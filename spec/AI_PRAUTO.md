@@ -89,7 +89,9 @@ The heartbeat derives its next action from **remote GitHub state** — labels, a
 │   ├── quota.sh                # [COMMITTED] Token quota check
 │   ├── issues.sh               # [COMMITTED] GitHub issue scanning and claiming
 │   ├── claude.sh               # [COMMITTED] Claude Code CLI invocation wrapper
-│   ├── git-ops.sh              # [COMMITTED] Branch creation, push, PR lifecycle
+│   ├── git-ops.sh              # [COMMITTED] Branch creation, worktree, push operations
+│   ├── pr.sh                   # [COMMITTED] PR creation, feedback handling, squash-finalize
+│   ├── phases.sh               # [COMMITTED] Phase-specific handlers (analysis → pr)
 │   └── state.sh                # [COMMITTED] Job state management (lock, resume, complete)
 ├── prompts/
 │   ├── system-append.md        # [COMMITTED] System prompt addendum for prauto identity
@@ -159,7 +161,7 @@ PRAUTO_GIT_AUTHOR_EMAIL="prauto01@dataspoke.local"
 
 # Claude Code CLI (tune per instance based on machine capacity)
 PRAUTO_CLAUDE_MODEL="sonnet"
-PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS=10
+PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS=20
 PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION=50
 PRAUTO_HEARTBEAT_INTERVAL_MINUTES=30
 

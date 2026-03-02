@@ -158,7 +158,9 @@ Prauto is the autonomous PR worker — a cron-driven system that picks up GitHub
 │   ├── quota.sh                #   Token quota management
 │   ├── issues.sh               #   Issue discovery, claiming
 │   ├── claude.sh               #   Claude CLI invocation
-│   └── git-ops.sh              #   Git/PR operations
+│   ├── git-ops.sh              #   Branch creation, worktree, push
+│   ├── pr.sh                   #   PR creation, feedback, squash-finalize
+│   └── phases.sh               #   Phase-specific handlers
 ├── prompts/                    # Prompt templates for Claude CLI invocations
 │   ├── issue-analysis.md       #   Issue analysis and plan generation
 │   ├── implementation.md       #   Code implementation

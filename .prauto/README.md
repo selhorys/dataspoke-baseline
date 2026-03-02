@@ -75,7 +75,9 @@ All GitHub API operations (issue labels, comments, PR creation) will then run as
 │   ├── quota.sh                # Token quota check
 │   ├── issues.sh               # Issue scanning and claiming
 │   ├── claude.sh               # Claude Code CLI wrapper
-│   ├── git-ops.sh              # Branch, push, PR lifecycle
+│   ├── git-ops.sh              # Branch creation, worktree, push
+│   ├── pr.sh                   # PR creation, feedback, squash-finalize
+│   ├── phases.sh               # Phase-specific handlers
 │   └── state.sh                # Job state management
 ├── prompts/
 │   ├── system-append.md        # Worker identity prompt
