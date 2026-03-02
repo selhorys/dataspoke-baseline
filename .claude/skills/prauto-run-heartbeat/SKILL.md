@@ -57,6 +57,9 @@ Key points:
 - `bash -x` — enables trace output for monitoring.
 - `2>&1` — merges stderr (trace) with stdout for unified output.
 
+**Known issue — `claude -p` output invisible to Bash tool stdout:**
+The `claude -p` CLI does **not** produce visible output in the Bash tool's stdout capture. Output only appears when redirected to a file (e.g., `> /tmp/out.txt`). The heartbeat already handles this — `invoke_claude()` in `lib/claude.sh` redirects to a temp file and reads it back with `jq`. However, this means the background task output will go **silent for minutes** during each `claude -p` invocation. This is expected, not a hang.
+
 Note the background task ID for monitoring.
 
 ---
@@ -91,6 +94,7 @@ Also check the background task output when available:
 - Parse `bash -x` trace lines (`+ command ...`) for supplementary detail.
 - Watch for `[INFO]`, `[WARN]`, and `[ERROR]` markers.
 - **Redact secrets**: The `bash -x` trace may print env var values (GH_TOKEN, ANTHROPIC_API_KEY). When summarizing output to the user, **never** include token/key values — replace them with `[REDACTED]`.
+- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the background task output produces **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Use state files to confirm the process is still alive (`heartbeat.lock` exists, `current-job.json` `last_heartbeat` updates).
 
 ### State-based milestones to report
 
@@ -124,7 +128,7 @@ Report a completion summary using **state files** as the source of truth:
 
 Perform up to **3 retry cycles**:
 
-1. **Diagnose**: Read the background task output for error details. Also check state files — a partially-created `current-job.json` or missing expected session file can indicate where the failure occurred.
+1. **Diagnose**: Read the background task output for error details. Also check state files — a partially-created `current-job.json` or missing expected session file can indicate where the failure occurred. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to a temp file; verify the file redirect and `jq` parsing are working.
 2. **Locate**: Map the error to a source file in `.prauto/` — typically one of:
    - `heartbeat.sh` — main orchestrator
    - `lib/helpers.sh` — logging, config loading

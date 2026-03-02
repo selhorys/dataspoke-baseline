@@ -182,36 +182,64 @@ find_actionable_prs() {
     local pr_branch
     pr_branch=$(echo "$prauto_prs" | jq -r ".[$i].headRefName")
 
-    # Get review comments (changes requested)
+    # Get formal review states (CHANGES_REQUESTED / COMMENTED)
     local reviews
     reviews=$(gh pr view "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
       --json reviews \
       --jq '[.reviews[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submittedAt) | last' \
       2>/dev/null)
 
-    # Get PR comments to check for prauto replies
-    local pr_comments
-    pr_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${pr_number}/comments" \
+    # Get inline PR review comments (code-level)
+    local pr_review_comments
+    pr_review_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${pr_number}/comments" \
       --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
       2>/dev/null || echo "[]")
 
-    # Find comments not yet addressed by prauto
+    # Get issue-level comments on the PR (conversation tab)
+    local pr_issue_comments
+    pr_issue_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${pr_number}/comments" \
+      --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
+      2>/dev/null || echo "[]")
+
+    # Merge both comment sources
+    local all_comments
+    all_comments=$(jq -s 'add' <<< "${pr_review_comments}${pr_issue_comments}" 2>/dev/null || echo "[]")
+
+    # Find non-prauto comments (reviewer feedback)
     local unaddressed
-    unaddressed=$(echo "$pr_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
+    unaddressed=$(echo "$all_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
       [.[] | select(.body | startswith($worker) | not)]
     ')
 
     local unaddressed_count
     unaddressed_count=$(echo "$unaddressed" | jq 'length')
 
-    if [[ "$unaddressed_count" -gt 0 ]] && [[ -n "$reviews" ]] && [[ "$reviews" != "null" ]]; then
+    # Actionable if there are unaddressed comments AND either:
+    # - a formal review exists (CHANGES_REQUESTED/COMMENTED), OR
+    # - issue-level comments from non-prauto users exist (reviewer used conversation tab)
+    local has_review_signal=false
+    if [[ -n "$reviews" ]] && [[ "$reviews" != "null" ]]; then
+      has_review_signal=true
+    fi
+    if [[ "$has_review_signal" == "false" ]] && [[ "$unaddressed_count" -gt 0 ]]; then
+      # Check if any unaddressed comment is from someone other than the PR author (prauto actor)
+      local external_count
+      external_count=$(echo "$unaddressed" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+        [.[] | select(.user != $actor)] | length
+      ')
+      if [[ "$external_count" -gt 0 ]]; then
+        has_review_signal=true
+      fi
+    fi
+
+    if [[ "$unaddressed_count" -gt 0 ]] && [[ "$has_review_signal" == "true" ]]; then
       ACTIONABLE_PR_NUMBER="$pr_number"
       ACTIONABLE_PR_BRANCH="$pr_branch"
       # Extract issue number from branch name (prauto/I-42 → 42)
       ACTIONABLE_PR_ISSUE="${pr_branch#${PRAUTO_BRANCH_PREFIX}I-}"
-      ACTIONABLE_COMMENTS=$(echo "$pr_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
+      ACTIONABLE_COMMENTS=$(echo "$all_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
         [.[] | select(.body | startswith($worker) | not)]
-        | map("Comment #\(.id) by \(.user):\n\(.body)")
+        | map("Comment by \(.user):\n\(.body)")
         | join("\n\n---\n\n")
       ')
       info "Found actionable PR #${pr_number} with unaddressed comments."

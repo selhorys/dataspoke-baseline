@@ -82,6 +82,8 @@ invoke_claude() {
   local output_file
   output_file=$(mktemp)
 
+  # NOTE: claude -p stdout is invisible to the Bash tool's stdout capture.
+  # File redirect is required — do NOT use $(...) command substitution.
   info "Invoking Claude (max_turns=$max_turns)..."
   if "${cmd[@]}" > "$output_file" 2>&1; then
     info "Claude invocation completed."
