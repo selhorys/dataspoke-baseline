@@ -142,6 +142,8 @@ The scaffold lives in `.claude/` and makes AI-assisted development immediately p
 | `monitor-k8s` | Full cluster health report (pods, events, Helm releases) |
 | `plan-doc` | Route spec authorship to the correct tier in `spec/` |
 | `datahub-api` | DataHub data model Q&A and Python SDK code writing |
+| `prauto-check-status` | Prauto issue/PR status dashboard and next-heartbeat prediction |
+| `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; diagnoses and fixes errors |
 
 ### Commands (multi-step workflows)
 

@@ -47,7 +47,9 @@ The scaffold supports two categories of workflows (from MANIFESTO §4):
 │   ├── kubectl/                # Kubernetes operations against local cluster
 │   ├── monitor-k8s/            # Cluster health reporting
 │   ├── plan-doc/               # Spec document routing and authoring
-│   └── datahub-api/            # DataHub data model Q&A and code writing
+│   ├── datahub-api/            # DataHub data model Q&A and code writing
+│   ├── prauto-check-status/    # Prauto issue/PR status dashboard and heartbeat prediction
+│   └── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
 ├── commands/                   # User-invoked multi-step workflows
 │   ├── dataspoke-dev-env-install.md
 │   ├── dataspoke-dev-env-uninstall.md
@@ -84,6 +86,8 @@ Skills are prompt extensions that give the agent specialized context or workflow
 | `monitor-k8s` | `/monitor-k8s [focus]` | User-invoked; runs in forked subagent | Full cluster health report: pod status, recent events, Helm releases |
 | `plan-doc` | `/plan-doc <topic>` | User-invoked or auto-triggered when writing specs | Route spec authorship to the correct tier: `spec/feature/` for common features, `spec/feature/spoke/` for user-group-specific features (DE/DA/DG), `spec/impl/` for chronological decision plans/logs |
 | `datahub-api` | `/datahub-api <task>` | User-invoked or auto-triggered on DataHub API tasks | Dual-mode skill: Q&A mode for DataHub data model questions, Code Writer mode for writing/testing Python code against DataHub APIs. Uses `ref/github/datahub/` source and live cluster for validation |
+| `prauto-check-status` | `/prauto-check-status [filter]` | User-invoked only | Status dashboard across all prauto lifecycle labels (ready/wip/review/done/failed); predicts what the next heartbeat will do based on current state |
+| `prauto-run-heartbeat` | `/prauto-run-heartbeat` | User-invoked only | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads log output, and diagnoses + fixes script errors across up to 3 retry cycles |
 
 ### Commands
 
