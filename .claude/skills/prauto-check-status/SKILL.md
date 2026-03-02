@@ -113,8 +113,15 @@ Based on the data collected above, simulate the heartbeat decision tree from `he
      - If phase is `plan-approval`: "Will check if plan approval has been given."
      - If phase is `analysis`: "Will re-run analysis from scratch."
      - If phase is `implementation`: "Will resume implementation (session: S)."
+     - If phase is `pr-review`: "Will address reviewer feedback and push fixes."
      - If phase is `pr`: "Will push branch and create/update PR."
      - If the issue has a `<!-- prauto:quota-paused -->` marker in its latest prauto comment: "Note: heartbeat will first check quota — if still exhausted, it will re-pause without doing work."
+   - No → continue to step 1.5.
+
+1.5. **No local job, but orphaned WIP issue** (`prauto:wip` + assigned to this worker, no `current-job.json`)?
+   - Yes → "Heartbeat will **recover** orphaned issue #N. It will derive phase from GitHub
+     (PR exists → `pr`, plan approved → `implementation`, plan posted → `plan-approval`,
+     nothing → `analysis`), rebuild the job file, and exit. The **next** heartbeat will resume work."
    - No → continue to step 2.
 
 2. **Approved + mergeable PR exists** (from 1c above — org-member approved, MERGEABLE, CLEAN)?

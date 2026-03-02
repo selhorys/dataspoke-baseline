@@ -75,7 +75,7 @@ Poll every **~20 seconds** until the background task exits. On each check:
 1. **Lock file** — `test -f .prauto/state/heartbeat.lock` → script is running.
 2. **Job file** — Read `.prauto/state/current-job.json` (if it exists) and compare to the baseline snapshot:
    - **New file appeared**: Heartbeat claimed an issue. Report the issue number and title.
-   - **`phase` changed**: Report the phase transition (e.g., `analysis` → `plan-approval` → `implementation` → `pr`).
+   - **`phase` changed**: Report the phase transition (e.g., `analysis` → `plan-approval` → `implementation` → `pr`, or `pr-review` → `pr` for reviewer-feedback cycles). Note: `cross_check_phase()` may skip phases forward (e.g., `analysis` → `pr`) if GitHub state is ahead of the local cache.
    - **`session_id` changed**: A Claude CLI session started or resumed.
    - **`retries` incremented**: A retry occurred.
    - **`last_heartbeat` updated**: Heartbeat is alive and progressing.
@@ -99,19 +99,35 @@ tail -100 /tmp/prauto-heartbeat.log
 - **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the log file has **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Use state files to confirm the process is still alive (`heartbeat.lock` exists, `current-job.json` `last_heartbeat` updates).
 - **Do NOT use `TaskOutput`** or the background task's output file path — those are ephemeral and get cleaned up by Claude Code before they can be read. Always read `/tmp/prauto-heartbeat.log` instead.
 
+### Non-standard heartbeat patterns
+
+The monitor may observe patterns that don't follow the typical claim→analyze→implement→PR lifecycle:
+
+1. **Orphan recovery** (Step 5.1): `current-job.json` appears with a non-`analysis` phase (derived from GitHub state), and the heartbeat exits immediately. No session files are created. The phase is inferred from GitHub signals: PR exists → `pr`, plan approved → `implementation`, plan posted → `plan-approval`, nothing → `analysis`. The *next* heartbeat will resume work normally.
+
+2. **Squash-finalize** (Step 5.5): No `current-job.json` at all. Lock appears and disappears. Only visible in `/tmp/prauto-heartbeat.log` — look for `[INFO] Squash-finalizing` markers. This is a stateless operation: the heartbeat rebases, squashes commits, generates a commit message via Claude, force-pushes, and swaps `prauto:review` → `prauto:done` labels.
+
+3. **Stale job cleanup** (Step 5 validation): `current-job.json` disappears and a new history file appears, but no session files were created. This means GitHub validation (issue closed, `prauto:wip` removed, or reassigned to another worker) triggered a stale-job completion via `complete_job`.
+
+4. **Cross-check phase jump** (Step 5 resume): When monitoring a resume, the phase in `current-job.json` may jump forward (e.g., `analysis` → `pr`) because `cross_check_phase()` detected GitHub state ahead of the local cache (e.g., a PR already exists for the branch).
+
 ### State-based milestones to report
 
 | State change | Meaning |
 |-------------|---------|
 | `heartbeat.lock` appears | Script started, lock acquired |
 | `current-job.json` created | Issue claimed, job started |
+| `current-job.json` created with phase != `analysis` + immediate exit | Orphan recovery — job rebuilt from GitHub state, will resume next heartbeat |
 | `current-job.json` phase = `analysis` | Analysis phase running |
 | New `sessions/analysis-I-*.txt` | Analysis complete — summarize the plan |
 | `current-job.json` phase = `plan-approval` | Plan posted to issue, awaiting approval |
 | `current-job.json` phase = `implementation` | Implementation phase running |
 | New `sessions/impl-I-*.json` | Implementation complete |
+| `current-job.json` phase = `pr-review` | Addressing PR reviewer feedback |
 | `current-job.json` phase = `pr` | PR creation/push phase |
 | `current-job.json` disappeared + new history file | Job completed |
+| `current-job.json` disappeared + new history, no session files created | GitHub validation found stale issue — job completed without work |
+| No `current-job.json` created but lock appeared/disappeared | Squash-finalize (stateless — no job file) |
 | `heartbeat.lock` disappeared | Script finished |
 
 ---
@@ -139,7 +155,9 @@ Perform up to **3 retry cycles**:
    - `lib/quota.sh` — token quota
    - `lib/issues.sh` — issue discovery, claiming
    - `lib/claude.sh` — Claude CLI invocation
-   - `lib/git-ops.sh` — git/PR operations
+   - `lib/git-ops.sh` — branch creation, worktree, push
+   - `lib/pr.sh` — PR creation, feedback, squash-finalize
+   - `lib/phases.sh` — phase-specific handlers
    - `prompts/*.md` — prompt templates
 3. **Analyze**: Read the relevant source file. Understand the root cause.
 4. **Fix**: Edit the source file to resolve the issue.
