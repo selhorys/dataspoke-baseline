@@ -7,7 +7,9 @@ DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (
 This repository delivers two artifacts:
 
 - **Baseline Product** — A pre-built implementation of essential features for an AI-era catalog, targeting DE, DA, and DG user groups.
-- **AI Scaffold** — Claude Code conventions, development specs, and utilities that enable rapid construction of custom data catalogs with AI coding agents.
+- **AI Scaffold** — Claude Code conventions, development specs, and utilities — including the PRauto autonomous PR system — that enable rapid construction of custom data catalogs with AI coding agents.
+
+Fork or copy this repository to create a data catalog for your organization. An automated coding factory is a bonus.
 
 ## Architecture
 
