@@ -1,0 +1,41 @@
+[project]
+name = "dataspoke-api"
+version = "0.1.0"
+description = "DataSpoke API server — FastAPI sidecar extension to DataHub"
+requires-python = "==3.13.*"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "PyJWT>=2.10",
+    "passlib[bcrypt]>=1.7",
+    "slowapi>=0.1.9",
+    "structlog>=24",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "mypy>=1.14",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["../../tests/unit/api"]

@@ -130,7 +130,7 @@ src/frontend/
 
 ### 2. DataSpoke API
 
-**Technology**: FastAPI (Python 3.11+)
+**Technology**: FastAPI (Python 3.13)
 
 Three-tier URI structure:
 
@@ -156,7 +156,7 @@ src/api/
 
 ### 3. DataSpoke Backend / Pipeline
 
-**Technology**: Python 3.11+, Temporal for orchestration
+**Technology**: Python 3.13, Temporal for orchestration
 
 Core computational layer. Feature service implementations are specified per feature in `spec/feature/` and `spec/feature/spoke/`.
 
@@ -406,8 +406,8 @@ Shared by all features.
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
 | Frontend | Next.js + TypeScript | SSR, React ecosystem, type safety |
-| API | FastAPI (Python 3.11+) | Async support, auto OpenAPI docs, Pydantic validation |
-| Backend | Python 3.11+ | Rich data/ML libraries, DataHub SDK compatibility |
+| API | FastAPI (Python 3.13) | Async support, auto OpenAPI docs, Pydantic validation |
+| Backend | Python 3.13 | Rich data/ML libraries, DataHub SDK compatibility |
 | Vector DB | Qdrant | Self-hostable, Rust-based performance, simple deployment |
 | Message Broker | Kafka | DataHub integration standard |
 | Orchestration | Temporal | Durable workflows, built-in retry, workflow-as-code testing |

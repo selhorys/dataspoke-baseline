@@ -24,7 +24,7 @@
 
 | Layer | Language | Framework | Static Gates |
 |-------|----------|-----------|-------------|
-| Backend (API + services) | Python 3.11+ | pytest + httpx | mypy, ruff |
+| Backend (API + services) | Python 3.13 | pytest + httpx | mypy, ruff |
 | Frontend | TypeScript | Jest + React Testing Library | TypeScript compiler, ESLint |
 | E2E | TypeScript | Playwright | — |
 
