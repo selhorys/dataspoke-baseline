@@ -46,19 +46,19 @@ Save this baseline mentally (file names, modification times) for comparison in S
 
 ## Step 3 — Run heartbeat
 
-Execute the heartbeat in the **background**:
+Execute the heartbeat in the **background**, redirecting output to a **persistent log file**:
 
 ```bash
-env -u CLAUDECODE bash -x .prauto/heartbeat.sh 2>&1
+env -u CLAUDECODE bash -x .prauto/heartbeat.sh > /tmp/prauto-heartbeat.log 2>&1
 ```
 
 Key points:
 - `env -u CLAUDECODE` — **required** to avoid nested-run limit (the heartbeat internally invokes `claude` CLI).
 - `bash -x` — enables trace output for monitoring.
-- `2>&1` — merges stderr (trace) with stdout for unified output.
+- `> /tmp/prauto-heartbeat.log 2>&1` — **critical**: redirects all output (stdout + stderr/trace) to a persistent file. Do NOT rely on the Bash tool's background task output capture — those temp files are ephemeral and get cleaned up before they can be read. The persistent log at `/tmp/prauto-heartbeat.log` survives task completion and is the **only reliable source** of trace output.
 
 **Known issue — `claude -p` output invisible to Bash tool stdout:**
-The `claude -p` CLI does **not** produce visible output in the Bash tool's stdout capture. Output only appears when redirected to a file (e.g., `> /tmp/out.txt`). The heartbeat already handles this — `invoke_claude()` in `lib/claude.sh` redirects to a temp file and reads it back with `jq`. However, this means the background task output will go **silent for minutes** during each `claude -p` invocation. This is expected, not a hang.
+The `claude -p` CLI does **not** produce visible output in the Bash tool's stdout capture. Output only appears when redirected to a file (e.g., `> /tmp/out.txt`). The heartbeat already handles this — `invoke_claude()` in `lib/claude.sh` redirects to a temp file and reads it back with `jq`. However, this means the log file will go **silent for minutes** during each `claude -p` invocation. This is expected, not a hang.
 
 Note the background task ID for monitoring.
 
@@ -87,14 +87,17 @@ Poll every **~20 seconds** until the background task exits. On each check:
    - **New file**: Job completed (or was abandoned). Read to determine outcome.
 5. **Job file disappeared**: Either `complete_job()` or `abandon_job()` was called — check history.
 
-### Secondary: Background task output
+### Secondary: Persistent log file
 
-Also check the background task output when available:
-- Use `TaskOutput` with a short timeout, or read the output file directly.
+Read the persistent log file at `/tmp/prauto-heartbeat.log` using `tail`:
+```bash
+tail -100 /tmp/prauto-heartbeat.log
+```
 - Parse `bash -x` trace lines (`+ command ...`) for supplementary detail.
 - Watch for `[INFO]`, `[WARN]`, and `[ERROR]` markers.
 - **Redact secrets**: The `bash -x` trace may print env var values (GH_TOKEN, ANTHROPIC_API_KEY). When summarizing output to the user, **never** include token/key values — replace them with `[REDACTED]`.
-- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the background task output produces **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Use state files to confirm the process is still alive (`heartbeat.lock` exists, `current-job.json` `last_heartbeat` updates).
+- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the log file has **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Use state files to confirm the process is still alive (`heartbeat.lock` exists, `current-job.json` `last_heartbeat` updates).
+- **Do NOT use `TaskOutput`** or the background task's output file path — those are ephemeral and get cleaned up by Claude Code before they can be read. Always read `/tmp/prauto-heartbeat.log` instead.
 
 ### State-based milestones to report
 
@@ -128,7 +131,7 @@ Report a completion summary using **state files** as the source of truth:
 
 Perform up to **3 retry cycles**:
 
-1. **Diagnose**: Read the background task output for error details. Also check state files — a partially-created `current-job.json` or missing expected session file can indicate where the failure occurred. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to a temp file; verify the file redirect and `jq` parsing are working.
+1. **Diagnose**: Read `/tmp/prauto-heartbeat.log` for error details. Also check state files — a partially-created `current-job.json` or missing expected session file can indicate where the failure occurred. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to a temp file; verify the file redirect and `jq` parsing are working.
 2. **Locate**: Map the error to a source file in `.prauto/` — typically one of:
    - `heartbeat.sh` — main orchestrator
    - `lib/helpers.sh` — logging, config loading
@@ -142,9 +145,9 @@ Perform up to **3 retry cycles**:
 4. **Fix**: Edit the source file to resolve the issue.
    - **NEVER modify `.prauto/config.local.env`** — if the error is credentials/config-related, report to user and stop.
    - **NEVER modify `.prauto/config.env`** unless it's clearly a bug in the shared config (not a config value issue).
-5. **Re-run**: Launch the heartbeat again:
+5. **Re-run**: Launch the heartbeat again (overwrite the previous log):
    ```bash
-   env -u CLAUDECODE bash -x .prauto/heartbeat.sh 2>&1
+   env -u CLAUDECODE bash -x .prauto/heartbeat.sh > /tmp/prauto-heartbeat.log 2>&1
    ```
    The re-run **automatically** uses credentials from `.prauto/config.local.env` — no manual credential handling needed.
 6. **Monitor**: Return to Step 4.
