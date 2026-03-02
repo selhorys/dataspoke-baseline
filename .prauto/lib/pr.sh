@@ -148,14 +148,26 @@ find_actionable_prs() {
       2>/dev/null || echo "[]")
 
     # Skip if latest prauto comment is a "feedback addressed" marker
-    local latest_prauto
-    latest_prauto=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+    # AND no newer non-prauto comments exist after the marker timestamp
+    local latest_prauto_body latest_prauto_time
+    latest_prauto_body=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
       [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .body // ""
     ')
-    if echo "$latest_prauto" | grep -q "Reviewer feedback addressed"; then
-      info "PR #${pr_number}: feedback already addressed. Skipping."
-      i=$((i + 1))
-      continue
+    latest_prauto_time=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+      [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .created_at // ""
+    ')
+    if echo "$latest_prauto_body" | grep -q "Reviewer feedback addressed"; then
+      # Check if any non-prauto comments exist after the marker
+      local newer_issue newer_reviews
+      newer_issue=$(echo "$pr_issue_comments" | jq --arg actor "$PRAUTO_GITHUB_ACTOR" --arg ts "$latest_prauto_time" '
+        [.[] | select(.user != $actor) | select(.created_at > $ts)] | length')
+      newer_reviews=$(echo "$pr_review_comments" | jq --arg ts "$latest_prauto_time" '
+        [.[] | select(.created_at > $ts)] | length')
+      if [[ "$newer_issue" -eq 0 ]] && [[ "$newer_reviews" -eq 0 ]]; then
+        info "PR #${pr_number}: feedback already addressed. Skipping."
+        i=$((i + 1)); continue
+      fi
+      info "PR #${pr_number}: new reviewer comments after marker. Re-evaluating."
     fi
 
     # Merge both comment sources
@@ -429,6 +441,20 @@ ${co_authored_by%$'\n'}"
   done
 
   info "PR #${pr_number}: marked as prauto:done (PR and issue #${issue_number}). NOT merged."
+}
+
+# Post Claude's response to reviewer comments as a PR comment.
+# This provides a written answer to reviewer questions and explains changes made.
+# Usage: post_review_response_comment <pr_number> <response_text>
+post_review_response_comment() {
+  local pr_number="$1"
+  local response_text="$2"
+  [[ -z "$response_text" ]] && return 0
+  gh pr comment "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Review response
+
+${response_text}" \
+    2>/dev/null || warn "Failed to post review response on PR #${pr_number}."
 }
 
 # Post a "feedback addressed" marker comment on a PR.

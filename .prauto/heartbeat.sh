@@ -232,6 +232,7 @@ if find_actionable_prs; then
   # Push and update PR
   push_branch "$ACTIONABLE_PR_BRANCH"
   create_or_update_pr "$ACTIONABLE_PR_ISSUE" "" "$ACTIONABLE_PR_BRANCH"
+  post_review_response_comment "$ACTIONABLE_PR_NUMBER" "$REVIEW_RESPONSE"
   post_feedback_addressed_comment "$ACTIONABLE_PR_NUMBER"
 
   # Complete job

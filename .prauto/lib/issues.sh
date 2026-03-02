@@ -19,6 +19,19 @@ fetch_org_members() {
   return 0
 }
 
+# Post a response to plan feedback as an issue comment.
+# Usage: post_feedback_response_comment <issue_number> <response_text>
+post_feedback_response_comment() {
+  local issue_number="$1"
+  local response_text="$2"
+  [[ -z "$response_text" ]] && return 0
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Feedback response
+
+${response_text}" \
+    2>/dev/null || warn "Failed to post feedback response on issue #${issue_number}."
+}
+
 # Find the oldest eligible issue labeled prauto:ready.
 # Sets FOUND_ISSUE_NUMBER, FOUND_ISSUE_TITLE, FOUND_ISSUE_BODY on success.
 # Returns 0 if found, 1 if none.

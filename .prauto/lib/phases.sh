@@ -88,12 +88,15 @@ handle_phase_plan_approval() {
     run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
     finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
-    # Counter-proposal — revise previous plan with feedback
+    # Counter-proposal — respond to feedback, then revise plan
     info "Counter-proposal received. Revising plan..."
     local issue_body_raw
     issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --json body --jq '.body // ""' 2>/dev/null || echo "")
     fetch_approved_plan "$issue_number"
+    # Generate and post response to feedback before re-analysis
+    generate_feedback_response "$issue_number" "$issue_title" "$COUNTER_PROPOSAL" "$APPROVED_PLAN_TEXT"
+    post_feedback_response_comment "$issue_number" "$FEEDBACK_RESPONSE_TEXT"
     if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw" "$COUNTER_PROPOSAL" "$APPROVED_PLAN_TEXT"; then
       warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
       exit 0
@@ -172,8 +175,9 @@ handle_phase_pr_review() {
   run_pr_review "$issue_number" "$branch" "$reviewer_comments"
   push_branch "$branch"
   create_or_update_pr "$issue_number" "$issue_title" "$branch"
-  # Post feedback-addressed marker
+  # Post review response and feedback-addressed marker
   if [[ -n "$review_pr_number" ]]; then
+    post_review_response_comment "$review_pr_number" "$REVIEW_RESPONSE"
     post_feedback_addressed_comment "$review_pr_number"
   fi
   complete_job "$issue_number"

@@ -246,37 +246,61 @@ generate_squash_commit_message() {
 
 # PR review phase: address reviewer feedback.
 # Always starts a fresh session with full reviewer comments as context.
-# Sets: REVIEW_SESSION_ID
+# Sets: REVIEW_SESSION_ID, REVIEW_RESPONSE
 run_pr_review() {
   local issue_number="$1"
   local branch="$2"
   local reviewer_comments="$3"
 
   local prompt
-  prompt="Address the following reviewer feedback on PR for issue #${issue_number} (branch \`${branch}\`).
-
-## Reviewer Comments
-
-${reviewer_comments}
-
-## Instructions
-
-1. Read each reviewer comment carefully.
-2. Make the requested changes.
-3. Run tests to verify.
-4. Run formatters (ruff for Python, npx prettier for TypeScript).
-5. Stage and commit with conventional commit messages.
-   Use: git commit --author=\"${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AUTHOR_EMAIL}>\"
-6. Do NOT push. The orchestrator handles pushing."
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/pr-review.md" \
+    "number=${issue_number}" \
+    "branch=${branch}" \
+    "reviewer_comments=${reviewer_comments}" \
+    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
+    "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
 
   local budget="${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
 
   invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" "$budget"
 
   REVIEW_SESSION_ID="$CLAUDE_SESSION_ID"
+  REVIEW_RESPONSE="$CLAUDE_OUTPUT"
 
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
     echo "$CLAUDE_OUTPUT" > "${SESSIONS_DIR}/review-I-${issue_number}.json"
     info "PR review session saved: ${CLAUDE_SESSION_ID}"
+  fi
+}
+
+# Generate a response to plan feedback (counter-proposal).
+# Uses a single-turn, no-tool Claude invocation to produce a concise response.
+# Usage: generate_feedback_response <issue_number> <issue_title> <feedback> <previous_plan>
+# Sets: FEEDBACK_RESPONSE_TEXT
+generate_feedback_response() {
+  local issue_number="$1"
+  local issue_title="$2"
+  local feedback="$3"
+  local previous_plan="$4"
+
+  local prompt
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/feedback-response.md" \
+    "number=${issue_number}" \
+    "title=${issue_title}" \
+    "feedback=${feedback}" \
+    "plan=${previous_plan}")
+
+  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS:-}"
+
+  # Minimal invocation: 1 turn, no tools
+  invoke_claude "$prompt" "" "1" "$budget"
+
+  FEEDBACK_RESPONSE_TEXT="$CLAUDE_OUTPUT"
+
+  # Strip markdown fences if Claude wrapped the output
+  FEEDBACK_RESPONSE_TEXT=$(echo "$FEEDBACK_RESPONSE_TEXT" | sed '/^```/d')
+
+  if [[ -z "$FEEDBACK_RESPONSE_TEXT" ]]; then
+    warn "Claude failed to generate feedback response for issue #${issue_number}."
   fi
 }
