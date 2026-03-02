@@ -119,6 +119,7 @@ run_analysis() {
   local issue_title="$2"
   local issue_body="$3"
   local counter_proposal="${4:-}"
+  local previous_plan="${5:-}"
 
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/issue-analysis.md" \
@@ -127,11 +128,21 @@ run_analysis() {
     "body=${issue_body}")
 
   if [[ -n "$counter_proposal" ]]; then
+    if [[ -n "$previous_plan" ]]; then
+      prompt="${prompt}
+
+## Previous Plan
+
+Use this as your starting point. Revise it based on the feedback below — do not start from scratch.
+
+${previous_plan}"
+    fi
+
     prompt="${prompt}
 
-## Previous Plan Feedback
+## Feedback on Previous Plan
 
-The following counter-proposal was made. Incorporate this feedback into your revised plan:
+The following counter-proposal was made. Revise the plan above to address this feedback:
 
 ${counter_proposal}"
   fi

@@ -88,12 +88,13 @@ handle_phase_plan_approval() {
     run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
     finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
-    # Counter-proposal — re-run analysis with feedback
-    info "Counter-proposal received. Re-running analysis..."
+    # Counter-proposal — revise previous plan with feedback
+    info "Counter-proposal received. Revising plan..."
     local issue_body_raw
     issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --json body --jq '.body // ""' 2>/dev/null || echo "")
-    if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw" "$COUNTER_PROPOSAL"; then
+    fetch_approved_plan "$issue_number"
+    if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw" "$COUNTER_PROPOSAL" "$APPROVED_PLAN_TEXT"; then
       warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
       exit 0
     fi

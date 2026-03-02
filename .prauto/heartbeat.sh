@@ -160,7 +160,7 @@ if find_wip_issue; then
 
   # Count heartbeat comments for retry tracking
   count_heartbeat_comments "$WIP_ISSUE_NUMBER"
-  local retry_count=$((HEARTBEAT_COMMENT_COUNT + 1))
+  retry_count=$((HEARTBEAT_COMMENT_COUNT + 1))
 
   # Check max retries
   if [[ "$HEARTBEAT_COMMENT_COUNT" -ge "$PRAUTO_MAX_RETRIES_PER_JOB" ]]; then

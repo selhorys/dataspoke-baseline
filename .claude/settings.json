@@ -43,6 +43,8 @@
       "Bash(kubectl version *)",
       "Bash(minikube *)",
       "Bash(sleep *)",
+      "Bash(env -u CLAUDECODE bash*)",
+      "Bash(tail */tmp/*)",
       "Skill(datahub-api)",
       "Skill(kubectl)",
       "Skill(monitor-k8s)",
