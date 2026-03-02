@@ -95,12 +95,25 @@ invoke_claude() {
   CLAUDE_SESSION_ID=$(jq -r '.session_id // empty' "$output_file" 2>/dev/null || echo "")
   CLAUDE_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || echo "")
 
-  # If JSON parsing fails, treat entire output as text
-  if [[ -z "$CLAUDE_OUTPUT" ]]; then
+  # Detect error subtypes (e.g. error_max_turns) — output has no .result field
+  local subtype
+  subtype=$(jq -r '.subtype // empty' "$output_file" 2>/dev/null || echo "")
+  if [[ "$subtype" == error_* ]]; then
+    warn "Claude returned subtype '${subtype}'. Output may be incomplete."
+    CLAUDE_OUTPUT=""
+  fi
+
+  # If JSON parsing produced no result and it's not an error subtype, use raw output
+  if [[ -z "$CLAUDE_OUTPUT" ]] && [[ "$subtype" != error_* ]]; then
     CLAUDE_OUTPUT=$(cat "$output_file")
   fi
 
   rm -f "$output_file"
+
+  # Return non-zero when output is empty so callers can handle gracefully
+  if [[ -z "$CLAUDE_OUTPUT" ]]; then
+    return 1
+  fi
 }
 
 # Phase 1: Analysis (read-only).
@@ -130,7 +143,12 @@ ${counter_proposal}"
 
   local budget="${PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS:-}"
 
-  invoke_claude "$prompt" "$ANALYSIS_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS" "$budget"
+  if ! invoke_claude "$prompt" "$ANALYSIS_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS" "$budget"; then
+    warn "Analysis produced no usable output for issue #${issue_number}."
+    ANALYSIS_OUTPUT=""
+    ANALYSIS_SESSION_ID="$CLAUDE_SESSION_ID"
+    return 1
+  fi
 
   ANALYSIS_OUTPUT="$CLAUDE_OUTPUT"
   ANALYSIS_SESSION_ID="$CLAUDE_SESSION_ID"

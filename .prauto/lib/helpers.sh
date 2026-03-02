@@ -29,3 +29,19 @@ load_config() {
   # shellcheck source=../config.local.env
   source "$prauto_dir/config.local.env"
 }
+
+# Check if a matching comment already exists (idempotency guard).
+# Usage: comment_exists <"issue"|"pr"> <number> <keyword>
+# Returns 0 if found, 1 if not found.
+comment_exists() {
+  local target_type="$1"
+  local target_number="$2"
+  local keyword="$3"
+  local prefix="prauto(${PRAUTO_WORKER_ID}): ${keyword}"
+
+  gh "${target_type}" view "$target_number" \
+    -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq ".comments[] | select(.body | startswith(\"${prefix}\")) | .id" \
+  | head -1 | grep -q .
+}

@@ -1,22 +1,6 @@
-# Issue discovery and claiming for prauto.
+# Issue discovery, claiming, and plan lifecycle for prauto.
 # Source this file — do not execute directly.
-# Requires: helpers.sh sourced, PRAUTO_GITHUB_REPO, PRAUTO_GITHUB_LABEL_* set, gh CLI available.
-
-# Check if a matching comment already exists (idempotency guard).
-# Usage: comment_exists <"issue"|"pr"> <number> <keyword>
-# Returns 0 if found, 1 if not found.
-comment_exists() {
-  local target_type="$1"
-  local target_number="$2"
-  local keyword="$3"
-  local prefix="prauto(${PRAUTO_WORKER_ID}): ${keyword}"
-
-  gh "${target_type}" view "$target_number" \
-    -R "$PRAUTO_GITHUB_REPO" \
-    --json comments \
-    --jq ".comments[] | select(.body | startswith(\"${prefix}\")) | .id" \
-  | head -1 | grep -q .
-}
+# Requires: helpers.sh sourced (for comment_exists), config loaded, gh CLI available.
 
 # Fetch organization member logins as a JSON array.
 # Usage: fetch_org_members
@@ -207,9 +191,98 @@ ${footer}"
   info "Plan comment posted on issue #${issue_number} (change_size=${change_size})."
 }
 
+# Find an orphaned WIP issue assigned to this worker (no local job file).
+# Searches for open issues with prauto:wip but without prauto:review.
+# Usage: find_orphaned_wip_issue
+# Sets: ORPHAN_ISSUE_NUMBER, ORPHAN_ISSUE_TITLE, ORPHAN_BRANCH
+# Returns 0 if found, 1 if none.
+find_orphaned_wip_issue() {
+  local issues_json
+  issues_json=$(gh issue list -R "$PRAUTO_GITHUB_REPO" \
+    --label "$PRAUTO_GITHUB_LABEL_WIP" \
+    --assignee "$PRAUTO_GITHUB_ACTOR" \
+    --state open \
+    --json number,title,labels --limit 10 2>/dev/null) || {
+    warn "Failed to list WIP issues from GitHub."; return 1
+  }
+  local filtered
+  filtered=$(echo "$issues_json" | jq -r \
+    --arg review "$PRAUTO_GITHUB_LABEL_REVIEW" \
+    '[.[] | select((.labels | map(.name) | index($review)) == null)]
+     | sort_by(.number) | .[0] // empty')
+  [[ -z "$filtered" ]] && return 1
+  ORPHAN_ISSUE_NUMBER=$(echo "$filtered" | jq -r '.number')
+  ORPHAN_ISSUE_TITLE=$(echo "$filtered" | jq -r '.title')
+  ORPHAN_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${ORPHAN_ISSUE_NUMBER}"
+  info "Found orphaned WIP issue: #${ORPHAN_ISSUE_NUMBER} — ${ORPHAN_ISSUE_TITLE}"
+  return 0
+}
+
+# Derive the current phase from GitHub signals (PR existence, plan comments, approval).
+# Usage: derive_phase_from_github <issue_number> <branch>
+# Sets: DERIVED_PHASE
+derive_phase_from_github() {
+  local issue_number="$1" branch="$2"
+  # Check if PR already exists for this branch
+  local pr_number
+  pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$branch" \
+    --json number --jq '.[0].number // empty' 2>/dev/null)
+  if [[ -n "$pr_number" ]]; then
+    DERIVED_PHASE="pr"; return 0
+  fi
+  # Check if plan comment exists
+  local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local plan_exists
+  plan_exists=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"${plan_prefix}\"))] | length" \
+    2>/dev/null) || plan_exists=0
+  if [[ "$plan_exists" -gt 0 ]]; then
+    local approval_status=0
+    check_plan_approval "$issue_number" || approval_status=$?
+    if [[ "$approval_status" -eq 0 ]]; then
+      DERIVED_PHASE="implementation"
+    else
+      DERIVED_PHASE="plan-approval"
+    fi
+    return 0
+  fi
+  DERIVED_PHASE="analysis"; return 0
+}
+
+# Estimate retry count from GitHub comment activity.
+# Counts prauto worker comments minus a baseline of 2 (Claimed + Plan).
+# Usage: estimate_retries_from_github <issue_number>
+# Sets: GITHUB_ESTIMATED_RETRIES
+estimate_retries_from_github() {
+  local issue_number="$1"
+  local prefix="prauto(${PRAUTO_WORKER_ID}):"
+  local comment_count
+  comment_count=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | length" \
+    2>/dev/null) || comment_count=0
+  local baseline=2
+  GITHUB_ESTIMATED_RETRIES=$(( comment_count > baseline ? comment_count - baseline : 0 ))
+}
+
+# Count existing plan comments by this worker, derive next revision number.
+# Usage: get_plan_revision_from_github <issue_number>
+# Sets: GITHUB_PLAN_REVISION
+get_plan_revision_from_github() {
+  local issue_number="$1"
+  local prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local plan_count
+  plan_count=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | length" \
+    2>/dev/null) || plan_count=0
+  GITHUB_PLAN_REVISION=$(( plan_count + 1 ))
+}
+
 # Check whether a plan has been approved on an issue.
 # Looks for comments after the plan comment.
-# Returns: 0 = approved ("go ahead"), 1 = no response yet, 2 = counter-proposal found.
+# Returns: 0 = approved ("go ahead"), 1 = no response yet, 2 = counter-proposal found, 3 = no plan comment found.
 # Sets COUNTER_PROPOSAL on return 2.
 check_plan_approval() {
   local issue_number="$1"
@@ -233,7 +306,7 @@ check_plan_approval() {
 
   if [[ -z "$plan_timestamp" ]]; then
     warn "No plan comment found on issue #${issue_number}."
-    return 1
+    return 3
   fi
 
   # Get non-prauto comments after the plan timestamp
@@ -264,53 +337,4 @@ check_plan_approval() {
   COUNTER_PROPOSAL=$(echo "$after_comments" | jq -r '.[-1].body')
   info "Counter-proposal found on issue #${issue_number}."
   return 2
-}
-
-# Check if the LATEST prauto comment on an issue has the quota-paused marker.
-# Usage: has_quota_paused_comment <issue_number>
-# Returns 0 if found, 1 if not found.
-has_quota_paused_comment() {
-  local issue_number="$1"
-  local prefix="prauto(${PRAUTO_WORKER_ID}):"
-
-  local latest_body
-  latest_body=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | last | .body // \"\"" \
-    2>/dev/null) || return 1
-
-  echo "$latest_body" | grep -q '<!-- prauto:quota-paused -->'
-}
-
-# Post a quota-paused notification on an issue.
-# Idempotent: skips if the LATEST prauto comment already has the marker.
-# Usage: post_quota_paused_comment <issue_number>
-post_quota_paused_comment() {
-  local issue_number="$1"
-
-  if has_quota_paused_comment "$issue_number"; then
-    info "Quota-paused comment already present on issue #${issue_number}. Skipping."
-    return 0
-  fi
-
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Paused — Claude token quota exhausted. Will resume automatically when quota is available.
-
-<!-- prauto:quota-paused -->" \
-    2>/dev/null || warn "Failed to post quota-paused comment on issue #${issue_number}."
-
-  info "Quota-paused comment posted on issue #${issue_number}."
-}
-
-# Post a quota-resumed notification on an issue.
-# No idempotency guard — gated externally by has_quota_paused_comment.
-# Usage: post_quota_resumed_comment <issue_number>
-post_quota_resumed_comment() {
-  local issue_number="$1"
-
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Resumed — Claude token quota is now available. Continuing work." \
-    2>/dev/null || warn "Failed to post quota-resumed comment on issue #${issue_number}."
-
-  info "Quota-resumed comment posted on issue #${issue_number}."
 }

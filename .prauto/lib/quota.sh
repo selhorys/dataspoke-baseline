@@ -1,6 +1,6 @@
-# Token quota checking for prauto.
+# Token quota checking and notifications for prauto.
 # Source this file — do not execute directly.
-# Requires: helpers.sh sourced, claude CLI available.
+# Requires: helpers.sh sourced (for comment_exists), claude CLI available, config loaded.
 
 # Run a command with a timeout (macOS-compatible, no coreutils needed).
 # Usage: run_with_timeout <seconds> <command> [args...]
@@ -63,4 +63,53 @@ check_quota() {
     fi
     return 1
   fi
+}
+
+# Check if the LATEST prauto comment on an issue has the quota-paused marker.
+# Usage: has_quota_paused_comment <issue_number>
+# Returns 0 if found, 1 if not found.
+has_quota_paused_comment() {
+  local issue_number="$1"
+  local prefix="prauto(${PRAUTO_WORKER_ID}):"
+
+  local latest_body
+  latest_body=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | last | .body // \"\"" \
+    2>/dev/null) || return 1
+
+  echo "$latest_body" | grep -q '<!-- prauto:quota-paused -->'
+}
+
+# Post a quota-paused notification on an issue.
+# Idempotent: skips if the LATEST prauto comment already has the marker.
+# Usage: post_quota_paused_comment <issue_number>
+post_quota_paused_comment() {
+  local issue_number="$1"
+
+  if has_quota_paused_comment "$issue_number"; then
+    info "Quota-paused comment already present on issue #${issue_number}. Skipping."
+    return 0
+  fi
+
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Paused — Claude token quota exhausted. Will resume automatically when quota is available.
+
+<!-- prauto:quota-paused -->" \
+    2>/dev/null || warn "Failed to post quota-paused comment on issue #${issue_number}."
+
+  info "Quota-paused comment posted on issue #${issue_number}."
+}
+
+# Post a quota-resumed notification on an issue.
+# No idempotency guard — gated externally by has_quota_paused_comment.
+# Usage: post_quota_resumed_comment <issue_number>
+post_quota_resumed_comment() {
+  local issue_number="$1"
+
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Resumed — Claude token quota is now available. Continuing work." \
+    2>/dev/null || warn "Failed to post quota-resumed comment on issue #${issue_number}."
+
+  info "Quota-resumed comment posted on issue #${issue_number}."
 }

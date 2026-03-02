@@ -99,6 +99,10 @@ source "$PRAUTO_DIR/lib/issues.sh"
 source "$PRAUTO_DIR/lib/claude.sh"
 # shellcheck source=lib/git-ops.sh
 source "$PRAUTO_DIR/lib/git-ops.sh"
+# shellcheck source=lib/pr.sh
+source "$PRAUTO_DIR/lib/pr.sh"
+# shellcheck source=lib/phases.sh
+source "$PRAUTO_DIR/lib/phases.sh"
 
 # Ensure state dirs exist
 ensure_state_dirs
@@ -134,11 +138,28 @@ if has_active_job; then
   info "Found active job. Attempting resume..."
   load_job
 
-  # Verify issue assignee matches this worker (prauto:wip ownership check)
-  issue_assignee=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-    --json assignees --jq '.assignees[].login' 2>/dev/null || echo "")
-  if ! echo "$issue_assignee" | grep -q "^${PRAUTO_GITHUB_ACTOR}$"; then
-    warn "Issue #${JOB_ISSUE_NUMBER} assignee (${issue_assignee}) does not match this worker (${PRAUTO_GITHUB_ACTOR}). Skipping."
+  # Validate full GitHub state: issue open + prauto:wip label + assigned to this worker
+  issue_state_json=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+    --json state,labels,assignees 2>/dev/null) || {
+    warn "Failed to fetch issue #${JOB_ISSUE_NUMBER} from GitHub. Skipping."
+    exit 0
+  }
+  issue_state=$(echo "$issue_state_json" | jq -r '.state')
+  issue_has_wip=$(echo "$issue_state_json" | jq -r --arg wip "$PRAUTO_GITHUB_LABEL_WIP" \
+    '.labels | map(.name) | index($wip) != null')
+  issue_assignee_match=$(echo "$issue_state_json" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" \
+    '[.assignees[].login] | index($actor) != null')
+
+  if [[ "$issue_state" != "OPEN" ]]; then
+    warn "Issue #${JOB_ISSUE_NUMBER} is ${issue_state}. Completing stale job."
+    complete_job; exit 0
+  fi
+  if [[ "$issue_has_wip" != "true" ]]; then
+    warn "Issue #${JOB_ISSUE_NUMBER} no longer has ${PRAUTO_GITHUB_LABEL_WIP}. Completing stale job."
+    complete_job; exit 0
+  fi
+  if [[ "$issue_assignee_match" != "true" ]]; then
+    warn "Issue #${JOB_ISSUE_NUMBER} not assigned to ${PRAUTO_GITHUB_ACTOR}. Skipping."
     exit 0
   fi
 
@@ -165,120 +186,36 @@ if has_active_job; then
   create_branch "$JOB_ISSUE_NUMBER"
   cd "$WORKTREE_DIR"
 
+  # Cross-check: advance local phase if GitHub shows later state
+  cross_check_phase
+
   case "$JOB_PHASE" in
-    analysis)
-      # Re-run analysis from scratch (cheap)
-      run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" ""
-      # Fetch issue body for change-size detection
-      issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-        --json body --jq '.body // ""' 2>/dev/null || echo "")
-      change_size=$(extract_change_size "$issue_body_raw")
-      post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size"
-      if [[ "$change_size" != "minor" ]]; then
-        update_job_field "phase" "plan-approval"
-        info "Plan posted for ${change_size} change. Waiting for approval. Exiting."
-        exit 0
-      fi
-      update_job_field "phase" "implementation"
-      update_job_field "session_id" ""
-      # Fall through to implementation
-      run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "$ANALYSIS_OUTPUT"
-      update_job_field "phase" "pr"
-      update_job_field "session_id" "$IMPL_SESSION_ID"
-      # Fall through to PR
-      push_branch "$JOB_BRANCH"
-      create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
-      # Update labels
-      gh issue edit "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-        --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
-        --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
-      complete_job
-      ;;
-    plan-approval)
-      COUNTER_PROPOSAL=""
-      approval_status=0
-      check_plan_approval "$JOB_ISSUE_NUMBER" || approval_status=$?
-      if [[ "$approval_status" -eq 0 ]]; then
-        # Approved — proceed to implementation
-        info "Plan approved. Starting implementation..."
-        # Load the last analysis output
-        analysis_file="${SESSIONS_DIR}/analysis-I-${JOB_ISSUE_NUMBER}.txt"
-        saved_analysis=""
-        if [[ -f "$analysis_file" ]]; then
-          saved_analysis=$(cat "$analysis_file")
-        fi
-        update_job_field "phase" "implementation"
-        update_job_field "session_id" ""
-        run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "$saved_analysis"
-        update_job_field "phase" "pr"
-        update_job_field "session_id" "$IMPL_SESSION_ID"
-        push_branch "$JOB_BRANCH"
-        create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
-        gh issue edit "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-          --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
-          --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
-        complete_job
-      elif [[ "$approval_status" -eq 2 ]]; then
-        # Counter-proposal — re-run analysis with feedback
-        info "Counter-proposal received. Re-running analysis..."
-        issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-          --json body --jq '.body // ""' 2>/dev/null || echo "")
-        run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$issue_body_raw" "$COUNTER_PROPOSAL"
-        change_size=$(extract_change_size "$issue_body_raw")
-        # Increment plan revision
-        current_rev=$(jq -r '.plan_revision // 1' "$JOB_FILE")
-        next_rev=$(( current_rev + 1 ))
-        update_job_field "plan_revision" "$next_rev"
-        post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size" "$next_rev"
-        # Stay in plan-approval phase, exit
-        info "Revised plan (rev ${next_rev}) posted. Waiting for approval. Exiting."
-        exit 0
-      else
-        # No response yet — just wait (don't bump retries)
-        info "Still waiting for plan approval on issue #${JOB_ISSUE_NUMBER}."
-        exit 0
-      fi
-      ;;
-    implementation)
-      run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "" "$JOB_SESSION_ID"
-      update_job_field "phase" "pr"
-      update_job_field "session_id" "$IMPL_SESSION_ID"
-      push_branch "$JOB_BRANCH"
-      create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
-      gh issue edit "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-        --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
-        --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
-      complete_job
-      ;;
-    pr-review)
-      run_pr_review "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "" "$JOB_SESSION_ID"
-      update_job_field "phase" "pr"
-      update_job_field "session_id" "$REVIEW_SESSION_ID"
-      push_branch "$JOB_BRANCH"
-      create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
-      # Post feedback-addressed marker (derive PR number from branch)
-      local review_pr_number
-      review_pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$JOB_BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null)
-      if [[ -n "$review_pr_number" ]]; then
-        post_feedback_addressed_comment "$review_pr_number"
-      fi
-      complete_job
-      ;;
-    pr)
-      push_branch "$JOB_BRANCH"
-      create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
-      gh issue edit "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-        --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
-        --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
-      complete_job
-      ;;
-    *)
-      warn "Unknown phase: ${JOB_PHASE}. Abandoning job."
-      abandon_job
-      ;;
+    analysis)        handle_phase_analysis ;;
+    plan-approval)   handle_phase_plan_approval ;;
+    implementation)  handle_phase_implementation ;;
+    pr-review)       handle_phase_pr_review ;;
+    pr)              handle_phase_pr ;;
+    *)               warn "Unknown phase: ${JOB_PHASE}. Abandoning job."; abandon_job ;;
   esac
 
   info "Resume complete. Exiting."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5.1: Recover orphaned WIP issues (GitHub SSOT recovery)
+# ---------------------------------------------------------------------------
+if find_orphaned_wip_issue; then
+  info "Recovering orphaned WIP issue #${ORPHAN_ISSUE_NUMBER}..."
+  derive_phase_from_github "$ORPHAN_ISSUE_NUMBER" "$ORPHAN_BRANCH"
+  estimate_retries_from_github "$ORPHAN_ISSUE_NUMBER"
+  save_job "$ORPHAN_ISSUE_NUMBER" "$ORPHAN_ISSUE_TITLE" "$ORPHAN_BRANCH" "issue" "$DERIVED_PHASE"
+  if [[ "$GITHUB_ESTIMATED_RETRIES" -gt 0 ]]; then
+    tmp=$(mktemp)
+    jq --argjson retries "$GITHUB_ESTIMATED_RETRIES" '.retries = $retries' "$JOB_FILE" > "$tmp"
+    mv "$tmp" "$JOB_FILE"
+  fi
+  info "Recovered: phase=${DERIVED_PHASE}, retries=${GITHUB_ESTIMATED_RETRIES}. Will resume next heartbeat."
   exit 0
 fi
 
@@ -360,7 +297,10 @@ save_job "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$BRANCH_NAME" "issue" "anal
 # Step 10: Phase 1 — Analysis
 # ---------------------------------------------------------------------------
 info "Starting analysis phase for issue #${FOUND_ISSUE_NUMBER}..."
-run_analysis "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$FOUND_ISSUE_BODY"
+if ! run_analysis "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$FOUND_ISSUE_BODY"; then
+  warn "Analysis failed for issue #${FOUND_ISSUE_NUMBER}. Will retry next heartbeat."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Step 10.5: Post plan & check approval gate
@@ -386,20 +326,9 @@ update_job_field "phase" "pr"
 update_job_field "session_id" "$IMPL_SESSION_ID"
 
 # ---------------------------------------------------------------------------
-# Step 12: Create/update PR
+# Step 12-13: Create/update PR, update labels, complete job
 # ---------------------------------------------------------------------------
-push_branch "$BRANCH_NAME"
-create_or_update_pr "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$BRANCH_NAME"
-
-# ---------------------------------------------------------------------------
-# Step 13: Complete job
-# ---------------------------------------------------------------------------
-# Update labels: remove wip, add review
-gh issue edit "$FOUND_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-  --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
-  --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
-
-complete_job
+finalize_issue_pr "$BRANCH_NAME" "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE"
 
 # ---------------------------------------------------------------------------
 # Steps 14-15: Restore secrets and release lock (handled by trap)
