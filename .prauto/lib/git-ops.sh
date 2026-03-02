@@ -417,16 +417,26 @@ squash_and_finalize_pr() {
   # If GH_TOKEN is set, push over HTTPS with the token embedded in the URL so the
   # push authenticates as the prauto account regardless of the local remote protocol
   # (SSH remotes would otherwise use the system SSH key).
+  #
+  # --force-with-lease needs an explicit expected value when pushing to a URL
+  # (rather than a named remote), because git can't infer the remote-tracking ref.
+  local expected_sha
+  expected_sha=$(git rev-parse "refs/remotes/origin/${pr_branch}" 2>/dev/null || echo "")
+  local lease_flag="--force-with-lease"
+  if [[ -n "$expected_sha" ]]; then
+    lease_flag="--force-with-lease=refs/heads/${pr_branch}:${expected_sha}"
+  fi
+
   if [[ -n "${GH_TOKEN:-}" ]]; then
-    git push --force-with-lease \
+    git push "$lease_flag" \
       "https://x-access-token:${GH_TOKEN}@github.com/${PRAUTO_GITHUB_REPO}.git" \
-      "HEAD:refs/heads/${pr_branch}" 2>/dev/null || {
-      warn "PR #${pr_number}: force-push failed (remote may have changed). Skipping merge."
+      "HEAD:refs/heads/${pr_branch}" || {
+      warn "PR #${pr_number}: force-push failed (remote may have changed). Skipping."
       return 1
     }
   else
-    git push --force-with-lease origin "$pr_branch" 2>/dev/null || {
-      warn "PR #${pr_number}: force-push failed (remote may have changed). Skipping merge."
+    git push "$lease_flag" origin "$pr_branch" || {
+      warn "PR #${pr_number}: force-push failed (remote may have changed). Skipping."
       return 1
     }
   fi
@@ -437,22 +447,23 @@ squash_and_finalize_pr() {
   final_commit_title=$(git log -1 --format='%s' HEAD 2>/dev/null || echo "$pr_title")
 
   # Update PR title to match the final squashed commit title.
-  gh pr edit "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-    --title "$final_commit_title" 2>/dev/null || \
+  # Uses REST API instead of `gh pr edit` which requires read:org scope.
+  gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${pr_number}" \
+    -X PATCH -f title="$final_commit_title" --silent 2>/dev/null || \
     warn "PR #${pr_number}: failed to update PR title."
   info "PR #${pr_number}: updated title to '${final_commit_title}'."
 
-  # Set prauto:done label on PR (remove prauto:review).
-  gh pr edit "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-    --remove-label "$PRAUTO_GITHUB_LABEL_REVIEW" \
-    --add-label "$PRAUTO_GITHUB_LABEL_DONE" 2>/dev/null || \
-    warn "PR #${pr_number}: failed to update PR labels."
-
-  # Set prauto:done label on the linked issue (remove prauto:review).
-  gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --remove-label "$PRAUTO_GITHUB_LABEL_REVIEW" \
-    --add-label "$PRAUTO_GITHUB_LABEL_DONE" 2>/dev/null || \
-    warn "Issue #${issue_number}: failed to update issue labels."
+  # Set prauto:done label on PR and linked issue (remove prauto:review).
+  # Uses REST API — `gh pr edit` / `gh issue edit` require read:org scope.
+  local target
+  for target in "$pr_number" "$issue_number"; do
+    gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${target}/labels" \
+      -X POST -f "labels[]=${PRAUTO_GITHUB_LABEL_DONE}" --silent 2>/dev/null || \
+      warn "#${target}: failed to add ${PRAUTO_GITHUB_LABEL_DONE} label."
+    gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${target}/labels/${PRAUTO_GITHUB_LABEL_REVIEW}" \
+      -X DELETE --silent 2>/dev/null || \
+      warn "#${target}: failed to remove ${PRAUTO_GITHUB_LABEL_REVIEW} label."
+  done
 
   info "PR #${pr_number}: marked as prauto:done (PR and issue #${issue_number}). NOT merged."
 }
