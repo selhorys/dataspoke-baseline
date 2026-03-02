@@ -43,7 +43,7 @@ src/
 - **Temporal** — `temporalio` SDK for workflows and activities in `src/workflows/`
 - **Dependency injection** — FastAPI `Depends()` for services, DB sessions, auth
 - **async/await** — `async def` for all I/O-bound operations
-- **Testing** — `pytest` + `pytest-asyncio`; mock DataHub calls in unit tests; never hit real DataHub in tests
+- **Testing** — `pytest` + `pytest-asyncio`; mock DataHub calls in unit tests; never hit real DataHub in tests. For directory layout, mocking rules, and the integration-test dev-env lock protocol, see `spec/TESTING.md`.
 
 ## DataHub integration patterns
 
