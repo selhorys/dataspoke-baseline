@@ -2,6 +2,10 @@ dev_env/.env
 dev_env/.*.pid
 helm-charts/dataspoke/charts/
 memory/
-.prauto/config.local.env
+.claude/*.local.*
+.claude/plans/
+.claude/worktrees/
+.claude/todos/
+.prauto/*.local.*
 .prauto/state/
 .prauto/worktrees/

@@ -158,9 +158,9 @@ The scaffold has been **refactored for implementation readiness** (v0.5, 2026-02
 | `spec/` hierarchy (MANIFESTO → ARCHITECTURE → feature) | Complete |
 | `dev_env/` local Kubernetes environment (DataHub + example sources) | Complete |
 | `ref/` AI reference materials (DataHub v1.4.0 source) | Complete |
-| `api/` standalone OpenAPI specs | Not yet created |
+| `api/` standalone OpenAPI specs | Initial spec created (`openapi.yaml`) |
 | `src/` application source code | Not yet created |
-| `helm-charts/` deployment packaging | Not yet created |
+| `helm-charts/` deployment packaging | Umbrella chart with subcharts created |
 
 ### Spec inventory
 

@@ -18,16 +18,33 @@ Your job is to write Helm charts, Dockerfiles, and dev environment scripts.
 
 ```
 helm-charts/
-├── dataspoke/                 # Main umbrella chart
-│   ├── Chart.yaml
-│   ├── values.yaml            # Defaults — no secrets
-│   ├── values-dev.yaml         # Dev overrides with minimal resources
-│   └── templates/             # Standard Helm chart structure
+└── dataspoke/                  # Main umbrella chart
+    ├── Chart.yaml
+    ├── Chart.lock
+    ├── values.yaml             # Defaults — no secrets
+    ├── values-dev.yaml         # Dev overrides with minimal resources
+    ├── templates/              # Umbrella-level templates
+    │   ├── _helpers.tpl
+    │   ├── configmap.yaml
+    │   ├── secrets.yaml
+    │   └── networkpolicy.yaml
+    ├── subcharts/              # Application subcharts (source)
+    │   ├── api/                # API service (deployment, service, ingress)
+    │   ├── frontend/           # Frontend service (deployment, service, ingress)
+    │   └── workers/            # Worker service (deployment)
+    └── charts/                 # Packaged dependencies (built from subcharts + Bitnami)
+        ├── api-0.1.0.tgz
+        ├── frontend-0.1.0.tgz
+        ├── workers-0.1.0.tgz
+        ├── postgresql-*.tgz
+        ├── redis-*.tgz
+        ├── qdrant-*.tgz
+        └── temporal-*.tgz
 
-docker-images/<service>/
+docker-images/<service>/        # Not yet created
 └── Dockerfile
 
-dev_env/dataspoke-infra/       # Follow dev_env/datahub/ style
+dev_env/dataspoke-infra/        # Follow dev_env/datahub/ style
 ├── install.sh
 └── uninstall.sh
 ```

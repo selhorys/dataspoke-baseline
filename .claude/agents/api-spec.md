@@ -13,7 +13,7 @@ Your job is to produce OpenAPI 3.0 YAML specs and companion markdown docs in `ap
 
 1. Read `spec/ARCHITECTURE.md` to understand the API layer design, auth model, and data flows.
 2. Read `spec/API_DESIGN_PRINCIPLE_en.md` — this is the **mandatory REST API convention** for the project. All URI structures, request/response formats, and naming rules must conform to it.
-3. Scan `api/` with Glob to find existing specs and maintain consistency.
+3. Read `api/openapi.yaml` — the project uses a **single consolidated OpenAPI spec**. Extend this file rather than creating separate per-resource YAML files.
 
 ## Design rules
 
@@ -32,53 +32,13 @@ All rules below are derived from `spec/API_DESIGN_PRINCIPLE_en.md`. That documen
 
 ## Output
 
-**`api/<resource>.yaml`** — OpenAPI 3.0 spec using this structure:
+The project maintains a single consolidated spec at **`api/openapi.yaml`**. Add new paths, schemas, and tags to this file rather than creating separate per-resource files.
 
-```yaml
-openapi: "3.0.3"
-info:
-  title: DataSpoke <Resource> API
-  version: "0.1.0"
-  description: |
-    <description>
-servers:
-  - url: http://localhost:8000/api/v1
-    description: Local development
-tags:
-  - name: <resource>
-    description: <description>
-paths:
-  /<resources>:
-    get:
-      summary: List <resources>
-      tags: [<resource>]
-      parameters:
-        - name: limit
-          in: query
-          schema: { type: integer, default: 20, maximum: 100 }
-        - name: offset
-          in: query
-          schema: { type: integer, default: 0 }
-      responses:
-        "200":
-          description: Paginated list
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/<Resource>List"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-components:
-  schemas:
-    <Resource>:
-      type: object
-      required: [id, created_at]
-      properties:
-        id: { type: string, format: uuid }
-        created_at: { type: string, format: date-time }
-  responses:
-    Unauthorized:
-      description: Authentication required
-```
+When adding endpoints, follow the existing structure in `api/openapi.yaml`:
 
-**`api/<resource>.md`** — companion doc with: endpoint summary table, key design decisions, and example request/response pairs.
+- Add new `paths:` entries under the appropriate route prefix (`/spoke/common/`, `/spoke/de/`, `/spoke/da/`, `/spoke/dg/`, `/hub/`)
+- Add reusable schemas to `components/schemas`
+- Add tags to group related endpoints
+- Maintain consistency with existing pagination, error response, and naming patterns already in the file
+
+Optionally produce **`api/<resource>.md`** — companion doc with: endpoint summary table, key design decisions, and example request/response pairs.
