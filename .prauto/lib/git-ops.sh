@@ -130,7 +130,7 @@ ${commit_log}
     -R "$PRAUTO_GITHUB_REPO" \
     --base "$PRAUTO_BASE_BRANCH" \
     --head "$branch" \
-    --title "prauto: ${issue_title}" \
+    --title "${issue_title}" \
     --body "$pr_body" \
     --assignee "${PRAUTO_GITHUB_ACTOR}" \
     --label "${PRAUTO_GITHUB_LABEL_REVIEW}" \
@@ -393,6 +393,23 @@ squash_and_finalize_pr() {
   generate_squash_commit_message \
     "$issue_number" "$issue_title" "$issue_body" \
     "$pr_number" "$diff_stat" "$diff_content"
+
+  # Append Co-Authored-By trailers for each PR approver
+  local approver_login approver_name approver_email co_authored_by=""
+  while IFS= read -r approver_login; do
+    [[ -z "$approver_login" ]] && continue
+    approver_name=$(gh api "users/${approver_login}" --jq '.name // .login' 2>/dev/null || echo "$approver_login")
+    approver_email=$(gh api "users/${approver_login}" --jq '.email // ""' 2>/dev/null || echo "")
+    [[ -z "$approver_email" ]] && approver_email="${approver_login}@users.noreply.github.com"
+    co_authored_by+="Co-Authored-By: ${approver_name} <${approver_email}>"$'\n'
+  done < <(gh pr view "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json reviews --jq '[.reviews[] | select(.state=="APPROVED") | .author.login] | unique | .[]' 2>/dev/null)
+
+  if [[ -n "$co_authored_by" ]]; then
+    SQUASH_COMMIT_MESSAGE="${SQUASH_COMMIT_MESSAGE}
+
+${co_authored_by%$'\n'}"
+  fi
 
   local msg_file
   msg_file=$(mktemp /tmp/prauto-squash-msg-XXXXXX)
