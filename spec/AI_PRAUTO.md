@@ -192,10 +192,11 @@ crontab trigger
     ├── 3. Secure secrets ─────────── (move config.local.env out of repo tree)
     │
     ├── 4. Check token quota ─────── (lib/quota.sh)
-    │       └── if exhausted → exit
+    │       └── if exhausted → if active job → post quota-paused comment → exit
     │
     ├── 5. Resume interrupted job ── (lib/state.sh)
-    │       ├── if active job exists → resume from saved phase → exit
+    │       ├── if active job exists → if quota-paused → post resumed comment
+    │       │                        → resume from saved phase → exit
     │       └── if completed or no job → continue
     │
     ├── 5.5 Squash-merge ready PRs ─ (lib/git-ops.sh)
@@ -285,7 +286,9 @@ This costs negligible tokens. If the call fails with a rate-limit or quota error
 When quota is exhausted:
 
 - If no active job: release lock and exit cleanly. Next heartbeat retries.
-- If mid-job: save current state (phase, session ID, retry count), release lock, and exit. Next heartbeat resumes.
+- If active job exists: post a "Paused" comment on the issue (with `<!-- prauto:quota-paused -->` marker), release lock, and exit. The retry counter is **not** incremented — quota exhaustion is not a job failure.
+- On next heartbeat (quota restored): if the latest prauto comment on the issue has the quota-paused marker, post a "Resumed" comment before continuing work. This makes the pause/resume cycle visible on the issue timeline.
+- Idempotency: the pause check inspects only the **latest** prauto comment (not all comments), so Paused→Resumed→Paused cycles produce distinct comments.
 
 ---
 
@@ -826,6 +829,8 @@ Action keywords by context:
 | Abandonment | `Abandoning` | `prauto(prauto01): Abandoning after 3 retries.` |
 | PR review reply | `Addressed` | `prauto(prauto01): Addressed feedback in latest commits.` |
 | Feedback marker | `Reviewer feedback addressed` | `prauto(prauto01): Reviewer feedback addressed.` |
+| Quota pause | `Paused` | `prauto(prauto01): Paused — Claude token quota exhausted.` |
+| Quota resume | `Resumed` | `prauto(prauto01): Resumed — Claude token quota is now available.` |
 
 Implementation:
 

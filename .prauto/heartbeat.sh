@@ -117,7 +117,12 @@ info "Secrets backed up to ${SECRETS_TEMP_FILE}."
 # Step 4: Check token quota
 # ---------------------------------------------------------------------------
 if ! check_quota; then
-  warn "Token quota exhausted or auth failed. Exiting."
+  warn "Token quota exhausted or auth failed."
+  # Notify on the active job's issue (if any) so humans can see why work stopped
+  if has_active_job; then
+    load_job
+    post_quota_paused_comment "$JOB_ISSUE_NUMBER"
+  fi
   exit 0
 fi
 info "Token quota available."
@@ -149,6 +154,11 @@ if has_active_job; then
     # Increment retries and update heartbeat timestamp
     bump_heartbeat
   fi
+  # If the previous heartbeat posted a quota-paused comment, post a resumed notice
+  if has_quota_paused_comment "$JOB_ISSUE_NUMBER"; then
+    post_quota_resumed_comment "$JOB_ISSUE_NUMBER"
+  fi
+
   info "Resuming job for issue #${JOB_ISSUE_NUMBER} (phase: ${JOB_PHASE}, retry: ${JOB_RETRIES})."
 
   # Create a worktree for the job's branch

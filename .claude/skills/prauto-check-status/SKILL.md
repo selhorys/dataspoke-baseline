@@ -56,6 +56,7 @@ For each issue:
     --jq '.comments | [.[] | {body: .body, author: .author.login, createdAt: .createdAt}]'
   ```
 - Report: "Plan posted, awaiting approval" / "Plan approved — ready for implementation" / "Counter-proposal received"
+- **Check quota-paused status**: From the same comments, find the latest `prauto(<worker>):` comment. If its body contains `<!-- prauto:quota-paused -->`, report: "Quota-paused — waiting for Claude token quota to become available"
 
 ### 1c. PRs with `prauto:review` (Awaiting review + merge conditions)
 
@@ -113,6 +114,7 @@ Based on the data collected above, simulate the heartbeat decision tree from `he
      - If phase is `analysis`: "Will re-run analysis from scratch."
      - If phase is `implementation`: "Will resume implementation (session: S)."
      - If phase is `pr`: "Will push branch and create/update PR."
+     - If the issue has a `<!-- prauto:quota-paused -->` marker in its latest prauto comment: "Note: heartbeat will first check quota — if still exhausted, it will re-pause without doing work."
    - No → continue to step 2.
 
 2. **Approved + mergeable PR exists** (from 1c above — org-member approved, MERGEABLE, CLEAN)?
@@ -131,6 +133,7 @@ Based on the data collected above, simulate the heartbeat decision tree from `he
 
 - If token quota might be exhausted, mention it.
 - If there's a lock file present (`.prauto/state/heartbeat.lock`), warn that another heartbeat may be running.
+- **Quota-paused marker**: The `<!-- prauto:quota-paused -->` HTML comment is appended to "Paused" comments. Only the **latest** prauto comment is checked — this allows correct detection across Paused→Resumed→Paused cycles. A "Resumed" comment replaces the marker as the latest comment, clearing the paused state.
 
 ---
 
