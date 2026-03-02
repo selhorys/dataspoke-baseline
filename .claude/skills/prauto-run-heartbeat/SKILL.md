@@ -35,7 +35,6 @@ Before launching the heartbeat, take a **baseline snapshot** of `.prauto/state/`
 
 ```bash
 # Record what exists before the run
-ls -la .prauto/state/current-job.json 2>/dev/null   # may not exist
 ls -la .prauto/state/sessions/ 2>/dev/null           # list existing session files
 ls -la .prauto/state/history/ 2>/dev/null             # list existing history files
 ```
@@ -66,62 +65,54 @@ Note the background task ID for monitoring.
 
 ## Step 4 — Monitor progress
 
-The heartbeat writes structured state to `.prauto/state/` as it runs. Use **state files as the primary monitoring source** and the background task output as a secondary signal.
+The heartbeat logs all key events to `/tmp/prauto-heartbeat.log` and writes artifacts to `.prauto/state/`. Use the **log file as the primary monitoring source** and **session/history files as completion signals**.
 
-### Primary: Watch `.prauto/state/` files
+### Primary: Persistent log file
+
+Read the persistent log file at `/tmp/prauto-heartbeat.log` using `tail`:
+```bash
+tail -100 /tmp/prauto-heartbeat.log
+```
 
 Poll every **~20 seconds** until the background task exits. On each check:
 
 1. **Lock file** — `test -f .prauto/state/heartbeat.lock` → script is running.
-2. **Job file** — Read `.prauto/state/current-job.json` (if it exists) and compare to the baseline snapshot:
-   - **New file appeared**: Heartbeat claimed an issue or found a WIP issue on GitHub. Report the issue number and title.
-   - **`phase` changed**: Report the phase transition (e.g., `analysis` → `plan-approval` → `implementation` → `pr`).
-   - **`timestamp` updated**: Heartbeat is alive and progressing.
+2. **Log file** — Parse `[INFO]`, `[WARN]`, and `[ERROR]` markers for phase transitions and key events. The heartbeat logs all decisions: issue discovery, phase routing, plan posting, implementation start/end, PR creation.
 3. **Session files** — `ls .prauto/state/sessions/` and compare to baseline:
    - **New `analysis-I-*.txt`**: Analysis phase completed. Read and summarize the plan.
    - **New `impl-I-*.json`**: Implementation phase completed. Report session ID.
    - **New `review-I-*.json`**: PR review phase completed.
 4. **History files** — `ls .prauto/state/history/` and compare to baseline:
    - **New file**: Job completed (or was abandoned). Read to determine outcome.
-5. **Job file disappeared**: Either `complete_job()` or `abandon_job_github()` was called — check history.
 
-### Secondary: Persistent log file
-
-Read the persistent log file at `/tmp/prauto-heartbeat.log` using `tail`:
-```bash
-tail -100 /tmp/prauto-heartbeat.log
-```
+Log file notes:
 - Parse `bash -x` trace lines (`+ command ...`) for supplementary detail.
-- Watch for `[INFO]`, `[WARN]`, and `[ERROR]` markers.
 - **Redact secrets**: The `bash -x` trace may print env var values (GH_TOKEN, ANTHROPIC_API_KEY). When summarizing output to the user, **never** include token/key values — replace them with `[REDACTED]`.
-- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the log file has **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Use state files to confirm the process is still alive (`heartbeat.lock` exists, `current-job.json` `timestamp` updates).
+- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the log file has **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Check `heartbeat.lock` to confirm the process is still alive.
 - **Do NOT use `TaskOutput`** or the background task's output file path — those are ephemeral and get cleaned up by Claude Code before they can be read. Always read `/tmp/prauto-heartbeat.log` instead.
 
 ### Heartbeat patterns
 
 The monitor may observe patterns that don't follow the typical claim→analyze→implement→PR lifecycle:
 
-1. **WIP issue resume** (Step 5): `current-job.json` appears with phase derived from GitHub state. A heartbeat marker comment is posted on the issue. The heartbeat creates a worktree and routes to the appropriate phase handler. Phase is always derived fresh from GitHub — no local phase cross-check needed.
+1. **WIP issue resume** (Step 5): Log shows `Found WIP issue #N`. A heartbeat marker comment is posted on the issue. The heartbeat creates a worktree and routes to the appropriate phase handler. Phase is always derived fresh from GitHub.
 
-2. **Squash-finalize** (Step 5.5): No `current-job.json` at all. Lock appears and disappears. Only visible in `/tmp/prauto-heartbeat.log` — look for `[INFO] Squash-finalizing` markers. This is a stateless operation: the heartbeat rebases, squashes commits, generates a commit message via Claude, force-pushes, and swaps `prauto:review` → `prauto:done` labels.
+2. **Squash-finalize** (Step 5.5): Only visible in the log — look for `[INFO] Squash-finalizing` markers. This is a stateless operation: the heartbeat rebases, squashes commits, generates a commit message via Claude, force-pushes, and swaps `prauto:review` → `prauto:done` labels.
 
-3. **Plan-approval wait** (Step 5, plan-approval phase): `current-job.json` appears briefly with `phase: plan-approval`, then disappears into history (or stays for monitoring). No session files created. No heartbeat marker comment posted (retries not counted for waiting).
+3. **Plan-approval wait** (Step 5, plan-approval phase): Log shows plan-approval routing. No session files created. No heartbeat marker comment posted (retries not counted for waiting).
 
-### State-based milestones to report
+### Milestones to report
 
-| State change | Meaning |
-|-------------|---------|
+| Signal | Meaning |
+|--------|---------|
 | `heartbeat.lock` appears | Script started, lock acquired |
-| `current-job.json` created | Issue claimed or WIP issue found on GitHub |
-| `current-job.json` phase = `analysis` | Analysis phase running |
+| Log: `[INFO] Found WIP issue #N` | Resuming WIP issue |
+| Log: `[INFO] Starting analysis phase` | Analysis running |
 | New `sessions/analysis-I-*.txt` | Analysis complete — summarize the plan |
-| `current-job.json` phase = `plan-approval` | Plan posted to issue, awaiting approval |
-| `current-job.json` phase = `implementation` | Implementation phase running |
+| Log: `[INFO] Plan posted` | Plan awaiting approval |
+| Log: `[INFO] Starting implementation phase` | Implementation running |
 | New `sessions/impl-I-*.json` | Implementation complete |
-| `current-job.json` phase = `pr-review` | Addressing PR reviewer feedback |
-| `current-job.json` phase = `pr` | PR creation/push phase |
-| `current-job.json` disappeared + new history file | Job completed |
-| No `current-job.json` created but lock appeared/disappeared | Squash-finalize (stateless — no job file) |
+| New `history/<date>_I-*.json` | Job completed |
 | `heartbeat.lock` disappeared | Script finished |
 
 ---
@@ -130,8 +121,8 @@ The monitor may observe patterns that don't follow the typical claim→analyze�
 
 ### On success (exit code 0)
 
-Report a completion summary using **state files** as the source of truth:
-- Read `current-job.json` (if still present) to report phase and status.
+Report a completion summary using **log + artifact files** as the source of truth:
+- Read `/tmp/prauto-heartbeat.log` for a chronological summary of key events.
 - Compare `state/sessions/` and `state/history/` to the baseline from Step 2 to identify what was created.
 - If a new `analysis-I-*.txt` was created, read and summarize the plan.
 - If a new history file was created, the job completed — report the outcome.
@@ -141,7 +132,7 @@ Report a completion summary using **state files** as the source of truth:
 
 Perform up to **3 retry cycles**:
 
-1. **Diagnose**: Read `/tmp/prauto-heartbeat.log` for error details. Also check state files — a partially-created `current-job.json` or missing expected session file can indicate where the failure occurred. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to a temp file; verify the file redirect and `jq` parsing are working.
+1. **Diagnose**: Read `/tmp/prauto-heartbeat.log` for error details. Also check state files — a missing expected session file can indicate where the failure occurred. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to a temp file; verify the file redirect and `jq` parsing are working.
 2. **Locate**: Map the error to a source file in `.prauto/` — typically one of:
    - `heartbeat.sh` — main orchestrator
    - `lib/helpers.sh` — logging, config loading

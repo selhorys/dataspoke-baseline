@@ -85,7 +85,6 @@ All GitHub API operations (issue labels, comments, PR creation) will then run as
 │   ├── implementation.md       # Phase 2: implementation prompt
 │   └── squash-commit.md        # Phase 4: squash commit message generation
 ├── state/                      # [GITIGNORED] Runtime state
-│   ├── current-job.json        # Active job metadata
 │   ├── heartbeat.lock          # PID-based lock file
 │   ├── heartbeat.log           # Cron output log
 │   ├── history/                # Completed job summaries
@@ -144,6 +143,6 @@ cd /path/to/dataspoke-baseline
 ## Troubleshooting
 
 - **Lock issues**: Check `.prauto/state/heartbeat.lock` — if the PID is stale, delete the file.
-- **Job stuck**: Check `.prauto/state/current-job.json` for the current phase and retry count.
+- **Job stuck**: Check heartbeat log and GitHub labels (`prauto:wip`, `prauto:review`) to determine the current phase.
 - **Logs**: Check `.prauto/state/heartbeat.log` for cron output.
 - **Session history**: Check `.prauto/state/sessions/` for Claude session outputs.

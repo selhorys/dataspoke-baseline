@@ -2,8 +2,7 @@
 # Source this file — do not execute directly.
 # Requires: helpers.sh, state.sh, quota.sh, issues.sh, claude.sh, git-ops.sh, pr.sh
 #           all sourced, config loaded.
-# All handlers accept (issue_number, issue_title, branch) parameters —
-# they do NOT rely on JOB_* globals.
+# All handlers accept (issue_number, issue_title, branch) parameters.
 
 # Shared helper: push, create/update PR, swap labels, complete job.
 # Usage: finalize_issue_pr <branch> <issue_number> <issue_title>
@@ -15,7 +14,7 @@ finalize_issue_pr() {
     --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
     --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" \
     --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
-  complete_job
+  complete_job "$issue_number"
 }
 
 # Fetch the approved plan text from GitHub issue comments.
@@ -62,14 +61,11 @@ handle_phase_analysis() {
   change_size=$(extract_change_size "$issue_body_raw")
   post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size"
   if [[ "$change_size" != "minor" ]]; then
-    update_job_field "phase" "plan-approval"
     info "Plan posted for ${change_size} change. Waiting for approval. Exiting."
     exit 0
   fi
-  update_job_field "phase" "implementation"
   # Fall through to implementation
   run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
-  update_job_field "phase" "pr"
   # Fall through to PR
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }
@@ -89,9 +85,7 @@ handle_phase_plan_approval() {
       --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || true
     # Fetch the plan from GitHub (not local session file)
     fetch_approved_plan "$issue_number"
-    update_job_field "phase" "implementation"
     run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
-    update_job_field "phase" "pr"
     finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
     # Counter-proposal — re-run analysis with feedback
@@ -129,9 +123,7 @@ handle_phase_plan_approval() {
       exit 0
     fi
     # Minor → proceed to implementation (same as approval path)
-    update_job_field "phase" "implementation"
     run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
-    update_job_field "phase" "pr"
     finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   else
     # No response yet — just wait (don't bump retries)
@@ -148,7 +140,6 @@ handle_phase_implementation() {
   # Fetch the plan from GitHub for context
   fetch_approved_plan "$issue_number"
   run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
-  update_job_field "phase" "pr"
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }
 
@@ -178,14 +169,13 @@ handle_phase_pr_review() {
   fi
 
   run_pr_review "$issue_number" "$branch" "$reviewer_comments"
-  update_job_field "phase" "pr"
   push_branch "$branch"
   create_or_update_pr "$issue_number" "$issue_title" "$branch"
   # Post feedback-addressed marker
   if [[ -n "$review_pr_number" ]]; then
     post_feedback_addressed_comment "$review_pr_number"
   fi
-  complete_job
+  complete_job "$issue_number"
 }
 
 # Phase: pr — just push + create PR + labels.

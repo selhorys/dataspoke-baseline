@@ -107,6 +107,10 @@ source "$PRAUTO_DIR/lib/phases.sh"
 # Ensure state dirs exist
 ensure_state_dirs
 
+# Reset ephemeral state (GitHub is SSOT — start each heartbeat from a clean local slate)
+reset_ephemeral_state
+info "Ephemeral state reset."
+
 # Change to repo root for all git operations
 cd "$REPO_DIR"
 
@@ -141,9 +145,6 @@ if find_wip_issue; then
 
   # For plan-approval phase, skip retry tracking and heartbeat comment (just check approval)
   if [[ "$DERIVED_PHASE" == "plan-approval" ]]; then
-    # Write monitoring state
-    write_monitor_state "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" "issue" "plan-approval"
-
     # If the previous heartbeat posted a quota-paused comment, post a resumed notice
     if has_quota_paused_comment "$WIP_ISSUE_NUMBER"; then
       post_quota_resumed_comment "$WIP_ISSUE_NUMBER"
@@ -170,9 +171,6 @@ if find_wip_issue; then
 
   # Post heartbeat comment (retry marker on GitHub)
   post_heartbeat_comment "$WIP_ISSUE_NUMBER" "$DERIVED_PHASE" "$retry_count" "$PRAUTO_MAX_RETRIES_PER_JOB"
-
-  # Write monitoring state
-  write_monitor_state "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" "issue" "$DERIVED_PHASE"
 
   # If the previous heartbeat posted a quota-paused comment, post a resumed notice
   if has_quota_paused_comment "$WIP_ISSUE_NUMBER"; then
@@ -224,16 +222,12 @@ fi
 if find_actionable_prs; then
   info "Addressing reviewer feedback on PR #${ACTIONABLE_PR_NUMBER}..."
 
-  # Write monitoring state for PR review
-  write_monitor_state "$ACTIONABLE_PR_ISSUE" "" "$ACTIONABLE_PR_BRANCH" "pr-review" "pr-review"
-
   # Create a worktree for the PR branch
   checkout_branch_worktree "$ACTIONABLE_PR_BRANCH"
   cd "$WORKTREE_DIR"
 
   # Run PR review phase
   run_pr_review "$ACTIONABLE_PR_ISSUE" "$ACTIONABLE_PR_BRANCH" "$ACTIONABLE_COMMENTS"
-  update_job_field "phase" "pr"
 
   # Push and update PR
   push_branch "$ACTIONABLE_PR_BRANCH"
@@ -241,7 +235,7 @@ if find_actionable_prs; then
   post_feedback_addressed_comment "$ACTIONABLE_PR_NUMBER"
 
   # Complete job
-  complete_job
+  complete_job "$ACTIONABLE_PR_ISSUE"
   info "PR review complete. Exiting."
   exit 0
 fi
@@ -268,9 +262,6 @@ fi
 create_branch "$FOUND_ISSUE_NUMBER"
 cd "$WORKTREE_DIR"
 
-# Write monitoring state
-write_monitor_state "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$BRANCH_NAME" "issue" "analysis"
-
 # ---------------------------------------------------------------------------
 # Step 10: Phase 1 — Analysis
 # ---------------------------------------------------------------------------
@@ -288,19 +279,15 @@ info "Change size: ${CHANGE_SIZE}"
 post_plan_comment "$FOUND_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$CHANGE_SIZE"
 
 if [[ "$CHANGE_SIZE" != "minor" ]]; then
-  update_job_field "phase" "plan-approval"
   info "Plan posted for ${CHANGE_SIZE} change. Waiting for approval. Exiting."
   exit 0
 fi
-
-update_job_field "phase" "implementation"
 
 # ---------------------------------------------------------------------------
 # Step 11: Phase 2 — Implementation
 # ---------------------------------------------------------------------------
 info "Starting implementation phase for issue #${FOUND_ISSUE_NUMBER}..."
 run_implementation "$FOUND_ISSUE_NUMBER" "$BRANCH_NAME" "$ANALYSIS_OUTPUT"
-update_job_field "phase" "pr"
 
 # ---------------------------------------------------------------------------
 # Step 12-13: Create/update PR, update labels, complete job
