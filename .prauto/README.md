@@ -104,7 +104,7 @@ Each heartbeat performs at most one job:
 1. Acquires a PID-based lock (prevents concurrent runs)
 2. Loads config and checks Claude token quota
 3. Resumes any interrupted job from a prior heartbeat
-4. Squash-finalizes approved PRs — rebuilds the commit message via Claude, producing a single conventional commit with `(issue #N, PR #N)` reference
+4. Squash-finalizes approved PRs — rebuilds the commit message via Claude, producing a single conventional commit with `(issue #N, PR #N)` reference and `Co-Authored-By` trailers for org-member approvers. Does NOT merge the PR — leaves that for the human
 5. Checks open PRs for reviewer comments to address (skips PRs with a "feedback addressed" marker)
 6. Finds an eligible issue (oldest with `prauto:ready` label)
 7. Claims the issue (optimistic lock via label swap)

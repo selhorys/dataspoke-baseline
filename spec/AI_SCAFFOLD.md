@@ -64,13 +64,23 @@ The scaffold supports two categories of workflows (from MANIFESTO §4):
 │   └── auto-format.sh          # Auto-format Python/TypeScript on write (async)
 ├── settings.json               # Tool permissions + hook configuration
 └── settings.local.json         # Local overrides (machine-specific approvals)
+
+.prauto/
+├── config.env                  # [COMMITTED] Shared settings
+├── config.local.env            # [GITIGNORED] Instance-specific settings
+├── heartbeat.sh                # [COMMITTED] Main cron entry point
+├── lib/                        # Shell libraries (quota, issues, claude, git-ops, state)
+├── prompts/                    # Prompt templates (analysis, implementation, squash-commit)
+├── state/                      # [GITIGNORED] Runtime state (job, lock, logs, sessions)
+└── README.md
 ```
 
-The scaffold works alongside four other structural elements:
+The scaffold works alongside five other structural elements:
 - **`CLAUDE.md`** — compact root-level agent instructions: project context, key design decisions, spec hierarchy, and implementation workflow. Points to `spec/ARCHITECTURE.md` and this document for details
 - **`spec/`** — hierarchical specification documents (MANIFESTO → ARCHITECTURE → feature specs). Feature specs split into `spec/feature/` (common/cross-cutting) and `spec/feature/spoke/` (user-group-specific DE/DA/DG)
 - **`dev_env/`** — local Kubernetes dev environment scripts
 - **`ref/`** — external source code for AI reference (version-locked DataHub v1.4.0 OSS source, downloaded via `ref/setup.sh`)
+- **`.prauto/`** — autonomous PR worker: cron-driven issue-to-PR automation via Claude Code CLI. See `spec/AI_PRAUTO.md` for full specification
 
 ---
 
@@ -86,8 +96,8 @@ Skills are prompt extensions that give the agent specialized context or workflow
 | `monitor-k8s` | `/monitor-k8s [focus]` | User-invoked; runs in forked subagent | Full cluster health report: pod status, recent events, Helm releases |
 | `plan-doc` | `/plan-doc <topic>` | User-invoked or auto-triggered when writing specs | Route spec authorship to the correct tier: `spec/feature/` for common features, `spec/feature/spoke/` for user-group-specific features (DE/DA/DG) |
 | `datahub-api` | `/datahub-api <task>` | User-invoked or auto-triggered on DataHub API tasks | Dual-mode skill: Q&A mode for DataHub data model questions, Code Writer mode for writing/testing Python code against DataHub APIs. Uses `ref/github/datahub/` source and live cluster for validation |
-| `prauto-check-status` | `/prauto-check-status [filter]` | User-invoked only | Status dashboard across all prauto lifecycle labels (ready/wip/review/done/failed); predicts what the next heartbeat will do based on current state |
-| `prauto-run-heartbeat` | `/prauto-run-heartbeat` | User-invoked only | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads log output, and diagnoses + fixes script errors across up to 3 retry cycles |
+| `prauto-check-status` | `/prauto-check-status [filter]` | User-invoked only | Status dashboard across all prauto lifecycle labels (ready/wip/review/done/failed); predicts what the next heartbeat will do based on current state. See `spec/AI_PRAUTO.md` |
+| `prauto-run-heartbeat` | `/prauto-run-heartbeat` | User-invoked only | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads log output, and diagnoses + fixes script errors across up to 3 retry cycles. See `spec/AI_PRAUTO.md` |
 
 ### Commands
 
@@ -162,6 +172,7 @@ Documents authored so far (use `/dataspoke-plan-write` to add more):
 | Top-level | `spec/ARCHITECTURE.md` | System-wide architecture, components, tech stack, feature mapping (UC1–UC8) |
 | Top-level | `spec/TESTING.md` | Testing conventions: toolchain, unit/integration/E2E patterns, Imazon test data design |
 | Top-level | `spec/AI_SCAFFOLD.md` | This document — Claude Code scaffold conventions |
+| Top-level | `spec/AI_PRAUTO.md` | Prauto: autonomous PR worker specification |
 | Top-level | `spec/USE_CASE_en.md`, `spec/USE_CASE_kr.md` | Conceptual scenarios by user group (UC1–UC8) |
 | Top-level | `spec/DATAHUB_INTEGRATION.md` | DataHub SDK patterns, aspect catalog, error handling |
 | Top-level | `spec/API_DESIGN_PRINCIPLE_en.md`, `spec/API_DESIGN_PRINCIPLE_kr.md` | REST API conventions |

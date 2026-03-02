@@ -32,7 +32,7 @@ Specs must not contradict each other — propagate changes up and down. Priority
 | 1 | `MANIFESTO_en/kr.md` | Product identity. Never modify unless explicitly requested. |
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Binding conventions. |
 | 3 | `ARCHITECTURE.md`, `TESTING.md`, `USE_CASE_en/kr.md` | System architecture, testing conventions, and scenarios. |
-| 4 | `AI_SCAFFOLD.md` | Claude Code scaffold conventions. |
+| 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md` | Claude Code scaffold conventions; autonomous PR worker. |
 | 5 | `feature/<FEATURE>.md` | Common feature specs. |
 | 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |
 
