@@ -160,10 +160,8 @@ if has_active_job; then
       # Re-run analysis from scratch (cheap)
       run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" ""
       # Fetch issue body for change-size detection
-      local issue_body_raw
       issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
         --json body --jq '.body // ""' 2>/dev/null || echo "")
-      local change_size
       change_size=$(extract_change_size "$issue_body_raw")
       post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size"
       if [[ "$change_size" != "minor" ]]; then
@@ -188,14 +186,14 @@ if has_active_job; then
       ;;
     plan-approval)
       COUNTER_PROPOSAL=""
-      local approval_status=0
+      approval_status=0
       check_plan_approval "$JOB_ISSUE_NUMBER" || approval_status=$?
       if [[ "$approval_status" -eq 0 ]]; then
         # Approved — proceed to implementation
         info "Plan approved. Starting implementation..."
         # Load the last analysis output
-        local analysis_file="${SESSIONS_DIR}/analysis-I-${JOB_ISSUE_NUMBER}.txt"
-        local saved_analysis=""
+        analysis_file="${SESSIONS_DIR}/analysis-I-${JOB_ISSUE_NUMBER}.txt"
+        saved_analysis=""
         if [[ -f "$analysis_file" ]]; then
           saved_analysis=$(cat "$analysis_file")
         fi
@@ -213,16 +211,13 @@ if has_active_job; then
       elif [[ "$approval_status" -eq 2 ]]; then
         # Counter-proposal — re-run analysis with feedback
         info "Counter-proposal received. Re-running analysis..."
-        local issue_body_raw
         issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
           --json body --jq '.body // ""' 2>/dev/null || echo "")
         run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$issue_body_raw" "$COUNTER_PROPOSAL"
-        local change_size
         change_size=$(extract_change_size "$issue_body_raw")
         # Increment plan revision
-        local current_rev
         current_rev=$(jq -r '.plan_revision // 1' "$JOB_FILE")
-        local next_rev=$(( current_rev + 1 ))
+        next_rev=$(( current_rev + 1 ))
         update_job_field "plan_revision" "$next_rev"
         post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size" "$next_rev"
         # Stay in plan-approval phase, exit
