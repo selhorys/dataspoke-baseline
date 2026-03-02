@@ -25,7 +25,7 @@
 
 ## Overview
 
-The DataSpoke API is a FastAPI (Python 3.11+) service that acts as the single ingress for
+The DataSpoke API is a FastAPI (Python 3.13) service that acts as the single ingress for
 all DataSpoke clients — the portal UI and external AI agents. It exposes a three-tier URI
 structure that maps directly to the user-group taxonomy defined in the MANIFESTO:
 
