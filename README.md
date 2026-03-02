@@ -236,6 +236,7 @@ See [`spec/feature/DEV_ENV.md`](spec/feature/DEV_ENV.md) for the full variable l
 | [spec/feature/API.md](spec/feature/API.md) | API layer design: routes, auth, middleware, error codes |
 | [spec/feature/DEV_ENV.md](spec/feature/DEV_ENV.md) | Dev environment specification |
 | [spec/feature/HELM_CHART.md](spec/feature/HELM_CHART.md) | Helm chart specification for production deployment |
+| [spec/TESTING.md](spec/TESTING.md) | Testing conventions: toolchain, unit/integration/E2E workflow, dev-env lock protocol |
 
 ## License
 

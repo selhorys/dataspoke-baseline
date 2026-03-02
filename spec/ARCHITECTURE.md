@@ -430,6 +430,8 @@ Shared by all features.
 | Container Runtime | Docker |
 | Orchestrator | Kubernetes + Helm |
 
+For full testing conventions, toolchain configuration, mocking rules, and the integration test lock protocol, see [`spec/TESTING.md`](TESTING.md).
+
 ---
 
 ## Deployment Architecture

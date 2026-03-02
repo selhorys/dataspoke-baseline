@@ -51,3 +51,4 @@ src/frontend/
 ## After completing a task
 
 Run `npm test` (or the relevant test subset) and `npx tsc --noEmit` to verify your changes before reporting completion.
+For test naming conventions and mocking rules, see `spec/TESTING.md`.

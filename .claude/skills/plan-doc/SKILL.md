@@ -16,6 +16,8 @@ spec/
 │                                 shared services, deployment. Conforms to MANIFESTO.
 ├── USE_CASE_en.md / _kr.md    ← Conceptual scenarios (UC1–UC8) by user group.
 ├── AI_SCAFFOLD.md             ← Goal 2: Claude Code scaffold conventions.
+├── TESTING.md                 ← Testing conventions: toolchain, unit/integration/E2E
+│                                 workflows, Imazon test data.
 ├── DATAHUB_INTEGRATION.md     ← DataHub SDK patterns, aspect catalog, GraphQL,
 │                                 event subscription, error handling.
 ├── API_DESIGN_PRINCIPLE_en.md / _kr.md

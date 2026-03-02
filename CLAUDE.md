@@ -31,7 +31,7 @@ Specs must not contradict each other — propagate changes up and down. Priority
 |----------|-----------|------|
 | 1 | `MANIFESTO_en/kr.md` | Product identity. Never modify unless explicitly requested. |
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Binding conventions. |
-| 3 | `ARCHITECTURE.md`, `USE_CASE_en/kr.md` | System architecture and scenarios. |
+| 3 | `ARCHITECTURE.md`, `TESTING.md`, `USE_CASE_en/kr.md` | System architecture, testing conventions, and scenarios. |
 | 4 | `AI_SCAFFOLD.md` | Claude Code scaffold conventions. |
 | 5 | `feature/<FEATURE>.md` | Common feature specs. |
 | 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |
@@ -57,6 +57,7 @@ For end-to-end feature implementation, use subagents in this order:
 
 Each agent reads the spec and the output of previous agents as context.
 For spec authoring, use `/dataspoke-plan-write` or `/plan-doc` directly.
+For testing conventions (unit/integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
 
 ## Testing prauto
 

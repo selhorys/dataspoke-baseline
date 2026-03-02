@@ -156,6 +156,7 @@ Documents authored so far (use `/dataspoke-plan-write` to add more):
 |------|----------|-------------|
 | Top-level | `spec/MANIFESTO_en.md`, `spec/MANIFESTO_kr.md` | Product identity, user-group taxonomy (DE/DA/DG). Highest authority |
 | Top-level | `spec/ARCHITECTURE.md` | System-wide architecture, components, tech stack, feature mapping (UC1–UC8) |
+| Top-level | `spec/TESTING.md` | Testing conventions: toolchain, unit/integration/E2E patterns, Imazon test data design |
 | Top-level | `spec/AI_SCAFFOLD.md` | This document — Claude Code scaffold conventions |
 | Top-level | `spec/USE_CASE_en.md`, `spec/USE_CASE_kr.md` | Conceptual scenarios by user group (UC1–UC8) |
 | Top-level | `spec/DATAHUB_INTEGRATION.md` | DataHub SDK patterns, aspect catalog, error handling |
