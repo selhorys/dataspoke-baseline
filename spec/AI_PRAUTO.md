@@ -1,6 +1,6 @@
 # Prauto: Autonomous PR Worker
 
-> **Document Status**: Specification v0.1 (2026-02-28)
+> **Document Status**: Specification v0.2 (2026-03-02)
 > This document specifies "prauto" — an autonomous PR worker that monitors GitHub issues, writes code via Claude Code CLI, and submits pull requests. Prauto extends the AI scaffold (`spec/AI_SCAFFOLD.md`) with unattended, cron-driven development automation.
 
 ---
@@ -32,10 +32,11 @@ Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipe
 
 1. Checks whether Claude Code API tokens are available
 2. Resumes any interrupted job from a prior heartbeat (if found, exits after completion)
-3. Checks open PRs for reviewer comments that need action (if found, exits after addressing)
-4. Finds an eligible GitHub issue via label-based discovery
-5. Invokes Claude Code CLI to analyze the issue and implement changes
-6. Creates or updates a pull request with the results
+3. Squash-finalizes approved PRs (if found, exits after completion)
+4. Checks open PRs for reviewer comments that need action (skips PRs with a "feedback addressed" marker; if found, exits after addressing and posting marker)
+5. Finds an eligible GitHub issue via label-based discovery
+6. Invokes Claude Code CLI to analyze the issue, posts plan for approval (non-minor changes wait), then implements changes
+7. Creates or updates a pull request with the results
 
 ### Relationship to `claude-code-action`
 
@@ -202,7 +203,8 @@ crontab trigger
     │       └── if none → continue
     │
     ├── 6. Check open PRs ────────── (lib/git-ops.sh)
-    │       ├── if PR has reviewer comments → checkout worktree, run pr-review, push, complete → exit
+    │       ├── PRs with "feedback addressed" marker → skipped
+    │       ├── if PR has reviewer comments → checkout worktree, run pr-review, push, post marker, complete → exit
     │       └── if no actionable comments → continue
     │
     ├── 7. Find eligible issue ───── (lib/issues.sh)
@@ -213,6 +215,12 @@ crontab trigger
     ├── 9. Create branch + worktree  (lib/git-ops.sh → .prauto/worktrees/I-{N}, then cd into it)
     │
     ├── 10. Phase 1: Analysis ────── (lib/claude.sh, read-only, runs inside worktree)
+    │
+    ├── 10.5 Plan approval gate ──── (non-minor: post plan, wait for approval; minor: proceed)
+    │       ├── if non-minor → post plan comment, set phase=plan-approval → exit
+    │       ├── (next heartbeat) approved → continue to implementation
+    │       ├── (next heartbeat) counter-proposal → re-run analysis with feedback → exit
+    │       └── (next heartbeat) no response → wait → exit
     │
     ├── 11. Phase 2: Implementation  (lib/claude.sh, read+write, runs inside worktree)
     │
@@ -307,24 +315,25 @@ The `replied_comment_ids` array tracks which PR review comments have been replie
 There are two job entry points: **new issue** (full pipeline) and **PR review** (implementation only).
 
 ```
-New issue:
+New issue (minor change):
   (no job) ──→ analysis ──→ implementation ──→ pr ──→ (complete)
-                  │               │            │
-                  └───────────────┴────────────┴──→ (interrupted)
-                                                        │
-                                      next heartbeat ←──┘
+
+New issue (non-minor change):
+  (no job) ──→ analysis ──→ plan-approval ──→ implementation ──→ pr ──→ (complete)
+                                  │  ↑
+                                  │  └── counter-proposal → re-analysis ─┘
+                                  └── no response → wait (next heartbeat)
 
 PR review:
   (no job) ──→ pr-review ──→ pr ──→ (complete)
-                   │          │
-                   └──────────┴──→ (interrupted)
-                                        │
-                          next heartbeat ←──┘
 ```
+
+Any phase can be interrupted; the next heartbeat resumes from the saved phase.
 
 | Phase | Description | On interruption |
 |-------|-------------|-----------------|
 | `analysis` | Claude reads issue + codebase, produces a plan | Restart analysis from scratch |
+| `plan-approval` | Wait for human approval of the posted plan | Check again next heartbeat (retries not counted) |
 | `implementation` | Claude writes code, runs tests, commits | Resume via `claude --resume <session_id>` |
 | `pr-review` | Claude addresses reviewer feedback on existing PR, commits | Resume via `claude --resume <session_id>` |
 | `pr` | Push branch, create/update PR, comment | Retry PR creation |
@@ -338,6 +347,7 @@ When a heartbeat finds `current-job.json`:
 3. Increment `retries`, update `last_heartbeat`
 4. Resume from the saved phase:
    - `analysis`: re-run analysis from scratch (analysis is cheap)
+   - `plan-approval`: check for approval comment; retries not incremented for this phase
    - `implementation`: if `session_id` exists, use `claude --resume <session_id>`; otherwise start fresh
    - `pr-review`: if `session_id` exists, use `claude --resume <session_id>`; otherwise start fresh
    - `pr`: retry PR creation/push
@@ -626,14 +636,18 @@ Generated by `prauto({worker_id})` using Claude Code CLI.
 Heartbeat step 6 scans for open PRs on branches matching the `prauto/` prefix:
 
 1. List all open PRs via `gh pr list --state open --json number,headRefName,reviews,labels,assignees --limit 50`, then filter client-side to entries whose `headRefName` starts with `PRAUTO_BRANCH_PREFIX` (`prauto/`), have the `prauto:review` label, and are assigned to this worker (`PRAUTO_GITHUB_ACTOR`), sorted by number ascending.
-2. For each candidate, fetch PR review comments via `gh api repos/{repo}/pulls/{N}/comments` and identify comments not authored by this worker (those not prefixed with `prauto({PRAUTO_WORKER_ID}):`). A PR is actionable if it has such unaddressed comments **and** at least one `CHANGES_REQUESTED` or `COMMENTED` review.
-3. If no PR has actionable feedback: continue to step 7 (find new issue)
-4. If a PR has actionable feedback (take the oldest PR first):
+2. For each candidate, fetch both inline review comments (`pulls/{N}/comments`) and issue-level comments (`issues/{N}/comments`). Before evaluating feedback, check the latest issue-level comment from the prauto actor — if it starts with `"Reviewer feedback addressed"`, skip this PR (prevents infinite re-pickup loops).
+3. A PR is actionable if it has unaddressed non-prauto comments **and** at least one `CHANGES_REQUESTED`/`COMMENTED` review or external issue-level comment.
+4. If no PR has actionable feedback: continue to step 7 (find new issue)
+5. If a PR has actionable feedback (take the oldest PR first):
    a. Create `current-job.json` with `"source": "pr-review"`, `"phase": "pr-review"`, the linked issue number, existing branch name, and `"replied_comment_ids": []`
    b. Create a worktree for the existing PR branch at `.prauto/worktrees/{branch}` via `checkout_branch_worktree`, then `cd` into it
    c. Run the `pr-review` phase (same tool whitelist as implementation) with reviewer comments as context; save session output to `state/sessions/review-I-{N}.json`
    d. Push additional commits to the PR branch; call `create_or_update_pr` to add a commit-log comment to the existing PR
-   e. Complete the job (move to history) and **exit the heartbeat**
+   e. Post a `"prauto(...): Reviewer feedback addressed."` marker comment via `post_feedback_addressed_comment`
+   f. Complete the job (move to history) and **exit the heartbeat**
+
+The feedback-addressed marker is the key mechanism that breaks the re-pickup loop: once prauto addresses feedback and posts the marker, subsequent heartbeats see the marker and skip the PR. When a reviewer posts new comments after the marker, the marker is no longer the latest prauto comment, and the PR becomes actionable again.
 
 The `pr-review` phase uses `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` and the implementation tool whitelist, since it performs the same kind of work (writing code, running tests, committing).
 
@@ -648,7 +662,7 @@ Heartbeat step 5.5 runs **before** the PR review check, so finalizing approved w
 - PR is assigned to `PRAUTO_GITHUB_ACTOR`
 - `mergeable == "MERGEABLE"` — no merge conflicts
 - `mergeStateStatus == "CLEAN"` — all branch-protection rules satisfied (required reviews, required CI checks)
-- Latest review from the repo owner (derived as `${PRAUTO_GITHUB_REPO%%/*}`) has state `APPROVED`
+- Latest review from an organization member has state `APPROVED`
 
 **Steps**:
 
@@ -810,7 +824,8 @@ Action keywords by context:
 |---------|---------|----------------|
 | Issue claim | `Claimed` | `prauto(prauto01): Claimed this issue.` |
 | Abandonment | `Abandoning` | `prauto(prauto01): Abandoning after 3 retries.` |
-| PR review reply | `Addressed` | `prauto(prauto01): Addressed feedback on ...` |
+| PR review reply | `Addressed` | `prauto(prauto01): Addressed feedback in latest commits.` |
+| Feedback marker | `Reviewer feedback addressed` | `prauto(prauto01): Reviewer feedback addressed.` |
 
 Implementation:
 

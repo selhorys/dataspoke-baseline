@@ -246,6 +246,12 @@ if has_active_job; then
       update_job_field "session_id" "$REVIEW_SESSION_ID"
       push_branch "$JOB_BRANCH"
       create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
+      # Post feedback-addressed marker (derive PR number from branch)
+      local review_pr_number
+      review_pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$JOB_BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null)
+      if [[ -n "$review_pr_number" ]]; then
+        post_feedback_addressed_comment "$review_pr_number"
+      fi
       complete_job
       ;;
     pr)
@@ -307,6 +313,7 @@ if find_actionable_prs; then
   # Push and update PR
   push_branch "$ACTIONABLE_PR_BRANCH"
   create_or_update_pr "$ACTIONABLE_PR_ISSUE" "" "$ACTIONABLE_PR_BRANCH"
+  post_feedback_addressed_comment "$ACTIONABLE_PR_NUMBER"
 
   # Complete job
   complete_job

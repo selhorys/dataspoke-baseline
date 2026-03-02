@@ -201,6 +201,17 @@ find_actionable_prs() {
       --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
       2>/dev/null || echo "[]")
 
+    # Skip if latest prauto comment is a "feedback addressed" marker
+    local latest_prauto
+    latest_prauto=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+      [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .body // ""
+    ')
+    if echo "$latest_prauto" | grep -q "Reviewer feedback addressed"; then
+      info "PR #${pr_number}: feedback already addressed. Skipping."
+      i=$((i + 1))
+      continue
+    fi
+
     # Merge both comment sources
     local all_comments
     all_comments=$(jq -s 'add' <<< "${pr_review_comments}${pr_issue_comments}" 2>/dev/null || echo "[]")
@@ -474,4 +485,15 @@ reply_to_comments() {
       -f body="prauto(${PRAUTO_WORKER_ID}): Addressed feedback in latest commits." \
       2>/dev/null || warn "Failed to reply to comment ${comment_id} on PR #${pr_number}."
   done
+}
+
+# Post a "feedback addressed" marker comment on a PR.
+# find_actionable_prs() checks for this marker and skips the PR if present,
+# preventing infinite re-pickup loops after addressing reviewer feedback.
+# Usage: post_feedback_addressed_comment <pr_number>
+post_feedback_addressed_comment() {
+  local pr_number="$1"
+  gh pr comment "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Reviewer feedback addressed." \
+    2>/dev/null || warn "Failed to post feedback-addressed comment on PR #${pr_number}."
 }

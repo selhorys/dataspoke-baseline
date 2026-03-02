@@ -104,13 +104,14 @@ Each heartbeat performs at most one job:
 1. Acquires a PID-based lock (prevents concurrent runs)
 2. Loads config and checks Claude token quota
 3. Resumes any interrupted job from a prior heartbeat
-4. Squash-finalizes approved PRs — rebuilds the commit message via Claude using the issue description and git diff, always producing a single conventional commit with `(issue #N, PR #N)` reference
-5. Checks open PRs for reviewer comments to address
+4. Squash-finalizes approved PRs — rebuilds the commit message via Claude, producing a single conventional commit with `(issue #N, PR #N)` reference
+5. Checks open PRs for reviewer comments to address (skips PRs with a "feedback addressed" marker)
 6. Finds an eligible issue (oldest with `prauto:ready` label)
 7. Claims the issue (optimistic lock via label swap)
 8. Runs Phase 1: Analysis (read-only Claude session)
-9. Runs Phase 2: Implementation (read+write Claude session)
-10. Pushes branch and creates/updates PR
+9. Posts plan and waits for approval (non-minor changes pause here; minor changes proceed immediately)
+10. Runs Phase 2: Implementation (read+write Claude session)
+11. Pushes branch and creates/updates PR
 
 ## GitHub Label Setup
 
