@@ -1,7 +1,7 @@
 ---
 name: prauto-run-heartbeat
 description: Test-run the prauto heartbeat script and monitor its progress. Diagnoses and fixes script errors on failure.
-allowed-tools: Bash(env *), Bash(which *), Bash(date *), Bash(test *), Read, Edit, Glob, Grep
+allowed-tools: Bash(env *), Bash(which *), Bash(date *), Bash(test *), Bash(ls *), Bash(cat *), Bash(tail *), Bash(ps *), Read, Edit, Glob, Grep
 ---
 
 ## Overview
@@ -29,7 +29,22 @@ Because the heartbeat spawns `claude` CLI internally, the `CLAUDECODE` env var m
 
 ---
 
-## Step 2 — Run heartbeat
+## Step 2 — Snapshot state before run
+
+Before launching the heartbeat, take a **baseline snapshot** of `.prauto/state/` so you can detect changes during monitoring:
+
+```bash
+# Record what exists before the run
+ls -la .prauto/state/current-job.json 2>/dev/null   # may not exist
+ls -la .prauto/state/sessions/ 2>/dev/null           # list existing session files
+ls -la .prauto/state/history/ 2>/dev/null             # list existing history files
+```
+
+Save this baseline mentally (file names, modification times) for comparison in Step 4.
+
+---
+
+## Step 3 — Run heartbeat
 
 Execute the heartbeat in the **background**:
 
@@ -46,55 +61,70 @@ Note the background task ID for monitoring.
 
 ---
 
-## Step 3 — Monitor progress
+## Step 4 — Monitor progress
 
-Poll the background task output every **~20 seconds** until exit.
+The heartbeat writes structured state to `.prauto/state/` as it runs. Use **state files as the primary monitoring source** and the background task output as a secondary signal.
 
-For each check:
-1. Read the latest output from the background task.
-2. Parse `bash -x` trace lines (`+ command ...`) to identify progress:
-   - Lock acquired / config loaded
-   - Token quota check
-   - Issue discovery / claiming
-   - Analysis phase start / completion
-   - Implementation phase start / completion
-   - PR creation / push
-   - Squash-finalize
-3. Watch for `[INFO]`, `[WARN]`, and `[ERROR]` markers from the script's logging.
-4. **Redact secrets**: The `bash -x` trace may print env var values (GH_TOKEN, ANTHROPIC_API_KEY). When summarizing output to the user, **never** include token/key values — replace them with `[REDACTED]`.
-5. Summarize progress concisely to the user.
+### Primary: Watch `.prauto/state/` files
 
-### Key milestones to report
+Poll every **~20 seconds** until the background task exits. On each check:
 
-| Log marker | Meaning |
-|-----------|---------|
-| `Lock acquired` | Script started |
-| `Config loaded (worker: ...)` | Credentials loaded |
-| `GitHub actor: ...` | GH_TOKEN auth works |
-| `Token quota available` | Claude auth works |
-| `No work to do` | Nothing to process |
-| `Starting analysis phase` | Phase 1 began |
-| `Claude invocation completed` | Nested Claude finished |
-| `Starting implementation phase` | Phase 2 began |
-| `Squash-finalizing approved PR` | Phase 4 began |
-| `Heartbeat complete` | Script finished successfully |
+1. **Lock file** — `test -f .prauto/state/heartbeat.lock` → script is running.
+2. **Job file** — Read `.prauto/state/current-job.json` (if it exists) and compare to the baseline snapshot:
+   - **New file appeared**: Heartbeat claimed an issue. Report the issue number and title.
+   - **`phase` changed**: Report the phase transition (e.g., `analysis` → `plan-approval` → `implementation` → `pr`).
+   - **`session_id` changed**: A Claude CLI session started or resumed.
+   - **`retries` incremented**: A retry occurred.
+   - **`last_heartbeat` updated**: Heartbeat is alive and progressing.
+3. **Session files** — `ls .prauto/state/sessions/` and compare to baseline:
+   - **New `analysis-I-*.txt`**: Analysis phase completed. Read and summarize the plan.
+   - **New `impl-I-*.json`**: Implementation phase completed. Report session ID.
+   - **New `review-I-*.json`**: PR review phase completed.
+4. **History files** — `ls .prauto/state/history/` and compare to baseline:
+   - **New file**: Job completed (or was abandoned). Read to determine outcome.
+5. **Job file disappeared**: Either `complete_job()` or `abandon_job()` was called — check history.
+
+### Secondary: Background task output
+
+Also check the background task output when available:
+- Use `TaskOutput` with a short timeout, or read the output file directly.
+- Parse `bash -x` trace lines (`+ command ...`) for supplementary detail.
+- Watch for `[INFO]`, `[WARN]`, and `[ERROR]` markers.
+- **Redact secrets**: The `bash -x` trace may print env var values (GH_TOKEN, ANTHROPIC_API_KEY). When summarizing output to the user, **never** include token/key values — replace them with `[REDACTED]`.
+
+### State-based milestones to report
+
+| State change | Meaning |
+|-------------|---------|
+| `heartbeat.lock` appears | Script started, lock acquired |
+| `current-job.json` created | Issue claimed, job started |
+| `current-job.json` phase = `analysis` | Analysis phase running |
+| New `sessions/analysis-I-*.txt` | Analysis complete — summarize the plan |
+| `current-job.json` phase = `plan-approval` | Plan posted to issue, awaiting approval |
+| `current-job.json` phase = `implementation` | Implementation phase running |
+| New `sessions/impl-I-*.json` | Implementation complete |
+| `current-job.json` phase = `pr` | PR creation/push phase |
+| `current-job.json` disappeared + new history file | Job completed |
+| `heartbeat.lock` disappeared | Script finished |
 
 ---
 
-## Step 4 — Handle outcome
+## Step 5 — Handle outcome
 
 ### On success (exit code 0)
 
-Report a completion summary:
-- What action the heartbeat took (claimed issue, resumed job, squash-finalized PR, no work to do, etc.)
-- Total duration
-- Any warnings encountered during execution
+Report a completion summary using **state files** as the source of truth:
+- Read `current-job.json` (if still present) to report phase and status.
+- Compare `state/sessions/` and `state/history/` to the baseline from Step 2 to identify what was created.
+- If a new `analysis-I-*.txt` was created, read and summarize the plan.
+- If a new history file was created, the job completed — report the outcome.
+- Total duration and any warnings encountered during execution.
 
 ### On failure (non-zero exit code)
 
 Perform up to **3 retry cycles**:
 
-1. **Diagnose**: Read the full error output. Find the failing command in the `bash -x` trace (the last `+` line before the error).
+1. **Diagnose**: Read the background task output for error details. Also check state files — a partially-created `current-job.json` or missing expected session file can indicate where the failure occurred.
 2. **Locate**: Map the error to a source file in `.prauto/` — typically one of:
    - `heartbeat.sh` — main orchestrator
    - `lib/helpers.sh` — logging, config loading
@@ -113,13 +143,13 @@ Perform up to **3 retry cycles**:
    env -u CLAUDECODE bash -x .prauto/heartbeat.sh 2>&1
    ```
    The re-run **automatically** uses credentials from `.prauto/config.local.env` — no manual credential handling needed.
-6. **Monitor**: Return to Step 3.
+6. **Monitor**: Return to Step 4.
 
 If all 3 retries fail with the same or new errors, report the persistent failure and suggest manual intervention.
 
 ---
 
-## Step 5 — Final report
+## Step 6 — Final report
 
 ```
 ## Heartbeat Test Run — <timestamp>
