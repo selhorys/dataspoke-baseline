@@ -126,4 +126,4 @@ Commands and skills for step-by-step development workflows.
   - Local Kubernetes cluster-based dev environment provisioning
 - **Development Planning**
   - Feature spec authoring: guided Q&A to define features per user group under `spec/feature/spoke/`, or common features under `spec/feature/`.
-  - Implementation planning: work plans under `spec/impl/` with AI coding approach suggestions (skill/subagent composition) to reinforce the scaffold.
+  - Implementation planning: tracked via GitHub Issues and PRs with AI coding approach suggestions (skill/subagent composition) to reinforce the scaffold.

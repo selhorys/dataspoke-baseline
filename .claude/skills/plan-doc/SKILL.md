@@ -29,21 +29,18 @@ spec/
 │   │                     No log-style content (no dates, authors, changelogs).
 │   └── <FEATURE>.md      e.g. API.md, DEV_ENV.md
 │
-├── feature/spoke/      ← Deep-dive specs for USER-GROUP-SPECIFIC features.
-│   │                     Same timeless reference format as feature/.
-│   │                     One file per feature, tagged by user group (DE/DA/DG).
-│   └── <FEATURE>.md      e.g. INGESTION.md, NL_SEARCH.md, METRICS_DASHBOARD.md
-│
-└── impl/               ← Chronological implementation plans/logs.
-    │                     Also used for minor changes. Each entry is dated.
-    └── YYYYMMDD_<topic>.md
+└── feature/spoke/      ← Deep-dive specs for USER-GROUP-SPECIFIC features.
+    │                     Same timeless reference format as feature/.
+    │                     One file per feature, tagged by user group (DE/DA/DG).
+    └── <FEATURE>.md      e.g. INGESTION.md, NL_SEARCH.md, METRICS_DASHBOARD.md
 ```
 
 **Routing rules:**
 - Top-level `spec/` — project-wide documents only. Do NOT create new top-level files unless the topic affects the whole system and warrants an architectural-level document.
 - `spec/feature/` — common/cross-cutting feature deep-dives that are not specific to a single user group (e.g. `API.md`, `DEV_ENV.md`, shared infrastructure).
 - `spec/feature/spoke/` — user-group-specific feature deep-dives. These map to features defined in the MANIFESTO under DE, DA, or DG groups. Examples: `INGESTION.md` (DE), `ONLINE_VALIDATOR.md` (DE/DA), `NL_SEARCH.md` (DA), `METRICS_DASHBOARD.md` (DG).
-- `spec/impl/` — chronological implementation plans/logs. Used for decision records, implementation notes, rollout plans, and minor changes. Written as a living log where new entries are prepended. **File names must be `YYYYMMDD_<topic_slug>.md` — date-prefixed and fully lowercase with underscores** (e.g., `20260216_rewrite_plan.md`).
+
+Implementation plans and decision records are tracked via GitHub Issues and PRs, not in the spec directory.
 
 **How to decide between `feature/` and `feature/spoke/`:**
 - If the feature belongs to a specific user group in the MANIFESTO (DE/DA/DG) → `feature/spoke/`
@@ -73,7 +70,6 @@ If writing about a specific feature, also check for an existing `spec/feature/<F
 |-------------|-------------|---------------|
 | `spec/feature/spoke/<FEATURE>.md` | User-group-specific feature from the MANIFESTO: DE (Ingestion, Online Validator, Doc Generation), DA (NL Search, Text-to-SQL Metadata, Validator), DG (Metrics Dashboard, Multi-Perspective Overview) | Spoke Feature Spec (see template A) |
 | `spec/feature/<FEATURE>.md` | Common/cross-cutting feature not specific to one user group (API design, dev environment, shared services) | Common Feature Spec (see template A, without user-group context) |
-| `spec/impl/YYYYMMDD_<topic>.md` | Decision plan, ADR, implementation note, rollout plan, minor change, or anything with a specific date/milestone | Plan Log (see template B) |
 | `spec/<DOC>.md` (top-level) | Only for project-wide topics that belong alongside MANIFESTO and ARCHITECTURE | Top-level spec (use template A without feature context) |
 
 ---
@@ -130,38 +126,6 @@ For spoke features, include the user group tag. For common features, omit it.
 
 ## Open Questions
 - [ ]
-```
-
----
-
-## Template B — Plan Log (`spec/impl/YYYYMMDD_<topic>.md`)
-
-Chronological log style. New entries go at the **top** (newest first).
-Each entry has a date header and structured content.
-
-```markdown
-# <Topic Name>
-
-<!-- Newest entries at the top. -->
-
----
-
-## YYYY-MM-DD — <Entry Title>
-
-**Context**: Why this decision or plan is being written now.
-
-**What**: What is changing or being decided.
-
-**Why**: Rationale, trade-offs considered.
-
-**Action items**:
-- [ ] item
-
----
-
-## YYYY-MM-DD — <Earlier Entry Title>
-
-...
 ```
 
 ---

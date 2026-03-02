@@ -6,7 +6,7 @@ Before asking the user anything, build an inventory of the spec landscape:
 
 1. Read `spec/MANIFESTO_en.md` — extract user-group taxonomy (DE/DA/DG), feature names, and naming conventions.
 2. Read `spec/ARCHITECTURE.md` — extract components, feature-to-architecture mapping (UC1–UC8), shared services, tech stack.
-3. Glob `spec/*.md`, `spec/feature/*.md`, `spec/feature/spoke/*.md`, `spec/impl/*.md` to build a list of all existing spec documents.
+3. Glob `spec/*.md`, `spec/feature/*.md`, `spec/feature/spoke/*.md` to build a list of all existing spec documents.
 4. Store this inventory internally. Use it to:
    - Avoid asking questions whose answers are already documented
    - Identify cross-reference opportunities
@@ -25,7 +25,6 @@ Use `AskUserQuestion` to present 4 scope options:
 | 1 | **Architectural guideline** | Top-level `spec/` document for system-wide concerns |
 | 2 | **Common feature spec** | Cross-cutting feature in `spec/feature/` |
 | 3 | **User-group-specific feature spec** | DE/DA/DG feature in `spec/feature/spoke/` |
-| 4 | **Implementation plan** | Chronological plan/log in `spec/impl/YYYYMMDD_<topic>.md` |
 
 Store the selected scope for subsequent steps.
 
@@ -59,12 +58,6 @@ Then ask scope-specific follow-up questions. Use `AskUserQuestion` for each roun
 - What API surface is anticipated? (`/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, or `/api/v1/hub/…`)
 - **Converge when**: user group confirmed, MANIFESTO feature mapping established, DataHub needs identified, API surface outlined.
 
-**Scope 4 — Implementation plan:**
-- Is this an ADR (architectural decision record), a rollout plan, or general implementation notes?
-- What is the implementation target (which spec, which feature)?
-- If complex: does this need an agent team approach? (Which subagents, what order, new skills needed?)
-- **Converge when**: implementation target clear, what/why/when established, agent team needs identified if applicable.
-
 ### Convergence rules
 
 - After each Q&A round, check whether the criteria for the selected scope are met.
@@ -78,7 +71,7 @@ Then ask scope-specific follow-up questions. Use `AskUserQuestion` for each roun
 Before writing, present a structured plan to the user:
 
 1. **File(s) to create or modify** — full paths, whether new or update
-2. **Document type and template** — Template A (feature spec) or Template B (plan log) from `plan-doc`
+2. **Document type and template** — Template A (feature spec) from `plan-doc`
 3. **Content outline** — H2 sections with 1–2 sentence descriptions of what each section will cover
 4. **Cross-references to update** — other spec files that should reference this document (e.g., ARCHITECTURE.md, USE_CASE_en.md)
 5. **MANIFESTO compliance notes** — confirm naming, user-group taxonomy, and product identity alignment
@@ -95,15 +88,9 @@ Delegate to `plan-doc` skill conventions:
 
 1. **Read context** (plan-doc Step 1): Read `spec/MANIFESTO_en.md`, `spec/ARCHITECTURE.md`, and any topic-relevant docs (DATAHUB_INTEGRATION.md, API_DESIGN_PRINCIPLE_en.md, USE_CASE_en.md) as appropriate.
 2. **Write using the correct template** (plan-doc Step 3):
-   - Scopes 1–3 → Template A (feature spec format, timeless reference)
-   - Scope 4 → Template B (plan log format, chronological with newest-first)
+   - Use Template A (feature spec format, timeless reference)
    - Apply all plan-doc style rules: H1 title, H2/H3 headings, ASCII diagrams, tables for comparisons, code blocks for schemas/APIs, MANIFESTO-compliant naming.
 3. **Update cross-references** (plan-doc Step 4): If the new document introduces components or data models that belong in the architecture overview, update `spec/ARCHITECTURE.md`. If it changes use case realization, note it in `spec/USE_CASE_en.md`. Never modify MANIFESTO files.
-4. **For scope 4 with agent team**: Include an "AI Coding Approach" section in the plan document with:
-   - Which subagents to use and in what order
-   - Key prompts or instructions for each subagent
-   - New skills or commands needed (if any)
-   - Dependencies between agent tasks
 
 ---
 
@@ -114,7 +101,7 @@ After writing, present a concise summary:
 - **Files created** — full paths
 - **Files modified** — full paths with brief description of what changed
 - **Document type** — which template was used (A or B)
-- **Template** — Template A (feature spec) or Template B (plan log)
+- **Template** — Template A (feature spec)
 - **Key content** — 3–5 bullet points summarizing the document's main contributions
 - **Cross-references added** — which existing docs were updated and how
 

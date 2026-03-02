@@ -35,7 +35,6 @@ Specs must not contradict each other — propagate changes up and down. Priority
 | 4 | `AI_SCAFFOLD.md` | Claude Code scaffold conventions. |
 | 5 | `feature/<FEATURE>.md` | Common feature specs. |
 | 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |
-| 7 | `impl/YYYYMMDD_<topic>.md` | Implementation logs (propagation stops here). |
 
 When both `_en.md` and `_kr.md` exist, read only English unless directed otherwise. Write Korean in plain style (-다/-한다).
 
