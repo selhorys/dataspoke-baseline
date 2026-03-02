@@ -17,6 +17,7 @@ body:
         - label: Architecture or high-level spec (spec/)
         - label: Cross-role feature spec (spec/feature/)
         - label: Role-specific feature spec (spec/feature/spoke/)
+        - label: General documentation or settings (README.md, CLAUDE.md, .claude/, etc)
         - label: Tooling or CI/CD (PRAUTO, GitHub Actions, hooks, etc.)
         - label: No spec change (implementation only)
         - label: Other (documented in description)
@@ -63,10 +64,11 @@ body:
         <!-- Key requirements or constraints -->
 
         #### TODO
-        - plan
-        - change spec
-        - implement spec
-        - unit test (and integration test on dev-env if needed)
+          - plan
+          - change spec/docs (if needed)
+          - implement spec (if needed)
+          - unit test (if needed)
+          - integration test on dev-env (if needed)
     validations:
       required: true
 
