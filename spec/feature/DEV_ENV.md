@@ -216,6 +216,7 @@ These variables are read by DataSpoke application code. In dev, they point to `l
 ```dotenv
 # --- DataHub Connection -------------------------------------------------------
 DATASPOKE_DATAHUB_GMS_URL=http://localhost:9004
+DATASPOKE_DATAHUB_TOKEN=                          # empty — DataHub doesn't require auth in dev
 DATASPOKE_DATAHUB_KAFKA_BROKERS=localhost:9005
 
 # --- PostgreSQL (DataSpoke operational DB) ------------------------------------

@@ -9,7 +9,7 @@ This repository delivers two artifacts:
 - **Baseline Product** — A pre-built implementation of essential features for an AI-era catalog, targeting DE, DA, and DG user groups.
 - **AI Scaffold** — Claude Code conventions, development specs, and utilities — including the PRauto autonomous PR system — that enable rapid construction of custom data catalogs with AI coding agents.
 
-Fork or copy this repository to create a data catalog for your organization. An automated coding factory is a bonus.
+This is the **baseline** or prototype. Fork or copy this repository to create a data catalog for your organization. An automated coding factory is a bonus.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ Fork or copy this repository to create a data catalog for your organization. An 
 ┌───────────▼───────────┐ ┌─────────▼───────────┐
 │       DataHub         │ │      DataSpoke      │
 │    (metadata SSOT)    │ │  Backend / Workers  │
-│                       │ │  + Infrastructure   │
+│                       │ │  + Shared Services  │
 └───────────────────────┘ └─────────────────────┘
 ```
 
@@ -225,6 +225,7 @@ Key application variables:
 | Variable | Purpose |
 |----------|---------|
 | `DATASPOKE_DATAHUB_GMS_URL` | DataHub GMS endpoint |
+| `DATASPOKE_DATAHUB_TOKEN` | DataHub personal access token (empty in local dev) |
 | `DATASPOKE_DATAHUB_KAFKA_BROKERS` | Kafka brokers for event streaming |
 | `DATASPOKE_POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB` | Operational database |
 | `DATASPOKE_REDIS_HOST` / `_PORT` / `_PASSWORD` | Cache |

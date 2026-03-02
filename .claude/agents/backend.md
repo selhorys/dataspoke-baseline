@@ -48,12 +48,17 @@ src/
 ## DataHub integration patterns
 
 - **Reading**: wrap DataHub's GraphQL API in a `DataHubClient` class under `src/shared/datahub/`. Use `async def` methods that query GMS at `settings.datahub_gms_url`.
-- **Writing**: use `DatahubRestEmitter` from the `acryl-datahub` package to emit MCEs via REST:
+- **Writing**: use `DatahubRestEmitter` from the `acryl-datahub` package to emit MCPs via REST:
 
 ```python
 from datahub.emitter.rest_emitter import DatahubRestEmitter
+from datahub.emitter.mcp import MetadataChangeProposalWrapper
+
 emitter = DatahubRestEmitter(gms_server=settings.datahub_gms_url)
-emitter.emit_mce(mce)
+emitter.emit_mcp(MetadataChangeProposalWrapper(
+    entityUrn=dataset_urn,
+    aspect=aspect,
+))
 ```
 
 Before writing the client wrapper, scan `src/shared/datahub/` — the class may already exist with its own conventions.

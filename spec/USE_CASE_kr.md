@@ -189,7 +189,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-emitter = DatahubRestEmitter(gms_server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN)
+emitter = DatahubRestEmitter(gms_server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN)
 dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
 
 # 설명 + 커스텀 속성 — Confluence에서 가져온 비즈니스 컨텍스트
@@ -356,7 +356,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="reviews.user_ratings_legacy", env="PROD")
 
 # 프로필 이력 — 이상 탐지를 위한 null 비율 시계열
@@ -478,7 +478,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="orders.daily_fulfillment_summary", env="PROD")
 
 # 프로필 이력 — 3σ 이상 탐지를 위한 시간별 rowCount
@@ -807,8 +807,8 @@ from datahub.metadata.schema_classes import (
     SchemaMetadataClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
-emitter = DatahubRestEmitter(gms_server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN)
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
+emitter = DatahubRestEmitter(gms_server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN)
 
 # 스키마 읽기 — 임베딩 기반 유사도를 위한 컬럼명과 타입
 # REST: GET /aspects/{urn}?aspect=schemaMetadata
@@ -936,7 +936,7 @@ from datahub.metadata.schema_classes import (
     GlobalTagsClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="customers.eu_profiles", env="PROD")
 
 # PII 태그 — GDPR 관련 분류 태그 확인
@@ -1120,7 +1120,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
 
 # 스키마 — SQL 생성을 위한 컬럼명과 타입
@@ -1259,7 +1259,7 @@ from datahub.metadata.schema_classes import (
     OwnershipClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 
 # 모든 데이터셋 열거 — 건강도 점수 계산을 위한 반복
 # GraphQL: scrollAcrossEntities 또는 REST 필터
@@ -1456,7 +1456,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 
 # 그래프 구축을 위한 모든 데이터셋 열거
 # GraphQL: scrollAcrossEntities 또는 REST 필터

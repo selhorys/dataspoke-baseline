@@ -127,5 +127,5 @@ DataSpoke는 네 가지 컴포넌트로 구성된다.
 - **개발 계획 수립 (Planning)**
   - 기능 스펙 작성: 질의응답을 통해 사용자 그룹별 기능을 `spec/feature/spoke/`에, 공통 기능을 `spec/feature/`에 정의한다.
   - 구현 계획 수립: GitHub Issues와 PR을 통해 현재 구현 상태와 환경을 고려한 작업 계획을 관리한다. AI 코딩 방식(스킬/서브에이전트 구성 등)을 제안받고 스캐폴드를 보강한다.
-- **PR 자동화 (PR-auto)**
+- **PR 자동화 (PRauto)**
   - cron 기반으로 `prauto:ready` 라벨이 붙은 GitHub 이슈를 감시하고, Claude Code CLI를 호출하여 분석·구현·PR 제출까지 무인 자동화한다. 상세 사양은 `spec/AI_PRAUTO.md`를 참고한다.

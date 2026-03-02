@@ -127,5 +127,5 @@ Commands and skills for step-by-step development workflows.
 - **Development Planning**
   - Feature spec authoring: guided Q&A to define features per user group under `spec/feature/spoke/`, or common features under `spec/feature/`.
   - Implementation planning: tracked via GitHub Issues and PRs with AI coding approach suggestions (skill/subagent composition) to reinforce the scaffold.
-- **PR Automation (PR-auto)**
+- **PR Automation (PRauto)**
   - Cron-driven monitoring of GitHub issues labeled `prauto:ready`; invokes Claude Code CLI to analyze, implement, and submit PRs autonomously. See `spec/AI_PRAUTO.md` for the full specification.

@@ -78,14 +78,14 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 
 # Read client — queries aspects and GraphQL
 graph = DataHubGraph(DatahubClientConfig(
-    server=DATAHUB_GMS_URL,
-    token=DATAHUB_TOKEN,
+    server=DATASPOKE_DATAHUB_GMS_URL,
+    token=DATASPOKE_DATAHUB_TOKEN,
 ))
 
 # Write client — emits MCPs
 emitter = DatahubRestEmitter(
-    gms_server=DATAHUB_GMS_URL,
-    token=DATAHUB_TOKEN,
+    gms_server=DATASPOKE_DATAHUB_GMS_URL,
+    token=DATASPOKE_DATAHUB_TOKEN,
 )
 ```
 
@@ -352,7 +352,7 @@ DataSpoke consumes Kafka events from DataHub to react to metadata changes in rea
 from confluent_kafka import Consumer
 
 consumer = Consumer({
-    "bootstrap.servers": DATAHUB_KAFKA_BROKERS,
+    "bootstrap.servers": DATASPOKE_DATAHUB_KAFKA_BROKERS,
     "group.id": "dataspoke-consumers",
     "auto.offset.reset": "latest",
 })
@@ -420,33 +420,26 @@ If 5 consecutive DataHub API calls fail:
 
 ## Configuration
 
-All DataHub connection parameters are centralized:
+All DataHub connection parameters are configured via environment variables (in dev, loaded from `dev_env/.env`; in production, injected via Helm values → ConfigMap/Secret):
 
-```yaml
-# config/datahub.yaml
-datahub:
-  gms_url: "${DATAHUB_GMS_URL}"           # e.g. http://datahub-gms:8080
-  token: "${DATAHUB_TOKEN}"                # Personal access token
-  kafka_brokers: "${DATAHUB_KAFKA_BROKERS}" # e.g. datahub-broker:9092
-  kafka_consumer_group: "dataspoke-consumers"
+| Variable | Purpose | Dev Default |
+|----------|---------|-------------|
+| `DATASPOKE_DATAHUB_GMS_URL` | GMS endpoint for SDK read/write | `http://localhost:9004` |
+| `DATASPOKE_DATAHUB_TOKEN` | Personal access token (empty in local dev — DataHub doesn't require auth in the dev env) | `""` |
+| `DATASPOKE_DATAHUB_KAFKA_BROKERS` | Kafka brokers for MCE/MAE events | `localhost:9005` |
 
-  # Resilience settings
-  retry_max_attempts: 3
-  retry_backoff_base_ms: 500
-  circuit_breaker_threshold: 5
-  circuit_breaker_reset_ms: 60000
-  bulk_batch_size: 100
-  bulk_batch_delay_ms: 100
-```
+Resilience settings (retry, circuit breaker, bulk batching) are application-level constants defined in `src/shared/config/`:
 
-For local development, these resolve to the dev_env cluster:
+| Setting | Default |
+|---------|---------|
+| `retry_max_attempts` | 3 |
+| `retry_backoff_base_ms` | 500 |
+| `circuit_breaker_threshold` | 5 |
+| `circuit_breaker_reset_ms` | 60000 |
+| `bulk_batch_size` | 100 |
+| `bulk_batch_delay_ms` | 100 |
 
-```bash
-# dev_env/.env
-DATAHUB_GMS_URL=http://localhost:8080  # via port-forward
-DATAHUB_TOKEN=""                       # no auth in dev
-DATAHUB_KAFKA_BROKERS=localhost:9092
-```
+See [`spec/feature/DEV_ENV.md` §Application Runtime Variables](feature/DEV_ENV.md#application-runtime-variables-dataspoke) for the full variable listing, and [`spec/feature/HELM_CHART.md` §Configuration Flow](feature/HELM_CHART.md#configuration-flow) for production deployment.
 
 ## Open Questions
 

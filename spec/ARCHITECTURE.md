@@ -359,7 +359,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 
 ## Shared Services
 
-Reusable backend services consumed by multiple features. These live in `src/shared/` or `src/backend/shared/`.
+Reusable backend services consumed by multiple features. These live in `src/shared/`.
 
 ### Ontology/Taxonomy Builder
 
@@ -486,7 +486,7 @@ Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod
 
 | Group | Variables | Purpose |
 |-------|-----------|---------|
-| DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS` | GMS endpoint for SDK read/write, Kafka brokers for MCE/MAE events |
+| DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_DATAHUB_KAFKA_BROKERS` | GMS endpoint for SDK read/write, personal access token (empty in local dev), Kafka brokers for MCE/MAE events |
 | PostgreSQL | `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_POSTGRES_PORT`, `DATASPOKE_POSTGRES_USER`, `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_POSTGRES_DB` | Operational DB for ingestion configs, quality results, health scores, ontology graph |
 | Redis | `DATASPOKE_REDIS_HOST`, `DATASPOKE_REDIS_PORT`, `DATASPOKE_REDIS_PASSWORD` | Cache for validation results, API responses, rate limiting |
 | Qdrant | `DATASPOKE_QDRANT_HOST`, `DATASPOKE_QDRANT_HTTP_PORT`, `DATASPOKE_QDRANT_GRPC_PORT`, `DATASPOKE_QDRANT_API_KEY` | Vector DB for semantic search, embedding storage |
@@ -530,8 +530,7 @@ dataspoke-baseline/
 ├── docker-images/      # Dockerfiles for each service (multi-stage builds)
 ├── spec/               # Architecture and feature specifications
 │   ├── feature/        # Cross-cutting feature specs
-│   ├── feature/spoke/  # User-group-specific feature specs (DE/DA/DG)
-│   └── impl/           # Chronological implementation plans
+│   └── feature/spoke/  # User-group-specific feature specs (DE/DA/DG)
 ├── src/
 │   ├── frontend/       # Next.js (pages per user group: de, da, dg)
 │   ├── api/            # FastAPI (routers per user group, schemas, middleware)
@@ -540,8 +539,7 @@ dataspoke-baseline/
 │   └── shared/         # DataHub client, shared models, LLM integration
 ├── tests/              # Unit, integration, E2E test suites
 ├── ref/                # External source for AI reference (git-ignored)
-├── migrations/         # Alembic database migrations
-└── config/             # Environment-specific configuration
+└── migrations/         # Alembic database migrations
 ```
 
 ---

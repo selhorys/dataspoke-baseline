@@ -74,8 +74,8 @@ curl -s http://localhost:9004/config \
   || echo "ERROR: GMS not reachable. Run: dev_env/datahub-port-forward.sh"
 
 # 3. Check token
-if [ -z "${DATAHUB_TOKEN:-}" ]; then
-  echo "DATAHUB_TOKEN not set — generate via: http://localhost:9002 → Settings → Access Tokens"
+if [ -z "${DATASPOKE_DATAHUB_TOKEN:-}" ]; then
+  echo "DATASPOKE_DATAHUB_TOKEN not set — generate via: http://localhost:9002 → Settings → Access Tokens"
 fi
 ```
 
@@ -90,7 +90,7 @@ Only use this if the static `ref/` files don't answer the question.
 | Resource | URL | Notes |
 |---|---|---|
 | Swagger UI (REST/OpenAPI) | `http://localhost:9004/openapi/swagger-ui/index.html` | Set Bearer token in Authorize dialog |
-| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATAHUB_TOKEN" http://localhost:9004/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
+| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_DATAHUB_TOKEN" http://localhost:9004/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
 | GraphiQL | `http://localhost:9002/api/graphiql` | Browser only, uses session cookie |
 | Unauthenticated health | `http://localhost:9004/config`, `http://localhost:9004/health` | No token needed |
 
@@ -106,7 +106,7 @@ import os
 
 graph = DataHubGraph(DatahubClientConfig(
     server="http://localhost:9004",
-    token=os.environ.get("DATAHUB_TOKEN", ""),
+    token=os.environ.get("DATASPOKE_DATAHUB_TOKEN", ""),
 ))
 ```
 
@@ -117,7 +117,7 @@ import os
 
 emitter = DatahubRestEmitter(
     "http://localhost:9004",
-    token=os.environ.get("DATAHUB_TOKEN", ""),
+    token=os.environ.get("DATASPOKE_DATAHUB_TOKEN", ""),
 )
 ```
 

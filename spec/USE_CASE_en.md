@@ -189,7 +189,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-emitter = DatahubRestEmitter(gms_server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN)
+emitter = DatahubRestEmitter(gms_server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN)
 dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
 
 # Description + custom properties — business context from Confluence
@@ -356,7 +356,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="reviews.user_ratings_legacy", env="PROD")
 
 # Profile history — null rates over time for anomaly detection
@@ -478,7 +478,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="orders.daily_fulfillment_summary", env="PROD")
 
 # Profile history — rowCount over time for 3σ anomaly detection
@@ -808,8 +808,8 @@ from datahub.metadata.schema_classes import (
     SchemaMetadataClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
-emitter = DatahubRestEmitter(gms_server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN)
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
+emitter = DatahubRestEmitter(gms_server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN)
 
 # Read schema — column names and types for embedding-based similarity
 # REST: GET /aspects/{urn}?aspect=schemaMetadata
@@ -937,7 +937,7 @@ from datahub.metadata.schema_classes import (
     GlobalTagsClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="customers.eu_profiles", env="PROD")
 
 # PII tags — check for GDPR-relevant classification tags
@@ -1121,7 +1121,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
 
 # Schema — column names and types for SQL generation
@@ -1260,7 +1260,7 @@ from datahub.metadata.schema_classes import (
     OwnershipClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 
 # Enumerate all datasets — iterate for health scoring
 # GraphQL: scrollAcrossEntities or REST filter
@@ -1457,7 +1457,7 @@ from datahub.metadata.schema_classes import (
     UpstreamLineageClass,
 )
 
-graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_GMS_URL, token=DATAHUB_TOKEN))
+graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
 
 # Enumerate all datasets for graph construction
 # GraphQL: scrollAcrossEntities or REST filter

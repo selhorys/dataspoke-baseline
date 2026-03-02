@@ -238,6 +238,7 @@ metadata:
   name: {{ include "dataspoke.fullname" . }}-secrets
 type: Opaque
 stringData:
+  DATASPOKE_DATAHUB_TOKEN: {{ .Values.secrets.datahub.token | quote }}
   DATASPOKE_POSTGRES_USER: {{ .Values.secrets.postgres.user | quote }}
   DATASPOKE_POSTGRES_PASSWORD: {{ .Values.secrets.postgres.password | quote }}
   DATASPOKE_REDIS_PASSWORD: {{ .Values.secrets.redis.password | quote }}
@@ -273,6 +274,8 @@ config:
     model: "gemini-2.0-flash"
 
 secrets:
+  datahub:
+    token: ""          # Personal access token (empty for local dev)
   postgres:
     user: ""           # Set via --set or external secrets
     password: ""
