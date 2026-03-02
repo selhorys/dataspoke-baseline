@@ -46,23 +46,18 @@ prepare_system_prompt() {
 }
 
 # Run Claude and capture output + session ID.
-# Usage: invoke_claude <prompt> <allowed_tools> <max_turns> [budget] [resume_session_id]
+# Usage: invoke_claude <prompt> <allowed_tools> <max_turns> [budget]
 # Sets: CLAUDE_SESSION_ID, CLAUDE_OUTPUT
 invoke_claude() {
   local prompt="$1"
   local allowed_tools="$2"
   local max_turns="$3"
   local budget="${4:-}"
-  local resume_session="${5:-}"
 
   local system_prompt_file
   system_prompt_file=$(prepare_system_prompt)
 
   local -a cmd=(claude)
-
-  if [[ -n "$resume_session" ]]; then
-    cmd+=(--resume "$resume_session")
-  fi
 
   cmd+=(
     -p "$prompt"
@@ -161,32 +156,29 @@ ${counter_proposal}"
 }
 
 # Phase 2: Implementation (read + write).
+# Always starts a fresh session. Claude checks the branch for existing work.
 # Sets: IMPL_SESSION_ID
 run_implementation() {
   local issue_number="$1"
   local branch="$2"
   local analysis_output="$3"
-  local resume_session="${4:-}"
 
   local prompt
-  if [[ -n "$resume_session" ]]; then
-    prompt="Continue the implementation. Check what has been done so far and pick up where you left off."
-  else
-    prompt=$(render_prompt "${PRAUTO_DIR}/prompts/implementation.md" \
-      "number=${issue_number}" \
-      "branch=${branch}" \
-      "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
-      "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}" \
-      "analysis_output=${analysis_output}")
-  fi
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/implementation.md" \
+    "number=${issue_number}" \
+    "branch=${branch}" \
+    "base_branch=${PRAUTO_BASE_BRANCH}" \
+    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
+    "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}" \
+    "analysis_output=${analysis_output}")
 
   local budget="${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
 
-  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" "$budget" "$resume_session"
+  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" "$budget"
 
   IMPL_SESSION_ID="$CLAUDE_SESSION_ID"
 
-  # Save session output for potential resume
+  # Save session output for debugging
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
     echo "$CLAUDE_OUTPUT" > "${SESSIONS_DIR}/impl-I-${issue_number}.json"
     info "Implementation session saved: ${CLAUDE_SESSION_ID}"
@@ -242,18 +234,15 @@ generate_squash_commit_message() {
 }
 
 # PR review phase: address reviewer feedback.
+# Always starts a fresh session with full reviewer comments as context.
 # Sets: REVIEW_SESSION_ID
 run_pr_review() {
   local issue_number="$1"
   local branch="$2"
   local reviewer_comments="$3"
-  local resume_session="${4:-}"
 
   local prompt
-  if [[ -n "$resume_session" ]]; then
-    prompt="Continue addressing the reviewer feedback. Check what has been done so far and pick up where you left off."
-  else
-    prompt="Address the following reviewer feedback on PR for issue #${issue_number} (branch \`${branch}\`).
+  prompt="Address the following reviewer feedback on PR for issue #${issue_number} (branch \`${branch}\`).
 
 ## Reviewer Comments
 
@@ -268,11 +257,10 @@ ${reviewer_comments}
 5. Stage and commit with conventional commit messages.
    Use: git commit --author=\"${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AUTHOR_EMAIL}>\"
 6. Do NOT push. The orchestrator handles pushing."
-  fi
 
   local budget="${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
 
-  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" "$budget" "$resume_session"
+  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" "$budget"
 
   REVIEW_SESSION_ID="$CLAUDE_SESSION_ID"
 

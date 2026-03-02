@@ -122,100 +122,79 @@ info "Secrets backed up to ${SECRETS_TEMP_FILE}."
 # ---------------------------------------------------------------------------
 if ! check_quota; then
   warn "Token quota exhausted or auth failed."
-  # Notify on the active job's issue (if any) so humans can see why work stopped
-  if has_active_job; then
-    load_job
-    post_quota_paused_comment "$JOB_ISSUE_NUMBER"
+  # Notify on the WIP issue (if any) so humans can see why work stopped
+  if find_wip_issue; then
+    post_quota_paused_comment "$WIP_ISSUE_NUMBER"
   fi
   exit 0
 fi
 info "Token quota available."
 
 # ---------------------------------------------------------------------------
-# Step 5: Resume interrupted job
+# Step 5: Find WIP issue on GitHub (GitHub-as-SSOT — replaces local resume + orphan recovery)
 # ---------------------------------------------------------------------------
-if has_active_job; then
-  info "Found active job. Attempting resume..."
-  load_job
+if find_wip_issue; then
+  info "Found WIP issue #${WIP_ISSUE_NUMBER} on GitHub. Deriving phase..."
 
-  # Validate full GitHub state: issue open + prauto:wip label + assigned to this worker
-  issue_state_json=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-    --json state,labels,assignees 2>/dev/null) || {
-    warn "Failed to fetch issue #${JOB_ISSUE_NUMBER} from GitHub. Skipping."
-    exit 0
-  }
-  issue_state=$(echo "$issue_state_json" | jq -r '.state')
-  issue_has_wip=$(echo "$issue_state_json" | jq -r --arg wip "$PRAUTO_GITHUB_LABEL_WIP" \
-    '.labels | map(.name) | index($wip) != null')
-  issue_assignee_match=$(echo "$issue_state_json" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" \
-    '[.assignees[].login] | index($actor) != null')
+  derive_phase_from_github "$WIP_ISSUE_NUMBER" "$WIP_BRANCH"
+  info "Derived phase: ${DERIVED_PHASE}"
 
-  if [[ "$issue_state" != "OPEN" ]]; then
-    warn "Issue #${JOB_ISSUE_NUMBER} is ${issue_state}. Completing stale job."
-    complete_job; exit 0
-  fi
-  if [[ "$issue_has_wip" != "true" ]]; then
-    warn "Issue #${JOB_ISSUE_NUMBER} no longer has ${PRAUTO_GITHUB_LABEL_WIP}. Completing stale job."
-    complete_job; exit 0
-  fi
-  if [[ "$issue_assignee_match" != "true" ]]; then
-    warn "Issue #${JOB_ISSUE_NUMBER} not assigned to ${PRAUTO_GITHUB_ACTOR}. Skipping."
-    exit 0
-  fi
+  # For plan-approval phase, skip retry tracking and heartbeat comment (just check approval)
+  if [[ "$DERIVED_PHASE" == "plan-approval" ]]; then
+    # Write monitoring state
+    write_monitor_state "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" "issue" "plan-approval"
 
-  # For plan-approval phase, don't count retries (waiting is not a failure)
-  if [[ "$JOB_PHASE" != "plan-approval" ]]; then
-    # Check max retries
-    if [[ "$JOB_RETRIES" -ge "$PRAUTO_MAX_RETRIES_PER_JOB" ]]; then
-      warn "Job for issue #${JOB_ISSUE_NUMBER} exceeded max retries (${JOB_RETRIES}/${PRAUTO_MAX_RETRIES_PER_JOB})."
-      abandon_job
-      exit 0
+    # If the previous heartbeat posted a quota-paused comment, post a resumed notice
+    if has_quota_paused_comment "$WIP_ISSUE_NUMBER"; then
+      post_quota_resumed_comment "$WIP_ISSUE_NUMBER"
     fi
 
-    # Increment retries and update heartbeat timestamp
-    bump_heartbeat
+    # Create worktree and route to plan-approval handler
+    create_branch "$WIP_ISSUE_NUMBER"
+    cd "$WORKTREE_DIR"
+    handle_phase_plan_approval "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH"
+    info "Plan-approval check complete. Exiting."
+    exit 0
   fi
+
+  # Count heartbeat comments for retry tracking
+  count_heartbeat_comments "$WIP_ISSUE_NUMBER"
+  local retry_count=$((HEARTBEAT_COMMENT_COUNT + 1))
+
+  # Check max retries
+  if [[ "$HEARTBEAT_COMMENT_COUNT" -ge "$PRAUTO_MAX_RETRIES_PER_JOB" ]]; then
+    warn "Issue #${WIP_ISSUE_NUMBER} exceeded max retries (${HEARTBEAT_COMMENT_COUNT}/${PRAUTO_MAX_RETRIES_PER_JOB})."
+    abandon_job_github "$WIP_ISSUE_NUMBER" "$HEARTBEAT_COMMENT_COUNT"
+    exit 0
+  fi
+
+  # Post heartbeat comment (retry marker on GitHub)
+  post_heartbeat_comment "$WIP_ISSUE_NUMBER" "$DERIVED_PHASE" "$retry_count" "$PRAUTO_MAX_RETRIES_PER_JOB"
+
+  # Write monitoring state
+  write_monitor_state "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" "issue" "$DERIVED_PHASE"
+
   # If the previous heartbeat posted a quota-paused comment, post a resumed notice
-  if has_quota_paused_comment "$JOB_ISSUE_NUMBER"; then
-    post_quota_resumed_comment "$JOB_ISSUE_NUMBER"
+  if has_quota_paused_comment "$WIP_ISSUE_NUMBER"; then
+    post_quota_resumed_comment "$WIP_ISSUE_NUMBER"
   fi
 
-  info "Resuming job for issue #${JOB_ISSUE_NUMBER} (phase: ${JOB_PHASE}, retry: ${JOB_RETRIES})."
+  info "Resuming issue #${WIP_ISSUE_NUMBER} (phase: ${DERIVED_PHASE}, attempt: ${retry_count}/${PRAUTO_MAX_RETRIES_PER_JOB})."
 
-  # Create a worktree for the job's branch
-  create_branch "$JOB_ISSUE_NUMBER"
+  # Create worktree for the issue's branch
+  create_branch "$WIP_ISSUE_NUMBER"
   cd "$WORKTREE_DIR"
 
-  # Cross-check: advance local phase if GitHub shows later state
-  cross_check_phase
-
-  case "$JOB_PHASE" in
-    analysis)        handle_phase_analysis ;;
-    plan-approval)   handle_phase_plan_approval ;;
-    implementation)  handle_phase_implementation ;;
-    pr-review)       handle_phase_pr_review ;;
-    pr)              handle_phase_pr ;;
-    *)               warn "Unknown phase: ${JOB_PHASE}. Abandoning job."; abandon_job ;;
+  # Route to phase handler
+  case "$DERIVED_PHASE" in
+    analysis)        handle_phase_analysis "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
+    implementation)  handle_phase_implementation "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
+    pr-review)       handle_phase_pr_review "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
+    pr)              handle_phase_pr "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
+    *)               warn "Unknown phase: ${DERIVED_PHASE}. Abandoning."; abandon_job_github "$WIP_ISSUE_NUMBER" "$HEARTBEAT_COMMENT_COUNT" ;;
   esac
 
-  info "Resume complete. Exiting."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 5.1: Recover orphaned WIP issues (GitHub SSOT recovery)
-# ---------------------------------------------------------------------------
-if find_orphaned_wip_issue; then
-  info "Recovering orphaned WIP issue #${ORPHAN_ISSUE_NUMBER}..."
-  derive_phase_from_github "$ORPHAN_ISSUE_NUMBER" "$ORPHAN_BRANCH"
-  estimate_retries_from_github "$ORPHAN_ISSUE_NUMBER"
-  save_job "$ORPHAN_ISSUE_NUMBER" "$ORPHAN_ISSUE_TITLE" "$ORPHAN_BRANCH" "issue" "$DERIVED_PHASE"
-  if [[ "$GITHUB_ESTIMATED_RETRIES" -gt 0 ]]; then
-    tmp=$(mktemp)
-    jq --argjson retries "$GITHUB_ESTIMATED_RETRIES" '.retries = $retries' "$JOB_FILE" > "$tmp"
-    mv "$tmp" "$JOB_FILE"
-  fi
-  info "Recovered: phase=${DERIVED_PHASE}, retries=${GITHUB_ESTIMATED_RETRIES}. Will resume next heartbeat."
+  info "WIP issue processing complete. Exiting."
   exit 0
 fi
 
@@ -245,8 +224,8 @@ fi
 if find_actionable_prs; then
   info "Addressing reviewer feedback on PR #${ACTIONABLE_PR_NUMBER}..."
 
-  # Create job state for PR review
-  save_job "$ACTIONABLE_PR_ISSUE" "" "$ACTIONABLE_PR_BRANCH" "pr-review" "pr-review"
+  # Write monitoring state for PR review
+  write_monitor_state "$ACTIONABLE_PR_ISSUE" "" "$ACTIONABLE_PR_BRANCH" "pr-review" "pr-review"
 
   # Create a worktree for the PR branch
   checkout_branch_worktree "$ACTIONABLE_PR_BRANCH"
@@ -255,7 +234,6 @@ if find_actionable_prs; then
   # Run PR review phase
   run_pr_review "$ACTIONABLE_PR_ISSUE" "$ACTIONABLE_PR_BRANCH" "$ACTIONABLE_COMMENTS"
   update_job_field "phase" "pr"
-  update_job_field "session_id" "$REVIEW_SESSION_ID"
 
   # Push and update PR
   push_branch "$ACTIONABLE_PR_BRANCH"
@@ -290,8 +268,8 @@ fi
 create_branch "$FOUND_ISSUE_NUMBER"
 cd "$WORKTREE_DIR"
 
-# Save job state
-save_job "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$BRANCH_NAME" "issue" "analysis"
+# Write monitoring state
+write_monitor_state "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$BRANCH_NAME" "issue" "analysis"
 
 # ---------------------------------------------------------------------------
 # Step 10: Phase 1 — Analysis
@@ -323,7 +301,6 @@ update_job_field "phase" "implementation"
 info "Starting implementation phase for issue #${FOUND_ISSUE_NUMBER}..."
 run_implementation "$FOUND_ISSUE_NUMBER" "$BRANCH_NAME" "$ANALYSIS_OUTPUT"
 update_job_field "phase" "pr"
-update_job_field "session_id" "$IMPL_SESSION_ID"
 
 # ---------------------------------------------------------------------------
 # Step 12-13: Create/update PR, update labels, complete job

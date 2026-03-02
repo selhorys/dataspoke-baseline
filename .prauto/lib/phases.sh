@@ -1,7 +1,9 @@
 # Phase handlers for prauto heartbeat.
 # Source this file — do not execute directly.
 # Requires: helpers.sh, state.sh, quota.sh, issues.sh, claude.sh, git-ops.sh, pr.sh
-#           all sourced, config loaded, JOB_* globals set by load_job().
+#           all sourced, config loaded.
+# All handlers accept (issue_number, issue_title, branch) parameters —
+# they do NOT rely on JOB_* globals.
 
 # Shared helper: push, create/update PR, swap labels, complete job.
 # Usage: finalize_issue_pr <branch> <issue_number> <issue_title>
@@ -11,155 +13,175 @@ finalize_issue_pr() {
   create_or_update_pr "$issue_number" "$issue_title" "$branch"
   gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
+    --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" \
     --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
   complete_job
 }
 
-# Cross-check: advance local phase if GitHub shows later state.
-# Operates on JOB_* globals (mutates JOB_PHASE if stale).
-cross_check_phase() {
-  # If PR exists for this branch, phase should be "pr"
-  if [[ "$JOB_PHASE" != "pr" && "$JOB_PHASE" != "pr-review" ]]; then
-    local existing_pr
-    existing_pr=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$JOB_BRANCH" \
-      --json number --jq '.[0].number // empty' 2>/dev/null)
-    if [[ -n "$existing_pr" ]]; then
-      warn "Cross-check: PR #${existing_pr} exists but phase='${JOB_PHASE}'. Advancing to 'pr'."
-      JOB_PHASE="pr"; update_job_field "phase" "pr"; return
-    fi
-  fi
-  # If phase is "analysis" but plan comment exists, advance to plan-approval
-  if [[ "$JOB_PHASE" == "analysis" ]]; then
-    local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
-    local plan_exists
-    plan_exists=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-      --json comments \
-      --jq "[.comments[] | select(.body | startswith(\"${plan_prefix}\"))] | length" \
-      2>/dev/null) || plan_exists=0
-    if [[ "$plan_exists" -gt 0 ]]; then
-      warn "Cross-check: plan exists but phase='analysis'. Advancing to 'plan-approval'."
-      JOB_PHASE="plan-approval"; update_job_field "phase" "plan-approval"; return
+# Fetch the approved plan text from GitHub issue comments.
+# Returns the body of the latest plan comment posted by this worker.
+# Usage: fetch_approved_plan <issue_number>
+# Sets: APPROVED_PLAN_TEXT
+fetch_approved_plan() {
+  local issue_number="$1"
+  local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+
+  APPROVED_PLAN_TEXT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"${plan_prefix}\"))] | last | .body // \"\"" \
+    2>/dev/null) || APPROVED_PLAN_TEXT=""
+
+  # Strip the prauto header and metadata, keep the plan content
+  if [[ -n "$APPROVED_PLAN_TEXT" ]]; then
+    # Extract everything after "## Implementation Plan" header
+    local plan_body
+    plan_body=$(echo "$APPROVED_PLAN_TEXT" | sed -n '/^## Implementation Plan$/,$ p' | tail -n +2)
+    # Strip trailing footer (everything after the last ---)
+    plan_body=$(echo "$plan_body" | sed '/^---$/,$ d')
+    if [[ -n "$plan_body" ]]; then
+      APPROVED_PLAN_TEXT="$plan_body"
     fi
   fi
 }
 
-# Phase: analysis — re-run analysis, post plan, auto-proceed for minor changes.
+# Phase: analysis — run analysis, post plan, auto-proceed for minor changes.
+# Usage: handle_phase_analysis <issue_number> <issue_title> <branch>
 handle_phase_analysis() {
+  local issue_number="$1" issue_title="$2" branch="$3"
+
   # Re-run analysis from scratch (cheap)
-  if ! run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" ""; then
-    warn "Analysis failed for issue #${JOB_ISSUE_NUMBER}. Will retry next heartbeat."
+  if ! run_analysis "$issue_number" "$issue_title" ""; then
+    warn "Analysis failed for issue #${issue_number}. Will retry next heartbeat."
     exit 0
   fi
   # Fetch issue body for change-size detection
   local issue_body_raw
-  issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+  issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json body --jq '.body // ""' 2>/dev/null || echo "")
   local change_size
   change_size=$(extract_change_size "$issue_body_raw")
-  post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size"
+  post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size"
   if [[ "$change_size" != "minor" ]]; then
     update_job_field "phase" "plan-approval"
     info "Plan posted for ${change_size} change. Waiting for approval. Exiting."
     exit 0
   fi
   update_job_field "phase" "implementation"
-  update_job_field "session_id" ""
   # Fall through to implementation
-  run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "$ANALYSIS_OUTPUT"
+  run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
   update_job_field "phase" "pr"
-  update_job_field "session_id" "$IMPL_SESSION_ID"
   # Fall through to PR
-  finalize_issue_pr "$JOB_BRANCH" "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE"
+  finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }
 
 # Phase: plan-approval — check approval, handle counter-proposal or missing plan.
+# Usage: handle_phase_plan_approval <issue_number> <issue_title> <branch>
 handle_phase_plan_approval() {
+  local issue_number="$1" issue_title="$2" branch="$3"
+
   COUNTER_PROPOSAL=""
   local approval_status=0
-  check_plan_approval "$JOB_ISSUE_NUMBER" || approval_status=$?
+  check_plan_approval "$issue_number" || approval_status=$?
   if [[ "$approval_status" -eq 0 ]]; then
-    # Approved — proceed to implementation
+    # Approved — remove plan-review label, proceed to implementation
     info "Plan approved. Starting implementation..."
-    # Load the last analysis output
-    local analysis_file="${SESSIONS_DIR}/analysis-I-${JOB_ISSUE_NUMBER}.txt"
-    local saved_analysis=""
-    if [[ -f "$analysis_file" ]]; then
-      saved_analysis=$(cat "$analysis_file")
-    fi
+    gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+      --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || true
+    # Fetch the plan from GitHub (not local session file)
+    fetch_approved_plan "$issue_number"
     update_job_field "phase" "implementation"
-    update_job_field "session_id" ""
-    run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "$saved_analysis"
+    run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
     update_job_field "phase" "pr"
-    update_job_field "session_id" "$IMPL_SESSION_ID"
-    finalize_issue_pr "$JOB_BRANCH" "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE"
+    finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
     # Counter-proposal — re-run analysis with feedback
     info "Counter-proposal received. Re-running analysis..."
     local issue_body_raw
-    issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+    issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --json body --jq '.body // ""' 2>/dev/null || echo "")
-    if ! run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$issue_body_raw" "$COUNTER_PROPOSAL"; then
-      warn "Re-analysis failed for issue #${JOB_ISSUE_NUMBER}. Will retry next heartbeat."
+    if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw" "$COUNTER_PROPOSAL"; then
+      warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
       exit 0
     fi
     local change_size
     change_size=$(extract_change_size "$issue_body_raw")
     # Derive plan revision from GitHub comment count (SSOT)
-    get_plan_revision_from_github "$JOB_ISSUE_NUMBER"
-    post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size" "$GITHUB_PLAN_REVISION"
-    update_job_field "plan_revision" "$GITHUB_PLAN_REVISION"  # cache locally
+    get_plan_revision_from_github "$issue_number"
+    post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size" "$GITHUB_PLAN_REVISION"
     # Stay in plan-approval phase, exit
     info "Revised plan (rev ${GITHUB_PLAN_REVISION}) posted. Waiting for approval. Exiting."
     exit 0
   elif [[ "$approval_status" -eq 3 ]]; then
     # Plan comment missing — re-run analysis from GitHub state
-    info "Plan comment missing on issue #${JOB_ISSUE_NUMBER}. Re-running analysis..."
+    info "Plan comment missing on issue #${issue_number}. Re-running analysis..."
     local issue_body_raw
-    issue_body_raw=$(gh issue view "$JOB_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+    issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --json body --jq '.body // ""' 2>/dev/null || echo "")
-    if ! run_analysis "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$issue_body_raw"; then
-      warn "Re-analysis failed for issue #${JOB_ISSUE_NUMBER}. Will retry next heartbeat."
+    if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw"; then
+      warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
       exit 0
     fi
     local change_size
     change_size=$(extract_change_size "$issue_body_raw")
-    post_plan_comment "$JOB_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$change_size"
+    post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size"
     if [[ "$change_size" != "minor" ]]; then
       info "Plan re-posted for ${change_size} change. Waiting for approval. Exiting."
       exit 0
     fi
     # Minor → proceed to implementation (same as approval path)
     update_job_field "phase" "implementation"
-    update_job_field "session_id" ""
-    run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "$ANALYSIS_OUTPUT"
+    run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
     update_job_field "phase" "pr"
-    update_job_field "session_id" "$IMPL_SESSION_ID"
-    finalize_issue_pr "$JOB_BRANCH" "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE"
+    finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   else
     # No response yet — just wait (don't bump retries)
-    info "Still waiting for plan approval on issue #${JOB_ISSUE_NUMBER}."
+    info "Still waiting for plan approval on issue #${issue_number}."
     exit 0
   fi
 }
 
-# Phase: implementation — resume implementation, finalize PR.
+# Phase: implementation — start fresh implementation, finalize PR.
+# Usage: handle_phase_implementation <issue_number> <issue_title> <branch>
 handle_phase_implementation() {
-  run_implementation "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "" "$JOB_SESSION_ID"
+  local issue_number="$1" issue_title="$2" branch="$3"
+
+  # Fetch the plan from GitHub for context
+  fetch_approved_plan "$issue_number"
+  run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
   update_job_field "phase" "pr"
-  update_job_field "session_id" "$IMPL_SESSION_ID"
-  finalize_issue_pr "$JOB_BRANCH" "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE"
+  finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }
 
-# Phase: pr-review — resume review, push, post feedback marker.
+# Phase: pr-review — address reviewer feedback, push, post feedback marker.
+# Usage: handle_phase_pr_review <issue_number> <issue_title> <branch>
 handle_phase_pr_review() {
-  run_pr_review "$JOB_ISSUE_NUMBER" "$JOB_BRANCH" "" "$JOB_SESSION_ID"
-  update_job_field "phase" "pr"
-  update_job_field "session_id" "$REVIEW_SESSION_ID"
-  push_branch "$JOB_BRANCH"
-  create_or_update_pr "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE" "$JOB_BRANCH"
-  # Post feedback-addressed marker (derive PR number from branch)
+  local issue_number="$1" issue_title="$2" branch="$3"
+
+  # Fetch reviewer comments from PR
   local review_pr_number
-  review_pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$JOB_BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null)
+  review_pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$branch" \
+    --json number --jq '.[0].number // empty' 2>/dev/null)
+
+  local reviewer_comments=""
+  if [[ -n "$review_pr_number" ]]; then
+    local pr_review_comments pr_issue_comments
+    pr_review_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${review_pr_number}/comments" \
+      --jq '[.[] | {body: .body, user: .user.login}]' 2>/dev/null || echo "[]")
+    pr_issue_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${review_pr_number}/comments" \
+      --jq '[.[] | {body: .body, user: .user.login}]' 2>/dev/null || echo "[]")
+    reviewer_comments=$(jq -s 'add' <<< "${pr_review_comments}${pr_issue_comments}" 2>/dev/null | \
+      jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
+        [.[] | select(.body | startswith($worker) | not)]
+        | map("Comment by \(.user):\n\(.body)")
+        | join("\n\n---\n\n")
+      ')
+  fi
+
+  run_pr_review "$issue_number" "$branch" "$reviewer_comments"
+  update_job_field "phase" "pr"
+  push_branch "$branch"
+  create_or_update_pr "$issue_number" "$issue_title" "$branch"
+  # Post feedback-addressed marker
   if [[ -n "$review_pr_number" ]]; then
     post_feedback_addressed_comment "$review_pr_number"
   fi
@@ -167,6 +189,8 @@ handle_phase_pr_review() {
 }
 
 # Phase: pr — just push + create PR + labels.
+# Usage: handle_phase_pr <issue_number> <issue_title> <branch>
 handle_phase_pr() {
-  finalize_issue_pr "$JOB_BRANCH" "$JOB_ISSUE_NUMBER" "$JOB_ISSUE_TITLE"
+  local issue_number="$1" issue_title="$2" branch="$3"
+  finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }

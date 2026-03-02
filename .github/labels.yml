@@ -15,6 +15,10 @@
   color: "D93F0B"
   description: "PRAUTO abandoned after max retries"
 
+- name: "prauto:plan-review"
+  color: "D4A5FF"
+  description: "Plan posted, awaiting human approval"
+
 - name: "prauto:done"
   color: "006400"
   description: "PRAUTO PR is approved and ready to be merged"

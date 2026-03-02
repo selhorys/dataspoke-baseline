@@ -188,15 +188,23 @@ ${footer}"
     --body "$body" \
     2>/dev/null || warn "Failed to post plan comment on issue #${issue_number}."
 
+  # Add prauto:plan-review label for non-minor plans (makes approval-wait visible on boards)
+  if [[ "$change_size" != "minor" ]]; then
+    gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+      --add-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || \
+      warn "Failed to add ${PRAUTO_GITHUB_LABEL_PLAN_REVIEW} label to issue #${issue_number}."
+  fi
+
   info "Plan comment posted on issue #${issue_number} (change_size=${change_size})."
 }
 
-# Find an orphaned WIP issue assigned to this worker (no local job file).
+# Find a WIP issue assigned to this worker on GitHub.
 # Searches for open issues with prauto:wip but without prauto:review.
-# Usage: find_orphaned_wip_issue
-# Sets: ORPHAN_ISSUE_NUMBER, ORPHAN_ISSUE_TITLE, ORPHAN_BRANCH
+# This is the single entry point for WIP detection (replaces both has_active_job+load_job and orphan recovery).
+# Usage: find_wip_issue
+# Sets: WIP_ISSUE_NUMBER, WIP_ISSUE_TITLE, WIP_BRANCH
 # Returns 0 if found, 1 if none.
-find_orphaned_wip_issue() {
+find_wip_issue() {
   local issues_json
   issues_json=$(gh issue list -R "$PRAUTO_GITHUB_REPO" \
     --label "$PRAUTO_GITHUB_LABEL_WIP" \
@@ -211,14 +219,40 @@ find_orphaned_wip_issue() {
     '[.[] | select((.labels | map(.name) | index($review)) == null)]
      | sort_by(.number) | .[0] // empty')
   [[ -z "$filtered" ]] && return 1
-  ORPHAN_ISSUE_NUMBER=$(echo "$filtered" | jq -r '.number')
-  ORPHAN_ISSUE_TITLE=$(echo "$filtered" | jq -r '.title')
-  ORPHAN_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${ORPHAN_ISSUE_NUMBER}"
-  info "Found orphaned WIP issue: #${ORPHAN_ISSUE_NUMBER} — ${ORPHAN_ISSUE_TITLE}"
+  WIP_ISSUE_NUMBER=$(echo "$filtered" | jq -r '.number')
+  WIP_ISSUE_TITLE=$(echo "$filtered" | jq -r '.title')
+  WIP_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${WIP_ISSUE_NUMBER}"
+  info "Found WIP issue on GitHub: #${WIP_ISSUE_NUMBER} — ${WIP_ISSUE_TITLE}"
   return 0
 }
 
-# Derive the current phase from GitHub signals (PR existence, plan comments, approval).
+# Count heartbeat comments posted by this worker on an issue.
+# Used for retry tracking (replaces local retries counter).
+# Usage: count_heartbeat_comments <issue_number>
+# Sets: HEARTBEAT_COMMENT_COUNT
+count_heartbeat_comments() {
+  local issue_number="$1"
+  local marker="prauto(${PRAUTO_WORKER_ID}): Heartbeat"
+  HEARTBEAT_COMMENT_COUNT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments \
+    --jq "[.comments[] | select(.body | startswith(\"${marker}\"))] | length" \
+    2>/dev/null) || HEARTBEAT_COMMENT_COUNT=0
+}
+
+# Post a heartbeat marker comment on an issue.
+# Usage: post_heartbeat_comment <issue_number> <phase> <attempt> <max>
+post_heartbeat_comment() {
+  local issue_number="$1"
+  local phase="$2"
+  local attempt="$3"
+  local max="$4"
+
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — ${phase} (attempt ${attempt}/${max})" \
+    2>/dev/null || warn "Failed to post heartbeat comment on issue #${issue_number}."
+}
+
+# Derive the current phase from GitHub signals (PR existence, labels, plan comments, approval).
 # Usage: derive_phase_from_github <issue_number> <branch>
 # Sets: DERIVED_PHASE
 derive_phase_from_github() {
@@ -230,7 +264,17 @@ derive_phase_from_github() {
   if [[ -n "$pr_number" ]]; then
     DERIVED_PHASE="pr"; return 0
   fi
-  # Check if plan comment exists
+  # Fast path: prauto:plan-review label means plan is posted, awaiting approval
+  local issue_labels
+  issue_labels=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json labels --jq '[.labels[].name]' 2>/dev/null) || issue_labels="[]"
+  local has_plan_review
+  has_plan_review=$(echo "$issue_labels" | jq -r --arg label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" \
+    'index($label) != null')
+  if [[ "$has_plan_review" == "true" ]]; then
+    DERIVED_PHASE="plan-approval"; return 0
+  fi
+  # Check if plan comment exists (no plan-review label = either approved or minor)
   local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
   local plan_exists
   plan_exists=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -248,22 +292,6 @@ derive_phase_from_github() {
     return 0
   fi
   DERIVED_PHASE="analysis"; return 0
-}
-
-# Estimate retry count from GitHub comment activity.
-# Counts prauto worker comments minus a baseline of 2 (Claimed + Plan).
-# Usage: estimate_retries_from_github <issue_number>
-# Sets: GITHUB_ESTIMATED_RETRIES
-estimate_retries_from_github() {
-  local issue_number="$1"
-  local prefix="prauto(${PRAUTO_WORKER_ID}):"
-  local comment_count
-  comment_count=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | length" \
-    2>/dev/null) || comment_count=0
-  local baseline=2
-  GITHUB_ESTIMATED_RETRIES=$(( comment_count > baseline ? comment_count - baseline : 0 ))
 }
 
 # Count existing plan comments by this worker, derive next revision number.

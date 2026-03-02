@@ -1,5 +1,15 @@
 Implement changes for GitHub issue #{number} on branch `{branch}`.
 
+## Check for existing work
+
+Before starting, check if prior work exists on this branch:
+
+```bash
+git log --oneline origin/{base_branch}..HEAD
+```
+
+If commits exist, continue from where they left off — do NOT redo completed work. Read the existing commits and code to understand what has been done, then pick up the remaining tasks from the plan.
+
 ## Instructions
 
 1. Follow the implementation plan from the analysis phase (provided below).

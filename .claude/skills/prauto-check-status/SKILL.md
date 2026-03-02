@@ -9,16 +9,14 @@ allowed-tools: Bash(gh *), Bash(jq *), Bash(cat *), Bash(date *), Bash(export *)
 
 1. **Load prauto config**: Read `.prauto/config.env` (shared) and `.prauto/config.local.env` (instance-specific) to get:
    - `PRAUTO_GITHUB_REPO` — e.g. `selhorys/dataspoke-baseline`
-   - `PRAUTO_GITHUB_LABEL_READY`, `PRAUTO_GITHUB_LABEL_WIP`, `PRAUTO_GITHUB_LABEL_REVIEW`, `PRAUTO_GITHUB_LABEL_FAILED`, `PRAUTO_GITHUB_LABEL_DONE`
+   - `PRAUTO_GITHUB_LABEL_READY`, `PRAUTO_GITHUB_LABEL_WIP`, `PRAUTO_GITHUB_LABEL_REVIEW`, `PRAUTO_GITHUB_LABEL_FAILED`, `PRAUTO_GITHUB_LABEL_DONE`, `PRAUTO_GITHUB_LABEL_PLAN_REVIEW`
    - `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`
-   - `PRAUTO_WORKER_ID`, `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY`
+   - `PRAUTO_WORKER_ID`, `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY`, `PRAUTO_MAX_RETRIES_PER_JOB`
    - `GH_TOKEN` (export if non-empty, so `gh` authenticates correctly)
 
 2. **Resolve GitHub actor**: Run `gh api user --jq '.login'` to get the authenticated user login.
 
-3. **Read current job state**: If `.prauto/state/current-job.json` exists, read it to understand any in-progress job (issue number, phase, retries, branch, last heartbeat).
-
-4. **Fetch org members** (if `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` is `"true"`):
+3. **Fetch org members** (if `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` is `"true"`):
    ```bash
    ORG=$(echo "$PRAUTO_GITHUB_REPO" | cut -d/ -f1)
    gh api "orgs/${ORG}/members" --paginate --jq '[.[].login]'
@@ -41,7 +39,7 @@ For each issue:
 - Show `#number — title` (author, created date)
 - If org-member filter is enabled, indicate whether the author is an org member (eligible) or not (will be skipped)
 
-### 1b. Issues with `prauto:wip` (Work in progress — awaiting plan approval)
+### 1b. Issues with `prauto:wip` (Work in progress)
 
 ```bash
 gh issue list -R "$REPO" --label "$LABEL_WIP" --state open \
@@ -50,12 +48,14 @@ gh issue list -R "$REPO" --label "$LABEL_WIP" --state open \
 
 For each issue:
 - Show `#number — title` (assigned to whom)
-- **Check plan approval status**: Fetch issue comments and look for the plan comment pattern (`prauto(<worker>): Plan`). Then check if any non-prauto comment after the plan says `go ahead` (approved) or contains a counter-proposal.
+- **Check `prauto:plan-review` label**: If present, the plan is posted and awaiting human approval (fast check, no need to scan comments).
+- If no `prauto:plan-review` label, **check plan approval status**: Fetch issue comments and look for the plan comment pattern (`prauto(<worker>): Plan`). Then check if any non-prauto comment after the plan says `go ahead` (approved) or contains a counter-proposal.
   ```bash
   gh issue view <number> -R "$REPO" --json comments \
     --jq '.comments | [.[] | {body: .body, author: .author.login, createdAt: .createdAt}]'
   ```
 - Report: "Plan posted, awaiting approval" / "Plan approved — ready for implementation" / "Counter-proposal received"
+- **Count heartbeat comments for retry estimate**: Count comments matching `prauto(<worker>): Heartbeat` to determine attempt count (replaces local retries counter).
 - **Check quota-paused status**: From the same comments, find the latest `prauto(<worker>):` comment. If its body contains `<!-- prauto:quota-paused -->`, report: "Quota-paused — waiting for Claude token quota to become available"
 
 ### 1c. PRs with `prauto:review` (Awaiting review + merge conditions)
@@ -108,20 +108,15 @@ Based on the data collected above, simulate the heartbeat decision tree from `he
 
 ### Decision tree
 
-1. **Active job exists** (`.prauto/state/current-job.json` present)?
-   - Yes → "Heartbeat will **resume** job for issue #N (phase: X, retry: Y/max)."
-     - If phase is `plan-approval`: "Will check if plan approval has been given."
-     - If phase is `analysis`: "Will re-run analysis from scratch."
-     - If phase is `implementation`: "Will resume implementation (session: S)."
-     - If phase is `pr-review`: "Will address reviewer feedback and push fixes."
-     - If phase is `pr`: "Will push branch and create/update PR."
+1. **WIP issue on GitHub** (`prauto:wip` + assigned to this worker)?
+   - Yes → derive phase from GitHub (PR exists → `pr`, `prauto:plan-review` label → `plan-approval`, plan approved → `implementation`, nothing → `analysis`), count heartbeat comments for retry estimate.
+     - If phase is `plan-approval`: "Will check if plan approval has been given. No heartbeat comment posted (retries not counted for waiting)."
+     - If phase is `analysis`: "Will re-run analysis from scratch (attempt N/max)."
+     - If phase is `implementation`: "Will start fresh implementation session — Claude checks branch for existing work (attempt N/max)."
+     - If phase is `pr-review`: "Will address reviewer feedback with fresh session (attempt N/max)."
+     - If phase is `pr`: "Will push branch and create/update PR (attempt N/max)."
+     - If heartbeat comment count >= max retries: "Will **abandon** issue — max retries exceeded."
      - If the issue has a `<!-- prauto:quota-paused -->` marker in its latest prauto comment: "Note: heartbeat will first check quota — if still exhausted, it will re-pause without doing work."
-   - No → continue to step 1.5.
-
-1.5. **No local job, but orphaned WIP issue** (`prauto:wip` + assigned to this worker, no `current-job.json`)?
-   - Yes → "Heartbeat will **recover** orphaned issue #N. It will derive phase from GitHub
-     (PR exists → `pr`, plan approved → `implementation`, plan posted → `plan-approval`,
-     nothing → `analysis`), rebuild the job file, and exit. The **next** heartbeat will resume work."
    - No → continue to step 2.
 
 2. **Approved + mergeable PR exists** (from 1c above — org-member approved, MERGEABLE, CLEAN)?
@@ -129,7 +124,7 @@ Based on the data collected above, simulate the heartbeat decision tree from `he
    - No → continue to step 3.
 
 3. **PR with unaddressed reviewer comments** (from 1c — CHANGES_REQUESTED or COMMENTED reviews with unaddressed comments)?
-   - Yes → "Heartbeat will **address reviewer feedback** on PR #N. Will create a job, run Claude in PR-review mode, push fixes."
+   - Yes → "Heartbeat will **address reviewer feedback** on PR #N. Will create a monitoring state, run Claude in PR-review mode, push fixes."
    - No → continue to step 4.
 
 4. **Eligible issue with `prauto:ready`** (from 1a — org member authored, no wip/review label)?
@@ -160,6 +155,7 @@ Present results as a structured report:
 ### prauto:wip — Work in Progress
 <table or "None">
 <approval status details>
+<heartbeat comment count for retry estimate>
 
 ### prauto:review — PRs Awaiting Review
 <table or "None">

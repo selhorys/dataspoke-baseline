@@ -1,6 +1,6 @@
 # PRauto: Autonomous PR Worker
 
-> **Document Status**: Specification v0.3 (2026-03-02)
+> **Document Status**: Specification v0.4 (2026-03-02)
 > This document specifies "prauto" — an autonomous PR worker that monitors GitHub issues, writes code via Claude Code CLI, and submits pull requests. Prauto extends the AI scaffold (`spec/AI_SCAFFOLD.md`) with unattended, cron-driven development automation.
 
 ---
@@ -18,9 +18,10 @@
 9. [PR Lifecycle](#pr-lifecycle)
 10. [Prompt Templates](#prompt-templates)
 11. [Write Idempotency](#write-idempotency)
-12. [Security Model](#security-model)
-13. [Integration with AI Scaffold](#integration-with-ai-scaffold)
-14. [Future: GitHub Actions Migration](#future-github-actions-migration)
+12. [Monitoring](#monitoring)
+13. [Security Model](#security-model)
+14. [Integration with AI Scaffold](#integration-with-ai-scaffold)
+15. [Future: GitHub Actions Migration](#future-github-actions-migration)
 
 ---
 
@@ -31,7 +32,7 @@
 Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipeline. Each heartbeat performs **at most one job** — it:
 
 1. Checks whether Claude Code API tokens are available
-2. Resumes any interrupted job from a prior heartbeat (if found, exits after completion)
+2. Finds a WIP issue on GitHub (if any) and derives the correct phase from GitHub state
 3. Squash-finalizes approved PRs (if found, exits after completion)
 4. Checks open PRs for reviewer comments that need action (skips PRs with a "feedback addressed" marker; if found, exits after addressing and posting marker)
 5. Finds an eligible GitHub issue via label-based discovery
@@ -42,7 +43,7 @@ Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipe
 
 Anthropic's [`claude-code-action`](https://github.com/anthropics/claude-code-action) is a GitHub Action that embeds Claude Code into CI/CD workflows. It runs exclusively on GitHub Actions runners — it has no local execution mode.
 
-Prauto uses the **Claude Code CLI** (`claude -p`), which is the same underlying engine. The CLI supports all features needed for autonomous operation: non-interactive print mode (`-p`), session resumption (`--resume`), structured output (`--output-format json`), tool restrictions (`--allowedTools`, `--disallowedTools`), budget caps (`--max-budget-usd`), and turn limits (`--max-turns`).
+Prauto uses the **Claude Code CLI** (`claude -p`), which is the same underlying engine. The CLI supports all features needed for autonomous operation: non-interactive print mode (`-p`), structured output (`--output-format json`), tool restrictions (`--allowedTools`, `--disallowedTools`), budget caps (`--max-budget-usd`), and turn limits (`--max-turns`).
 
 The prompt templates and tool restrictions designed here are portable to `claude-code-action` via its `claude_args` input (see [Future: GitHub Actions Migration](#future-github-actions-migration)).
 
@@ -60,20 +61,17 @@ Docker, Kubernetes, and cloud runner deployments are out of scope for v1 and wil
 
 ### GitHub as single source of truth
 
-The heartbeat derives its next action from **remote GitHub state** — labels, assignees, issue/PR comments, and review status. Local state files (`current-job.json`, session files) are optimization hints for session resumption, not the authority for what action to take.
+Every heartbeat derives its next action from **remote GitHub state** — labels, assignees, issue/PR comments, and review status. Local state files (`current-job.json`, session files) exist for **monitoring only** and are never read to determine routing.
 
-**Principle**: If `current-job.json` is deleted or becomes stale, the heartbeat must still be able to determine the correct action by inspecting GitHub alone. The only local file the heartbeat depends on is `heartbeat.lock` (collision prevention).
+**Principle**: Why resume when context can be retrieved from GitHub, and context not staged to GitHub will be ignored?
 
 **Implications**:
-- The `plan-approval` phase checks GitHub comments for plan presence, not local phase state. If the plan comment is missing (deleted or never posted), the heartbeat re-runs analysis instead of waiting forever.
-- Issue labels (`prauto:wip`, `prauto:ready`, `prauto:review`) are the canonical lifecycle markers — `current-job.json` phase is a local cache.
-- `session_id` in `current-job.json` is the one field that cannot be derived from GitHub — it enables efficient Claude session resumption. Without it, the heartbeat starts a fresh session (correct but slower).
-
-**Recovery mechanisms** (enforcing the principle):
-- **Orphan recovery** (step 5.1): If no `current-job.json` exists but GitHub shows a `prauto:wip` issue assigned to this worker, the heartbeat rebuilds the job file by deriving the phase from GitHub signals (PR existence → `pr`, plan comment + approval → `implementation`, plan comment → `plan-approval`, nothing → `analysis`).
-- **Phase cross-check** (step 5): Before routing to a phase handler, the heartbeat verifies the local phase against GitHub state and advances it forward if the local value is stale (e.g., phase says `analysis` but a plan comment already exists → advance to `plan-approval`).
-- **Issue state validation** (step 5): The heartbeat verifies the issue is open, has `prauto:wip`, and is assigned to this worker before resuming. If any condition fails, the stale job is completed.
-- **Plan revision from GitHub**: Counter-proposal handling derives the revision number from the count of existing plan comments on GitHub, not from a local counter.
+- There is no `--resume` flag. Every Claude session starts fresh. The implementation prompt instructs Claude to check the branch for existing work (`git log --oneline origin/{base_branch}..HEAD`) and continue from where it left off.
+- `current-job.json` is a **write-only monitoring artifact**. It is written by the heartbeat for external tools to observe progress, but never read for routing decisions.
+- The "orphaned WIP issue" concept is eliminated — every heartbeat checks GitHub for WIP issues as its primary routing mechanism, not as a fallback.
+- Retry tracking is done via **heartbeat marker comments** on the GitHub issue, not a local counter.
+- There is no phase cross-check between local and remote state. Phase is always derived fresh from GitHub.
+- `prauto:plan-review` label provides a fast signal for plan-approval state (visible on issue boards, filterable).
 
 ---
 
@@ -87,19 +85,19 @@ The heartbeat derives its next action from **remote GitHub state** — labels, a
 ├── lib/
 │   ├── helpers.sh              # [COMMITTED] Shared bash helpers (info, warn, error)
 │   ├── quota.sh                # [COMMITTED] Token quota check
-│   ├── issues.sh               # [COMMITTED] GitHub issue scanning and claiming
+│   ├── issues.sh               # [COMMITTED] GitHub issue scanning, claiming, WIP detection
 │   ├── claude.sh               # [COMMITTED] Claude Code CLI invocation wrapper
 │   ├── git-ops.sh              # [COMMITTED] Branch creation, worktree, push operations
 │   ├── pr.sh                   # [COMMITTED] PR creation, feedback handling, squash-finalize
 │   ├── phases.sh               # [COMMITTED] Phase-specific handlers (analysis → pr)
-│   └── state.sh                # [COMMITTED] Job state management (lock, resume, complete)
+│   └── state.sh                # [COMMITTED] Monitoring state, lock, complete
 ├── prompts/
 │   ├── system-append.md        # [COMMITTED] System prompt addendum for prauto identity
 │   ├── issue-analysis.md       # [COMMITTED] Prompt template: analyze issue, produce plan
 │   ├── implementation.md       # [COMMITTED] Prompt template: implement the plan
 │   └── squash-commit.md        # [COMMITTED] Prompt template: generate squash commit message
 ├── state/                      # [GITIGNORED] Runtime state
-│   ├── current-job.json        # Active job metadata
+│   ├── current-job.json        # Monitoring-only artifact (NOT used for routing)
 │   ├── heartbeat.lock          # PID-based lock file
 │   ├── heartbeat.log           # Cron output log
 │   ├── .system-append-rendered.md  # Rendered system prompt (substituted at runtime)
@@ -135,6 +133,7 @@ PRAUTO_GITHUB_LABEL_WIP="prauto:wip"
 PRAUTO_GITHUB_LABEL_REVIEW="prauto:review"
 PRAUTO_GITHUB_LABEL_FAILED="prauto:failed"
 PRAUTO_GITHUB_LABEL_DONE="prauto:done"
+PRAUTO_GITHUB_LABEL_PLAN_REVIEW="prauto:plan-review"
 PRAUTO_BASE_BRANCH="dev"
 PRAUTO_BRANCH_PREFIX="prauto/"
 
@@ -211,31 +210,24 @@ crontab trigger
     ├── 3. Secure secrets ─────────── (move config.local.env out of repo tree)
     │
     ├── 4. Check token quota ─────── (lib/quota.sh)
-    │       └── if exhausted → if active job → post quota-paused comment → exit
+    │       └── if exhausted → if WIP issue on GitHub → post quota-paused comment → exit
     │
-    ├── 5. Resume interrupted job
-    │       ├── load job state ─────── (lib/state.sh: has_active_job, load_job)
-    │       ├── validate GitHub state ── (issue open + prauto:wip + assigned to worker)
-    │       │   └── if stale → complete job → exit
-    │       ├── check retries ──────── (lib/state.sh: bump_heartbeat; skip for plan-approval)
-    │       ├── quota-pause recovery ── (lib/issues.sh: has_quota_paused_comment → post resumed)
-    │       │   └── detects pause via GitHub issue comment marker, NOT local state
+    ├── 5. Find WIP issue on GitHub ── (lib/issues.sh: find_wip_issue)
+    │       ├── query GitHub for prauto:wip issues assigned to this worker
+    │       ├── derive phase from GitHub ── (PR exists? plan-review label? plan approved? nothing?)
+    │       ├── if plan-approval → check approval, skip retry tracking → exit
+    │       ├── count heartbeat comments → retry check
+    │       │   └── if count >= max retries → abandon → exit
+    │       ├── post heartbeat comment ── (retry marker on GitHub)
+    │       ├── write monitoring state ── (current-job.json, monitoring only)
     │       ├── create worktree ─────── (lib/git-ops.sh)
-    │       ├── cross-check phase ───── (advance local phase if GitHub shows later state)
-    │       └── resume from saved phase → exit
+    │       └── route to phase handler → exit
     │
-    ├── 5.1 Recover orphaned WIP issues ── (GitHub SSOT recovery)
-    │       ├── if no local job → scan for prauto:wip issues assigned to this worker
-    │       ├── derive phase from GitHub (PR exists? plan comment? approval?)
-    │       ├── estimate retries from GitHub comment count
-    │       ├── rebuild current-job.json → exit (next heartbeat resumes normally)
-    │       └── if none found → continue
-    │
-    ├── 5.5 Squash-finalize approved PRs ─ (lib/git-ops.sh)
+    ├── 5.5 Squash-finalize approved PRs ─ (lib/pr.sh)
     │       ├── if approved + CLEAN PR found → rebase, squash, force-push → exit
     │       └── if none → continue
     │
-    ├── 6. Check open PRs ────────── (lib/git-ops.sh)
+    ├── 6. Check open PRs ────────── (lib/pr.sh)
     │       ├── PRs with "feedback addressed" marker → skipped
     │       ├── if PR has reviewer comments → checkout worktree, run pr-review, push, post marker, complete → exit
     │       └── if no actionable comments → continue
@@ -249,15 +241,16 @@ crontab trigger
     │
     ├── 10. Phase 1: Analysis ────── (lib/claude.sh, read-only, runs inside worktree)
     │
-    ├── 10.5 Plan approval gate ──── (non-minor: post plan, wait for approval; minor: proceed)
-    │       ├── if non-minor → post plan comment, set phase=plan-approval → exit
-    │       ├── (next heartbeat) approved → continue to implementation
+    ├── 10.5 Plan approval gate ──── (non-minor: post plan + plan-review label, wait; minor: proceed)
+    │       ├── if non-minor → post plan comment, add prauto:plan-review label → exit
+    │       ├── (next heartbeat) approved → remove plan-review label → continue to implementation
     │       ├── (next heartbeat) counter-proposal → re-run analysis with feedback → exit
-    │       └── (next heartbeat) no response → wait → exit
+    │       ├── (next heartbeat) no response → wait → exit
+    │       └── (next heartbeat) plan missing → re-run analysis → exit
     │
     ├── 11. Phase 2: Implementation  (lib/claude.sh, read+write, runs inside worktree)
     │
-    ├── 12. Create/update PR ──────── (lib/git-ops.sh)
+    ├── 12. Create/update PR ──────── (lib/pr.sh)
     │
     ├── 13. Complete job ──────────── (lib/state.sh)
     │
@@ -317,35 +310,14 @@ This costs negligible tokens. If the call fails with a rate-limit or quota error
 
 When quota is exhausted:
 
-- If no active job: release lock and exit cleanly. Next heartbeat retries.
-- If active job exists: post a "Paused" comment on the issue (with `<!-- prauto:quota-paused -->` marker), release lock, and exit. The retry counter is **not** incremented — quota exhaustion is not a job failure.
+- If no WIP issue on GitHub: release lock and exit cleanly. Next heartbeat retries.
+- If WIP issue exists: post a "Paused" comment on the issue (with `<!-- prauto:quota-paused -->` marker), release lock, and exit. The retry counter is **not** incremented — quota exhaustion is not a job failure.
 - On next heartbeat (quota restored): if the latest prauto comment on the issue has the quota-paused marker, post a "Resumed" comment before continuing work. This makes the pause/resume cycle visible on the issue timeline.
 - Idempotency: the pause check inspects only the **latest** prauto comment (not all comments), so Paused→Resumed→Paused cycles produce distinct comments.
 
 ---
 
 ## Job State Machine
-
-### State file: `state/current-job.json`
-
-```json
-{
-  "issue_number": 42,
-  "issue_title": "Implement health check endpoint",
-  "branch": "prauto/I-42",
-  "source": "issue",
-  "phase": "implementation",
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "started_at": "2026-02-28T10:00:00Z",
-  "retries": 0,
-  "last_heartbeat": "2026-02-28T10:15:00Z",
-  "replied_comment_ids": []
-}
-```
-
-The `replied_comment_ids` array tracks which PR review comments have been replied to, preventing duplicate replies on resume (see [Reply Tracking](#reply-tracking)).
-
-> **Note**: `current-job.json` is a local optimization cache. If deleted, the heartbeat recovers the job from GitHub state (step 5.1). The `session_id` field is the only value that cannot be recovered — without it, Claude starts a fresh session instead of resuming.
 
 ### Phases
 
@@ -366,37 +338,37 @@ PR review:
   (no job) ──→ pr-review ──→ pr ──→ (complete)
 ```
 
-Any phase can be interrupted; the next heartbeat resumes from the saved phase.
+Phase is always derived fresh from GitHub on each heartbeat — never read from local state.
 
-| Phase | Description | On interruption |
-|-------|-------------|-----------------|
+| Phase | Description | On next heartbeat |
+|-------|-------------|-------------------|
 | `analysis` | Claude reads issue + codebase, produces a plan | Restart analysis from scratch |
-| `plan-approval` | Wait for human approval of the posted plan | Check again next heartbeat (retries not counted). If plan comment is missing, fall back to re-analysis. |
-| `implementation` | Claude writes code, runs tests, commits | Resume via `claude --resume <session_id>` |
-| `pr-review` | Claude addresses reviewer feedback on existing PR, commits | Resume via `claude --resume <session_id>` |
+| `plan-approval` | Wait for human approval of the posted plan | Check again (retries not counted). If plan comment is missing, fall back to re-analysis. |
+| `implementation` | Claude writes code, runs tests, commits | Start fresh session — Claude checks branch for existing work |
+| `pr-review` | Claude addresses reviewer feedback on existing PR, commits | Start fresh session with full reviewer comments |
 | `pr` | Push branch, create/update PR, comment | Retry PR creation |
 
-### Resume logic
+### Phase derivation from GitHub
 
-When a heartbeat finds `current-job.json`:
+On every heartbeat, `derive_phase_from_github()` determines the current phase by inspecting GitHub state:
 
-1. Read `source`, `phase`, `session_id`, `retries`
-2. **Validate GitHub state**: verify issue is open, has `prauto:wip` label, and is assigned to this worker. If any check fails, complete the stale job and exit.
-3. If `retries >= PRAUTO_MAX_RETRIES_PER_JOB`: abandon job, comment on issue, apply `prauto:failed` label
-4. Increment `retries`, update `last_heartbeat`
-5. **Cross-check phase**: compare local phase against GitHub signals (PR existence, plan comments). If local phase is behind, advance it forward. Never regress.
-6. Resume from the (possibly corrected) phase:
-   - `analysis`: re-run analysis from scratch (analysis is cheap)
-   - `plan-approval`: check for approval comment; retries not incremented for this phase. If plan comment missing → re-run analysis.
-   - `implementation`: if `session_id` exists, use `claude --resume <session_id>`; otherwise start fresh
-   - `pr-review`: if `session_id` exists, use `claude --resume <session_id>`; otherwise start fresh
-   - `pr`: retry PR creation/push
+1. PR exists for this branch → `pr`
+2. `prauto:plan-review` label present on issue → `plan-approval` (fast path)
+3. Plan comment exists + "go ahead" reply → `implementation`
+4. Plan comment exists + no approval → `plan-approval`
+5. No plan comment → `analysis`
 
-When NO `current-job.json` exists but GitHub shows a `prauto:wip` issue assigned to this worker (orphan recovery):
+### Retry tracking via heartbeat comments
 
-1. Derive phase from GitHub: PR exists → `pr`; plan approved → `implementation`; plan exists → `plan-approval`; nothing → `analysis`
-2. Estimate retries from prauto comment count on issue
-3. Rebuild `current-job.json` and exit; next heartbeat resumes normally
+Instead of a local `retries` counter, each heartbeat posts a marker comment on the GitHub issue:
+
+```
+prauto({worker_id}): Heartbeat — {phase} (attempt N/max)
+```
+
+The function `count_heartbeat_comments()` counts these markers. When the count reaches `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned.
+
+**Exception**: The `plan-approval` phase does **not** post heartbeat comments or count retries — waiting for human approval is not a failure.
 
 ### Job completion
 
@@ -406,25 +378,22 @@ A job is considered successfully completed in two scenarios:
 
 1. Push branch and create PR (with `prauto:review` label and assignee on PR)
 2. Move `current-job.json` to `state/history/YYYYMMDD_I-{number}.json`
-3. Update issue labels: remove `prauto:wip`, add `prauto:review`
+3. Update issue labels: remove `prauto:wip` (and `prauto:plan-review` if present), add `prauto:review`
 
 **PR comment response → follow-up commits:**
 
 1. Address reviewer feedback with additional commits on the PR branch
 2. Push new commits
-3. Record replied comment IDs in `current-job.json` (see [Reply Tracking](#reply-tracking))
-4. Reply to each addressed reviewer comment (with idempotency check — see [Comment Idempotency](#comment-idempotency))
-5. Move `current-job.json` to `state/history/YYYYMMDD_I-{number}.json`
+3. Post a "feedback addressed" marker comment on the PR
+4. Move `current-job.json` to `state/history/YYYYMMDD_I-{number}.json`
 
 ### Job abandonment
 
-After max retries:
+After max retries (heartbeat comment count >= `PRAUTO_MAX_RETRIES_PER_JOB`):
 
-1. Move `current-job.json` to `state/history/` **first** (state transition is the critical step)
-2. Update issue labels: remove `prauto:wip`, add `prauto:failed`
-3. Post comment (with idempotency check — see [Comment Idempotency](#comment-idempotency)): "prauto({worker_id}): Abandoning after {n} retries. Manual intervention needed."
-
-Moving the state file before posting the comment ensures that if the comment call fails, the job is still properly completed and the next heartbeat will not re-abandon.
+1. Move `current-job.json` to `state/history/` (if present)
+2. Update issue labels: remove `prauto:wip` and `prauto:plan-review`, add `prauto:failed`
+3. Post comment (with idempotency check): "prauto({worker_id}): Abandoning after {n} retries. Manual intervention needed."
 
 ---
 
@@ -441,14 +410,29 @@ Prauto uses GitHub labels to track issue lifecycle. No GitHub bot account is req
     │
     ├── prauto claims → removes prauto:ready, adds prauto:wip, sets assignee
     │       │
-    │       ├── success → removes prauto:wip, adds prauto:review (on issue + PR)
+    │       ├── if non-minor: adds prauto:plan-review (plan posted, awaiting approval)
+    │       │       │
+    │       │       └── on approval: removes prauto:plan-review (implementation starts)
+    │       │
+    │       ├── success → removes prauto:wip (+ prauto:plan-review if present), adds prauto:review (on issue + PR)
     │       │       │
     │       │       └── approved + squash-finalized → removes prauto:review, adds prauto:done (on issue + PR)
     │       │
-    │       └── failure → removes prauto:wip, adds prauto:failed
+    │       └── failure → removes prauto:wip (+ prauto:plan-review if present), adds prauto:failed
     │
     └── (no prauto pickup yet → stays prauto:ready)
 ```
+
+### GitHub labels
+
+| Label | Color | Description |
+|-------|-------|-------------|
+| `prauto:ready` | Green `#85E89D` | Ready for PRAUTO to pick up |
+| `prauto:wip` | Yellow `#FBCA04` | PRAUTO is working on this issue |
+| `prauto:plan-review` | Purple `#D4A5FF` | Plan posted, awaiting human approval |
+| `prauto:review` | Blue `#1D76DB` | PRAUTO PR is in review |
+| `prauto:failed` | Red `#D93F0B` | PRAUTO abandoned after max retries |
+| `prauto:done` | Dark green `#006400` | PRAUTO PR is approved and ready to be merged |
 
 ### Search priority
 
@@ -480,7 +464,7 @@ This prevents external actors from injecting work into the prauto pipeline by op
 3. Remove label `prauto:ready`, set issue assignee to `PRAUTO_GITHUB_ACTOR`
 4. Post comment (with idempotency check — see [Comment Idempotency](#comment-idempotency)): `prauto({worker_id}): Claimed this issue. Starting work.`
 
-When resuming a `prauto:wip` issue, the worker verifies the issue assignee matches `PRAUTO_GITHUB_ACTOR` before proceeding. This ensures only the owning worker resumes its own jobs.
+When finding a WIP issue via `find_wip_issue()`, the function filters for issues assigned to `PRAUTO_GITHUB_ACTOR` — ensuring only the owning worker resumes its own jobs.
 
 The add-then-verify pattern detects concurrent claims: if two workers both add `prauto:wip` to an issue that already had it, the second worker sees the label was present before its own addition and backs off. The worker that observes a clean add (label was not previously present) wins.
 
@@ -516,9 +500,6 @@ Prauto splits each job into multiple Claude Code sessions with different tool pe
 The analysis and implementation phases use the same invocation structure with phase-specific variables:
 
 ```bash
-# Analysis phase: PHASE_MAX_TURNS=$PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS, PHASE_BUDGET=$PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS
-# Implementation phase: PHASE_MAX_TURNS=$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION, PHASE_BUDGET=$PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION
-
 claude -p "<prompt>" \
   --append-system-prompt-file ".prauto/state/.system-append-rendered.md" \
   --model "$PRAUTO_CLAUDE_MODEL" \
@@ -529,6 +510,8 @@ claude -p "<prompt>" \
   --disallowedTools <denylist> \
   --dangerously-skip-permissions
 ```
+
+Every invocation starts a fresh session. There is no `--resume` flag.
 
 ### Tool whitelists by phase
 
@@ -584,26 +567,26 @@ Each Claude phase saves its output to `state/sessions/`:
 | Implementation | `impl-I-{N}.json` | JSON (full Claude output) |
 | PR review | `review-I-{N}.json` | JSON (full Claude output) |
 
-The session ID (`session_id` field from JSON output) is extracted and stored in `current-job.json` for resume support.
+Session files are saved for **debugging purposes only**. They are not used for routing or resumption.
 
-### Session resumption
+### Branch-based continuity (replaces session resumption)
 
-When a job is interrupted mid-implementation:
+When an implementation is interrupted and restarted on the next heartbeat:
 
-1. The Claude session output (JSON) is saved to `state/sessions/impl-I-{number}.json`
-2. The session ID is extracted and stored in `current-job.json`
-3. On resume, Claude is invoked with `--resume <session_id>` plus a continuation prompt
+1. The heartbeat creates a worktree for the existing branch (which has prior commits)
+2. Claude is invoked with a fresh session using the full implementation prompt
+3. The prompt includes instructions to check the branch for existing work:
 
 ```bash
-claude --resume "$SESSION_ID" \
-  -p "Continue the implementation. Check what has been done so far and pick up where you left off." \
-  --output-format json \
-  --max-turns "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" \
-  ${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:+--max-budget-usd "$PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION"} \
-  --allowedTools <implementation whitelist> \
-  --disallowedTools <denylist> \
-  --dangerously-skip-permissions
+git log --oneline origin/{base_branch}..HEAD
 ```
+
+4. If commits exist, Claude continues from where it left off rather than redoing completed work.
+
+This approach is simpler and more reliable than session resumption because:
+- Git commits are durable state — they survive across sessions, machines, and time
+- No `session_id` to track, lose, or invalidate
+- Context that matters is on the branch; context that doesn't matter was never committed
 
 ---
 
@@ -636,7 +619,7 @@ After `create_branch`, `heartbeat.sh` immediately `cd`s into `$WORKTREE_DIR` so 
 
 ### Push and PR creation
 
-After implementation completes, `git-ops.sh` handles:
+After implementation completes, `pr.sh` handles:
 
 1. **Push**: `git push -u origin prauto/I-{number}`
 2. **Check for existing PR**: `gh pr list --head prauto/I-{number}`
@@ -686,7 +669,7 @@ Heartbeat step 6 scans for open PRs on branches matching the `prauto/` prefix:
 3. A PR is actionable if it has unaddressed non-prauto comments **and** at least one `CHANGES_REQUESTED`/`COMMENTED` review or external issue-level comment.
 4. If no PR has actionable feedback: continue to step 7 (find new issue)
 5. If a PR has actionable feedback (take the oldest PR first):
-   a. Create `current-job.json` with `"source": "pr-review"`, `"phase": "pr-review"`, the linked issue number, existing branch name, and `"replied_comment_ids": []`
+   a. Write monitoring state with `"source": "pr-review"`, `"phase": "pr-review"`, the linked issue number, and existing branch name
    b. Create a worktree for the existing PR branch at `.prauto/worktrees/{branch}` via `checkout_branch_worktree`, then `cd` into it
    c. Run the `pr-review` phase (same tool whitelist as implementation) with reviewer comments as context; save session output to `state/sessions/review-I-{N}.json`
    d. Push additional commits to the PR branch; call `create_or_update_pr` to add a commit-log comment to the existing PR
@@ -810,6 +793,18 @@ Do NOT make code changes. Analysis only.
 ```markdown
 Implement changes for GitHub issue #{number} on branch `{branch}`.
 
+## Check for existing work
+
+Before starting, check if prior work exists on this branch:
+
+\`\`\`bash
+git log --oneline origin/{base_branch}..HEAD
+\`\`\`
+
+If commits exist, continue from where they left off — do NOT redo completed work.
+Read the existing commits and code to understand what has been done,
+then pick up the remaining tasks from the plan.
+
 ## Instructions
 
 1. Follow the implementation plan from the analysis phase (provided below).
@@ -826,6 +821,8 @@ Implement changes for GitHub issue #{number} on branch `{branch}`.
 
 {analysis_output}
 ```
+
+The `{base_branch}` variable is substituted with the value from `PRAUTO_BASE_BRANCH` in `config.env`.
 
 ### `prompts/squash-commit.md` — Phase 4 (squash-finalize)
 
@@ -874,7 +871,8 @@ Action keywords by context:
 |---------|---------|----------------|
 | Issue claim | `Claimed` | `prauto(prauto01): Claimed this issue.` |
 | Abandonment | `Abandoning` | `prauto(prauto01): Abandoning after 3 retries.` |
-| PR review reply | `Addressed` | `prauto(prauto01): Addressed feedback in latest commits.` |
+| Plan | `Plan` | `prauto(prauto01): Plan` |
+| Heartbeat | `Heartbeat` | `prauto(prauto01): Heartbeat — implementation (attempt 2/3)` |
 | Feedback marker | `Reviewer feedback addressed` | `prauto(prauto01): Reviewer feedback addressed.` |
 | Quota pause | `Paused` | `prauto(prauto01): Paused — Claude token quota exhausted.` |
 | Quota resume | `Resumed` | `prauto(prauto01): Resumed — Claude token quota is now available.` |
@@ -903,11 +901,14 @@ if ! comment_exists "issue" "$ISSUE_NUMBER" "Claimed"; then
 fi
 ```
 
-### Reply tracking
+### Heartbeat comment tracking
 
-The `replied_comment_ids` array in `current-job.json` is initialized to `[]` on every new job and is loaded by `load_job`. The helper `add_replied_comment_id` in `lib/state.sh` and `reply_to_comments` in `lib/git-ops.sh` are defined for per-comment reply tracking, but **the PR review flow in the current implementation does not post individual replies to reviewer comments**. After addressing feedback via Claude, prauto pushes commits and calls `create_or_update_pr`, which adds a commit-log comment to the PR body — this is the only reply mechanism currently wired in.
+Heartbeat marker comments serve a dual purpose:
 
-The infrastructure (field, helpers) is in place for future fine-grained reply tracking.
+1. **Retry tracking**: `count_heartbeat_comments()` counts comments matching `prauto({worker_id}): Heartbeat` to determine the current attempt count. This replaces the local `retries` counter.
+2. **Visibility**: The heartbeat comment includes the current phase and attempt count, making the worker's progress visible on the GitHub issue timeline.
+
+Heartbeat comments are intentionally **not** idempotency-checked — each heartbeat should post a new marker to accurately reflect the attempt count. The `plan-approval` phase is exempt (no heartbeat comment posted during approval waits).
 
 ### Optimistic claim locking
 
@@ -953,6 +954,38 @@ claim_issue() {
 ```
 
 The two-step check-then-add pattern is not fully atomic, but the verification window (step 3) catches most races. For single-worker deployments this is a no-op safeguard.
+
+---
+
+## Monitoring
+
+### `current-job.json` — monitoring-only artifact
+
+The `current-job.json` file is written by the heartbeat for external monitoring tools to observe progress. It is **never read** for routing decisions.
+
+```json
+{
+  "issue_number": 42,
+  "issue_title": "Implement health check endpoint",
+  "branch": "prauto/I-42",
+  "source": "issue",
+  "phase": "implementation",
+  "timestamp": "2026-02-28T10:15:00Z"
+}
+```
+
+The file is written at the start of each job via `write_monitor_state()` and updated via `update_job_field()` as phases progress. On job completion, it is moved to `state/history/YYYYMMDD_I-{number}.json`.
+
+External tools can watch this file to determine:
+- Whether a heartbeat is actively working on something
+- Which issue and phase it's in
+- When it last updated
+
+If the file is deleted externally, the heartbeat continues to function normally — it derives all routing from GitHub.
+
+### Session files
+
+Session output files in `state/sessions/` are saved for debugging. They contain Claude's output from each phase. These files are not used for routing or resumption.
 
 ---
 

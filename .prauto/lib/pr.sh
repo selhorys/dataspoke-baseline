@@ -431,46 +431,6 @@ ${co_authored_by%$'\n'}"
   info "PR #${pr_number}: marked as prauto:done (PR and issue #${issue_number}). NOT merged."
 }
 
-# Reply to reviewer comments on a PR with idempotency.
-# Usage: reply_to_comments <pr_number> <comment_ids_csv>
-reply_to_comments() {
-  local pr_number="$1"
-  local comment_ids="$2"
-
-  IFS=',' read -ra ids <<< "$comment_ids"
-  for comment_id in "${ids[@]}"; do
-    [[ -z "$comment_id" ]] && continue
-
-    # Local cache check (fast path)
-    if [[ -f "$JOB_FILE" ]]; then
-      local already_replied
-      already_replied=$(jq -r --arg id "$comment_id" '.replied_comment_ids | index($id) // empty' "$JOB_FILE" 2>/dev/null)
-      if [[ -n "$already_replied" ]]; then
-        info "Comment ${comment_id} already replied to (local). Skipping."
-        continue
-      fi
-    fi
-    # GitHub fallback (SSOT)
-    local existing_reply
-    existing_reply=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${pr_number}/comments" \
-      --jq "[.[] | select(.in_reply_to_id == ${comment_id}) | select(.body | startswith(\"prauto(${PRAUTO_WORKER_ID}):\"))] | length" \
-      2>/dev/null || echo "0")
-    if [[ "$existing_reply" -gt 0 ]]; then
-      info "Comment ${comment_id} already replied to (GitHub). Skipping."
-      [[ -f "$JOB_FILE" ]] && add_replied_comment_id "$comment_id"
-      continue
-    fi
-
-    # Record ID before posting (crash safety)
-    add_replied_comment_id "$comment_id"
-
-    # Post reply
-    gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${pr_number}/comments/${comment_id}/replies" \
-      -f body="prauto(${PRAUTO_WORKER_ID}): Addressed feedback in latest commits." \
-      2>/dev/null || warn "Failed to reply to comment ${comment_id} on PR #${pr_number}."
-  done
-}
-
 # Post a "feedback addressed" marker comment on a PR.
 # find_actionable_prs() checks for this marker and skips the PR if present,
 # preventing infinite re-pickup loops after addressing reviewer feedback.
