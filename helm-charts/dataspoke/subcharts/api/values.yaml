@@ -17,3 +17,10 @@ ingress:
   tls: []
 
 resources: {}
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

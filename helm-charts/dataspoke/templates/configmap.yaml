@@ -21,4 +21,5 @@ data:
   DATASPOKE_TEMPORAL_NAMESPACE: {{ .Values.config.temporal.namespace | quote }}
   DATASPOKE_LLM_PROVIDER: {{ .Values.config.llm.provider | quote }}
   DATASPOKE_LLM_MODEL: {{ .Values.config.llm.model | quote }}
+  DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
 {{- end }}
