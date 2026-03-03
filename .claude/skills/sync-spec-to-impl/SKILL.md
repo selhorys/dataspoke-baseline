@@ -2,7 +2,7 @@
 name: sync-spec-to-impl
 description: Synchronize DataSpoke specification documents with current implementation state. Use when specs and implementations have drifted and need reconciliation.
 argument-hint: [prauto|ai-scaffold|dev-env|helm-charts|api|ref|backend|frontend|all]
-allowed-tools: Read, Write, Edit, Glob, Grep, AskUserQuestion
+allowed-tools: Read, Write, Edit, Glob, Grep
 ---
 
 ## Definitions
@@ -42,7 +42,25 @@ A single SKILL.md file straddles both sides:
 
 ## Routing & Scope Definitions
 
-Parse `$ARGUMENTS` to determine the change scope. If no arguments are given or the scope is unclear, use `AskUserQuestion` with a **multi-selectable** list using the scope keywords below. Phrase it as: "Which specification scopes should be synchronized with current implementation?" and enable `multiSelect: true`.
+Parse `$ARGUMENTS` to determine the change scope. If no arguments are given or the scope is unclear, output the following scope menu and **wait for the user to reply** with their selection:
+
+```
+Select scopes to sync (comma-separated numbers or keywords):
+
+  1. all          — All scopes that have both spec and impl files
+  2. prauto       — .prauto scripts, prauto-related specs and skills
+  3. ai-scaffold  — CLAUDE.md, .claude/ settings, hooks, agents, all skills
+  4. dev-env      — dev_env/ scripts, DEV_ENV spec
+  5. helm-charts  — Helm chart definitions and specs
+  6. api          — API specs, OpenAPI, src/api/ code
+  7. ref          — ref/ setup scripts and reference materials
+  8. backend      — Backend services, Temporal workflows (TBD)
+  9. frontend     — Next.js frontend code (TBD)
+
+Example: "1" or "prauto, api" or "2,3,6"
+```
+
+Parse the user's reply into individual scope keywords. Accept numbers, keywords, or a mix.
 
 The directories below are **starting points** — always glob the actual tree to discover what exists. If files have moved or been renamed, follow the real structure rather than these hints.
 
