@@ -219,6 +219,7 @@ config:
   llm:
     provider: "gemini"
     model: "gemini-2.0-flash"
+  corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------
 # Shared secrets (injected into Secret)
@@ -236,6 +237,8 @@ secrets:
     apiKey: ""
   llm:
     apiKey: ""
+  jwt:
+    secretKey: ""      # Must be set in production
 
 # ---------------------------------------------------------------------------
 # Network policy — cross-namespace access to DataHub
