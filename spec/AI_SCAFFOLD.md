@@ -30,14 +30,12 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 ```
 .claude/
 ├── skills/                     # Prompt extensions and multi-step workflows
-│   ├── kubectl/                # Kubernetes operations against local cluster
-│   ├── monitor-k8s/            # Cluster health reporting (runs in forked subagent)
+│   ├── k8s-work/               # Kubernetes cluster management (health, monitoring, operations)
 │   ├── plan-doc/               # Spec document routing and authoring
 │   ├── datahub-api/            # DataHub data model Q&A and code writing
 │   ├── prauto-check-status/    # Prauto issue/PR status dashboard
 │   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
-│   ├── dev-env-install/        # End-to-end dev environment setup
-│   ├── dev-env-uninstall/      # Controlled environment teardown
+│   ├── dev-env/                # Dev environment management (install, uninstall, port-forward, status)
 │   └── ref-setup/              # Download AI reference materials
 ├── agents/                     # Subagent system prompts (model: sonnet)
 │   ├── api-spec.md             # OpenAPI spec author
@@ -70,14 +68,12 @@ Skills are prompt extensions that give the agent specialized context for a speci
 
 | Skill | Purpose |
 |-------|---------|
-| `kubectl` | Run kubectl/helm operations against the local cluster; reads cluster config from `dev_env/.env` |
-| `monitor-k8s` | Full cluster health report: pod status, resource usage, Helm releases, warning events. Runs as a forked subagent with active polling during installs |
+| `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `dev_env/.env` |
 | `plan-doc` | Route spec authorship to the correct tier (`spec/feature/` or `spec/feature/spoke/`) using the project's template and naming conventions |
 | `datahub-api` | Dual-mode: Q&A about DataHub's data model, or write/test Python code against DataHub APIs. Uses `ref/github/datahub/` source and live cluster. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
-| `dev-env-install` | End-to-end dev environment setup: configure `.env`, run preflight checks, execute `install.sh`, monitor pod readiness, report access URLs |
-| `dev-env-uninstall` | Controlled teardown: show cluster state, confirm with user, run `uninstall.sh`, clean up |
+| `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
 | `ref-setup` | Download AI reference materials (DataHub v1.4.0 source) with interactive selection; monitor in background until complete |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
@@ -183,7 +179,7 @@ The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke
 
 1. **Revise the manifesto** — redefine user groups and feature scope
 2. **Run `/plan-doc`** — update architectural specs, then common and spoke feature specs
-3. **Run `/dev-env-install`** — bring up the local DataHub environment
+3. **Run `/dev-env install`** — bring up the local DataHub environment
 4. **Use subagents** in order: `api-spec` → `backend` → `frontend` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.

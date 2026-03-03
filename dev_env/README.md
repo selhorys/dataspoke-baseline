@@ -14,7 +14,7 @@ The cluster hosts only **infrastructure dependencies**. DataSpoke application se
 
 ### 0. If you use Claude Code
 
-Just run skill: `/dev-env-install`
+Just run skill: `/dev-env install`
 
 ### 1. Configure your cluster
 
@@ -211,7 +211,7 @@ helm list -n $DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE
 
 You will be prompted before any destructive operation.
 
-Claude Code skill: `/dev-env-uninstall`
+Claude Code skill: `/dev-env uninstall`
 
 ## Namespace Architecture
 

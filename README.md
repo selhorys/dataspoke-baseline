@@ -83,7 +83,7 @@ cp dev_env/.env.example dev_env/.env
 cd dev_env && ./install.sh
 ```
 
-> Using Claude Code? Run `/dev-env-install` for guided end-to-end setup.
+> Using Claude Code? Run `/dev-env install` for guided end-to-end setup.
 
 ### 2. Start Port-Forwarding
 
@@ -131,7 +131,7 @@ kubectl get pods -n $DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE
 
 ```bash
 cd dev_env && ./uninstall.sh
-# Or: /dev-env-uninstall
+# Or: /dev-env uninstall
 ```
 
 ## AI Scaffold
@@ -142,14 +142,12 @@ The scaffold lives in `.claude/` and makes AI-assisted development immediately p
 
 | Skill | Purpose |
 |-------|---------|
-| `kubectl` | kubectl/helm operations against the local cluster |
-| `monitor-k8s` | Full cluster health report (pods, events, Helm releases) |
+| `k8s-work` | Kubernetes cluster management: health checks, continuous monitoring, kubectl/helm operations |
 | `plan-doc` | Route spec authorship to the correct tier in `spec/` |
 | `datahub-api` | DataHub data model Q&A and Python SDK code writing |
 | `prauto-check-status` | Prauto issue/PR status dashboard and next-heartbeat prediction |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; diagnoses and fixes errors |
-| `dev-env-install` | End-to-end dev environment setup |
-| `dev-env-uninstall` | Controlled environment teardown |
+| `dev-env` | Dev environment management: install, uninstall, port-forward, status |
 | `ref-setup` | Download AI reference materials (`ref/`) with interactive selection |
 
 ### Subagents (specialized implementers)
@@ -167,7 +165,7 @@ Fork this repository and adapt:
 
 1. Revise `spec/MANIFESTO_*.md` — redefine user groups, features, and product identity
 2. Run `/plan-doc` — update architecture and author feature specs
-3. Run `/dev-env-install` — bring up the local environment
+3. Run `/dev-env install` — bring up the local environment
 4. Use `api-spec` → `backend` → `frontend` → `k8s-helm` subagents in sequence
 
 ## Repository Structure
