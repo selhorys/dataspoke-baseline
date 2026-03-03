@@ -74,19 +74,7 @@ pytest tests/unit/
 - Mock all LLM calls — inject deterministic fixture responses.
 - Use in-memory or SQLite-backed test fixtures for PostgreSQL-dependent logic when possible; use `unittest.mock` or `pytest-mock` otherwise.
 
-Example pattern:
-
-```python
-# tests/unit/backend/test_quality_score.py
-from unittest.mock import MagicMock, patch
-
-def test_score_degrades_on_null_rate():
-    mock_profile = MagicMock()
-    mock_profile.null_proportion = 0.30
-    with patch("src.backend.quality_score.get_dataset_profile", return_value=mock_profile):
-        score = compute_quality_score("urn:li:dataset:(mock,example,PROD)")
-    assert score < 80
-```
+Example pattern: patch external clients at the module boundary (not where defined), inject deterministic fixtures, assert on business outcomes. E.g., mock `get_dataset_profile` to return a profile with 30% null proportion, then assert `compute_quality_score` returns below 80.
 
 **Static gates** (must pass before committing):
 

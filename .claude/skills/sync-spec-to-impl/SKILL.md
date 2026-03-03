@@ -134,7 +134,8 @@ Follow the spec hierarchy from `CLAUDE.md`. Higher-priority documents constrain 
 - **`README.md`** files: Quick-start focused. Prerequisites, install command, access details, link to spec. No architecture discussion.
 - **SKILL.md declarations**: `description` should be one sentence. `argument-hint` should match actual accepted arguments.
 - **High-level specs (priority 1–3)**: Describe *what* and *why*, not *how*. Implementation details belong in priority 4–6 documents or in impl files.
-- **Generally, all spec-side documents should stay brief.** They exist to orient and constrain, not to replicate implementation details.
+- **Generally, all spec-side documents should stay brief.** They exist to orient and constrain, not to replicate implementation details. 
+- In spec, focus on architecture, decisions, and constraints. From spec, remove verbatim template code, full code blocks, and script snippets that duplicate the impl files.
 
 ### Change direction heuristic
 

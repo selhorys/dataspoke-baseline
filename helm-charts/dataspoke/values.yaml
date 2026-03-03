@@ -225,6 +225,8 @@ config:
 # ---------------------------------------------------------------------------
 secrets:
   createSecret: true
+  datahub:
+    token: ""          # Personal access token (empty for local dev)
   postgres:
     user: ""
     password: ""
