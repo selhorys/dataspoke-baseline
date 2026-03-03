@@ -70,6 +70,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Register required Helm repositories (idempotent)
+# ---------------------------------------------------------------------------
+add_repo_if_missing() {
+  local name="$1" url="$2"
+  if helm repo list 2>/dev/null | grep -q "^${name}"; then
+    info "Helm repo '${name}' already added."
+  else
+    info "Adding Helm repo '${name}' (${url})..."
+    helm repo add "${name}" "${url}"
+  fi
+}
+
+info "Adding/updating Helm repositories..."
+add_repo_if_missing bitnami  "https://charts.bitnami.com/bitnami"
+add_repo_if_missing qdrant   "https://qdrant.github.io/qdrant-helm"
+add_repo_if_missing temporal "https://go.temporal.io/helm-charts"
+helm repo update
+
+# ---------------------------------------------------------------------------
+# Build chart dependencies
+# ---------------------------------------------------------------------------
+if [[ -d "$CHART_DIR" ]]; then
+  info "Building Helm chart dependencies..."
+  helm dependency build "$CHART_DIR"
+fi
+
+# ---------------------------------------------------------------------------
 # Install via umbrella Helm chart with dev profile
 # ---------------------------------------------------------------------------
 if [[ -d "$CHART_DIR" ]]; then
