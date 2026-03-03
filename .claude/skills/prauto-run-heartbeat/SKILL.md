@@ -1,6 +1,8 @@
 ---
 name: prauto-run-heartbeat
 description: Test-run the prauto heartbeat script and monitor its progress. Diagnoses and fixes script errors on failure.
+disable-model-invocation: true
+user-invocable: true
 allowed-tools: Bash(env *), Bash(which *), Bash(date *), Bash(test *), Bash(ls *), Bash(cat *), Bash(tail *), Bash(ps *), Read, Edit, Glob, Grep
 ---
 

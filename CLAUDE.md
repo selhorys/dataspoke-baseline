@@ -55,7 +55,7 @@ For end-to-end feature implementation, use subagents in this order:
 5. `k8s-helm` agent — containerize and deploy (when ready)
 
 Each agent reads the spec and the output of previous agents as context.
-For spec authoring, use `/dataspoke-plan-write` or `/plan-doc` directly.
+For spec authoring, use `/plan-doc` directly.
 For testing conventions (unit/integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
 
 ## Testing prauto
@@ -68,9 +68,8 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 ## Claude Code Configuration
 
-**Skills**: `kubectl`, `monitor-k8s`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`
-_(Note: `datahub-api` requires `ref/github/datahub/` — run `/dataspoke-ref-setup-all` once if not present.)_
-**Commands**: `dataspoke-dev-env-install`, `dataspoke-dev-env-uninstall`, `dataspoke-ref-setup-all`, `dataspoke-plan-write`
+**Skills**: `kubectl`, `monitor-k8s`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env-install`, `dev-env-uninstall`, `ref-setup`
+_(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `api-spec`, `backend`, `frontend`, `k8s-helm`
 **Hook**: `auto-format.sh` — auto-formats Python (ruff) and TypeScript (prettier) after edits
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

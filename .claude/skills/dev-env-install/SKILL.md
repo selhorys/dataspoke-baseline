@@ -1,4 +1,10 @@
-Read `spec/feature/DEV_ENV.md` for the full development environment specification, then set up the local dev environment step by step.
+---
+name: dev-env-install
+description: Read `spec/feature/DEV_ENV.md` for the full development environment specification, then set up the local dev environment step by step.
+disable-model-invocation: true
+user-invocable: true
+allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(monitor-k8s)
+---
 
 ## Step 1 — Configure `.env`
 

@@ -5,13 +5,12 @@
 1. [Purpose](#purpose)
 2. [Scaffold Structure](#scaffold-structure)
 3. [Skills](#skills)
-4. [Commands](#commands)
-5. [Subagents](#subagents)
-6. [Permissions](#permissions)
-7. [Hooks](#hooks)
-8. [Prauto](#prauto)
-9. [Building a Custom Spoke](#building-a-custom-spoke)
-10. [Design Principles](#design-principles)
+4. [Subagents](#subagents)
+5. [Permissions](#permissions)
+6. [Hooks](#hooks)
+7. [Prauto](#prauto)
+8. [Building a Custom Spoke](#building-a-custom-spoke)
+9. [Design Principles](#design-principles)
 
 ---
 
@@ -30,18 +29,16 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 
 ```
 .claude/
-├── skills/                     # Auto-loaded prompt extensions
+├── skills/                     # Prompt extensions and multi-step workflows
 │   ├── kubectl/                # Kubernetes operations against local cluster
 │   ├── monitor-k8s/            # Cluster health reporting (runs in forked subagent)
 │   ├── plan-doc/               # Spec document routing and authoring
 │   ├── datahub-api/            # DataHub data model Q&A and code writing
 │   ├── prauto-check-status/    # Prauto issue/PR status dashboard
-│   └── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
-├── commands/                   # User-invoked multi-step workflows
-│   ├── dataspoke-dev-env-install.md
-│   ├── dataspoke-dev-env-uninstall.md
-│   ├── dataspoke-ref-setup-all.md
-│   └── dataspoke-plan-write.md
+│   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
+│   ├── dev-env-install/        # End-to-end dev environment setup
+│   ├── dev-env-uninstall/      # Controlled environment teardown
+│   └── ref-setup/              # Download AI reference materials
 ├── agents/                     # Subagent system prompts (model: sonnet)
 │   ├── api-spec.md             # OpenAPI spec author
 │   ├── backend.md              # FastAPI/Python implementer
@@ -60,7 +57,7 @@ The scaffold works alongside these structural elements:
 | `CLAUDE.md` | Root-level agent instructions: project context, spec hierarchy, implementation workflow |
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
 | `dev_env/` | Local Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
-| `ref/` | External source code for AI reference (DataHub v1.4.0 source, downloaded via `/dataspoke-ref-setup-all`) |
+| `ref/` | External source code for AI reference (DataHub v1.4.0 source, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
 | `api/` | Consolidated OpenAPI spec (`openapi.yaml`) |
 | `helm-charts/` | DataSpoke umbrella Helm chart with subcharts. See `spec/feature/HELM_CHART.md` |
@@ -76,26 +73,14 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `kubectl` | Run kubectl/helm operations against the local cluster; reads cluster config from `dev_env/.env` |
 | `monitor-k8s` | Full cluster health report: pod status, resource usage, Helm releases, warning events. Runs as a forked subagent with active polling during installs |
 | `plan-doc` | Route spec authorship to the correct tier (`spec/feature/` or `spec/feature/spoke/`) using the project's template and naming conventions |
-| `datahub-api` | Dual-mode: Q&A about DataHub's data model, or write/test Python code against DataHub APIs. Uses `ref/github/datahub/` source and live cluster. Requires `/dataspoke-ref-setup-all` first |
+| `datahub-api` | Dual-mode: Q&A about DataHub's data model, or write/test Python code against DataHub APIs. Uses `ref/github/datahub/` source and live cluster. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
+| `dev-env-install` | End-to-end dev environment setup: configure `.env`, run preflight checks, execute `install.sh`, monitor pod readiness, report access URLs |
+| `dev-env-uninstall` | Controlled teardown: show cluster state, confirm with user, run `uninstall.sh`, clean up |
+| `ref-setup` | Download AI reference materials (DataHub v1.4.0 source) with interactive selection; monitor in background until complete |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
-
----
-
-## Commands
-
-Commands are user-invoked multi-step workflows in `.claude/commands/`. They orchestrate sequences of agent actions that would otherwise require many manual steps.
-
-| Command | Purpose |
-|---------|---------|
-| `dataspoke-dev-env-install` | End-to-end dev environment setup: configure `.env`, run preflight checks, execute `install.sh`, monitor pod readiness, report access URLs |
-| `dataspoke-dev-env-uninstall` | Controlled teardown: show cluster state, confirm with user, run `uninstall.sh`, clean up |
-| `dataspoke-ref-setup-all` | Download AI reference materials (DataHub v1.4.0 source) in background and monitor until complete |
-| `dataspoke-plan-write` | Guided spec authoring: scope selection → iterative Q&A → writing plan review → document writing (via `plan-doc`) → AI scaffold recommendations |
-
-`dataspoke-plan-write` is the primary entry point for all spec authoring. Power users who already know the target file can use `/plan-doc <topic>` directly.
 
 ---
 
@@ -197,11 +182,11 @@ The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke
 ### Recommended sequence
 
 1. **Revise the manifesto** — redefine user groups and feature scope
-2. **Run `/dataspoke-plan-write`** — update architectural specs, then common and spoke feature specs
-3. **Run `/dataspoke-dev-env-install`** — bring up the local DataHub environment
+2. **Run `/plan-doc`** — update architectural specs, then common and spoke feature specs
+3. **Run `/dev-env-install`** — bring up the local DataHub environment
 4. **Use subagents** in order: `api-spec` → `backend` → `frontend` → `k8s-helm`
 
-Steps 1-2 ensure every spec follows MANIFESTO conventions. The command's scaffold recommendation step (Step 7) identifies when new subagents, skills, or permissions are needed.
+Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
 ---
 

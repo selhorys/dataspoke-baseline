@@ -1,4 +1,10 @@
-Tear down the local DataSpoke development environment.
+---
+name: dev-env-uninstall
+description: Tear down the local DataSpoke development environment.
+disable-model-invocation: true
+user-invocable: true
+allowed-tools: Bash(*), Read, Glob, Grep, Skill(monitor-k8s)
+---
 
 ## Step 1 — Load configuration
 

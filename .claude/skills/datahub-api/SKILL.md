@@ -15,7 +15,7 @@ allowed-tools: Read, Grep, Glob, Bash(python3 *), Bash(pip3 *), Bash(curl *)
 
 If `ref/github/datahub` is **missing**, stop immediately and tell the user:
 
-> `ref/github/datahub` is not present. Run `/dataspoke-ref-setup-all` to download
+> `ref/github/datahub` is not present. Run `/ref-setup` to download
 > the DataHub v1.4.0 source (shallow clone, ~1-3 min). Retry this task after it completes.
 
 **Step 1 — Select operating mode:**
