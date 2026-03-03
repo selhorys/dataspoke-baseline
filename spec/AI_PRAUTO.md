@@ -144,6 +144,10 @@ PRAUTO_BRANCH_PREFIX="prauto/"
 # When enabled, issues authored by non-members are silently skipped.
 PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY="true"
 
+# PR reviewer login to request on gh pr create. Leave empty to skip --reviewer.
+# Override in config.local.env if the repo owner is an org (not a GitHub user).
+PRAUTO_REVIEWER=""
+
 # Limits (defaults — can be overridden in config.local.env)
 PRAUTO_MAX_RETRIES_PER_JOB=3
 ```
@@ -177,7 +181,7 @@ GH_TOKEN=""
 
 If `ANTHROPIC_API_KEY` is empty, `claude` falls back to system credentials (e.g., keyring or `claude auth login`). If `GH_TOKEN` is empty, `gh` uses its own authenticated session. Secrets are optional — a bare developer machine with both CLIs already authenticated needs no values here.
 
-The `GH_TOKEN`, when provided, is a fine-grained personal access token with these permissions on the target repository:
+The `GH_TOKEN`, when provided, is a personal access token (classic or fine-grained) with these permissions on the target repository:
 
 | Permission | Access | Used for |
 |------------|--------|----------|
@@ -492,7 +496,7 @@ Prauto splits each job into multiple Claude Code sessions with different tool pe
 
 | Phase | Purpose | Tools | Max turns |
 |-------|---------|-------|-----------|
-| Analysis | Read codebase, understand issue, produce plan | Read-only | 10 |
+| Analysis | Read codebase, understand issue, produce plan | Read-only | 20 |
 | Implementation | Write code, run tests, commit | Read + Write + limited Bash | 50 |
 | Squash commit | Generate final commit message from issue + diff | None (text generation only) | 1 |
 
@@ -636,7 +640,8 @@ gh pr create \
   --title "${ISSUE_TITLE}" \
   --body "<generated PR body>" \
   --assignee "${PRAUTO_GITHUB_ACTOR}" \
-  --label "${PRAUTO_GITHUB_LABEL_REVIEW}"
+  --label "${PRAUTO_GITHUB_LABEL_REVIEW}" \
+  ${PRAUTO_REVIEWER:+--reviewer "$PRAUTO_REVIEWER"}
 ```
 
 4. **Update PR** (if exists): push new commits and add a comment
@@ -904,10 +909,10 @@ Generate a single conventional commit message for the following squash commit.
 
 ## Rules
 
-1. First line: `<type>: <subject>` — conventional commit format (feat, fix, docs, refactor, etc.)
+1. First line: `<type>: <subject>` — conventional commit format (feat, fix, docs, refactor, etc.). **Max 100 characters** — shorten the subject if needed.
 2. Second line: blank
 3. Body: brief description of what was done (max 5 lines). Focus on the "why" and key changes.
-4. Last line of body MUST be: `(issue #{issue_number}, PR #{pr_number})`
+4. Append `(issue #{issue_number}, PR #{pr_number})` at the end of the last body sentence — no blank line before it.
 5. Output ONLY the raw commit message text. No markdown fences, no explanations.
 ```
 
@@ -1022,29 +1027,11 @@ The two-step check-then-add pattern is not fully atomic, but the verification wi
 
 ## Monitoring
 
-### `current-job.json` — monitoring-only artifact
+### `current-job.json` — reserved for future monitoring
 
-The `current-job.json` file is written by the heartbeat for external monitoring tools to observe progress. It is **never read** for routing decisions.
+The `current-job.json` file is reserved for future external monitoring tools. It is **not currently written** by the heartbeat — `reset_ephemeral_state()` deletes any stale copy at the start of each run.
 
-```json
-{
-  "issue_number": 42,
-  "issue_title": "Implement health check endpoint",
-  "branch": "prauto/I-42",
-  "source": "issue",
-  "phase": "implementation",
-  "timestamp": "2026-02-28T10:15:00Z"
-}
-```
-
-The file is written at the start of each job via `write_monitor_state()` and updated via `update_job_field()` as phases progress. On job completion, it is moved to `state/history/YYYYMMDD_I-{number}.json`.
-
-External tools can watch this file to determine:
-- Whether a heartbeat is actively working on something
-- Which issue and phase it's in
-- When it last updated
-
-If the file is deleted externally, the heartbeat continues to function normally — it derives all routing from GitHub.
+Job completion records are written directly to `state/history/YYYYMMDD_I-{number}.json` by `complete_job()` and `abandon_job_github()`. These history files are the only persistent local artifacts.
 
 ### Session files
 
@@ -1119,7 +1106,6 @@ These patterns are appended to the `--disallowedTools` list in both phases.
 | `.claude/settings.json` | Prauto uses CLI flags for tool restrictions |
 | `.claude/settings.local.json` | Prauto has its own config |
 | `.claude/agents/` | No new subagents added |
-| `.claude/commands/` | Prauto is not a Claude Code command |
 
 ### Coexistence
 

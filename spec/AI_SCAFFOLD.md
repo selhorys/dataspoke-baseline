@@ -76,7 +76,7 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
 | `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
 | `ref-setup` | Download AI reference materials (DataHub v1.4.0 source) with interactive selection; monitor in background until complete |
-| `sync-spec-to-impl` | Compare specification documents against current implementation, identify drift, and reconcile. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api) or full sync across all scopes |
+| `sync-spec-to-impl` | Compare specification documents against current implementation, identify drift, and reconcile. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref) or full sync across all scopes |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
 
@@ -105,7 +105,7 @@ Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate
 |----------|--------|----------|
 | Read-only | Auto-allowed | `kubectl get`, `helm list`, `git log`, `docker ps` |
 | Reference docs | Auto-allowed | `WebSearch`, `WebFetch` to framework/tool documentation domains |
-| Skills | Auto-allowed | All skills listed above |
+| Skills | Auto-allowed / prompt | Most skills auto-allowed; `prauto-run-heartbeat` and `ref-setup` require user confirmation (side effects) |
 | Dev env scripts | Auto-allowed | `bash dev_env/install.sh`, `bash dev_env/uninstall.sh` |
 | Mutating | Prompt for confirmation | `kubectl apply`, `helm install`, `helm upgrade` |
 | Destructive | Always blocked | `kubectl delete namespace`, `rm -rf`, `sudo` |

@@ -7,7 +7,7 @@ See `spec/AI_PRAUTO.md` for the full specification.
 ## Prerequisites
 
 - `claude` CLI installed and authenticated
-- `gh` CLI installed and authenticated (fine-grained PAT with Issues, PRs, Contents permissions)
+- `gh` CLI installed and authenticated (PAT with Issues, PRs, Contents permissions)
 - `git` configured for the repository
 - `jq` for JSON processing
 
