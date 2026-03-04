@@ -149,6 +149,7 @@ The scaffold lives in `.claude/` and makes AI-assisted development immediately p
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; diagnoses and fixes errors |
 | `dev-env` | Dev environment management: install, uninstall, port-forward, status |
 | `ref-setup` | Download AI reference materials (`ref/`) with interactive selection |
+| `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs |
 
 ### Subagents (specialized implementers)
 

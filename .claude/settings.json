@@ -51,6 +51,7 @@
       "Skill(plan-doc)",
       "Skill(prauto-check-status)",
       "Skill(sync-spec-to-impl)",
+      "Skill(sync-specs)",
       "WebSearch",
       "WebFetch(domain:docs.python.org)",
       "WebFetch(domain:fastapi.tiangolo.com)",

@@ -37,7 +37,8 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
 │   ├── dev-env/                # Dev environment management (install, uninstall, port-forward, status)
 │   ├── ref-setup/              # Download AI reference materials
-│   └── sync-spec-to-impl/     # Spec ↔ implementation synchronization
+│   ├── sync-spec-to-impl/     # Spec ↔ implementation synchronization
+│   └── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
 ├── agents/                     # Subagent system prompts (model: sonnet)
 │   ├── api-spec.md             # OpenAPI spec author
 │   ├── backend.md              # FastAPI/Python implementer
@@ -77,6 +78,7 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
 | `ref-setup` | Download AI reference materials (DataHub v1.4.0 source) with interactive selection; monitor in background until complete |
 | `sync-spec-to-impl` | Compare specification documents against current implementation, identify drift, and reconcile. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref) or full sync across all scopes |
+| `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
 
