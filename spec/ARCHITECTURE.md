@@ -158,7 +158,7 @@ src/api/
 
 **Technology**: Python 3.13, Temporal for orchestration
 
-Core computational layer. Feature service implementations are specified per feature in `spec/feature/` and `spec/feature/spoke/`.
+Core computational layer. For the full backend specification — layered architecture, shared services, Temporal workflows, database schema, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
 
 **Key capabilities by domain**:
 
