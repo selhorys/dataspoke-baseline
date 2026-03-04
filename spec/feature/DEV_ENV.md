@@ -70,7 +70,7 @@ Local Kubernetes Cluster (minikube / docker-desktop)
 ### Non-Goals
 
 - Production deployment (use `helm-charts/dataspoke` for production)
-- Running DataSpoke application services in-cluster
+- Running DataSpoke application services in-cluster as the default workflow (for on-demand in-cluster testing, use the umbrella Helm chart with application subcharts enabled — see [TESTING.md §Testing Modes](../TESTING.md#testing-modes))
 - External data source connectivity (example sources are in-cluster only)
 - High availability or data persistence between dev environment resets
 

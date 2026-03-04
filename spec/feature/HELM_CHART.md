@@ -10,7 +10,8 @@
 7. [Resource Sizing](#resource-sizing)
 8. [Ingress & Network Policy](#ingress--network-policy)
 9. [Dev Environment Integration](#dev-environment-integration)
-10. [References](#references)
+10. [In-Cluster Testing](#in-cluster-testing)
+11. [References](#references)
 
 ---
 
@@ -224,6 +225,25 @@ This means:
 1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments
 2. `dev_env/dataspoke-infra/` is a thin wrapper — no duplicate values files or templates
 3. Switching from dev to production is changing the values file, not the chart
+
+---
+
+## In-Cluster Testing
+
+For on-demand integration testing where all components run inside Kubernetes (e.g., verifying health probes, ingress routing, network policies, or resource behavior), enable application subcharts on top of the dev profile:
+
+```bash
+helm upgrade --install dataspoke ./helm-charts/dataspoke \
+  --namespace "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}" \
+  --values ./helm-charts/dataspoke/values-dev.yaml \
+  --set frontend.enabled=true \
+  --set api.enabled=true \
+  --set workers.enabled=true \
+  --set config.createConfigMap=true \
+  --set secrets.createSecret=true
+```
+
+This is **not** the default development workflow — every code change requires a container rebuild and `helm upgrade`. Use only when the user explicitly requests it. For normal development, run application services locally and connect to port-forwarded infrastructure. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 ---
 

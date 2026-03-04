@@ -113,6 +113,19 @@ npx eslint src/        # from src/frontend/
 
 Integration tests run against the local dev environment. They exercise real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Temporal, Redis, and the dummy-data sources.
 
+### Testing Modes
+
+Integration tests support two execution modes:
+
+| Mode | App Services | When to Use |
+|------|-------------|-------------|
+| **Local (default)** | Run on host (`uvicorn`, `npm run dev`, `python -m worker`) | Normal development — fast test-and-fix loop |
+| **In-cluster (on-demand)** | Deployed via Helm chart into K8s cluster | Testing Kubernetes-specific behavior only — when user explicitly requests it |
+
+**Local mode** is the standard workflow described below. Application services run on the developer's machine and connect to port-forwarded infrastructure. Reinstalling the Helm chart is not required between test iterations — only the locally-running process needs to be restarted. This keeps the test-and-fix loop fast.
+
+**In-cluster mode** deploys all components (including frontend, API, and workers) into the Kubernetes cluster using the umbrella Helm chart with application subcharts enabled. This mode is significantly slower to iterate — every code change requires a container rebuild and helm upgrade. Use it only when the user explicitly requests it, for example to verify health probe behavior, ingress routing, resource limits, or network policy under real Kubernetes scheduling. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing) for the deployment command.
+
 ### Workflow
 
 Follow these seven steps in order every time you run integration tests:
