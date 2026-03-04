@@ -139,9 +139,13 @@ Follow the spec hierarchy from `CLAUDE.md`. Higher-priority documents constrain 
 
 ### Change direction heuristic
 
-- If **impl is more recent** (has features/options that spec doesn't mention) → propose updating spec to document the current state.
-- If **spec has requirements** that impl doesn't fulfill → flag as "spec gap in implementation" — do not auto-modify impl code (too risky without tests). Report it for the user to decide.
-- If **both have drifted** → propose spec update to match impl reality, and list impl gaps separately.
+This skill is a **reverse sync**: normal workflow flows spec → impl, but here we synchronize spec ← impl. The user invokes this skill when a component's implementation is well-established and its subtle design drift deserves to be captured in the spec documents.
+
+Therefore:
+
+- **Spec contradicts impl** → fix the spec. The implementation is the source of truth for this sync direction.
+- **Spec describes something not yet implemented** → preserve the spec as-is. Report the gap (as "spec gap in implementation") so the user is aware, but do not remove or weaken the requirement.
+- **Impl has features/options the spec doesn't mention** → propose updating spec to document the current state.
 
 ---
 
