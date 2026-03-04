@@ -55,7 +55,7 @@ Standard Oracle connector output: 500 tables with column types and keys — noth
 **Register a multi-source enrichment config:**
 
 ```python
-# POST /api/v1/spoke/de/ingestion/configs
+# PUT /api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf
 dataspoke.ingestion.register_config({
   "name": "oracle_book_catalog_enriched",
   "source_type": "oracle",
@@ -262,7 +262,7 @@ The AI Agent searches DataHub for "reviews" and "orders" tables, picks candidate
 ```
 AI Agent Query: "Find review and purchase tables suitable for ML training"
 
-DataSpoke Response (via /api/v1/spoke/de/validator):
+DataSpoke Response (via /api/v1/spoke/common/search + /spoke/common/data/{dataset_urn}/attr/validation/result):
 - reviews.user_ratings (✓ Quality Score: 96)
   Last refreshed: 1 hour ago | Completeness: 99.7% | 28 downstream consumers
 
@@ -277,7 +277,7 @@ DataSpoke Response (via /api/v1/spoke/de/validator):
 **Step 2: Context Verification**
 
 ```python
-# POST /api/v1/spoke/de/validator/context
+# POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
 dataspoke.validator.verify_context("reviews.user_ratings_legacy")
 
 # Response:
@@ -314,7 +314,7 @@ Validation Results:
 A marketing analyst wants to connect `orders.purchase_history` to a Tableau dashboard for quarterly buyer-segment reporting. Before connecting, she validates the table through the DA endpoint:
 
 ```python
-# POST /api/v1/spoke/da/validator/check
+# POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
 dataspoke.validator.check({
   "dataset": "orders.purchase_history",
   "use_case": "reporting_dashboard",
@@ -872,7 +872,7 @@ Manual process: search DataHub for "customer" tables, check each description for
 **Query:**
 
 ```
-Natural Language Input (via /api/v1/spoke/da/search):
+Natural Language Input (via /api/v1/spoke/common/search?q=...):
 "Find tables with European customer PII used by marketing analytics"
 ```
 
@@ -1025,7 +1025,7 @@ Result: 0 rows returned. Analyst spends 15–30 minutes debugging, asks a data e
 **Step 1: Metadata Context Retrieval**
 
 ```python
-# POST /api/v1/spoke/da/text-to-sql/context
+# GET /api/v1/spoke/common/search?q=...&sql_context=true
 dataspoke.text_to_sql.get_context({
   "question": "What were Imazon's top 10 best-selling genres in Q4?",
   "candidate_tables": ["orders.purchase_history", "catalog.title_master", "catalog.genre_hierarchy"]
