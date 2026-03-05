@@ -5,7 +5,7 @@
 #   cd dev_env && ./dummy-data-reset.sh
 #
 # Prerequisites:
-#   - Kubernetes cluster running with dummy-data1 namespace
+#   - Kubernetes cluster running with dataspoke-dummy-data-01 namespace
 #   - example-postgres and example-kafka deployments are Ready
 #   - dev_env/.env is populated
 

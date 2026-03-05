@@ -1,6 +1,6 @@
 # DataSpoke Development Environment
 
-A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dummy-data1` (example data sources).
+A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
 
 The cluster hosts only **infrastructure dependencies**. DataSpoke application services (frontend, API, workers) run on your host machine, connecting to port-forwarded infrastructure.
 
@@ -219,7 +219,7 @@ Claude Code skill: `/dev-env uninstall`
 |-----------|---------|------------|
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
 | `dataspoke-01` | DataSpoke infrastructure (PostgreSQL, Redis, Qdrant, Temporal) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
-| `dummy-data1` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
+| `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 ## Directory Structure
 
@@ -269,8 +269,8 @@ This environment targets ~11.1 GiB memory limits on an 8+ CPU / 16 GB RAM cluste
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi |
 | redis | dataspoke-01 | 256 Mi |
 | dev-lock | dataspoke-01 | 64 Mi |
-| example-postgres | dummy-data1 | 256 Mi |
-| example-kafka | dummy-data1 | 512 Mi |
+| example-postgres | dataspoke-dummy-data-01 | 256 Mi |
+| example-kafka | dataspoke-dummy-data-01 | 512 Mi |
 | **Total** | | **~11.1 Gi** |
 
 ## Troubleshooting

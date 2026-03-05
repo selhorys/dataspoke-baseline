@@ -27,7 +27,7 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │
 │  ┌─────────────────────┐   ┌──────────────────────────────┐  │
-│  │  datahub-01         │   │  dummy-data1                 │  │
+│  │  datahub-01         │   │  dataspoke-dummy-data-01     │  │
 │  │                     │   │                              │  │
 │  │  - GMS              │   │  - PostgreSQL (example src)  │  │
 │  │  - Frontend         │◄──┤  - Kafka (example src)       │  │
@@ -84,7 +84,7 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 |-----------|---------|------------|
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
 | `dataspoke-01` | DataSpoke infrastructure (Temporal, Qdrant, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
-| `dummy-data1` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
+| `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 > Namespace names are **defaults** from `.env.example`. All scripts read them from environment variables and never hardcode them.
 
@@ -198,7 +198,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 ### Example Data Sources
 
-Plain Kubernetes manifests (no Helm) in the `dummy-data1` namespace.
+Plain Kubernetes manifests (no Helm) in the `dataspoke-dummy-data-01` namespace.
 
 | Component | Image | Mem Limit | Storage | Service |
 |-----------|-------|-----------|---------|---------|
@@ -351,8 +351,8 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~69%**
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
-| example-postgres | dummy-data1 | 256 Mi | |
-| example-kafka | dummy-data1 | 512 Mi | |
+| example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
+| example-kafka | dataspoke-dummy-data-01 | 512 Mi | |
 | **Total** | | **~11.1 Gi** | |
 
 ~4.9 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
