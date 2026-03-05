@@ -12,7 +12,7 @@ body:
     id: spec-scope
     attributes:
       label: Spec Scope
-      description: Which parts of the specification are affected?
+      description: Which part of the specification is most affected?
       options:
         - label: Architecture or high-level spec (spec/)
         - label: Cross-role feature spec (spec/feature/)
@@ -26,7 +26,7 @@ body:
     id: impl-scope
     attributes:
       label: Implementation Scope
-      description: Which parts of the implementation are affected?
+      description: Which part of the implementation is most affected?
       options:
         - label: OpenAPI spec (api/)
         - label: Backend - API routes and services
@@ -43,7 +43,7 @@ body:
     id: change-size
     attributes:
       label: Change Size
-      description: Estimated size of the change, counting both spec and implementation
+      description: Estimated change size considering both specification and implementation
       options:
         - Minor (single file or a few files)
         - Medium (multiple files across a few directories)
@@ -76,28 +76,8 @@ body:
     id: spec-refs
     attributes:
       label: Spec References
-      description: Which spec files are relevant?
+      description: Which existing spec files are relevant?
       placeholder: |
         e.g.
         - spec/feature/API.md (section: Health Check)
         - spec/ARCHITECTURE.md (section: Three-tier routing)
-
-  - type: textarea
-    id: file-paths
-    attributes:
-      label: File Paths (if known)
-      description: Files to create or modify
-      placeholder: |
-        e.g.
-        - src/api/routes/health.py (create)
-        - src/api/main.py (modify)
-
-  - type: textarea
-    id: acceptance-criteria
-    attributes:
-      label: Acceptance Criteria
-      description: How do we know this is done?
-      placeholder: |
-        - [ ] Endpoint returns 200 with expected payload
-        - [ ] Unit tests pass
-        - [ ] Follows API design principles
