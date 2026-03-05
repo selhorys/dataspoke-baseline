@@ -373,7 +373,7 @@ class ActionItem(BaseModel):
 | `DATASPOKE_NOTIFICATION_ENABLED` | Master toggle for all notifications | `false` |
 
 When `DATASPOKE_NOTIFICATION_ENABLED` is `false`, notification calls are no-ops
-(logged but not sent). This is the default for local development.
+(logged but not sent). This is the default for development.
 
 ### Shared Domain Models (`src/shared/models/`)
 

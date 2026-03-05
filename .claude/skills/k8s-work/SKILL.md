@@ -1,6 +1,6 @@
 ---
 name: k8s-work
-description: Manage the local Kubernetes development cluster — health checks, continuous monitoring, kubectl/helm operations, and troubleshooting.
+description: Manage the Kubernetes development cluster — health checks, continuous monitoring, kubectl/helm operations, and troubleshooting.
 argument-hint: [status|monitor|<kubectl/helm operation>]
 disable-model-invocation: false
 context: fork

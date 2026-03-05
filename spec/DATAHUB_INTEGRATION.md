@@ -425,7 +425,7 @@ All DataHub connection parameters are configured via environment variables (in d
 | Variable | Purpose | Dev Default |
 |----------|---------|-------------|
 | `DATASPOKE_DATAHUB_GMS_URL` | GMS endpoint for SDK read/write | `http://localhost:9004` |
-| `DATASPOKE_DATAHUB_TOKEN` | Personal access token (empty in local dev — DataHub doesn't require auth in the dev env) | `""` |
+| `DATASPOKE_DATAHUB_TOKEN` | Personal access token (empty in dev — DataHub doesn't require auth in the dev env) | `""` |
 | `DATASPOKE_DATAHUB_KAFKA_BROKERS` | Kafka brokers for MCE/MAE events | `localhost:9005` |
 
 Resilience settings (retry, circuit breaker, bulk batching) are application-level constants defined in `src/shared/config/`:

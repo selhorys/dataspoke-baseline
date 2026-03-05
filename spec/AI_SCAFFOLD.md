@@ -56,7 +56,7 @@ The scaffold works alongside these structural elements:
 |---------|------|
 | `CLAUDE.md` | Root-level agent instructions: project context, spec hierarchy, implementation workflow |
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
-| `dev_env/` | Local Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
+| `dev_env/` | Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
 | `ref/` | External source code for AI reference (DataHub v1.4.0 source, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
 | `api/` | Consolidated OpenAPI spec (`openapi.yaml`) |
@@ -183,7 +183,7 @@ The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke
 
 1. **Revise the manifesto** — redefine user groups and feature scope
 2. **Run `/plan-doc`** — update architectural specs, then common and spoke feature specs
-3. **Run `/dev-env install`** — bring up the local DataHub environment
+3. **Run `/dev-env install`** — bring up the DataHub environment
 4. **Use subagents** in order: `api-spec` → `backend` → `frontend` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.

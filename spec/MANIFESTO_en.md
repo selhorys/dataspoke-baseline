@@ -123,7 +123,7 @@ Commands and skills for step-by-step development workflows.
 
 - **Development Environment Setup**
   - GitHub clone and reference data setup
-  - Local Kubernetes cluster-based dev environment provisioning
+  - Kubernetes cluster-based dev environment provisioning
 - **Development Planning**
   - Feature spec authoring: guided Q&A to define features per user group under `spec/feature/spoke/`, or common features under `spec/feature/`.
   - Implementation planning: tracked via GitHub Issues and PRs with AI coding approach suggestions (skill/subagent composition) to reinforce the scaffold.

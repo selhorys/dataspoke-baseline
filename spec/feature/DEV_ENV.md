@@ -1,4 +1,4 @@
-# DEV_ENV — Local Development Environment
+# DEV_ENV — Development Environment
 
 ## Table of Contents
 
@@ -18,12 +18,12 @@
 
 ## Overview
 
-`dev_env/` provides a fully scripted local Kubernetes environment for developing and testing DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the DataSpoke application connects to.
+`dev_env/` provides a fully scripted Kubernetes-based environment for developing and testing DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the DataSpoke application connects to.
 
-Application components (frontend, API, workers) are **not** installed in the cluster — developers run them locally, connecting to port-forwarded infrastructure services. DataHub is installed locally only for development; in production it is deployed separately.
+Application components (frontend, API, workers) are **not** installed in the cluster — developers run them on the host, connecting to port-forwarded infrastructure services. DataHub is installed in the dev cluster only for development; in production it is deployed separately.
 
 ```
-Local Kubernetes Cluster (minikube / docker-desktop)
+Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │
 │  ┌─────────────────────┐   ┌──────────────────────────────┐  │
@@ -59,13 +59,13 @@ Local Kubernetes Cluster (minikube / docker-desktop)
 
 ### Goals
 
-- Single command (`./install.sh`) to stand up infrastructure dependencies for local development
+- Single command (`./install.sh`) to stand up infrastructure dependencies for development
 - Clean namespace separation matching the production topology
 - DataHub with **Elasticsearch graph backend** for lineage support (Neo4j is not required)
 - Example data sources (PostgreSQL + Kafka) in a dedicated namespace for testing ingestion workflows
 - Advisory lock service for coordinating multi-tester access to shared dev state
 - Idempotent installs — re-running `install.sh` is always safe
-- Resource-constrained sizing that fits within ~70% of a typical local cluster (8+ CPU / 16 GB RAM)
+- Resource-constrained sizing that fits within ~70% of a typical dev cluster (8+ CPU / 16 GB RAM)
 
 ### Non-Goals
 
@@ -192,7 +192,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 | `dataspoke-redis-secret` | `REDIS_PASSWORD` |
 | `dataspoke-qdrant-secret` | `QDRANT_API_KEY` (only if non-empty) |
 
-> LLM secrets are not deployed into the cluster. The locally-running app reads them directly from `.env`.
+> LLM secrets are not deployed into the cluster. The host-running app reads them directly from `.env`.
 
 ---
 
@@ -355,7 +355,7 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~69%**
 | example-kafka | dummy-data1 | 512 Mi | |
 | **Total** | | **~11.1 Gi** | |
 
-~4.9 GiB headroom for K8s system components, Helm setup jobs, and locally-running app services.
+~4.9 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 

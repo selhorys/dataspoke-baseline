@@ -1,14 +1,14 @@
-# DataSpoke Local Development Environment
+# DataSpoke Development Environment
 
-A fully scripted local Kubernetes environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dummy-data1` (example data sources).
+A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dummy-data1` (example data sources).
 
-The cluster hosts only **infrastructure dependencies**. DataSpoke application services (frontend, API, workers) run locally on your host machine, connecting to port-forwarded infrastructure.
+The cluster hosts only **infrastructure dependencies**. DataSpoke application services (frontend, API, workers) run on your host machine, connecting to port-forwarded infrastructure.
 
 ## Prerequisites
 
 - `kubectl` installed and configured
 - `helm` v3 installed
-- A local Kubernetes cluster (Docker Desktop, minikube, or kind) with **8+ CPUs / 16 GB RAM**
+- A Kubernetes cluster (e.g. Docker Desktop, minikube, kind, or a remote cluster) with **8+ CPUs / 16 GB RAM**
 
 ## Quick Start
 
@@ -18,7 +18,7 @@ Just run skill: `/dev-env install`
 
 ### 1. Configure your cluster
 
-Copy the example and edit to match your local cluster:
+Copy the example and edit to match your cluster:
 
 ```bash
 cp .env.example .env
@@ -27,7 +27,7 @@ cp .env.example .env
 Then edit `.env`:
 
 ```bash
-# Set your local Kubernetes context
+# Set your Kubernetes context
 DATASPOKE_DEV_KUBE_CLUSTER=minikube
 ```
 
@@ -59,8 +59,8 @@ This takes approximately 5-10 minutes on the first run while container images ar
 ./datahub-port-forward.sh --stop   # stop both and clean up PIDs
 ```
 
-| Endpoint | Local URL | Purpose |
-|----------|-----------|---------|
+| Endpoint | Forwarded URL | Purpose |
+|----------|---------------|---------|
 | DataHub UI | http://localhost:9002 | Web UI, GraphiQL |
 | DataHub GMS | http://localhost:9004 | REST API, Swagger UI, SDK target |
 
@@ -73,8 +73,8 @@ Credentials: `datahub` / `datahub`
 ./dataspoke-port-forward.sh --stop # stop all and clean up PIDs
 ```
 
-| Service | Local Address | Purpose |
-|---------|--------------|---------|
+| Service | Forwarded Address | Purpose |
+|---------|-------------------|---------|
 | PostgreSQL | localhost:9201 | DataSpoke operational DB |
 | Redis | localhost:9202 | Cache, rate limiting |
 | Qdrant HTTP | localhost:9203 | Vector DB REST API |
@@ -91,8 +91,8 @@ When multiple testers share a single machine, use the lock service to coordinate
 ./lock-port-forward.sh --stop   # stop it
 ```
 
-| Endpoint | Local URL | Purpose |
-|----------|-----------|---------|
+| Endpoint | Forwarded URL | Purpose |
+|----------|---------------|---------|
 | Lock API | http://localhost:9221 | Dev-env mutex REST API |
 
 **API reference:**
@@ -158,8 +158,8 @@ Forward example PostgreSQL and Kafka:
 ./dummy-data-port-forward.sh --stop # stop and clean up PIDs
 ```
 
-| Service | Local Address | Credentials |
-|---------|--------------|-------------|
+| Service | Forwarded Address | Credentials |
+|---------|-------------------|-------------|
 | PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` (database: `example_db`) |
 | Kafka | localhost:9104 | — |
 

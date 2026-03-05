@@ -1,7 +1,6 @@
 ---
 name: prauto-check-status
-description: Check prauto issue/PR status across all lifecycle labels and predict next heartbeat action.
-argument-hint: [filter]
+description: Query GitHub to display prauto-managed issues and PRs across lifecycle labels (ready, wip, plan-review, review, done, failed) and predict the next heartbeat action. Use when the user asks about prauto work status, backlog, specific issue pickup, failed jobs, PR approval/merge readiness, reviewer feedback, quota-pause state, or wants a status dashboard.
 allowed-tools: Bash(gh *), Bash(jq *), Bash(cat *), Bash(date *), Bash(export *), Read
 ---
 

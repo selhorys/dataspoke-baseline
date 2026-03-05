@@ -1,6 +1,6 @@
 ---
 name: datahub-api
-description: Answer questions about DataHub's data model and write/test Python code that interacts with DataHub APIs. Use when the task involves DataHub GraphQL queries, REST/OpenAPI calls, acryl-datahub SDK usage, or questions about DataHub's data model.
+description: Reference and coding guide for DataHub integration in backend development. Use when implementing or debugging code that touches DataHub — entities (datasets, dashboards, charts), aspects (ownership, tags, domains, glossary terms, structured properties), lineage, assertions, URNs, ingestion/emission, GraphQL, REST, or the acryl-datahub Python SDK. Also answers data-modeling questions and helps choose native DataHub features vs custom extensions. Trigger this skill whenever a task involves DataHub metadata, lineage, ingestion, or any DataHub API surface, even without explicit mention of "API".
 argument-hint: <task>
 allowed-tools: Read, Grep, Glob, Bash(python3 *), Bash(pip3 *), Bash(curl *)
 ---

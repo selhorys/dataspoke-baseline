@@ -1,9 +1,9 @@
 # DataSpoke Umbrella Chart — Dev Overlay
-# Infrastructure only. Application subcharts disabled (run locally).
+# Infrastructure only. Application subcharts disabled (run on the host).
 # Used by: dev_env/dataspoke-infra/install.sh
 
 # ---------------------------------------------------------------------------
-# Application components: disabled (developers run them locally)
+# Application components: disabled (developers run them on the host)
 # ---------------------------------------------------------------------------
 frontend:
   enabled: false

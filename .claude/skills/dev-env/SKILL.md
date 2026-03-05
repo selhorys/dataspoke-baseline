@@ -1,6 +1,6 @@
 ---
 name: dev-env
-description: Manage the local DataSpoke development environment — install, uninstall, port-forward, and check status.
+description: Manage the kubernetes-based DataSpoke development environment — install, uninstall, port-forward, and check status.
 disable-model-invocation: true
 user-invocable: true
 argument-hint: [install|uninstall|port-forward|status] [component...]
@@ -81,7 +81,7 @@ All actions start here:
    - **DataSpoke infra**: `./dev_env/dataspoke-port-forward.sh` → PostgreSQL `:9201`, Redis `:9202`, Qdrant `:9203`/`:9204`, Temporal `:9205`
    - **Dummy data**: `./dev_env/dummy-data-port-forward.sh` → PostgreSQL `:9102`, Kafka `:9104`
    - **Lock service**: `./dev_env/lock-port-forward.sh` → API `:9221`
-3. Show how to run DataSpoke app services locally:
+3. Show how to run DataSpoke app services on the host:
    - `source dev_env/.env`
    - Frontend: `cd src/frontend && npm run dev` (http://localhost:3000)
    - API: `cd src/api && uvicorn main:app --reload --port 8000`

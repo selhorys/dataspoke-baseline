@@ -1,6 +1,6 @@
-# DataHub prerequisites Helm values — local dev sizing
+# DataHub prerequisites Helm values — dev sizing
 # Chart: datahub/datahub-prerequisites version 0.2.1
-# Target cluster: 8 CPU / 14 GB RAM (minikube)
+# Target cluster: 8 CPU / 14 GB RAM
 # All components use replicaCount: 1 for minimal resource usage.
 # Total memory limits (prerequisites): ~3.3 GiB of ~7 GiB cluster-wide budget
 

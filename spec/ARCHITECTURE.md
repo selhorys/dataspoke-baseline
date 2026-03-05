@@ -478,7 +478,7 @@ All runtime configuration is driven by **environment variables** with two tiers:
 | `DATASPOKE_DEV_*` | Dev environment only | `dev_env/*.sh` scripts |
 | `DATASPOKE_*` (no `DEV`) | Application runtime | DataSpoke app code (FastAPI, workers, frontend) |
 
-Dev-only variables (`DATASPOKE_DEV_*`) configure local Kubernetes cluster settings, namespace names, chart versions, and port-forward ports. The application code never reads them.
+Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, namespace names, chart versions, and port-forward ports. The application code never reads them.
 
 Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values differ. In dev, they point to `localhost` (port-forwarded from k8s). In production, they are injected via Helm values → Kubernetes ConfigMap/Secret.
 
@@ -486,7 +486,7 @@ Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod
 
 | Group | Variables | Purpose |
 |-------|-----------|---------|
-| DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_DATAHUB_KAFKA_BROKERS` | GMS endpoint for SDK read/write, personal access token (empty in local dev), Kafka brokers for MCE/MAE events |
+| DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_DATAHUB_KAFKA_BROKERS` | GMS endpoint for SDK read/write, personal access token (empty in dev), Kafka brokers for MCE/MAE events |
 | PostgreSQL | `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_POSTGRES_PORT`, `DATASPOKE_POSTGRES_USER`, `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_POSTGRES_DB` | Operational DB for ingestion configs, quality results, health scores, ontology graph |
 | Redis | `DATASPOKE_REDIS_HOST`, `DATASPOKE_REDIS_PORT`, `DATASPOKE_REDIS_PASSWORD` | Cache for validation results, API responses, rate limiting |
 | Qdrant | `DATASPOKE_QDRANT_HOST`, `DATASPOKE_QDRANT_HTTP_PORT`, `DATASPOKE_QDRANT_GRPC_PORT`, `DATASPOKE_QDRANT_API_KEY` | Vector DB for semantic search, embedding storage |
@@ -499,22 +499,22 @@ Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod
 |-------|-----------|---------|
 | Cluster & namespaces | `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE` | Cluster context and namespace targeting |
 | Chart versions | `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION` | Helm chart version pins |
-| Port-forward | `DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_*` (UI, GMS, Kafka), `DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_*` | Local port mappings |
+| Port-forward | `DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_*` (UI, GMS, Kafka), `DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_*` | Port mappings |
 
 For production, secrets (`DATASPOKE_LLM_API_KEY`, `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, etc.) are stored as Kubernetes Secrets and referenced by deployments. Configuration flows through the umbrella Helm chart: Helm values → ConfigMap/Secret → container environment. See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
 
 For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
 
-### Local Development
+### Development Environment
 
-For dev/CI, DataHub and DataSpoke infrastructure dependencies are provisioned locally via `dev_env/`:
+For dev/CI, DataHub and DataSpoke infrastructure dependencies are provisioned via `dev_env/`:
 ```bash
 cd dev_env && ./install.sh    # Install DataHub + DataSpoke infra + examples (5–10 min first run)
 cd dev_env && ./uninstall.sh  # Tear down
 # Settings: dev_env/.env (DATASPOKE_DEV_* for cluster config, DATASPOKE_* for app config)
 ```
 
-The dev environment installs only **infrastructure dependencies** (PostgreSQL, Redis, Qdrant, Temporal) into the cluster. DataSpoke application services (frontend, API, workers) run locally on the developer's host, connecting to port-forwarded infrastructure services. See [`spec/feature/DEV_ENV.md` §Running DataSpoke Locally](feature/DEV_ENV.md#running-dataspoke-locally).
+The dev environment installs only **infrastructure dependencies** (PostgreSQL, Redis, Qdrant, Temporal) into the cluster. DataSpoke application services (frontend, API, workers) run on the developer's host, connecting to port-forwarded infrastructure services. See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md).
 
 The bundled dev environment is **NOT** for production. For production Kubernetes deployment, see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 
@@ -525,7 +525,7 @@ The bundled dev environment is **NOT** for production. For production Kubernetes
 ```
 dataspoke-baseline/
 ├── api/                # Standalone OpenAPI 3.0 specs (API-first)
-├── dev_env/            # Local Kubernetes dev environment
+├── dev_env/            # Kubernetes dev environment
 ├── helm-charts/        # Kubernetes deployment manifests
 ├── docker-images/      # Dockerfiles for each service (multi-stage builds)
 ├── spec/               # Architecture and feature specifications

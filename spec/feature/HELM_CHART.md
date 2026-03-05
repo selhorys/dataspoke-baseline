@@ -121,7 +121,7 @@ Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`, `
 
 Sensitive: `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_POSTGRES_USER/PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_QDRANT_API_KEY`, `DATASPOKE_LLM_API_KEY`.
 
-All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/Secret creation is disabled (`createConfigMap: false`, `createSecret: false`) — the locally-running app reads env vars directly from `dev_env/.env`.
+All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/Secret creation is disabled (`createConfigMap: false`, `createSecret: false`) — the host-running app reads env vars directly from `dev_env/.env`.
 
 ---
 
@@ -138,7 +138,7 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 
 ### Dev (`values-dev.yaml`)
 
-- Application subcharts disabled — developers run them locally
+- Application subcharts disabled — developers run them on the host
 - Single replicas, reduced resource limits
 - PostgreSQL initdb creates Temporal databases (`temporal`, `temporal_visibility`)
 - Temporal schema setup/migration jobs enabled; Web UI disabled
@@ -243,7 +243,7 @@ helm upgrade --install dataspoke ./helm-charts/dataspoke \
   --set secrets.createSecret=true
 ```
 
-This is **not** the default development workflow — every code change requires a container rebuild and `helm upgrade`. Use only when the user explicitly requests it. For normal development, run application services locally and connect to port-forwarded infrastructure. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+This is **not** the default development workflow — every code change requires a container rebuild and `helm upgrade`. Use only when the user explicitly requests it. For normal development, run application services on the host and connect to port-forwarded infrastructure. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 ---
 
@@ -255,5 +255,5 @@ This is **not** the default development workflow — every code change requires 
 - [Qdrant Helm Chart](https://github.com/qdrant/qdrant-helm)
 - [Temporal Helm Chart](https://github.com/temporalio/helm-charts)
 - [External Secrets Operator](https://external-secrets.io/) — production secrets management
-- [DEV_ENV.md](DEV_ENV.md) — Local development environment specification
+- [DEV_ENV.md](DEV_ENV.md) — Development environment specification
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System architecture and deployment topology
