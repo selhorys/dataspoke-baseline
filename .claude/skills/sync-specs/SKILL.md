@@ -1,6 +1,13 @@
 ---
 name: sync-specs
-description: Propagate spec changes to sibling/parent specs and harness docs. Use when a spec document is created, modified, or deleted and dependent documents need updating.
+description: >-
+  Propagate spec changes to sibling/parent specs and harness docs.
+  Use when a spec is created, modified, or deleted and dependent documents need updating —
+  including updating references in ARCHITECTURE.md, README.md, CLAUDE.md, or USE_CASE;
+  adding new specs to feature mapping tables; fixing cross-references between related specs;
+  or removing dead links. Invoke this skill whenever you need to "update parent/sibling spec references",
+  "keep specs consistent", or "propagate changes up/down the spec hierarchy",
+  even without an explicit user request.
 argument-hint: <spec-file-path> [new|modified|deleted]
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 ---

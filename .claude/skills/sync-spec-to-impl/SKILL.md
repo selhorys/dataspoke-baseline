@@ -1,6 +1,12 @@
 ---
 name: sync-spec-to-impl
-description: Synchronize DataSpoke specification documents with current implementation state. Use when specs and implementations have drifted and need reconciliation.
+description: >-
+  Reverse-sync DataSpoke specs from implementation: update spec documents to match
+  what code actually does (impl → spec). Detects structural drift, naming mismatches,
+  undocumented features, and stale references across scopes (prauto, ai-scaffold,
+  dev-env, helm-charts, api, ref, backend, frontend). Trigger when specs are outdated,
+  the user wants to audit spec vs code, or implementation has changed and docs need
+  catching up.
 argument-hint: [prauto|ai-scaffold|dev-env|helm-charts|api|ref|backend|frontend|all]
 allowed-tools: Read, Write, Edit, Glob, Grep
 ---
