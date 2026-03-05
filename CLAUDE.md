@@ -23,7 +23,7 @@ Settings in `dev_env/.env`. See `dev_env/README.md` for access details and port-
 - **Temporal** for orchestration, **Qdrant** for vector search, **PostgreSQL** for operational DB
 - **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/feature/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows, DB schema
 
-## Spec Hierarchy
+## Spec Convention
 
 Specs must not contradict each other — propagate changes up and down. Priority order:
 
@@ -37,6 +37,8 @@ Specs must not contradict each other — propagate changes up and down. Priority
 | 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |
 
 When both `_en.md` and `_kr.md` exist, read only English unless directed otherwise. Write Korean in plain style (-다/-한다).
+
+In spec, focus on architecture, decisions, and constraints. From spec, remove verbatim template code, full code blocks, and script snippets that duplicate the impl files.
 
 ## Git Commit Convention
 
