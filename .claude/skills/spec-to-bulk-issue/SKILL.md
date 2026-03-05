@@ -8,7 +8,7 @@ description: >-
   implementation issues from specs, or revise existing issues.
 argument-hint: "write [<spec-path> ...] | revise [<glob>] | register [<glob>]"
 user-invocable: true
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(gh *), Bash(mkdir *)
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(gh *), Bash(mkdir *), Bash(bash *register-issues*)
 ---
 
 ## Overview
@@ -222,39 +222,21 @@ Glob for `issues/*.md` files. If `$ARGUMENTS` contains a specific glob or file l
 
 Sort files by their numeric prefix (ascending) so earlier-order issues are registered first.
 
-### Step 2 — Verify GitHub auth
+### Step 2 — Run the helper script
+
+Use the helper script at `.claude/skills/spec-to-bulk-issue/register-issues.sh` which handles auth verification, title/body parsing, and sequential `gh issue create` calls:
 
 ```bash
-gh auth status
+bash .claude/skills/spec-to-bulk-issue/register-issues.sh <file1> <file2> ...
 ```
 
-Confirm authentication is via the user's local account (not prauto). If auth fails, stop and inform the user.
+The script:
+1. Verifies `gh auth status`
+2. Resolves the repo name via `gh repo view`
+3. For each file (in argument order): extracts title (line 3), body (everything after `# Body`), calls `gh issue create --label "prauto:ready"`
+4. Prints a summary table: filename, issue number, URL
 
-### Step 3 — Get repo name
+### Step 3 — Summary
 
-```bash
-gh repo view --json nameWithOwner -q '.nameWithOwner'
-```
-
-### Step 4 — Register each issue
-
-For each issue file, in numeric order:
-
-1. Parse the `# Title` line to extract the issue title.
-2. Parse everything after `# Body` as the issue body.
-3. Create the GitHub issue:
-
-```bash
-gh issue create \
-  --repo <repo> \
-  --title "<title>" \
-  --label "prauto:ready" \
-  --body "<body>"
-```
-
-4. Print the resulting issue URL after each creation.
-
-### Step 5 — Summary
-
-Print a table of all registered issues: local filename, GitHub issue number, URL.
+Relay the script's summary table to the user. If any files were skipped, note why.
 
