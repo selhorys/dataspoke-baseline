@@ -120,6 +120,8 @@ Portal-style interface with user-group-specific entry points (DE, DA, DG). Provi
 - Real-time updates via WebSocket for validation status and alerts
 - Search interface for natural language queries (DA)
 
+For layout, shared components, routing, and auth, see [`spec/feature/FRONTEND_BASIC.md`](feature/FRONTEND_BASIC.md). Per-workspace specs: [`FRONTEND_DE.md`](feature/FRONTEND_DE.md), [`FRONTEND_DA.md`](feature/FRONTEND_DA.md), [`FRONTEND_DG.md`](feature/FRONTEND_DG.md).
+
 ```
 src/frontend/
 ├── app/            # Next.js pages per user group (de, da, dg)
@@ -529,7 +531,7 @@ dataspoke-baseline/
 ├── helm-charts/        # Kubernetes deployment manifests
 ├── docker-images/      # Dockerfiles for each service (multi-stage builds)
 ├── spec/               # Architecture and feature specifications
-│   ├── feature/        # Cross-cutting feature specs
+│   ├── feature/        # Cross-cutting feature specs (API, BACKEND, FRONTEND_*, DEV_ENV, HELM_CHART)
 │   └── feature/spoke/  # User-group-specific feature specs (DE/DA/DG)
 ├── src/
 │   ├── frontend/       # Next.js (pages per user group: de, da, dg)
