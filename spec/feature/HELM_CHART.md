@@ -30,6 +30,7 @@ Production Deployment                    Dev Deployment (dev_env)
 │  frontend  ✓           │              │  frontend  ✗           │
 │  api       ✓           │              │  api       ✗           │
 │  workers   ✓           │              │  workers   ✗           │
+│  event-consumer (opt)  │              │  event-consumer ✗      │
 │  temporal  ✓           │              │  temporal  ✓           │
 │  qdrant    ✓           │              │  qdrant    ✓           │
 │  postgresql ✓          │              │  postgresql ✓          │
@@ -63,7 +64,8 @@ helm-charts/dataspoke/
 ├── subcharts/
 │   ├── frontend/               # Next.js — Deployment + Service + Ingress
 │   ├── api/                    # FastAPI — Deployment + Service + Ingress
-│   └── workers/                # Temporal worker — Deployment only (no service)
+│   ├── workers/                # Temporal worker — Deployment only (no service)
+│   └── event-consumer/         # Kafka consumer — Deployment only (no service)
 └── charts/                     # Fetched subchart archives (helm dep update)
 ```
 
@@ -74,6 +76,7 @@ helm-charts/dataspoke/
 | frontend | `file://subcharts/frontend` | 0.1.0 | `frontend.enabled` |
 | api | `file://subcharts/api` | 0.1.0 | `api.enabled` |
 | workers | `file://subcharts/workers` | 0.1.0 | `workers.enabled` |
+| event-consumer | `file://subcharts/event-consumer` | 0.1.0 | `event-consumer.enabled` |
 | postgresql | `bitnami/postgresql` | ~18.5.0 | `postgresql.enabled` |
 | redis | `bitnami/redis` | ~25.3.0 | `redis.enabled` |
 | qdrant | `qdrant/qdrant` | ~1.17.0 | `qdrant.enabled` |
@@ -90,6 +93,7 @@ Tilde ranges allow patch-level updates. Exact resolved versions are locked in `C
 | frontend | Deployment | enabled | **disabled** | no |
 | api | Deployment | enabled | **disabled** | no |
 | workers | Deployment | enabled | **disabled** | no |
+| event-consumer | Deployment | **disabled** | **disabled** | no |
 | postgresql | StatefulSet | enabled | enabled | yes (PV) |
 | redis | Deployment | enabled | enabled | no |
 | qdrant | StatefulSet | enabled | enabled | yes (PV) |
@@ -149,6 +153,7 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 
 - **Temporal persistence**: Temporal reuses the parent chart's PostgreSQL instance rather than deploying its own datastore. The dev profile creates the required databases via PostgreSQL `initdb` scripts. Temporal persistence credentials are injected at install time via `--set`.
 - **Profile switching**: Dev and production use the same chart — only the values file differs. `dev_env/dataspoke-infra/install.sh` is a thin wrapper that creates K8s secrets from `.env` and runs `helm upgrade --install` with `values-dev.yaml`.
+- **Event consumer separation**: The Kafka event consumer can optionally be deployed as a standalone pod (`event-consumer.enabled`), separate from the Temporal workers. By default, both processes are co-located in the `workers` deployment. Enable the event-consumer subchart for independent scaling and fault isolation in production — Kafka consumers scale by partition count, Temporal workers by activity throughput. When `event-consumer.enabled=true`, the workers deployment should disable its embedded consumer via `DATASPOKE_KAFKA_CONSUMER_ENABLED=false`.
 
 ---
 
@@ -184,11 +189,14 @@ Two approaches:
 | frontend | 2 | 250m / 500m | 256Mi / 512Mi | — |
 | api | 2 | 500m / 1000m | 512Mi / 1024Mi | — |
 | workers | 2 | 500m / 1000m | 1024Mi / 2048Mi | — |
+| event-consumer† | 1 | 250m / 500m | 512Mi / 1024Mi | — |
 | postgresql | 1 | 500m / 1000m | 1024Mi / 2048Mi | 50Gi |
 | redis | 1+1 | 250m / 500m | 256Mi / 512Mi | — |
 | qdrant | 1 | 500m / 1000m | 1024Mi / 2048Mi | 50Gi |
 | temporal | 1 | 500m / 1000m | 1024Mi / 2048Mi | — |
 | **Total** | | **~5500m / ~11000m** | **~8.5Gi / ~17Gi** | **100Gi** |
+
+† event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m CPU and ~512Mi/1024Mi memory.
 
 ### Dev Minimums
 
@@ -241,6 +249,7 @@ helm upgrade --install dataspoke ./helm-charts/dataspoke \
   --set workers.enabled=true \
   --set config.createConfigMap=true \
   --set secrets.createSecret=true
+  # Optionally add: --set event-consumer.enabled=true
 ```
 
 This is **not** the default development workflow — every code change requires a container rebuild and `helm upgrade`. Use only when the user explicitly requests it. For normal development, run application services on the host and connect to port-forwarded infrastructure. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).

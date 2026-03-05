@@ -160,7 +160,7 @@ src/api/
 
 **Technology**: Python 3.13, Temporal for orchestration
 
-Core computational layer. For the full backend specification — layered architecture, shared services, Temporal workflows, database schema, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
+Core computational layer. For the full backend specification — layered architecture, shared services, Temporal workflows, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL schema, Qdrant collections) in [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
 
 **Key capabilities by domain**:
 
@@ -444,18 +444,21 @@ DataHub exists in a separate namespace or cluster. DataSpoke deploys into its ow
 
 ```
 Namespace: dataspoke
-├── dataspoke-frontend    (Deployment)    Ingress: /app/*
-├── dataspoke-api         (Deployment)    Ingress: /api/*
-├── dataspoke-workers     (Deployment)    — no ingress
-├── temporal-server       (Deployment)
-├── qdrant                (StatefulSet, PV)
-├── postgresql            (StatefulSet, PV)
-└── redis                 (Deployment)
+├── dataspoke-frontend         (Deployment)    Ingress: /app/*
+├── dataspoke-api              (Deployment)    Ingress: /api/*
+├── dataspoke-workers          (Deployment)    — no ingress (Temporal activities)
+├── dataspoke-event-consumer   (Deployment)    — no ingress (Kafka consumer) [optional]
+├── temporal-server            (Deployment)
+├── qdrant                     (StatefulSet, PV)
+├── postgresql                 (StatefulSet, PV)
+└── redis                      (Deployment)
 
 External Dependencies:
   datahub-gms:8080    (GraphQL / REST)
   datahub-kafka:9092  (Event streaming)
 ```
+
+`dataspoke-event-consumer` is optional — by default Kafka consumers are co-located in `dataspoke-workers`. Enable the separate pod for independent scaling in production (Kafka consumers scale by partition count; Temporal workers by activity throughput). See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 
 Replica counts, resource requests/limits, and PV sizes are configurable via Helm values. The table below shows **minimum requirements** for a functional single-node deployment:
 
@@ -464,10 +467,13 @@ Replica counts, resource requests/limits, and PV sizes are configurable via Helm
 | dataspoke-frontend | 1 | 256Mi | 0.25 | — |
 | dataspoke-api | 1 | 512Mi | 0.5 | — |
 | dataspoke-workers | 1 | 1Gi | 0.5 | — |
+| dataspoke-event-consumer† | 1 | 512Mi | 0.25 | — |
 | temporal-server | 1 | 1Gi | 0.5 | — |
 | qdrant | 1 | 1Gi | 0.5 | 10Gi |
 | postgresql | 1 | 512Mi | 0.5 | 10Gi |
 | redis | 1 | 256Mi | 0.25 | — |
+
+† Optional — disabled by default; enable via `event-consumer.enabled`.
 
 **Network**: DataSpoke namespace requires access to DataHub namespace. Configure NetworkPolicy if using strict policies.
 
@@ -531,7 +537,7 @@ dataspoke-baseline/
 ├── helm-charts/        # Kubernetes deployment manifests
 ├── docker-images/      # Dockerfiles for each service (multi-stage builds)
 ├── spec/               # Architecture and feature specifications
-│   ├── feature/        # Cross-cutting feature specs (API, BACKEND, FRONTEND_*, DEV_ENV, HELM_CHART)
+│   ├── feature/        # Cross-cutting feature specs (API, BACKEND, BACKEND_SCHEMA, FRONTEND_*, DEV_ENV, HELM_CHART)
 │   └── feature/spoke/  # User-group-specific feature specs (DE/DA/DG)
 ├── src/
 │   ├── frontend/       # Next.js (pages per user group: de, da, dg)

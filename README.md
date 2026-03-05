@@ -239,7 +239,8 @@ See [`spec/feature/DEV_ENV.md`](spec/feature/DEV_ENV.md) for the full variable l
 | [spec/DATAHUB_INTEGRATION.md](spec/DATAHUB_INTEGRATION.md) | DataHub SDK/API patterns |
 | [spec/API_DESIGN_PRINCIPLE_en.md](spec/API_DESIGN_PRINCIPLE_en.md) | REST API conventions |
 | [spec/feature/API.md](spec/feature/API.md) | API layer design: routes, auth, middleware, error codes |
-| [spec/feature/BACKEND.md](spec/feature/BACKEND.md) | Backend layer: services, workflows, DB schema, infrastructure integration |
+| [spec/feature/BACKEND.md](spec/feature/BACKEND.md) | Backend layer: services, workflows, infrastructure integration |
+| [spec/feature/BACKEND_SCHEMA.md](spec/feature/BACKEND_SCHEMA.md) | Backend data contracts: PostgreSQL schema, Qdrant collections |
 | [spec/feature/FRONTEND_BASIC.md](spec/feature/FRONTEND_BASIC.md) | Frontend: basic layout, shared components, auth, routing |
 | [spec/feature/FRONTEND_DE.md](spec/feature/FRONTEND_DE.md) | Frontend: Data Engineering workspace |
 | [spec/feature/FRONTEND_DA.md](spec/feature/FRONTEND_DA.md) | Frontend: Data Analysis workspace |

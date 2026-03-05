@@ -21,7 +21,7 @@ Settings in `dev_env/.env`. See `dev_env/README.md` for access details and port-
 - **API-first**: OpenAPI specs in `api/` as standalone artifacts; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
 - **Temporal** for orchestration, **Qdrant** for vector search, **PostgreSQL** for operational DB
-- **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/feature/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows, DB schema; `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
+- **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/feature/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows; `spec/feature/BACKEND_SCHEMA.md` for DB schema, Qdrant collections; `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
 
 ## Spec Convention
 
