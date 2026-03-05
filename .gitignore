@@ -17,3 +17,4 @@ memory/
 .prauto/*.local.*
 .prauto/state/
 .prauto/worktrees/
+issues/
