@@ -60,6 +60,23 @@ Each agent reads the spec and the output of previous agents as context.
 For spec authoring, use `/plan-doc` directly.
 For testing conventions (unit/integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
 
+## Integration Test Protocol
+
+Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
+
+**Infrastructure**: host mode against port-forwarded dev-env infra. Ensure port-forwards are active before running tests.
+
+**Lock protocol**: acquire the dev-env advisory lock before any state-mutating operation.
+
+**Data reset**: always run `dev_env/dummy-data-reset.sh` before and after test runs.
+
+**Test data**: all scenarios use **Imazon** as the canonical company context — do not invent alternative test companies. 
+
+**Assertion rules**:
+- Never hardcode row counts — query actual counts within the test
+- Never hardcode surrogate IDs — look up by stable natural key (ISBN, URN, email)
+- Never assert on wall-clock timestamps — assert on relative ordering or freshness windows
+
 ## Testing prauto
 
 Due to Claude's nested-run limit, testing `.prauto/heartbeat.sh` from inside a Claude Code session requires unsetting the `CLAUDECODE` env var:
