@@ -1,0 +1,31 @@
+[project]
+name = "dataspoke-shared"
+version = "0.1.0"
+description = "DataSpoke shared domain models, exceptions, and constants"
+requires-python = "==3.13.*"
+dependencies = [
+    "pydantic>=2.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "mypy>=1.14",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["../../tests/unit/shared"]
