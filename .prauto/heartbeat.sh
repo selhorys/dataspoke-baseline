@@ -282,6 +282,7 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
             run_pr_review "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" "$ACTIONABLE_COMMENTS"
             push_branch "$REVIEW_PR_BRANCH"
             create_or_update_pr "$CUR_ISSUE_NUMBER" "" "$REVIEW_PR_BRANCH"
+            run_and_post_test_results "$REVIEW_PR_BRANCH"
             post_review_response_comment "$REVIEW_PR_NUMBER" "$REVIEW_RESPONSE"
             post_feedback_addressed_comment "$REVIEW_PR_NUMBER"
             complete_job "$CUR_ISSUE_NUMBER"
