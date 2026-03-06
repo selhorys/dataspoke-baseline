@@ -92,7 +92,7 @@ run_integration_tests_with_protocol() {
   # Run integration tests (signal conftest that lock is pre-acquired)
   info "Running integration tests..."
   local integ_output integ_exit=0
-  integ_output=$(DATASPOKE_LOCK_PREACQUIRED=1 pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
+  integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
 
   # Reset dummy data after tests
   if [[ -x "$reset_script" ]]; then

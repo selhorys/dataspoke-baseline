@@ -161,6 +161,8 @@ curl -s -X POST http://localhost:9221/lock/acquire \
 
 Do not proceed past this step if you receive `409`. The lock is advisory; bypassing it risks corrupting shared state for other testers.
 
+When an outer process (e.g. prauto) has already acquired the lock, set `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` before running pytest so that `conftest.py` skips the lock acquire/release cycle.
+
 #### Step 3 — Reset dummy data
 
 Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty:

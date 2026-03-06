@@ -76,7 +76,7 @@ async def async_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSessio
 @pytest.fixture(scope="session", autouse=True)
 def acquire_lock() -> None:
     # When run from prauto phases.sh, the lock is already held externally.
-    if os.environ.get("DATASPOKE_LOCK_PREACQUIRED"):
+    if os.environ.get("DATASPOKE_DEV_ENV_LOCK_PREACQUIRED"):
         yield  # type: ignore[misc]
         return
 
