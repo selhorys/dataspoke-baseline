@@ -103,32 +103,37 @@ For each: show `#number — title`. These need manual intervention.
 
 ## Part 2: Next Heartbeat Prediction
 
-Based on the data collected above, simulate the heartbeat decision tree from `heartbeat.sh` and describe **exactly what would happen** on the next heartbeat run. Follow this priority order (heartbeat processes only ONE action per run):
+Based on the data collected above, simulate the heartbeat decision tree from `heartbeat.sh` and describe **exactly what would happen** on the next heartbeat run. The heartbeat has two stages: (1) claim new work if under limit, (2) process all claimed issues.
 
-### Decision tree
+### Stage 1: Claim new issue
 
-1. **WIP issue on GitHub** (`prauto:wip` + assigned to this worker)?
-   - Yes → derive phase from GitHub (PR exists → `pr`, `prauto:plan-review` label → `plan-approval`, plan approved → `implementation`, nothing → `analysis`), count heartbeat comments for retry estimate.
-     - If phase is `plan-approval`: "Will check if plan approval has been given. No heartbeat comment posted (retries not counted for waiting)."
-     - If phase is `analysis`: "Will re-run analysis from scratch (attempt N/max)."
-     - If phase is `implementation`: "Will start fresh implementation session — Claude checks branch for existing work (attempt N/max)."
-     - If phase is `pr-review`: "Will address reviewer feedback with fresh session (attempt N/max)."
-     - If phase is `pr`: "Will push branch and create/update PR (attempt N/max)."
-     - If heartbeat comment count >= max retries: "Will **abandon** issue — max retries exceeded."
-     - If the issue has a `<!-- prauto:quota-paused -->` marker in its latest prauto comment: "Note: heartbeat will first check quota — if still exhausted, it will re-pause without doing work."
-   - No → continue to step 2.
+Count all open issues assigned to this worker with any `prauto:` label. Compare against `PRAUTO_OPEN_ISSUE_LIMIT`.
 
-2. **Approved + mergeable PR exists** (from 1c above — org-member approved, MERGEABLE, CLEAN)?
-   - Yes → "Heartbeat will **squash-finalize** PR #N (branch: B). Will rebase, squash commits, generate commit message via Claude, force-push, and label as `prauto:done`."
-   - No → continue to step 3.
+- If count >= limit: "Will **skip** new issue pickup (${count}/${limit} open issues)."
+- If count < limit:
+  - If eligible `prauto:ready` issue exists (from 1a — org member authored, no wip/review label): "Will **claim** issue #N."
+  - If no eligible issue: "No eligible issues to claim."
 
-3. **PR with unaddressed reviewer comments** (from 1c — CHANGES_REQUESTED or COMMENTED reviews with unaddressed comments)?
-   - Yes → "Heartbeat will **address reviewer feedback** on PR #N. Will create a monitoring state, run Claude in PR-review mode, push fixes."
-   - No → continue to step 4.
+### Stage 2: Process all claimed issues
 
-4. **Eligible issue with `prauto:ready`** (from 1a — org member authored, no wip/review label)?
-   - Yes → "Heartbeat will **claim** issue #N and start analysis phase."
-   - No → "Heartbeat will find **no work to do** and exit."
+List all claimed issues (oldest first). For each, predict the action:
+
+**For `prauto:wip` issues** — derive phase from GitHub (PR exists → `pr`, `prauto:plan-review` label → `plan-approval`, plan approved → `implementation`, nothing → `analysis`), count heartbeat comments for retry estimate.
+- If phase is `plan-approval` + no response: "Will **skip** — waiting for plan approval."
+- If phase is `plan-approval` + approved: "Will start **implementation**."
+- If phase is `plan-approval` + counter-proposal: "Will **revise plan** based on feedback."
+- If phase is `analysis`: "Will re-run **analysis** from scratch (attempt N/max)."
+- If phase is `implementation`: "Will start fresh **implementation** session — Claude checks branch for existing work (attempt N/max)."
+- If phase is `pr`: "Will **push branch** and create/update PR (attempt N/max)."
+- If heartbeat comment count >= max retries: "Will **abandon** issue — max retries exceeded."
+- If the issue has a `<!-- prauto:quota-paused -->` marker: note quota-paused state.
+
+**For `prauto:review` issues** — check PR status via `check_review_pr()`:
+- If approved + mergeable + CLEAN: "Will **squash-finalize** PR #N."
+- If unaddressed reviewer comments: "Will **address reviewer feedback** on PR #N."
+- Otherwise: "Will **skip** — waiting for review."
+
+**For `prauto:done` / `prauto:failed` issues**: "Will **skip** (terminal state)."
 
 ### Additional notes
 

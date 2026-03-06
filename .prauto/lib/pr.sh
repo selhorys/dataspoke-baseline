@@ -69,202 +69,41 @@ ${commit_log}
   info "PR created for issue #${issue_number}."
 }
 
-# Find open PRs with unaddressed reviewer comments.
-# Sets: ACTIONABLE_PR_NUMBER, ACTIONABLE_PR_BRANCH, ACTIONABLE_PR_ISSUE, ACTIONABLE_COMMENTS
-# Returns 0 if found, 1 if none.
-find_actionable_prs() {
-  local prs_json
-  prs_json=$(gh pr list \
-    -R "$PRAUTO_GITHUB_REPO" \
-    --state open \
-    --json number,headRefName,reviews,labels,assignees \
-    --limit 50 2>/dev/null) || {
-    warn "Failed to list PRs."
-    return 1
-  }
+# Check PR status for a prauto:review issue and determine the next action.
+# Priority: squash-finalize (approved+clean) > address feedback > waiting.
+# Usage: check_review_pr <issue_number>
+# Sets: REVIEW_PR_NUMBER, REVIEW_PR_BRANCH, REVIEW_PR_ACTION ("squash_ready"|"feedback_needed")
+#       REVIEW_PR_TITLE, REVIEW_PR_BODY (for squash_ready)
+#       ACTIONABLE_COMMENTS (for feedback_needed)
+# Returns 0 if actionable, 1 if waiting/no-pr.
+check_review_pr() {
+  local issue_number="$1"
+  REVIEW_PR_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${issue_number}"
+  REVIEW_PR_ACTION=""
 
-  # Filter PRs on prauto branches that have prauto:review label and are assigned to this worker
-  local prauto_prs
-  prauto_prs=$(echo "$prs_json" | jq -r \
-    --arg prefix "$PRAUTO_BRANCH_PREFIX" \
-    --arg review_label "$PRAUTO_GITHUB_LABEL_REVIEW" \
-    --arg actor "$PRAUTO_GITHUB_ACTOR" '
-    [.[] | select(
-      (.headRefName | startswith($prefix)) and
-      (.labels | map(.name) | index($review_label) != null) and
-      (.assignees | map(.login) | index($actor) != null)
-    )]
-    | sort_by(.number)
-  ')
+  # Find PR for this branch
+  local pr_list_json
+  pr_list_json=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$REVIEW_PR_BRANCH" \
+    --json number,title,body --jq '.[0] // empty' 2>/dev/null)
+  [[ -z "$pr_list_json" ]] && return 1
 
-  local pr_count
-  pr_count=$(echo "$prauto_prs" | jq 'length')
+  REVIEW_PR_NUMBER=$(echo "$pr_list_json" | jq -r '.number')
+  REVIEW_PR_TITLE=$(echo "$pr_list_json" | jq -r '.title')
+  REVIEW_PR_BODY=$(echo "$pr_list_json" | jq -r '.body // ""')
 
-  if [[ "$pr_count" -eq 0 ]]; then
-    return 1
-  fi
+  # Single detailed PR fetch (used by both squash and feedback checks)
+  local pr_detail
+  pr_detail=$(gh pr view "$REVIEW_PR_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+    --json mergeable,mergeStateStatus,reviews 2>/dev/null) || pr_detail=""
 
-  # Check each PR for unaddressed reviewer comments
-  local i=0
-  while [[ "$i" -lt "$pr_count" ]]; do
-    local pr_number
-    pr_number=$(echo "$prauto_prs" | jq -r ".[$i].number")
-    local pr_branch
-    pr_branch=$(echo "$prauto_prs" | jq -r ".[$i].headRefName")
-
-    # Verify linked issue is still open (GitHub SSOT)
-    local issue_from_branch="${pr_branch#${PRAUTO_BRANCH_PREFIX}I-}"
-    local linked_issue_state
-    linked_issue_state=$(gh issue view "$issue_from_branch" -R "$PRAUTO_GITHUB_REPO" \
-      --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
-    if [[ "$linked_issue_state" != "OPEN" ]]; then
-      info "PR #${pr_number}: linked issue #${issue_from_branch} is ${linked_issue_state}. Skipping."
-      i=$((i + 1)); continue
-    fi
-
-    # Get formal review states (CHANGES_REQUESTED / COMMENTED)
-    local reviews
-    reviews=$(gh pr view "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-      --json reviews \
-      --jq '[.reviews[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submittedAt) | last' \
-      2>/dev/null)
-
-    # Get inline PR review comments (code-level)
-    local pr_review_comments
-    pr_review_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${pr_number}/comments" \
-      --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
-      2>/dev/null || echo "[]")
-
-    # Get issue-level comments on the PR (conversation tab)
-    local pr_issue_comments
-    pr_issue_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${pr_number}/comments" \
-      --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
-      2>/dev/null || echo "[]")
-
-    # Skip if latest prauto comment is a "feedback addressed" marker
-    # AND no newer non-prauto comments exist after the marker timestamp
-    local latest_prauto_body latest_prauto_time
-    latest_prauto_body=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
-      [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .body // ""
-    ')
-    latest_prauto_time=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
-      [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .created_at // ""
-    ')
-    if echo "$latest_prauto_body" | grep -q "Reviewer feedback addressed"; then
-      # Check if any non-prauto comments exist after the marker
-      local newer_issue newer_reviews
-      newer_issue=$(echo "$pr_issue_comments" | jq --arg actor "$PRAUTO_GITHUB_ACTOR" --arg ts "$latest_prauto_time" '
-        [.[] | select(.user != $actor) | select(.created_at > $ts)] | length')
-      newer_reviews=$(echo "$pr_review_comments" | jq --arg ts "$latest_prauto_time" '
-        [.[] | select(.created_at > $ts)] | length')
-      if [[ "$newer_issue" -eq 0 ]] && [[ "$newer_reviews" -eq 0 ]]; then
-        info "PR #${pr_number}: feedback already addressed. Skipping."
-        i=$((i + 1)); continue
-      fi
-      info "PR #${pr_number}: new reviewer comments after marker. Re-evaluating."
-    fi
-
-    # Merge both comment sources
-    local all_comments
-    all_comments=$(jq -s 'add' <<< "${pr_review_comments}${pr_issue_comments}" 2>/dev/null || echo "[]")
-
-    # Find non-prauto comments (reviewer feedback)
-    local unaddressed
-    unaddressed=$(echo "$all_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
-      [.[] | select(.body | startswith($worker) | not)]
-    ')
-
-    local unaddressed_count
-    unaddressed_count=$(echo "$unaddressed" | jq 'length')
-
-    # Actionable if there are unaddressed comments AND either:
-    # - a formal review exists (CHANGES_REQUESTED/COMMENTED), OR
-    # - issue-level comments from non-prauto users exist (reviewer used conversation tab)
-    local has_review_signal=false
-    if [[ -n "$reviews" ]] && [[ "$reviews" != "null" ]]; then
-      has_review_signal=true
-    fi
-    if [[ "$has_review_signal" == "false" ]] && [[ "$unaddressed_count" -gt 0 ]]; then
-      # Check if any unaddressed comment is from someone other than the PR author (prauto actor)
-      local external_count
-      external_count=$(echo "$unaddressed" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
-        [.[] | select(.user != $actor)] | length
-      ')
-      if [[ "$external_count" -gt 0 ]]; then
-        has_review_signal=true
-      fi
-    fi
-
-    if [[ "$unaddressed_count" -gt 0 ]] && [[ "$has_review_signal" == "true" ]]; then
-      ACTIONABLE_PR_NUMBER="$pr_number"
-      ACTIONABLE_PR_BRANCH="$pr_branch"
-      # Extract issue number from branch name (prauto/I-42 → 42)
-      ACTIONABLE_PR_ISSUE="${pr_branch#${PRAUTO_BRANCH_PREFIX}I-}"
-      ACTIONABLE_COMMENTS=$(echo "$all_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
-        [.[] | select(.body | startswith($worker) | not)]
-        | map("Comment by \(.user):\n\(.body)")
-        | join("\n\n---\n\n")
-      ')
-      info "Found actionable PR #${pr_number} with unaddressed comments."
-      return 0
-    fi
-
-    i=$((i + 1))
-  done
-
-  return 1
-}
-
-# Find prauto-owned PRs that are approved by an org member and merge-ready.
-# Sets: MERGEABLE_PR_NUMBER, MERGEABLE_PR_BRANCH, MERGEABLE_PR_TITLE,
-#       MERGEABLE_PR_BODY, MERGEABLE_PR_ISSUE
-# Returns 0 if found, 1 if none.
-find_mergeable_prs() {
-  # Fetch org members for approval check
-  if ! fetch_org_members; then
-    warn "Cannot check PR approvals without org member list."
-    return 1
-  fi
-  local members_json="$ORG_MEMBERS_JSON"
-
-  local prs_json
-  prs_json=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --state open \
-    --json number,headRefName,title,body,labels,assignees --limit 50 2>/dev/null) || {
-    warn "Failed to list PRs for merge check."
-    return 1
-  }
-
-  local pr_numbers
-  pr_numbers=$(echo "$prs_json" | jq -r \
-    --arg prefix "$PRAUTO_BRANCH_PREFIX" \
-    --arg review_label "$PRAUTO_GITHUB_LABEL_REVIEW" \
-    --arg actor "$PRAUTO_GITHUB_ACTOR" '
-    [.[] | select(
-      (.headRefName | startswith($prefix)) and
-      (.labels | map(.name) | index($review_label) != null) and
-      (.assignees | map(.login) | index($actor) != null)
-    )]
-    | sort_by(.number) | .[].number')
-  [[ -z "$pr_numbers" ]] && return 1
-
-  while IFS= read -r pr_number; do
-    [[ -z "$pr_number" ]] && continue
-    local pr_branch pr_title pr_body
-    pr_branch=$(echo "$prs_json" | jq -r --argjson n "$pr_number" '.[] | select(.number==$n) | .headRefName')
-    pr_title=$(echo "$prs_json"  | jq -r --argjson n "$pr_number" '.[] | select(.number==$n) | .title')
-    pr_body=$(echo "$prs_json"   | jq -r --argjson n "$pr_number" '.[] | select(.number==$n) | .body // ""')
-
-    local pr_detail
-    pr_detail=$(gh pr view "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-      --json mergeable,mergeStateStatus,reviews 2>/dev/null) || continue
-
+  # --- Priority 1: Check squash-ready (approved + MERGEABLE + CLEAN) ---
+  if [[ -n "$pr_detail" ]] && fetch_org_members 2>/dev/null; then
     local mergeable merge_state
-    mergeable=$(echo "$pr_detail"    | jq -r '.mergeable')
-    merge_state=$(echo "$pr_detail"  | jq -r '.mergeStateStatus')
+    mergeable=$(echo "$pr_detail" | jq -r '.mergeable')
+    merge_state=$(echo "$pr_detail" | jq -r '.mergeStateStatus')
 
-    # Check if any org member left an APPROVED review (latest review per member)
-    local is_approved approver
-    approver=$(echo "$pr_detail" | jq -r --argjson members "$members_json" '
+    local approver
+    approver=$(echo "$pr_detail" | jq -r --argjson members "$ORG_MEMBERS_JSON" '
       (.reviews // [])
       | map(select(.author.login as $a | $members | index($a) != null))
       | group_by(.author.login)
@@ -272,20 +111,79 @@ find_mergeable_prs() {
       | map(select(.state == "APPROVED"))
       | first // empty
       | .author.login // empty')
-    is_approved=$([[ -n "$approver" ]] && echo "true" || echo "false")
 
-    if [[ "$is_approved" == "true" ]] && \
-       [[ "$mergeable" == "MERGEABLE" ]] && \
-       [[ "$merge_state" == "CLEAN" ]]; then
-      MERGEABLE_PR_NUMBER="$pr_number"
-      MERGEABLE_PR_BRANCH="$pr_branch"
-      MERGEABLE_PR_TITLE="$pr_title"
-      MERGEABLE_PR_BODY="$pr_body"
-      MERGEABLE_PR_ISSUE="${pr_branch#${PRAUTO_BRANCH_PREFIX}I-}"
-      info "Found merge-ready PR #${pr_number} approved by org member '${approver}'."
+    if [[ -n "$approver" ]] && [[ "$mergeable" == "MERGEABLE" ]] && [[ "$merge_state" == "CLEAN" ]]; then
+      REVIEW_PR_ACTION="squash_ready"
+      info "PR #${REVIEW_PR_NUMBER}: approved by '${approver}', mergeable, clean → squash-ready."
       return 0
     fi
-  done <<< "$pr_numbers"
+  fi
+
+  # --- Priority 2: Check feedback-needed (unaddressed reviewer comments) ---
+  local pr_review_comments pr_issue_comments
+  pr_review_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${REVIEW_PR_NUMBER}/comments" \
+    --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
+    2>/dev/null || echo "[]")
+  pr_issue_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${REVIEW_PR_NUMBER}/comments" \
+    --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' \
+    2>/dev/null || echo "[]")
+
+  # Skip if feedback already addressed and no newer comments
+  local latest_prauto_body latest_prauto_time
+  latest_prauto_body=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+    [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .body // ""')
+  latest_prauto_time=$(echo "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+    [.[] | select(.user == $actor)] | sort_by(.created_at) | last | .created_at // ""')
+
+  if echo "$latest_prauto_body" | grep -q "Reviewer feedback addressed"; then
+    local newer_issue newer_reviews
+    newer_issue=$(echo "$pr_issue_comments" | jq --arg actor "$PRAUTO_GITHUB_ACTOR" --arg ts "$latest_prauto_time" '
+      [.[] | select(.user != $actor) | select(.created_at > $ts)] | length')
+    newer_reviews=$(echo "$pr_review_comments" | jq --arg ts "$latest_prauto_time" '
+      [.[] | select(.created_at > $ts)] | length')
+    if [[ "$newer_issue" -eq 0 ]] && [[ "$newer_reviews" -eq 0 ]]; then
+      info "PR #${REVIEW_PR_NUMBER}: feedback already addressed. Waiting."
+      return 1
+    fi
+    info "PR #${REVIEW_PR_NUMBER}: new comments after marker. Re-evaluating."
+  fi
+
+  # Merge both comment sources
+  local all_comments
+  all_comments=$(jq -s 'add' <<< "${pr_review_comments}${pr_issue_comments}" 2>/dev/null || echo "[]")
+
+  # Find non-prauto comments
+  local unaddressed unaddressed_count
+  unaddressed=$(echo "$all_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
+    [.[] | select(.body | startswith($worker) | not)]')
+  unaddressed_count=$(echo "$unaddressed" | jq 'length')
+
+  # Check for review signal (formal review or external comments)
+  local has_review_signal=false
+  if [[ -n "$pr_detail" ]]; then
+    local has_review
+    has_review=$(echo "$pr_detail" | jq \
+      '[(.reviews // [])[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | length > 0')
+    [[ "$has_review" == "true" ]] && has_review_signal=true
+  fi
+  if [[ "$has_review_signal" == "false" ]] && [[ "$unaddressed_count" -gt 0 ]]; then
+    local external_count
+    external_count=$(echo "$unaddressed" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" '
+      [.[] | select(.user != $actor)] | length')
+    [[ "$external_count" -gt 0 ]] && has_review_signal=true
+  fi
+
+  if [[ "$unaddressed_count" -gt 0 ]] && [[ "$has_review_signal" == "true" ]]; then
+    ACTIONABLE_COMMENTS=$(echo "$all_comments" | jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
+      [.[] | select(.body | startswith($worker) | not)]
+      | map("Comment by \(.user):\n\(.body)")
+      | join("\n\n---\n\n")')
+    REVIEW_PR_ACTION="feedback_needed"
+    info "PR #${REVIEW_PR_NUMBER}: unaddressed comments → feedback needed."
+    return 0
+  fi
+
+  info "PR #${REVIEW_PR_NUMBER}: waiting for review."
   return 1
 }
 
@@ -452,7 +350,7 @@ ${response_text}" \
 }
 
 # Post a "feedback addressed" marker comment on a PR.
-# find_actionable_prs() checks for this marker and skips the PR if present,
+# check_review_pr() checks for this marker and skips the PR if present,
 # preventing infinite re-pickup loops after addressing reviewer feedback.
 # Usage: post_feedback_addressed_comment <pr_number>
 post_feedback_addressed_comment() {

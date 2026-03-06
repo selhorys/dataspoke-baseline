@@ -29,15 +29,14 @@
 
 ### What prauto is
 
-Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipeline. Each heartbeat performs **at most one job** — it:
+Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipeline. Each heartbeat:
 
 1. Checks whether Claude Code API tokens are available
-2. Finds a WIP issue on GitHub (if any) and derives the correct phase from GitHub state
-3. Squash-finalizes approved PRs (if found, exits after completion)
-4. Checks open PRs for reviewer comments that need action (skips PRs with a "feedback addressed" marker; if found, exits after addressing and posting marker)
-5. Finds an eligible GitHub issue via label-based discovery
-6. Invokes Claude Code CLI to analyze the issue, posts plan for approval (non-minor changes wait), then implements changes
-7. Creates or updates a pull request with the results
+2. Claims new work if under `PRAUTO_OPEN_ISSUE_LIMIT` — finds the oldest eligible `prauto:ready` issue
+3. Processes **all** claimed issues (oldest first, including any newly claimed), each via a self-contained state machine:
+   - WIP issues: derives the correct phase (analysis, plan-approval, implementation, pr) and handles it
+   - Review issues: squash-finalizes approved PRs, or addresses reviewer feedback
+   - Waiting/terminal issues: skipped
 
 ### Relationship to `claude-code-action`
 
@@ -49,11 +48,10 @@ Prauto runs on a local developer machine. Requires: `claude` CLI (authenticated)
 
 ### GitHub as single source of truth
 
-Every heartbeat derives its next action from **remote GitHub state** — labels, assignees, issue/PR comments, and review status. Local state files (`current-job.json`, session files) exist for **monitoring only** and are never read to determine routing.
+Every heartbeat derives its next action from **remote GitHub state** — labels, assignees, issue/PR comments, and review status. Local state files (session outputs, history records) exist for **debugging only** and are never read to determine routing.
 
 **Key implications**:
 - No `--resume` flag — every Claude session starts fresh. The implementation prompt instructs Claude to check the branch for existing work and continue from there.
-- `current-job.json` is a **write-only monitoring artifact**, never read for routing.
 - Retry tracking uses **heartbeat marker comments** on the GitHub issue, not a local counter.
 - Phase is always derived fresh from GitHub — no local/remote cross-check.
 - `prauto:plan-review` label provides fast signal for plan-approval state (visible on issue boards, filterable).
@@ -84,7 +82,6 @@ Every heartbeat derives its next action from **remote GitHub state** — labels,
 │   ├── feedback-response.md    # Prompt: respond to plan feedback
 │   └── squash-commit.md        # Prompt: generate squash commit message
 ├── state/                      # [GITIGNORED] Runtime state
-│   ├── current-job.json        # Monitoring-only artifact
 │   ├── heartbeat.lock          # PID-based lock file
 │   ├── heartbeat.log           # Cron output log
 │   ├── .system-append-rendered.md
@@ -104,8 +101,8 @@ Gitignored paths: `config.local.env`, `state/`, `worktrees/`.
 
 | File | Committed | Purpose | Key variables |
 |------|-----------|---------|---------------|
-| `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, org-member filter flag, reviewer login |
-| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, Claude model/max-turns/budget, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, `PRAUTO_OPEN_ISSUE_LIMIT`, org-member filter flag, reviewer login |
+| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, Claude model/max-turns/budget, `PRAUTO_OPEN_ISSUE_LIMIT` (override), `ANTHROPIC_API_KEY`, `GH_TOKEN` |
 
 A single developer machine may run multiple prauto instances (e.g., `prauto01` in one clone, `prauto02` in another) sharing the same GitHub credential but with distinct identities.
 
@@ -128,57 +125,38 @@ crontab trigger
     ├── 3. Secure secrets ─────────── (move config.local.env out of repo tree)
     │
     ├── 4. Check token quota ─────── (lib/quota.sh)
-    │       └── if exhausted → if WIP issue on GitHub → post quota-paused comment → exit
+    │       └── if exhausted → post quota-paused on WIP issues → exit
     │
-    ├── 5. Find WIP issue on GitHub ── (lib/issues.sh: find_wip_issue)
-    │       ├── query GitHub for prauto:wip issues assigned to this worker
-    │       ├── derive phase from GitHub ── (PR exists? plan-review label? plan approved? nothing?)
-    │       ├── if plan-approval → check approval, skip retry tracking → exit
-    │       ├── count heartbeat comments → retry check
-    │       │   └── if count >= max retries → abandon → exit
-    │       ├── post heartbeat comment ── (retry marker on GitHub)
-    │       ├── write monitoring state ── (current-job.json, monitoring only)
-    │       ├── create worktree ─────── (lib/git-ops.sh)
-    │       └── route to phase handler → exit
+    ├── 5. Claim new issue ─────── (lib/issues.sh: find_all_claimed_issues, find_eligible_issue, claim_issue)
+    │       ├── count ALL open issues held by worker (any prauto: label) via find_all_claimed_issues
+    │       ├── if count >= PRAUTO_OPEN_ISSUE_LIMIT → skip pickup
+    │       └── otherwise → find oldest prauto:ready issue → claim (add prauto:wip, comment)
     │
-    ├── 5.5 Squash-finalize approved PRs ─ (lib/pr.sh)
-    │       ├── if approved + CLEAN PR found → rebase, squash, force-push → exit
-    │       └── if none → continue
+    ├── 6. Process all claimed issues ── (lib/issues.sh: find_all_claimed_issues)
+    │       ├── query GitHub for ALL open issues assigned to worker (any prauto: label)
+    │       ├── includes newly claimed issue from step 5
+    │       ├── for each issue (oldest first), self-contained state machine:
+    │       │   ├── prauto:done / prauto:failed → skip (terminal)
+    │       │   ├── prauto:wip:
+    │       │   │   ├── derive phase from GitHub
+    │       │   │   ├── plan-approval + no response → pending, skip
+    │       │   │   ├── plan-approval + actionable → handle, clean up worktree → next
+    │       │   │   ├── max retries reached → abandon, skip
+    │       │   │   ├── post heartbeat comment, create worktree → phase handler → clean up worktree → next
+    │       │   ├── prauto:review:
+    │       │   │   ├── check PR (lib/pr.sh: check_review_pr)
+    │       │   │   ├── approved + clean → squash-finalize → clean up worktree → next
+    │       │   │   ├── unaddressed feedback → address comments → clean up worktree → next
+    │       │   │   └── otherwise → pending, skip
+    │       │   └── other label → skip
+    │       └── after all issues processed/skipped → done
     │
-    ├── 6. Check open PRs ────────── (lib/pr.sh)
-    │       ├── PRs with "feedback addressed" marker (and no newer comments) → skipped
-    │       ├── if PR has reviewer comments → checkout worktree, run pr-review, push,
-    │       │   post review response comment, post feedback-addressed marker, complete → exit
-    │       └── if no actionable comments → continue
-    │
-    ├── 7. Find eligible issue ───── (lib/issues.sh)
-    │       └── if none found → exit
-    │
-    ├── 8. Claim issue ───────────── (add prauto:wip label, comment)
-    │
-    ├── 9. Create branch + worktree  (lib/git-ops.sh → .prauto/worktrees/I-{N}, then cd into it)
-    │
-    ├── 10. Phase 1: Analysis ────── (lib/claude.sh, read-only, runs inside worktree)
-    │
-    ├── 10.5 Plan approval gate ──── (non-minor: post plan + plan-review label, wait; minor: proceed)
-    │       ├── if non-minor → post plan comment, add prauto:plan-review label → exit
-    │       ├── (next heartbeat) approved → remove plan-review label → continue to implementation
-    │       ├── (next heartbeat) counter-proposal → post feedback response, re-run analysis → exit
-    │       ├── (next heartbeat) no response → wait → exit
-    │       └── (next heartbeat) plan missing → re-run analysis → exit
-    │
-    ├── 11. Phase 2: Implementation  (lib/claude.sh, read+write, runs inside worktree)
-    │
-    ├── 12. Create/update PR ──────── (lib/pr.sh)
-    │
-    ├── 13. Complete job ──────────── (lib/state.sh)
-    │
-    └── 14-15. Restore secrets + release lock  (EXIT trap: cleanup())
+    └── 7. Restore secrets + release lock  (EXIT trap: cleanup())
 ```
 
-**One job per heartbeat**: Steps 5, 5.5, and 6 each exit after completing their work. A single heartbeat never runs more than one Claude session.
+**Claim-first, then process-all**: Step 5 calls `find_all_claimed_issues()` to count all open issues assigned to this worker with any `prauto:` label. If under `PRAUTO_OPEN_ISSUE_LIMIT`, it finds and claims a new issue. Step 6 re-fetches claimed issues (if a new one was claimed) and loops over **all** of them (oldest first). Each iteration is a self-contained state machine for one issue: WIP issues route through phase derivation (analysis, plan-approval, implementation, pr); review issues check for squash-finalize or feedback. Each issue needing active work is processed; issues in terminal (`done`/`failed`) or waiting states are skipped. The heartbeat exits after all claimed issues are processed or skipped.
 
-**Worktree isolation**: Every Claude session runs inside a dedicated git worktree at `.prauto/worktrees/I-{N}` (new issue) or `.prauto/worktrees/{branch}` (PR review). The main repo directory is never the working directory during Claude invocations. The EXIT trap removes the worktree unconditionally.
+**Worktree isolation**: Every Claude session runs inside a dedicated git worktree at `.prauto/worktrees/I-{N}` (new issue) or `.prauto/worktrees/{branch}` (PR review). The main repo directory is never the working directory during Claude invocations. Each iteration cleans up its worktree before moving to the next issue; the EXIT trap serves as a safety net for unexpected exits.
 
 **Secrets handling**: Secrets are sourced into shell variables before Claude runs. `config.local.env` stays on disk but is protected by the `--disallowedTools` denylist entry. The EXIT trap removes the temp backup.
 
@@ -296,7 +274,7 @@ Issues are discovered via `gh issue list` filtered by `prauto:ready` label, excl
 
 **Optimistic claim protocol**: (1) Check if `prauto:wip` already present — if so, back off. (2) Add `prauto:wip` label. (3) Re-fetch after brief delay to detect race. (4) If another worker claimed first, back off. (5) Remove `prauto:ready`, set assignee, post claim comment. The add-then-verify pattern catches most concurrent claims.
 
-When finding a WIP issue, `find_wip_issue()` filters for issues assigned to this worker's `PRAUTO_GITHUB_ACTOR`.
+When finding claimed issues, `find_all_claimed_issues()` returns all open issues assigned to this worker's `PRAUTO_GITHUB_ACTOR` that carry any `prauto:` label, sorted oldest-first.
 
 ### Issue body conventions
 
@@ -348,11 +326,11 @@ After implementation, `pr.sh` pushes the branch, checks for an existing PR via `
 
 ### PR review handling
 
-Heartbeat step 6 scans open PRs on `prauto/` branches assigned to this worker with the `prauto:review` label. A PR is actionable if it has unaddressed non-prauto comments and at least one `CHANGES_REQUESTED`/`COMMENTED` review or external comment. The feedback-addressed marker breaks the re-pickup loop: once posted, subsequent heartbeats skip the PR. New reviewer comments after the marker make the PR actionable again.
+In the step 6 processing loop, issues with the `prauto:review` label are checked via `check_review_pr()`. A PR is actionable if it has unaddressed non-prauto comments and at least one `CHANGES_REQUESTED`/`COMMENTED` review or external comment. The feedback-addressed marker breaks the re-pickup loop: once posted, subsequent heartbeats skip the PR. New reviewer comments after the marker make the PR actionable again.
 
 ### Squash-finalize action
 
-Runs at step 5.5 (before PR review), so finalizing approved work takes priority.
+Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger conditions. Squash-ready takes priority over feedback-needed within `check_review_pr()`.
 
 **Trigger conditions** (all must be true): branch matches `prauto/` prefix, PR has `prauto:review` label, assigned to this worker, `mergeable == "MERGEABLE"`, `mergeStateStatus == "CLEAN"`, latest org-member review is `APPROVED`.
 
@@ -407,10 +385,6 @@ The claim protocol uses check-then-add with a verification window: (1) check for
 
 ## Monitoring
 
-### `current-job.json`
-
-Reserved for future external monitoring tools. Not currently written by the heartbeat — stale copies are deleted at heartbeat start.
-
 ### History and session files
 
 Job completion records are written to `state/history/YYYYMMDD_I-{number}.json`. Session output files in `state/sessions/` are saved for debugging only — not used for routing or resumption.
@@ -429,7 +403,7 @@ Job completion records are written to `state/history/YYYYMMDD_I-{number}.json`. 
 | Issue author | Org-member filter (opt-in) | `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` |
 | Turn limit | Per-job turn cap (primary) | `--max-turns` |
 | Budget | Per-job dollar cap (API billing only) | `--max-budget-usd` (optional) |
-| Concurrency | One job at a time | PID-based lock file |
+| Concurrency | Max open issues per worker | `PRAUTO_OPEN_ISSUE_LIMIT` (default 1) + PID-based lock file |
 | GitHub access | Fine-grained PAT | Scoped to issues, PRs, contents only |
 | Secrets (git) | Gitignored local env | `config.local.env` never committed |
 | Secrets (runtime) | Protected by denylist + temp backup removed on exit | `--disallowedTools` blocks `Read(.prauto/config.local.env)` |

@@ -58,6 +58,17 @@ checkout_branch_worktree() {
   info "Worktree ready at ${WORKTREE_DIR} (branch: ${branch})."
 }
 
+# Remove the current worktree and reset WORKTREE_DIR.
+# Safe to call when no worktree is active (no-op).
+# Usage: cleanup_worktree
+cleanup_worktree() {
+  if [[ -n "$WORKTREE_DIR" ]] && [[ -d "$WORKTREE_DIR" ]]; then
+    cd "$REPO_DIR"
+    git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+  fi
+  WORKTREE_DIR=""
+}
+
 # Push the current branch to origin.
 push_branch() {
   local branch="$1"

@@ -126,176 +126,180 @@ info "Secrets backed up to ${SECRETS_TEMP_FILE}."
 # ---------------------------------------------------------------------------
 if ! check_quota; then
   warn "Token quota exhausted or auth failed."
-  # Notify on the WIP issue (if any) so humans can see why work stopped
-  if find_wip_issue; then
-    post_quota_paused_comment "$WIP_ISSUE_NUMBER"
+  # Notify on all WIP issues so humans can see why work stopped
+  if find_all_claimed_issues; then
+    qi=0
+    while [[ "$qi" -lt "$ALL_CLAIMED_COUNT" ]]; do
+      q_labels=$(echo "$ALL_CLAIMED_ISSUES" | jq ".[$qi].labels | map(.name)")
+      if labels_contain "$q_labels" "$PRAUTO_GITHUB_LABEL_WIP"; then
+        q_issue=$(echo "$ALL_CLAIMED_ISSUES" | jq -r ".[$qi].number")
+        post_quota_paused_comment "$q_issue"
+      fi
+      qi=$((qi + 1))
+    done
   fi
   exit 0
 fi
 info "Token quota available."
 
 # ---------------------------------------------------------------------------
-# Step 5: Find WIP issue on GitHub (GitHub-as-SSOT — replaces local resume + orphan recovery)
+# Step 5: Claim new issue (if under limit)
+# Uses find_all_claimed_issues to both count and list claimed issues.
+# If under PRAUTO_OPEN_ISSUE_LIMIT, finds and claims the oldest eligible issue.
 # ---------------------------------------------------------------------------
-if find_wip_issue; then
-  info "Found WIP issue #${WIP_ISSUE_NUMBER} on GitHub. Deriving phase..."
+CLAIMED_NEW_ISSUE=""
+find_all_claimed_issues || true
+if [[ "${ALL_CLAIMED_COUNT:-0}" -ge "${PRAUTO_OPEN_ISSUE_LIMIT}" ]]; then
+  info "Open issue limit reached (${ALL_CLAIMED_COUNT}/${PRAUTO_OPEN_ISSUE_LIMIT}). Skipping new issue pickup."
+else
+  if find_eligible_issue; then
+    if claim_issue "$FOUND_ISSUE_NUMBER"; then
+      info "Claimed issue #${FOUND_ISSUE_NUMBER}."
+      CLAIMED_NEW_ISSUE="$FOUND_ISSUE_NUMBER"
+    else
+      warn "Failed to claim issue #${FOUND_ISSUE_NUMBER}."
+    fi
+  else
+    info "No eligible issues to claim."
+  fi
+fi
 
-  derive_phase_from_github "$WIP_ISSUE_NUMBER" "$WIP_BRANCH"
-  info "Derived phase: ${DERIVED_PHASE}"
+# ---------------------------------------------------------------------------
+# Step 6: Process all claimed issues (oldest first)
+# Re-fetches from GitHub if a new issue was claimed (to include it).
+# Each iteration is a self-contained state machine for one issue.
+# Issues needing active work are processed; terminal or waiting issues are skipped.
+# ---------------------------------------------------------------------------
+if [[ -n "$CLAIMED_NEW_ISSUE" ]]; then
+  find_all_claimed_issues || true
+fi
+pending_claimed_count=0
+if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
+  claim_i=0
+  while [[ "$claim_i" -lt "$ALL_CLAIMED_COUNT" ]]; do
+    CUR_ISSUE_NUMBER=$(echo "$ALL_CLAIMED_ISSUES" | jq -r ".[$claim_i].number")
+    CUR_ISSUE_TITLE=$(echo "$ALL_CLAIMED_ISSUES" | jq -r ".[$claim_i].title")
+    CUR_LABELS=$(echo "$ALL_CLAIMED_ISSUES" | jq ".[$claim_i].labels | map(.name)")
+    CUR_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${CUR_ISSUE_NUMBER}"
 
-  # For plan-approval phase, skip retry tracking and heartbeat comment (just check approval)
-  if [[ "$DERIVED_PHASE" == "plan-approval" ]]; then
-    # If the previous heartbeat posted a quota-paused comment, post a resumed notice
-    if has_quota_paused_comment "$WIP_ISSUE_NUMBER"; then
-      post_quota_resumed_comment "$WIP_ISSUE_NUMBER"
+    # ---- Terminal states: nothing to do ----
+    if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_DONE" || \
+       labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_FAILED"; then
+      claim_i=$((claim_i + 1)); continue
     fi
 
-    # Create worktree and route to plan-approval handler
-    create_branch "$WIP_ISSUE_NUMBER"
-    cd "$WORKTREE_DIR"
-    handle_phase_plan_approval "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH"
-    info "Plan-approval check complete. Exiting."
-    exit 0
-  fi
+    # ---- prauto:wip — active work item ----
+    if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_WIP"; then
+      derive_phase_from_github "$CUR_ISSUE_NUMBER" "$CUR_BRANCH"
+      info "WIP #${CUR_ISSUE_NUMBER}: phase=${DERIVED_PHASE}"
 
-  # Count heartbeat comments for retry tracking
-  count_heartbeat_comments "$WIP_ISSUE_NUMBER"
-  retry_count=$((HEARTBEAT_COMMENT_COUNT + 1))
+      # Plan-approval: peek to decide wait vs active work
+      if [[ "$DERIVED_PHASE" == "plan-approval" ]]; then
+        COUNTER_PROPOSAL=""
+        peek_status=0
+        check_plan_approval "$CUR_ISSUE_NUMBER" || peek_status=$?
 
-  # Check max retries
-  if [[ "$HEARTBEAT_COMMENT_COUNT" -ge "$PRAUTO_MAX_RETRIES_PER_JOB" ]]; then
-    warn "Issue #${WIP_ISSUE_NUMBER} exceeded max retries (${HEARTBEAT_COMMENT_COUNT}/${PRAUTO_MAX_RETRIES_PER_JOB})."
-    abandon_job_github "$WIP_ISSUE_NUMBER" "$HEARTBEAT_COMMENT_COUNT"
-    exit 0
-  fi
+        if [[ "$peek_status" -eq 1 ]]; then
+          info "Issue #${CUR_ISSUE_NUMBER}: waiting for plan approval. Skipping."
+          if has_quota_paused_comment "$CUR_ISSUE_NUMBER"; then
+            post_quota_resumed_comment "$CUR_ISSUE_NUMBER"
+          fi
+          pending_claimed_count=$((pending_claimed_count + 1))
+          claim_i=$((claim_i + 1)); continue
+        fi
 
-  # Post heartbeat comment (retry marker on GitHub)
-  post_heartbeat_comment "$WIP_ISSUE_NUMBER" "$DERIVED_PHASE" "$retry_count" "$PRAUTO_MAX_RETRIES_PER_JOB"
+        # Actionable (approved, counter-proposal, or missing plan)
+        if has_quota_paused_comment "$CUR_ISSUE_NUMBER"; then
+          post_quota_resumed_comment "$CUR_ISSUE_NUMBER"
+        fi
+        create_branch "$CUR_ISSUE_NUMBER"
+        cd "$WORKTREE_DIR"
+        handle_phase_plan_approval "$CUR_ISSUE_NUMBER" "$CUR_ISSUE_TITLE" "$CUR_BRANCH"
+        info "Plan-approval work complete for #${CUR_ISSUE_NUMBER}."
+        cleanup_worktree
+        claim_i=$((claim_i + 1)); continue
+      fi
 
-  # If the previous heartbeat posted a quota-paused comment, post a resumed notice
-  if has_quota_paused_comment "$WIP_ISSUE_NUMBER"; then
-    post_quota_resumed_comment "$WIP_ISSUE_NUMBER"
-  fi
+      # Non plan-approval WIP: retry tracking + phase handling
+      count_heartbeat_comments "$CUR_ISSUE_NUMBER"
+      retry_count=$((HEARTBEAT_COMMENT_COUNT + 1))
 
-  info "Resuming issue #${WIP_ISSUE_NUMBER} (phase: ${DERIVED_PHASE}, attempt: ${retry_count}/${PRAUTO_MAX_RETRIES_PER_JOB})."
+      if [[ "$HEARTBEAT_COMMENT_COUNT" -ge "$PRAUTO_MAX_RETRIES_PER_JOB" ]]; then
+        warn "Issue #${CUR_ISSUE_NUMBER} exceeded max retries (${HEARTBEAT_COMMENT_COUNT}/${PRAUTO_MAX_RETRIES_PER_JOB})."
+        abandon_job_github "$CUR_ISSUE_NUMBER" "$HEARTBEAT_COMMENT_COUNT"
+        claim_i=$((claim_i + 1)); continue
+      fi
 
-  # Create worktree for the issue's branch
-  create_branch "$WIP_ISSUE_NUMBER"
-  cd "$WORKTREE_DIR"
+      post_heartbeat_comment "$CUR_ISSUE_NUMBER" "$DERIVED_PHASE" "$retry_count" "$PRAUTO_MAX_RETRIES_PER_JOB"
 
-  # Route to phase handler
-  case "$DERIVED_PHASE" in
-    analysis)        handle_phase_analysis "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
-    implementation)  handle_phase_implementation "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
-    pr-review)       handle_phase_pr_review "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
-    pr)              handle_phase_pr "$WIP_ISSUE_NUMBER" "$WIP_ISSUE_TITLE" "$WIP_BRANCH" ;;
-    *)               warn "Unknown phase: ${DERIVED_PHASE}. Abandoning."; abandon_job_github "$WIP_ISSUE_NUMBER" "$HEARTBEAT_COMMENT_COUNT" ;;
-  esac
+      if has_quota_paused_comment "$CUR_ISSUE_NUMBER"; then
+        post_quota_resumed_comment "$CUR_ISSUE_NUMBER"
+      fi
 
-  info "WIP issue processing complete. Exiting."
-  exit 0
+      info "Resuming issue #${CUR_ISSUE_NUMBER} (phase: ${DERIVED_PHASE}, attempt: ${retry_count}/${PRAUTO_MAX_RETRIES_PER_JOB})."
+
+      create_branch "$CUR_ISSUE_NUMBER"
+      cd "$WORKTREE_DIR"
+
+      case "$DERIVED_PHASE" in
+        analysis)        handle_phase_analysis "$CUR_ISSUE_NUMBER" "$CUR_ISSUE_TITLE" "$CUR_BRANCH" ;;
+        implementation)  handle_phase_implementation "$CUR_ISSUE_NUMBER" "$CUR_ISSUE_TITLE" "$CUR_BRANCH" ;;
+        pr)              handle_phase_pr "$CUR_ISSUE_NUMBER" "$CUR_ISSUE_TITLE" "$CUR_BRANCH" ;;
+        *)               warn "Unknown phase: ${DERIVED_PHASE}. Abandoning."; abandon_job_github "$CUR_ISSUE_NUMBER" "$HEARTBEAT_COMMENT_COUNT" ;;
+      esac
+
+      info "WIP issue #${CUR_ISSUE_NUMBER} processing complete."
+      cleanup_worktree
+      claim_i=$((claim_i + 1)); continue
+    fi
+
+    # ---- prauto:review — PR in code review ----
+    if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_REVIEW"; then
+      if check_review_pr "$CUR_ISSUE_NUMBER"; then
+        case "$REVIEW_PR_ACTION" in
+          squash_ready)
+            info "Squash-finalizing PR #${REVIEW_PR_NUMBER} for issue #${CUR_ISSUE_NUMBER}..."
+            checkout_branch_worktree "$REVIEW_PR_BRANCH"
+            cd "$WORKTREE_DIR"
+            if squash_and_finalize_pr \
+                "$REVIEW_PR_NUMBER" "$REVIEW_PR_BRANCH" \
+                "$REVIEW_PR_TITLE" "$REVIEW_PR_BODY" "$CUR_ISSUE_NUMBER"; then
+              info "Squash-finalize complete for #${CUR_ISSUE_NUMBER}."
+            else
+              warn "Squash-finalize failed for PR #${REVIEW_PR_NUMBER}."
+            fi
+            cleanup_worktree
+            ;;
+          feedback_needed)
+            info "Addressing reviewer feedback on PR #${REVIEW_PR_NUMBER} for issue #${CUR_ISSUE_NUMBER}..."
+            checkout_branch_worktree "$REVIEW_PR_BRANCH"
+            cd "$WORKTREE_DIR"
+            run_pr_review "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" "$ACTIONABLE_COMMENTS"
+            push_branch "$REVIEW_PR_BRANCH"
+            create_or_update_pr "$CUR_ISSUE_NUMBER" "" "$REVIEW_PR_BRANCH"
+            post_review_response_comment "$REVIEW_PR_NUMBER" "$REVIEW_RESPONSE"
+            post_feedback_addressed_comment "$REVIEW_PR_NUMBER"
+            complete_job "$CUR_ISSUE_NUMBER"
+            info "PR review complete for #${CUR_ISSUE_NUMBER}."
+            cleanup_worktree
+            ;;
+        esac
+        claim_i=$((claim_i + 1)); continue
+      fi
+      # Waiting for review
+      pending_claimed_count=$((pending_claimed_count + 1))
+      info "Issue #${CUR_ISSUE_NUMBER}: PR waiting for review. Skipping."
+      claim_i=$((claim_i + 1)); continue
+    fi
+
+    # ---- Unknown prauto label combination ----
+    claim_i=$((claim_i + 1))
+  done
+
+  info "All claimed issues checked. ${pending_claimed_count} pending."
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5.5: Squash and finalize approved PRs (do NOT merge)
-# ---------------------------------------------------------------------------
-if find_mergeable_prs; then
-  info "Squash-finalizing approved PR #${MERGEABLE_PR_NUMBER} (${MERGEABLE_PR_BRANCH})..."
-  checkout_branch_worktree "$MERGEABLE_PR_BRANCH"
-  cd "$WORKTREE_DIR"
-  if squash_and_finalize_pr \
-      "$MERGEABLE_PR_NUMBER" \
-      "$MERGEABLE_PR_BRANCH" \
-      "$MERGEABLE_PR_TITLE" \
-      "$MERGEABLE_PR_BODY" \
-      "$MERGEABLE_PR_ISSUE"; then
-    info "Squash-finalize complete. Exiting."
-  else
-    warn "Squash-finalize failed for PR #${MERGEABLE_PR_NUMBER}. Exiting."
-  fi
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 6: Check open PRs for reviewer comments
-# ---------------------------------------------------------------------------
-if find_actionable_prs; then
-  info "Addressing reviewer feedback on PR #${ACTIONABLE_PR_NUMBER}..."
-
-  # Create a worktree for the PR branch
-  checkout_branch_worktree "$ACTIONABLE_PR_BRANCH"
-  cd "$WORKTREE_DIR"
-
-  # Run PR review phase
-  run_pr_review "$ACTIONABLE_PR_ISSUE" "$ACTIONABLE_PR_BRANCH" "$ACTIONABLE_COMMENTS"
-
-  # Push and update PR
-  push_branch "$ACTIONABLE_PR_BRANCH"
-  create_or_update_pr "$ACTIONABLE_PR_ISSUE" "" "$ACTIONABLE_PR_BRANCH"
-  post_review_response_comment "$ACTIONABLE_PR_NUMBER" "$REVIEW_RESPONSE"
-  post_feedback_addressed_comment "$ACTIONABLE_PR_NUMBER"
-
-  # Complete job
-  complete_job "$ACTIONABLE_PR_ISSUE"
-  info "PR review complete. Exiting."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 7: Find eligible issue
-# ---------------------------------------------------------------------------
-if ! find_eligible_issue; then
-  info "No work to do. Exiting."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 8: Claim issue
-# ---------------------------------------------------------------------------
-if ! claim_issue "$FOUND_ISSUE_NUMBER"; then
-  warn "Failed to claim issue #${FOUND_ISSUE_NUMBER}. Exiting."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 9: Create branch
-# ---------------------------------------------------------------------------
-create_branch "$FOUND_ISSUE_NUMBER"
-cd "$WORKTREE_DIR"
-
-# ---------------------------------------------------------------------------
-# Step 10: Phase 1 — Analysis
-# ---------------------------------------------------------------------------
-info "Starting analysis phase for issue #${FOUND_ISSUE_NUMBER}..."
-if ! run_analysis "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE" "$FOUND_ISSUE_BODY"; then
-  warn "Analysis failed for issue #${FOUND_ISSUE_NUMBER}. Will retry next heartbeat."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 10.5: Post plan & check approval gate
-# ---------------------------------------------------------------------------
-CHANGE_SIZE=$(extract_change_size "$FOUND_ISSUE_BODY")
-info "Change size: ${CHANGE_SIZE}"
-post_plan_comment "$FOUND_ISSUE_NUMBER" "$ANALYSIS_OUTPUT" "$CHANGE_SIZE"
-
-if [[ "$CHANGE_SIZE" != "minor" ]]; then
-  info "Plan posted for ${CHANGE_SIZE} change. Waiting for approval. Exiting."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Step 11: Phase 2 — Implementation
-# ---------------------------------------------------------------------------
-info "Starting implementation phase for issue #${FOUND_ISSUE_NUMBER}..."
-run_implementation "$FOUND_ISSUE_NUMBER" "$BRANCH_NAME" "$ANALYSIS_OUTPUT"
-
-# ---------------------------------------------------------------------------
-# Step 12-13: Create/update PR, update labels, complete job
-# ---------------------------------------------------------------------------
-finalize_issue_pr "$BRANCH_NAME" "$FOUND_ISSUE_NUMBER" "$FOUND_ISSUE_TITLE"
-
-# ---------------------------------------------------------------------------
-# Steps 14-15: Restore secrets and release lock (handled by trap)
+# Step 7: Restore secrets and release lock (handled by trap)
 # ---------------------------------------------------------------------------
 info "Heartbeat complete."

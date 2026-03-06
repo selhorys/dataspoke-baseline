@@ -40,8 +40,6 @@ release_lock() {
 # Reset ephemeral state at heartbeat startup (GitHub is SSOT for job state).
 # Called after lock acquisition to ensure a clean local slate each run.
 reset_ephemeral_state() {
-  # Remove stale monitoring file (GitHub is SSOT for job state)
-  rm -f "${STATE_DIR}/current-job.json"
   # Remove rendered prompt (regenerated each invocation)
   rm -f "${STATE_DIR}/.system-append-rendered.md"
   # Clean orphaned worktrees from crashed previous runs

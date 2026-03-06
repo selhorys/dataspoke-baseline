@@ -211,31 +211,23 @@ ${footer}"
   info "Plan comment posted on issue #${issue_number} (change_size=${change_size})."
 }
 
-# Find a WIP issue assigned to this worker on GitHub.
-# Searches for open issues with prauto:wip but without prauto:review.
-# This is the single entry point for WIP detection (replaces both has_active_job+load_job and orphan recovery).
-# Usage: find_wip_issue
-# Sets: WIP_ISSUE_NUMBER, WIP_ISSUE_TITLE, WIP_BRANCH
-# Returns 0 if found, 1 if none.
-find_wip_issue() {
+# Find ALL open issues claimed by this worker (any prauto: label), sorted oldest-first.
+# Usage: find_all_claimed_issues
+# Sets: ALL_CLAIMED_ISSUES (JSON array with number, title, labels), ALL_CLAIMED_COUNT
+# Returns 0 if at least one found, 1 if none.
+find_all_claimed_issues() {
   local issues_json
   issues_json=$(gh issue list -R "$PRAUTO_GITHUB_REPO" \
-    --label "$PRAUTO_GITHUB_LABEL_WIP" \
     --assignee "$PRAUTO_GITHUB_ACTOR" \
     --state open \
-    --json number,title,labels --limit 10 2>/dev/null) || {
-    warn "Failed to list WIP issues from GitHub."; return 1
+    --json number,title,labels --limit 50 2>/dev/null) || {
+    warn "Failed to list claimed issues from GitHub."; return 1
   }
-  local filtered
-  filtered=$(echo "$issues_json" | jq -r \
-    --arg review "$PRAUTO_GITHUB_LABEL_REVIEW" \
-    '[.[] | select((.labels | map(.name) | index($review)) == null)]
-     | sort_by(.number) | .[0] // empty')
-  [[ -z "$filtered" ]] && return 1
-  WIP_ISSUE_NUMBER=$(echo "$filtered" | jq -r '.number')
-  WIP_ISSUE_TITLE=$(echo "$filtered" | jq -r '.title')
-  WIP_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${WIP_ISSUE_NUMBER}"
-  info "Found WIP issue on GitHub: #${WIP_ISSUE_NUMBER} — ${WIP_ISSUE_TITLE}"
+  ALL_CLAIMED_ISSUES=$(echo "$issues_json" | jq \
+    '[.[] | select(.labels | any(.name | startswith("prauto:")))] | sort_by(.number)')
+  ALL_CLAIMED_COUNT=$(echo "$ALL_CLAIMED_ISSUES" | jq 'length')
+  [[ "$ALL_CLAIMED_COUNT" -eq 0 ]] && return 1
+  info "Found ${ALL_CLAIMED_COUNT} claimed issue(s) on GitHub."
   return 0
 }
 

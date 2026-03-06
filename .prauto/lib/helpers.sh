@@ -30,6 +30,13 @@ load_config() {
   source "$prauto_dir/config.local.env"
 }
 
+# Check if a JSON array of strings contains a specific value.
+# Usage: labels_contain <json_array_string> <value>
+# Returns 0 if found, 1 if not.
+labels_contain() {
+  echo "$1" | jq -e --arg v "$2" 'index($v) != null' >/dev/null 2>&1
+}
+
 # Check if a matching comment already exists (idempotency guard).
 # Usage: comment_exists <"issue"|"pr"> <number> <keyword>
 # Returns 0 if found, 1 if not found.

@@ -51,7 +51,7 @@ handle_phase_analysis() {
   # Re-run analysis from scratch (cheap)
   if ! run_analysis "$issue_number" "$issue_title" ""; then
     warn "Analysis failed for issue #${issue_number}. Will retry next heartbeat."
-    exit 0
+    return 0
   fi
   # Fetch issue body for change-size detection
   local issue_body_raw
@@ -61,8 +61,8 @@ handle_phase_analysis() {
   change_size=$(extract_change_size "$issue_body_raw")
   post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size"
   if [[ "$change_size" != "minor" ]]; then
-    info "Plan posted for ${change_size} change. Waiting for approval. Exiting."
-    exit 0
+    info "Plan posted for ${change_size} change. Waiting for approval."
+    return 0
   fi
   # Fall through to implementation
   run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
@@ -99,16 +99,16 @@ handle_phase_plan_approval() {
     post_feedback_response_comment "$issue_number" "$FEEDBACK_RESPONSE_TEXT"
     if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw" "$COUNTER_PROPOSAL" "$APPROVED_PLAN_TEXT"; then
       warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
-      exit 0
+      return 0
     fi
     local change_size
     change_size=$(extract_change_size "$issue_body_raw")
     # Derive plan revision from GitHub comment count (SSOT)
     get_plan_revision_from_github "$issue_number"
     post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size" "$GITHUB_PLAN_REVISION"
-    # Stay in plan-approval phase, exit
-    info "Revised plan (rev ${GITHUB_PLAN_REVISION}) posted. Waiting for approval. Exiting."
-    exit 0
+    # Stay in plan-approval phase
+    info "Revised plan (rev ${GITHUB_PLAN_REVISION}) posted. Waiting for approval."
+    return 0
   elif [[ "$approval_status" -eq 3 ]]; then
     # Plan comment missing — re-run analysis from GitHub state
     info "Plan comment missing on issue #${issue_number}. Re-running analysis..."
@@ -117,14 +117,14 @@ handle_phase_plan_approval() {
       --json body --jq '.body // ""' 2>/dev/null || echo "")
     if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw"; then
       warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
-      exit 0
+      return 0
     fi
     local change_size
     change_size=$(extract_change_size "$issue_body_raw")
     post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size"
     if [[ "$change_size" != "minor" ]]; then
-      info "Plan re-posted for ${change_size} change. Waiting for approval. Exiting."
-      exit 0
+      info "Plan re-posted for ${change_size} change. Waiting for approval."
+      return 0
     fi
     # Minor → proceed to implementation (same as approval path)
     run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
@@ -132,7 +132,7 @@ handle_phase_plan_approval() {
   else
     # No response yet — just wait (don't bump retries)
     info "Still waiting for plan approval on issue #${issue_number}."
-    exit 0
+    return 0
   fi
 }
 
@@ -145,42 +145,6 @@ handle_phase_implementation() {
   fetch_approved_plan "$issue_number"
   run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"
-}
-
-# Phase: pr-review — address reviewer feedback, push, post feedback marker.
-# Usage: handle_phase_pr_review <issue_number> <issue_title> <branch>
-handle_phase_pr_review() {
-  local issue_number="$1" issue_title="$2" branch="$3"
-
-  # Fetch reviewer comments from PR
-  local review_pr_number
-  review_pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$branch" \
-    --json number --jq '.[0].number // empty' 2>/dev/null)
-
-  local reviewer_comments=""
-  if [[ -n "$review_pr_number" ]]; then
-    local pr_review_comments pr_issue_comments
-    pr_review_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${review_pr_number}/comments" \
-      --jq '[.[] | {body: .body, user: .user.login}]' 2>/dev/null || echo "[]")
-    pr_issue_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${review_pr_number}/comments" \
-      --jq '[.[] | {body: .body, user: .user.login}]' 2>/dev/null || echo "[]")
-    reviewer_comments=$(jq -s 'add' <<< "${pr_review_comments}${pr_issue_comments}" 2>/dev/null | \
-      jq -r --arg worker "prauto(${PRAUTO_WORKER_ID})" '
-        [.[] | select(.body | startswith($worker) | not)]
-        | map("Comment by \(.user):\n\(.body)")
-        | join("\n\n---\n\n")
-      ')
-  fi
-
-  run_pr_review "$issue_number" "$branch" "$reviewer_comments"
-  push_branch "$branch"
-  create_or_update_pr "$issue_number" "$issue_title" "$branch"
-  # Post review response and feedback-addressed marker
-  if [[ -n "$review_pr_number" ]]; then
-    post_review_response_comment "$review_pr_number" "$REVIEW_RESPONSE"
-    post_feedback_addressed_comment "$review_pr_number"
-  fi
-  complete_job "$issue_number"
 }
 
 # Phase: pr — just push + create PR + labels.
