@@ -50,7 +50,7 @@
       "Skill(k8s-work)",
       "Skill(plan-doc)",
       "Skill(prauto-check-status)",
-      "Skill(sync-spec-to-impl)",
+      "Skill(sync-spec-from-impl)",
       "Skill(sync-specs)",
       "WebSearch",
       "WebFetch(domain:docs.python.org)",

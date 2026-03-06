@@ -1,5 +1,5 @@
 ---
-name: sync-spec-to-impl
+name: sync-spec-from-impl
 description: >-
   Reverse-sync DataSpoke specs from implementation: update spec documents to match
   what code actually does (impl → spec). Detects structural drift, naming mismatches,

@@ -7,6 +7,7 @@ description: >-
   with the prauto:ready label. Use when the user wants to bulk-create
   implementation issues from specs, or revise existing issues.
 argument-hint: "write [<spec-path> ...] | revise [<glob>] | register [<glob>]"
+disable-model-invocation: true
 user-invocable: true
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash(gh *), Bash(mkdir *), Bash(bash *register-issues*)
 ---

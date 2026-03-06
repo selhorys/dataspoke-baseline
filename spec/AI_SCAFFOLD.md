@@ -37,8 +37,9 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
 │   ├── dev-env/                # Dev environment management (install, uninstall, port-forward, status)
 │   ├── ref-setup/              # Download AI reference materials
-│   ├── sync-spec-to-impl/     # Spec ↔ implementation synchronization
-│   └── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
+│   ├── sync-spec-from-impl/     # Spec ↔ implementation synchronization
+│   ├── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
+│   └── spec-to-bulk-issue/    # Bulk-create implementation issues from specs
 ├── agents/                     # Subagent system prompts (model: sonnet)
 │   ├── api-spec.md             # OpenAPI spec author
 │   ├── backend.md              # FastAPI/Python implementer
@@ -77,8 +78,9 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
 | `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
 | `ref-setup` | Download AI reference materials (DataHub v1.4.0 source) with interactive selection; monitor in background until complete |
-| `sync-spec-to-impl` | Compare specification documents against current implementation, identify drift, and reconcile. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref) or full sync across all scopes |
+| `sync-spec-from-impl` | Compare specification documents against current implementation, identify drift, and reconcile. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref) or full sync across all scopes |
 | `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
+| `spec-to-bulk-issue` | Analyze specs to find unimplemented components, write ordered issue tickets in `issues/`, revise existing issues, and optionally register them to GitHub with `prauto:ready` label |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
 
@@ -147,15 +149,18 @@ Prauto is the autonomous PR worker — a cron-driven system that picks up GitHub
 │   ├── pr.sh                   #   PR creation, feedback, squash-finalize
 │   └── phases.sh               #   Phase-specific handlers
 ├── prompts/                    # Prompt templates for Claude CLI invocations
+│   ├── system-append.md        #   System prompt supplement
 │   ├── issue-analysis.md       #   Issue analysis and plan generation
 │   ├── implementation.md       #   Code implementation
-│   ├── squash-commit.md        #   Squash-finalize commit message
-│   └── system-append.md        #   System prompt supplement
+│   ├── pr-review.md            #   Address PR reviewer feedback
+│   ├── feedback-response.md    #   Respond to plan counter-proposal
+│   └── squash-commit.md        #   Squash-finalize commit message
 ├── state/                      # [GITIGNORED] Runtime state
-│   ├── current-job.json        #   Active job (issue, phase, retries, branch)
 │   ├── heartbeat.lock          #   PID-based lock file
+│   ├── .system-append-rendered.md
 │   ├── sessions/               #   Analysis, implementation, review outputs
 │   └── history/                #   Completed job records
+├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
 └── README.md
 ```
 

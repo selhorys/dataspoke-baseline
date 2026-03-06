@@ -87,7 +87,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 ## Claude Code Configuration
 
-**Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `sync-spec-to-impl`, `sync-specs`
+**Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `sync-spec-from-impl`, `sync-specs`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `api-spec`, `backend`, `frontend`, `k8s-helm`
 **Hook**: `auto-format.sh` — auto-formats Python (ruff) and TypeScript (prettier) after edits

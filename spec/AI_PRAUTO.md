@@ -101,8 +101,8 @@ Gitignored paths: `config.local.env`, `state/`, `worktrees/`.
 
 | File | Committed | Purpose | Key variables |
 |------|-----------|---------|---------------|
-| `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, `PRAUTO_OPEN_ISSUE_LIMIT`, org-member filter flag, reviewer login |
-| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, Claude model/max-turns/budget, `PRAUTO_OPEN_ISSUE_LIMIT` (override), `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, `PRAUTO_CLAUDE_MODEL`, org-member filter flag, reviewer login |
+| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, Claude model/max-turns/budget, `PRAUTO_OPEN_ISSUE_LIMIT`, `PRAUTO_HEARTBEAT_INTERVAL_MINUTES`, reviewer override, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
 
 A single developer machine may run multiple prauto instances (e.g., `prauto01` in one clone, `prauto02` in another) sharing the same GitHub credential but with distinct identities.
 
