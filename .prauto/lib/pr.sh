@@ -262,7 +262,11 @@ ${co_authored_by%$'\n'}"
   fi
 
   local msg_file
-  msg_file=$(mktemp /tmp/prauto-squash-msg-XXXXXX)
+  if [[ -n "${CUR_SESSION_DIR:-}" ]] && [[ -d "${CUR_SESSION_DIR:-}" ]]; then
+    msg_file="${CUR_SESSION_DIR}/squash-msg.txt"
+  else
+    msg_file=$(mktemp)
+  fi
   printf '%s\n' "$SQUASH_COMMIT_MESSAGE" > "$msg_file"
 
   local author_arg="${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AUTHOR_EMAIL}>"

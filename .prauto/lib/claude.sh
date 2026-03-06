@@ -75,7 +75,11 @@ invoke_claude() {
   fi
 
   local output_file
-  output_file=$(mktemp)
+  if [[ -n "${CUR_SESSION_DIR:-}" ]] && [[ -d "${CUR_SESSION_DIR:-}" ]]; then
+    output_file="${CUR_SESSION_DIR}/claude-output-$$.json"
+  else
+    output_file=$(mktemp)
+  fi
 
   # NOTE: claude -p stdout is invisible to the Bash tool's stdout capture.
   # File redirect is required — do NOT use $(...) command substitution.
@@ -103,7 +107,10 @@ invoke_claude() {
     CLAUDE_OUTPUT=$(cat "$output_file")
   fi
 
-  rm -f "$output_file"
+  # Keep output file in session dir for debugging; delete only system temp files
+  if [[ -z "${CUR_SESSION_DIR:-}" ]] || [[ "$output_file" != "${CUR_SESSION_DIR}/"* ]]; then
+    rm -f "$output_file"
+  fi
 
   # Return non-zero when output is empty so callers can handle gracefully
   if [[ -z "$CLAUDE_OUTPUT" ]]; then
@@ -159,9 +166,10 @@ ${counter_proposal}"
   ANALYSIS_OUTPUT="$CLAUDE_OUTPUT"
   ANALYSIS_SESSION_ID="$CLAUDE_SESSION_ID"
 
-  # Save session output
+  # Save session output to session dir
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
-    echo "$CLAUDE_OUTPUT" > "${SESSIONS_DIR}/analysis-I-${issue_number}.txt"
+    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/analysis.txt"
     info "Analysis session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
@@ -189,9 +197,10 @@ run_implementation() {
 
   IMPL_SESSION_ID="$CLAUDE_SESSION_ID"
 
-  # Save session output for debugging
+  # Save session output to session dir
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
-    echo "$CLAUDE_OUTPUT" > "${SESSIONS_DIR}/impl-I-${issue_number}.json"
+    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/implementation.json"
     info "Implementation session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
@@ -268,7 +277,8 @@ run_pr_review() {
   REVIEW_RESPONSE="$CLAUDE_OUTPUT"
 
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
-    echo "$CLAUDE_OUTPUT" > "${SESSIONS_DIR}/review-I-${issue_number}.json"
+    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/review.json"
     info "PR review session saved: ${CLAUDE_SESSION_ID}"
   fi
 }

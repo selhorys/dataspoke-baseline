@@ -4,12 +4,29 @@
 
 STATE_DIR="${PRAUTO_DIR}/state"
 LOCK_FILE="${STATE_DIR}/heartbeat.lock"
-HISTORY_DIR="${STATE_DIR}/history"
 SESSIONS_DIR="${STATE_DIR}/sessions"
+
+# Current issue session directory (set by init_issue_session).
+CUR_SESSION_DIR=""
 
 # Ensure state directories exist.
 ensure_state_dirs() {
-  mkdir -p "$STATE_DIR" "$HISTORY_DIR" "$SESSIONS_DIR" "${PRAUTO_DIR}/worktrees"
+  mkdir -p "$STATE_DIR" "$SESSIONS_DIR" "${PRAUTO_DIR}/worktrees"
+}
+
+# Initialize a per-issue session directory.
+# Creates .prauto/state/sessions/issue-{N}/{uuid}/ and sets CUR_SESSION_DIR.
+# Usage: init_issue_session <issue_number>
+# Sets: CUR_SESSION_DIR
+init_issue_session() {
+  local issue_number="$1"
+  local session_id
+  session_id=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s-$$)
+  # Lowercase the UUID for consistency (macOS uuidgen outputs uppercase)
+  session_id=$(echo "$session_id" | tr '[:upper:]' '[:lower:]')
+  CUR_SESSION_DIR="${SESSIONS_DIR}/issue-${issue_number}/${session_id}"
+  mkdir -p "$CUR_SESSION_DIR"
+  info "Session dir: ${CUR_SESSION_DIR}"
 }
 
 # Acquire PID-based lock. Returns 0 on success, 1 if already locked.
@@ -60,10 +77,15 @@ abandon_job_github() {
   local issue_number="$1"
   local retry_count="$2"
 
-  # Write abandon record to history
-  local date_prefix
-  date_prefix=$(date +%Y%m%d)
-  local history_file="${HISTORY_DIR}/${date_prefix}_I-${issue_number}.json"
+  # Write abandon record to session dir (or fallback to sessions root)
+  local history_file
+  if [[ -n "$CUR_SESSION_DIR" ]] && [[ -d "$CUR_SESSION_DIR" ]]; then
+    history_file="${CUR_SESSION_DIR}/abandon.json"
+  else
+    local date_prefix
+    date_prefix=$(date +%Y%m%d)
+    history_file="${SESSIONS_DIR}/${date_prefix}_abandon_I-${issue_number}.json"
+  fi
   jq -n \
     --argjson issue_number "$issue_number" \
     --argjson retry_count "$retry_count" \
@@ -92,9 +114,14 @@ abandon_job_github() {
 # Usage: complete_job <issue_number>
 complete_job() {
   local issue_number="$1"
-  local date_prefix
-  date_prefix=$(date +%Y%m%d)
-  local history_file="${HISTORY_DIR}/${date_prefix}_I-${issue_number}.json"
+  local history_file
+  if [[ -n "$CUR_SESSION_DIR" ]] && [[ -d "$CUR_SESSION_DIR" ]]; then
+    history_file="${CUR_SESSION_DIR}/complete.json"
+  else
+    local date_prefix
+    date_prefix=$(date +%Y%m%d)
+    history_file="${SESSIONS_DIR}/${date_prefix}_complete_I-${issue_number}.json"
+  fi
   jq -n \
     --argjson issue_number "$issue_number" \
     --arg completed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

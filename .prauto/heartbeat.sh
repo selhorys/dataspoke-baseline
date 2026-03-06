@@ -27,6 +27,7 @@ cleanup() {
   # Clean up secrets backup (original stays in place, protected by --disallowedTools denylist)
   if [[ -n "$SECRETS_TEMP_FILE" ]] && [[ -f "$SECRETS_TEMP_FILE" ]]; then
     rm -f "$SECRETS_TEMP_FILE"
+    [[ -n "${SECRETS_TEMP_DIR:-}" ]] && rmdir "$SECRETS_TEMP_DIR" 2>/dev/null || true
     info "Secrets backup cleaned up."
   fi
   # Release lock
@@ -117,7 +118,9 @@ cd "$REPO_DIR"
 # ---------------------------------------------------------------------------
 # Step 3: Secure secrets (move config.local.env out of repo tree)
 # ---------------------------------------------------------------------------
-SECRETS_TEMP_FILE="/tmp/.prauto-secrets-$$"
+SECRETS_TEMP_DIR="${PRAUTO_DIR}/state/.secrets-$$"
+mkdir -p "$SECRETS_TEMP_DIR"
+SECRETS_TEMP_FILE="${SECRETS_TEMP_DIR}/config.local.env"
 cp "$PRAUTO_DIR/config.local.env" "$SECRETS_TEMP_FILE"
 info "Secrets backed up to ${SECRETS_TEMP_FILE}."
 
@@ -190,6 +193,7 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
 
     # ---- prauto:wip — active work item ----
     if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_WIP"; then
+      init_issue_session "$CUR_ISSUE_NUMBER"
       derive_phase_from_github "$CUR_ISSUE_NUMBER" "$CUR_BRANCH"
       info "WIP #${CUR_ISSUE_NUMBER}: phase=${DERIVED_PHASE}"
 
@@ -255,6 +259,7 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
 
     # ---- prauto:review — PR in code review ----
     if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_REVIEW"; then
+      init_issue_session "$CUR_ISSUE_NUMBER"
       if check_review_pr "$CUR_ISSUE_NUMBER"; then
         case "$REVIEW_PR_ACTION" in
           squash_ready)

@@ -37,7 +37,7 @@ check_quota() {
   # NOTE: claude -p stdout is invisible to the Bash tool's stdout capture,
   # so we discard it (>/dev/null) and rely solely on the exit code.
   local stderr_file
-  stderr_file=$(mktemp)
+  stderr_file="${STATE_DIR}/.quota-check-$$.stderr"
 
   if run_with_timeout "$quota_timeout" \
     claude -p "Reply with exactly: OK" \
