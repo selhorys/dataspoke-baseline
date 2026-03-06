@@ -85,8 +85,16 @@ Every heartbeat derives its next action from **remote GitHub state** — labels,
 │   ├── heartbeat.lock          # PID-based lock file
 │   ├── heartbeat.log           # Cron output log
 │   ├── .system-append-rendered.md
-│   ├── history/                # Completed job summaries
-│   └── sessions/               # Claude session outputs
+│   └── sessions/               # Per-issue session directories
+│       └── issue-{N}/          # One dir per issue number
+│           └── {uuid}/         # One dir per heartbeat session
+│               ├── claude-output-{pid}.json  # Raw Claude CLI output
+│               ├── analysis.txt              # Analysis phase output
+│               ├── implementation.json       # Implementation phase output
+│               ├── review.json               # PR review phase output
+│               ├── complete.json             # Job completion record
+│               ├── abandon.json              # Job abandonment record
+│               └── squash-msg.txt            # Squash commit message (temp)
 ├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
 └── README.md
 ```
@@ -385,9 +393,9 @@ The claim protocol uses check-then-add with a verification window: (1) check for
 
 ## Monitoring
 
-### History and session files
+### Session directories
 
-Job completion records are written to `state/history/YYYYMMDD_I-{number}.json`. Session output files in `state/sessions/` are saved for debugging only — not used for routing or resumption.
+Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{uuid}/`. All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), phase outputs (`analysis.txt`, `implementation.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a unique UUID subdirectory. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
 
 ---
 

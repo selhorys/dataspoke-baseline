@@ -33,33 +33,32 @@ Because the heartbeat spawns `claude` CLI internally, the `CLAUDECODE` env var m
 
 ## Step 2 — Snapshot state before run
 
-Before launching the heartbeat, take a **baseline snapshot** of `.prauto/state/` so you can detect changes during monitoring:
+Before launching the heartbeat, take a **baseline snapshot** of `.prauto/state/sessions/` so you can detect new session directories during monitoring:
 
 ```bash
 # Record what exists before the run
-ls -la .prauto/state/sessions/ 2>/dev/null           # list existing session files
-ls -la .prauto/state/history/ 2>/dev/null             # list existing history files
+find .prauto/state/sessions/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | sort
 ```
 
-Save this baseline mentally (file names, modification times) for comparison in Step 4.
+Save this baseline mentally (directory names) for comparison in Step 4. The heartbeat creates per-issue session directories at `.prauto/state/sessions/issue-{N}/{uuid}/` for each issue it processes.
 
 ---
 
 ## Step 3 — Run heartbeat
 
-Execute the heartbeat in the **background**, redirecting output to a **persistent log file**:
+Execute the heartbeat in the **background**, redirecting output to a **persistent log file** inside the state directory:
 
 ```bash
-env -u CLAUDECODE bash -x .prauto/heartbeat.sh > /tmp/prauto-heartbeat.log 2>&1
+env -u CLAUDECODE bash -x .prauto/heartbeat.sh > .prauto/state/heartbeat.log 2>&1
 ```
 
 Key points:
 - `env -u CLAUDECODE` — **required** to avoid nested-run limit (the heartbeat internally invokes `claude` CLI).
 - `bash -x` — enables trace output for monitoring.
-- `> /tmp/prauto-heartbeat.log 2>&1` — **critical**: redirects all output (stdout + stderr/trace) to a persistent file. Do NOT rely on the Bash tool's background task output capture — those temp files are ephemeral and get cleaned up before they can be read. The persistent log at `/tmp/prauto-heartbeat.log` survives task completion and is the **only reliable source** of trace output.
+- `> .prauto/state/heartbeat.log 2>&1` — **critical**: redirects all output (stdout + stderr/trace) to a persistent file inside the state directory (gitignored). Do NOT rely on the Bash tool's background task output capture — those temp files are ephemeral and get cleaned up before they can be read. The persistent log at `.prauto/state/heartbeat.log` survives task completion and is the **only reliable source** of trace output.
 
 **Known issue — `claude -p` output invisible to Bash tool stdout:**
-The `claude -p` CLI does **not** produce visible output in the Bash tool's stdout capture. Output only appears when redirected to a file (e.g., `> /tmp/out.txt`). The heartbeat already handles this — `invoke_claude()` in `lib/claude.sh` redirects to a temp file and reads it back with `jq`. However, this means the log file will go **silent for minutes** during each `claude -p` invocation. This is expected, not a hang.
+The `claude -p` CLI does **not** produce visible output in the Bash tool's stdout capture. Output only appears when redirected to a file. The heartbeat already handles this — `invoke_claude()` in `lib/claude.sh` redirects to a file inside the session directory and reads it back with `jq`. However, this means the log file will go **silent for minutes** during each `claude -p` invocation. This is expected, not a hang.
 
 Note the background task ID for monitoring.
 
@@ -67,31 +66,47 @@ Note the background task ID for monitoring.
 
 ## Step 4 — Monitor progress
 
-The heartbeat logs all key events to `/tmp/prauto-heartbeat.log` and writes artifacts to `.prauto/state/`. Use the **log file as the primary monitoring source** and **session/history files as completion signals**.
+The heartbeat logs all key events to `.prauto/state/heartbeat.log` and writes artifacts to per-issue session directories under `.prauto/state/sessions/issue-{N}/{uuid}/`. Use the **log file as the primary monitoring source** and **session directories as completion signals**.
+
+### Session directory structure
+
+Each issue processed by the heartbeat gets a session directory:
+```
+.prauto/state/sessions/
+  issue-{N}/
+    {uuid}/                    # unique per heartbeat run
+      claude-output-{pid}.json # raw Claude CLI output
+      analysis.txt             # analysis phase output
+      implementation.json      # implementation phase output
+      review.json              # PR review phase output
+      complete.json            # job completion record
+      abandon.json             # job abandonment record
+      squash-msg.txt           # squash commit message (temp)
+```
 
 ### Primary: Persistent log file
 
-Read the persistent log file at `/tmp/prauto-heartbeat.log` using `tail`:
+Read the persistent log file at `.prauto/state/heartbeat.log` using `tail`:
 ```bash
-tail -100 /tmp/prauto-heartbeat.log
+tail -100 .prauto/state/heartbeat.log
 ```
 
 Poll every **~20 seconds** until the background task exits. On each check:
 
 1. **Lock file** — `test -f .prauto/state/heartbeat.lock` → script is running.
-2. **Log file** — Parse `[INFO]`, `[WARN]`, and `[ERROR]` markers for phase transitions and key events. The heartbeat logs all decisions: issue discovery, phase routing, plan posting, implementation start/end, PR creation.
-3. **Session files** — `ls .prauto/state/sessions/` and compare to baseline:
-   - **New `analysis-I-*.txt`**: Analysis phase completed. Read and summarize the plan.
-   - **New `impl-I-*.json`**: Implementation phase completed. Report session ID.
-   - **New `review-I-*.json`**: PR review phase completed.
-4. **History files** — `ls .prauto/state/history/` and compare to baseline:
-   - **New file**: Job completed (or was abandoned). Read to determine outcome.
+2. **Log file** — Parse `[INFO]`, `[WARN]`, and `[ERROR]` markers for phase transitions and key events. The heartbeat logs all decisions: issue discovery, phase routing, plan posting, implementation start/end, PR creation. Look for `Session dir:` lines to identify the active session directory.
+3. **Session directories** — `find .prauto/state/sessions/ -mindepth 1 -maxdepth 2 -type d | sort` and compare to baseline:
+   - **New `issue-{N}/{uuid}/` directory**: A new session was created for issue N.
+   - **`analysis.txt` in session dir**: Analysis phase completed. Read and summarize the plan.
+   - **`implementation.json` in session dir**: Implementation phase completed. Report session ID.
+   - **`review.json` in session dir**: PR review phase completed.
+   - **`complete.json` or `abandon.json`**: Job finished — read to determine outcome.
 
 Log file notes:
 - Parse `bash -x` trace lines (`+ command ...`) for supplementary detail.
 - **Redact secrets**: The `bash -x` trace may print env var values (GH_TOKEN, ANTHROPIC_API_KEY). When summarizing output to the user, **never** include token/key values — replace them with `[REDACTED]`.
-- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the log file has **no new lines** — the `claude` process is running but its output goes to an internal temp file, not to stdout. Do **not** interpret silence as a hang. Check `heartbeat.lock` to confirm the process is still alive.
-- **Do NOT use `TaskOutput`** or the background task's output file path — those are ephemeral and get cleaned up by Claude Code before they can be read. Always read `/tmp/prauto-heartbeat.log` instead.
+- **Expect long silences**: Each `claude -p` invocation (analysis, implementation, PR review) can run for several minutes. During this time the log file has **no new lines** — the `claude` process is running but its output goes to the session directory, not to stdout. Do **not** interpret silence as a hang. Check `heartbeat.lock` to confirm the process is still alive.
+- **Do NOT use `TaskOutput`** or the background task's output file path — those are ephemeral and get cleaned up by Claude Code before they can be read. Always read `.prauto/state/heartbeat.log` instead.
 
 ### Heartbeat patterns
 
@@ -112,18 +127,19 @@ The heartbeat processes **all** claimed issues in a single run (oldest first). Y
 | Signal | Meaning |
 |--------|---------|
 | `heartbeat.lock` appears | Script started, lock acquired |
+| Log: `[INFO] Session dir: ...issue-{N}/{uuid}` | Session directory created for issue N |
 | Log: `[INFO] Claimed issue #N` | New issue claimed (Step 5) |
 | Log: `[INFO] Open issue limit reached` | Skipped new pickup (at limit) |
 | Log: `[INFO] WIP #N: phase=<phase>` | Processing a WIP issue (Step 6 loop) |
 | Log: `[INFO] Starting analysis phase` | Analysis running for current issue |
-| New `sessions/analysis-I-*.txt` | Analysis complete — summarize the plan |
+| `analysis.txt` in session dir | Analysis complete — summarize the plan |
 | Log: `[INFO] Plan posted` | Plan awaiting approval |
 | Log: `[INFO] Starting implementation phase` | Implementation running for current issue |
-| New `sessions/impl-I-*.json` | Implementation complete |
+| `implementation.json` in session dir | Implementation complete |
 | Log: `[INFO] Squash-finalizing PR #N` | Squash-finalize running for review issue |
 | Log: `[INFO] Addressing reviewer feedback` | PR review running for review issue |
 | Log: `[INFO] All claimed issues checked` | Processing loop finished |
-| New `history/<date>_I-*.json` | Job completed |
+| `complete.json` / `abandon.json` in session dir | Job finished |
 | `heartbeat.lock` disappeared | Script finished |
 
 ---
@@ -132,18 +148,19 @@ The heartbeat processes **all** claimed issues in a single run (oldest first). Y
 
 ### On success (exit code 0)
 
-Report a completion summary using **log + artifact files** as the source of truth:
-- Read `/tmp/prauto-heartbeat.log` for a chronological summary of key events.
-- Compare `state/sessions/` and `state/history/` to the baseline from Step 2 to identify what was created.
-- If a new `analysis-I-*.txt` was created, read and summarize the plan.
-- If a new history file was created, the job completed — report the outcome.
+Report a completion summary using **log + session directory artifacts** as the source of truth:
+- Read `.prauto/state/heartbeat.log` for a chronological summary of key events.
+- Compare `state/sessions/` to the baseline from Step 2 to identify new session directories.
+- For each new session dir (`issue-{N}/{uuid}/`), check for `analysis.txt`, `implementation.json`, `review.json`, `complete.json`, or `abandon.json`.
+- If `analysis.txt` exists, read and summarize the plan.
+- If `complete.json` or `abandon.json` exists, the job finished — report the outcome.
 - Total duration and any warnings encountered during execution.
 
 ### On failure (non-zero exit code)
 
 Perform up to **3 retry cycles**:
 
-1. **Diagnose**: Read `/tmp/prauto-heartbeat.log` for error details. Also check state files — a missing expected session file can indicate where the failure occurred. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to a temp file; verify the file redirect and `jq` parsing are working.
+1. **Diagnose**: Read `.prauto/state/heartbeat.log` for error details. Also check session directories — a missing expected artifact file can indicate where the failure occurred. The `claude-output-{pid}.json` file in the session dir contains raw Claude CLI output for debugging. **Note**: If `CLAUDE_OUTPUT` is empty in the error trace, this may be caused by the `claude -p` Bash tool stdout capture issue (see Step 3). Check `invoke_claude()` in `lib/claude.sh` — it redirects to the session directory; verify the file redirect and `jq` parsing are working.
 2. **Locate**: Map the error to a source file in `.prauto/` — typically one of:
    - `heartbeat.sh` — main orchestrator
    - `lib/helpers.sh` — logging, config loading
@@ -161,7 +178,7 @@ Perform up to **3 retry cycles**:
    - **NEVER modify `.prauto/config.env`** unless it's clearly a bug in the shared config (not a config value issue).
 5. **Re-run**: Launch the heartbeat again (overwrite the previous log):
    ```bash
-   env -u CLAUDECODE bash -x .prauto/heartbeat.sh > /tmp/prauto-heartbeat.log 2>&1
+   env -u CLAUDECODE bash -x .prauto/heartbeat.sh > .prauto/state/heartbeat.log 2>&1
    ```
    The re-run **automatically** uses credentials from `.prauto/config.local.env` — no manual credential handling needed.
 6. **Monitor**: Return to Step 4.
