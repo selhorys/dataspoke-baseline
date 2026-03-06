@@ -35,8 +35,16 @@ fetch_approved_plan() {
     # Extract everything after "## Implementation Plan" header
     local plan_body
     plan_body=$(echo "$APPROVED_PLAN_TEXT" | sed -n '/^## Implementation Plan$/,$ p' | tail -n +2)
-    # Strip trailing footer (everything after the last ---)
-    plan_body=$(echo "$plan_body" | sed '/^---$/,$ d')
+    # Strip trailing footer (everything after the LAST ---, which separates
+    # the analysis output from the approval prompt).  The analysis output may
+    # contain its own --- separators, so we must not cut at the first one.
+    plan_body=$(echo "$plan_body" | awk '
+      { lines[NR] = $0 }
+      /^---$/ { last_sep = NR }
+      END {
+        end = (last_sep > 0) ? last_sep - 1 : NR
+        for (i = 1; i <= end; i++) print lines[i]
+      }')
     if [[ -n "$plan_body" ]]; then
       APPROVED_PLAN_TEXT="$plan_body"
     fi
