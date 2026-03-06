@@ -4,17 +4,110 @@
 #           all sourced, config loaded.
 # All handlers accept (issue_number, issue_title, branch) parameters.
 
-# Shared helper: push, create/update PR, swap labels, complete job.
+# Shared helper: push, create/update PR, run tests, post results, swap labels, complete job.
 # Usage: finalize_issue_pr <branch> <issue_number> <issue_title>
 finalize_issue_pr() {
   local branch="$1" issue_number="$2" issue_title="$3"
   push_branch "$branch"
   create_or_update_pr "$issue_number" "$issue_title" "$branch"
+  run_and_post_test_results "$branch"
   gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
     --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" \
     --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null || true
   complete_job "$issue_number"
+}
+
+# Run available test suites and post results as PR comments.
+# Unit tests run unconditionally if the directory exists.
+# Integration tests follow the dev-env lock protocol (best-effort).
+# Usage: run_and_post_test_results <branch>
+run_and_post_test_results() {
+  local branch="$1"
+
+  get_pr_number_for_branch "$branch"
+  if [[ -z "$BRANCH_PR_NUMBER" ]]; then
+    warn "No PR found for branch ${branch}. Skipping test result posting."
+    return 0
+  fi
+
+  # --- Unit tests ---
+  if [[ -d "tests/unit" ]]; then
+    info "Running unit tests..."
+    local unit_output unit_exit=0
+    unit_output=$(pytest tests/unit/ --tb=short 2>&1) || unit_exit=$?
+    post_test_results_comment "$BRANCH_PR_NUMBER" "Unit" "$unit_exit" "$unit_output"
+    info "Unit test results posted on PR #${BRANCH_PR_NUMBER} (exit: ${unit_exit})."
+  else
+    info "No tests/unit/ directory. Skipping unit tests."
+  fi
+
+  # --- Integration tests (requires dev-env) ---
+  if [[ -d "tests/integration" ]]; then
+    run_integration_tests_with_protocol "$BRANCH_PR_NUMBER"
+  else
+    info "No tests/integration/ directory. Skipping integration tests."
+  fi
+}
+
+# Run integration tests with the dev-env lock protocol.
+# Acquires lock, resets dummy data, runs tests, resets again, releases lock.
+# Skips gracefully if dev-env is not reachable or lock cannot be acquired.
+# Usage: run_integration_tests_with_protocol <pr_number>
+run_integration_tests_with_protocol() {
+  local pr_number="$1"
+  local lock_owner="prauto-${PRAUTO_WORKER_ID}"
+  local lock_url="http://localhost:9221/lock"
+  local reset_script="${REPO_DIR}/dev_env/dummy-data-reset.sh"
+
+  # Check if lock endpoint is reachable
+  if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
+    info "Dev-env lock endpoint not reachable. Skipping integration tests."
+    return 0
+  fi
+
+  # Acquire lock
+  local lock_code
+  lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${lock_url}/acquire" \
+    -H "Content-Type: application/json" \
+    -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto integration tests for PR #${pr_number}\"}")
+
+  if [[ "$lock_code" != "200" ]]; then
+    info "Could not acquire dev-env lock (HTTP ${lock_code}). Skipping integration tests."
+    return 0
+  fi
+  info "Dev-env lock acquired for integration tests."
+
+  # Reset dummy data before tests
+  if [[ -x "$reset_script" ]]; then
+    if ! "$reset_script" >/dev/null 2>&1; then
+      warn "Pre-test dummy data reset failed. Skipping integration tests."
+      curl -s -X POST "${lock_url}/release" \
+        -H "Content-Type: application/json" \
+        -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+      return 0
+    fi
+  fi
+
+  # Run integration tests
+  info "Running integration tests..."
+  local integ_output integ_exit=0
+  integ_output=$(pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
+
+  # Reset dummy data after tests
+  if [[ -x "$reset_script" ]]; then
+    "$reset_script" >/dev/null 2>&1 || warn "Post-test dummy data reset failed."
+  fi
+
+  # Release lock
+  curl -s -X POST "${lock_url}/release" \
+    -H "Content-Type: application/json" \
+    -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  info "Dev-env lock released."
+
+  # Post results
+  post_test_results_comment "$pr_number" "Integration" "$integ_exit" "$integ_output"
+  info "Integration test results posted on PR #${pr_number} (exit: ${integ_exit})."
 }
 
 # Fetch the approved plan text from GitHub issue comments.

@@ -349,6 +349,51 @@ ${response_text}" \
     2>/dev/null || warn "Failed to post review response on PR #${pr_number}."
 }
 
+# Look up the PR number for a given branch.
+# Usage: get_pr_number_for_branch <branch>
+# Sets: BRANCH_PR_NUMBER (empty if no PR found)
+get_pr_number_for_branch() {
+  local branch="$1"
+  BRANCH_PR_NUMBER=$(gh pr list -R "$PRAUTO_GITHUB_REPO" \
+    --head "$branch" --json number --jq '.[0].number // empty' 2>/dev/null) || BRANCH_PR_NUMBER=""
+}
+
+# Post test results as a PR comment.
+# Uses a collapsible <details> section to keep the PR clean.
+# Usage: post_test_results_comment <pr_number> <test_type> <exit_code> <output>
+post_test_results_comment() {
+  local pr_number="$1"
+  local test_type="$2"
+  local exit_code="$3"
+  local output="$4"
+
+  local status_label
+  if [[ "$exit_code" -eq 0 ]]; then
+    status_label="Passed"
+  else
+    status_label="Failed (exit code ${exit_code})"
+  fi
+
+  # Truncate output if too long (GitHub comment limit is 65536 chars)
+  if [[ ${#output} -gt 60000 ]]; then
+    output="${output:0:60000}
+... (truncated)"
+  fi
+
+  gh pr comment "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): ${test_type} Test Results — ${status_label}
+
+<details>
+<summary>${test_type} test output</summary>
+
+\`\`\`
+${output}
+\`\`\`
+
+</details>" \
+    2>/dev/null || warn "Failed to post ${test_type} test results on PR #${pr_number}."
+}
+
 # Post a "feedback addressed" marker comment on a PR.
 # check_review_pr() checks for this marker and skips the PR if present,
 # preventing infinite re-pickup loops after addressing reviewer feedback.
