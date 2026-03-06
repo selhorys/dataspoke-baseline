@@ -133,6 +133,7 @@ Write one markdown file per issue: `issues/{NN}_{slug}.md`
 #### TODO
 
 - [ ] implement `<path>`
+- [ ] wire to API route `<METHOD /api/v1/…>` and verify via API test (if the function can serve an API endpoint)
 - [ ] unit test: <what>
 - [ ] integration test: <what> (if needed)
 
@@ -146,6 +147,8 @@ Write one markdown file per issue: `issues/{NN}_{slug}.md`
 - Mark the correct checkboxes for Spec Scope and Implementation Scope.
 - Title follows conventional commits: `feat: <scope> - <description>`
 - Check the appropriate boxes (use `[x]`) — don't leave all unchecked.
+- If a backend function can be wired to an API route, the TODO must include wiring it to the route and testing the function through the API endpoint (not just a standalone unit test).
+- If the TODO list includes integration tests, append a remark: **Note**: for integration tests, the implementation plan should include test scenarios on dev-env conforming to `spec/TESTING.md`.
 
 ### Step 7 — Summary
 
