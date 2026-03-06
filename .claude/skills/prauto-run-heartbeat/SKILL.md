@@ -95,25 +95,34 @@ Log file notes:
 
 ### Heartbeat patterns
 
-The monitor may observe patterns that don't follow the typical claim→analyze→implement→PR lifecycle:
+The heartbeat processes **all** claimed issues in a single run (oldest first). You may see multiple phase transitions in one execution. Key patterns:
 
-1. **WIP issue resume** (Step 5): Log shows `Found WIP issue #N`. A heartbeat marker comment is posted on the issue. The heartbeat creates a worktree and routes to the appropriate phase handler. Phase is always derived fresh from GitHub.
+1. **New issue claimed** (Step 5): Log shows `Claimed issue #N`. The heartbeat then re-fetches all claimed issues to include the new one in the processing loop.
 
-2. **Squash-finalize** (Step 5.5): Only visible in the log — look for `[INFO] Squash-finalizing` markers. This is a stateless operation: the heartbeat rebases, squashes commits, generates a commit message via Claude, force-pushes, and swaps `prauto:review` → `prauto:done` labels.
+2. **WIP issue processing** (Step 6 loop): Log shows `WIP #N: phase=<phase>`. A heartbeat marker comment is posted, a worktree is created, and the phase handler runs. After completion, the worktree is cleaned up before moving to the next issue.
 
-3. **Plan-approval wait** (Step 5, plan-approval phase): Log shows plan-approval routing. No session files created. No heartbeat marker comment posted (retries not counted for waiting).
+3. **Squash-finalize** (Step 6 loop, prauto:review issues): Log shows `Squash-finalizing PR #N for issue #M`. The heartbeat rebases, squashes commits, generates a commit message via Claude, force-pushes, and swaps `prauto:review` → `prauto:done` labels.
+
+4. **Plan-approval wait** (Step 6 loop): Log shows `waiting for plan approval. Skipping.` No session files created. No heartbeat marker comment posted (retries not counted for waiting). The loop continues to the next issue.
+
+5. **PR review feedback** (Step 6 loop, prauto:review issues): Log shows `Addressing reviewer feedback on PR #N`. A worktree is created, Claude addresses comments, pushes, and posts a feedback-addressed marker.
 
 ### Milestones to report
 
 | Signal | Meaning |
 |--------|---------|
 | `heartbeat.lock` appears | Script started, lock acquired |
-| Log: `[INFO] Found WIP issue #N` | Resuming WIP issue |
-| Log: `[INFO] Starting analysis phase` | Analysis running |
+| Log: `[INFO] Claimed issue #N` | New issue claimed (Step 5) |
+| Log: `[INFO] Open issue limit reached` | Skipped new pickup (at limit) |
+| Log: `[INFO] WIP #N: phase=<phase>` | Processing a WIP issue (Step 6 loop) |
+| Log: `[INFO] Starting analysis phase` | Analysis running for current issue |
 | New `sessions/analysis-I-*.txt` | Analysis complete — summarize the plan |
 | Log: `[INFO] Plan posted` | Plan awaiting approval |
-| Log: `[INFO] Starting implementation phase` | Implementation running |
+| Log: `[INFO] Starting implementation phase` | Implementation running for current issue |
 | New `sessions/impl-I-*.json` | Implementation complete |
+| Log: `[INFO] Squash-finalizing PR #N` | Squash-finalize running for review issue |
+| Log: `[INFO] Addressing reviewer feedback` | PR review running for review issue |
+| Log: `[INFO] All claimed issues checked` | Processing loop finished |
 | New `history/<date>_I-*.json` | Job completed |
 | `heartbeat.lock` disappeared | Script finished |
 
