@@ -39,6 +39,54 @@ green="\033[32m" yellow="\033[33m" red="\033[31m" cyan="\033[36m" blue="\033[34m
 header() { echo -e "\n${bold}${cyan}### $1${reset}"; }
 row() { printf "  %-6s %-70s %s\n" "$1" "$2" "$3"; }
 
+# Check plan approval status for an issue (mirrors check_plan_approval in issues.sh).
+# Usage: check_plan_status <issue_number>
+# Sets: PLAN_STATUS ("approved"|"waiting"|"counter-proposal"|"no-plan")
+#       PLAN_COUNTER_PROPOSAL_PREVIEW (first line of counter-proposal, if any)
+check_plan_status() {
+  local issue_number="$1"
+  local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  PLAN_STATUS="waiting"
+  PLAN_COUNTER_PROPOSAL_PREVIEW=""
+
+  local comments_json
+  comments_json=$(gh issue view "$issue_number" -R "$REPO" \
+    --json comments --jq '.comments' 2>/dev/null) || { PLAN_STATUS="waiting"; return; }
+
+  # Find timestamp of the last plan comment
+  local plan_timestamp
+  plan_timestamp=$(echo "$comments_json" | jq -r --arg prefix "$plan_prefix" '
+    [.[] | select(.body | startswith($prefix))] | last | .createdAt // empty')
+
+  if [[ -z "$plan_timestamp" ]]; then
+    PLAN_STATUS="no-plan"; return
+  fi
+
+  # Get non-prauto comments after the plan
+  local after_comments
+  after_comments=$(echo "$comments_json" | jq -r --arg ts "$plan_timestamp" '
+    [.[] | select(.createdAt > $ts) | select(.body | startswith("prauto(") | not)]')
+  local comment_count
+  comment_count=$(echo "$after_comments" | jq 'length')
+
+  if [[ "$comment_count" -eq 0 ]]; then
+    PLAN_STATUS="waiting"; return
+  fi
+
+  # Check for "go ahead"
+  local i body_trimmed
+  for (( i = 0; i < comment_count; i++ )); do
+    body_trimmed=$(echo "$after_comments" | jq -r ".[$i].body" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ "$body_trimmed" == "go ahead" ]]; then
+      PLAN_STATUS="approved"; return
+    fi
+  done
+
+  # No "go ahead" — latest non-prauto comment is a counter-proposal
+  PLAN_STATUS="counter-proposal"
+  PLAN_COUNTER_PROPOSAL_PREVIEW=$(echo "$after_comments" | jq -r '.[-1].body' | head -1 | cut -c1-60)
+}
+
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
@@ -95,6 +143,7 @@ show_wip() {
 
     # Derive phase
     local phase="analysis"
+    local plan_detail=""
     local pr_exists
     pr_exists=$(gh pr list -R "$REPO" --head "${BRANCH_PREFIX}I-${num}" \
       --json number --jq '.[0].number // empty' 2>/dev/null)
@@ -102,20 +151,21 @@ show_wip() {
       phase="pr"
     elif [[ "$has_plan_review" == "true" ]]; then
       phase="plan-approval"
+      check_plan_status "$num"
+      case "$PLAN_STATUS" in
+        approved)           plan_detail=" → approved, will implement" ;;
+        counter-proposal)   plan_detail=" → counter-proposal: \"${PLAN_COUNTER_PROPOSAL_PREVIEW}\"" ;;
+        no-plan)            plan_detail=" → plan missing, will re-analyze" ;;
+        *)                  plan_detail=" → waiting for response" ;;
+      esac
     else
-      # Check if plan was approved
-      local plan_approved
-      plan_approved=$(gh issue view "$num" -R "$REPO" --json comments \
-        --jq '[.comments[] | select(.body | test("(?i)go ahead"))] | length' 2>/dev/null)
-      if [[ "$plan_approved" -gt 0 ]]; then
-        phase="implementation"
-      else
-        # Check if plan exists at all
-        local has_plan
-        has_plan=$(gh issue view "$num" -R "$REPO" --json comments \
-          --jq '[.comments[] | select(.body | startswith("prauto(")) | select(.body | contains(": Plan"))] | length' 2>/dev/null)
-        [[ "$has_plan" -eq 0 ]] && phase="analysis"
-      fi
+      check_plan_status "$num"
+      case "$PLAN_STATUS" in
+        approved)       phase="implementation" ;;
+        counter-proposal) phase="plan-approval"; plan_detail=" → counter-proposal: \"${PLAN_COUNTER_PROPOSAL_PREVIEW}\"" ;;
+        no-plan)        phase="analysis" ;;
+        *)              phase="analysis" ;;
+      esac
     fi
 
     # Count heartbeat comments for retry
@@ -137,7 +187,7 @@ show_wip() {
     [[ "$phase" == "pr" ]] && phase_color="$blue"
 
     echo -e "  #${num}\t${title}"
-    echo -e "    ${dim}assignee=${assignee}  phase=${phase_color}${phase}${reset}${dim}  retries=${hb_count}/${MAX_RETRIES}${quota_paused}${reset}"
+    echo -e "    ${dim}assignee=${assignee}  phase=${phase_color}${phase}${reset}${dim}${plan_detail}  retries=${hb_count}/${MAX_RETRIES}${quota_paused}${reset}"
 
     i=$((i + 1))
   done
@@ -306,17 +356,22 @@ show_next() {
       elif [[ -n "$pr_exists" ]]; then
         action="${blue}Push branch${reset} + create/update PR (attempt $((hb_count+1))/${MAX_RETRIES})"
       elif [[ "$has_plan_review" == "true" ]]; then
-        # prauto:plan-review label present → still waiting (label is removed on approval)
-        action="${yellow}Skip${reset} — waiting for plan approval"
+        # prauto:plan-review label present — check actual comment state
+        check_plan_status "$num"
+        case "$PLAN_STATUS" in
+          approved)         action="${green}Start implementation${reset} (plan approved)" ;;
+          counter-proposal) action="${yellow}Revise plan${reset} — counter-proposal: \"${PLAN_COUNTER_PROPOSAL_PREVIEW}\"" ;;
+          no-plan)          action="${yellow}Re-run analysis${reset} — plan comment missing" ;;
+          *)                action="${yellow}Skip${reset} — waiting for plan approval" ;;
+        esac
       else
-        local has_plan
-        has_plan=$(gh issue view "$num" -R "$REPO" --json comments \
-          --jq "[.comments[] | select(.body | startswith(\"prauto(\")) | select(.body | contains(\": Plan\"))] | length" 2>/dev/null)
-        if [[ "$has_plan" -gt 0 ]]; then
-          action="${green}Start implementation${reset} (plan approved)"
-        else
-          action="${yellow}Run analysis${reset} (attempt $((hb_count+1))/${MAX_RETRIES})"
-        fi
+        check_plan_status "$num"
+        case "$PLAN_STATUS" in
+          approved)         action="${green}Start implementation${reset} (plan approved)" ;;
+          counter-proposal) action="${yellow}Revise plan${reset} — counter-proposal: \"${PLAN_COUNTER_PROPOSAL_PREVIEW}\"" ;;
+          no-plan)          action="${yellow}Run analysis${reset} (attempt $((hb_count+1))/${MAX_RETRIES})" ;;
+          *)                action="${yellow}Run analysis${reset} (attempt $((hb_count+1))/${MAX_RETRIES})" ;;
+        esac
       fi
     elif echo "$labels" | grep -q "$LABEL_REVIEW"; then
       label="review"
