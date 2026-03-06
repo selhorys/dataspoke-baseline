@@ -163,7 +163,7 @@ Do not proceed past this step if you receive `409`. The lock is advisory; bypass
 
 #### Step 3 — Reset dummy data
 
-Always reset before running tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty:
+Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty:
 
 ```bash
 cd dev_env && ./dummy-data-reset.sh
