@@ -55,5 +55,13 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "gpt-4o"
 
+    # Notifications
+    notification_enabled: bool = False
+    notification_from: str = "dataspoke@example.com"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+
 
 settings = Settings()
