@@ -422,6 +422,7 @@ Shared by all features.
 
 | Purpose | Technology |
 |---------|-----------|
+| Package Manager | uv |
 | API Testing | pytest, httpx |
 | Frontend Testing | Jest, React Testing Library |
 | E2E Testing | Playwright |

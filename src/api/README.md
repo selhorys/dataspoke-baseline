@@ -10,7 +10,7 @@ Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/�
 ## Prerequisites
 
 - Python **3.13**
-- [`uv`](https://github.com/astral-sh/uv) (recommended) or `pip`
+- [`uv`](https://github.com/astral-sh/uv)
 
 ---
 
@@ -20,9 +20,7 @@ Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/�
 
 ```bash
 # From the repo root
-uv sync --directory src/api
-# or
-pip install -e "src/api[dev]"
+uv sync
 ```
 
 ### 2. Set environment variables
@@ -39,9 +37,7 @@ cd dev_env && ./dataspoke-port-forward.sh
 
 ```bash
 # From repo root
-uvicorn src.api.main:app --reload --port 8000
-# or from src/api/
-uvicorn main:app --reload --port 8000
+uv run uvicorn src.api.main:app --reload --port 8000
 ```
 
 The interactive docs are available at:
@@ -94,7 +90,7 @@ Unit tests run without a live dev environment (no real DB, DataHub, or Redis nee
 
 ```bash
 # From the repo root
-pytest tests/unit/api/ -v
+uv run pytest tests/unit/api/ -v
 ```
 
 ---
@@ -103,7 +99,7 @@ pytest tests/unit/api/ -v
 
 ```bash
 # From the repo root
-ruff check src/api tests/unit/api/
-ruff format src/api tests/unit/api/
-mypy src/api
+uv run ruff check src/api tests/unit/api/
+uv run ruff format src/api tests/unit/api/
+uv run mypy src/api
 ```

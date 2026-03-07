@@ -36,7 +36,7 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 | Layer | Technology |
 |-------|-----------|
 | Frontend | Next.js + TypeScript |
-| API | FastAPI (Python 3.11+) |
+| API | FastAPI (Python 3.13) |
 | Orchestration | Temporal |
 | Vector DB | Qdrant |
 | Operational DB | PostgreSQL |
@@ -69,7 +69,8 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 
 - **kubectl** + **Helm v3** installed and configured
 - A local Kubernetes cluster (Docker Desktop, minikube, or kind) with **8+ CPUs / 16 GB RAM**
-- **Python 3.11+** and **Node.js 18+** for running app services locally
+- **Python 3.13** and **Node.js 18+** for running app services locally
+- [`uv`](https://github.com/astral-sh/uv) for Python dependency management
 
 ### 1. Configure and Install the Dev Environment
 
@@ -108,14 +109,17 @@ dev_env/dataspoke-port-forward.sh    # DataSpoke infrastructure
 ```bash
 source dev_env/.env
 
+# Install Python dependencies (from repo root)
+uv sync
+
 # Frontend
 cd src/frontend && npm run dev          # http://localhost:3000
 
-# API
-cd src/api && uvicorn main:app --reload --port 8000
+# API (from repo root)
+uv run uvicorn src.api.main:app --reload --port 8000
 
-# Workers
-cd src/workflows && python -m worker
+# Workers (from repo root)
+uv run python -m src.workflows.worker
 ```
 
 ### 4. Verify

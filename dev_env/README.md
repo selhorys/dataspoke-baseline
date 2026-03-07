@@ -134,17 +134,17 @@ Load environment variables and start services on the host:
 ```bash
 source .env
 
+# Install Python dependencies (from repo root)
+cd .. && uv sync
+
 # Frontend
-cd ../src/frontend && npm run dev          # http://localhost:3000
+cd src/frontend && npm run dev          # http://localhost:3000
 
-# API
-cd ../src/api && uvicorn main:app --reload --port 8000
+# API (from repo root)
+uv run uvicorn src.api.main:app --reload --port 8000
 
-# Workers
-cd ../src/workflows && python -m worker
-
-# Or use the Makefile (when available):
-make dev-up
+# Workers (from repo root)
+uv run python -m src.workflows.worker
 ```
 
 The `DATASPOKE_*` variables in `.env` point to `localhost` — the port-forwards connect them to the in-cluster infrastructure transparently.

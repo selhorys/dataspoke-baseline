@@ -311,7 +311,7 @@ Every invocation starts a fresh session — no `--resume`. The rendered system p
 
 **Analysis (read-only)**: `Read`, `Glob`, `Grep`, and `Bash` limited to `git log/diff/status/branch`.
 
-**Implementation / PR review (read+write)**: Above plus `Write`, `Edit`, and `Bash` for `git add/commit`, `pytest`, `python3`, `npm run`, `npx prettier/tsc`, `ruff`.
+**Implementation / PR review (read+write)**: Above plus `Write`, `Edit`, and `Bash` for `git add/commit`, `uv run pytest`, `uv run python3`, `npm run`, `npx prettier/tsc`, `uv run ruff`.
 
 **Denylist (both phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`, `gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`. The denylist is defense-in-depth — the whitelist already restricts Claude, but the denylist provides a second layer that remains effective if the whitelist is accidentally broadened.
 
@@ -341,12 +341,12 @@ In the step 6 processing loop, issues with the `prauto:review` label are checked
 
 After implementation or PR review feedback, the worker runs available test suites and posts results as collapsible PR comments before swapping labels.
 
-- **Unit tests**: If `tests/unit/` exists, runs `pytest tests/unit/ --tb=short`. Always runs unconditionally.
+- **Unit tests**: If `tests/unit/` exists, runs `uv run pytest tests/unit/ --tb=short`. Always runs unconditionally.
 - **Integration tests**: If `tests/integration/` exists, follows the dev-env lock protocol (best-effort):
   1. Check if the dev-env lock endpoint (`http://localhost:9221/lock/status`) is reachable — skip gracefully if not.
   2. Acquire the advisory lock with owner `prauto-{worker_id}`.
   3. Run `dev_env/dummy-data-reset.sh` before tests.
-  4. Run `pytest tests/integration/ --tb=short` with `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1`.
+  4. Run `uv run pytest tests/integration/ --tb=short` with `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1`.
   5. Run `dev_env/dummy-data-reset.sh` after tests.
   6. Release the advisory lock.
 - Results are posted on the PR as `prauto({worker_id}): {Type} Test Results — {Passed|Failed}` inside a `<details>` block.

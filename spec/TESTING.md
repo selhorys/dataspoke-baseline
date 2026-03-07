@@ -64,7 +64,7 @@ Unit tests verify business logic in isolation. They **must never** require a run
 **Running**:
 
 ```bash
-pytest tests/unit/
+uv run pytest tests/unit/
 ```
 
 **Mocking rules**:
@@ -79,8 +79,8 @@ Example pattern: patch external clients at the module boundary (not where define
 **Static gates** (must pass before committing):
 
 ```bash
-mypy src/
-ruff check src/ tests/
+uv run mypy src/
+uv run ruff check src/ tests/
 ```
 
 ### TypeScript (Frontend)
@@ -119,7 +119,7 @@ Integration tests support two execution modes:
 
 | Mode | App Services | When to Use |
 |------|-------------|-------------|
-| **Host (default)** | Run on host (`uvicorn`, `npm run dev`, `python -m worker`) | Normal development — fast test-and-fix loop |
+| **Host (default)** | Run on host (`uv run uvicorn`, `npm run dev`, `uv run python -m worker`) | Normal development — fast test-and-fix loop |
 | **In-cluster (on-demand)** | Deployed via Helm chart into K8s cluster | Testing Kubernetes-specific behavior only — when user explicitly requests it |
 
 **Host mode** is the standard workflow described below. Application services run on the developer's machine and connect to port-forwarded infrastructure. Reinstalling the Helm chart is not required between test iterations — only the host-running process needs to be restarted. This keeps the test-and-fix loop fast.
@@ -188,7 +188,7 @@ Document these additions in the test file's module docstring so the next develop
 #### Step 5 — Run and iterate
 
 ```bash
-pytest tests/integration/
+uv run pytest tests/integration/
 ```
 
 Fix code and re-run from Step 3 as needed. Do not re-run without resetting — tests that depend on a clean baseline will produce false results against dirty state.
@@ -230,11 +230,11 @@ cd dev_env
 The DataSpoke application services must also be running on the host:
 
 ```bash
-# API (from src/api/)
-uvicorn main:app --reload --port 8000
+# API (from repo root)
+uv run uvicorn src.api.main:app --reload --port 8000
 
-# Workers (from src/workflows/)
-python -m worker
+# Workers (from repo root)
+uv run python -m src.workflows.worker
 ```
 
 ### Directory Structure
@@ -356,9 +356,10 @@ Test-specific data extensions (inserted after dummy-data-reset.sh):
 
 ```yaml
 # Minimal CI gate (conceptual — actual workflow in .github/workflows/)
-- run: pytest tests/unit/ --tb=short
-- run: mypy src/
-- run: ruff check src/ tests/
+- run: uv sync
+- run: uv run pytest tests/unit/ --tb=short
+- run: uv run mypy src/
+- run: uv run ruff check src/ tests/
 - run: npx tsc --noEmit          # from src/frontend/
 - run: npx eslint src/           # from src/frontend/
 ```

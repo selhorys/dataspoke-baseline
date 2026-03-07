@@ -1,23 +1,22 @@
 # Stage 1: build dependencies into a venv
 FROM python:3.13-slim AS builder
 
-RUN pip install --no-cache-dir uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /build
 
-COPY src/api/pyproject.toml .
-RUN uv venv /venv && \
-    uv pip install --python /venv/bin/python --no-cache .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Stage 2: runtime image
 FROM python:3.13-slim
 
 ENV PYTHONPATH=/app \
-    PATH="/venv/bin:$PATH" \
+    PATH="/build/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-COPY --from=builder /venv /venv
+COPY --from=builder /build/.venv /build/.venv
 
 WORKDIR /app
 COPY src/ ./src/
