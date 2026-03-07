@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     Text,
     UniqueConstraint,
+    desc,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -86,7 +87,7 @@ class ValidationConfig(Base):
 class ValidationResult(Base):
     __tablename__ = "validation_results"
     __table_args__ = (
-        Index("ix_validation_results_urn_measured", "dataset_urn", "measured_at"),
+        Index("ix_validation_results_urn_measured", "dataset_urn", desc("measured_at")),
         {"schema": SCHEMA},
     )
 
@@ -135,7 +136,7 @@ class GenerationConfig(Base):
 class GenerationResult(Base):
     __tablename__ = "generation_results"
     __table_args__ = (
-        Index("ix_generation_results_urn_generated", "dataset_urn", "generated_at"),
+        Index("ix_generation_results_urn_generated", "dataset_urn", desc("generated_at")),
         {"schema": SCHEMA},
     )
 
@@ -262,7 +263,7 @@ class MetricDefinition(Base):
 class MetricResult(Base):
     __tablename__ = "metric_results"
     __table_args__ = (
-        Index("ix_metric_results_metric_measured", "metric_id", "measured_at"),
+        Index("ix_metric_results_metric_measured", "metric_id", desc("measured_at")),
         {"schema": SCHEMA},
     )
 
@@ -287,7 +288,7 @@ class MetricIssue(Base):
     __table_args__ = (
         Index("ix_metric_issues_status_priority", "status", "priority"),
         Index("ix_metric_issues_urn_status", "dataset_urn", "status"),
-        Index("ix_metric_issues_metric_created", "metric_id", "created_at"),
+        Index("ix_metric_issues_metric_created", "metric_id", desc("created_at")),
         {"schema": SCHEMA},
     )
 
@@ -319,7 +320,7 @@ class MetricIssue(Base):
 class Event(Base):
     __tablename__ = "events"
     __table_args__ = (
-        Index("ix_events_entity_occurred", "entity_type", "entity_id", "occurred_at"),
+        Index("ix_events_entity_occurred", "entity_type", "entity_id", desc("occurred_at")),
         {"schema": SCHEMA},
     )
 

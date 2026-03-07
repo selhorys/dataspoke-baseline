@@ -98,6 +98,7 @@ src/
 ├── shared/               # Cross-cutting shared libraries
 │   ├── __init__.py
 │   ├── config.py         # Resilience settings, constants
+│   ├── exceptions.py     # DataSpokeError hierarchy (error codes for API mapping)
 │   ├── datahub/          # DataHub client wrapper
 │   │   ├── __init__.py
 │   │   ├── client.py     # DataHubClient — read/write wrapper with retry

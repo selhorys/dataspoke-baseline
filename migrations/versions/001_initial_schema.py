@@ -85,7 +85,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_validation_results_urn_measured",
         "validation_results",
-        ["dataset_urn", "measured_at"],
+        ["dataset_urn", sa.text("measured_at DESC")],
         schema=SCHEMA,
     )
 
@@ -132,7 +132,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_generation_results_urn_generated",
         "generation_results",
-        ["dataset_urn", "generated_at"],
+        ["dataset_urn", sa.text("generated_at DESC")],
         schema=SCHEMA,
     )
 
@@ -242,7 +242,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_metric_results_metric_measured",
         "metric_results",
-        ["metric_id", "measured_at"],
+        ["metric_id", sa.text("measured_at DESC")],
         schema=SCHEMA,
     )
 
@@ -286,7 +286,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_metric_issues_metric_created",
         "metric_issues",
-        ["metric_id", "created_at"],
+        ["metric_id", sa.text("created_at DESC")],
         schema=SCHEMA,
     )
 
@@ -308,7 +308,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_events_entity_occurred",
         "events",
-        ["entity_type", "entity_id", "occurred_at"],
+        ["entity_type", "entity_id", sa.text("occurred_at DESC")],
         schema=SCHEMA,
     )
 
