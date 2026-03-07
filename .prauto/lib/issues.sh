@@ -251,8 +251,15 @@ find_all_claimed_issues() {
     --json number,title,labels --limit 50 2>/dev/null) || {
     warn "Failed to list claimed issues from GitHub."; return 1
   }
+  # Exclude issues that ONLY have prauto:ready (no prauto:wip/review/done/failed).
+  # These are restarted issues awaiting re-claim and should not count toward the open limit.
   ALL_CLAIMED_ISSUES=$(echo "$issues_json" | jq \
-    '[.[] | select(.labels | any(.name | startswith("prauto:")))] | sort_by(.number)')
+    --arg ready "$PRAUTO_GITHUB_LABEL_READY" \
+    '[.[] | select(.labels | any(.name | startswith("prauto:"))) |
+      select((.labels | map(.name) | [.[] | select(startswith("prauto:"))]) as $pl |
+        ($pl | length > 1) or ($pl[0] != $ready)
+      )
+    ] | sort_by(.number)')
   ALL_CLAIMED_COUNT=$(echo "$ALL_CLAIMED_ISSUES" | jq 'length')
   [[ "$ALL_CLAIMED_COUNT" -eq 0 ]] && return 1
   info "Found ${ALL_CLAIMED_COUNT} claimed issue(s) on GitHub."

@@ -177,7 +177,7 @@ handle_phase_analysis() {
     return 0
   fi
   # Fall through to implementation
-  run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT" "$issue_body_raw"
+  run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
   # Fall through to PR
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }
@@ -190,10 +190,6 @@ handle_phase_plan_approval() {
   COUNTER_PROPOSAL=""
   local approval_status=0
   check_plan_approval "$issue_number" || approval_status=$?
-  # Fetch issue body for implementation context
-  local issue_body_raw
-  issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json body --jq '.body // ""' 2>/dev/null || echo "")
   if [[ "$approval_status" -eq 0 ]]; then
     # Approved — remove plan-review label, proceed to implementation
     info "Plan approved. Starting implementation..."
@@ -201,7 +197,7 @@ handle_phase_plan_approval() {
       --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || true
     # Fetch the plan from GitHub (not local session file)
     fetch_approved_plan "$issue_number"
-    run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT" "$issue_body_raw"
+    run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
     finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
     # Counter-proposal — respond to feedback, then revise plan
@@ -210,6 +206,10 @@ handle_phase_plan_approval() {
     # Generate and post response to feedback before re-analysis
     generate_feedback_response "$issue_number" "$issue_title" "$COUNTER_PROPOSAL" "$APPROVED_PLAN_TEXT"
     post_feedback_response_comment "$issue_number" "$FEEDBACK_RESPONSE_TEXT"
+    # Fetch issue body for re-analysis (analysis needs issue body as context)
+    local issue_body_raw
+    issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+      --json body --jq '.body // ""' 2>/dev/null || echo "")
     if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw" "$COUNTER_PROPOSAL" "$APPROVED_PLAN_TEXT"; then
       warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
       return 0
@@ -225,6 +225,10 @@ handle_phase_plan_approval() {
   elif [[ "$approval_status" -eq 3 ]]; then
     # Plan comment missing — re-run analysis from GitHub state
     info "Plan comment missing on issue #${issue_number}. Re-running analysis..."
+    # Fetch issue body for re-analysis (analysis needs issue body as context)
+    local issue_body_raw
+    issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+      --json body --jq '.body // ""' 2>/dev/null || echo "")
     if ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw"; then
       warn "Re-analysis failed for issue #${issue_number}. Will retry next heartbeat."
       return 0
@@ -237,7 +241,7 @@ handle_phase_plan_approval() {
       return 0
     fi
     # Minor → proceed to implementation (same as approval path)
-    run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT" "$issue_body_raw"
+    run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
     finalize_issue_pr "$branch" "$issue_number" "$issue_title"
   else
     # No response yet — just wait (don't bump retries)
@@ -251,12 +255,9 @@ handle_phase_plan_approval() {
 handle_phase_implementation() {
   local issue_number="$1" issue_title="$2" branch="$3"
 
-  # Fetch the issue body and plan from GitHub for context
-  local issue_body_raw
-  issue_body_raw=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json body --jq '.body // ""' 2>/dev/null || echo "")
+  # Fetch the approved plan from GitHub for context (issue body is not needed here)
   fetch_approved_plan "$issue_number"
-  run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT" "$issue_body_raw"
+  run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }
 

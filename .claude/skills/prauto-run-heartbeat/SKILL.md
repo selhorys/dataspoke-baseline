@@ -22,13 +22,13 @@ Because the heartbeat spawns `claude` CLI internally, the `CLAUDECODE` env var m
 
 ## Step 1 — Pre-flight checks
 
-1. Verify `.prauto/config.local.env` exists: `test -f .prauto/config.local.env`
-   - Do **NOT** read its contents — it contains secrets (GH_TOKEN, ANTHROPIC_API_KEY).
-   - If missing, tell the user to create it from `.prauto/config.local.env.example` and stop.
-2. Verify `.prauto/heartbeat.sh` exists and is executable.
-3. Check for stale lock: if `.prauto/state/heartbeat.lock` exists, warn the user that another heartbeat may be running. Ask whether to proceed or abort.
-4. Ensure state directories exist: `mkdir -p .prauto/state/sessions .prauto/worktrees` — these are gitignored and must be created locally.
-5. Verify required CLI tools are available: `which claude && which gh && which git && which jq`
+Run the pre-flight script:
+
+```bash
+.claude/skills/prauto-run-heartbeat/preflight.sh
+```
+
+If it exits non-zero, report the failures and stop. For a stale lock, ask the user whether to proceed or abort.
 
 ---
 

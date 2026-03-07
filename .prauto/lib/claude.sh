@@ -176,13 +176,12 @@ ${counter_proposal}"
 
 # Phase 2: Implementation (read + write).
 # Always starts a fresh session. Claude checks the branch for existing work.
-# Usage: run_implementation <issue_number> <branch> <analysis_output> <issue_body>
+# Usage: run_implementation <issue_number> <branch> <analysis_output>
 # Sets: IMPL_SESSION_ID
 run_implementation() {
   local issue_number="$1"
   local branch="$2"
   local analysis_output="$3"
-  local issue_body="${4:-}"
 
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/implementation.md" \
@@ -191,7 +190,6 @@ run_implementation() {
     "base_branch=${PRAUTO_BASE_BRANCH}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
     "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}" \
-    "issue_body=${issue_body}" \
     "analysis_output=${analysis_output}")
 
   local budget="${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
@@ -258,20 +256,18 @@ generate_squash_commit_message() {
 
 # PR review phase: address reviewer feedback.
 # Always starts a fresh session with full reviewer comments as context.
-# Usage: run_pr_review <issue_number> <branch> <reviewer_comments> <issue_body> <plan>
+# Usage: run_pr_review <issue_number> <branch> <reviewer_comments> <plan>
 # Sets: REVIEW_SESSION_ID, REVIEW_RESPONSE
 run_pr_review() {
   local issue_number="$1"
   local branch="$2"
   local reviewer_comments="$3"
-  local issue_body="${4:-}"
-  local plan="${5:-}"
+  local plan="${4:-}"
 
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/pr-review.md" \
     "number=${issue_number}" \
     "branch=${branch}" \
-    "issue_body=${issue_body}" \
     "plan=${plan}" \
     "reviewer_comments=${reviewer_comments}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
