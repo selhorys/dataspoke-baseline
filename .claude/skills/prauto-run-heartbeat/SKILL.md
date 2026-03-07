@@ -27,7 +27,8 @@ Because the heartbeat spawns `claude` CLI internally, the `CLAUDECODE` env var m
    - If missing, tell the user to create it from `.prauto/config.local.env.example` and stop.
 2. Verify `.prauto/heartbeat.sh` exists and is executable.
 3. Check for stale lock: if `.prauto/state/heartbeat.lock` exists, warn the user that another heartbeat may be running. Ask whether to proceed or abort.
-4. Verify required CLI tools are available: `which claude && which gh && which git && which jq`
+4. Ensure state directories exist: `mkdir -p .prauto/state/sessions .prauto/worktrees` — these are gitignored and must be created locally.
+5. Verify required CLI tools are available: `which claude && which gh && which git && which jq`
 
 ---
 
