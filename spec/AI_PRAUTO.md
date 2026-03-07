@@ -64,6 +64,7 @@ Every heartbeat derives its next action from **remote GitHub state** — labels,
 .prauto/
 ├── config.env                  # [COMMITTED] Shared settings: GitHub labels, tool lists
 ├── config.local.env            # [GITIGNORED] Instance-specific: identity, Claude limits, secrets
+├── config.local.env.example    # [COMMITTED] Template for config.local.env
 ├── heartbeat.sh                # [COMMITTED] Main cron entry point
 ├── lib/
 │   ├── helpers.sh              # Shared bash helpers (info, warn, error)
@@ -110,7 +111,7 @@ Gitignored paths: `config.local.env`, `state/`, `worktrees/`.
 | File | Committed | Purpose | Key variables |
 |------|-----------|---------|---------------|
 | `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, `PRAUTO_CLAUDE_MODEL`, org-member filter flag, reviewer login |
-| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, Claude model/max-turns/budget, `PRAUTO_OPEN_ISSUE_LIMIT`, `PRAUTO_HEARTBEAT_INTERVAL_MINUTES`, reviewer override, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, `PRAUTO_CLAUDE_MODEL`, `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS`, `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION`, `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS`, `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION`, `PRAUTO_OPEN_ISSUE_LIMIT`, `PRAUTO_HEARTBEAT_INTERVAL_MINUTES`, `PRAUTO_QUOTA_TIMEOUT` (default 45s), reviewer override, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
 
 A single developer machine may run multiple prauto instances (e.g., `prauto01` in one clone, `prauto02` in another) sharing the same GitHub credential but with distinct identities.
 
@@ -130,7 +131,7 @@ crontab trigger
     │
     ├── 2. Load config ───────────── (config.env + config.local.env)
     │
-    ├── 3. Secure secrets ─────────── (move config.local.env out of repo tree)
+    ├── 3. Secure secrets ─────────── (back up config.local.env; original stays, protected by denylist)
     │
     ├── 4. Check token quota ─────── (lib/quota.sh)
     │       └── if exhausted → post quota-paused on WIP issues → exit
@@ -166,7 +167,7 @@ crontab trigger
 
 **Worktree isolation**: Every Claude session runs inside a dedicated git worktree at `.prauto/worktrees/I-{N}` (new issue) or `.prauto/worktrees/{branch}` (PR review). The main repo directory is never the working directory during Claude invocations. Each iteration cleans up its worktree before moving to the next issue; the EXIT trap serves as a safety net for unexpected exits.
 
-**Secrets handling**: Secrets are sourced into shell variables before Claude runs. `config.local.env` stays on disk but is protected by the `--disallowedTools` denylist entry. The EXIT trap removes the temp backup.
+**Secrets handling**: `config.local.env` is copied to a temporary backup under `state/.secrets-$$/` before Claude runs. The original stays in place, protected by the `--disallowedTools` denylist entry. Secrets are sourced into shell env vars. The EXIT trap removes the temp backup.
 
 **Bash conventions**: All scripts follow `dev_env/` patterns — `set -euo pipefail`, `SCRIPT_DIR` idiom, shared helpers from `lib/helpers.sh`, idempotent operations.
 
@@ -294,15 +295,15 @@ For best results, issues should include a clear description, references to relev
 
 ### Multi-phase execution model
 
-| Phase | Purpose | Tools | Max turns |
-|-------|---------|-------|-----------|
-| Analysis | Read codebase, understand issue, produce plan | Read-only | 20 |
-| Implementation | Write code, run tests, commit | Read + Write + limited Bash | 50 |
-| PR review | Address reviewer feedback (same tools as implementation) | Read + Write + limited Bash | 50 |
+| Phase | Purpose | Tools | Max turns (configurable) |
+|-------|---------|-------|--------------------------|
+| Analysis | Read codebase, understand issue, produce plan | Read-only | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
+| Implementation | Write code, run tests, commit | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
+| PR review | Address reviewer feedback (same tools as implementation) | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
 | Squash commit | Generate final commit message | None (text generation only) | 1 |
 | Feedback response | Respond to plan counter-proposal | None (text generation only) | 1 |
 
-`--max-turns` is the primary guard against runaway sessions. `--max-budget-usd` can be added for API billing but has no effect on subscription plans.
+`--max-turns` is the primary guard against runaway sessions. Values are set in `config.local.env` (example defaults: 50 analysis, 150 implementation). `--max-budget-usd` can be added via `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS` / `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION` for API billing but has no effect on subscription plans.
 
 Every invocation starts a fresh session — no `--resume`. The rendered system prompt (`state/.system-append-rendered.md`) is passed via `--append-system-prompt-file`.
 
@@ -336,13 +337,29 @@ After implementation, `pr.sh` pushes the branch, checks for an existing PR via `
 
 In the step 6 processing loop, issues with the `prauto:review` label are checked via `check_review_pr()`. A PR is actionable if it has unaddressed non-prauto comments and at least one `CHANGES_REQUESTED`/`COMMENTED` review or external comment. The feedback-addressed marker breaks the re-pickup loop: once posted, subsequent heartbeats skip the PR. New reviewer comments after the marker make the PR actionable again.
 
+### Test execution
+
+After implementation or PR review feedback, the worker runs available test suites and posts results as collapsible PR comments before swapping labels.
+
+- **Unit tests**: If `tests/unit/` exists, runs `pytest tests/unit/ --tb=short`. Always runs unconditionally.
+- **Integration tests**: If `tests/integration/` exists, follows the dev-env lock protocol (best-effort):
+  1. Check if the dev-env lock endpoint (`http://localhost:9221/lock/status`) is reachable — skip gracefully if not.
+  2. Acquire the advisory lock with owner `prauto-{worker_id}`.
+  3. Run `dev_env/dummy-data-reset.sh` before tests.
+  4. Run `pytest tests/integration/ --tb=short` with `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1`.
+  5. Run `dev_env/dummy-data-reset.sh` after tests.
+  6. Release the advisory lock.
+- Results are posted on the PR as `prauto({worker_id}): {Type} Test Results — {Passed|Failed}` inside a `<details>` block.
+
 ### Squash-finalize action
 
 Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger conditions. Squash-ready takes priority over feedback-needed within `check_review_pr()`.
 
 **Trigger conditions** (all must be true): branch matches `prauto/` prefix, PR has `prauto:review` label, assigned to this worker, `mergeable == "MERGEABLE"`, `mergeStateStatus == "CLEAN"`, latest org-member review is `APPROVED`.
 
-**Steps**: Rebase on base branch (abort on conflict), generate squash commit message via Claude (1-turn, no tools, using issue description + diff as context), rebuild as a single commit via `git reset --soft` + `git commit`, force-push with lease, update labels to `prauto:done` on both PR and issue. Does **NOT** merge the PR or close the issue — that is left to the human.
+**Steps**: Rebase on base branch (abort on conflict), generate squash commit message via Claude (1-turn, no tools, using issue description + diff as context), rebuild as a single commit via `git reset --soft` + `git commit`, force-push with lease, update PR title to match the squashed commit's subject line, update labels to `prauto:done` on both PR and issue. Does **NOT** merge the PR or close the issue — that is left to the human.
+
+**Label updates via REST API**: The squash-finalize step uses `gh api` REST calls (not `gh issue edit` / `gh pr edit`) for label operations, because the latter require `read:org` scope which the bot's classic PAT may lack.
 
 **Commit message format**: Conventional commit (`<type>: <subject>`) with max 5-line body, issue/PR reference, and `Co-Authored-By` trailers for all org-member PR approvers.
 
@@ -369,21 +386,21 @@ Autonomous workers must be resilient to crashes and restarts. Every write action
 
 ### Comment idempotency
 
-Before posting any comment, the worker checks for an existing comment matching (1) the worker's GitHub user and (2) the prefix `prauto({worker_id}):` followed by an action keyword.
+Before posting certain comments, the worker checks for an existing comment matching (1) the worker's GitHub user and (2) the prefix `prauto({worker_id}):` followed by an action keyword.
 
-| Context | Keyword |
-|---------|---------|
-| Issue claim | `Claimed` |
-| Abandonment | `Abandoning` |
-| Plan | `Plan` |
-| Heartbeat | `Heartbeat` |
-| Review response | `Review response` |
-| Feedback response | `Feedback response` |
-| Feedback marker | `Reviewer feedback addressed` |
-| Quota pause | `Paused` |
-| Quota resume | `Resumed` |
+| Context | Keyword | Idempotency guard |
+|---------|---------|-------------------|
+| Issue claim | `Claimed` | Yes — `comment_exists` |
+| Abandonment | `Abandoning` | Yes — `comment_exists` |
+| Plan | `Plan` (or `Plan (rev N)`) | Yes — `comment_exists` |
+| Quota pause | `Paused` | Yes — `has_quota_paused_comment` |
+| Heartbeat | `Heartbeat` | **No** — each heartbeat intentionally posts a new marker for retry counting |
+| Review response | `Review response` | **No** — multiple responses are valid across review rounds |
+| Feedback response | `Feedback response` | **No** — multiple responses are valid across plan revisions |
+| Feedback marker | `Reviewer feedback addressed` | **No** — gated externally by `check_review_pr()` |
+| Quota resume | `Resumed` | **No** — gated externally by `has_quota_paused_comment()` |
 
-Heartbeat comments are intentionally **not** idempotency-checked — each heartbeat posts a new marker to accurately reflect attempt count. The `plan-approval` phase is exempt (no heartbeat comment during approval waits).
+The `plan-approval` phase is exempt from heartbeat comments (waiting for human approval is not a failure).
 
 ### Optimistic claim locking
 

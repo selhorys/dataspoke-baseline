@@ -93,8 +93,7 @@ All GitHub API operations (issue labels, comments, PR creation) will then run as
 ├── state/                      # [GITIGNORED] Runtime state
 │   ├── heartbeat.lock          # PID-based lock file
 │   ├── heartbeat.log           # Cron output log
-│   ├── history/                # Completed job summaries
-│   └── sessions/               # Claude session outputs
+│   └── sessions/               # Per-issue session dirs (Claude outputs, job records)
 ├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
 └── README.md
 ```
