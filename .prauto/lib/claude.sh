@@ -3,7 +3,7 @@
 # Requires: helpers.sh sourced, PRAUTO_DIR set, config loaded, claude CLI available.
 
 # Tool whitelists and denylists per spec.
-ANALYSIS_ALLOWED_TOOLS='Read,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *)'
+ANALYSIS_ALLOWED_TOOLS='Read,Write,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *)'
 
 IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *)'
 
@@ -128,11 +128,16 @@ run_analysis() {
   local counter_proposal="${4:-}"
   local previous_plan="${5:-}"
 
+  # Plan file: Claude writes the full plan here via Write tool
+  local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+  local plan_file="${session_out_dir}/plan.md"
+
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/issue-analysis.md" \
     "number=${issue_number}" \
     "title=${issue_title}" \
-    "body=${issue_body}")
+    "body=${issue_body}" \
+    "plan_file=${plan_file}")
 
   if [[ -n "$counter_proposal" ]]; then
     if [[ -n "$previous_plan" ]]; then
@@ -163,13 +168,20 @@ ${counter_proposal}"
     return 1
   fi
 
-  ANALYSIS_OUTPUT="$CLAUDE_OUTPUT"
   ANALYSIS_SESSION_ID="$CLAUDE_SESSION_ID"
 
-  # Save session output to session dir
+  # Prefer the plan file written by Claude via Write tool over .result
+  if [[ -f "$plan_file" ]] && [[ -s "$plan_file" ]]; then
+    ANALYSIS_OUTPUT=$(cat "$plan_file")
+    info "Plan captured from file ($(wc -c < "$plan_file") bytes)."
+  else
+    warn "Plan file not found at ${plan_file}. Falling back to .result output."
+    ANALYSIS_OUTPUT="$CLAUDE_OUTPUT"
+  fi
+
+  # Save to session dir
+  echo "$ANALYSIS_OUTPUT" > "${session_out_dir}/analysis.txt"
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
-    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
-    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/analysis.txt"
     info "Analysis session saved: ${CLAUDE_SESSION_ID}"
   fi
 }

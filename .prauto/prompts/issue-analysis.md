@@ -6,16 +6,17 @@ Analyze the following GitHub issue and produce an implementation plan.
 
 ## Instructions
 
-1. Read the DataSpoke spec hierarchy to understand context:
-   - `spec/MANIFESTO_en.md` for product identity
-   - `spec/ARCHITECTURE.md` for system architecture
-   - Relevant feature specs in `spec/feature/` or `spec/feature/spoke/`
-2. Examine the current codebase to understand what exists.
-3. Produce an implementation plan:
-   - Files to create or modify
-   - Order of changes
-   - Existing patterns to follow
-   - Tests needed
-   - Risks or open questions
+Produce an implementation plan for the issue above:
+- Files to create or modify
+- Order of changes
+- Existing patterns to follow
+- Tests needed (unit and integration)
+- Risks or open questions
+
+When your plan is complete, use the Write tool to save the full plan to this exact path:
+
+  {plan_file}
+
+This file is the ONLY artifact captured from this session and will be posted to the GitHub issue for human review.
 
 Do NOT make code changes. Analysis only.
