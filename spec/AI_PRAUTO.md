@@ -98,7 +98,8 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │       └── issue-{N}/          # One dir per issue number
 │           └── {uuid}/         # One dir per heartbeat session
 │               ├── claude-output-{pid}.json  # Raw Claude CLI output
-│               ├── analysis.txt              # Analysis phase output
+│               ├── plan.md                   # Full plan written by Claude via Write tool
+│               ├── analysis.txt              # Analysis phase output (copy of plan.md)
 │               ├── implementation.json       # Implementation phase output
 │               ├── review.json               # PR review phase output
 │               ├── complete.json             # Job completion record
@@ -323,7 +324,7 @@ For best results, issues should include a clear description, references to relev
 
 | Phase | Purpose | Tools | Max turns (configurable) |
 |-------|---------|-------|--------------------------|
-| Analysis | Read codebase, understand issue, produce plan | Read-only | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
+| Analysis | Read codebase, understand issue, produce plan | Read + Write (plan file) | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
 | Implementation | Write code, run tests, commit | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
 | PR review | Address reviewer feedback (same tools as implementation) | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
 | Squash commit | Generate final commit message | None (text generation only) | 1 |
@@ -335,7 +336,7 @@ Every invocation starts a fresh session — no `--resume`. The rendered system p
 
 ### Tool restrictions by phase
 
-**Analysis (read-only)**: `Read`, `Glob`, `Grep`, and `Bash` limited to `git log/diff/status/branch`.
+**Analysis (read + plan write)**: `Read`, `Write`, `Glob`, `Grep`, and `Bash` limited to `git log/diff/status/branch`. The `Write` tool is used solely to save the completed plan to a session-directory file (`plan.md`), which is the captured artifact posted to the GitHub issue.
 
 **Implementation / PR review (read+write)**: Above plus `Write`, `Edit`, and `Bash` for `git add/commit`, `uv sync`, `uv run pytest`, `uv run python3`, `uv run ruff`, `uv run mypy`, `npm run`, `npx prettier/tsc`.
 
@@ -393,12 +394,12 @@ Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger 
 
 ## Prompt Templates
 
-Six prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
+Six prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, plan_file, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body and a `plan_file` path where Claude must Write the completed plan; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
 
 | Template | Phase | Purpose | Context | Key instructions |
 |----------|-------|---------|---------|------------------|
 | `system-append.md` | All | Worker identity addendum | — | Declares autonomous mode, forbids pushing, requires conventional commits, mandates spec reading |
-| `issue-analysis.md` | Analysis | Read issue + codebase, produce plan | Issue body | Read spec hierarchy, examine codebase, list files/order/patterns/tests/risks. No code changes. |
+| `issue-analysis.md` | Analysis | Read issue + codebase, produce plan | Issue body, plan_file path | Produce plan (files/order/patterns/tests/risks), Write full plan to `{plan_file}`. No code changes. |
 | `implementation.md` | Implementation | Write code per plan | Plan only | Check branch for existing work first, follow specs and patterns, write tests, run formatters, commit but don't push |
 | `pr-review.md` | PR review | Address reviewer feedback | Plan + reviewer comments | Make requested changes, answer questions, produce reviewer-facing response summary |
 | `feedback-response.md` | Plan feedback | Respond to plan counter-proposal | — | Address each feedback point, acknowledge suggestions, keep under 500 words (1-turn, no tools) |
@@ -438,7 +439,7 @@ The claim protocol uses check-then-add with a timestamp-based verification windo
 
 ### Session directories
 
-Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{uuid}/`. All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), phase outputs (`analysis.txt`, `implementation.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a unique UUID subdirectory. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
+Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{uuid}/`. All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), plan file (`plan.md`), phase outputs (`analysis.txt`, `implementation.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a unique UUID subdirectory. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
 
 ---
 

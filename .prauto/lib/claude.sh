@@ -118,7 +118,7 @@ invoke_claude() {
   fi
 }
 
-# Phase 1: Analysis (read-only).
+# Phase 1: Analysis (read + plan write).
 # Usage: run_analysis <issue_number> <issue_title> <issue_body> [counter_proposal]
 # Sets: ANALYSIS_OUTPUT, ANALYSIS_SESSION_ID
 run_analysis() {
