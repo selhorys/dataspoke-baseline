@@ -57,12 +57,13 @@ class QdrantManager:
                 ]
                 query_filter = models.Filter(must=must_conditions)
 
-            return await self._client.query_points(
+            result = await self._client.query_points(
                 collection_name=collection,
                 query=vector,
                 limit=limit,
                 query_filter=query_filter,
-            ).points
+            )
+            return result.points
         except Exception as exc:
             raise StorageUnavailableError(f"Qdrant search failed: {exc}") from exc
 

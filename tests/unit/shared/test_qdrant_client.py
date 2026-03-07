@@ -88,6 +88,46 @@ async def test_ensure_collection_raises_storage_unavailable_on_error(mock_qdrant
 
 
 @pytest.mark.asyncio
+async def test_search_returns_points(mock_qdrant):
+    scored_point = MagicMock()
+    query_response = MagicMock()
+    query_response.points = [scored_point]
+    mock_qdrant.query_points.return_value = query_response
+
+    mgr = _make_manager(mock_qdrant)
+    result = await mgr.search("test_col", vector=[0.1] * 1536, limit=5)
+
+    assert result == [scored_point]
+    mock_qdrant.query_points.assert_awaited_once()
+    call_kwargs = mock_qdrant.query_points.call_args.kwargs
+    assert call_kwargs["collection_name"] == "test_col"
+    assert call_kwargs["limit"] == 5
+    assert call_kwargs["query_filter"] is None
+
+
+@pytest.mark.asyncio
+async def test_search_with_filters(mock_qdrant):
+    query_response = MagicMock()
+    query_response.points = []
+    mock_qdrant.query_points.return_value = query_response
+
+    mgr = _make_manager(mock_qdrant)
+    await mgr.search("test_col", vector=[0.1] * 1536, filters={"platform": "snowflake"})
+
+    call_kwargs = mock_qdrant.query_points.call_args.kwargs
+    assert call_kwargs["query_filter"] is not None
+
+
+@pytest.mark.asyncio
+async def test_search_raises_storage_unavailable_on_error(mock_qdrant):
+    mock_qdrant.query_points.side_effect = Exception("timeout")
+
+    mgr = _make_manager(mock_qdrant)
+    with pytest.raises(StorageUnavailableError, match="Qdrant search failed"):
+        await mgr.search("col", vector=[0.1] * 1536)
+
+
+@pytest.mark.asyncio
 async def test_close(mock_qdrant):
     mgr = _make_manager(mock_qdrant)
     await mgr.close()
