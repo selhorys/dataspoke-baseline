@@ -207,7 +207,10 @@ dataspoke-baseline/
 │   └── shared/             # DataHub client, shared models, LLM integration
 ├── docker-images/          # Dockerfiles (not yet created)
 ├── tests/                  # Unit, integration, and E2E test suites (not yet created)
-└── migrations/             # Alembic database migrations (not yet created)
+├── migrations/             # Alembic database migrations (not yet created)
+├── pyproject.toml          # Python project metadata and dependencies (uv)
+├── uv.lock                 # Locked dependency versions (committed)
+└── .venv/                  # Python virtual environment (gitignored, created by uv sync)
 ```
 
 ## Environment Variables

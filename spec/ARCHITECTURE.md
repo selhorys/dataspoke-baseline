@@ -548,7 +548,10 @@ dataspoke-baseline/
 │   └── shared/         # DataHub client, shared models, LLM integration
 ├── tests/              # Unit, integration, E2E test suites
 ├── ref/                # External source for AI reference (git-ignored)
-└── migrations/         # Alembic database migrations
+├── migrations/         # Alembic database migrations
+├── pyproject.toml      # Python project metadata and dependencies (uv)
+├── uv.lock             # Locked dependency versions (committed)
+└── .venv/              # Python virtual environment (git-ignored, created by uv sync)
 ```
 
 ---

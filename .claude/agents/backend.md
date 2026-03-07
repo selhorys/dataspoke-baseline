@@ -72,4 +72,4 @@ For each task, produce:
 
 ## After completing a task
 
-Run `pytest` (or the relevant test subset) to verify your changes before reporting completion.
+Run `uv run pytest` (or the relevant test subset) to verify your changes before reporting completion. If you add or change dependencies in `pyproject.toml`, run `uv sync` first to update `.venv`.

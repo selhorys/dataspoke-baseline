@@ -35,7 +35,7 @@ run_and_post_test_results() {
   if [[ -d "tests/unit" ]]; then
     info "Running unit tests..."
     local unit_output unit_exit=0
-    unit_output=$(pytest tests/unit/ --tb=short 2>&1) || unit_exit=$?
+    unit_output=$(uv run pytest tests/unit/ --tb=short 2>&1) || unit_exit=$?
     post_test_results_comment "$BRANCH_PR_NUMBER" "Unit" "$unit_exit" "$unit_output"
     info "Unit test results posted on PR #${BRANCH_PR_NUMBER} (exit: ${unit_exit})."
   else
@@ -92,7 +92,7 @@ run_integration_tests_with_protocol() {
   # Run integration tests (signal conftest that lock is pre-acquired)
   info "Running integration tests..."
   local integ_output integ_exit=0
-  integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
+  integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 uv run pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
 
   # Reset dummy data after tests
   if [[ -x "$reset_script" ]]; then

@@ -311,7 +311,7 @@ Every invocation starts a fresh session — no `--resume`. The rendered system p
 
 **Analysis (read-only)**: `Read`, `Glob`, `Grep`, and `Bash` limited to `git log/diff/status/branch`.
 
-**Implementation / PR review (read+write)**: Above plus `Write`, `Edit`, and `Bash` for `git add/commit`, `uv run pytest`, `uv run python3`, `npm run`, `npx prettier/tsc`, `uv run ruff`.
+**Implementation / PR review (read+write)**: Above plus `Write`, `Edit`, and `Bash` for `git add/commit`, `uv sync`, `uv run pytest`, `uv run python3`, `uv run ruff`, `uv run mypy`, `npm run`, `npx prettier/tsc`.
 
 **Denylist (both phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`, `gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`. The denylist is defense-in-depth — the whitelist already restricts Claude, but the denylist provides a second layer that remains effective if the whitelist is accidentally broadened.
 

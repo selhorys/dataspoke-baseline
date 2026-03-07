@@ -12,11 +12,12 @@
 
 1. [Toolchain Summary](#toolchain-summary)
 2. [Repository Layout](#repository-layout)
-3. [Unit Testing](#unit-testing)
-4. [Integration Testing](#integration-testing)
-5. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
-6. [Test Data Design](#test-data-design)
-7. [CI Behavior](#ci-behavior)
+3. [Python Environment Setup](#python-environment-setup)
+4. [Unit Testing](#unit-testing)
+5. [Integration Testing](#integration-testing)
+6. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
+7. [Test Data Design](#test-data-design)
+8. [CI Behavior](#ci-behavior)
 
 ---
 
@@ -46,6 +47,23 @@ tests/
 ```
 
 > The `tests/` directory does not yet exist in the repo. It is created when the first tests are written. This spec defines the intended layout in advance.
+
+---
+
+## Python Environment Setup
+
+All Python test commands use `uv run` to execute within the project's `.venv` virtual environment. Before running any tests or static gates, ensure dependencies are installed:
+
+```bash
+uv sync             # Install production + dev dependencies into .venv/
+```
+
+Run `uv sync` again whenever `pyproject.toml` or `uv.lock` changes (e.g., after pulling new commits or adding a dependency). The `uv run` prefix ensures commands execute inside `.venv` without manual activation.
+
+When a backend feature adds or changes dependencies:
+1. Edit `pyproject.toml` (add/remove/update the dependency).
+2. Run `uv sync` — this updates `uv.lock` and installs into `.venv/`.
+3. Commit both `pyproject.toml` and `uv.lock` together.
 
 ---
 

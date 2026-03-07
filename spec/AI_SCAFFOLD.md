@@ -122,10 +122,10 @@ The full allow/deny lists are in `.claude/settings.json`. The settings file is t
 
 A single async hook (`auto-format.sh`) runs after every `Edit` or `Write` tool call:
 
-- **Python files** (`.py`): `ruff check --fix` + `ruff format`
+- **Python files** (`.py`): `uv run ruff check --fix` + `uv run ruff format` (falls back to bare `ruff` if `uv` is unavailable)
 - **TypeScript files** (`.ts`, `.tsx`): `npx prettier --write`
 
-Formatting is best-effort — if `ruff` or `npx` is not installed, the hook silently exits. The hook is async (non-blocking) with a 15-second timeout.
+Formatting is best-effort — if neither `uv` nor `ruff` is installed (for Python), or `npx` is not installed (for TypeScript), the hook silently exits. The hook is async (non-blocking) with a 15-second timeout.
 
 ---
 

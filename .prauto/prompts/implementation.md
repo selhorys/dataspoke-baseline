@@ -16,11 +16,12 @@ If commits exist, continue from where they left off — do NOT redo completed wo
 2. Read relevant specs before writing code.
 3. Follow existing code patterns.
 4. Write tests for your changes.
-5. Run tests to verify (pytest for Python, npx tsc for TypeScript).
-6. Run formatters (ruff for Python, npx prettier for TypeScript).
-7. Stage and commit with conventional commit messages.
+5. If you added or changed Python dependencies in `pyproject.toml`, run `uv sync` to update `.venv`.
+6. Run tests to verify (`uv run pytest` for Python, `npx tsc` for TypeScript).
+7. Run formatters (`uv run ruff` for Python, `npx prettier` for TypeScript).
+8. Stage and commit with conventional commit messages.
    Use: git commit --author="{author_name} <{author_email}>"
-8. Do NOT push. The orchestrator handles pushing.
+9. Do NOT push. The orchestrator handles pushing.
 
 ## Analysis Output
 
