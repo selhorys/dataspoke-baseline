@@ -79,6 +79,7 @@ Each issue processed by the heartbeat gets a session directory:
       claude-output-{pid}.json # raw Claude CLI output
       analysis.txt             # analysis phase output
       implementation.json      # implementation phase output
+      integration-fix.json     # integration fix phase output
       review.json              # PR review phase output
       complete.json            # job completion record
       abandon.json             # job abandonment record
@@ -137,6 +138,9 @@ The heartbeat processes **all** claimed issues in a single run (oldest first). Y
 | Log: `[INFO] Plan posted` | Plan awaiting approval |
 | Log: `[INFO] Starting implementation phase` | Implementation running for current issue |
 | `implementation.json` in session dir | Implementation complete |
+| Log: `[INFO] Integration test fix loop: attempt` | Integration fix loop running |
+| Log: `[INFO] Integration tests passed` | Integration tests passed |
+| `integration-fix.json` in session dir | Integration fix session complete |
 | Log: `[INFO] Squash-finalizing PR #N` | Squash-finalize running for review issue |
 | Log: `[INFO] Addressing reviewer feedback` | PR review running for review issue |
 | Log: `[INFO] All claimed issues checked` | Processing loop finished |

@@ -155,6 +155,97 @@ fetch_approved_plan() {
   fi
 }
 
+# Run integration tests in a fix loop: test → Claude fix → re-test (up to N retries).
+# Follows the dev-env lock protocol. Skips gracefully if dev-env is not reachable.
+# Usage: run_integration_test_fix <issue_number> <branch>
+run_integration_test_fix() {
+  local issue_number="$1"
+  local branch="$2"
+
+  # Skip if no integration tests exist
+  if [[ ! -d "tests/integration" ]]; then
+    info "No tests/integration/ directory. Skipping integration test fix loop."
+    return 0
+  fi
+
+  local lock_owner="prauto-${PRAUTO_WORKER_ID}"
+  local lock_url="http://localhost:9221/lock"
+  local reset_script="${REPO_DIR}/dev_env/dummy-data-reset.sh"
+  local max_retries="${PRAUTO_INTEGRATION_FIX_MAX_RETRIES:-2}"
+
+  # Check if lock endpoint is reachable
+  if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
+    info "Dev-env lock endpoint not reachable. Skipping integration test fix loop."
+    return 0
+  fi
+
+  # Acquire lock
+  local lock_code
+  lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${lock_url}/acquire" \
+    -H "Content-Type: application/json" \
+    -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto integration fix for issue #${issue_number}\"}")
+
+  if [[ "$lock_code" != "200" ]]; then
+    info "Could not acquire dev-env lock (HTTP ${lock_code}). Skipping integration test fix loop."
+    return 0
+  fi
+  info "Dev-env lock acquired for integration test fix loop."
+
+  # Set up .venv if needed
+  if [[ -f "pyproject.toml" ]]; then
+    uv sync 2>&1 || warn "uv sync failed — integration tests may not run correctly."
+  fi
+
+  local attempt integ_output integ_exit
+  for (( attempt = 1; attempt <= max_retries; attempt++ )); do
+    info "Integration test fix loop: attempt ${attempt}/${max_retries}"
+
+    # Reset dummy data before tests
+    if [[ -x "$reset_script" ]]; then
+      "$reset_script" >/dev/null 2>&1 || warn "Pre-test dummy data reset failed."
+    fi
+
+    # Run integration tests
+    integ_exit=0
+    integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 uv run pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
+
+    if [[ "$integ_exit" -eq 0 ]]; then
+      info "Integration tests passed on attempt ${attempt}."
+      break
+    fi
+
+    info "Integration tests failed (exit ${integ_exit}) on attempt ${attempt}/${max_retries}."
+
+    if [[ "$attempt" -lt "$max_retries" ]]; then
+      # Invoke Claude to fix integration test failures
+      info "Invoking Claude to fix integration test failures..."
+      run_integration_fix_session "$issue_number" "$branch" "$integ_output"
+    else
+      info "Max integration fix retries reached. Proceeding with current state."
+    fi
+  done
+
+  # Reset dummy data after loop
+  if [[ -x "$reset_script" ]]; then
+    "$reset_script" >/dev/null 2>&1 || warn "Post-loop dummy data reset failed."
+  fi
+
+  # Release lock
+  curl -s -X POST "${lock_url}/release" \
+    -H "Content-Type: application/json" \
+    -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  info "Dev-env lock released after integration test fix loop."
+}
+
+# Combined helper: implement → integration test fix loop → finalize PR.
+# Usage: implement_and_finalize <issue_number> <branch> <plan> <issue_title>
+implement_and_finalize() {
+  local issue_number="$1" branch="$2" plan="$3" issue_title="$4"
+  run_implementation "$issue_number" "$branch" "$plan"
+  run_integration_test_fix "$issue_number" "$branch"
+  finalize_issue_pr "$branch" "$issue_number" "$issue_title"
+}
+
 # Phase: analysis — run analysis, post plan, auto-proceed for minor changes.
 # Usage: handle_phase_analysis <issue_number> <issue_title> <branch>
 handle_phase_analysis() {
@@ -176,10 +267,8 @@ handle_phase_analysis() {
     info "Plan posted for ${change_size} change. Waiting for approval."
     return 0
   fi
-  # Fall through to implementation
-  run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
-  # Fall through to PR
-  finalize_issue_pr "$branch" "$issue_number" "$issue_title"
+  # Fall through to implementation + integration fix + PR
+  implement_and_finalize "$issue_number" "$branch" "$ANALYSIS_OUTPUT" "$issue_title"
 }
 
 # Phase: plan-approval — check approval, handle counter-proposal or missing plan.
@@ -197,8 +286,7 @@ handle_phase_plan_approval() {
       --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || true
     # Fetch the plan from GitHub (not local session file)
     fetch_approved_plan "$issue_number"
-    run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
-    finalize_issue_pr "$branch" "$issue_number" "$issue_title"
+    implement_and_finalize "$issue_number" "$branch" "$APPROVED_PLAN_TEXT" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
     # Counter-proposal — respond to feedback, then revise plan
     info "Counter-proposal received. Revising plan..."
@@ -241,8 +329,7 @@ handle_phase_plan_approval() {
       return 0
     fi
     # Minor → proceed to implementation (same as approval path)
-    run_implementation "$issue_number" "$branch" "$ANALYSIS_OUTPUT"
-    finalize_issue_pr "$branch" "$issue_number" "$issue_title"
+    implement_and_finalize "$issue_number" "$branch" "$ANALYSIS_OUTPUT" "$issue_title"
   else
     # No response yet — just wait (don't bump retries)
     info "Still waiting for plan approval on issue #${issue_number}."
@@ -257,8 +344,7 @@ handle_phase_implementation() {
 
   # Fetch the approved plan from GitHub for context (issue body is not needed here)
   fetch_approved_plan "$issue_number"
-  run_implementation "$issue_number" "$branch" "$APPROVED_PLAN_TEXT"
-  finalize_issue_pr "$branch" "$issue_number" "$issue_title"
+  implement_and_finalize "$issue_number" "$branch" "$APPROVED_PLAN_TEXT" "$issue_title"
 }
 
 # Phase: pr — just push + create PR + labels.

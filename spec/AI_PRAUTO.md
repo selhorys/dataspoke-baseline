@@ -87,6 +87,7 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │   ├── system-append.md        # System prompt addendum for prauto identity
 │   ├── issue-analysis.md       # Prompt: analyze issue, produce plan
 │   ├── implementation.md       # Prompt: implement the plan
+│   ├── integration-fix.md      # Prompt: fix integration test failures
 │   ├── pr-review.md            # Prompt: address PR reviewer feedback
 │   ├── feedback-response.md    # Prompt: respond to plan feedback
 │   └── squash-commit.md        # Prompt: generate squash commit message
@@ -101,6 +102,7 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │               ├── plan.md                   # Full plan written by Claude via Write tool
 │               ├── analysis.txt              # Analysis phase output (copy of plan.md)
 │               ├── implementation.json       # Implementation phase output
+│               ├── integration-fix.json      # Integration fix phase output
 │               ├── review.json               # PR review phase output
 │               ├── complete.json             # Job completion record
 │               ├── abandon.json              # Job abandonment record
@@ -120,7 +122,7 @@ Gitignored paths: `config.local.env`, `state/`, `worktrees/`.
 | File | Committed | Purpose | Key variables |
 |------|-----------|---------|---------------|
 | `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, `PRAUTO_CLAUDE_MODEL`, org-member filter flag, reviewer login |
-| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, `PRAUTO_CLAUDE_MODEL`, `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS`, `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION`, `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS`, `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION`, `PRAUTO_OPEN_ISSUE_LIMIT`, `PRAUTO_HEARTBEAT_INTERVAL_MINUTES`, `PRAUTO_QUOTA_TIMEOUT` (default 45s), reviewer override, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, `PRAUTO_CLAUDE_MODEL`, `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS`, `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION`, `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX`, `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS`, `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION`, `PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX`, `PRAUTO_INTEGRATION_FIX_MAX_RETRIES`, `PRAUTO_OPEN_ISSUE_LIMIT`, `PRAUTO_HEARTBEAT_INTERVAL_MINUTES`, `PRAUTO_QUOTA_TIMEOUT` (default 45s), reviewer override, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
 
 A single developer machine may run multiple prauto instances (e.g., `prauto01` in one clone, `prauto02` in another) sharing the same GitHub credential but with distinct identities.
 
@@ -201,17 +203,17 @@ There is no dedicated Anthropic API endpoint to query remaining token balance. P
 
 ```
 New issue (minor change):
-  (no job) ──→ analysis ──→ implementation ──→ pr ──→ (complete)
+  (no job) ──→ analysis ──→ implementation ──→ integration-fix ──→ pr ──→ (complete)
 
 New issue (non-minor change):
-  (no job) ──→ analysis ──→ plan-approval ──→ implementation ──→ pr ──→ (complete)
+  (no job) ──→ analysis ──→ plan-approval ──→ implementation ──→ integration-fix ──→ pr ──→ (complete)
                                   │  ↑
                                   │  ├── counter-proposal → re-analysis ─┘
                                   │  ├── plan missing → re-analysis ─────┘
                                   └── no response → wait (next heartbeat)
 
 PR review:
-  (no job) ──→ pr-review ──→ pr ──→ (complete)
+  (no job) ──→ pr-review ──→ integration-fix ──→ pr ──→ (complete)
 ```
 
 Phase is always derived fresh from GitHub — never read from local state.
@@ -220,7 +222,8 @@ Phase is always derived fresh from GitHub — never read from local state.
 |-------|-------------|-------------------|
 | `analysis` | Claude reads issue + codebase, produces a plan | Restart analysis from scratch |
 | `plan-approval` | Wait for human approval of the posted plan | Check again (retries not counted). If plan comment missing, fall back to re-analysis. |
-| `implementation` | Claude writes code, runs tests, commits | Start fresh session — Claude checks branch for existing work |
+| `implementation` | Claude writes code, runs unit tests, commits | Start fresh session — Claude checks branch for existing work |
+| `integration-fix` | Run integration tests; on failure, Claude fixes and retries (up to N attempts) | Best-effort loop; skipped if dev-env unreachable |
 | `pr-review` | Claude addresses reviewer feedback on existing PR, commits | Start fresh session with full reviewer comments |
 | `pr` | Push branch, create/update PR, comment | Retry PR creation |
 
@@ -325,7 +328,8 @@ For best results, issues should include a clear description, references to relev
 | Phase | Purpose | Tools | Max turns (configurable) |
 |-------|---------|-------|--------------------------|
 | Analysis | Read codebase, understand issue, produce plan | Read + Write (plan file) | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
-| Implementation | Write code, run tests, commit | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
+| Implementation | Write code, run unit tests, commit | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
+| Integration fix | Fix integration test failures (loop) | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` |
 | PR review | Address reviewer feedback (same tools as implementation) | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
 | Squash commit | Generate final commit message | None (text generation only) | 1 |
 | Feedback response | Respond to plan counter-proposal | None (text generation only) | 1 |
@@ -366,7 +370,24 @@ In the step 6 processing loop, issues with the `prauto:review` label are checked
 
 ### Test execution
 
-After implementation or PR review feedback, the worker runs available test suites and posts results as collapsible PR comments before swapping labels.
+Testing happens in two stages: an **integration fix loop** before the PR is created, and a **final test report** after push.
+
+#### Stage 1: Integration fix loop (pre-push)
+
+After implementation (or PR review), but before pushing, `run_integration_test_fix()` runs a fix loop for integration tests. This uses the same three-step pipeline as the main flow — the `implement_and_finalize()` helper calls `run_implementation()` → `run_integration_test_fix()` → `finalize_issue_pr()`. The PR review feedback path in `heartbeat.sh` also calls `run_integration_test_fix()` between `run_pr_review()` and push.
+
+- Skips gracefully if `tests/integration/` does not exist or the dev-env lock endpoint is unreachable.
+- Acquires the dev-env advisory lock, then loops up to `PRAUTO_INTEGRATION_FIX_MAX_RETRIES` times (default 2):
+  1. Reset dummy data.
+  2. Run `uv run pytest tests/integration/ --tb=short`.
+  3. If tests pass → break.
+  4. If tests fail and retries remain → invoke Claude (`integration-fix.md` prompt) with the test output to diagnose and fix. Claude commits fixes locally.
+- After the loop: reset dummy data, release lock.
+- Each Claude fix session uses `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` (default 50) and `PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX`.
+
+#### Stage 2: Final test report (post-push)
+
+After push and PR creation, `run_and_post_test_results()` runs both test suites and posts results as collapsible PR comments.
 
 - **Unit tests**: If `tests/unit/` exists, runs `uv run pytest tests/unit/ --tb=short`. Always runs unconditionally.
 - **Integration tests**: If `tests/integration/` exists, follows the dev-env lock protocol (best-effort):
@@ -394,13 +415,14 @@ Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger 
 
 ## Prompt Templates
 
-Six prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, plan_file, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body and a `plan_file` path where Claude must Write the completed plan; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
+Seven prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, plan_file, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body and a `plan_file` path where Claude must Write the completed plan; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
 
 | Template | Phase | Purpose | Context | Key instructions |
 |----------|-------|---------|---------|------------------|
 | `system-append.md` | All | Worker identity addendum | — | Declares autonomous mode, forbids pushing, requires conventional commits, mandates spec reading |
 | `issue-analysis.md` | Analysis | Read issue + codebase, produce plan | Issue body, plan_file path | Produce plan (files/order/patterns/tests/risks), Write full plan to `{plan_file}`. No code changes. |
 | `implementation.md` | Implementation | Write code per plan | Plan only | Check branch for existing work first, follow specs and patterns, write tests, run formatters, commit but don't push |
+| `integration-fix.md` | Integration fix | Fix integration test failures | Test output | Read failing tests, diagnose root cause, fix source code, re-run tests, commit |
 | `pr-review.md` | PR review | Address reviewer feedback | Plan + reviewer comments | Make requested changes, answer questions, produce reviewer-facing response summary |
 | `feedback-response.md` | Plan feedback | Respond to plan counter-proposal | — | Address each feedback point, acknowledge suggestions, keep under 500 words (1-turn, no tools) |
 | `squash-commit.md` | Squash-finalize | Generate conventional commit message | — | From issue description + diff, produce `<type>: <subject>` with max 5-line body (1-turn, no tools) |

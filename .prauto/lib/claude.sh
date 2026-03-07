@@ -218,6 +218,44 @@ run_implementation() {
   fi
 }
 
+# Phase 2b: Fix integration test failures.
+# Invokes Claude with the failing test output to diagnose and fix.
+# Usage: run_integration_fix_session <issue_number> <branch> <test_output>
+# Sets: INTEG_FIX_SESSION_ID
+run_integration_fix_session() {
+  local issue_number="$1"
+  local branch="$2"
+  local test_output="$3"
+
+  # Truncate test output if too long to fit in prompt
+  local truncated_output="$test_output"
+  if [[ ${#test_output} -gt 30000 ]]; then
+    truncated_output="${test_output:0:30000}
+... (truncated)"
+  fi
+
+  local prompt
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/integration-fix.md" \
+    "number=${issue_number}" \
+    "branch=${branch}" \
+    "test_output=${truncated_output}" \
+    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
+    "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
+
+  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
+  local max_turns="${PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX:-50}"
+
+  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$max_turns" "$budget"
+
+  INTEG_FIX_SESSION_ID="$CLAUDE_SESSION_ID"
+
+  if [[ -n "$CLAUDE_SESSION_ID" ]]; then
+    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/integration-fix.json"
+    info "Integration fix session saved: ${CLAUDE_SESSION_ID}"
+  fi
+}
+
 # Phase 4: Generate squash commit message from issue description and diff.
 # Uses a single-turn, no-tool Claude invocation to produce a conventional commit message.
 # Usage: generate_squash_commit_message <issue_number> <issue_title> <issue_body> <pr_number> <diff_stat> <diff>

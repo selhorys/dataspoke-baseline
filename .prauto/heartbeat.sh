@@ -284,6 +284,7 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
             checkout_branch_worktree "$REVIEW_PR_BRANCH"
             cd "$WORKTREE_DIR"
             run_pr_review "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" "$ACTIONABLE_COMMENTS" "$APPROVED_PLAN_TEXT"
+            run_integration_test_fix "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH"
             push_branch "$REVIEW_PR_BRANCH"
             create_or_update_pr "$CUR_ISSUE_NUMBER" "" "$REVIEW_PR_BRANCH"
             run_and_post_test_results "$REVIEW_PR_BRANCH"
