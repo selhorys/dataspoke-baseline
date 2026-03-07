@@ -65,7 +65,7 @@ dev_env/dataspoke-infra/        # Follow dev_env/datahub/ style
 ## Dockerfile rules
 
 - Multi-stage builds: `builder` stage → `runtime` stage
-- Python services: base `python:3.11-slim`; install with `pip install --no-cache-dir`
+- Python services: base `python:3.13-slim`; copy `uv` from `ghcr.io/astral-sh/uv:latest`, install with `uv sync --frozen --no-dev`
 - Next.js: base `node:20-alpine` for build with `standalone` output mode; `node:20-alpine` for runtime
 - Never run as root: add `USER nonroot` or create a non-root user
 
