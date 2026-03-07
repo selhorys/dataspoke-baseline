@@ -280,9 +280,14 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
             ;;
           feedback_needed)
             info "Addressing reviewer feedback on PR #${REVIEW_PR_NUMBER} for issue #${CUR_ISSUE_NUMBER}..."
+            # Fetch issue body and plan for reviewer context
+            local review_issue_body
+            review_issue_body=$(gh issue view "$CUR_ISSUE_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+              --json body --jq '.body // ""' 2>/dev/null || echo "")
+            fetch_approved_plan "$CUR_ISSUE_NUMBER"
             checkout_branch_worktree "$REVIEW_PR_BRANCH"
             cd "$WORKTREE_DIR"
-            run_pr_review "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" "$ACTIONABLE_COMMENTS"
+            run_pr_review "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" "$ACTIONABLE_COMMENTS" "$review_issue_body" "$APPROVED_PLAN_TEXT"
             push_branch "$REVIEW_PR_BRANCH"
             create_or_update_pr "$CUR_ISSUE_NUMBER" "" "$REVIEW_PR_BRANCH"
             run_and_post_test_results "$REVIEW_PR_BRANCH"

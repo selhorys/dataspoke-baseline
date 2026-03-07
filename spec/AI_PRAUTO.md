@@ -393,14 +393,14 @@ Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger 
 
 ## Prompt Templates
 
-Six prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, reviewer comments) are substituted at runtime by `lib/claude.sh`.
+Six prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, reviewer comments) are substituted at runtime by `lib/claude.sh`. The issue body and approved plan are passed to both implementation and PR review prompts so Claude has full requirements context.
 
 | Template | Phase | Purpose | Key instructions |
 |----------|-------|---------|------------------|
 | `system-append.md` | All | Worker identity addendum | Declares autonomous mode, forbids pushing, requires conventional commits, mandates spec reading |
 | `issue-analysis.md` | Analysis | Read issue + codebase, produce plan | Read spec hierarchy, examine codebase, list files/order/patterns/tests/risks. No code changes. |
-| `implementation.md` | Implementation | Write code per plan | Check branch for existing work first, follow specs and patterns, write tests, run formatters, commit but don't push |
-| `pr-review.md` | PR review | Address reviewer feedback | Make requested changes, answer questions, produce reviewer-facing response summary |
+| `implementation.md` | Implementation | Write code per plan | Receives issue body + plan as context; check branch for existing work first, follow specs and patterns, write tests, run formatters, commit but don't push |
+| `pr-review.md` | PR review | Address reviewer feedback | Receives issue body + plan as context; make requested changes, answer questions, produce reviewer-facing response summary |
 | `feedback-response.md` | Plan feedback | Respond to plan counter-proposal | Address each feedback point, acknowledge suggestions, keep under 500 words (1-turn, no tools) |
 | `squash-commit.md` | Squash-finalize | Generate conventional commit message | From issue description + diff, produce `<type>: <subject>` with max 5-line body (1-turn, no tools) |
 

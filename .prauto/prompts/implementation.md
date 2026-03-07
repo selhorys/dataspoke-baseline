@@ -1,5 +1,9 @@
 Implement changes for GitHub issue #{number} on branch `{branch}`.
 
+## Issue Description
+
+{issue_body}
+
 ## Check for existing work
 
 Before starting, check if prior work exists on this branch:

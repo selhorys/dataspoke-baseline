@@ -1,5 +1,13 @@
 Address the following reviewer feedback on PR for issue #{number} (branch `{branch}`).
 
+## Issue Description
+
+{issue_body}
+
+## Implementation Plan
+
+{plan}
+
 ## Reviewer Comments
 
 {reviewer_comments}
