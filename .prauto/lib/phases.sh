@@ -31,6 +31,12 @@ run_and_post_test_results() {
     return 0
   fi
 
+  # --- Set up .venv via uv sync ---
+  if [[ -f "pyproject.toml" ]]; then
+    info "Setting up .venv (uv sync)..."
+    uv sync 2>&1 || warn "uv sync failed — tests may not run correctly."
+  fi
+
   # --- Unit tests ---
   if [[ -d "tests/unit" ]]; then
     info "Running unit tests..."
