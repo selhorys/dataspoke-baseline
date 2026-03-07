@@ -38,6 +38,9 @@ labels_contain() {
 }
 
 # Check if a matching comment already exists (idempotency guard).
+# For issue comments, respects READY_LABEL_TIMESTAMP — only considers comments
+# posted after the last prauto:ready label event (ignores stale comments from
+# previous lifecycles). PR comments are not filtered.
 # Usage: comment_exists <"issue"|"pr"> <number> <keyword>
 # Returns 0 if found, 1 if not found.
 comment_exists() {
@@ -46,9 +49,19 @@ comment_exists() {
   local keyword="$3"
   local prefix="prauto(${PRAUTO_WORKER_ID}): ${keyword}"
 
-  gh "${target_type}" view "$target_number" \
-    -R "$PRAUTO_GITHUB_REPO" \
-    --json comments \
-    --jq ".comments[] | select(.body | startswith(\"${prefix}\")) | .id" \
-  | head -1 | grep -q .
+  if [[ "$target_type" == "issue" ]] && [[ -n "${READY_LABEL_TIMESTAMP:-}" ]]; then
+    gh issue view "$target_number" \
+      -R "$PRAUTO_GITHUB_REPO" \
+      --json comments \
+      --jq '.comments' 2>/dev/null \
+      | jq -r --arg prefix "$prefix" --arg ready_ts "$READY_LABEL_TIMESTAMP" '
+        [.[] | select(.createdAt > $ready_ts) | select(.body | startswith($prefix))] | length > 0
+      ' | grep -q 'true'
+  else
+    gh "${target_type}" view "$target_number" \
+      -R "$PRAUTO_GITHUB_REPO" \
+      --json comments \
+      --jq ".comments[] | select(.body | startswith(\"${prefix}\")) | .id" \
+    | head -1 | grep -q .
+  fi
 }

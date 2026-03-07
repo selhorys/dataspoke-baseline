@@ -39,19 +39,37 @@ green="\033[32m" yellow="\033[33m" red="\033[31m" cyan="\033[36m" blue="\033[34m
 header() { echo -e "\n${bold}${cyan}### $1${reset}"; }
 row() { printf "  %-6s %-70s %s\n" "$1" "$2" "$3"; }
 
+# Fetch the timestamp of the last time the prauto:ready label was set on an issue.
+# Uses the GitHub timeline API. All comment-scanning in status.sh uses this as a floor.
+# Usage: get_ready_label_timestamp <issue_number>
+# Sets: READY_LABEL_TIMESTAMP (ISO 8601 string, or empty if not found)
+get_ready_label_timestamp() {
+  local issue_number="$1"
+  READY_LABEL_TIMESTAMP=$(gh api "repos/${REPO}/issues/${issue_number}/timeline" \
+    --paginate \
+    --jq '[.[] | select(.event == "labeled") | select(.label.name == "'"${LABEL_READY}"'")] | last | .created_at // empty' \
+    2>/dev/null) || READY_LABEL_TIMESTAMP=""
+}
+
 # Check plan approval status for an issue (mirrors check_plan_approval in issues.sh).
+# Scoped to the current lifecycle — only considers comments after READY_LABEL_TIMESTAMP.
 # Usage: check_plan_status <issue_number>
+# Requires: READY_LABEL_TIMESTAMP set (via get_ready_label_timestamp)
 # Sets: PLAN_STATUS ("approved"|"waiting"|"counter-proposal"|"no-plan")
 #       PLAN_COUNTER_PROPOSAL_PREVIEW (first line of counter-proposal, if any)
 check_plan_status() {
   local issue_number="$1"
   local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
   PLAN_STATUS="waiting"
   PLAN_COUNTER_PROPOSAL_PREVIEW=""
 
   local comments_json
   comments_json=$(gh issue view "$issue_number" -R "$REPO" \
     --json comments --jq '.comments' 2>/dev/null) || { PLAN_STATUS="waiting"; return; }
+  # Filter to only comments after the last prauto:ready label event
+  comments_json=$(echo "$comments_json" | jq --arg ready_ts "$ready_ts" '
+    [.[] | select($ready_ts == "" or .createdAt > $ready_ts)]')
 
   # Find timestamp of the last plan comment
   local plan_timestamp
@@ -141,6 +159,10 @@ show_wip() {
     assignee=$(echo "$wip_json" | jq -r ".[$i].assignees[0].login // \"unassigned\"")
     has_plan_review=$(echo "$wip_json" | jq -r ".[$i].labels | any(.name == \"$LABEL_PLAN_REVIEW\")")
 
+    # Fetch the ready-label timestamp (anchor for comment filtering)
+    get_ready_label_timestamp "$num"
+    local ready_ts="${READY_LABEL_TIMESTAMP:-}"
+
     # Derive phase
     local phase="analysis"
     local plan_detail=""
@@ -168,16 +190,20 @@ show_wip() {
       esac
     fi
 
-    # Count heartbeat comments for retry
+    # Count heartbeat comments for retry (scoped to current lifecycle)
     local hb_count
-    hb_count=$(gh issue view "$num" -R "$REPO" --json comments \
-      --jq "[.comments[] | select(.body | startswith(\"prauto($PRAUTO_WORKER_ID): Heartbeat\"))] | length" 2>/dev/null)
+    hb_count=$(gh issue view "$num" -R "$REPO" --json comments --jq '.comments' 2>/dev/null \
+      | jq --arg hb "prauto($PRAUTO_WORKER_ID): Heartbeat" --arg ready_ts "$ready_ts" '
+        [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith($hb))] | length
+      ') || hb_count=0
 
-    # Check quota-paused
+    # Check quota-paused (scoped to current lifecycle)
     local quota_paused=""
     local latest_prauto_body
-    latest_prauto_body=$(gh issue view "$num" -R "$REPO" --json comments \
-      --jq "[.comments[] | select(.body | startswith(\"prauto(\"))] | sort_by(.createdAt) | last | .body // \"\"" 2>/dev/null)
+    latest_prauto_body=$(gh issue view "$num" -R "$REPO" --json comments --jq '.comments' 2>/dev/null \
+      | jq -r --arg ready_ts "$ready_ts" '
+        [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith("prauto("))] | sort_by(.createdAt) | last | .body // ""
+      ') || latest_prauto_body=""
     if echo "$latest_prauto_body" | grep -q "prauto:quota-paused"; then
       quota_paused=" ${red}[QUOTA-PAUSED]${reset}"
     fi
@@ -347,9 +373,15 @@ show_next() {
       local has_plan_review
       has_plan_review=$(echo "$ALL_CLAIMED" | jq -r ".[$ci].labels | any(.name == \"$LABEL_PLAN_REVIEW\")")
 
+      # Fetch ready-label timestamp for lifecycle-scoped comment filtering
+      get_ready_label_timestamp "$num"
+      local next_ready_ts="${READY_LABEL_TIMESTAMP:-}"
+
       local hb_count
-      hb_count=$(gh issue view "$num" -R "$REPO" --json comments \
-        --jq "[.comments[] | select(.body | startswith(\"prauto($PRAUTO_WORKER_ID): Heartbeat\"))] | length" 2>/dev/null)
+      hb_count=$(gh issue view "$num" -R "$REPO" --json comments --jq '.comments' 2>/dev/null \
+        | jq --arg hb "prauto($PRAUTO_WORKER_ID): Heartbeat" --arg ready_ts "$next_ready_ts" '
+          [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith($hb))] | length
+        ') || hb_count=0
 
       if [[ "$hb_count" -ge "$MAX_RETRIES" ]]; then
         action="${red}Abandon${reset} — max retries exceeded"

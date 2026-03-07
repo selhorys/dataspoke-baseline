@@ -35,14 +35,23 @@ Resolve actor: `gh api user --jq '.login'`
 
 ### Issue comments (plan approval, retries, quota)
 
+**Important**: All comment scanning must be scoped to the **current lifecycle** — only consider comments posted after the last `prauto:ready` label event. Fetch the anchor timestamp via the timeline API:
+
+```bash
+gh api "repos/$REPO/issues/<number>/timeline" --paginate \
+  --jq '[.[] | select(.event == "labeled") | select(.label.name == "prauto:ready")] | last | .created_at // empty'
+```
+
+Then filter comments to only those with `createdAt` after that timestamp:
+
 ```bash
 gh issue view <number> -R "$REPO" --json comments \
   --jq '.comments | [.[] | {body: .body, author: .author.login, createdAt: .createdAt}]'
 ```
 
-- **Plan approval**: Look for `prauto(<worker>): Plan` comment, then check if any non-prauto comment after it says `go ahead` (approved) or contains a counter-proposal.
-- **Retry count**: Count comments matching `prauto(<worker>): Heartbeat`.
-- **Quota-paused**: Latest `prauto(<worker>):` comment body contains `<!-- prauto:quota-paused -->`.
+- **Plan approval**: Look for `prauto(<worker>): Plan` comment (after ready-label timestamp), then check if any non-prauto comment after it says `go ahead` (approved) or contains a counter-proposal.
+- **Retry count**: Count comments matching `prauto(<worker>): Heartbeat` (after ready-label timestamp).
+- **Quota-paused**: Latest `prauto(<worker>):` comment (after ready-label timestamp) body contains `<!-- prauto:quota-paused -->`.
 
 ### PR review status (for prauto:review issues)
 

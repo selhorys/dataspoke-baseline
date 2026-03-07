@@ -66,17 +66,21 @@ check_quota() {
 }
 
 # Check if the LATEST prauto comment on an issue has the quota-paused marker.
+# Scoped to the current lifecycle — only considers comments after READY_LABEL_TIMESTAMP.
 # Usage: has_quota_paused_comment <issue_number>
 # Returns 0 if found, 1 if not found.
 has_quota_paused_comment() {
   local issue_number="$1"
   local prefix="prauto(${PRAUTO_WORKER_ID}):"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
 
   local latest_body
   latest_body=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | last | .body // \"\"" \
-    2>/dev/null) || return 1
+    --jq '.comments' 2>/dev/null \
+    | jq -r --arg prefix "$prefix" --arg ready_ts "$ready_ts" '
+      [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith($prefix))] | last | .body // ""
+    ') || return 1
 
   echo "$latest_body" | grep -q '<!-- prauto:quota-paused -->'
 }

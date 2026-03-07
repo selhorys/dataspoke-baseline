@@ -56,6 +56,14 @@ Every heartbeat derives its next action from **remote GitHub state** — labels,
 - Phase is always derived fresh from GitHub — no local/remote cross-check.
 - `prauto:plan-review` label provides fast signal for plan-approval state (visible on issue boards, filterable).
 
+### Ready-label timestamp as lifecycle anchor
+
+When an issue has the `prauto:ready` label set (or re-set for restarts), the timestamp of that label event marks the **start of the current lifecycle**. All comment-scanning functions — phase derivation, plan approval checks, retry counting, quota-pause detection, and idempotency guards — **ignore comments posted before the last `prauto:ready` label event**.
+
+This is implemented via `get_ready_label_timestamp()`, which queries the GitHub timeline API (`/issues/{N}/timeline`) for the most recent `labeled` event with `label.name == "prauto:ready"`. The resulting `READY_LABEL_TIMESTAMP` is fetched once per issue at the start of each heartbeat iteration and used as a floor filter in all downstream functions.
+
+**Why this matters**: When an issue is restarted (re-labeled `prauto:ready`), stale comments from the previous lifecycle — old plans, heartbeat markers, quota-pause notices — are automatically invisible to the new lifecycle without requiring manual cleanup.
+
 ---
 
 ## Directory Structure
@@ -217,17 +225,17 @@ Phase is always derived fresh from GitHub — never read from local state.
 
 ### Phase derivation from GitHub
 
-On every heartbeat, `derive_phase_from_github()` inspects GitHub state in priority order:
+On every heartbeat, `derive_phase_from_github()` inspects GitHub state in priority order. Comment checks (steps 3–5) only consider comments posted after the last `prauto:ready` label event:
 
 1. PR exists for this branch → `pr`
 2. `prauto:plan-review` label present on issue → `plan-approval`
-3. Plan comment exists + "go ahead" reply → `implementation`
-4. Plan comment exists + no approval → `plan-approval`
-5. No plan comment → `analysis`
+3. Plan comment exists (in current lifecycle) + "go ahead" reply → `implementation`
+4. Plan comment exists (in current lifecycle) + no approval → `plan-approval`
+5. No plan comment (in current lifecycle) → `analysis`
 
 ### Retry tracking
 
-Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. The function `count_heartbeat_comments()` counts these markers **within the current claim lifecycle only** — it only counts heartbeat comments posted after the most recent `Claimed` comment by this worker. This ensures restarted issues (see [Issue Restart Protocol](#issue-restart-protocol)) begin with a fresh retry counter.
+Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. The function `count_heartbeat_comments()` counts these markers **within the current lifecycle only** — it only counts heartbeat comments posted after the last `prauto:ready` label event (see [Ready-label timestamp as lifecycle anchor](#ready-label-timestamp-as-lifecycle-anchor)) and after the most recent `Claimed` comment by this worker. This ensures restarted issues (see [Issue Restart Protocol](#issue-restart-protocol)) begin with a fresh retry counter.
 
 When the count reaches `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned.
 
@@ -287,12 +295,13 @@ When a previously processed issue needs to be retried from scratch (e.g., after 
 2. Unassign the prauto worker
 3. Delete the working branch, PR, and optionally stale plan/heartbeat comments
 
-The prauto worker treats this as a fresh issue. The implementation handles stale comments from the previous attempt:
+The prauto worker treats this as a fresh issue. The **ready-label timestamp** (see [Ready-label timestamp as lifecycle anchor](#ready-label-timestamp-as-lifecycle-anchor)) ensures all comment-scanning functions automatically ignore stale comments from the previous attempt:
 
+- **Ready-label anchor**: `get_ready_label_timestamp()` fetches the timestamp of the last `prauto:ready` label event from the GitHub timeline API. All comment-scanning functions use this as a floor — comments before this timestamp are invisible to the new lifecycle.
 - **Claim race check**: Uses a timestamp-based window — only considers `Claimed` comments posted after the current claim attempt began (ignores stale comments from previous runs).
-- **Claimed comment**: Always posts a fresh `Claimed` comment (no idempotency guard), providing a timestamp anchor for the new lifecycle.
-- **Retry counter**: `count_heartbeat_comments()` only counts heartbeat comments posted after the most recent `Claimed` comment by this worker, so the counter resets automatically on re-claim.
-- **Phase derivation**: Derives phase from current GitHub state. If stale plan comments were not deleted, the phase may derive as `implementation` or `plan-approval` instead of `analysis`. For a clean restart, delete old plan comments before resetting the label.
+- **Claimed comment**: Always posts a fresh `Claimed` comment (no idempotency guard), providing a secondary timestamp anchor within the lifecycle.
+- **Retry counter**: `count_heartbeat_comments()` only counts heartbeat comments posted after both the ready-label timestamp and the most recent `Claimed` comment, so the counter resets automatically on re-claim.
+- **Phase derivation**: Derives phase from current GitHub state, scoped to comments after the ready-label timestamp. Stale plan comments from previous lifecycles are automatically ignored — no manual cleanup needed.
 
 ### Search and claiming
 

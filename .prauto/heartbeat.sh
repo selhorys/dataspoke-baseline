@@ -191,6 +191,9 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
       claim_i=$((claim_i + 1)); continue
     fi
 
+    # Fetch the ready-label timestamp once per issue (anchor for comment filtering)
+    get_ready_label_timestamp "$CUR_ISSUE_NUMBER"
+
     # ---- prauto:wip — active work item ----
     if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_WIP"; then
       init_issue_session "$CUR_ISSUE_NUMBER"

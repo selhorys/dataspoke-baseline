@@ -2,6 +2,24 @@
 # Source this file — do not execute directly.
 # Requires: helpers.sh sourced (for comment_exists), config loaded, gh CLI available.
 
+# Fetch the timestamp of the last time the prauto:ready label was set on an issue.
+# Uses the GitHub timeline API to find the most recent "labeled" event for prauto:ready.
+# All comment-scanning functions use this as a floor — comments before this timestamp are ignored.
+# Usage: get_ready_label_timestamp <issue_number>
+# Sets: READY_LABEL_TIMESTAMP (ISO 8601 string, or empty if not found)
+get_ready_label_timestamp() {
+  local issue_number="$1"
+  READY_LABEL_TIMESTAMP=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${issue_number}/timeline" \
+    --paginate \
+    --jq '[.[] | select(.event == "labeled") | select(.label.name == "'"${PRAUTO_GITHUB_LABEL_READY}"'")] | last | .created_at // empty' \
+    2>/dev/null) || READY_LABEL_TIMESTAMP=""
+  if [[ -n "$READY_LABEL_TIMESTAMP" ]]; then
+    info "Ready label timestamp for #${issue_number}: ${READY_LABEL_TIMESTAMP}"
+  else
+    warn "Could not determine ready label timestamp for #${issue_number}. No comment filtering."
+  fi
+}
+
 # Fetch organization member logins as a JSON array.
 # Usage: fetch_org_members
 # Sets ORG_MEMBERS_JSON on success (e.g. '["alice","bob"]').
@@ -243,20 +261,23 @@ find_all_claimed_issues() {
 
 # Count heartbeat comments posted by this worker on an issue.
 # Only counts comments from the CURRENT claim lifecycle — heartbeat comments
-# posted after the most recent "Claimed" comment by this worker. This ensures
-# that restarted issues (reset to prauto:ready, then re-claimed) start with
-# a fresh retry counter.
+# posted after the most recent "Claimed" comment by this worker AND after the
+# last prauto:ready label event (READY_LABEL_TIMESTAMP). This ensures that
+# restarted issues start with a fresh retry counter.
 # Usage: count_heartbeat_comments <issue_number>
+# Requires: READY_LABEL_TIMESTAMP set (via get_ready_label_timestamp)
 # Sets: HEARTBEAT_COMMENT_COUNT
 count_heartbeat_comments() {
   local issue_number="$1"
   local hb_marker="prauto(${PRAUTO_WORKER_ID}): Heartbeat"
   local claim_marker="prauto(${PRAUTO_WORKER_ID}): Claimed"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
   HEARTBEAT_COMMENT_COUNT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json comments --jq '.comments' 2>/dev/null \
-    | jq --arg hb "$hb_marker" --arg cl "$claim_marker" '
-      ([.[] | select(.body | startswith($cl))] | last | .createdAt // "") as $anchor |
-      [.[] | select(.body | startswith($hb)) | select(.createdAt > $anchor)] | length
+    | jq --arg hb "$hb_marker" --arg cl "$claim_marker" --arg ready_ts "$ready_ts" '
+      [.[] | select($ready_ts == "" or .createdAt > $ready_ts)] as $scoped |
+      ($scoped | [.[] | select(.body | startswith($cl))] | last | .createdAt // "") as $anchor |
+      [$scoped[] | select(.body | startswith($hb)) | select(.createdAt > $anchor)] | length
     ') || HEARTBEAT_COMMENT_COUNT=0
 }
 
@@ -296,12 +317,16 @@ derive_phase_from_github() {
     DERIVED_PHASE="plan-approval"; return 0
   fi
   # Check if plan comment exists (no plan-review label = either approved or minor)
+  # Only consider comments after the last prauto:ready label event
   local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
   local plan_exists
   plan_exists=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${plan_prefix}\"))] | length" \
-    2>/dev/null) || plan_exists=0
+    --jq '.comments' 2>/dev/null \
+    | jq --arg prefix "$plan_prefix" --arg ready_ts "$ready_ts" '
+      [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith($prefix))] | length
+    ') || plan_exists=0
   if [[ "$plan_exists" -gt 0 ]]; then
     local approval_status=0
     check_plan_approval "$issue_number" || approval_status=$?
@@ -316,29 +341,37 @@ derive_phase_from_github() {
 }
 
 # Count existing plan comments by this worker, derive next revision number.
+# Only counts plan comments after the last prauto:ready label event.
 # Usage: get_plan_revision_from_github <issue_number>
+# Requires: READY_LABEL_TIMESTAMP set (via get_ready_label_timestamp)
 # Sets: GITHUB_PLAN_REVISION
 get_plan_revision_from_github() {
   local issue_number="$1"
   local prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
   local plan_count
   plan_count=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${prefix}\"))] | length" \
-    2>/dev/null) || plan_count=0
+    --jq '.comments' 2>/dev/null \
+    | jq --arg prefix "$prefix" --arg ready_ts "$ready_ts" '
+      [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith($prefix))] | length
+    ') || plan_count=0
   GITHUB_PLAN_REVISION=$(( plan_count + 1 ))
 }
 
 # Check whether a plan has been approved on an issue.
-# Looks for comments after the plan comment.
+# Looks for comments after the plan comment, scoped to the current lifecycle
+# (only considers comments after the last prauto:ready label event).
 # Returns: 0 = approved ("go ahead"), 1 = no response yet, 2 = counter-proposal found, 3 = no plan comment found.
+# Requires: READY_LABEL_TIMESTAMP set (via get_ready_label_timestamp)
 # Sets COUNTER_PROPOSAL on return 2.
 check_plan_approval() {
   local issue_number="$1"
 
   local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
 
-  # Fetch all comments as JSON array
+  # Fetch all comments as JSON array, scoped to current lifecycle
   local comments_json
   comments_json=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json comments \
@@ -346,6 +379,10 @@ check_plan_approval() {
     warn "Failed to fetch comments for issue #${issue_number}."
     return 1
   }
+  # Filter to only comments after the last prauto:ready label event
+  comments_json=$(echo "$comments_json" | jq --arg ready_ts "$ready_ts" '
+    [.[] | select($ready_ts == "" or .createdAt > $ready_ts)]
+  ')
 
   # Find the timestamp of the last plan comment
   local plan_timestamp

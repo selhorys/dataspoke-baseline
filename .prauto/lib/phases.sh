@@ -117,17 +117,22 @@ run_integration_tests_with_protocol() {
 }
 
 # Fetch the approved plan text from GitHub issue comments.
-# Returns the body of the latest plan comment posted by this worker.
+# Returns the body of the latest plan comment posted by this worker,
+# scoped to the current lifecycle (after the last prauto:ready label event).
 # Usage: fetch_approved_plan <issue_number>
+# Requires: READY_LABEL_TIMESTAMP set (via get_ready_label_timestamp)
 # Sets: APPROVED_PLAN_TEXT
 fetch_approved_plan() {
   local issue_number="$1"
   local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
 
   APPROVED_PLAN_TEXT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${plan_prefix}\"))] | last | .body // \"\"" \
-    2>/dev/null) || APPROVED_PLAN_TEXT=""
+    --jq '.comments' 2>/dev/null \
+    | jq -r --arg prefix "$plan_prefix" --arg ready_ts "$ready_ts" '
+      [.[] | select($ready_ts == "" or .createdAt > $ready_ts) | select(.body | startswith($prefix))] | last | .body // ""
+    ') || APPROVED_PLAN_TEXT=""
 
   # Strip the prauto header and metadata, keep the plan content
   if [[ -n "$APPROVED_PLAN_TEXT" ]]; then
