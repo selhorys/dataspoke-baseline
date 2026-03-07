@@ -94,6 +94,7 @@ find_eligible_issue() {
 }
 
 # Claim an issue with optimistic locking.
+# Supports restart: issues reset to prauto:ready with stale comments are re-claimable.
 # Returns 0 on success, 1 if another worker claimed it.
 claim_issue() {
   local issue_number="$1"
@@ -107,35 +108,44 @@ claim_issue() {
     return 1
   fi
 
-  # Step 2: Add prauto:wip label
+  # Step 2: Record pre-claim timestamp, then add prauto:wip label
+  local pre_claim_ts
+  pre_claim_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --add-label "$PRAUTO_GITHUB_LABEL_WIP" 2>/dev/null || {
     warn "Failed to add ${PRAUTO_GITHUB_LABEL_WIP} label to issue #${issue_number}."
     return 1
   }
 
-  # Step 3: Brief delay then verify no race
+  # Step 3: Brief delay then verify no race — only consider Claimed comments
+  # posted AFTER pre_claim_ts (ignores stale comments from previous attempts)
   sleep 2
-  local wip_comments
-  wip_comments=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json comments --jq '[.comments[] | select(.body | startswith("prauto(")) | select(.body | contains("Claimed"))] | length' \
-    2>/dev/null)
+  local race_comments
+  race_comments=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --json comments --jq '.comments' 2>/dev/null \
+    | jq --arg ts "$pre_claim_ts" '
+      [.[] |
+        select(.body | startswith("prauto(")) |
+        select(.body | contains("Claimed")) |
+        select(.createdAt > $ts)
+      ] | length
+    ') || race_comments=0
 
-  if [[ "$wip_comments" -gt 0 ]]; then
+  if [[ "$race_comments" -gt 0 ]]; then
     warn "Issue #${issue_number} was claimed by another worker during race window."
     return 1
   fi
 
-  # Step 4: Remove prauto:ready, set assignee, post claim comment
+  # Step 4: Remove prauto:ready, set assignee, post claim comment.
+  # Always post a fresh Claimed comment (no idempotency guard) so that
+  # restarted issues get a new timestamp anchor for retry counting.
   gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --remove-label "$PRAUTO_GITHUB_LABEL_READY" \
     --add-assignee "$PRAUTO_GITHUB_ACTOR" 2>/dev/null || true
 
-  if ! comment_exists "issue" "$issue_number" "Claimed"; then
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Claimed this issue. Starting work." \
-      2>/dev/null || warn "Failed to post claim comment on issue #${issue_number}."
-  fi
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Claimed this issue. Starting work." \
+    2>/dev/null || warn "Failed to post claim comment on issue #${issue_number}."
 
   info "Claimed issue #${issue_number}."
   return 0
@@ -232,16 +242,22 @@ find_all_claimed_issues() {
 }
 
 # Count heartbeat comments posted by this worker on an issue.
-# Used for retry tracking (replaces local retries counter).
+# Only counts comments from the CURRENT claim lifecycle — heartbeat comments
+# posted after the most recent "Claimed" comment by this worker. This ensures
+# that restarted issues (reset to prauto:ready, then re-claimed) start with
+# a fresh retry counter.
 # Usage: count_heartbeat_comments <issue_number>
 # Sets: HEARTBEAT_COMMENT_COUNT
 count_heartbeat_comments() {
   local issue_number="$1"
-  local marker="prauto(${PRAUTO_WORKER_ID}): Heartbeat"
+  local hb_marker="prauto(${PRAUTO_WORKER_ID}): Heartbeat"
+  local claim_marker="prauto(${PRAUTO_WORKER_ID}): Claimed"
   HEARTBEAT_COMMENT_COUNT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json comments \
-    --jq "[.comments[] | select(.body | startswith(\"${marker}\"))] | length" \
-    2>/dev/null) || HEARTBEAT_COMMENT_COUNT=0
+    --json comments --jq '.comments' 2>/dev/null \
+    | jq --arg hb "$hb_marker" --arg cl "$claim_marker" '
+      ([.[] | select(.body | startswith($cl))] | last | .createdAt // "") as $anchor |
+      [.[] | select(.body | startswith($hb)) | select(.createdAt > $anchor)] | length
+    ') || HEARTBEAT_COMMENT_COUNT=0
 }
 
 # Post a heartbeat marker comment on an issue.

@@ -1,6 +1,6 @@
 # PRauto: Autonomous PR Worker
 
-> **Document Status**: Specification v0.4 (2026-03-02)
+> **Document Status**: Specification v0.5 (2026-03-07)
 > This document specifies "prauto" — an autonomous PR worker that monitors GitHub issues, writes code via Claude Code CLI, and submits pull requests. Prauto extends the AI scaffold (`spec/AI_SCAFFOLD.md`) with unattended, cron-driven development automation.
 
 ---
@@ -13,7 +13,7 @@
 4. [Heartbeat Cycle](#heartbeat-cycle)
 5. [Token Quota Checking](#token-quota-checking)
 6. [Job State Machine](#job-state-machine)
-7. [Issue Discovery Protocol](#issue-discovery-protocol)
+7. [Issue Discovery Protocol](#issue-discovery-protocol) (includes [Issue Restart Protocol](#issue-restart-protocol))
 8. [Claude Code Invocation](#claude-code-invocation)
 9. [PR Lifecycle](#pr-lifecycle)
 10. [Prompt Templates](#prompt-templates)
@@ -227,7 +227,9 @@ On every heartbeat, `derive_phase_from_github()` inspects GitHub state in priori
 
 ### Retry tracking
 
-Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. The function `count_heartbeat_comments()` counts these markers. When the count reaches `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned.
+Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. The function `count_heartbeat_comments()` counts these markers **within the current claim lifecycle only** — it only counts heartbeat comments posted after the most recent `Claimed` comment by this worker. This ensures restarted issues (see [Issue Restart Protocol](#issue-restart-protocol)) begin with a fresh retry counter.
+
+When the count reaches `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned.
 
 **Exception**: The `plan-approval` phase does **not** post heartbeat comments or count retries — waiting for human approval is not a failure.
 
@@ -277,11 +279,26 @@ After max retries: move job to history, update issue labels (remove `prauto:wip`
 | `prauto:failed` | Red `#D93F0B` | Abandoned after max retries |
 | `prauto:done` | Dark green `#006400` | PR approved, ready to merge |
 
+### Issue restart protocol
+
+When a previously processed issue needs to be retried from scratch (e.g., after a failed attempt produced unusable results), a human resets the issue to its initial state:
+
+1. Remove all `prauto:` labels except `prauto:ready`
+2. Unassign the prauto worker
+3. Delete the working branch, PR, and optionally stale plan/heartbeat comments
+
+The prauto worker treats this as a fresh issue. The implementation handles stale comments from the previous attempt:
+
+- **Claim race check**: Uses a timestamp-based window — only considers `Claimed` comments posted after the current claim attempt began (ignores stale comments from previous runs).
+- **Claimed comment**: Always posts a fresh `Claimed` comment (no idempotency guard), providing a timestamp anchor for the new lifecycle.
+- **Retry counter**: `count_heartbeat_comments()` only counts heartbeat comments posted after the most recent `Claimed` comment by this worker, so the counter resets automatically on re-claim.
+- **Phase derivation**: Derives phase from current GitHub state. If stale plan comments were not deleted, the phase may derive as `implementation` or `plan-approval` instead of `analysis`. For a clean restart, delete old plan comments before resetting the label.
+
 ### Search and claiming
 
 Issues are discovered via `gh issue list` filtered by `prauto:ready` label, excluding already-WIP/review issues, sorted oldest-first. When `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` is enabled, issues from non-members are silently skipped (requires org-owned repo).
 
-**Optimistic claim protocol**: (1) Check if `prauto:wip` already present — if so, back off. (2) Add `prauto:wip` label. (3) Re-fetch after brief delay to detect race. (4) If another worker claimed first, back off. (5) Remove `prauto:ready`, set assignee, post claim comment. The add-then-verify pattern catches most concurrent claims.
+**Optimistic claim protocol**: (1) Check if `prauto:wip` already present — if so, back off. (2) Record pre-claim timestamp, add `prauto:wip` label. (3) Re-fetch after brief delay; only consider `Claimed` comments posted after the pre-claim timestamp (ignores stale comments from previous attempts). (4) If another worker claimed during the window, back off. (5) Remove `prauto:ready`, set assignee, post a fresh claim comment (always, even on re-claim). The timestamp-based race check supports issue restarts where old comments remain.
 
 When finding claimed issues, `find_all_claimed_issues()` returns all open issues assigned to this worker's `PRAUTO_GITHUB_ACTOR` that carry any `prauto:` label, sorted oldest-first.
 
@@ -390,7 +407,7 @@ Before posting certain comments, the worker checks for an existing comment match
 
 | Context | Keyword | Idempotency guard |
 |---------|---------|-------------------|
-| Issue claim | `Claimed` | Yes — `comment_exists` |
+| Issue claim | `Claimed` | **No** — always posts a fresh comment to anchor retry counting for restarts |
 | Abandonment | `Abandoning` | Yes — `comment_exists` |
 | Plan | `Plan` (or `Plan (rev N)`) | Yes — `comment_exists` |
 | Quota pause | `Paused` | Yes — `has_quota_paused_comment` |
@@ -404,7 +421,7 @@ The `plan-approval` phase is exempt from heartbeat comments (waiting for human a
 
 ### Optimistic claim locking
 
-The claim protocol uses check-then-add with a verification window: (1) check for existing `prauto:wip` label, (2) add it, (3) re-fetch after brief delay to detect races, (4) check for competing claim comments. Not fully atomic, but catches most races. For single-worker deployments this is a no-op safeguard.
+The claim protocol uses check-then-add with a timestamp-based verification window: (1) check for existing `prauto:wip` label, (2) record pre-claim timestamp, add label, (3) re-fetch after brief delay, only consider `Claimed` comments created after the pre-claim timestamp, (4) check for competing claims within the window. The timestamp scoping allows issues with stale `Claimed` comments from previous attempts to be re-claimed cleanly. Not fully atomic, but catches most races. For single-worker deployments this is a no-op safeguard.
 
 ---
 
