@@ -417,6 +417,12 @@ Total: **7750m** across all components. Pods rarely hit limits simultaneously. E
 
 ---
 
+## Open Questions
+
+- [ ] When DataSpoke exposes a redefined dataset registration API (blended API/UI), `dummy-data-ingest.sh` could be replaced by calls to that API for integration test setup. This would simplify the test workflow and exercise the redefined API as part of every test run. The current SDK script would remain as the bootstrap path for dev environments where the DataSpoke API is not running.
+
+---
+
 ## References
 
 - [DataHub — Deploying with Kubernetes](https://docs.datahub.com/docs/deploy/kubernetes) — minimum: 2 CPUs, 8 GB RAM
