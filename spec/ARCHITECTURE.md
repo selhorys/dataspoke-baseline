@@ -70,6 +70,7 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 3. **API-First** — Standalone OpenAPI specs in `api/` enable parallel frontend/backend development and AI-agent iteration.
 4. **Layer Separation** — Four components (UI, API, Backend/Pipeline, DataHub) are independently scalable and replaceable.
 5. **Cloud-Native** — Kubernetes-ready with containerized deployments.
+6. **Blended API/UI for Convenience** — DataSpoke may re-expose DataHub's basic functions through its own API and UI layer, combining DataHub-native and DataSpoke-specific metadata in a single call (see [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overview)).
 
 ---
 
@@ -77,7 +78,7 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 
 ### 1. DataHub as Metadata SSOT
 
-DataHub is the **mandatory backend** for metadata persistence. DataSpoke never duplicates metadata storage — it reads from and writes to DataHub, adding a computational layer on top.
+DataHub is the **mandatory backend** for metadata persistence. DataSpoke tries not to duplicate metadata that DataHub already persists — it reads from and writes to DataHub, adding a computational layer on top.
 
 | Role | Responsibility |
 |------|---------------|
@@ -347,6 +348,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 |---------|----|-----------|--------------------|----------------|
 | Ontology/Taxonomy Builder | UC4, UC8 | `/spoke/common/ontology/` | LLM Classification, Hierarchy Builder, Relationship Inference | LLM API, PostgreSQL, Qdrant |
 | Quality Score Engine | UC2, UC3, UC6 | — (internal shared service; no dedicated API route) | Score Aggregator, Anomaly Detector | PostgreSQL, Redis |
+| Redefined DataHub Functions *(TBD)* | — | `/spoke/common/data` (creation, modification) | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data | DataHub SDK (read + write) |
 
 ### Cross-Cutting Infrastructure
 

@@ -45,6 +45,7 @@ To prevent redundant builds and cross-domain inconsistency:
 
 - **DataHub-backed Backend**: DataHub stores metadata and serves as the Single Source of Truth (SSOT).
 - **API Convention Compliance**: A unified API specification maintains consistency across all domains.
+- **Blended API/UI for Convenience**: DataSpoke may re-expose DataHub's basic functions (e.g., dataset registration, metadata browsing) through its own API and UI layer, blending DataHub-native and DataSpoke-specific metadata in a single call for user convenience.
 
 ### System Architecture
 

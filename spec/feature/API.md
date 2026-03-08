@@ -42,6 +42,8 @@ The API is the only **HTTP-facing** component for external clients (the portal U
 AI agents). Backend services and Temporal workers also access DataHub, PostgreSQL, Redis,
 Qdrant, and Temporal directly but are not exposed over HTTP.
 
+In the future, DataSpoke may also expose **redefined DataHub functions** — blended endpoints that proxy DataHub's basic operations (e.g., dataset creation, metadata browsing) while simultaneously handling DataSpoke-specific data in a single call. These would appear under `/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
+
 ```
 Browser / AI Agent
        │
@@ -204,6 +206,17 @@ while DA or other teams may register simpler configurations.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/event` | Generation event reports (success/failure notices) | Automated Doc Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types) | Data Resource | — |
 | **WS** | `/spoke/common/data/{dataset_urn}/stream/validation` | Real-time validation progress stream | Online Data Validator | UC2 |
+
+#### Redefined DataHub Functions *(TBD)*
+
+Future routes for blended dataset creation and modification. Example candidates:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/spoke/common/data` | Create a dataset — write core metadata to DataHub and initialize DataSpoke-side records in a single call |
+| `PATCH` | `/spoke/common/data/{dataset_urn}` | Update dataset metadata — blend DataHub aspect writes with DataSpoke-specific updates |
+
+These routes are **not yet defined**; scope and design will be specified when the feature is planned. See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview).
 
 #### Ingestion (`/spoke/common/ingestion`)
 

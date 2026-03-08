@@ -72,7 +72,7 @@ Each DataSpoke feature has a clear integration direction:
 | Doc Generation | DE | **Read + Write** | Read schemas for clustering; write deprecation, tags |
 | NL Search | DA | **Read** | Read properties, tags, lineage, usage for vector index |
 | Metrics Dashboard | DG | **Read** | Read properties, ownership, schemas, tags for health scoring |
-| Redefined DataHub Functions *(future)* | All | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
+| Redefined DataHub Functions *(TBD)* | All | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
 ### Client Initialization
 
