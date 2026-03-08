@@ -192,6 +192,18 @@ SELECT count(*) FROM reviews.user_ratings_legacy
 
 See `spec/feature/DEV_ENV.md §Dummy Data Reset` for full schema details and data design choices.
 
+### 9. Register tables in DataHub
+
+After populating dummy data, register the tables as DataHub dataset entities so they're browsable in the DataHub UI:
+
+```bash
+./dummy-data-ingest.sh               # reset + ingest (default)
+./dummy-data-ingest.sh --no-reset    # ingest only (additive)
+./dummy-data-ingest.sh --reset-only  # soft-delete datasets only
+```
+
+This discovers all 17 tables from `example-postgres` and emits `DatasetProperties` + `SchemaMetadata` aspects to DataHub GMS. Requires both dummy-data (9102) and DataHub GMS (9004) port-forwards to be active.
+
 ## Verify Installation
 
 ```bash
@@ -235,7 +247,9 @@ dev_env/
 ├── dataspoke-lock/               # Lock service (plain K8s manifests, dataspoke-01 ns)
 ├── dataspoke-example/            # Example data sources (plain K8s manifests)
 ├── dummy-data-reset.sh           # Idempotent reset of dummy data (SQL + Kafka)
-└── dummy-data/                   # SQL seed files + Kafka topic/message scripts
+├── dummy-data-ingest.sh          # Register example-postgres tables in DataHub
+├── dummy-data-port-forward.sh    # Port-forward example PostgreSQL + Kafka
+└── dummy-data/                   # SQL seed files, Kafka scripts, DataHub ingest script
 ```
 
 ## Environment Variables

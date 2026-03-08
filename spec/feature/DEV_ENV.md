@@ -104,7 +104,11 @@ dev_env/
 ├── dataspoke-lock/                  # Lock service (plain K8s manifests)
 ├── dataspoke-example/               # Example data sources (plain K8s manifests)
 ├── dummy-data-reset.sh              # Idempotent reset of dummy data (SQL + Kafka)
-└── dummy-data/                      # SQL seed files + Kafka topic/message scripts
+├── dummy-data-ingest.sh             # Register example-postgres tables in DataHub
+└── dummy-data/                      # SQL seed files, Kafka scripts, DataHub ingest script
+    ├── sql/                         # 10 SQL seed files (00_schemas … 09_ebooknow)
+    ├── kafka/                       # Kafka topic init + message seed scripts
+    └── datahub/ingest.py            # Async Python: discover tables → emit to DataHub GMS
 ```
 
 ---
@@ -317,6 +321,27 @@ All ports are configurable via `DATASPOKE_DEV_*_PORT` variables. The `DATASPOKE_
 | `imazon.orders.events` | 20 | UC3 |
 | `imazon.shipping.updates` | 15 | UC3 |
 | `imazon.reviews.new` | 10 | UC2 |
+
+### DataHub Ingestion
+
+`dummy-data-ingest.sh` registers the 17 example-postgres tables as DataHub dataset entities. It runs a Python script (`dummy-data/datahub/ingest.py`) that:
+
+1. Discovers schemas, tables, and columns from `example-postgres` via `asyncpg`
+2. Obtains a DataHub session token (via frontend login if `DATASPOKE_DATAHUB_TOKEN` is empty)
+3. Emits three aspects per dataset via `DatahubRestEmitter`: `Status`, `DatasetProperties`, `SchemaMetadata`
+
+**Reset mechanism**: The `--reset` flag (default) soft-deletes all `example_db` datasets from DataHub before re-ingesting, ensuring a clean slate.
+
+```bash
+cd dev_env
+./dummy-data-ingest.sh               # reset + ingest (default)
+./dummy-data-ingest.sh --no-reset    # ingest only (additive)
+./dummy-data-ingest.sh --reset-only  # soft-delete only
+```
+
+**Prerequisites**: `dummy-data-reset.sh` has been run (tables exist in PostgreSQL), and port-forwards are active for both example-postgres (9102) and DataHub GMS (9004).
+
+This script seeds the dev environment so DataHub UI shows browsable datasets. It is separate from `dummy-data-reset.sh` (which handles PostgreSQL + Kafka only) because DataHub ingestion has its own reset semantics (soft-delete vs CASCADE drop).
 
 ### Data Design Choices
 

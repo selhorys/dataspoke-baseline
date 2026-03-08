@@ -52,6 +52,10 @@ _llm_provider = os.environ.get("DATASPOKE_LLM_PROVIDER", "openai")
 _llm_api_key = os.environ.get("DATASPOKE_LLM_API_KEY", "")
 _llm_model = os.environ.get("DATASPOKE_LLM_MODEL", "gpt-4o-mini")
 
+_TEST_DATASET_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,integration_test.test_schema.test_table,DEV)"
+)
+
 
 # --- DataHub ---
 
@@ -69,26 +73,75 @@ async def datahub_client():
     return DataHubClient(gms_url=_datahub_gms_url, token=token)
 
 
+@pytest_asyncio.fixture
+async def datahub_test_dataset(datahub_client):
+    """Emit a self-contained test dataset, clean up after."""
+    from datahub.metadata.schema_classes import (
+        DatasetPropertiesClass,
+        OtherSchemaClass,
+        SchemaFieldClass,
+        SchemaMetadataClass,
+        StatusClass,
+    )
+
+    urn = _TEST_DATASET_URN
+    await datahub_client.emit_aspect(urn, StatusClass(removed=False))
+    await datahub_client.emit_aspect(
+        urn,
+        DatasetPropertiesClass(
+            name="test_schema.test_table",
+            qualifiedName="integration_test.test_schema.test_table",
+            description="Self-contained integration test fixture",
+            customProperties={"source": "integration-test"},
+        ),
+    )
+    await datahub_client.emit_aspect(
+        urn,
+        SchemaMetadataClass(
+            schemaName="test_schema.test_table",
+            platform="urn:li:dataPlatform:postgres",
+            version=0,
+            hash="",
+            platformSchema=OtherSchemaClass(rawSchema=""),
+            fields=[
+                SchemaFieldClass(
+                    fieldPath="id",
+                    nativeDataType="integer",
+                    type={"type": {"type": "NUMBER"}},
+                    nullable=False,
+                ),
+                SchemaFieldClass(
+                    fieldPath="name",
+                    nativeDataType="text",
+                    type={"type": {"type": "STRING"}},
+                    nullable=True,
+                ),
+            ],
+        ),
+    )
+    # Wait for DataHub's ES index to propagate the new entity
+    await asyncio.sleep(3)
+    yield urn
+    await datahub_client.emit_aspect(urn, StatusClass(removed=True))
+
+
 async def test_datahub_connectivity(datahub_client) -> None:
     assert await datahub_client.check_connectivity() is True
 
 
-async def test_datahub_enumerate_datasets(datahub_client) -> None:
+async def test_datahub_enumerate_datasets(datahub_client, datahub_test_dataset) -> None:
     datasets = await datahub_client.enumerate_datasets()
-    # Returns a list (possibly empty if dummy data not ingested)
     assert isinstance(datasets, list)
-    if not datasets:
-        pytest.skip("No datasets in DataHub (dummy data not ingested)")
+    assert len(datasets) > 0
+    assert datahub_test_dataset in datasets
 
 
-async def test_datahub_get_aspect_existing(datahub_client) -> None:
+async def test_datahub_get_aspect_existing(datahub_client, datahub_test_dataset) -> None:
     from datahub.metadata.schema_classes import DatasetPropertiesClass
 
-    datasets = await datahub_client.enumerate_datasets()
-    if not datasets:
-        pytest.skip("No datasets in DataHub (dummy data not ingested)")
-    result = await datahub_client.get_aspect(datasets[0], DatasetPropertiesClass)
+    result = await datahub_client.get_aspect(datahub_test_dataset, DatasetPropertiesClass)
     assert result is not None
+    assert result.name == "test_schema.test_table"
 
 
 async def test_datahub_get_aspect_nonexistent(datahub_client) -> None:
