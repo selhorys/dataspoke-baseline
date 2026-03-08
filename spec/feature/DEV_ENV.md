@@ -324,7 +324,7 @@ All ports are configurable via `DATASPOKE_DEV_*_PORT` variables. The `DATASPOKE_
 
 ### DataHub Ingestion
 
-`dummy-data-ingest.sh` registers the 17 example-postgres tables as DataHub dataset entities. It runs a Python script (`dummy-data/datahub/ingest.py`) that:
+`dummy-data-ingest.sh` registers the 17 example-postgres tables as DataHub dataset entities. It runs a Python script (`dummy-data/datahub/ingest.py`) — **not the `datahub` CLI**, which requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. The script:
 
 1. Discovers schemas, tables, and columns from `example-postgres` via `asyncpg`
 2. Obtains a DataHub session token (via frontend login if `DATASPOKE_DATAHUB_TOKEN` is empty)

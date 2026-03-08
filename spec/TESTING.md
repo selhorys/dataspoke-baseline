@@ -29,6 +29,8 @@
 | Frontend | TypeScript | Jest + React Testing Library | TypeScript compiler, ESLint |
 | E2E | TypeScript | Playwright | — |
 
+> **Do not use the `datahub` CLI** — it requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead (e.g., `dev_env/dummy-data/datahub/ingest.py`).
+
 ---
 
 ## Repository Layout
