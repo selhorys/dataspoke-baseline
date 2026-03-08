@@ -45,7 +45,6 @@ To prevent redundant builds and cross-domain inconsistency:
 
 - **DataHub-backed Backend**: DataHub stores metadata and serves as the Single Source of Truth (SSOT).
 - **API Convention Compliance**: A unified API specification maintains consistency across all domains.
-- **Blended API/UI for Convenience**: DataSpoke may re-expose DataHub's basic functions (e.g., dataset registration, metadata browsing) through its own API and UI layer, blending DataHub-native and DataSpoke-specific metadata in a single call for user convenience.
 
 ### System Architecture
 
@@ -120,13 +119,11 @@ DataSpoke consists of four components:
 
 ## 4. AI Scaffold
 
-Commands and skills for step-by-step development workflows.
+A set of Claude Code configurations (`.claude/`) that make AI-assisted development productive. The AI agent knows the project layout, naming conventions, spec hierarchy, and operational environment from the first session. See `spec/AI_SCAFFOLD.md` for the full specification.
 
-- **Development Environment Setup**
-  - GitHub clone and reference data setup
-  - Kubernetes cluster-based dev environment provisioning
-- **Development Planning**
-  - Feature spec authoring: guided Q&A to define features per user group under `spec/feature/spoke/`, or common features under `spec/feature/`.
-  - Implementation planning: tracked via GitHub Issues and PRs with AI coding approach suggestions (skill/subagent composition) to reinforce the scaffold.
-- **PR Automation (PRauto)**
-  - Cron-driven monitoring of GitHub issues labeled `prauto:ready`; invokes Claude Code CLI to analyze, implement, and submit PRs autonomously. See `spec/AI_PRAUTO.md` for the full specification.
+The scaffold provides:
+
+- **Skills** — Development environment management, spec authoring and synchronization, DataHub integration guidance, Kubernetes operations, and bulk issue creation.
+- **Subagents** — Implementation pipeline with standard workflow: spec → api → backend → frontend → k8s/helm.
+- **PR Automation (PRauto)** — Cron-driven autonomous PR worker. Monitors GitHub issues labeled `prauto:ready`, invokes Claude Code CLI to analyze, implement, and submit PRs. See `spec/AI_PRAUTO.md`.
+- **Custom Spoke Support** — The scaffold is designed to be forked and customized.
