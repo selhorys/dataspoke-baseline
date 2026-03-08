@@ -17,6 +17,12 @@
 
 DataSpoke is a **sidecar extension** to DataHub. DataHub is the Hub (metadata SSOT); DataSpoke reads from and writes to DataHub without modifying its core. This document defines the integration patterns, SDK usage conventions, and aspect catalog that all DataSpoke features must follow.
 
+**Key principles**:
+
+1. **DataHub is the Hub** — DataHub stores metadata; DataSpoke computes on top of it. DataSpoke tries not to duplicate metadata that DataHub already persists.
+2. **DataSpoke features primarily fill the gaps** — DataSpoke features are designed for use cases that cannot be fulfilled by DataHub alone (e.g., deep ingestion, predictive SLA, NL search).
+3. **DataSpoke API can redefine DataHub functions for convenience** — in some cases DataSpoke may re-expose DataHub's basic functions (e.g., dataset registration, metadata browsing) through its own API and UI layer. It is a **blended API/UI** that combines DataHub-native metadata with DataSpoke-specific metadata in a single call for user convenience. For example, when a user needs both basic dataset properties (stored in DataHub) and deep-ingestion annotations (stored in DataSpoke's backend) at the same time, a single DataSpoke endpoint can aggregate both sources instead of requiring two separate calls. The same applies to creation and modification flows — a DataSpoke "create dataset" API could write core metadata to DataHub while simultaneously initializing DataSpoke-side records. These redefined features are **not the primary focus** of this project; architecture and use-case specs do not cover them in detail. However, future versions of DataSpoke may include baseline redefined features (e.g., dataset creation, unified metadata views).
+
 All integration code uses the `acryl-datahub` Python SDK. Three communication channels exist:
 
 ```
@@ -36,8 +42,6 @@ DataSpoke ───────────────────────�
     └──────────────────────────────────────────────┘
 ```
 
-**Key principle**: DataHub stores metadata; DataSpoke computes on top of it. DataSpoke never duplicates metadata that DataHub already persists.
-
 ## Goals & Non-Goals
 
 ### Goals
@@ -46,10 +50,11 @@ DataSpoke ───────────────────────�
 - Catalog every DataHub aspect that DataSpoke reads or writes
 - Establish error handling and resilience conventions
 - Provide copy-paste-ready code patterns for feature implementers
+- Enable possible redefinition of DataHub's basic functions (e.g., dataset registration) in DataSpoke's API and UI layer for blended user experiences
 
 ### Non-Goals
 
-- Modifying DataHub core or extending its data model with custom aspects
+- Modifying DataHub core (custom aspects may be considered — see [Open Questions](#open-questions))
 - Defining DataSpoke's own data model (see individual feature specs)
 - Covering DataHub admin operations (ingestion recipes, user management)
 
@@ -67,6 +72,7 @@ Each DataSpoke feature has a clear integration direction:
 | Doc Generation | DE | **Read + Write** | Read schemas for clustering; write deprecation, tags |
 | NL Search | DA | **Read** | Read properties, tags, lineage, usage for vector index |
 | Metrics Dashboard | DG | **Read** | Read properties, ownership, schemas, tags for health scoring |
+| Redefined DataHub Functions *(future)* | All | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
 ### Client Initialization
 
@@ -89,7 +95,7 @@ emitter = DatahubRestEmitter(
 )
 ```
 
-Read-only features (Validator, Predictive SLA, NL Search, Metrics Dashboard) use `DataHubGraph` only. Features that write back (Deep Ingestion, Doc Generation) additionally use `DatahubRestEmitter`.
+Read-only features (Validator, Predictive SLA, NL Search, Metrics Dashboard) use `DataHubGraph` only. Features that write back (Deep Ingestion, Doc Generation) additionally use `DatahubRestEmitter`. Redefined DataHub functions would use both clients to blend DataHub and DataSpoke data in a single API call.
 
 ### URN Construction
 
