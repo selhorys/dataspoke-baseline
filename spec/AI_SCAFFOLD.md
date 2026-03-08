@@ -152,14 +152,15 @@ Prauto is the autonomous PR worker — a cron-driven system that picks up GitHub
 │   ├── system-append.md        #   System prompt supplement
 │   ├── issue-analysis.md       #   Issue analysis and plan generation
 │   ├── implementation.md       #   Code implementation
+│   ├── integration-fix.md      #   Fix integration test failures
 │   ├── pr-review.md            #   Address PR reviewer feedback
 │   ├── feedback-response.md    #   Respond to plan counter-proposal
 │   └── squash-commit.md        #   Squash-finalize commit message
 ├── state/                      # [GITIGNORED] Runtime state
 │   ├── heartbeat.lock          #   PID-based lock file
+│   ├── heartbeat.log           #   Cron output log
 │   ├── .system-append-rendered.md
-│   ├── sessions/               #   Analysis, implementation, review outputs
-│   └── history/                #   Completed job records
+│   └── sessions/               #   Per-issue session outputs (analysis, implementation, review)
 ├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
 └── README.md
 ```

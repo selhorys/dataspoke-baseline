@@ -125,17 +125,17 @@ src/
 │       ├── quality.py    # QualityScore, QualityIssue, AnomalyResult
 │       ├── ontology.py   # Concept, ConceptRelationship
 │       └── events.py     # EventRecord (base for all event types)
-├── workflows/            # Temporal workflow definitions
-│   ├── __init__.py
-│   ├── worker.py         # Temporal worker entry point
-│   ├── ingestion.py      # Ingestion workflow + activities
-│   ├── validation.py     # Validation workflow + activities
-│   ├── sla_monitor.py    # SLA monitoring scheduled workflow + activities (UC3)
-│   ├── generation.py     # Doc generation workflow + activities
-│   ├── embedding_sync.py # Embedding maintenance workflow + activities
-│   ├── metrics.py        # Metrics collection workflow + activities
-│   └── ontology.py       # Ontology rebuild workflow + activities
-└── migrations/           # Alembic database migrations (repo root: migrations/)
+└── workflows/            # Temporal workflow definitions
+    ├── __init__.py
+    ├── worker.py         # Temporal worker entry point
+    ├── ingestion.py      # Ingestion workflow + activities
+    ├── validation.py     # Validation workflow + activities
+    ├── sla_monitor.py    # SLA monitoring scheduled workflow + activities (UC3)
+    ├── generation.py     # Doc generation workflow + activities
+    ├── embedding_sync.py # Embedding maintenance workflow + activities
+    ├── metrics.py        # Metrics collection workflow + activities
+    └── ontology.py       # Ontology rebuild workflow + activities
+migrations/               # Alembic database migrations (repo root)
 ```
 
 ---

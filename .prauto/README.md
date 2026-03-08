@@ -73,6 +73,7 @@ All GitHub API operations (issue labels, comments, PR creation) will then run as
 .prauto/
 ├── config.env                  # [COMMITTED] Shared settings
 ├── config.local.env            # [GITIGNORED] Instance-specific settings
+├── config.local.env.example    # [COMMITTED] Template for config.local.env
 ├── heartbeat.sh                # Main cron entry point
 ├── lib/
 │   ├── helpers.sh              # Shared bash helpers
@@ -87,6 +88,7 @@ All GitHub API operations (issue labels, comments, PR creation) will then run as
 │   ├── system-append.md        # Worker identity prompt
 │   ├── issue-analysis.md       # Phase 1: analysis prompt
 │   ├── implementation.md       # Phase 2: implementation prompt
+│   ├── integration-fix.md      # Integration test failure fix prompt
 │   ├── pr-review.md            # PR reviewer feedback prompt
 │   ├── feedback-response.md    # Plan counter-proposal response prompt
 │   └── squash-commit.md        # Squash commit message generation
