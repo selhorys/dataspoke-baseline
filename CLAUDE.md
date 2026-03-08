@@ -68,7 +68,7 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
 **Lock protocol**: acquire the dev-env advisory lock before any state-mutating operation.
 
-**Data reset**: always run `dev_env/dummy-data-reset.sh` before and after test runs.
+**Data reset**: always run `dev_env/dummy-data-reset.sh && dev_env/dummy-data-ingest.sh` before and after test runs (ingest registers datasets in DataHub after reset populates PostgreSQL).
 
 **Test data**: all scenarios use **Imazon** as the canonical company context — do not invent alternative test companies. 
 

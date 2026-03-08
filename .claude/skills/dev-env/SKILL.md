@@ -76,17 +76,22 @@ All actions start here:
 ### Post-install
 
 1. Confirm all expected components are running.
-2. Show access information:
+2. Start port-forwarding for dummy-data and DataHub GMS (needed for the next step).
+3. Seed dummy data and register datasets in DataHub:
+   ```bash
+   cd dev_env && ./dummy-data-reset.sh && ./dummy-data-ingest.sh
+   ```
+4. Show access information:
    - **DataHub**: `./dev_env/datahub-port-forward.sh` → UI at `http://localhost:9002`, credentials `datahub / datahub`
    - **DataSpoke infra**: `./dev_env/dataspoke-port-forward.sh` → PostgreSQL `:9201`, Redis `:9202`, Qdrant `:9203`/`:9204`, Temporal `:9205`
    - **Dummy data**: `./dev_env/dummy-data-port-forward.sh` → PostgreSQL `:9102`, Kafka `:9104`
    - **Lock service**: `./dev_env/lock-port-forward.sh` → API `:9221`
-3. Show how to run DataSpoke app services on the host:
+5. Show how to run DataSpoke app services on the host:
    - `source dev_env/.env`
    - Frontend: `cd src/frontend && npm run dev` (http://localhost:3000)
    - API: `cd src/api && uvicorn main:app --reload --port 8000`
    - Workers: `cd src/workflows && python -m worker`
-4. **Ask the user** if they want to start port-forwarding now.
+6. **Ask the user** if they want to start port-forwarding now.
 
 ---
 

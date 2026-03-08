@@ -65,6 +65,7 @@ run_integration_tests_with_protocol() {
   local lock_owner="prauto-${PRAUTO_WORKER_ID}"
   local lock_url="http://localhost:9221/lock"
   local reset_script="${REPO_DIR}/dev_env/dummy-data-reset.sh"
+  local ingest_script="${REPO_DIR}/dev_env/dummy-data-ingest.sh"
 
   # Check if lock endpoint is reachable
   if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
@@ -84,7 +85,7 @@ run_integration_tests_with_protocol() {
   fi
   info "Dev-env lock acquired for integration tests."
 
-  # Reset dummy data before tests
+  # Reset dummy data and ingest DataHub datasets before tests
   if [[ -x "$reset_script" ]]; then
     if ! "$reset_script" >/dev/null 2>&1; then
       warn "Pre-test dummy data reset failed. Skipping integration tests."
@@ -93,6 +94,9 @@ run_integration_tests_with_protocol() {
         -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
       return 0
     fi
+    if [[ -x "$ingest_script" ]]; then
+      "$ingest_script" >/dev/null 2>&1 || warn "Pre-test DataHub ingest failed."
+    fi
   fi
 
   # Run integration tests (signal conftest that lock is pre-acquired)
@@ -100,9 +104,12 @@ run_integration_tests_with_protocol() {
   local integ_output integ_exit=0
   integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 uv run pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
 
-  # Reset dummy data after tests
+  # Reset dummy data and ingest DataHub datasets after tests
   if [[ -x "$reset_script" ]]; then
     "$reset_script" >/dev/null 2>&1 || warn "Post-test dummy data reset failed."
+    if [[ -x "$ingest_script" ]]; then
+      "$ingest_script" >/dev/null 2>&1 || warn "Post-test DataHub ingest failed."
+    fi
   fi
 
   # Release lock
@@ -171,6 +178,7 @@ run_integration_test_fix() {
   local lock_owner="prauto-${PRAUTO_WORKER_ID}"
   local lock_url="http://localhost:9221/lock"
   local reset_script="${REPO_DIR}/dev_env/dummy-data-reset.sh"
+  local ingest_script="${REPO_DIR}/dev_env/dummy-data-ingest.sh"
   local max_retries="${PRAUTO_INTEGRATION_FIX_MAX_RETRIES:-2}"
 
   # Check if lock endpoint is reachable
@@ -200,9 +208,12 @@ run_integration_test_fix() {
   for (( attempt = 1; attempt <= max_retries; attempt++ )); do
     info "Integration test fix loop: attempt ${attempt}/${max_retries}"
 
-    # Reset dummy data before tests
+    # Reset dummy data and ingest DataHub datasets before tests
     if [[ -x "$reset_script" ]]; then
       "$reset_script" >/dev/null 2>&1 || warn "Pre-test dummy data reset failed."
+      if [[ -x "$ingest_script" ]]; then
+        "$ingest_script" >/dev/null 2>&1 || warn "Pre-test DataHub ingest failed."
+      fi
     fi
 
     # Run integration tests
@@ -225,9 +236,12 @@ run_integration_test_fix() {
     fi
   done
 
-  # Reset dummy data after loop
+  # Reset dummy data and ingest DataHub datasets after loop
   if [[ -x "$reset_script" ]]; then
     "$reset_script" >/dev/null 2>&1 || warn "Post-loop dummy data reset failed."
+    if [[ -x "$ingest_script" ]]; then
+      "$ingest_script" >/dev/null 2>&1 || warn "Post-loop DataHub ingest failed."
+    fi
   fi
 
   # Release lock

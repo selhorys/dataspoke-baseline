@@ -183,6 +183,7 @@ dataspoke-baseline/
 ├── dev_env/                # Local Kubernetes dev environment
 │   ├── .env                # All settings (gitignored)
 │   ├── install.sh / uninstall.sh
+│   ├── dummy-data-reset.sh / dummy-data-ingest.sh
 │   ├── datahub/            # DataHub Helm install
 │   ├── dataspoke-infra/    # DataSpoke infrastructure (PG, Redis, Qdrant, Temporal)
 │   └── dataspoke-example/  # Example data sources (PG, Kafka)

@@ -186,10 +186,10 @@ When an outer process (e.g. prauto) has already acquired the lock, set `DATASPOK
 Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty:
 
 ```bash
-cd dev_env && ./dummy-data-reset.sh
+cd dev_env && ./dummy-data-reset.sh && ./dummy-data-ingest.sh
 ```
 
-This script is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. See [`spec/feature/DEV_ENV.md §Dummy Data Reset`](feature/DEV_ENV.md#dummy-data-reset) for the full schema listing.
+`dummy-data-reset.sh` is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. `dummy-data-ingest.sh` then registers the 17 example-postgres tables as DataHub dataset entities with `DatasetProperties` and `SchemaMetadata` aspects. Always run both in sequence — the ingest depends on the reset having populated PostgreSQL. See [`spec/feature/DEV_ENV.md §Dummy Data Reset`](feature/DEV_ENV.md#dummy-data-reset) and [`§DataHub Ingestion`](feature/DEV_ENV.md#datahub-ingestion).
 
 #### Step 4 — Extend dummy data if needed
 
@@ -216,7 +216,7 @@ Fix code and re-run from Step 3 as needed. Do not re-run without resetting — t
 Restore the baseline state after your test run so the next tester starts clean:
 
 ```bash
-cd dev_env && ./dummy-data-reset.sh
+cd dev_env && ./dummy-data-reset.sh && ./dummy-data-ingest.sh
 ```
 
 #### Step 7 — Release the lock
@@ -335,6 +335,8 @@ The baseline dummy data covers these tables and use cases. Reference these when 
 | `storefront.listing_items` | 15 | UC4 | Marketplace listings |
 
 Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), `imazon.reviews.new` (10 msgs).
+
+DataHub datasets: All 17 tables above are also registered as DataHub dataset entities (platform `postgres`, env `PROD`) via `dummy-data-ingest.sh`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total).
 
 ### Assertion Principles
 
