@@ -44,3 +44,9 @@ class StorageUnavailableError(DataSpokeError):
     """Raised when PostgreSQL, Redis, or Qdrant is unreachable."""
 
     error_code: str = "STORAGE_UNAVAILABLE"
+
+
+class NotificationError(DataSpokeError):
+    """Raised when a notification (e.g. email) fails to send."""
+
+    error_code: str = "NOTIFICATION_FAILED"
