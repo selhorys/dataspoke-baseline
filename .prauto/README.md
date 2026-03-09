@@ -31,7 +31,7 @@ See `spec/AI_PRAUTO.md` for the full specification (heartbeat cycle, label lifec
 
    ```bash
    # Run heartbeat every 30 minutes, Mon-Fri 9:00-18:00 KST
-   */30 9-18 * * 1-5 cd /path/to/dataspoke-baseline && .prauto/heartbeat.sh >> .prauto/state/heartbeat.log 2>&1
+   */30 9-18 * * 1-5 cd /path/to/dataspoke-baseline && .prauto/heartbeat.sh >> .prauto/state/heartbeat_cron.log 2>&1
    ```
 
 ## Optional: Dedicated GitHub Bot Account
