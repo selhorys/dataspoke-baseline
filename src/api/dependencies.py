@@ -10,9 +10,11 @@ will be added as backend services are implemented in src/backend/.
 
 from collections.abc import AsyncGenerator
 
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.config import settings
+from src.backend.dataset.service import DatasetService
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
@@ -49,6 +51,16 @@ def get_llm() -> LLMClient:
 
 
 # ── Service providers (added as backend services are implemented) ──
+
+
+async def get_dataset_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    cache: RedisClient = Depends(get_redis),
+) -> DatasetService:
+    return DatasetService(datahub=datahub, db=db, cache=cache)
+
+
 # async def get_ingestion_service(...) -> IngestionService: ...
 # async def get_validation_service(...) -> ValidationService: ...
 # async def get_generation_service(...) -> GenerationService: ...
