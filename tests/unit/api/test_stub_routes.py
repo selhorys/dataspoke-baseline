@@ -26,9 +26,7 @@ COMMON_ONTOLOGY_ROUTES = [
 # ── Common/data ────────────────────────────────────────────────────────────────
 _URN = "urn:li:dataset:(urn:li:dataPlatform:mysql,db.table,PROD)"
 COMMON_DATA_ROUTES = [
-    ("GET", f"/api/v1/spoke/common/data/{_URN}"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/event"),
+    # GET /{urn}, GET /{urn}/attr, GET /{urn}/event — implemented by DatasetService
     ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
     ("PUT", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
     ("PATCH", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
