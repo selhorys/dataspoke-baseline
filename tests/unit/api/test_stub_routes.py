@@ -27,12 +27,7 @@ COMMON_ONTOLOGY_ROUTES = [
 _URN = "urn:li:dataset:(urn:li:dataPlatform:mysql,db.table,PROD)"
 COMMON_DATA_ROUTES = [
     # GET /{urn}, GET /{urn}/attr, GET /{urn}/event — implemented by DatasetService
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
-    ("PUT", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
-    ("PATCH", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
-    ("DELETE", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/conf"),
-    ("POST", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/method/run"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/ingestion/event"),
+    # Ingestion routes — implemented by IngestionService
     ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
     ("PUT", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
     ("PATCH", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
@@ -50,15 +45,8 @@ COMMON_DATA_ROUTES = [
     ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/gen/event"),
 ]
 
-# ── Common/ingestion ───────────────────────────────────────────────────────────
-COMMON_INGESTION_ROUTES = [
-    ("GET", "/api/v1/spoke/common/ingestion"),
-    ("GET", f"/api/v1/spoke/common/ingestion/{_URN}"),
-    ("GET", f"/api/v1/spoke/common/ingestion/{_URN}/attr"),
-    ("PATCH", f"/api/v1/spoke/common/ingestion/{_URN}/attr"),
-    ("POST", f"/api/v1/spoke/common/ingestion/{_URN}/method/run"),
-    ("GET", f"/api/v1/spoke/common/ingestion/{_URN}/event"),
-]
+# ── Common/ingestion — implemented by IngestionService ────────────────────────
+COMMON_INGESTION_ROUTES: list[tuple[str, str]] = []
 
 # ── Common/validation ──────────────────────────────────────────────────────────
 COMMON_VALIDATION_ROUTES = [

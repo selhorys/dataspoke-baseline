@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.config import settings
 from src.backend.dataset.service import DatasetService
+from src.backend.ingestion.service import IngestionService
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
@@ -61,7 +62,14 @@ async def get_dataset_service(
     return DatasetService(datahub=datahub, db=db, cache=cache)
 
 
-# async def get_ingestion_service(...) -> IngestionService: ...
+async def get_ingestion_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    llm: LLMClient = Depends(get_llm),
+) -> IngestionService:
+    return IngestionService(datahub=datahub, db=db, llm=llm)
+
+
 # async def get_validation_service(...) -> ValidationService: ...
 # async def get_generation_service(...) -> GenerationService: ...
 # async def get_search_service(...) -> SearchService: ...
