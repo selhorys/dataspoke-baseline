@@ -6,6 +6,7 @@ Port-forwards must be active before running:
 """
 
 import os
+import subprocess
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 def _load_dotenv() -> None:
@@ -47,6 +50,26 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+def _alembic_cmd(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run an alembic command against the dev-env PostgreSQL."""
+    host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
+    port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
+    user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
+    password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "dataspoke")
+    db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+    alembic_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
+
+    env = {**os.environ, "PYTHONPATH": _PROJECT_ROOT, "DATASPOKE_ALEMBIC_URL": alembic_url}
+    return subprocess.run(
+        ["alembic", *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=_PROJECT_ROOT,
+        env=env,
+    )
+
+
 @pytest.fixture(scope="session")
 def integration_db_url() -> str:
     host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
@@ -71,6 +94,14 @@ async def async_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSessio
     factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         yield session
+
+
+@pytest.fixture(scope="session", autouse=True)
+def alembic_at_head() -> None:
+    """Ensure the dataspoke schema is at head for the entire test session."""
+    result = _alembic_cmd("upgrade", "head")
+    assert result.returncode == 0, f"alembic upgrade failed: {result.stderr}"
+    yield  # type: ignore[misc]
 
 
 @pytest.fixture(scope="session", autouse=True)

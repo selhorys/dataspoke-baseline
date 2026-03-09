@@ -9,17 +9,16 @@ Prerequisites:
 - dev_env/dummy-data-reset.sh has been run (conftest acquires lock)
 """
 
-import os
-import subprocess
 import uuid
 
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from .conftest import _alembic_cmd
+
 IMAZON_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.catalog.title_master,PROD)"
 SCHEMA = "dataspoke"
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 EXPECTED_TABLES = {
     "ingestion_configs",
@@ -49,36 +48,6 @@ EXPECTED_INDEXES = {
     "ix_dataset_concept_map_concept",
     "ix_concept_categories_parent",
 }
-
-
-def _alembic_cmd(*args: str) -> subprocess.CompletedProcess[str]:
-    host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-    port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
-    user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-    password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "dataspoke")
-    db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
-    alembic_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
-
-    env = {**os.environ, "PYTHONPATH": PROJECT_ROOT, "DATASPOKE_ALEMBIC_URL": alembic_url}
-    return subprocess.run(
-        ["alembic", *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=PROJECT_ROOT,
-        env=env,
-    )
-
-
-@pytest.fixture(autouse=True, scope="module")
-def alembic_upgrade_head() -> None:
-    """Ensure schema is at head before tests, downgrade after."""
-    # Clean slate: downgrade first in case previous run left state
-    _alembic_cmd("downgrade", "base")
-    result = _alembic_cmd("upgrade", "head")
-    assert result.returncode == 0, f"alembic upgrade failed: {result.stderr}"
-    yield  # type: ignore[misc]
-    _alembic_cmd("downgrade", "base")
 
 
 @pytest.mark.asyncio
