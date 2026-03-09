@@ -27,11 +27,23 @@ See `spec/AI_PRAUTO.md` for the full specification (heartbeat cycle, label lifec
    npx github-label-sync --access-token "$(gh auth token)" --labels .github/labels.yml <owner>/<repo>
    ```
 
-4. Add a cron entry (adjust the path and schedule):
+4. Schedule the heartbeat. Choose one of the options below:
+
+   **Option A — `cron` (Linux / CI)**
 
    ```bash
    # Run heartbeat every 30 minutes, Mon-Fri 9:00-18:00 KST
    */30 9-18 * * 1-5 cd /path/to/dataspoke-baseline && .prauto/heartbeat.sh >> .prauto/state/heartbeat_cron.log 2>&1
+   ```
+
+   **Option B — `launchd` (macOS)**
+
+   On macOS, cron jobs cannot access the Keychain that can be useful to use claude code without `ANTHROPIC_API_KEY` set. in this case, launchd can be used instead of cron. create launchd setting file (e.g. `~/Library/LaunchAgents/com.dataspoke.prauto.heartbeat.plist`) and load it. Note that when using launchd, PATH must include directories for **all** required CLIs (`claude`, `gh`, `git`, `jq`).
+
+   ```bash
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dataspoke.prauto.heartbeat.plist  # load
+   launchctl bootout gui/$(id -u)/com.dataspoke.prauto.heartbeat                                 # unload
+   launchctl kickstart gui/$(id -u)/com.dataspoke.prauto.heartbeat                               # run now
    ```
 
 ## Optional: Dedicated GitHub Bot Account
