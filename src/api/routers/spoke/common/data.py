@@ -3,10 +3,19 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_dataset_service
+from src.api.dependencies import get_dataset_service, get_ingestion_service
 from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse, QualityScoreResponse
 from src.api.schemas.events import EventListResponse, EventResponse
+from src.api.schemas.ingestion import (
+    CreateIngestionConfigRequest,
+    IngestionConfigResponse,
+    PatchIngestionConfigRequest,
+    RunIngestionRequest,
+    RunResultResponse,
+)
 from src.backend.dataset.service import DatasetService
+from src.backend.ingestion.service import IngestionService
+from src.shared.exceptions import EntityNotFoundError
 
 router = APIRouter(
     prefix="/data",
@@ -91,34 +100,107 @@ async def get_dataset_events(
 # ── Ingestion ─────────────────────────────────────────────────────────────────
 
 
-@router.get("/{dataset_urn}/attr/ingestion/conf")
-async def get_ingestion_conf(dataset_urn: str) -> None:
-    raise _501
+def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
+    return IngestionConfigResponse(
+        id=c.id if isinstance(c.id, str) else str(c.id),
+        dataset_urn=c.dataset_urn,
+        sources=c.sources,
+        deep_spec_enabled=c.deep_spec_enabled,
+        schedule=c.schedule,
+        status=c.status,
+        owner=c.owner,
+        created_at=c.created_at,
+        updated_at=c.updated_at,
+    )
 
 
-@router.put("/{dataset_urn}/attr/ingestion/conf")
-async def put_ingestion_conf(dataset_urn: str) -> None:
-    raise _501
+@router.get("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
+async def get_ingestion_conf(
+    dataset_urn: str,
+    service: IngestionService = Depends(get_ingestion_service),
+) -> IngestionConfigResponse:
+    config = await service.get_config(dataset_urn)
+    if config is None:
+        raise EntityNotFoundError("ingestion_config", dataset_urn)
+    return _config_response(config)
 
 
-@router.patch("/{dataset_urn}/attr/ingestion/conf")
-async def patch_ingestion_conf(dataset_urn: str) -> None:
-    raise _501
+@router.put("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
+async def put_ingestion_conf(
+    dataset_urn: str,
+    body: CreateIngestionConfigRequest,
+    service: IngestionService = Depends(get_ingestion_service),
+) -> IngestionConfigResponse:
+    config = await service.upsert_config(
+        dataset_urn=dataset_urn,
+        sources=body.sources,
+        deep_spec_enabled=body.deep_spec_enabled,
+        schedule=body.schedule,
+        owner=body.owner,
+    )
+    return _config_response(config)
+
+
+@router.patch("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
+async def patch_ingestion_conf(
+    dataset_urn: str,
+    body: PatchIngestionConfigRequest,
+    service: IngestionService = Depends(get_ingestion_service),
+) -> IngestionConfigResponse:
+    patch = body.model_dump(exclude_unset=True)
+    config = await service.patch_config(dataset_urn, patch)
+    return _config_response(config)
 
 
 @router.delete("/{dataset_urn}/attr/ingestion/conf", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ingestion_conf(dataset_urn: str) -> None:
-    raise _501
+async def delete_ingestion_conf(
+    dataset_urn: str,
+    service: IngestionService = Depends(get_ingestion_service),
+) -> None:
+    await service.delete_config(dataset_urn)
 
 
-@router.post("/{dataset_urn}/attr/ingestion/method/run")
-async def run_ingestion(dataset_urn: str) -> None:
-    raise _501
+@router.post("/{dataset_urn}/attr/ingestion/method/run", response_model=RunResultResponse)
+async def run_ingestion(
+    dataset_urn: str,
+    body: RunIngestionRequest,
+    service: IngestionService = Depends(get_ingestion_service),
+) -> RunResultResponse:
+    result = await service.run(dataset_urn, dry_run=body.dry_run)
+    return RunResultResponse(
+        run_id=result.run_id,
+        status=result.status,
+        detail=result.detail,
+    )
 
 
-@router.get("/{dataset_urn}/attr/ingestion/event")
-async def get_ingestion_events(dataset_urn: str) -> None:
-    raise _501
+@router.get("/{dataset_urn}/attr/ingestion/event", response_model=EventListResponse)
+async def get_ingestion_events(
+    dataset_urn: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
+    service: IngestionService = Depends(get_ingestion_service),
+) -> EventListResponse:
+    events, total_count = await service.get_events(dataset_urn, offset, limit, from_time, to_time)
+    return EventListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total_count,
+        events=[
+            EventResponse(
+                id=e["id"],
+                entity_type=e["entity_type"],
+                entity_id=e["entity_id"],
+                event_type=e["event_type"],
+                status=e["status"],
+                detail=e["detail"],
+                occurred_at=e["occurred_at"],
+            )
+            for e in events
+        ],
+    )
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
