@@ -1,7 +1,9 @@
 """DataSpoke API — FastAPI application factory."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError as PydanticValidationError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -32,11 +34,52 @@ from src.api.routers.spoke.common import (
 )
 from src.api.routers.spoke.dg import metrics as dg_metrics
 from src.api.routers.spoke.dg import overview as dg_overview
+from src.shared.exceptions import (
+    ConflictError,
+    DataHubUnavailableError,
+    DataSpokeError,
+    EntityNotFoundError,
+    StorageUnavailableError,
+)
+
+_TRACE_HEADER = "X-Trace-Id"
 
 API_PREFIX = "/api/v1"
 SPOKE_COMMON = f"{API_PREFIX}/spoke/common"
 SPOKE_DG = f"{API_PREFIX}/spoke/dg"
 HUB = f"{API_PREFIX}/hub"
+
+
+def _error_json(request: Request, status: int, error_code: str, message: str) -> JSONResponse:
+    trace_id = request.headers.get(_TRACE_HEADER, "")
+    return JSONResponse(
+        status_code=status,
+        content={"error_code": error_code, "message": message, "trace_id": trace_id},
+    )
+
+
+async def _handle_not_found(request: Request, exc: EntityNotFoundError) -> JSONResponse:
+    return _error_json(request, 404, exc.error_code, str(exc))
+
+
+async def _handle_conflict(request: Request, exc: ConflictError) -> JSONResponse:
+    return _error_json(request, 409, exc.error_code, str(exc))
+
+
+async def _handle_validation(request: Request, exc: PydanticValidationError) -> JSONResponse:
+    return _error_json(request, 422, "VALIDATION_ERROR", str(exc))
+
+
+async def _handle_datahub(request: Request, exc: DataHubUnavailableError) -> JSONResponse:
+    return _error_json(request, 502, exc.error_code, str(exc))
+
+
+async def _handle_storage(request: Request, exc: StorageUnavailableError) -> JSONResponse:
+    return _error_json(request, 503, exc.error_code, str(exc))
+
+
+async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JSONResponse:
+    return _error_json(request, 500, exc.error_code, str(exc))
 
 
 def create_app() -> FastAPI:
@@ -51,6 +94,14 @@ def create_app() -> FastAPI:
     # ── State (needed by slowapi) ──────────────────────────────────────────────
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+
+    # ── Exception handlers (specific → generic) ───────────────────────────────
+    app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
+    app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
+    app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
+    app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
+    app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
+    app.add_exception_handler(DataSpokeError, _handle_dataspoke_generic)  # type: ignore[arg-type]
 
     # ── Middleware (applied bottom-up; order matches spec/feature/API.md) ──────
     # 5. Rate limiting
