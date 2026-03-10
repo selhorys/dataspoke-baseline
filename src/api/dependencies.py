@@ -119,3 +119,13 @@ async def get_metrics_service(
     from src.shared.notifications.service import NotificationService
 
     return MetricsService(datahub=datahub, db=db, cache=cache, notification=NotificationService())
+
+
+async def get_overview_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    cache: RedisClient = Depends(get_redis),
+) -> "OverviewService":
+    from src.backend.overview.service import OverviewService
+
+    return OverviewService(datahub=datahub, db=db, cache=cache)

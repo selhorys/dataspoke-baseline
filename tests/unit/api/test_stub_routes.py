@@ -103,12 +103,6 @@ async def test_dg_metric_stubs_return_501(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dg_overview_stubs_return_501(client: AsyncClient) -> None:
-    for method, path in DG_OVERVIEW_ROUTES:
-        await _assert_501(client, method, path, _DG_HEADERS)
-
-
-@pytest.mark.asyncio
 async def test_unauthenticated_common_routes_return_401(client: AsyncClient) -> None:
     """Protected routes without auth must return 401, not 501."""
     for method, path in COMMON_ONTOLOGY_ROUTES[:2]:

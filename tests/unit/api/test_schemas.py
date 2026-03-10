@@ -269,8 +269,8 @@ class TestMetricsSchemas:
 class TestOverviewSchemas:
     def test_overview_defaults(self) -> None:
         resp = OverviewResponse()
-        assert resp.layout == "grid"
-        assert resp.color_by == "quality"
+        assert resp.layout == "force"
+        assert resp.color_by == "quality_score"
         assert resp.stats.total_datasets == 0
 
 
