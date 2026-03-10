@@ -305,9 +305,40 @@ class ValidationService:
                     }
                 )
 
-        # 3. Anomaly detection (stub)
-        anomalies: list[dict[str, Any]] = []
-        # TODO: implement anomaly detection (Prophet/IsolationForest)
+        # 3. Anomaly detection
+        from datahub.metadata.schema_classes import DatasetProfileClass, OperationClass
+
+        from src.backend.validation.anomaly import detect_anomalies
+
+        profiles = await self._datahub.get_timeseries(dataset_urn, DatasetProfileClass, limit=30)
+        operations = await self._datahub.get_timeseries(dataset_urn, OperationClass, limit=30)
+
+        anomaly_method = config.rules.get("anomaly_method", "prophet")
+        anomaly_results = await detect_anomalies(profiles, operations, method=anomaly_method)
+        anomalies: list[dict[str, Any]] = [
+            {
+                "metric_name": a.metric_name,
+                "is_anomaly": a.is_anomaly,
+                "expected_value": a.expected_value,
+                "actual_value": a.actual_value,
+                "confidence": a.confidence,
+                "detected_at": a.detected_at.isoformat(),
+            }
+            for a in anomaly_results
+        ]
+
+        # 3b. SLA check (if SLA target configured)
+        sla_check = None
+        if config.sla_target:
+            from src.backend.validation.sla import check_sla
+
+            sla_check = await check_sla(
+                datahub=self._datahub,
+                dataset_urn=dataset_urn,
+                sla_target=config.sla_target,
+                history=profiles,
+                quality_score=score.overall_score,
+            )
 
         # 4. Recommendations from issues
         recommendations: list[str] = []
@@ -341,15 +372,29 @@ class ValidationService:
         alternatives: list[str] = []
         # TODO: implement Qdrant similarity search for alternative datasets
 
+        # Add SLA violations to recommendations
+        if sla_check is not None and sla_check.violations:
+            for v in sla_check.violations:
+                recommendations.append(v)
+
         detail: dict[str, Any] = {
             "run_id": run_id,
             "quality_score": score.overall_score,
             "dimensions": score.dimensions,
             "issues_count": len(issues),
+            "anomalies_count": len(anomalies),
             "upstream_count": len(upstream),
             "downstream_count": len(downstream),
             "dry_run": dry_run,
         }
+
+        if sla_check is not None:
+            detail["sla"] = {
+                "is_breaching": sla_check.is_breaching,
+                "is_pre_breach": sla_check.is_pre_breach,
+                "current_freshness_hours": sla_check.current_freshness_hours,
+                "violations": sla_check.violations,
+            }
 
         if dry_run:
             return ValidationRunResult(run_id=run_id, status="success", detail=detail)
