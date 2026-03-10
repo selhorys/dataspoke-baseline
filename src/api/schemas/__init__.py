@@ -33,15 +33,15 @@ from src.api.schemas.ingestion import (
     RunResultResponse,
 )
 from src.api.schemas.metrics import (
-    CreateMetricRequest,
+    MetricAttrResponse,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
-    MetricIssueListResponse,
-    MetricIssueResponse,
     MetricResultListResponse,
     MetricResultResponse,
-    PatchMetricRequest,
+    MetricRunResultResponse,
+    PatchMetricConfigRequest,
     RunMetricRequest,
+    UpsertMetricConfigRequest,
 )
 from src.api.schemas.ontology import (
     ConceptListResponse,
@@ -101,15 +101,15 @@ __all__ = [
     "RunIngestionRequest",
     "RunResultResponse",
     # metrics
-    "CreateMetricRequest",
+    "MetricAttrResponse",
     "MetricDefinitionListResponse",
     "MetricDefinitionResponse",
-    "MetricIssueListResponse",
-    "MetricIssueResponse",
     "MetricResultListResponse",
     "MetricResultResponse",
-    "PatchMetricRequest",
+    "MetricRunResultResponse",
+    "PatchMetricConfigRequest",
     "RunMetricRequest",
+    "UpsertMetricConfigRequest",
     # ontology
     "ConceptListResponse",
     "ConceptRelationshipResponse",

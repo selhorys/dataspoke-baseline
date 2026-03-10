@@ -20,9 +20,9 @@ from src.api.schemas.ingestion import (
     RunResultResponse,
 )
 from src.api.schemas.metrics import (
-    CreateMetricRequest,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
+    UpsertMetricConfigRequest,
 )
 from src.api.schemas.ontology import ConceptListResponse, ConceptResponse
 from src.api.schemas.overview import OverviewResponse
@@ -234,26 +234,28 @@ class TestDatasetSchemas:
 
 
 class TestMetricsSchemas:
-    def test_create_request(self) -> None:
-        req = CreateMetricRequest(
-            name="row_count",
-            dataset_urn="urn:li:dataset:test",
-            expression="COUNT(*)",
-            owner="admin",
+    def test_upsert_request(self) -> None:
+        req = UpsertMetricConfigRequest(
+            title="Row Count",
+            description="Counts total rows",
+            theme="quality",
+            measurement_query={"type": "dataset_count"},
         )
-        assert req.threshold == {}
+        assert req.alarm_enabled is False
+        assert req.active is True
 
     def test_definition_response(self) -> None:
         now = datetime.now(tz=UTC)
         resp = MetricDefinitionResponse(
             id="m1",
-            name="row_count",
-            dataset_urn="urn:li:dataset:test",
-            expression="COUNT(*)",
-            threshold={},
+            title="Row Count",
+            description="Counts total rows",
+            theme="quality",
+            measurement_query={"type": "dataset_count"},
             schedule=None,
-            status="active",
-            owner="admin",
+            alarm_enabled=False,
+            alarm_threshold=None,
+            active=True,
             created_at=now,
             updated_at=now,
         )
