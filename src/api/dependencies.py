@@ -110,4 +110,12 @@ async def get_ontology_service(
     return OntologyService(db=db)
 
 
-# async def get_metrics_service(...) -> MetricsService: ...
+async def get_metrics_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    cache: RedisClient = Depends(get_redis),
+) -> "MetricsService":
+    from src.backend.metrics.service import MetricsService
+    from src.shared.notifications.service import NotificationService
+
+    return MetricsService(datahub=datahub, db=db, cache=cache, notification=NotificationService())

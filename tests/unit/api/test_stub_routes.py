@@ -37,21 +37,8 @@ COMMON_GEN_ROUTES: list[tuple[str, str]] = []
 # ── Common/search — implemented by SearchService ──────────────────────────────
 COMMON_SEARCH_ROUTES: list[tuple[str, str]] = []
 
-# ── DG/metric ──────────────────────────────────────────────────────────────────
-DG_METRIC_ROUTES = [
-    ("GET", "/api/v1/spoke/dg/metric"),
-    ("GET", "/api/v1/spoke/dg/metric/metric-id-1"),
-    ("GET", "/api/v1/spoke/dg/metric/metric-id-1/attr"),
-    ("GET", "/api/v1/spoke/dg/metric/metric-id-1/attr/conf"),
-    ("PUT", "/api/v1/spoke/dg/metric/metric-id-1/attr/conf"),
-    ("PATCH", "/api/v1/spoke/dg/metric/metric-id-1/attr/conf"),
-    ("DELETE", "/api/v1/spoke/dg/metric/metric-id-1/attr/conf"),
-    ("GET", "/api/v1/spoke/dg/metric/metric-id-1/attr/result"),
-    ("POST", "/api/v1/spoke/dg/metric/metric-id-1/method/run"),
-    ("POST", "/api/v1/spoke/dg/metric/metric-id-1/method/activate"),
-    ("POST", "/api/v1/spoke/dg/metric/metric-id-1/method/deactivate"),
-    ("GET", "/api/v1/spoke/dg/metric/metric-id-1/event"),
-]
+# ── DG/metric — implemented by MetricsService ────────────────────────────────
+DG_METRIC_ROUTES: list[tuple[str, str]] = []
 
 # ── DG/overview ────────────────────────────────────────────────────────────────
 DG_OVERVIEW_ROUTES = [

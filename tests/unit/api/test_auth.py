@@ -87,10 +87,33 @@ async def test_wrong_group_returns_403(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_admin_group_can_access_dg_routes(client: AsyncClient) -> None:
     """Admin users bypass group-tier restrictions."""
-    headers = auth_headers(groups=["admin"])
-    response = await client.get("/api/v1/spoke/dg/metric", headers=headers)
-    # 501 means route was reached (admin auth passed); auth itself was 200
-    assert response.status_code == 501
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.api.dependencies import get_datahub, get_db, get_redis
+    from src.api.main import app
+
+    mock_session = AsyncMock()
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+    mock_session.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    async def _mock_db():
+        yield mock_session
+
+    app.dependency_overrides[get_db] = _mock_db
+    app.dependency_overrides[get_datahub] = lambda: AsyncMock()
+    app.dependency_overrides[get_redis] = lambda: AsyncMock()
+    try:
+        headers = auth_headers(groups=["admin"])
+        response = await client.get("/api/v1/spoke/dg/metric", headers=headers)
+        # 200 means route was reached (admin auth passed); service returns paginated list
+        assert response.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_datahub, None)
+        app.dependency_overrides.pop(get_redis, None)
 
 
 @pytest.mark.asyncio
