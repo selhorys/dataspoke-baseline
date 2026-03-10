@@ -13,15 +13,8 @@ _ALL_GROUPS = auth_headers(groups=["de", "da", "dg", "admin"])
 _DE_HEADERS = auth_headers(groups=["de"])
 _DG_HEADERS = auth_headers(groups=["dg"])
 
-# ── Common/ontology ────────────────────────────────────────────────────────────
-COMMON_ONTOLOGY_ROUTES = [
-    ("GET", "/api/v1/spoke/common/ontology"),
-    ("GET", "/api/v1/spoke/common/ontology/concept-1"),
-    ("GET", "/api/v1/spoke/common/ontology/concept-1/attr"),
-    ("GET", "/api/v1/spoke/common/ontology/concept-1/event"),
-    ("POST", "/api/v1/spoke/common/ontology/concept-1/method/approve"),
-    ("POST", "/api/v1/spoke/common/ontology/concept-1/method/reject"),
-]
+# ── Common/ontology — implemented by OntologyService ──────────────────────────
+COMMON_ONTOLOGY_ROUTES: list[tuple[str, str]] = []
 
 # ── Common/data ────────────────────────────────────────────────────────────────
 _URN = "urn:li:dataset:(urn:li:dataPlatform:mysql,db.table,PROD)"
