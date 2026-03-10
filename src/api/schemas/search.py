@@ -1,19 +1,25 @@
-"""Vector search request/response models."""
+"""Vector search request/response models aligned with OpenAPI spec."""
 
-from typing import Any
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 
 
-class SearchRequest(BaseModel):
-    q: str = Field(..., min_length=1)
-    limit: int = Field(default=20, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
-    platform: str | None = None
-    has_pii: bool | None = None
-    tags: list[str] = []
+class ColumnInfo(BaseModel):
+    name: str
+    type: str
+    sample_values: list[str] = []
+
+
+class JoinPath(BaseModel):
+    target_urn: str
+    join_keys: list[str] = []
+
+
+class SqlContext(BaseModel):
+    columns: list[ColumnInfo] = []
+    join_paths: list[JoinPath] = []
+    sample_query: str | None = None
 
 
 class SearchResultItem(BaseModel):
@@ -21,21 +27,17 @@ class SearchResultItem(BaseModel):
     name: str
     platform: str
     description: str | None = None
-    score: float
     tags: list[str] = []
-    metadata: dict[str, Any] = {}
+    owners: list[str] = []
+    quality_score: int | None = None
+    score: float
+    sql_context: SqlContext | None = None
 
 
 class SearchResponse(PaginatedResponse):
-    results: list[SearchResultItem] = []
-
-
-class ReindexRequest(BaseModel):
-    platform: str | None = None
-    force: bool = False
+    datasets: list[SearchResultItem] = []
 
 
 class ReindexResponse(SingleResponse):
-    task_id: str
     status: str
     message: str = ""

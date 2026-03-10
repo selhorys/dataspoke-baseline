@@ -44,6 +44,7 @@ class QdrantManager:
         vector: list[float],
         limit: int = 20,
         filters: dict[str, str] | None = None,
+        score_threshold: float | None = None,
     ) -> list[ScoredPoint]:
         query_filter = None
         if filters:
@@ -55,6 +56,7 @@ class QdrantManager:
             query=vector,
             limit=limit,
             query_filter=query_filter,
+            score_threshold=score_threshold,
         )
         return result.points
 
