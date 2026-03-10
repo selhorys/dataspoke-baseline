@@ -1,0 +1,496 @@
+"""Unit tests for GenerationService (mocked infrastructure)."""
+
+import uuid
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.backend.generation.service import GenerationService
+from src.shared.exceptions import ConflictError, EntityNotFoundError
+
+_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
+
+
+def _make_config_row(
+    dataset_urn: str = _DATASET_URN,
+    target_fields: dict | None = None,
+    code_refs: dict | None = None,
+    schedule: str | None = "0 0 * * *",
+    status: str = "draft",
+    owner: str = "alice@example.com",
+):
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.dataset_urn = dataset_urn
+    row.target_fields = target_fields or {"description": True, "tags": True}
+    row.code_refs = code_refs
+    row.schedule = schedule
+    row.status = status
+    row.owner = owner
+    row.created_at = datetime.now(tz=UTC)
+    row.updated_at = datetime.now(tz=UTC)
+    return row
+
+
+def _make_result_row(
+    dataset_urn: str = _DATASET_URN,
+    proposals: dict | None = None,
+    similar_diffs: list | None = None,
+    approval_status: str = "pending",
+    minutes_ago: int = 5,
+):
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.dataset_urn = dataset_urn
+    row.proposals = proposals or {
+        "field_descriptions": {"user_id": "Unique identifier"},
+        "table_summary": "User table",
+        "suggested_tags": ["pii"],
+    }
+    row.similar_diffs = similar_diffs or []
+    row.approval_status = approval_status
+    row.run_id = uuid.uuid4()
+    row.generated_at = datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)
+    row.applied_at = None
+    return row
+
+
+def _make_event_row(
+    entity_id: str = _DATASET_URN,
+    event_type: str = "generation.completed",
+    status: str = "success",
+    minutes_ago: int = 5,
+):
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.entity_type = "generation"
+    row.entity_id = entity_id
+    row.event_type = event_type
+    row.status = status
+    row.detail = {"source": "test"}
+    row.occurred_at = datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)
+    return row
+
+
+@pytest.fixture
+def datahub():
+    return AsyncMock()
+
+
+@pytest.fixture
+def db():
+    return AsyncMock()
+
+
+@pytest.fixture
+def llm():
+    return AsyncMock()
+
+
+@pytest.fixture
+def qdrant():
+    return AsyncMock()
+
+
+@pytest.fixture
+def service(datahub, db, llm, qdrant):
+    return GenerationService(datahub=datahub, db=db, llm=llm, qdrant=qdrant)
+
+
+# ── get_config ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_config_found(service, db):
+    config_row = _make_config_row()
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=result_mock)
+
+    config = await service.get_config(_DATASET_URN)
+    assert config is not None
+    assert config.dataset_urn == _DATASET_URN
+    assert config.owner == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_get_config_not_found(service, db):
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result_mock)
+
+    config = await service.get_config("nonexistent")
+    assert config is None
+
+
+# ── upsert_config ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_config_creates_new(service, db):
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    await service.upsert_config(
+        dataset_urn=_DATASET_URN,
+        target_fields={"description": True},
+        code_refs=None,
+        schedule=None,
+        owner="alice@example.com",
+    )
+    db.add.assert_called_once()
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upsert_config_updates_existing(service, db):
+    existing_row = _make_config_row()
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = existing_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    await service.upsert_config(
+        dataset_urn=_DATASET_URN,
+        target_fields={"tags": True},
+        code_refs={"owner": "org", "repo": "app"},
+        schedule="0 6 * * *",
+        owner="bob@example.com",
+    )
+    db.add.assert_called_once()
+    db.commit.assert_awaited_once()
+    assert existing_row.target_fields == {"tags": True}
+    assert existing_row.owner == "bob@example.com"
+
+
+# ── patch_config ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_config_applies_partial(service, db):
+    existing_row = _make_config_row()
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = existing_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
+    assert existing_row.schedule == "0 12 * * *"
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_patch_config_not_found(service, db):
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result_mock)
+
+    with pytest.raises(EntityNotFoundError) as exc_info:
+        await service.patch_config("nonexistent", {"schedule": "0 12 * * *"})
+    assert exc_info.value.error_code == "GENERATION_CONFIG_NOT_FOUND"
+
+
+# ── delete_config ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_config_success(service, db):
+    existing_row = _make_config_row()
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = existing_row
+    db.execute = AsyncMock(return_value=result_mock)
+
+    await service.delete_config(_DATASET_URN)
+    db.delete.assert_awaited_once_with(existing_row)
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_config_not_found(service, db):
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result_mock)
+
+    with pytest.raises(EntityNotFoundError) as exc_info:
+        await service.delete_config("nonexistent")
+    assert exc_info.value.error_code == "GENERATION_CONFIG_NOT_FOUND"
+
+
+# ── list_configs ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_configs_paginated(service, db):
+    rows = [_make_config_row(dataset_urn=f"urn:{i}") for i in range(3)]
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 5
+
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = rows
+
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    configs, total = await service.list_configs(offset=0, limit=3)
+    assert total == 5
+    assert len(configs) == 3
+
+
+@pytest.mark.asyncio
+async def test_list_configs_empty(service, db):
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    configs, total = await service.list_configs()
+    assert total == 0
+    assert configs == []
+
+
+# ── get_results ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_results_paginated(service, db):
+    rows = [_make_result_row(minutes_ago=i) for i in range(3)]
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 5
+
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = rows
+
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    results, total = await service.get_results(_DATASET_URN, offset=0, limit=3)
+    assert total == 5
+    assert len(results) == 3
+    assert results[0].dataset_urn == _DATASET_URN
+
+
+@pytest.mark.asyncio
+async def test_get_results_empty(service, db):
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    results, total = await service.get_results(_DATASET_URN)
+    assert total == 0
+    assert results == []
+
+
+# ── generate ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_generate_builds_prompt_with_schema(service, db, datahub, llm):
+    config_row = _make_config_row(code_refs=None)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    # Mock DataHub aspects
+    schema_mock = MagicMock()
+    field_mock = MagicMock()
+    field_mock.fieldPath = "user_id"
+    field_mock.nativeDataType = "int"
+    field_mock.description = ""
+    schema_mock.fields = [field_mock]
+
+    datahub.get_aspect = AsyncMock(
+        side_effect=lambda urn, cls: schema_mock if "Schema" in cls.__name__ else None
+    )
+
+    llm.complete_json = AsyncMock(
+        return_value={
+            "field_descriptions": {"user_id": "Unique user identifier"},
+            "table_summary": "User table",
+            "suggested_tags": ["pii"],
+        }
+    )
+
+    result = await service.generate(_DATASET_URN)
+    assert result.status == "success"
+    assert result.run_id
+    llm.complete_json.assert_awaited_once()
+
+    # Verify the prompt includes the field name
+    call_args = llm.complete_json.call_args
+    assert "user_id" in call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_generate_includes_code_refs_when_configured(service, db, datahub, llm):
+    config_row = _make_config_row(code_refs={"owner": "org", "repo": "app", "token": "tok"})
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    datahub.get_aspect = AsyncMock(return_value=None)
+
+    llm.complete_json = AsyncMock(
+        return_value={
+            "field_descriptions": {},
+            "table_summary": "Table",
+            "suggested_tags": [],
+        }
+    )
+
+    with patch("src.backend.generation.service.SourceCodeAnalyzer") as MockAnalyzer:
+        analyzer_instance = AsyncMock()
+        analyzer_instance.analyze = AsyncMock(return_value={"col1": "description"})
+        analyzer_instance.diff_similar_tables = AsyncMock(return_value=[])
+        MockAnalyzer.return_value = analyzer_instance
+
+        result = await service.generate(_DATASET_URN)
+        assert result.status == "success"
+        analyzer_instance.analyze.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_skips_code_refs_when_not_configured(service, db, datahub, llm):
+    config_row = _make_config_row(code_refs=None)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    datahub.get_aspect = AsyncMock(return_value=None)
+
+    llm.complete_json = AsyncMock(
+        return_value={
+            "field_descriptions": {},
+            "table_summary": "Table",
+            "suggested_tags": [],
+        }
+    )
+
+    result = await service.generate(_DATASET_URN)
+    assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_generate_config_not_found(service, db):
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result_mock)
+
+    with pytest.raises(EntityNotFoundError) as exc_info:
+        await service.generate("nonexistent")
+    assert exc_info.value.error_code == "GENERATION_CONFIG_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_generate_produces_structured_proposals(service, db, datahub, llm):
+    config_row = _make_config_row(code_refs=None)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    datahub.get_aspect = AsyncMock(return_value=None)
+
+    expected_proposals = {
+        "field_descriptions": {"id": "Primary key"},
+        "table_summary": "Main table",
+        "suggested_tags": ["important"],
+    }
+    llm.complete_json = AsyncMock(return_value=expected_proposals)
+
+    result = await service.generate(_DATASET_URN)
+    assert result.status == "success"
+
+    # Verify the result was persisted — db.add should have been called with GenerationResult
+    add_calls = db.add.call_args_list
+    # Last add before commit should be the result row
+    assert len(add_calls) >= 1
+
+
+# ── apply ────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_apply_writes_to_datahub(service, db, datahub):
+    result_row = _make_result_row(approval_status="approved")
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = result_row
+    db.execute = AsyncMock(return_value=result_mock)
+
+    datahub.emit_aspect = AsyncMock()
+
+    result = await service.apply(_DATASET_URN, str(result_row.id))
+    assert result.status == "applied"
+    # Should emit aspects for field descriptions, table summary, and tags
+    assert datahub.emit_aspect.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_pending_result(service, db):
+    result_row = _make_result_row(approval_status="pending")
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = result_row
+    db.execute = AsyncMock(return_value=result_mock)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.apply(_DATASET_URN, str(result_row.id))
+    assert exc_info.value.error_code == "GENERATION_NOT_APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_apply_result_not_found(service, db):
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result_mock)
+
+    with pytest.raises(EntityNotFoundError) as exc_info:
+        await service.apply(_DATASET_URN, str(uuid.uuid4()))
+    assert exc_info.value.error_code == "GENERATION_RESULT_NOT_FOUND"
+
+
+# ── get_events ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_events_paginated(service, db):
+    rows = [_make_event_row(minutes_ago=i) for i in range(3)]
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 5
+
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = rows
+
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    events, total = await service.get_events(_DATASET_URN, offset=0, limit=3)
+    assert total == 5
+    assert len(events) == 3
+    assert events[0]["entity_type"] == "generation"
+
+
+@pytest.mark.asyncio
+async def test_get_events_empty(service, db):
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    events, total = await service.get_events(_DATASET_URN)
+    assert total == 0
+    assert events == []

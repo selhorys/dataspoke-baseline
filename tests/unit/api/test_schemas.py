@@ -144,18 +144,19 @@ class TestGenerationSchemas:
     def test_create_request(self) -> None:
         req = CreateGenerationConfigRequest(
             dataset_urn="urn:li:dataset:test",
-            target_type="description",
+            target_fields={"description": True, "tags": True},
             owner="admin",
         )
-        assert req.template == {}
+        assert req.code_refs is None
 
     def test_config_response(self) -> None:
         now = datetime.now(tz=UTC)
         resp = GenerationConfigResponse(
             id="1",
             dataset_urn="urn:li:dataset:test",
-            target_type="description",
-            template={},
+            target_fields={"description": True},
+            code_refs=None,
+            schedule=None,
             status="active",
             owner="admin",
             created_at=now,

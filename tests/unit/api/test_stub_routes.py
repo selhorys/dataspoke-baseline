@@ -25,18 +25,11 @@ COMMON_ONTOLOGY_ROUTES = [
 
 # ── Common/data ────────────────────────────────────────────────────────────────
 _URN = "urn:li:dataset:(urn:li:dataPlatform:mysql,db.table,PROD)"
-COMMON_DATA_ROUTES = [
+COMMON_DATA_ROUTES: list[tuple[str, str]] = [
     # GET /{urn}, GET /{urn}/attr, GET /{urn}/event — implemented by DatasetService
     # Ingestion routes — implemented by IngestionService
     # Validation routes — implemented by ValidationService
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
-    ("PUT", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
-    ("PATCH", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
-    ("DELETE", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/gen/result"),
-    ("POST", f"/api/v1/spoke/common/data/{_URN}/attr/gen/method/generate"),
-    ("POST", f"/api/v1/spoke/common/data/{_URN}/attr/gen/method/apply"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/gen/event"),
+    # Generation routes — implemented by GenerationService
 ]
 
 # ── Common/ingestion — implemented by IngestionService ────────────────────────
@@ -45,17 +38,8 @@ COMMON_INGESTION_ROUTES: list[tuple[str, str]] = []
 # ── Common/validation — implemented by ValidationService ──────────────────────
 COMMON_VALIDATION_ROUTES: list[tuple[str, str]] = []
 
-# ── Common/gen ─────────────────────────────────────────────────────────────────
-COMMON_GEN_ROUTES = [
-    ("GET", "/api/v1/spoke/common/gen"),
-    ("GET", f"/api/v1/spoke/common/gen/{_URN}"),
-    ("GET", f"/api/v1/spoke/common/gen/{_URN}/attr"),
-    ("PATCH", f"/api/v1/spoke/common/gen/{_URN}/attr"),
-    ("GET", f"/api/v1/spoke/common/gen/{_URN}/attr/result"),
-    ("POST", f"/api/v1/spoke/common/gen/{_URN}/method/generate"),
-    ("POST", f"/api/v1/spoke/common/gen/{_URN}/method/apply"),
-    ("GET", f"/api/v1/spoke/common/gen/{_URN}/event"),
-]
+# ── Common/gen — implemented by GenerationService ─────────────────────────────
+COMMON_GEN_ROUTES: list[tuple[str, str]] = []
 
 # ── Common/search ──────────────────────────────────────────────────────────────
 COMMON_SEARCH_ROUTES = [
