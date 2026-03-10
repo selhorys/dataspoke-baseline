@@ -120,7 +120,7 @@ async def datahub_test_dataset(datahub_client):
         ),
     )
     # Wait for DataHub's ES index to propagate the new entity
-    await asyncio.sleep(3)
+    await asyncio.sleep(8)
     yield urn
     await datahub_client.emit_aspect(urn, StatusClass(removed=True))
 
