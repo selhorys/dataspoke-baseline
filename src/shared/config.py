@@ -21,6 +21,10 @@ SEARCH_RESULT_CACHE_TTL: int = 120
 
 # Vector search
 EMBEDDING_DIMENSION: int = 1536
+SEARCH_SCORE_THRESHOLD: float = 0.3
+EMBEDDING_COLLECTION: str = "dataset_embeddings"
+EMBEDDING_MODEL_OPENAI: str = "text-embedding-3-small"
+EMBEDDING_MODEL_GOOGLE: str = "models/text-embedding-004"
 
 # Ontology
 ONTOLOGY_CONFIDENCE_THRESHOLD: float = 0.7

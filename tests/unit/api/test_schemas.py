@@ -26,7 +26,7 @@ from src.api.schemas.metrics import (
 )
 from src.api.schemas.ontology import ConceptListResponse, ConceptResponse
 from src.api.schemas.overview import OverviewResponse
-from src.api.schemas.search import SearchRequest, SearchResponse, SearchResultItem
+from src.api.schemas.search import SearchResponse, SearchResultItem
 from src.api.schemas.validation import (
     CreateValidationConfigRequest,
     ValidationConfigListResponse,
@@ -170,15 +170,18 @@ class TestGenerationSchemas:
 
 
 class TestSearchSchemas:
-    def test_search_request_requires_q(self) -> None:
-        with pytest.raises(ValidationError):
-            SearchRequest()  # type: ignore[call-arg]
-
-    def test_search_request_defaults(self) -> None:
-        req = SearchRequest(q="test")
-        assert req.limit == 20
-        assert req.offset == 0
-        assert req.tags == []
+    def test_search_result_item(self) -> None:
+        item = SearchResultItem(
+            urn="urn:li:dataset:test",
+            name="test",
+            platform="postgres",
+            score=0.95,
+            owners=["urn:li:corpuser:alice"],
+            quality_score=85,
+        )
+        assert item.owners == ["urn:li:corpuser:alice"]
+        assert item.quality_score == 85
+        assert item.sql_context is None
 
     def test_search_response(self) -> None:
         item = SearchResultItem(
@@ -187,8 +190,8 @@ class TestSearchSchemas:
             platform="postgres",
             score=0.95,
         )
-        resp = SearchResponse(results=[item], total_count=1)
-        assert len(resp.results) == 1
+        resp = SearchResponse(datasets=[item], total_count=1)
+        assert len(resp.datasets) == 1
         assert resp.total_count == 1
 
 

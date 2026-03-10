@@ -52,11 +52,12 @@ from src.api.schemas.ontology import (
 )
 from src.api.schemas.overview import OverviewResponse, PatchOverviewRequest
 from src.api.schemas.search import (
-    ReindexRequest,
+    ColumnInfo,
+    JoinPath,
     ReindexResponse,
-    SearchRequest,
     SearchResponse,
     SearchResultItem,
+    SqlContext,
 )
 from src.api.schemas.validation import (
     CreateValidationConfigRequest,
@@ -119,11 +120,12 @@ __all__ = [
     "OverviewResponse",
     "PatchOverviewRequest",
     # search
-    "ReindexRequest",
+    "ColumnInfo",
+    "JoinPath",
     "ReindexResponse",
-    "SearchRequest",
     "SearchResponse",
     "SearchResultItem",
+    "SqlContext",
     # validation
     "CreateValidationConfigRequest",
     "PatchValidationConfigRequest",

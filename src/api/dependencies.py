@@ -91,6 +91,16 @@ async def get_generation_service(
     return GenerationService(datahub=datahub, db=db, llm=llm, qdrant=qdrant)
 
 
-# async def get_search_service(...) -> SearchService: ...
+async def get_search_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    cache: RedisClient = Depends(get_redis),
+    llm: LLMClient = Depends(get_llm),
+    qdrant: QdrantManager = Depends(get_qdrant),
+) -> "SearchService":
+    from src.backend.search.service import SearchService
+
+    return SearchService(datahub=datahub, cache=cache, llm=llm, qdrant=qdrant)
+
+
 # async def get_ontology_service(...) -> OntologyService: ...
 # async def get_metrics_service(...) -> MetricsService: ...

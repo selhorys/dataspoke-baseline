@@ -41,11 +41,8 @@ COMMON_VALIDATION_ROUTES: list[tuple[str, str]] = []
 # ── Common/gen — implemented by GenerationService ─────────────────────────────
 COMMON_GEN_ROUTES: list[tuple[str, str]] = []
 
-# ── Common/search ──────────────────────────────────────────────────────────────
-COMMON_SEARCH_ROUTES = [
-    ("GET", "/api/v1/spoke/common/search"),
-    ("POST", "/api/v1/spoke/common/search/method/reindex"),
-]
+# ── Common/search — implemented by SearchService ──────────────────────────────
+COMMON_SEARCH_ROUTES: list[tuple[str, str]] = []
 
 # ── DG/metric ──────────────────────────────────────────────────────────────────
 DG_METRIC_ROUTES = [
