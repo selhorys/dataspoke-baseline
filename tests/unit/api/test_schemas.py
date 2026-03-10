@@ -125,6 +125,7 @@ class TestValidationSchemas:
             dataset_urn="urn:li:dataset:test",
             rules={},
             schedule=None,
+            sla_target=None,
             status="active",
             owner="admin",
             created_at=now,
