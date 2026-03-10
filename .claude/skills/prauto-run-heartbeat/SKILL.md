@@ -41,7 +41,7 @@ Before launching the heartbeat, take a **baseline snapshot** of `.prauto/state/s
 find .prauto/state/sessions/ -mindepth 1 -maxdepth 2 -type d 2>/dev/null | sort
 ```
 
-Save this baseline mentally (directory names) for comparison in Step 4. The heartbeat creates per-issue session directories at `.prauto/state/sessions/issue-{N}/{uuid}/` for each issue it processes.
+Save this baseline mentally (directory names) for comparison in Step 4. The heartbeat creates per-issue session directories at `.prauto/state/sessions/issue-{N}/{yyyyMMDD}-{HHmmss}-{uuid8}/` (e.g., `issue-42/20260303-135959-05bb59b7/`) for each issue it processes.
 
 ---
 
@@ -75,7 +75,7 @@ Each issue processed by the heartbeat gets a session directory:
 ```
 .prauto/state/sessions/
   issue-{N}/
-    {uuid}/                    # unique per heartbeat run
+    {yyyyMMDD}-{HHmmss}-{uuid8}/  # e.g. 20260303-135959-05bb59b7
       claude-output-{pid}.json # raw Claude CLI output
       analysis.txt             # analysis phase output
       implementation.json      # implementation phase output
@@ -96,7 +96,7 @@ tail -100 .prauto/state/heartbeat.log
 Poll every **~20 seconds** until the background task exits. On each check:
 
 1. **Lock file** — `test -f .prauto/state/heartbeat.lock` → script is running.
-2. **Log file** — Parse `[INFO]`, `[WARN]`, and `[ERROR]` markers for phase transitions and key events. The heartbeat logs all decisions: issue discovery, phase routing, plan posting, implementation start/end, PR creation. Look for `Session dir:` lines to identify the active session directory.
+2. **Log file** — Parse `[YYYY-MM-DD HH:MM:SS UTC - INFO]`, `[... - WARN]`, and `[... - ERROR]` markers for phase transitions and key events. The heartbeat logs all decisions: issue discovery, phase routing, plan posting, implementation start/end, PR creation. Look for `Session dir:` lines to identify the active session directory.
 3. **Session directories** — `find .prauto/state/sessions/ -mindepth 1 -maxdepth 2 -type d | sort` and compare to baseline:
    - **New `issue-{N}/{uuid}/` directory**: A new session was created for issue N.
    - **`analysis.txt` in session dir**: Analysis phase completed. Read and summarize the plan.
@@ -129,21 +129,23 @@ The heartbeat processes **all** claimed issues in a single run (oldest first). Y
 | Signal | Meaning |
 |--------|---------|
 | `heartbeat.lock` appears | Script started, lock acquired |
-| Log: `[INFO] Session dir: ...issue-{N}/{uuid}` | Session directory created for issue N |
-| Log: `[INFO] Claimed issue #N` | New issue claimed (Step 5) |
-| Log: `[INFO] Open issue limit reached` | Skipped new pickup (at limit) |
-| Log: `[INFO] WIP #N: phase=<phase>` | Processing a WIP issue (Step 6 loop) |
-| Log: `[INFO] Starting analysis phase` | Analysis running for current issue |
+| Log: `[... - INFO] Session dir: ...issue-{N}/{ts-uuid8}` | Session directory created for issue N |
+| Log: `[... - INFO] Claimed issue #N` | New issue claimed (Step 5) |
+| Log: `[... - INFO] Open issue limit reached` | Skipped new pickup (at limit) |
+| Log: `[... - INFO] WIP #N: phase=<phase>` | Processing a WIP issue (Step 6 loop) |
+| Log: `[... - INFO] Starting analysis phase` | Analysis running for current issue |
 | `analysis.txt` in session dir | Analysis complete — summarize the plan |
-| Log: `[INFO] Plan posted` | Plan awaiting approval |
-| Log: `[INFO] Starting implementation phase` | Implementation running for current issue |
+| Log: `[... - INFO] Plan posted` | Plan awaiting approval |
+| Log: `[... - INFO] Starting implementation phase` | Implementation running for current issue |
+| GitHub comment: `Heartbeat — implementation starting` | Implementation phase entered |
 | `implementation.json` in session dir | Implementation complete |
-| Log: `[INFO] Integration test fix loop: attempt` | Integration fix loop running |
-| Log: `[INFO] Integration tests passed` | Integration tests passed |
+| Log: `[... - INFO] Integration test fix loop: attempt` | Integration fix loop running |
+| GitHub comment: `Heartbeat — integration test fix loop: attempt N/max` | Integration fix attempt started |
+| Log: `[... - INFO] Integration tests passed` | Integration tests passed |
 | `integration-fix.json` in session dir | Integration fix session complete |
-| Log: `[INFO] Squash-finalizing PR #N` | Squash-finalize running for review issue |
-| Log: `[INFO] Addressing reviewer feedback` | PR review running for review issue |
-| Log: `[INFO] All claimed issues checked` | Processing loop finished |
+| Log: `[... - INFO] Squash-finalizing PR #N` | Squash-finalize running for review issue |
+| Log: `[... - INFO] Addressing reviewer feedback` | PR review running for review issue |
+| Log: `[... - INFO] All claimed issues checked` | Processing loop finished |
 | `complete.json` / `abandon.json` in session dir | Job finished |
 | `heartbeat.lock` disappeared | Script finished |
 

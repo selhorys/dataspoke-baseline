@@ -2,9 +2,10 @@
 # Source this file — do not execute directly.
 # Usage: source "${SCRIPT_DIR}/lib/helpers.sh"
 
-info()  { echo -e "\033[0;32m[INFO]\033[0m  $*"; }
-warn()  { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
-error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
+_ts() { date -u '+%Y-%m-%d %H:%M:%S UTC'; }
+info()  { echo -e "\033[0;32m[$(_ts) - INFO]\033[0m  $*"; }
+warn()  { echo -e "\033[0;33m[$(_ts) - WARN]\033[0m  $*"; }
+error() { echo -e "\033[0;31m[$(_ts) - ERROR]\033[0m $*" >&2; exit 1; }
 
 # Verify a command exists or exit with error.
 ensure_command() {

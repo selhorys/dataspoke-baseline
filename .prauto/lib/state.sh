@@ -20,10 +20,12 @@ ensure_state_dirs() {
 # Sets: CUR_SESSION_DIR
 init_issue_session() {
   local issue_number="$1"
-  local session_id
-  session_id=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s-$$)
-  # Lowercase the UUID for consistency (macOS uuidgen outputs uppercase)
-  session_id=$(echo "$session_id" | tr '[:upper:]' '[:lower:]')
+  local uuid
+  uuid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s-$$)
+  uuid=$(echo "$uuid" | tr '[:upper:]' '[:lower:]')
+  local ts
+  ts=$(date -u '+%Y%m%d-%H%M%S')
+  local session_id="${ts}-${uuid:0:8}"
   CUR_SESSION_DIR="${SESSIONS_DIR}/issue-${issue_number}/${session_id}"
   mkdir -p "$CUR_SESSION_DIR"
   info "Session dir: ${CUR_SESSION_DIR}"

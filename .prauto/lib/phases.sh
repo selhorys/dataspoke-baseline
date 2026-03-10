@@ -207,6 +207,9 @@ run_integration_test_fix() {
   local attempt integ_output integ_exit
   for (( attempt = 1; attempt <= max_retries; attempt++ )); do
     info "Integration test fix loop: attempt ${attempt}/${max_retries}"
+    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+      --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}" \
+      2>/dev/null || warn "Failed to post integration fix comment on issue #${issue_number}."
 
     # Reset dummy data and ingest DataHub datasets before tests
     if [[ -x "$reset_script" ]]; then
@@ -255,6 +258,10 @@ run_integration_test_fix() {
 # Usage: implement_and_finalize <issue_number> <branch> <plan> <issue_title>
 implement_and_finalize() {
   local issue_number="$1" branch="$2" plan="$3" issue_title="$4"
+  # Post implementation start comment (not idempotent — each attempt is a new marker)
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — implementation starting" \
+    2>/dev/null || warn "Failed to post implementation start comment on issue #${issue_number}."
   run_implementation "$issue_number" "$branch" "$plan"
   run_integration_test_fix "$issue_number" "$branch"
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"

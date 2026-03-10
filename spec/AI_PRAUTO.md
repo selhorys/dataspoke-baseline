@@ -82,7 +82,7 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │   ├── git-ops.sh              # Branch creation, worktree, push operations
 │   ├── pr.sh                   # PR creation, feedback handling, squash-finalize
 │   ├── phases.sh               # Phase-specific handlers (analysis → pr)
-│   └── state.sh                # Monitoring state, lock, complete
+│   └── state.sh                # Session init, lock, complete
 ├── prompts/
 │   ├── system-append.md        # System prompt addendum for prauto identity
 │   ├── issue-analysis.md       # Prompt: analyze issue, produce plan
@@ -97,7 +97,7 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │   ├── .system-append-rendered.md
 │   └── sessions/               # Per-issue session directories
 │       └── issue-{N}/          # One dir per issue number
-│           └── {uuid}/         # One dir per heartbeat session
+│           └── {yyyyMMDD}-{HHmmss}-{uuid8}/  # One dir per session (e.g. 20260303-135959-05bb59b7)
 │               ├── claude-output-{pid}.json  # Raw Claude CLI output
 │               ├── plan.md                   # Full plan written by Claude via Write tool
 │               ├── analysis.txt              # Analysis phase output (copy of plan.md)
@@ -180,7 +180,7 @@ crontab trigger
 
 **Secrets handling**: `config.local.env` is copied to a temporary backup under `state/.secrets-$$/` before Claude runs. The original stays in place, protected by the `--disallowedTools` denylist entry. Secrets are sourced into shell env vars. The EXIT trap removes the temp backup.
 
-**Bash conventions**: All scripts follow `dev_env/` patterns — `set -euo pipefail`, `SCRIPT_DIR` idiom, shared helpers from `lib/helpers.sh`, idempotent operations.
+**Bash conventions**: All scripts follow `dev_env/` patterns — `set -euo pipefail`, `SCRIPT_DIR` idiom, shared helpers from `lib/helpers.sh`, idempotent operations. Log output includes UTC timestamps: `[2026-03-07 01:20:56 UTC - INFO] ...`.
 
 **Cron**: Recommended schedule is every 30 minutes during working hours. See `.prauto/README.md` for setup.
 
@@ -239,7 +239,7 @@ On every heartbeat, `derive_phase_from_github()` inspects GitHub state in priori
 
 ### Retry tracking
 
-Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. The function `count_heartbeat_comments()` counts these markers **within the current lifecycle only** — it only counts heartbeat comments posted after the last `prauto:ready` label event (see [Ready-label timestamp as lifecycle anchor](#ready-label-timestamp-as-lifecycle-anchor)) and after the most recent `Claimed` comment by this worker. This ensures restarted issues (see [Issue Restart Protocol](#issue-restart-protocol)) begin with a fresh retry counter.
+Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. Additionally, when entering the implementation phase (from any route — analysis fall-through, plan approval, or direct implementation), a `prauto({worker_id}): Heartbeat — implementation starting` comment is posted. The function `count_heartbeat_comments()` counts these markers **within the current lifecycle only** — it only counts heartbeat comments posted after the last `prauto:ready` label event (see [Ready-label timestamp as lifecycle anchor](#ready-label-timestamp-as-lifecycle-anchor)) and after the most recent `Claimed` comment by this worker. This ensures restarted issues (see [Issue Restart Protocol](#issue-restart-protocol)) begin with a fresh retry counter.
 
 When the count reaches `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned.
 
@@ -444,6 +444,8 @@ Before posting certain comments, the worker checks for an existing comment match
 | Plan | `Plan` (or `Plan (rev N)`) | Yes — `comment_exists` |
 | Quota pause | `Paused` | Yes — `has_quota_paused_comment` |
 | Heartbeat | `Heartbeat` | **No** — each heartbeat intentionally posts a new marker for retry counting |
+| Implementation start | `Heartbeat — implementation starting` | **No** — each implementation entry posts a new marker |
+| Integration fix attempt | `Heartbeat — integration test fix loop: attempt N/max` | **No** — each attempt posts a new marker |
 | Review response | `Review response` | **No** — multiple responses are valid across review rounds |
 | Feedback response | `Feedback response` | **No** — multiple responses are valid across plan revisions |
 | Feedback marker | `Reviewer feedback addressed` | **No** — gated externally by `check_review_pr()` |
@@ -461,7 +463,7 @@ The claim protocol uses check-then-add with a timestamp-based verification windo
 
 ### Session directories
 
-Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{uuid}/`. All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), plan file (`plan.md`), phase outputs (`analysis.txt`, `implementation.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a unique UUID subdirectory. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
+Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{yyyyMMDD}-{HHmmss}-{uuid8}/` (e.g., `issue-42/20260303-135959-05bb59b7/`). All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), plan file (`plan.md`), phase outputs (`analysis.txt`, `implementation.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a timestamped subdirectory containing the first 8 characters of a UUID for uniqueness. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
 
 ---
 
