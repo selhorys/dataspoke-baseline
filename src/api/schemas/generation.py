@@ -10,14 +10,16 @@ from src.api.schemas.common import PaginatedResponse, SingleResponse
 
 class CreateGenerationConfigRequest(BaseModel):
     dataset_urn: str
-    target_type: str
-    template: dict[str, Any] = {}
+    target_fields: dict[str, Any]
+    code_refs: dict[str, Any] | None = None
+    schedule: str | None = None
     owner: str
 
 
 class PatchGenerationConfigRequest(BaseModel):
-    target_type: str | None = None
-    template: dict[str, Any] | None = None
+    target_fields: dict[str, Any] | None = None
+    code_refs: dict[str, Any] | None = None
+    schedule: str | None = None
     status: str | None = None
 
 
@@ -33,8 +35,9 @@ class ApplyGenerationRequest(BaseModel):
 class GenerationConfigResponse(SingleResponse):
     id: str
     dataset_urn: str
-    target_type: str
-    template: dict[str, Any]
+    target_fields: dict[str, Any]
+    code_refs: dict[str, Any] | None
+    schedule: str | None
     status: str
     owner: str
     created_at: datetime
@@ -47,12 +50,20 @@ class GenerationConfigListResponse(PaginatedResponse):
 
 class GenerationResultResponse(SingleResponse):
     id: str
-    config_id: str
     dataset_urn: str
-    generated_content: dict[str, Any] = {}
-    applied: bool = False
-    created_at: datetime
+    proposals: dict[str, Any] = {}
+    similar_diffs: list[dict[str, Any]] = []
+    approval_status: str = "pending"
+    run_id: str
+    generated_at: datetime
+    applied_at: datetime | None = None
 
 
 class GenerationResultListResponse(PaginatedResponse):
     results: list[GenerationResultResponse] = []
+
+
+class RunResultResponse(SingleResponse):
+    run_id: str
+    status: str
+    detail: dict[str, Any] = {}

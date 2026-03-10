@@ -80,7 +80,17 @@ async def get_validation_service(
     return ValidationService(datahub=datahub, db=db, cache=cache)
 
 
-# async def get_generation_service(...) -> GenerationService: ...
+async def get_generation_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    llm: LLMClient = Depends(get_llm),
+    qdrant: QdrantManager = Depends(get_qdrant),
+) -> "GenerationService":
+    from src.backend.generation.service import GenerationService
+
+    return GenerationService(datahub=datahub, db=db, llm=llm, qdrant=qdrant)
+
+
 # async def get_search_service(...) -> SearchService: ...
 # async def get_ontology_service(...) -> OntologyService: ...
 # async def get_metrics_service(...) -> MetricsService: ...
