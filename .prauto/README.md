@@ -41,6 +41,7 @@ See `spec/AI_PRAUTO.md` for the full specification (heartbeat cycle, label lifec
    On macOS, cron jobs cannot access the Keychain that can be useful to use claude code without `ANTHROPIC_API_KEY` set. in this case, launchd can be used instead of cron. create launchd setting file (e.g. `~/Library/LaunchAgents/com.dataspoke.prauto.heartbeat.plist`) and load it. Note that when using launchd, PATH must include directories for **all** required CLIs (`claude`, `gh`, `git`, `jq`).
 
    ```bash
+   vi ~/Library/LaunchAgents/com.dataspoke.prauto.heartbeat.plist                                # edit
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dataspoke.prauto.heartbeat.plist  # load
    launchctl bootout gui/$(id -u)/com.dataspoke.prauto.heartbeat                                 # unload
    launchctl kickstart gui/$(id -u)/com.dataspoke.prauto.heartbeat                               # run now
