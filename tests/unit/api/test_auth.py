@@ -96,9 +96,28 @@ async def test_admin_group_can_access_dg_routes(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None:
     """Any valid group member can access /spoke/common/* routes."""
-    for group in ["de", "da", "dg"]:
-        headers = auth_headers(groups=[group])
-        response = await client.get("/api/v1/spoke/common/ontology", headers=headers)
-        assert response.status_code == 501, (
-            f"Expected 501 for group={group}, got {response.status_code}"
-        )
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.api.dependencies import get_db
+    from src.api.main import app
+
+    mock_session = AsyncMock()
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+
+    async def _mock_db():
+        yield mock_session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        for group in ["de", "da", "dg"]:
+            mock_session.execute = AsyncMock(side_effect=[count_result, rows_result])
+            headers = auth_headers(groups=[group])
+            response = await client.get("/api/v1/spoke/common/ontology", headers=headers)
+            assert response.status_code == 200, (
+                f"Expected 200 for group={group}, got {response.status_code}"
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)

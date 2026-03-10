@@ -42,3 +42,11 @@ class ConceptRelationshipResponse(SingleResponse):
     relationship_type: str
     confidence_score: float
     created_at: datetime
+
+
+class ConceptAttrResponse(SingleResponse):
+    concept_id: str
+    dataset_count: int
+    avg_confidence: float
+    relationships: list[ConceptRelationshipResponse] = []
+    children: list[ConceptResponse] = []

@@ -102,5 +102,12 @@ async def get_search_service(
     return SearchService(datahub=datahub, cache=cache, llm=llm, qdrant=qdrant)
 
 
-# async def get_ontology_service(...) -> OntologyService: ...
+async def get_ontology_service(
+    db: AsyncSession = Depends(get_db),
+) -> "OntologyService":
+    from src.backend.ontology.service import OntologyService
+
+    return OntologyService(db=db)
+
+
 # async def get_metrics_service(...) -> MetricsService: ...
