@@ -182,7 +182,7 @@ ${counter_proposal}"
   # Save to session dir
   echo "$ANALYSIS_OUTPUT" > "${session_out_dir}/analysis.txt"
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
-    info "Analysis session saved: ${CLAUDE_SESSION_ID}"
+    info "Analysis claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 
@@ -214,7 +214,7 @@ run_implementation() {
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
     local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
     echo "$CLAUDE_OUTPUT" > "${session_out_dir}/implementation.json"
-    info "Implementation session saved: ${CLAUDE_SESSION_ID}"
+    info "Implementation claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 
@@ -252,7 +252,7 @@ run_integration_fix_session() {
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
     local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
     echo "$CLAUDE_OUTPUT" > "${session_out_dir}/integration-fix.json"
-    info "Integration fix session saved: ${CLAUDE_SESSION_ID}"
+    info "Integration fix claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 
@@ -333,7 +333,7 @@ run_pr_review() {
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
     local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
     echo "$CLAUDE_OUTPUT" > "${session_out_dir}/review.json"
-    info "PR review session saved: ${CLAUDE_SESSION_ID}"
+    info "PR review claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 
