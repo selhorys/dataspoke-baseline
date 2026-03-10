@@ -28,13 +28,7 @@ _URN = "urn:li:dataset:(urn:li:dataPlatform:mysql,db.table,PROD)"
 COMMON_DATA_ROUTES = [
     # GET /{urn}, GET /{urn}/attr, GET /{urn}/event — implemented by DatasetService
     # Ingestion routes — implemented by IngestionService
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
-    ("PUT", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
-    ("PATCH", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
-    ("DELETE", f"/api/v1/spoke/common/data/{_URN}/attr/validation/conf"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/validation/result"),
-    ("POST", f"/api/v1/spoke/common/data/{_URN}/attr/validation/method/run"),
-    ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/validation/event"),
+    # Validation routes — implemented by ValidationService
     ("GET", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
     ("PUT", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
     ("PATCH", f"/api/v1/spoke/common/data/{_URN}/attr/gen/conf"),
@@ -48,16 +42,8 @@ COMMON_DATA_ROUTES = [
 # ── Common/ingestion — implemented by IngestionService ────────────────────────
 COMMON_INGESTION_ROUTES: list[tuple[str, str]] = []
 
-# ── Common/validation ──────────────────────────────────────────────────────────
-COMMON_VALIDATION_ROUTES = [
-    ("GET", "/api/v1/spoke/common/validation"),
-    ("GET", f"/api/v1/spoke/common/validation/{_URN}"),
-    ("GET", f"/api/v1/spoke/common/validation/{_URN}/attr"),
-    ("PATCH", f"/api/v1/spoke/common/validation/{_URN}/attr"),
-    ("GET", f"/api/v1/spoke/common/validation/{_URN}/attr/result"),
-    ("POST", f"/api/v1/spoke/common/validation/{_URN}/method/run"),
-    ("GET", f"/api/v1/spoke/common/validation/{_URN}/event"),
-]
+# ── Common/validation — implemented by ValidationService ──────────────────────
+COMMON_VALIDATION_ROUTES: list[tuple[str, str]] = []
 
 # ── Common/gen ─────────────────────────────────────────────────────────────────
 COMMON_GEN_ROUTES = [

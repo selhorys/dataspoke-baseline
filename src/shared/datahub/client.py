@@ -87,9 +87,19 @@ class DataHubClient:
                 raise
             return None
 
-    async def get_timeseries(self, urn: str, aspect_class: type[T], limit: int = 30) -> list[T]:
+    async def get_timeseries(
+        self,
+        urn: str,
+        aspect_class: type[T],
+        limit: int = 30,
+        filter: dict[str, Any] | None = None,
+    ) -> list[T]:
         result = await self._with_retry(
-            self._graph.get_timeseries_values, urn, aspect_class, limit=limit
+            self._graph.get_timeseries_values,
+            urn,
+            aspect_class,
+            filter=filter or {},
+            limit=limit,
         )
         return list(result) if result else []
 
@@ -100,6 +110,26 @@ class DataHubClient:
                 input: {
                     urn: $urn,
                     direction: DOWNSTREAM,
+                    count: 1000
+                }
+            ) {
+                searchResults {
+                    entity { urn }
+                }
+            }
+        }
+        """
+        result = await self._with_retry(self._graph.execute_graphql, query, variables={"urn": urn})
+        search_results = (result or {}).get("searchAcrossLineage", {}).get("searchResults", [])
+        return [r["entity"]["urn"] for r in search_results]
+
+    async def get_upstream_lineage(self, urn: str) -> list[str]:
+        query = """
+        query searchAcrossLineage($urn: String!) {
+            searchAcrossLineage(
+                input: {
+                    urn: $urn,
+                    direction: UPSTREAM,
                     count: 1000
                 }
             ) {

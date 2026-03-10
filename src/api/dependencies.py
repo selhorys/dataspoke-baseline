@@ -70,7 +70,16 @@ async def get_ingestion_service(
     return IngestionService(datahub=datahub, db=db, llm=llm)
 
 
-# async def get_validation_service(...) -> ValidationService: ...
+async def get_validation_service(
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    cache: RedisClient = Depends(get_redis),
+) -> "ValidationService":
+    from src.backend.validation.service import ValidationService
+
+    return ValidationService(datahub=datahub, db=db, cache=cache)
+
+
 # async def get_generation_service(...) -> GenerationService: ...
 # async def get_search_service(...) -> SearchService: ...
 # async def get_ontology_service(...) -> OntologyService: ...
