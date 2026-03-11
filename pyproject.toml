@@ -28,6 +28,7 @@ dependencies = [
     "langchain-anthropic>=0.3",
     "temporalio>=1.7,<2.0",
     # Ingestion extractors
+    "confluent-kafka>=2.6",
     "httpx>=0.28",
     "sqlparse>=0.5",
     "openpyxl>=3.1",
