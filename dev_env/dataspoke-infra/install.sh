@@ -120,6 +120,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Register Temporal namespace (idempotent)
+# ---------------------------------------------------------------------------
+TEMPORAL_NS="${DATASPOKE_TEMPORAL_NAMESPACE:-dataspoke}"
+info "Waiting for Temporal frontend to become ready..."
+kubectl rollout status deployment/dataspoke-temporal-frontend -n "${NS}" --timeout=120s
+
+info "Registering Temporal namespace '${TEMPORAL_NS}'..."
+kubectl exec -n "${NS}" deploy/dataspoke-temporal-frontend -- \
+  tctl --namespace "${TEMPORAL_NS}" namespace describe >/dev/null 2>&1 \
+  || kubectl exec -n "${NS}" deploy/dataspoke-temporal-frontend -- \
+    tctl --namespace "${TEMPORAL_NS}" namespace register --retention 168h \
+  && info "Temporal namespace '${TEMPORAL_NS}' registered." \
+  || warn "Failed to register Temporal namespace '${TEMPORAL_NS}' — register manually."
+
+# ---------------------------------------------------------------------------
 # Print access instructions
 # ---------------------------------------------------------------------------
 echo ""

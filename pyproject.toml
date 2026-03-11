@@ -26,6 +26,7 @@ dependencies = [
     "langchain-openai>=0.3",
     "langchain-google-genai>=2",
     "langchain-anthropic>=0.3",
+    "temporalio>=1.7,<2.0",
     # Ingestion extractors
     "httpx>=0.28",
     "sqlparse>=0.5",
