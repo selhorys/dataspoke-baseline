@@ -1,5 +1,10 @@
 """Integration tests for OntologyService against dev-env infrastructure.
 
+Test-specific data extensions (created and cleaned up within each test):
+- Transient concept_categories rows with Imazon-domain names
+  (e.g. integration_test_imazon_customer, integration_test_imazon_order).
+- Transient dataspoke.events rows for approve/reject lifecycle tests.
+
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - Dummy data ingested via dummy-data-reset.sh && dummy-data-ingest.sh
@@ -13,6 +18,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from .conftest import _auth_headers
 
 
 @pytest_asyncio.fixture
@@ -33,15 +40,6 @@ async def http_client(async_session):
         yield client
 
     app.dependency_overrides.clear()
-
-
-def _auth_headers() -> dict[str, str]:
-    from src.api.auth.jwt import create_access_token
-
-    token, _ = create_access_token(
-        subject="integration-test-user", groups=["de", "da", "dg"], email="test@example.com"
-    )
-    return {"Authorization": f"Bearer {token}"}
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

@@ -2,9 +2,13 @@
 
 Port-forwards must be active before running:
 - PostgreSQL on localhost:9201 (dataspoke-port-forward.sh)
+- DataHub GMS on localhost:9004 (datahub-port-forward.sh)
+- Redis on localhost:9202 (dataspoke-port-forward.sh)
 - Lock service on localhost:9221 (lock-port-forward.sh)
 """
 
+import base64
+import json
 import os
 import subprocess
 from collections.abc import AsyncGenerator
@@ -13,12 +17,16 @@ from pathlib import Path
 import httpx
 import pytest
 import pytest_asyncio
+import requests
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+
+from src.shared.cache.client import RedisClient
+from src.shared.datahub.client import DataHubClient
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -48,6 +56,57 @@ def _load_dotenv() -> None:
 
 
 _load_dotenv()
+
+# ── Shared infrastructure env vars ────────────────────────────────────────────
+
+_datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
+_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
+_datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+
+_redis_host = os.environ.get("DATASPOKE_REDIS_HOST", "localhost")
+_redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
+_redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
+
+_lock_owner = os.environ.get(
+    "DATASPOKE_LOCK_OWNER",
+    f"integration-test-{os.environ.get('USER', 'unknown')}",
+)
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+
+def _get_datahub_session_token() -> str:
+    """Get a DataHub session token via frontend login for dev-env testing."""
+    resp = requests.post(
+        f"{_datahub_frontend_url}/logIn",
+        json={"username": "datahub", "password": "datahub"},
+        timeout=5,
+    )
+    resp.raise_for_status()
+    cookie = resp.headers.get("Set-Cookie", "")
+    if "PLAY_SESSION=" not in cookie:
+        return ""
+    play_session = cookie.split("PLAY_SESSION=")[1].split(";")[0]
+    payload = play_session.split(".")[1]
+    payload += "=" * (4 - len(payload) % 4)
+    data = json.loads(base64.b64decode(payload))
+    return data.get("data", {}).get("token", "")
+
+
+def _auth_headers() -> dict[str, str]:
+    """Create JWT auth headers for integration test requests."""
+    from src.api.auth.jwt import create_access_token
+
+    token, _ = create_access_token(
+        subject="integration-test-user",
+        groups=["de", "da", "dg"],
+        email="test@example.com",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+# ── Shared fixtures ───────────────────────────────────────────────────────────
 
 
 def _alembic_cmd(*args: str) -> subprocess.CompletedProcess[str]:
@@ -96,6 +155,24 @@ async def async_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSessio
         yield session
 
 
+@pytest_asyncio.fixture
+async def datahub_client():
+    token = _datahub_token
+    if not token:
+        try:
+            token = _get_datahub_session_token()
+        except Exception:
+            pytest.skip("Cannot obtain DataHub token (frontend unreachable)")
+    return DataHubClient(gms_url=_datahub_gms_url, token=token)
+
+
+@pytest_asyncio.fixture
+async def redis_client():
+    client = RedisClient(host=_redis_host, port=_redis_port, password=_redis_password)
+    yield client
+    await client.close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def alembic_at_head() -> None:
     """Ensure the dataspoke schema is at head for the entire test session."""
@@ -115,7 +192,7 @@ def acquire_lock() -> None:
     try:
         resp = httpx.post(
             f"{lock_url}/lock/acquire",
-            json={"owner": "prauto-01", "message": "integration test: alembic migrations"},
+            json={"owner": _lock_owner, "message": "integration test suite"},
             timeout=5.0,
         )
         if resp.status_code == 409:
@@ -129,7 +206,7 @@ def acquire_lock() -> None:
     try:
         httpx.post(
             f"{lock_url}/lock/release",
-            json={"owner": "prauto-01"},
+            json={"owner": _lock_owner},
             timeout=5.0,
         )
     except httpx.ConnectError:

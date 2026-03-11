@@ -1,5 +1,11 @@
 """Integration tests for GenerationService against dev-env infrastructure.
 
+Test-specific data extensions (created and cleaned up within each test):
+- Transient generation_configs rows via PUT API (Imazon-prefixed test URNs).
+- Transient generation_results rows from POST generate runs.
+- Transient dataspoke.events rows for event pagination tests.
+- LLM and Qdrant calls are mocked (deterministic fixture responses).
+
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
@@ -7,7 +13,6 @@ Prerequisites:
 """
 
 import json
-import os
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -18,40 +23,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.datahub.client import DataHubClient
+from .conftest import _auth_headers
 
-_datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
-_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
-_datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
-
-_TEST_URN_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:postgres,integration_test.generation"
-
-
-@pytest_asyncio.fixture
-async def datahub_client():
-    import base64
-
-    import requests
-
-    token = _datahub_token
-    if not token:
-        try:
-            resp = requests.post(
-                f"{_datahub_frontend_url}/logIn",
-                json={"username": "datahub", "password": "datahub"},
-                timeout=5,
-            )
-            resp.raise_for_status()
-            cookie = resp.headers.get("Set-Cookie", "")
-            if "PLAY_SESSION=" in cookie:
-                play_session = cookie.split("PLAY_SESSION=")[1].split(";")[0]
-                payload = play_session.split(".")[1]
-                payload += "=" * (4 - len(payload) % 4)
-                data = json.loads(base64.b64decode(payload))
-                token = data.get("data", {}).get("token", "")
-        except Exception:
-            pytest.skip("Cannot obtain DataHub token (frontend unreachable)")
-    return DataHubClient(gms_url=_datahub_gms_url, token=token)
+_TEST_URN_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.generation"
 
 
 @pytest_asyncio.fixture
@@ -99,15 +73,6 @@ async def http_client(datahub_client, mock_llm, mock_qdrant, async_session):
         yield client
 
     app.dependency_overrides.clear()
-
-
-def _auth_headers() -> dict[str, str]:
-    from src.api.auth.jwt import create_access_token
-
-    token, _ = create_access_token(
-        subject="integration-test-user", groups=["de", "da", "dg"], email="test@example.com"
-    )
-    return {"Authorization": f"Bearer {token}"}
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

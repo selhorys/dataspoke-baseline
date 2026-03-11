@@ -1,5 +1,11 @@
 """Integration tests for DatasetService against dev-env infrastructure.
 
+Test-specific data extensions (created and cleaned up by fixtures):
+- 1 DataHub dataset entity (imazon.test.dataset_svc.users, env=DEV) with
+  StatusClass, DatasetPropertiesClass, SchemaMetadataClass (2 fields),
+  OwnershipClass, and GlobalTagsClass aspects. Soft-deleted on teardown.
+- Transient rows in dataspoke.events for event-list tests.
+
 Prerequisites:
 - DataHub GMS port-forwarded to localhost:9004
 - PostgreSQL port-forwarded to localhost:9201
@@ -8,69 +14,22 @@ Prerequisites:
 """
 
 import asyncio
-import base64
 import json
-import os
 import uuid
 from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-import requests
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.cache.client import RedisClient
-from src.shared.datahub.client import DataHubClient
-
-_datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
-_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
-_datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
-
-_redis_host = os.environ.get("DATASPOKE_REDIS_HOST", "localhost")
-_redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
-_redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
-
-
-def _get_datahub_session_token() -> str:
-    resp = requests.post(
-        f"{_datahub_frontend_url}/logIn",
-        json={"username": "datahub", "password": "datahub"},
-        timeout=5,
-    )
-    resp.raise_for_status()
-    cookie = resp.headers.get("Set-Cookie", "")
-    if "PLAY_SESSION=" not in cookie:
-        return ""
-    play_session = cookie.split("PLAY_SESSION=")[1].split(";")[0]
-    payload = play_session.split(".")[1]
-    payload += "=" * (4 - len(payload) % 4)
-    data = json.loads(base64.b64decode(payload))
-    return data.get("data", {}).get("token", "")
-
-
-@pytest_asyncio.fixture
-async def datahub_client():
-    token = _datahub_token
-    if not token:
-        try:
-            token = _get_datahub_session_token()
-        except Exception:
-            pytest.skip("Cannot obtain DataHub token (frontend unreachable)")
-    return DataHubClient(gms_url=_datahub_gms_url, token=token)
-
-
-@pytest_asyncio.fixture
-async def redis_client():
-    client = RedisClient(host=_redis_host, port=_redis_port, password=_redis_password)
-    yield client
-    await client.close()
+from .conftest import _auth_headers
 
 
 @pytest_asyncio.fixture
 async def test_dataset_urn(datahub_client):
-    """Emit a self-contained test dataset for service-level testing."""
+    """Emit a self-contained Imazon test dataset for service-level testing."""
     from datahub.metadata.schema_classes import (
         DatasetPropertiesClass,
         GlobalTagsClass,
@@ -84,7 +43,7 @@ async def test_dataset_urn(datahub_client):
         TagAssociationClass,
     )
 
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,integration_test.dataset_svc.users,DEV)"
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.dataset_svc.users,DEV)"
 
     await datahub_client.emit_aspect(urn, StatusClass(removed=False))
     await datahub_client.emit_aspect(
@@ -161,15 +120,6 @@ async def http_client(datahub_client, redis_client, async_session):
         yield client
 
     app.dependency_overrides.clear()
-
-
-def _auth_headers() -> dict[str, str]:
-    from src.api.auth.jwt import create_access_token
-
-    token, _ = create_access_token(
-        subject="integration-test-user", groups=["de", "da", "dg"], email="test@example.com"
-    )
-    return {"Authorization": f"Bearer {token}"}
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

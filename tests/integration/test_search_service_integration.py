@@ -1,5 +1,11 @@
 """Integration tests for SearchService against dev-env infrastructure.
 
+Test-specific data extensions (created and cleaned up by fixtures):
+- 1 DataHub dataset entity (imazon.test.search_svc.orders, env=DEV) with
+  StatusClass, DatasetPropertiesClass, SchemaMetadataClass (2 fields),
+  OwnershipClass, and GlobalTagsClass aspects. Soft-deleted on teardown.
+- Transient Qdrant vectors created via reindex API calls.
+
 Prerequisites:
 - DataHub GMS port-forwarded to localhost:9004
 - Redis port-forwarded to localhost:9202
@@ -15,64 +21,16 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from src.shared.cache.client import RedisClient
-from src.shared.datahub.client import DataHubClient
 from src.shared.vector.client import QdrantManager
 
-_datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
-_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
-_datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
-
-_redis_host = os.environ.get("DATASPOKE_REDIS_HOST", "localhost")
-_redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
-_redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
+from .conftest import _auth_headers
 
 _qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
 _qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
 _qdrant_grpc_port = int(os.environ.get("DATASPOKE_QDRANT_GRPC_PORT", "9204"))
 _qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
 
-_TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,integration_test.search_svc.orders,DEV)"
-
-
-def _get_datahub_session_token() -> str:
-    import base64
-    import json
-
-    import requests
-
-    resp = requests.post(
-        f"{_datahub_frontend_url}/logIn",
-        json={"username": "datahub", "password": "datahub"},
-        timeout=5,
-    )
-    resp.raise_for_status()
-    cookie = resp.headers.get("Set-Cookie", "")
-    if "PLAY_SESSION=" not in cookie:
-        return ""
-    play_session = cookie.split("PLAY_SESSION=")[1].split(";")[0]
-    payload = play_session.split(".")[1]
-    payload += "=" * (4 - len(payload) % 4)
-    data = json.loads(base64.b64decode(payload))
-    return data.get("data", {}).get("token", "")
-
-
-@pytest_asyncio.fixture
-async def datahub_client():
-    token = _datahub_token
-    if not token:
-        try:
-            token = _get_datahub_session_token()
-        except Exception:
-            pytest.skip("Cannot obtain DataHub token (frontend unreachable)")
-    return DataHubClient(gms_url=_datahub_gms_url, token=token)
-
-
-@pytest_asyncio.fixture
-async def redis_client():
-    client = RedisClient(host=_redis_host, port=_redis_port, password=_redis_password)
-    yield client
-    await client.close()
+_TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.search_svc.orders,DEV)"
 
 
 @pytest_asyncio.fixture
@@ -107,7 +65,7 @@ async def mock_llm():
 
 @pytest_asyncio.fixture
 async def test_dataset_urn(datahub_client):
-    """Emit a test dataset for search integration testing."""
+    """Emit a self-contained Imazon test dataset for search integration testing."""
     from datahub.metadata.schema_classes import (
         DatasetPropertiesClass,
         GlobalTagsClass,
@@ -205,15 +163,6 @@ async def http_client(datahub_client, redis_client, qdrant_client, mock_llm, asy
         yield client
 
     app.dependency_overrides.clear()
-
-
-def _auth_headers() -> dict[str, str]:
-    from src.api.auth.jwt import create_access_token
-
-    token, _ = create_access_token(
-        subject="integration-test-user", groups=["de", "da", "dg"], email="test@example.com"
-    )
-    return {"Authorization": f"Bearer {token}"}
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
