@@ -67,6 +67,8 @@ _redis_host = os.environ.get("DATASPOKE_REDIS_HOST", "localhost")
 _redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
+_kafka_brokers = os.environ.get("DATASPOKE_DATAHUB_KAFKA_BROKERS", "localhost:9005")
+
 _lock_owner = os.environ.get(
     "DATASPOKE_LOCK_OWNER",
     f"integration-test-{os.environ.get('USER', 'unknown')}",
@@ -164,6 +166,11 @@ async def datahub_client():
         except Exception:
             pytest.skip("Cannot obtain DataHub token (frontend unreachable)")
     return DataHubClient(gms_url=_datahub_gms_url, token=token)
+
+
+@pytest.fixture(scope="session")
+def kafka_brokers() -> str:
+    return _kafka_brokers
 
 
 @pytest_asyncio.fixture

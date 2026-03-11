@@ -406,6 +406,19 @@ wheels = [
 ]
 
 [[package]]
+name = "confluent-kafka"
+version = "2.13.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/38/f5855cae6d328fa66e689d068709f91cbbd4d72e7e03959998bd43ac6b26/confluent_kafka-2.13.2.tar.gz", hash = "sha256:619d10d1d77c9821ba913b3e42a33ade7f889f3573c7f3c17b57c3056e3310f5", size = 276068, upload-time = "2026-03-02T12:53:31.457Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/bc/ae9a7f21ba49e55b1be18362cefd7648e4aceb588e254f9ee5edb97fcf44/confluent_kafka-2.13.2-cp313-cp313-macosx_13_0_arm64.whl", hash = "sha256:02702808dd3cfd91f117fbf17181da2a95392967e9f946b1cbdc5589b36e39d1", size = 3199459, upload-time = "2026-03-02T12:53:00.614Z" },
+    { url = "https://files.pythonhosted.org/packages/12/94/ccd92f9a3bb685b265bc83ede699651aa526502e4988e906e710d3f24cd3/confluent_kafka-2.13.2-cp313-cp313-macosx_13_0_x86_64.whl", hash = "sha256:7dc3a2da92638c077bbabb07058f1938078b42a89f0bbfdcb852d4289c2de27e", size = 3638743, upload-time = "2026-03-02T12:53:01.951Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/66/048925a546a0f8e9134a89441aa4ae663892839004668d1039d5f9dd8d45/confluent_kafka-2.13.2-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:f3e6d010ad38447a48e0f9fab81edd4d2fd0b5f5a79ab475c30347689e35c6e6", size = 3724788, upload-time = "2026-03-02T12:53:03.775Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/a6/53faa22d52d8fc6f58424d4b6c2c32855198fcb776ea8b4404ee50b58c72/confluent_kafka-2.13.2-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:9161865d8246eb77d1c30233a315bdad96145af783981877664532fa212f56be", size = 3981324, upload-time = "2026-03-02T12:53:05.339Z" },
+    { url = "https://files.pythonhosted.org/packages/02/a8/1578956d3721645b24c22b0e9ceeab794fffc197a32074a7572bfbc07ca7/confluent_kafka-2.13.2-cp313-cp313-win_amd64.whl", hash = "sha256:931233798306b859f4870ec58e3951a2bd32d14ef29f944f56892851b0aafab0", size = 4157492, upload-time = "2026-03-02T12:53:06.977Z" },
+]
+
+[[package]]
 name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -495,6 +508,7 @@ dependencies = [
     { name = "aiosmtplib" },
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "confluent-kafka" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain-anthropic" },
@@ -534,6 +548,7 @@ requires-dist = [
     { name = "aiosmtplib", specifier = ">=3.0" },
     { name = "alembic", specifier = ">=1.14" },
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "confluent-kafka", specifier = ">=2.6" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "langchain-anthropic", specifier = ">=0.3" },
