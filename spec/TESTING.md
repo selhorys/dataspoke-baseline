@@ -43,12 +43,11 @@ tests/
 │   ├── api/            # FastAPI route tests (no running server)
 │   ├── backend/        # Service logic tests
 │   ├── shared/         # DataHub client wrapper, shared model tests
+│   ├── workflows/      # Temporal workflow tests (Temporal test framework)
 │   └── frontend/       # Jest tests (or co-located in src/frontend/)
 ├── integration/        # Dev-env-backed integration tests
 └── e2e/                # Playwright end-to-end tests
 ```
-
-> The `tests/` directory does not yet exist in the repo. It is created when the first tests are written. This spec defines the intended layout in advance.
 
 ---
 
@@ -73,7 +72,7 @@ When a backend feature adds or changes dependencies:
 
 ### Scope
 
-Unit tests verify business logic in isolation. They **must never** require a running dev environment — no real database, DataHub instance, Redis, Qdrant, or Kafka connections.
+Unit tests verify business logic in isolation. They **must never** require a running dev environment — no real database, DataHub instance, Redis, Qdrant, Temporal, or Kafka connections.
 
 ### Python (Backend / API)
 
@@ -148,7 +147,9 @@ Integration tests support two execution modes:
 
 ### Workflow
 
-Follow these seven steps in order every time you run integration tests:
+Follow these seven steps in order every time you run integration tests.
+
+> **Automation note:** When running via `uv run pytest tests/integration/`, `conftest.py` automates Steps 2, 3, 6, and 7 (lock acquire/release and dummy-data reset). The manual commands below are for reference or when running outside pytest.
 
 #### Step 1 — Write test scenarios and code
 
@@ -247,26 +248,11 @@ cd dev_env
 ./lock-port-forward.sh
 ```
 
-The DataSpoke application services must also be running on the host:
-
-```bash
-# API (from repo root)
-uv run uvicorn src.api.main:app --reload --port 8000
-
-# Workers (from repo root)
-uv run python -m src.workflows.worker
-```
+Integration tests do **not** require a running API server or Temporal worker — they use in-process ASGI transport (`httpx.ASGITransport`) and spin up in-process Temporal workers via fixtures.
 
 ### Directory Structure
 
-```
-tests/integration/
-├── conftest.py         # Shared fixtures: DB connections, API client, env config
-├── test_ingestion_integration.py
-├── test_validation_integration.py
-├── test_search_integration.py
-└── test_metrics_integration.py
-```
+Test files are named `test_<feature>_service_integration.py` and placed under `tests/integration/`. Shared fixtures (DB connections, DataHub/Redis/Qdrant/Temporal clients, lock protocol, dummy-data reset) live in `conftest.py`.
 
 ---
 
@@ -310,7 +296,7 @@ npx playwright test --headed
 
 ## Test Data Design
 
-All test scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies — consistency makes test failures easier to interpret.
+Integration and E2E test scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies — consistency makes test failures easier to interpret.
 
 ### Imazon Dummy-Data Reference
 
@@ -338,7 +324,7 @@ The baseline dummy data covers these tables and use cases. Reference these when 
 
 Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), `imazon.reviews.new` (10 msgs).
 
-DataHub datasets: All 17 tables above are also registered as DataHub dataset entities (platform `postgres`, env `PROD`) via `dummy-data-ingest.sh`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total).
+DataHub datasets: All 17 tables above are also registered as DataHub dataset entities (platform `postgres`, env `DEV`) via `dummy-data-ingest.sh`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total).
 
 ### Assertion Principles
 

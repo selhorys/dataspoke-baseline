@@ -71,7 +71,7 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
 **Data reset**: always run `dev_env/dummy-data-reset.sh && dev_env/dummy-data-ingest.sh` before and after test runs (ingest registers datasets in DataHub after reset populates PostgreSQL).
 
-**Test data**: all scenarios use **Imazon** as the canonical company context — do not invent alternative test companies. 
+**Test data**: all integration/E2E scenarios use **Imazon** as the canonical company context — do not invent alternative test companies.
 
 **Assertion rules**:
 - Never hardcode row counts — query actual counts within the test

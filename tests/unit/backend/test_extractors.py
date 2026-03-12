@@ -40,7 +40,7 @@ async def test_confluence_extractor_returns_descriptions():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client_cls:
+    with patch("src.backend.ingestion.extractors.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -87,7 +87,7 @@ async def test_github_extractor_returns_code_refs():
     ]
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client_cls:
+    with patch("src.backend.ingestion.extractors.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)

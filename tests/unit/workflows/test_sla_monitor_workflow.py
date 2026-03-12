@@ -1,5 +1,7 @@
 """Unit tests for SLAMonitorWorkflow using Temporal test framework."""
 
+import asyncio
+
 import pytest
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
@@ -20,9 +22,11 @@ async def env():
 
 async def test_no_breach_no_alerts(env: WorkflowEnvironment):
     alert_called = False
+    check_done = asyncio.Event()
 
     @activity.defn(name="check_sla_activity")
     async def mock_check(dataset_urn: str, sla_target: dict) -> dict:
+        check_done.set()
         return {
             "dataset_urn": dataset_urn,
             "is_breaching": False,
@@ -44,7 +48,6 @@ async def test_no_breach_no_alerts(env: WorkflowEnvironment):
         workflows=[SLAMonitorWorkflow],
         activities=[mock_check, mock_alert],
     ):
-        # SLAMonitorWorkflow uses continue_as_new, so we cancel after first iteration
         handle = await env.client.start_workflow(
             SLAMonitorWorkflow.run,
             SLAMonitorParams(
@@ -55,17 +58,14 @@ async def test_no_breach_no_alerts(env: WorkflowEnvironment):
             id="sla-test-1",
             task_queue=TASK_QUEUE,
         )
-        # Wait briefly then cancel (workflow loops via continue_as_new)
-        import asyncio
-
-        await asyncio.sleep(0.5)
+        await asyncio.wait_for(check_done.wait(), timeout=10)
         await handle.cancel()
 
     assert not alert_called
 
 
 async def test_breach_sends_alert(env: WorkflowEnvironment):
-    alert_called = False
+    alert_done = asyncio.Event()
 
     @activity.defn(name="check_sla_activity")
     async def mock_check(dataset_urn: str, sla_target: dict) -> dict:
@@ -89,10 +89,9 @@ async def test_breach_sends_alert(env: WorkflowEnvironment):
 
     @activity.defn(name="send_sla_alerts_activity")
     async def mock_alert(alerts: list[dict], recipients: list[str]) -> None:
-        nonlocal alert_called
-        alert_called = True
         assert len(alerts) == 1
         assert recipients == ["ops@example.com"]
+        alert_done.set()
 
     async with Worker(
         env.client,
@@ -110,9 +109,5 @@ async def test_breach_sends_alert(env: WorkflowEnvironment):
             id="sla-test-2",
             task_queue=TASK_QUEUE,
         )
-        import asyncio
-
-        await asyncio.sleep(0.5)
+        await asyncio.wait_for(alert_done.wait(), timeout=10)
         await handle.cancel()
-
-    assert alert_called
