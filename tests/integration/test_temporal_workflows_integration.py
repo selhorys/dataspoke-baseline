@@ -21,12 +21,10 @@ import pytest
 import pytest_asyncio
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
-from temporalio.client import Client
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.worker import Worker
 
-from src.api.config import settings
 from src.workflows._common import TASK_QUEUE
 from src.workflows.embedding_sync import (
     EmbeddingSyncParams,
@@ -72,16 +70,6 @@ ALL_ACTIVITIES = [
     aggregate_health_activity,
     publish_metric_update_activity,
 ]
-
-
-@pytest_asyncio.fixture(scope="module")
-async def temporal_client():
-    addr = f"{settings.temporal_host}:{settings.temporal_port}"
-    try:
-        client = await Client.connect(addr, namespace=settings.temporal_namespace)
-    except RuntimeError:
-        pytest.skip(f"Temporal not reachable at {addr}")
-    yield client
 
 
 _TEST_WORKFLOW_IDS = [

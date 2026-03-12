@@ -47,7 +47,7 @@ fi
 # ── Run the Python ingestion script ───────────────────────────────────────
 info "Running DataHub ingestion for example-postgres..."
 cd "$REPO_ROOT"
-uv run python dev_env/dummy-data/datahub/ingest.py "${PYTHON_ARGS[@]}"
+uv run python dev_env/dummy-data/datahub/ingest.py ${PYTHON_ARGS[@]+"${PYTHON_ARGS[@]}"}
 
 info "============================================"
 info "DataHub ingestion complete!"

@@ -20,11 +20,6 @@ import os
 import pytest
 import pytest_asyncio
 
-_qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
-_qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
-_qdrant_grpc_port = int(os.environ.get("DATASPOKE_QDRANT_GRPC_PORT", "9204"))
-_qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
-
 _llm_provider = os.environ.get("DATASPOKE_LLM_PROVIDER", "openai")
 _llm_api_key = os.environ.get("DATASPOKE_LLM_API_KEY", "")
 _llm_model = os.environ.get("DATASPOKE_LLM_MODEL", "gpt-4o-mini")
@@ -160,19 +155,7 @@ async def test_redis_pubsub(redis_client) -> None:
     assert "test_message" in received
 
 
-# --- Qdrant ---
-
-
-@pytest_asyncio.fixture
-async def qdrant_manager():
-    from src.shared.vector.client import QdrantManager
-
-    return QdrantManager(
-        host=_qdrant_host,
-        port=_qdrant_http_port,
-        api_key=_qdrant_api_key,
-        grpc_port=_qdrant_grpc_port,
-    )
+# --- Qdrant (qdrant_manager fixture provided by conftest.py) ---
 
 
 async def test_qdrant_connectivity(qdrant_manager) -> None:

@@ -1,10 +1,13 @@
-"""Shared fixtures for integration tests against the dev-env PostgreSQL.
+"""Shared fixtures for integration tests against the dev-env infrastructure.
 
 Port-forwards must be active before running:
 - PostgreSQL on localhost:9201 (dataspoke-port-forward.sh)
 - DataHub GMS on localhost:9004 (datahub-port-forward.sh)
 - Redis on localhost:9202 (dataspoke-port-forward.sh)
+- Qdrant on localhost:9203/9204 (dataspoke-port-forward.sh)
+- Temporal on localhost:9205 (dataspoke-port-forward.sh)
 - Lock service on localhost:9221 (lock-port-forward.sh)
+- Dummy-data ports on localhost:9102/9104 (dummy-data-port-forward.sh)
 """
 
 import base64
@@ -29,6 +32,7 @@ from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+_DEV_ENV_DIR = str(Path(__file__).resolve().parents[2] / "dev_env")
 
 
 def _load_dotenv() -> None:
@@ -68,6 +72,15 @@ _redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
 _kafka_brokers = os.environ.get("DATASPOKE_DATAHUB_KAFKA_BROKERS", "localhost:9005")
+
+_qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
+_qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
+_qdrant_grpc_port = int(os.environ.get("DATASPOKE_QDRANT_GRPC_PORT", "9204"))
+_qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
+
+_temporal_host = os.environ.get("DATASPOKE_TEMPORAL_HOST", "localhost")
+_temporal_port = int(os.environ.get("DATASPOKE_TEMPORAL_PORT", "9205"))
+_temporal_namespace = os.environ.get("DATASPOKE_TEMPORAL_NAMESPACE", "dataspoke")
 
 _lock_owner = os.environ.get(
     "DATASPOKE_LOCK_OWNER",
@@ -218,3 +231,71 @@ def acquire_lock() -> None:
         )
     except httpx.ConnectError:
         pass
+
+
+def _run_dummy_data_scripts() -> None:
+    """Run dummy-data-reset.sh && dummy-data-ingest.sh from the dev_env directory.
+
+    Per spec/TESTING.md Steps 3 & 6: always reset dummy data before and after
+    integration test runs so the baseline state is clean.
+    """
+    for script in ("./dummy-data-reset.sh", "./dummy-data-ingest.sh --no-reset"):
+        result = subprocess.run(
+            script,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=_DEV_ENV_DIR,
+        )
+        if result.returncode != 0:
+            pytest.fail(
+                f"Dummy data script failed: {script}\n"
+                f"stdout: {result.stdout[-500:]}\n"
+                f"stderr: {result.stderr[-500:]}"
+            )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def dummy_data_reset(acquire_lock) -> None:  # noqa: ARG001 — depends on lock
+    """Reset dummy data before tests (Step 3) and after tests (Step 6).
+
+    Runs dummy-data-reset.sh && dummy-data-ingest.sh to ensure the Imazon
+    baseline state is clean. Depends on acquire_lock so the lock is held
+    before any state-mutating operation.
+    """
+    _run_dummy_data_scripts()
+    yield  # type: ignore[misc]
+    _run_dummy_data_scripts()
+
+
+# ── Temporal fixture ─────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(scope="module")
+async def temporal_client():
+    """Connect to the dev-env Temporal server; skip if unreachable."""
+    from temporalio.client import Client
+
+    addr = f"{_temporal_host}:{_temporal_port}"
+    try:
+        client = await Client.connect(addr, namespace=_temporal_namespace)
+    except Exception:
+        pytest.skip(f"Temporal not reachable at {addr}")
+    yield client
+
+
+# ── Qdrant fixture ───────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture
+async def qdrant_manager():
+    """Create a QdrantManager pointing at the dev-env Qdrant instance."""
+    from src.shared.vector.client import QdrantManager
+
+    return QdrantManager(
+        host=_qdrant_host,
+        port=_qdrant_http_port,
+        api_key=_qdrant_api_key,
+        grpc_port=_qdrant_grpc_port,
+    )
