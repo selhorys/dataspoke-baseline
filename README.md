@@ -190,8 +190,9 @@ dataspoke-baseline/
 ├── spec/                   # Architecture and feature specifications
 │   ├── MANIFESTO_en.md     # Product identity (highest authority)
 │   ├── ARCHITECTURE.md     # System architecture, tech stack, feature mapping
+│   ├── TESTING.md          # Testing conventions, toolchain, integration test protocol
 │   ├── AI_SCAFFOLD.md      # Claude Code scaffold conventions
-│   ├── feature/            # Common feature specs (API, DEV_ENV, HELM_CHART)
+│   ├── feature/            # Common feature specs (API, BACKEND, BACKEND_SCHEMA, FRONTEND_*, DEV_ENV, HELM_CHART)
 │   └── feature/spoke/      # User-group-specific feature specs (DE/DA/DG)
 ├── .claude/                # AI coding scaffold (skills, commands, agents, hooks)
 ├── .prauto/                # Autonomous PR worker (cron-driven issue-to-PR)
