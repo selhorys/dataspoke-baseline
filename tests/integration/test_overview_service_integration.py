@@ -11,7 +11,7 @@ Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Redis port-forwarded to localhost:9202
-- Dummy data ingested via conftest.py Python utilities
+- Dummy data ingested via module_dummy_data fixture (catalog schema)
 """
 
 import uuid
@@ -24,6 +24,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .conftest import _auth_headers
+
+# ── Per-module dummy-data reset (see spec/TESTING.md §Per-Module) ─────────
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 
 
 @pytest_asyncio.fixture

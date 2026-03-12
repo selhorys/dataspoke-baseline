@@ -4,7 +4,7 @@ Prerequisites:
 - Temporal port-forwarded to localhost:9205
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
-- Dummy data ingested via conftest.py Python utilities
+- Dummy data ingested via module_dummy_data fixture (catalog schema)
 
 Test-specific data extensions (inserted after baseline reset):
 - 1 IngestionConfig row for example_db.catalog.title_master (sources={}, dry-run)
@@ -48,6 +48,9 @@ from src.workflows.validation import (
     ValidationWorkflow,
     run_validation_activity,
 )
+
+# ── Per-module dummy-data reset (see spec/TESTING.md §Per-Module) ─────────
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 
 _IMAZON_DATASET_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"

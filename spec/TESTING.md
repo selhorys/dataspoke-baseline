@@ -230,14 +230,17 @@ Fix code and re-run from Step 3 as needed. Do not re-run without resetting — t
 
 #### Per-Module Dummy-Data Reset
 
-Test modules can declare which schemas/topics they depend on via module-level constants. A module-scoped fixture resets only the declared schemas before and after the module's tests:
+Test modules can declare which schemas/topics/datasets they depend on via module-level constants. An autouse module-scoped fixture resets only the declared components before and after the module's tests:
 
 ```python
 DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog", "orders"])
 DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 ```
 
-The fixture is opt-in — modules that do not declare these constants use only the session-scoped full reset.
+`DUMMY_DATA_DATAHUB_SCHEMAS` triggers DataHub dataset ingestion for the specified schemas and automatically includes those schemas in the PostgreSQL reset (DataHub discovery requires the PG tables to exist).
+
+Modules that declare no constants are no-ops. The session-scoped fixture only runs a full reset on teardown (Step 6) to leave the environment clean for the next tester.
 
 #### Step 6 — Reset dummy data before exit
 

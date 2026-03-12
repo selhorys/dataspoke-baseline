@@ -249,24 +249,30 @@ def _reset_all_dummy_data() -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def dummy_data_reset(acquire_lock) -> None:  # noqa: ARG001 — depends on lock
-    """Reset dummy data before tests (Step 3) and after tests (Step 6).
+    """Reset dummy data after tests only (Step 6).
 
-    Uses Python utilities in tests/integration/util/ to ensure the Imazon
-    baseline state is clean. Depends on acquire_lock so the lock is held
-    before any state-mutating operation.
+    Per-module selective resets (module_dummy_data) handle Step 3 setup for
+    modules that declare DUMMY_DATA_SCHEMAS / DUMMY_DATA_TOPICS /
+    DUMMY_DATA_DATAHUB_SCHEMAS.  The full teardown reset ensures the next
+    tester starts with a clean baseline.
     """
-    _reset_all_dummy_data()
     yield  # type: ignore[misc]
     _reset_all_dummy_data()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module", autouse=True)
 def module_dummy_data(request) -> None:
-    """Opt-in module-scoped fixture for selective dummy-data reset.
+    """Autouse module-scoped fixture for selective dummy-data reset.
 
     Test modules declare dependencies via module-level constants:
-        DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog", "orders"])
-        DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
+        DUMMY_DATA_SCHEMAS: frozenset[str]         — PostgreSQL schemas to reset
+        DUMMY_DATA_TOPICS: frozenset[str]           — Kafka topics to reset
+        DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str]  — DataHub datasets to ingest
+
+    DUMMY_DATA_DATAHUB_SCHEMAS implies the corresponding DUMMY_DATA_SCHEMAS
+    (DataHub discovery requires the PG tables to exist).
+
+    Modules that declare no constants are no-ops.
     """
     import asyncio
 
@@ -274,18 +280,35 @@ def module_dummy_data(request) -> None:
 
     schemas = getattr(request.module, "DUMMY_DATA_SCHEMAS", None)
     topics = getattr(request.module, "DUMMY_DATA_TOPICS", None)
+    datahub_schemas = getattr(request.module, "DUMMY_DATA_DATAHUB_SCHEMAS", None)
 
-    def _reset():
+    # DataHub ingest requires PG tables for schema discovery.
+    if datahub_schemas:
+        schemas = (schemas or frozenset()) | datahub_schemas
+
+    has_pg_kafka = bool(schemas or topics)
+
+    def _reset_pg_kafka():
         if schemas:
             asyncio.run(postgres.reset_schemas(schemas))
         if topics:
             kafka.reset_topics(topics)
 
-    if schemas or topics:
-        _reset()
+    def _ingest_datahub():
+        if datahub_schemas:
+            from tests.integration.util import datahub
+
+            asyncio.run(datahub.ingest_datasets(schemas=datahub_schemas))
+
+    if has_pg_kafka:
+        _reset_pg_kafka()
+    if datahub_schemas:
+        _ingest_datahub()
+
     yield  # type: ignore[misc]
-    if schemas or topics:
-        _reset()
+
+    if has_pg_kafka:
+        _reset_pg_kafka()
 
 
 # ── Temporal fixture ─────────────────────────────────────────────────────────
