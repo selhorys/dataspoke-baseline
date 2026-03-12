@@ -240,11 +240,11 @@ DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 
 `DUMMY_DATA_DATAHUB_SCHEMAS` triggers DataHub dataset ingestion for the specified schemas and automatically includes those schemas in the PostgreSQL reset (DataHub discovery requires the PG tables to exist).
 
-Modules that declare no constants are no-ops. The session-scoped fixture only runs a full reset on teardown (Step 6) to leave the environment clean for the next tester.
+Modules that declare no constants are no-ops. Module-scoped teardowns reset only the declared schemas/topics, so no session-level full reset is needed.
 
 #### Step 6 — Reset dummy data before exit
 
-Restore the baseline state after your test run so the next tester starts clean. `conftest.py` handles this automatically via the same Python utilities used in Step 3.
+Module-scoped teardowns in `conftest.py` restore the baseline for each module's declared schemas/topics. For a full manual reset (e.g. after a crash): `uv run python -m tests.integration.util --reset-all`.
 
 #### Step 7 — Release the lock
 

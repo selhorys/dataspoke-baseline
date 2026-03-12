@@ -84,7 +84,10 @@ kubectl get svc example-kafka -n "${NS}" >/dev/null 2>&1 \
 kubectl port-forward --namespace "${NS}" svc/example-postgres "${PG_PORT}:5432" >/dev/null 2>&1 &
 PG_PID=$!
 
-kubectl port-forward --namespace "${NS}" svc/example-kafka "${KAFKA_PORT}:9092" >/dev/null 2>&1 &
+# Forward to the EXTERNAL listener (9094), which advertises localhost:9104
+# for host-side access.  The internal PLAINTEXT listener (9092) advertises
+# example-kafka:9092, which is unresolvable from the host.
+kubectl port-forward --namespace "${NS}" svc/example-kafka "${KAFKA_PORT}:9094" >/dev/null 2>&1 &
 KAFKA_PID=$!
 
 # Write PIDs
@@ -108,7 +111,7 @@ fi
 info "Port-forwards started in background."
 echo ""
 echo "  PostgreSQL:  localhost:${PG_PORT}  (-> example-postgres:5432)"
-echo "  Kafka:       localhost:${KAFKA_PORT}  (-> example-kafka:9092)"
+echo "  Kafka:       localhost:${KAFKA_PORT}  (-> example-kafka:9094 EXTERNAL)"
 echo ""
 echo "  PIDs: PostgreSQL=$PG_PID, Kafka=$KAFKA_PID (saved to $PID_FILE)"
 echo "  Stop with: $0 --stop"

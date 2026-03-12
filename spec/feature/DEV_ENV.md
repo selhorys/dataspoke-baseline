@@ -201,9 +201,9 @@ Plain Kubernetes manifests (no Helm) in the `dataspoke-dummy-data-01` namespace.
 | Component | Image | Mem Limit | Storage | Service |
 |-----------|-------|-----------|---------|---------|
 | PostgreSQL | `postgres:15` | 256 Mi | 5 Gi PVC | `example-postgres:5432` |
-| Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 1 Gi PVC | `example-kafka:9092` |
+| Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 1 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
 
-This Kafka instance is **separate** from DataHub's prerequisites Kafka. It simulates an external data source for ingestion testing.
+This Kafka instance is **separate** from DataHub's prerequisites Kafka. It simulates an external data source for ingestion testing. Like DataHub Kafka, it exposes an EXTERNAL listener (port 9094) that advertises `localhost:9104` for host-side access via port-forward.
 
 ---
 
@@ -269,14 +269,14 @@ All port-forward scripts run in background, write PIDs to dotfiles, and support 
 |---------|----------------|--------------|
 | DataHub UI | `datahub-frontend:9002` | `localhost:9002` |
 | DataHub GMS | `datahub-datahub-gms:8080` | `localhost:9004` |
-| DataHub Kafka | `datahub-prerequisites-kafka:9092` | `localhost:9005` |
+| DataHub Kafka | `datahub-prerequisites-kafka:9095` (EXTERNAL) | `localhost:9005` |
 | PostgreSQL (dataspoke) | `dataspoke-postgresql:5432` | `localhost:9201` |
 | Redis | `dataspoke-redis-master:6379` | `localhost:9202` |
 | Qdrant HTTP / gRPC | `dataspoke-qdrant:6333/6334` | `localhost:9203/9204` |
 | Temporal | `dataspoke-temporal-frontend:7233` | `localhost:9205` |
 | Lock API | `dev-lock:8080` | `localhost:9221` |
 | example-postgres | `example-postgres:5432` | `localhost:9102` |
-| example-kafka | `example-kafka:9092` | `localhost:9104` |
+| example-kafka | `example-kafka:9094` (EXTERNAL) | `localhost:9104` |
 
 All ports are configurable via `DATASPOKE_DEV_*_PORT` variables. The `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these localhost addresses.
 

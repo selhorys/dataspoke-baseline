@@ -229,7 +229,8 @@ Claude Code skill: `/dev-env uninstall`
 dev_env/
 ├── .env                          # All settings (gitignored, copy from .env.example)
 ├── install.sh / uninstall.sh     # Top-level orchestrators
-├── datahub-port-forward.sh       # Port-forward DataHub UI + GMS
+├── lib/helpers.sh                # Shared shell functions: info(), warn(), error()
+├── datahub-port-forward.sh       # Port-forward DataHub UI + GMS + Kafka
 ├── dataspoke-port-forward.sh     # Port-forward DataSpoke infra services
 ├── lock-port-forward.sh          # Port-forward lock service (localhost:9221)
 ├── datahub/                      # DataHub Helm install (prerequisites + datahub charts)

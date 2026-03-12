@@ -259,15 +259,15 @@ def _reset_all_dummy_data() -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def dummy_data_reset(acquire_lock) -> None:  # noqa: ARG001 — depends on lock
-    """Reset dummy data after tests only (Step 6).
+    """Placeholder for session-level dummy-data lifecycle.
 
-    Per-module selective resets (module_dummy_data) handle Step 3 setup for
-    modules that declare DUMMY_DATA_SCHEMAS / DUMMY_DATA_TOPICS /
-    DUMMY_DATA_DATAHUB_SCHEMAS.  The full teardown reset ensures the next
-    tester starts with a clean baseline.
+    Per-module selective resets (module_dummy_data) handle both setup and
+    teardown for modules that declare DUMMY_DATA_SCHEMAS / DUMMY_DATA_TOPICS /
+    DUMMY_DATA_DATAHUB_SCHEMAS.  Individual tests clean up their own transient
+    data.  No session-level full reset is needed — it was too slow and
+    redundant with module-level teardowns.
     """
     yield  # type: ignore[misc]
-    _reset_all_dummy_data()
 
 
 @pytest.fixture(scope="module", autouse=True)
