@@ -165,7 +165,6 @@ async def temporal_worker(temporal_client):
         pass
 
 
-@pytest.mark.integration
 async def test_start_ingestion_workflow(temporal_client, temporal_worker):
     """Start IngestionWorkflow for an Imazon dataset and verify completion."""
     result = await temporal_client.execute_workflow(
@@ -179,7 +178,6 @@ async def test_start_ingestion_workflow(temporal_client, temporal_worker):
     assert "run_id" in result
 
 
-@pytest.mark.integration
 async def test_validation_workflow_against_real_dataset(temporal_client, temporal_worker):
     """Start ValidationWorkflow and verify Temporal orchestration completes.
 
@@ -204,7 +202,6 @@ async def test_validation_workflow_against_real_dataset(temporal_client, tempora
         pass
 
 
-@pytest.mark.integration
 async def test_duplicate_workflow_rejected(temporal_client, temporal_worker):
     """Start a workflow, then try to start another with the same ID while it's running."""
     workflow_id = "integration-duplicate-test"
@@ -237,7 +234,6 @@ async def test_duplicate_workflow_rejected(temporal_client, temporal_worker):
         pass
 
 
-@pytest.mark.integration
 async def test_embedding_sync_single_dataset(temporal_client, temporal_worker):
     """Start EmbeddingSyncWorkflow in single mode for a known dataset."""
     result = await temporal_client.execute_workflow(
@@ -251,7 +247,6 @@ async def test_embedding_sync_single_dataset(temporal_client, temporal_worker):
     assert result["mode"] == "single"
 
 
-@pytest.mark.integration
 async def test_query_workflow_status(temporal_client, temporal_worker):
     """Start a workflow and query its handle to verify status."""
     handle = await temporal_client.start_workflow(

@@ -23,6 +23,23 @@ kafka:
       transaction.state.log.replication.factor=1
   kraft:
     enabled: false
+  # Listeners: CLIENT (9092) for in-cluster DataHub components, INTERNAL (9094)
+  # for inter-broker, EXTERNAL (9095) for host-side port-forwarded access.
+  # advertisedListeners must include the namespace matching the Helm install
+  # target (DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE in .env, default: datahub-01).
+  listeners:
+    client:
+      protocol: PLAINTEXT
+    interbroker:
+      protocol: PLAINTEXT
+    external:
+      containerPort: 9095
+      protocol: PLAINTEXT
+      name: EXTERNAL
+    overrideListeners: "CLIENT://:9092,INTERNAL://:9094,EXTERNAL://:9095"
+    securityProtocolMap: "CLIENT:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+    # yamllint disable-line rule:line-length
+    advertisedListeners: "CLIENT://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.datahub-01.svc.cluster.local:9092,INTERNAL://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.datahub-01.svc.cluster.local:9094,EXTERNAL://localhost:9005"
   # Bitnami ZooKeeper (subchart of kafka)
   zookeeper:
     enabled: true

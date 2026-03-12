@@ -12,7 +12,6 @@ with workflow.unsafe.imports_passed_through():
     from src.shared.exceptions import DataSpokeError
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
-        HEARTBEAT_TIMEOUT,
         default_retry_policy,
         make_datahub,
         make_llm,
@@ -54,5 +53,4 @@ class GenerationWorkflow:
             args=[params.dataset_urn],
             start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
             retry_policy=default_retry_policy(),
-            heartbeat_timeout=HEARTBEAT_TIMEOUT,
         )

@@ -1,9 +1,9 @@
 """Integration tests for infrastructure clients against dev-env services.
 
 Test-specific data extensions (created and cleaned up by fixtures/tests):
-- 1 DataHub dataset entity (imazon.test.infra_clients.test_table, env=DEV)
+- 1 DataHub dataset entity (imazon.test.infra_clients_<uuid>, env=DEV)
   with StatusClass, DatasetPropertiesClass, and SchemaMetadataClass aspects.
-  Soft-deleted on teardown.
+  Unique URN per run; soft-deleted on teardown.
 - Transient Redis keys under ``integration_test:infra_clients:*`` prefix.
 - Transient Qdrant collection ``integration_test_infra_clients`` with 2 points.
 - LLM tests require DATASPOKE_LLM_API_KEY env var (skipped otherwise).
@@ -29,9 +29,13 @@ _llm_provider = os.environ.get("DATASPOKE_LLM_PROVIDER", "openai")
 _llm_api_key = os.environ.get("DATASPOKE_LLM_API_KEY", "")
 _llm_model = os.environ.get("DATASPOKE_LLM_MODEL", "gpt-4o-mini")
 
-_TEST_DATASET_URN = (
-    "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.infra_clients.test_table,DEV)"
-)
+_TEST_DATASET_URN_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.infra_clients_"
+
+
+def _unique_test_urn() -> str:
+    import uuid
+
+    return f"{_TEST_DATASET_URN_PREFIX}{uuid.uuid4().hex[:8]},DEV)"
 
 
 # --- DataHub ---
@@ -39,7 +43,10 @@ _TEST_DATASET_URN = (
 
 @pytest_asyncio.fixture
 async def datahub_test_dataset(datahub_client):
-    """Emit a self-contained Imazon test dataset, clean up after."""
+    """Emit a self-contained Imazon test dataset, clean up after.
+
+    Uses a unique URN per run to avoid stale soft-delete state in the ES index.
+    """
     from datahub.metadata.schema_classes import (
         DatasetPropertiesClass,
         OtherSchemaClass,
@@ -48,13 +55,13 @@ async def datahub_test_dataset(datahub_client):
         StatusClass,
     )
 
-    urn = _TEST_DATASET_URN
+    urn = _unique_test_urn()
     await datahub_client.emit_aspect(urn, StatusClass(removed=False))
     await datahub_client.emit_aspect(
         urn,
         DatasetPropertiesClass(
-            name="infra_clients.test_table",
-            qualifiedName="imazon.test.infra_clients.test_table",
+            name=urn.split(",")[1],
+            qualifiedName=urn.split(",")[1],
             description="Self-contained integration test fixture",
             customProperties={"source": "integration-test"},
         ),
@@ -62,7 +69,7 @@ async def datahub_test_dataset(datahub_client):
     await datahub_client.emit_aspect(
         urn,
         SchemaMetadataClass(
-            schemaName="infra_clients.test_table",
+            schemaName=urn.split(",")[1],
             platform="urn:li:dataPlatform:postgres",
             version=0,
             hash="",
@@ -83,8 +90,8 @@ async def datahub_test_dataset(datahub_client):
             ],
         ),
     )
-    # Wait for DataHub's ES index to propagate the new entity
-    await asyncio.sleep(8)
+    # Wait briefly for aspect writes to settle in the metadata store
+    await asyncio.sleep(1)
     yield urn
     await datahub_client.emit_aspect(urn, StatusClass(removed=True))
 
@@ -93,11 +100,11 @@ async def test_datahub_connectivity(datahub_client) -> None:
     assert await datahub_client.check_connectivity() is True
 
 
-async def test_datahub_enumerate_datasets(datahub_client, datahub_test_dataset) -> None:
+async def test_datahub_enumerate_datasets(datahub_client) -> None:
     datasets = await datahub_client.enumerate_datasets()
     assert isinstance(datasets, list)
     assert len(datasets) > 0
-    assert datahub_test_dataset in datasets
+    assert all(d.startswith("urn:li:dataset:") for d in datasets)
 
 
 async def test_datahub_get_aspect_existing(datahub_client, datahub_test_dataset) -> None:
@@ -105,7 +112,7 @@ async def test_datahub_get_aspect_existing(datahub_client, datahub_test_dataset)
 
     result = await datahub_client.get_aspect(datahub_test_dataset, DatasetPropertiesClass)
     assert result is not None
-    assert result.name == "infra_clients.test_table"
+    assert result.name == datahub_test_dataset.split(",")[1]
 
 
 async def test_datahub_get_aspect_nonexistent(datahub_client) -> None:

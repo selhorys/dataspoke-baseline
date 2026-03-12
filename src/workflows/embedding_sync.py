@@ -73,7 +73,6 @@ class EmbeddingSyncWorkflow:
                 enumerate_datasets_activity,
                 start_to_close_timeout=timedelta(minutes=10),
                 retry_policy=default_retry_policy(),
-                heartbeat_timeout=HEARTBEAT_TIMEOUT,
             )
             batches = _batched(urns, BULK_BATCH_SIZE)
             total_indexed = 0

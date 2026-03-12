@@ -15,7 +15,6 @@ with workflow.unsafe.imports_passed_through():
     from src.shared.notifications.service import NotificationService
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
-        HEARTBEAT_TIMEOUT,
         default_retry_policy,
         make_cache,
         make_datahub,
@@ -82,7 +81,6 @@ class MetricsCollectionWorkflow:
             args=[params.metric_id],
             start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
             retry_policy=default_retry_policy(),
-            heartbeat_timeout=HEARTBEAT_TIMEOUT,
         )
 
         if params.aggregate:
@@ -90,7 +88,6 @@ class MetricsCollectionWorkflow:
                 aggregate_health_activity,
                 start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
                 retry_policy=default_retry_policy(),
-                heartbeat_timeout=HEARTBEAT_TIMEOUT,
             )
 
         await workflow.execute_activity(

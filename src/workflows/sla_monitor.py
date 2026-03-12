@@ -13,7 +13,6 @@ with workflow.unsafe.imports_passed_through():
     from src.shared.notifications.service import NotificationService
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
-        HEARTBEAT_TIMEOUT,
         default_retry_policy,
         make_cache,
         make_datahub,
@@ -120,7 +119,6 @@ class SLAMonitorWorkflow:
             args=[params.dataset_urn, params.sla_target],
             start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
             retry_policy=default_retry_policy(),
-            heartbeat_timeout=HEARTBEAT_TIMEOUT,
         )
 
         if sla_result.get("alerts") and params.alert_recipients:

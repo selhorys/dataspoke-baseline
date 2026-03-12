@@ -24,7 +24,7 @@ from src.shared.exceptions import DataHubUnavailableError, EventProcessingError
 def _make_event(
     *,
     entity_type: str = "dataset",
-    entity_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.public.users,PROD)",
+    entity_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
     aspect_name: str = "datasetProperties",
     change_type: str = "UPSERT",
 ) -> MetadataChangeLogEvent:
@@ -39,7 +39,7 @@ def _make_event(
 def _make_raw_mcl(**overrides: object) -> bytes:
     data = {
         "entityType": "dataset",
-        "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.public.users,PROD)",
+        "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
         "aspectName": "datasetProperties",
         "changeType": "UPSERT",
         "aspect": {"value": "test"},
@@ -66,7 +66,7 @@ class TestDeserializeMcl:
         raw = json.dumps(
             {
                 "entityType": "dataset",
-                "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,t,PROD)",
+                "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.reviews.user_ratings,DEV)",
                 "aspectName": "ownership",
                 "changeType": "UPSERT",
             }
@@ -135,7 +135,11 @@ class TestEventRouter:
         # Non-retryable exceptions are logged but swallowed
         await router.dispatch(event)
 
-    async def test_handler_timeout_swallowed(self) -> None:
+    async def test_handler_timeout_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import src.shared.datahub.events as _events_mod
+
+        monkeypatch.setattr(_events_mod, "HANDLER_TIMEOUT_S", 0.05)
+
         async def slow_handler(event: MetadataChangeLogEvent) -> None:
             import asyncio
 

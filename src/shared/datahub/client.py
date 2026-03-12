@@ -147,12 +147,15 @@ class DataHubClient:
         extra_filters = []
         if platform:
             extra_filters.append({"field": "platform", "value": f"urn:li:dataPlatform:{platform}"})
-        result = await self._with_retry(
-            self._graph.get_urns_by_filter,
-            entity_types=["dataset"],
-            extra_or_filters=extra_filters if extra_filters else None,
-        )
-        return list(result) if result else []
+
+        def _fetch() -> list[str]:
+            result = self._graph.get_urns_by_filter(
+                entity_types=["dataset"],
+                extra_or_filters=extra_filters if extra_filters else None,
+            )
+            return list(result) if result else []
+
+        return await self._with_retry(_fetch)
 
     async def emit_aspect(self, urn: str, aspect: Any) -> None:
         mcp = MetadataChangeProposalWrapper(entityUrn=urn, aspect=aspect)

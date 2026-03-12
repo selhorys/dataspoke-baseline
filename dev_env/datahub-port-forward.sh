@@ -84,10 +84,15 @@ GMS_SVC="datahub-datahub-gms"
 kubectl get svc "$GMS_SVC" -n "${NS}" >/dev/null 2>&1 \
   || error "Service '$GMS_SVC' not found in namespace '${NS}'."
 
-# Kafka service (from datahub-prerequisites)
-KAFKA_SVC="datahub-prerequisites-kafka"
-kubectl get svc "$KAFKA_SVC" -n "${NS}" >/dev/null 2>&1 \
-  || error "Service '$KAFKA_SVC' not found in namespace '${NS}'."
+# Kafka pod (from datahub-prerequisites) — port-forward targets the EXTERNAL
+# listener (9095), which advertises localhost:9005 for host-side access.
+# We forward to the pod directly (not the service) since the EXTERNAL port
+# is not exposed on the ClusterIP service.
+KAFKA_POD=$(kubectl get pods -n "${NS}" \
+  -l 'app.kubernetes.io/name=kafka,app.kubernetes.io/component=broker' \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) \
+  || error "No kafka broker pod found in namespace '${NS}'."
+[[ -z "$KAFKA_POD" ]] && error "No kafka broker pod found in namespace '${NS}'."
 
 # ---------------------------------------------------------------------------
 # Start port-forwards in the background
@@ -98,7 +103,7 @@ UI_PID=$!
 kubectl port-forward --namespace "${NS}" "svc/${GMS_SVC}" "${GMS_PORT}:8080" >/dev/null 2>&1 &
 GMS_PID=$!
 
-kubectl port-forward --namespace "${NS}" "svc/${KAFKA_SVC}" "${KAFKA_PORT}:9092" >/dev/null 2>&1 &
+kubectl port-forward --namespace "${NS}" "${KAFKA_POD}" "${KAFKA_PORT}:9095" >/dev/null 2>&1 &
 KAFKA_PID=$!
 
 # Write PIDs
