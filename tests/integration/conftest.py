@@ -70,7 +70,10 @@ _redis_host = os.environ.get("DATASPOKE_REDIS_HOST", "localhost")
 _redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
-_kafka_brokers = os.environ.get("DATASPOKE_DATAHUB_KAFKA_BROKERS", "localhost:9005")
+_kafka_brokers = (
+    f"localhost:{os.environ.get('DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARD_PORT', '9104')}"
+)
+_datahub_kafka_brokers = os.environ.get("DATASPOKE_DATAHUB_KAFKA_BROKERS", "localhost:9005")
 
 _qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
 _qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
@@ -182,7 +185,14 @@ async def datahub_client():
 
 @pytest.fixture(scope="session")
 def kafka_brokers() -> str:
+    """Example-kafka (dummy-data namespace) for general integration tests."""
     return _kafka_brokers
+
+
+@pytest.fixture(scope="session")
+def datahub_kafka_brokers() -> str:
+    """DataHub Kafka — only for tests verifying DataHub↔DataSpoke connection."""
+    return _datahub_kafka_brokers
 
 
 @pytest_asyncio.fixture

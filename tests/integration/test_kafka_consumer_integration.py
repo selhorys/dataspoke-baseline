@@ -44,10 +44,10 @@ def _unique_group_id() -> str:
     return f"dataspoke-consumers-test-{uuid.uuid4().hex[:8]}"
 
 
-def _make_consumer(kafka_brokers: str, group_id: str | None = None) -> Consumer:
+def _make_consumer(datahub_kafka_brokers: str, group_id: str | None = None) -> Consumer:
     return Consumer(
         {
-            "bootstrap.servers": kafka_brokers,
+            "bootstrap.servers": datahub_kafka_brokers,
             "group.id": group_id or _unique_group_id(),
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
@@ -56,8 +56,8 @@ def _make_consumer(kafka_brokers: str, group_id: str | None = None) -> Consumer:
     )
 
 
-def _make_producer(kafka_brokers: str) -> Producer:
-    return Producer({"bootstrap.servers": kafka_brokers})
+def _make_producer(datahub_kafka_brokers: str) -> Producer:
+    return Producer({"bootstrap.servers": datahub_kafka_brokers})
 
 
 def _wait_for_assignment(consumer: Consumer, *, max_polls: int = 10) -> None:
@@ -114,9 +114,9 @@ def _poll_for_test_message(
 
 
 class TestKafkaConsumerIntegration:
-    def test_consumer_connects_to_kafka(self, kafka_brokers: str) -> None:
+    def test_consumer_connects_to_kafka(self, datahub_kafka_brokers: str) -> None:
         """Verify we can create a consumer and subscribe without connection errors."""
-        consumer = _make_consumer(kafka_brokers)
+        consumer = _make_consumer(datahub_kafka_brokers)
         try:
             consumer.subscribe([_VERSIONED_TOPIC])
             msg = consumer.poll(timeout=5.0)
@@ -126,12 +126,12 @@ class TestKafkaConsumerIntegration:
         finally:
             consumer.close()
 
-    def test_consume_versioned_mcl_event(self, kafka_brokers: str) -> None:
+    def test_consume_versioned_mcl_event(self, datahub_kafka_brokers: str) -> None:
         """Produce a test MCL to the versioned topic and consume it."""
         group_id = _unique_group_id()
         test_id = uuid.uuid4().hex[:8]
-        producer = _make_producer(kafka_brokers)
-        consumer = _make_consumer(kafka_brokers, group_id=group_id)
+        producer = _make_producer(datahub_kafka_brokers)
+        consumer = _make_consumer(datahub_kafka_brokers, group_id=group_id)
 
         try:
             consumer.subscribe([_VERSIONED_TOPIC])
@@ -157,12 +157,12 @@ class TestKafkaConsumerIntegration:
         finally:
             consumer.close()
 
-    def test_consume_timeseries_mcl_event(self, kafka_brokers: str) -> None:
+    def test_consume_timeseries_mcl_event(self, datahub_kafka_brokers: str) -> None:
         """Produce a test MCL to the timeseries topic and consume it."""
         group_id = _unique_group_id()
         test_id = uuid.uuid4().hex[:8]
-        producer = _make_producer(kafka_brokers)
-        consumer = _make_consumer(kafka_brokers, group_id=group_id)
+        producer = _make_producer(datahub_kafka_brokers)
+        consumer = _make_consumer(datahub_kafka_brokers, group_id=group_id)
 
         try:
             consumer.subscribe([_TIMESERIES_TOPIC])
@@ -188,12 +188,12 @@ class TestKafkaConsumerIntegration:
             consumer.close()
 
     @pytest.mark.asyncio
-    async def test_handler_failure_skips_commit(self, kafka_brokers: str) -> None:
+    async def test_handler_failure_skips_commit(self, datahub_kafka_brokers: str) -> None:
         """When a handler fails, offset should NOT be committed."""
         group_id = _unique_group_id()
         test_id = uuid.uuid4().hex[:8]
-        producer = _make_producer(kafka_brokers)
-        consumer = _make_consumer(kafka_brokers, group_id=group_id)
+        producer = _make_producer(datahub_kafka_brokers)
+        consumer = _make_consumer(datahub_kafka_brokers, group_id=group_id)
 
         try:
             consumer.subscribe([_VERSIONED_TOPIC])
@@ -232,7 +232,7 @@ class TestKafkaConsumerIntegration:
             # Re-create consumer with same group — message should be redelivered
             # because the committed offset is still at the pre-test-message position
             consumer.close()
-            consumer = _make_consumer(kafka_brokers, group_id=group_id)
+            consumer = _make_consumer(datahub_kafka_brokers, group_id=group_id)
             consumer.subscribe([_VERSIONED_TOPIC])
 
             result = _poll_for_test_message(consumer, test_id)
