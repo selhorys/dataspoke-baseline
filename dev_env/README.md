@@ -163,20 +163,22 @@ Forward example PostgreSQL and Kafka:
 | PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` (database: `example_db`) |
 | Kafka | localhost:9104 | — |
 
-### 8. Populate dummy data
+### 8. Populate dummy data and register in DataHub
 
-Populate `example-postgres` and `example-kafka` with realistic Imazon use-case data:
+Populate `example-postgres` and `example-kafka` with realistic Imazon use-case data and register tables in DataHub:
 
 ```bash
-./dummy-data-reset.sh
+# From repo root (requires port-forwards for 9102, 9104, 9004):
+uv run python -m tests.integration.util --reset-all
 ```
 
-This is **idempotent** — every run drops all custom schemas CASCADE and recreates them, and deletes+recreates Kafka topics. Safe to re-run at any time.
+This is **idempotent** — every run drops all custom schemas CASCADE and recreates them, deletes+recreates Kafka topics, and re-registers all DataHub datasets. Safe to re-run at any time.
 
 **What gets created:**
 
 - **PostgreSQL**: 11 schemas, 17 tables, ~600 rows covering UC1-UC7 scenarios (catalog, orders, customers, reviews, publishers, shipping, inventory, marketing, eBookNow products/content/storefront)
 - **Kafka**: 3 topics (`imazon.orders.events`, `imazon.shipping.updates`, `imazon.reviews.new`) with ~45 JSON messages
+- **DataHub**: 17 dataset entities with `DatasetProperties` + `SchemaMetadata` aspects (137 columns total)
 
 **Verify:**
 
@@ -190,19 +192,7 @@ SELECT count(*) FROM reviews.user_ratings_legacy
   WHERE rating_score IS NULL;                              -- expect 15 (~30% null rate)
 ```
 
-See `spec/feature/DEV_ENV.md §Dummy Data Reset` for full schema details and data design choices.
-
-### 9. Register tables in DataHub
-
-After populating dummy data, register the tables as DataHub dataset entities so they're browsable in the DataHub UI:
-
-```bash
-./dummy-data-ingest.sh               # reset + ingest (default)
-./dummy-data-ingest.sh --no-reset    # ingest only (additive)
-./dummy-data-ingest.sh --reset-only  # soft-delete datasets only
-```
-
-This discovers all 17 tables from `example-postgres` and emits `DatasetProperties` + `SchemaMetadata` aspects to DataHub GMS. Requires both dummy-data (9102) and DataHub GMS (9004) port-forwards to be active.
+See `spec/feature/DEV_ENV.md §Dummy Data` for full schema details and data design choices.
 
 ## Verify Installation
 
@@ -246,10 +236,7 @@ dev_env/
 ├── dataspoke-infra/              # DataSpoke infra via umbrella chart (values-dev.yaml)
 ├── dataspoke-lock/               # Lock service (plain K8s manifests, dataspoke-01 ns)
 ├── dataspoke-example/            # Example data sources (plain K8s manifests)
-├── dummy-data-reset.sh           # Idempotent reset of dummy data (SQL + Kafka)
-├── dummy-data-ingest.sh          # Register example-postgres tables in DataHub
-├── dummy-data-port-forward.sh    # Port-forward example PostgreSQL + Kafka
-└── dummy-data/                   # SQL seed files, Kafka scripts, DataHub ingest script
+└── dummy-data-port-forward.sh    # Port-forward example PostgreSQL + Kafka
 ```
 
 ## Environment Variables

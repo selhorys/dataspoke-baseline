@@ -69,7 +69,9 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
 **Lock protocol**: acquire the dev-env advisory lock before any state-mutating operation.
 
-**Data reset**: always run `dev_env/dummy-data-reset.sh && dev_env/dummy-data-ingest.sh` before and after test runs (ingest registers datasets in DataHub after reset populates PostgreSQL).
+**Data reset**: `conftest.py` automatically resets dummy data via Python utilities in `tests/integration/util/` before and after test runs. For manual reset: `uv run python -m tests.integration.util --reset-all`
+
+**Dummy-data fixtures**: SQL seed files, Kafka JSONL messages, and DataHub ingestion logic live in `tests/integration/util/`.
 
 **Test data**: all integration/E2E scenarios use **Imazon** as the canonical company context — do not invent alternative test companies.
 

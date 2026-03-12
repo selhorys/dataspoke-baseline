@@ -29,7 +29,7 @@
 | Frontend | TypeScript | Jest + React Testing Library | TypeScript compiler, ESLint |
 | E2E | TypeScript | Playwright | — |
 
-> **Do not use the `datahub` CLI** — it requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead (e.g., `dev_env/dummy-data/datahub/ingest.py`).
+> **Do not use the `datahub` CLI** — it requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead (e.g., `tests/integration/util/datahub.py`).
 
 ---
 
@@ -46,6 +46,14 @@ tests/
 │   ├── workflows/      # Temporal workflow tests (Temporal test framework)
 │   └── frontend/       # Jest tests (or co-located in src/frontend/)
 ├── integration/        # Dev-env-backed integration tests
+│   ├── util/                # Dummy-data reset/ingest utilities
+│   │   ├── fixtures/sql/    # SQL seed files (10 files: 00_schemas … 09_ebooknow)
+│   │   ├── fixtures/kafka/  # Kafka JSONL seed messages (orders, shipping, reviews)
+│   │   ├── postgres.py      # PostgreSQL reset functions (asyncpg, port 9102)
+│   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, port 9104)
+│   │   └── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
+│   ├── conftest.py
+│   └── test_*_integration.py
 └── e2e/                # Playwright end-to-end tests
 ```
 
@@ -149,7 +157,7 @@ Integration tests support two execution modes:
 
 Follow these seven steps in order every time you run integration tests.
 
-> **Automation note:** When running via `uv run pytest tests/integration/`, `conftest.py` automates Steps 2, 3, 6, and 7 (lock acquire/release and dummy-data reset). The manual commands below are for reference or when running outside pytest.
+> **Automation note:** When running via `uv run pytest tests/integration/`, `conftest.py` automates Steps 2, 3, 6, and 7 (lock acquire/release and dummy-data reset via Python utilities in `tests/integration/util/`). The manual commands below are for reference or when running outside pytest.
 
 #### Step 1 — Write test scenarios and code
 
@@ -186,13 +194,19 @@ When an outer process (e.g. prauto) has already acquired the lock, set `DATASPOK
 
 #### Step 3 — Reset dummy data
 
-Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty:
+Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty.
+
+`conftest.py` resets dummy data via Python utilities in `tests/integration/util/` — connecting directly to port-forwarded PostgreSQL (9102), Kafka (9104), and DataHub GMS (9004).
+
+The reset is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. The ingest then registers the 17 example-postgres tables as DataHub dataset entities with `DatasetProperties` and `SchemaMetadata` aspects.
+
+For manual reset outside pytest:
 
 ```bash
-cd dev_env && ./dummy-data-reset.sh && ./dummy-data-ingest.sh
+uv run python -m tests.integration.util --reset-all
 ```
 
-`dummy-data-reset.sh` is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. `dummy-data-ingest.sh` then registers the 17 example-postgres tables as DataHub dataset entities with `DatasetProperties` and `SchemaMetadata` aspects. Always run both in sequence — the ingest depends on the reset having populated PostgreSQL. See [`spec/feature/DEV_ENV.md §Dummy Data Reset`](feature/DEV_ENV.md#dummy-data-reset) and [`§DataHub Ingestion`](feature/DEV_ENV.md#datahub-ingestion).
+See [`spec/feature/DEV_ENV.md §Dummy Data`](feature/DEV_ENV.md#dummy-data) for data details.
 
 #### Step 4 — Extend dummy data if needed
 
@@ -214,13 +228,20 @@ uv run pytest tests/integration/
 
 Fix code and re-run from Step 3 as needed. Do not re-run without resetting — tests that depend on a clean baseline will produce false results against dirty state.
 
+#### Per-Module Dummy-Data Reset
+
+Test modules can declare which schemas/topics they depend on via module-level constants. A module-scoped fixture resets only the declared schemas before and after the module's tests:
+
+```python
+DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog", "orders"])
+DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
+```
+
+The fixture is opt-in — modules that do not declare these constants use only the session-scoped full reset.
+
 #### Step 6 — Reset dummy data before exit
 
-Restore the baseline state after your test run so the next tester starts clean:
-
-```bash
-cd dev_env && ./dummy-data-reset.sh && ./dummy-data-ingest.sh
-```
+Restore the baseline state after your test run so the next tester starts clean. `conftest.py` handles this automatically via the same Python utilities used in Step 3.
 
 #### Step 7 — Release the lock
 
@@ -322,9 +343,18 @@ The baseline dummy data covers these tables and use cases. Reference these when 
 | `content.ebook_assets` | 20 | UC4 | EPUB/PDF/MOBI assets |
 | `storefront.listing_items` | 15 | UC4 | Marketplace listings |
 
-Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), `imazon.reviews.new` (10 msgs).
+Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), `imazon.reviews.new` (10 msgs). Seed messages are stored as JSONL files in `tests/integration/util/fixtures/kafka/`.
 
-DataHub datasets: All 17 tables above are also registered as DataHub dataset entities (platform `postgres`, env `DEV`) via `dummy-data-ingest.sh`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total).
+DataHub datasets: All 17 tables above are also registered as DataHub dataset entities (platform `postgres`, env `DEV`) via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total). The module discovers schemas/tables/columns from `example-postgres` via `asyncpg`, obtains a DataHub session token (via frontend login if `DATASPOKE_DATAHUB_TOKEN` is empty), and emits `Status`, `DatasetProperties`, and `SchemaMetadata` aspects via `DatahubRestEmitter`. Reset uses soft-delete semantics (separate from PostgreSQL CASCADE drop).
+
+### Data Design Choices
+
+- **UC2 anomaly**: `user_ratings_legacy` has 30% NULL `rating_score` — tests data quality detection.
+- **UC3 SLA**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15, `row_count=12` vs typical ~145) — tests freshness/volume anomaly detection.
+- **UC4 overlap**: ~70% of `digital_catalog` titles match `title_master` by ISBN — tests cross-source lineage matching.
+- **UC5 PII**: Fake but structurally realistic EU PII across DE/FR/ES/IT/NL — tests PII classification and GDPR propagation.
+- **UC7 join path**: Full referential integrity `order_items → editions → title_master → genre_hierarchy` — tests multi-hop lineage.
+- **ISBNs**: 978-prefix, obviously fake (e.g., `9780000000001`).
 
 ### Assertion Principles
 
@@ -338,13 +368,13 @@ DataHub datasets: All 17 tables above are also registered as DataHub dataset ent
 
 ### Extending the Baseline
 
-When a test needs rows not present in the baseline reset, insert them after `dummy-data-reset.sh` and document them at the top of the test file:
+When a test needs rows not present in the baseline reset, insert them after the reset and document them at the top of the test file:
 
 ```python
 """
 Integration tests for the validation service against the reviews domain.
 
-Test-specific data extensions (inserted after dummy-data-reset.sh):
+Test-specific data extensions (inserted after baseline reset):
   - 5 extra rows in reviews.user_ratings_legacy with rating_score = 0
     to test boundary detection at zero-score threshold.
 """

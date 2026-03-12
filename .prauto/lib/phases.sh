@@ -64,8 +64,6 @@ run_integration_tests_with_protocol() {
   local pr_number="$1"
   local lock_owner="prauto-${PRAUTO_WORKER_ID}"
   local lock_url="http://localhost:9221/lock"
-  local reset_script="${REPO_DIR}/dev_env/dummy-data-reset.sh"
-  local ingest_script="${REPO_DIR}/dev_env/dummy-data-ingest.sh"
 
   # Check if lock endpoint is reachable
   if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
@@ -85,32 +83,10 @@ run_integration_tests_with_protocol() {
   fi
   info "Dev-env lock acquired for integration tests."
 
-  # Reset dummy data and ingest DataHub datasets before tests
-  if [[ -x "$reset_script" ]]; then
-    if ! "$reset_script" >/dev/null 2>&1; then
-      warn "Pre-test dummy data reset failed. Skipping integration tests."
-      curl -s -X POST "${lock_url}/release" \
-        -H "Content-Type: application/json" \
-        -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
-      return 0
-    fi
-    if [[ -x "$ingest_script" ]]; then
-      "$ingest_script" >/dev/null 2>&1 || warn "Pre-test DataHub ingest failed."
-    fi
-  fi
-
-  # Run integration tests (signal conftest that lock is pre-acquired)
+  # Run integration tests (conftest.py handles dummy-data resets via Python utilities)
   info "Running integration tests..."
   local integ_output integ_exit=0
   integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 uv run pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
-
-  # Reset dummy data and ingest DataHub datasets after tests
-  if [[ -x "$reset_script" ]]; then
-    "$reset_script" >/dev/null 2>&1 || warn "Post-test dummy data reset failed."
-    if [[ -x "$ingest_script" ]]; then
-      "$ingest_script" >/dev/null 2>&1 || warn "Post-test DataHub ingest failed."
-    fi
-  fi
 
   # Release lock
   curl -s -X POST "${lock_url}/release" \
@@ -177,8 +153,6 @@ run_integration_test_fix() {
 
   local lock_owner="prauto-${PRAUTO_WORKER_ID}"
   local lock_url="http://localhost:9221/lock"
-  local reset_script="${REPO_DIR}/dev_env/dummy-data-reset.sh"
-  local ingest_script="${REPO_DIR}/dev_env/dummy-data-ingest.sh"
   local max_retries="${PRAUTO_INTEGRATION_FIX_MAX_RETRIES:-2}"
 
   # Check if lock endpoint is reachable
@@ -211,15 +185,7 @@ run_integration_test_fix() {
       --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}" \
       2>/dev/null || warn "Failed to post integration fix comment on issue #${issue_number}."
 
-    # Reset dummy data and ingest DataHub datasets before tests
-    if [[ -x "$reset_script" ]]; then
-      "$reset_script" >/dev/null 2>&1 || warn "Pre-test dummy data reset failed."
-      if [[ -x "$ingest_script" ]]; then
-        "$ingest_script" >/dev/null 2>&1 || warn "Pre-test DataHub ingest failed."
-      fi
-    fi
-
-    # Run integration tests
+    # Run integration tests (conftest.py handles dummy-data resets via Python utilities)
     integ_exit=0
     integ_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 uv run pytest tests/integration/ --tb=short 2>&1) || integ_exit=$?
 
@@ -238,14 +204,6 @@ run_integration_test_fix() {
       info "Max integration fix retries reached. Proceeding with current state."
     fi
   done
-
-  # Reset dummy data and ingest DataHub datasets after loop
-  if [[ -x "$reset_script" ]]; then
-    "$reset_script" >/dev/null 2>&1 || warn "Post-loop dummy data reset failed."
-    if [[ -x "$ingest_script" ]]; then
-      "$ingest_script" >/dev/null 2>&1 || warn "Post-loop DataHub ingest failed."
-    fi
-  fi
 
   # Release lock
   curl -s -X POST "${lock_url}/release" \

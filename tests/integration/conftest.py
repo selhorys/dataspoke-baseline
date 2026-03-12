@@ -32,7 +32,6 @@ from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
-_DEV_ENV_DIR = str(Path(__file__).resolve().parents[2] / "dev_env")
 
 
 def _load_dotenv() -> None:
@@ -233,40 +232,60 @@ def acquire_lock() -> None:
         pass
 
 
-def _run_dummy_data_scripts() -> None:
-    """Run dummy-data-reset.sh && dummy-data-ingest.sh from the dev_env directory.
+def _reset_all_dummy_data() -> None:
+    """Reset all dummy data via Python utilities.
 
     Per spec/TESTING.md Steps 3 & 6: always reset dummy data before and after
     integration test runs so the baseline state is clean.
     """
-    for script in ("./dummy-data-reset.sh", "./dummy-data-ingest.sh --no-reset"):
-        result = subprocess.run(
-            script,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=_DEV_ENV_DIR,
-        )
-        if result.returncode != 0:
-            pytest.fail(
-                f"Dummy data script failed: {script}\n"
-                f"stdout: {result.stdout[-500:]}\n"
-                f"stderr: {result.stderr[-500:]}"
-            )
+    import asyncio
+
+    from tests.integration.util import datahub, kafka, postgres
+
+    asyncio.run(postgres.reset_all())
+    kafka.reset_all()
+    asyncio.run(datahub.reset_and_ingest())
 
 
 @pytest.fixture(scope="session", autouse=True)
 def dummy_data_reset(acquire_lock) -> None:  # noqa: ARG001 — depends on lock
     """Reset dummy data before tests (Step 3) and after tests (Step 6).
 
-    Runs dummy-data-reset.sh && dummy-data-ingest.sh to ensure the Imazon
+    Uses Python utilities in tests/integration/util/ to ensure the Imazon
     baseline state is clean. Depends on acquire_lock so the lock is held
     before any state-mutating operation.
     """
-    _run_dummy_data_scripts()
+    _reset_all_dummy_data()
     yield  # type: ignore[misc]
-    _run_dummy_data_scripts()
+    _reset_all_dummy_data()
+
+
+@pytest.fixture(scope="module")
+def module_dummy_data(request) -> None:
+    """Opt-in module-scoped fixture for selective dummy-data reset.
+
+    Test modules declare dependencies via module-level constants:
+        DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog", "orders"])
+        DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
+    """
+    import asyncio
+
+    from tests.integration.util import kafka, postgres
+
+    schemas = getattr(request.module, "DUMMY_DATA_SCHEMAS", None)
+    topics = getattr(request.module, "DUMMY_DATA_TOPICS", None)
+
+    def _reset():
+        if schemas:
+            asyncio.run(postgres.reset_schemas(schemas))
+        if topics:
+            kafka.reset_topics(topics)
+
+    if schemas or topics:
+        _reset()
+    yield  # type: ignore[misc]
+    if schemas or topics:
+        _reset()
 
 
 # ── Temporal fixture ─────────────────────────────────────────────────────────

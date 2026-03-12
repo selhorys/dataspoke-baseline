@@ -1,17 +1,16 @@
-"""Register example-postgres tables as DataHub dataset entities.
+"""DataHub dummy-data reset/ingest utilities for integration tests.
 
-Connects to the port-forwarded example-postgres to discover schemas, tables,
-and columns, then emits DatasetProperties + SchemaMetadata aspects to DataHub
-GMS via the REST emitter.
+Registers example-postgres tables as DataHub dataset entities.
 
-Usage:
-    uv run python dev_env/dummy-data/datahub/ingest.py          # ingest
-    uv run python dev_env/dummy-data/datahub/ingest.py --reset   # delete + ingest
-    uv run python dev_env/dummy-data/datahub/ingest.py --reset-only  # delete only
+Usage (as a module):
+    uv run python -m tests.integration.util.datahub          # ingest
+    uv run python -m tests.integration.util.datahub --reset  # delete + ingest
+    uv run python -m tests.integration.util.datahub --reset-only  # delete only
 
 Environment variables (loaded from dev_env/.env if present):
     DATASPOKE_DATAHUB_GMS_URL       (default: http://localhost:9004)
     DATASPOKE_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
+    DATASPOKE_DATAHUB_FRONTEND_URL  (default: http://localhost:9002)
     DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT (default: 9102)
     DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER     (default: postgres)
     DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
@@ -48,9 +47,8 @@ PLATFORM = "postgres"
 ENV = "DEV"
 INSTANCE = "example_db"
 
-# Schemas seeded by dummy-data-reset.sh (skip system schemas)
-TARGET_SCHEMAS = frozenset(
-    [
+TARGET_SCHEMAS: frozenset[str] = frozenset(
+    {
         "catalog",
         "orders",
         "customers",
@@ -62,11 +60,10 @@ TARGET_SCHEMAS = frozenset(
         "products",
         "content",
         "storefront",
-    ]
+    }
 )
 
-# Map information_schema.columns.data_type to DataHub SchemaFieldDataType
-_PG_TO_DATAHUB_TYPE = {
+_PG_TO_DATAHUB_TYPE: dict[str, str] = {
     "integer": "NUMBER",
     "bigint": "NUMBER",
     "smallint": "NUMBER",
@@ -91,12 +88,16 @@ _PG_TO_DATAHUB_TYPE = {
     "ARRAY": "ARRAY",
 }
 
+# ---------------------------------------------------------------------------
+# Environment / dotenv
+# ---------------------------------------------------------------------------
+
 
 def _load_dotenv() -> None:
     """Load dev_env/.env into os.environ without overwriting existing vars."""
-    start = Path(__file__).resolve().parents[2]
+    start = Path(__file__).resolve().parents[3]
     for candidate in (start, *start.parents):
-        env_path = candidate / ".env"
+        env_path = candidate / "dev_env" / ".env"
         if env_path.is_file():
             break
     else:
@@ -114,21 +115,20 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 _gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
-_frontend_url = os.environ.get(
-    "DATASPOKE_DATAHUB_FRONTEND_URL",
-    f"http://localhost:{os.environ.get('DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_UI_PORT', '9002')}",
-)
+_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
 _token_env = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+
 _pg_host = "localhost"
 _pg_port = int(os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT", "9102"))
 _pg_user = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
 _pg_password = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
 _pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
 
+# ---------------------------------------------------------------------------
+# Lazy token resolution — never called at module import time
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# DataHub auth: obtain a session token via frontend login if not provided
-# ---------------------------------------------------------------------------
+_token: str | None = None
 
 
 def _get_datahub_session_token() -> str:
@@ -162,7 +162,17 @@ def _resolve_token() -> str | None:
     return None
 
 
-_token = _resolve_token()
+def _get_token() -> str | None:
+    """Return the cached token, resolving it lazily on first call."""
+    global _token
+    if _token is None:
+        _token = _resolve_token()
+    return _token
+
+
+# ---------------------------------------------------------------------------
+# URN helpers
+# ---------------------------------------------------------------------------
 
 
 def _make_urn(schema: str, table: str) -> str:
@@ -174,8 +184,16 @@ def _make_urn(schema: str, table: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def discover_tables() -> dict[str, list[dict]]:
-    """Return {urn: [column_dicts]} by querying information_schema."""
+async def discover_tables(
+    schemas: frozenset[str] | None = None,
+) -> dict[str, list[dict]]:  # type: ignore[type-arg]
+    """Return {urn: [column_dicts]} by querying information_schema.
+
+    Args:
+        schemas: Set of schema names to discover.  Defaults to TARGET_SCHEMAS.
+    """
+    effective_schemas = schemas if schemas is not None else TARGET_SCHEMAS
+
     conn = await asyncpg.connect(
         host=_pg_host,
         port=_pg_port,
@@ -192,12 +210,12 @@ async def discover_tables() -> dict[str, list[dict]]:
             WHERE table_schema = ANY($1::text[])
             ORDER BY table_schema, table_name, ordinal_position
             """,
-            sorted(TARGET_SCHEMAS),
+            sorted(effective_schemas),
         )
     finally:
         await conn.close()
 
-    datasets: dict[str, list[dict]] = {}
+    datasets: dict[str, list[dict]] = {}  # type: ignore[type-arg]
     for row in rows:
         urn = _make_urn(row["table_schema"], row["table_name"])
         datasets.setdefault(urn, []).append(
@@ -218,10 +236,11 @@ async def discover_tables() -> dict[str, list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-def reset_datahub_datasets() -> int:
+def reset_datasets() -> int:
     """Soft-delete all example_db datasets from DataHub. Returns count deleted."""
-    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=_token))
-    emitter = DatahubRestEmitter(gms_server=_gms_url, token=_token)
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
     urns = list(
         graph.get_urns_by_filter(
@@ -238,11 +257,12 @@ def reset_datahub_datasets() -> int:
         return 0
 
     for urn in urns:
-        mcp = MetadataChangeProposalWrapper(
-            entityUrn=urn,
-            aspect=StatusClass(removed=True),
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=StatusClass(removed=True),
+            )
         )
-        emitter.emit_mcp(mcp)
 
     print(f"  Soft-deleted {len(urns)} datasets.")
     return len(urns)
@@ -253,7 +273,7 @@ def reset_datahub_datasets() -> int:
 # ---------------------------------------------------------------------------
 
 
-def _build_schema_fields(columns: list[dict]) -> list[SchemaFieldClass]:
+def _build_schema_fields(columns: list[dict]) -> list[SchemaFieldClass]:  # type: ignore[type-arg]
     fields = []
     for col in columns:
         dh_type = _PG_TO_DATAHUB_TYPE.get(col["native_type"], "STRING")
@@ -268,14 +288,20 @@ def _build_schema_fields(columns: list[dict]) -> list[SchemaFieldClass]:
     return fields
 
 
-async def ingest_datasets() -> int:
-    """Discover tables and emit metadata to DataHub. Returns count ingested."""
-    datasets = await discover_tables()
+async def ingest_datasets(schemas: frozenset[str] | None = None) -> int:
+    """Discover tables and emit metadata to DataHub. Returns count ingested.
+
+    Args:
+        schemas: Optional subset of schemas to ingest.  Defaults to all
+                 TARGET_SCHEMAS.
+    """
+    token = _get_token()
+    datasets = await discover_tables(schemas=schemas)
     if not datasets:
-        print("  No tables found in example-postgres. Run dummy-data-reset.sh first.")
+        print("  No tables found in example-postgres. Run postgres.reset_all() first.")
         return 0
 
-    emitter = DatahubRestEmitter(gms_server=_gms_url, token=_token)
+    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
     for urn, columns in datasets.items():
         schema = columns[0]["schema"]
@@ -328,6 +354,28 @@ async def ingest_datasets() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Convenience: reset then ingest in one call
+# ---------------------------------------------------------------------------
+
+
+async def reset_and_ingest(
+    schemas: frozenset[str] | None = None,
+) -> tuple[int, int]:
+    """Soft-delete existing datasets then ingest from example-postgres.
+
+    Args:
+        schemas: Optional subset of schemas to ingest after reset.  Defaults
+                 to all TARGET_SCHEMAS.
+
+    Returns:
+        A (deleted, ingested) tuple with the respective counts.
+    """
+    deleted = reset_datasets()
+    ingested = await ingest_datasets(schemas=schemas)
+    return deleted, ingested
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -338,7 +386,7 @@ async def async_main() -> None:
 
     if do_reset:
         print("[INFO]  Resetting DataHub datasets...")
-        reset_datahub_datasets()
+        reset_datasets()
         if reset_only:
             print("[INFO]  Reset complete (--reset-only).")
             return

@@ -10,7 +10,7 @@ Prerequisites:
 - DataHub GMS port-forwarded to localhost:9004
 - Redis port-forwarded to localhost:9202
 - Qdrant port-forwarded to localhost:9203 (HTTP) / 9204 (gRPC)
-- Dummy data ingested via dummy-data-reset.sh && dummy-data-ingest.sh
+- Dummy data ingested via conftest.py Python utilities
 """
 
 import asyncio

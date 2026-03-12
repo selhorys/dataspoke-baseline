@@ -102,13 +102,7 @@ dev_env/
 ├── datahub/                         # DataHub Helm install (prerequisites + datahub charts)
 ├── dataspoke-infra/                 # DataSpoke infra via umbrella chart (values-dev.yaml)
 ├── dataspoke-lock/                  # Lock service (plain K8s manifests)
-├── dataspoke-example/               # Example data sources (plain K8s manifests)
-├── dummy-data-reset.sh              # Idempotent reset of dummy data (SQL + Kafka)
-├── dummy-data-ingest.sh             # Register example-postgres tables in DataHub
-└── dummy-data/                      # SQL seed files, Kafka scripts, DataHub ingest script
-    ├── sql/                         # 10 SQL seed files (00_schemas … 09_ebooknow)
-    ├── kafka/                       # Kafka topic init + message seed scripts
-    └── datahub/ingest.py            # Async Python: discover tables → emit to DataHub GMS
+└── dataspoke-example/               # Example data sources (plain K8s manifests)
 ```
 
 ---
@@ -290,67 +284,7 @@ All ports are configurable via `DATASPOKE_DEV_*_PORT` variables. The `DATASPOKE_
 
 ## Dummy Data
 
-`dummy-data-reset.sh` populates `example-postgres` and `example-kafka` with realistic Imazon use-case data. **Idempotent**: drops all custom schemas CASCADE and recreates them; deletes and recreates Kafka topics.
-
-### PostgreSQL (17 tables, ~600 rows)
-
-| Schema | Table | Rows | UC | Key Characteristics |
-|--------|-------|------|-----|---------------------|
-| `catalog` | `genre_hierarchy` | 15 | UC7 | Self-referencing hierarchy |
-| `catalog` | `title_master` | 30 | UC1,7 | isbn+edition_id composite PK |
-| `catalog` | `editions` | 40 | UC1,7 | Join path to order_items |
-| `orders` | `order_items` | 80 | UC7 | edition_id FK → editions |
-| `orders` | `daily_fulfillment_summary` | 30 | UC3 | 1 anomalous low-volume day |
-| `orders` | `raw_events` | 100 | UC3 | Lifecycle event stream |
-| `orders` | `eu_purchase_history` | 30 | UC5 | PII: address, payment_last4 |
-| `customers` | `eu_profiles` | 20 | UC5 | PII: email, name, DOB |
-| `reviews` | `user_ratings` | 50 | UC2 | Healthy: no NULLs |
-| `reviews` | `user_ratings_legacy` | 50 | UC2 | Degraded: ~30% NULL rating_score |
-| `publishers` | `feed_raw` | 20 | UC1 | Upstream JSONB payloads |
-| `shipping` | `carrier_status` | 40 | UC3 | Includes delayed/exception statuses |
-| `inventory` | `book_stock` | 25 | UC4 | Multi-warehouse stock |
-| `marketing` | `eu_email_campaigns` | 15 | UC5 | Downstream of eu_profiles |
-| `products` | `digital_catalog` | 20 | UC4 | eBookNow: ~30% NULL isbn |
-| `content` | `ebook_assets` | 20 | UC4 | EPUB/PDF/MOBI/COVER/SAMPLE |
-| `storefront` | `listing_items` | 15 | UC4 | Marketplace listings |
-
-### Kafka (3 topics, ~45 messages)
-
-| Topic | Messages | UC |
-|-------|----------|----|
-| `imazon.orders.events` | 20 | UC3 |
-| `imazon.shipping.updates` | 15 | UC3 |
-| `imazon.reviews.new` | 10 | UC2 |
-
-### DataHub Ingestion
-
-`dummy-data-ingest.sh` registers the 17 example-postgres tables as DataHub dataset entities. It runs a Python script (`dummy-data/datahub/ingest.py`) — **not the `datahub` CLI**, which requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. The script:
-
-1. Discovers schemas, tables, and columns from `example-postgres` via `asyncpg`
-2. Obtains a DataHub session token (via frontend login if `DATASPOKE_DATAHUB_TOKEN` is empty)
-3. Emits three aspects per dataset via `DatahubRestEmitter`: `Status`, `DatasetProperties`, `SchemaMetadata`
-
-**Reset mechanism**: The `--reset` flag (default) soft-deletes all `example_db` datasets from DataHub before re-ingesting, ensuring a clean slate.
-
-```bash
-cd dev_env
-./dummy-data-ingest.sh               # reset + ingest (default)
-./dummy-data-ingest.sh --no-reset    # ingest only (additive)
-./dummy-data-ingest.sh --reset-only  # soft-delete only
-```
-
-**Prerequisites**: `dummy-data-reset.sh` has been run (tables exist in PostgreSQL), and port-forwards are active for both example-postgres (9102) and DataHub GMS (9004).
-
-This script seeds the dev environment so DataHub UI shows browsable datasets. It is separate from `dummy-data-reset.sh` (which handles PostgreSQL + Kafka only) because DataHub ingestion has its own reset semantics (soft-delete vs CASCADE drop).
-
-### Data Design Choices
-
-- **UC2 anomaly**: `user_ratings_legacy` has 30% NULL `rating_score` — tests data quality detection.
-- **UC3 SLA**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15, `row_count=12` vs typical ~145) — tests freshness/volume anomaly detection.
-- **UC4 overlap**: ~70% of `digital_catalog` titles match `title_master` by ISBN — tests cross-source lineage matching.
-- **UC5 PII**: Fake but structurally realistic EU PII across DE/FR/ES/IT/NL — tests PII classification and GDPR propagation.
-- **UC7 join path**: Full referential integrity `order_items → editions → title_master → genre_hierarchy` — tests multi-hop lineage.
-- **ISBNs**: 978-prefix, obviously fake (e.g., `9780000000001`).
+The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka instances populated with Imazon use-case data (11 schemas, 17 tables, ~600 rows; 3 Kafka topics, ~45 messages). Seed files, ingestion logic, and data design details live in `tests/integration/util/` — see [`TESTING.md §Test Data Design`](../TESTING.md#test-data-design) for the full reference.
 
 ---
 
@@ -419,7 +353,7 @@ Total: **7750m** across all components. Pods rarely hit limits simultaneously. E
 
 ## Open Questions
 
-- [ ] When DataSpoke exposes a redefined dataset registration API (blended API/UI), `dummy-data-ingest.sh` could be replaced by calls to that API for integration test setup. This would simplify the test workflow and exercise the redefined API as part of every test run. The current SDK script would remain as the bootstrap path for dev environments where the DataSpoke API is not running.
+- [ ] When DataSpoke exposes a redefined dataset registration API (blended API/UI), `tests/integration/util/datahub.py` could be replaced by calls to that API for integration test setup. This would simplify the test workflow and exercise the redefined API as part of every test run.
 
 ---
 

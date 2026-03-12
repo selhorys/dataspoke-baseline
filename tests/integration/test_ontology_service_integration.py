@@ -7,7 +7,7 @@ Test-specific data extensions (created and cleaned up within each test):
 
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
-- Dummy data ingested via dummy-data-reset.sh && dummy-data-ingest.sh
+- Dummy data ingested via conftest.py Python utilities
 """
 
 import uuid

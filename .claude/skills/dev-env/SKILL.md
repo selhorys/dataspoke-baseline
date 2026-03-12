@@ -79,7 +79,7 @@ All actions start here:
 2. Start port-forwarding for dummy-data and DataHub GMS (needed for the next step).
 3. Seed dummy data and register datasets in DataHub:
    ```bash
-   cd dev_env && ./dummy-data-reset.sh && ./dummy-data-ingest.sh
+   uv run python -m tests.integration.util --reset-all
    ```
 4. Show access information:
    - **DataHub**: `./dev_env/datahub-port-forward.sh` → UI at `http://localhost:9002`, credentials `datahub / datahub`

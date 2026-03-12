@@ -1,0 +1,20 @@
+{"event_id":"evt-001","order_id":"ORD-2024-00001","event_type":"placed","timestamp":"2024-11-01T09:12:00Z","items":[{"edition_id":1,"qty":1},{"edition_id":4,"qty":1}],"total":34.98}
+{"event_id":"evt-002","order_id":"ORD-2024-00001","event_type":"confirmed","timestamp":"2024-11-01T09:15:00Z","warehouse":"WH-East"}
+{"event_id":"evt-003","order_id":"ORD-2024-00001","event_type":"shipped","timestamp":"2024-11-02T08:00:00Z","carrier":"UPS","tracking":"1Z999AA10001"}
+{"event_id":"evt-004","order_id":"ORD-2024-00001","event_type":"delivered","timestamp":"2024-11-04T14:30:00Z","signed_by":"E. Smith"}
+{"event_id":"evt-005","order_id":"ORD-2024-00002","event_type":"placed","timestamp":"2024-11-02T14:30:00Z","items":[{"edition_id":5,"qty":1}],"total":13.29}
+{"event_id":"evt-006","order_id":"ORD-2024-00002","event_type":"confirmed","timestamp":"2024-11-02T14:35:00Z","warehouse":"WH-West"}
+{"event_id":"evt-007","order_id":"ORD-2024-00002","event_type":"shipped","timestamp":"2024-11-03T10:00:00Z","carrier":"FedEx","tracking":"FX100200300"}
+{"event_id":"evt-008","order_id":"ORD-2024-00002","event_type":"delivered","timestamp":"2024-11-05T11:00:00Z","signed_by":"M. Jones"}
+{"event_id":"evt-009","order_id":"ORD-2024-00003","event_type":"placed","timestamp":"2024-11-03T11:45:00Z","items":[{"edition_id":7,"qty":1},{"edition_id":9,"qty":1}],"total":40.98}
+{"event_id":"evt-010","order_id":"ORD-2024-00003","event_type":"confirmed","timestamp":"2024-11-03T11:50:00Z","warehouse":"WH-East"}
+{"event_id":"evt-011","order_id":"ORD-2024-00003","event_type":"shipped","timestamp":"2024-11-04T09:00:00Z","carrier":"DHL","tracking":"DH5001001"}
+{"event_id":"evt-012","order_id":"ORD-2024-00003","event_type":"delivered","timestamp":"2024-11-06T16:20:00Z","signed_by":"A. Weber"}
+{"event_id":"evt-013","order_id":"ORD-2024-00004","event_type":"placed","timestamp":"2024-11-04T08:20:00Z","items":[{"edition_id":10,"qty":1}],"total":29.69}
+{"event_id":"evt-014","order_id":"ORD-2024-00004","event_type":"confirmed","timestamp":"2024-11-04T08:25:00Z","warehouse":"WH-East"}
+{"event_id":"evt-015","order_id":"ORD-2024-00004","event_type":"shipped","timestamp":"2024-11-05T07:30:00Z","carrier":"UPS","tracking":"1Z999AA10002"}
+{"event_id":"evt-016","order_id":"ORD-2024-00004","event_type":"delivered","timestamp":"2024-11-07T13:45:00Z","signed_by":"L. Kim"}
+{"event_id":"evt-017","order_id":"ORD-2024-00005","event_type":"placed","timestamp":"2024-11-05T16:55:00Z","items":[{"edition_id":11,"qty":1}],"total":29.99}
+{"event_id":"evt-018","order_id":"ORD-2024-00005","event_type":"confirmed","timestamp":"2024-11-05T17:00:00Z","warehouse":"WH-West"}
+{"event_id":"evt-019","order_id":"ORD-2024-00005","event_type":"shipped","timestamp":"2024-11-06T08:15:00Z","carrier":"FedEx","tracking":"FX100200301"}
+{"event_id":"evt-020","order_id":"ORD-2024-00005","event_type":"delivered","timestamp":"2024-11-08T10:30:00Z","signed_by":"T. Nguyen"}

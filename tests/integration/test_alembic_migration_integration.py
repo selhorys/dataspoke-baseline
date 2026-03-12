@@ -6,7 +6,7 @@ No baseline dummy-data extensions needed — tests operate exclusively on the
 Prerequisites:
 - Port-forward PostgreSQL to localhost:9201
 - Port-forward lock service to localhost:9221
-- dev_env/dummy-data-reset.sh has been run (conftest acquires lock)
+- conftest.py resets dummy data via Python utilities (acquires lock)
 """
 
 import uuid

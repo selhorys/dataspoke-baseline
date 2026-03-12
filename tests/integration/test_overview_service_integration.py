@@ -11,7 +11,7 @@ Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Redis port-forwarded to localhost:9202
-- Dummy data ingested via dummy-data-reset.sh && dummy-data-ingest.sh
+- Dummy data ingested via conftest.py Python utilities
 """
 
 import uuid

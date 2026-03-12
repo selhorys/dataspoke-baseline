@@ -1,0 +1,15 @@
+{"tracking":"1Z999AA10001","carrier":"UPS","order_id":"ORD-2024-00001","status":"picked_up","timestamp":"2024-11-01T18:00:00Z","location":"New York, NY"}
+{"tracking":"1Z999AA10001","carrier":"UPS","order_id":"ORD-2024-00001","status":"in_transit","timestamp":"2024-11-02T06:00:00Z","location":"Philadelphia, PA"}
+{"tracking":"1Z999AA10001","carrier":"UPS","order_id":"ORD-2024-00001","status":"delivered","timestamp":"2024-11-04T14:30:00Z","location":"Boston, MA"}
+{"tracking":"FX100200300","carrier":"FedEx","order_id":"ORD-2024-00002","status":"picked_up","timestamp":"2024-11-02T20:00:00Z","location":"Los Angeles, CA"}
+{"tracking":"FX100200300","carrier":"FedEx","order_id":"ORD-2024-00002","status":"in_transit","timestamp":"2024-11-03T08:00:00Z","location":"Phoenix, AZ"}
+{"tracking":"FX100200300","carrier":"FedEx","order_id":"ORD-2024-00002","status":"delivered","timestamp":"2024-11-05T11:00:00Z","location":"Denver, CO"}
+{"tracking":"DH5001001","carrier":"DHL","order_id":"ORD-2024-00003","status":"picked_up","timestamp":"2024-11-04T07:00:00Z","location":"Chicago, IL"}
+{"tracking":"DH5001001","carrier":"DHL","order_id":"ORD-2024-00003","status":"in_transit","timestamp":"2024-11-05T12:00:00Z","location":"Detroit, MI"}
+{"tracking":"DH5001001","carrier":"DHL","order_id":"ORD-2024-00003","status":"delivered","timestamp":"2024-11-06T16:20:00Z","location":"Cleveland, OH"}
+{"tracking":"1Z999AA10002","carrier":"UPS","order_id":"ORD-2024-00004","status":"picked_up","timestamp":"2024-11-05T06:00:00Z","location":"Houston, TX"}
+{"tracking":"1Z999AA10002","carrier":"UPS","order_id":"ORD-2024-00004","status":"in_transit","timestamp":"2024-11-06T10:00:00Z","location":"Dallas, TX"}
+{"tracking":"1Z999AA10002","carrier":"UPS","order_id":"ORD-2024-00004","status":"delivered","timestamp":"2024-11-07T13:45:00Z","location":"Austin, TX"}
+{"tracking":"FX100200304","carrier":"FedEx","order_id":"ORD-2024-00015","status":"in_transit","timestamp":"2024-11-17T22:00:00Z","location":"Oakland, CA"}
+{"tracking":"FX100200304","carrier":"FedEx","order_id":"ORD-2024-00015","status":"delayed","timestamp":"2024-11-18T10:00:00Z","location":"Customs, CA","reason":"Customs clearance delay"}
+{"tracking":"1Z999AA10010","carrier":"UPS","order_id":"ORD-2024-00035","status":"delayed","timestamp":"2024-12-07T06:00:00Z","location":"Louisville, KY","reason":"Mechanical delay at sort facility"}

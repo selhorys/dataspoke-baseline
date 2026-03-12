@@ -378,11 +378,10 @@ After implementation (or PR review), but before pushing, `run_integration_test_f
 
 - Skips gracefully if `tests/integration/` does not exist or the dev-env lock endpoint is unreachable.
 - Acquires the dev-env advisory lock, then loops up to `PRAUTO_INTEGRATION_FIX_MAX_RETRIES` times (default 2):
-  1. Reset dummy data and re-ingest DataHub datasets (`dummy-data-reset.sh && dummy-data-ingest.sh`).
-  2. Run `uv run pytest tests/integration/ --tb=short`.
-  3. If tests pass → break.
-  4. If tests fail and retries remain → invoke Claude (`integration-fix.md` prompt) with the test output to diagnose and fix. Claude commits fixes locally.
-- After the loop: reset dummy data and re-ingest, release lock.
+  1. Run `uv run pytest tests/integration/ --tb=short` (`conftest.py` handles dummy-data resets internally via Python utilities).
+  2. If tests pass → break.
+  3. If tests fail and retries remain → invoke Claude (`integration-fix.md` prompt) with the test output to diagnose and fix. Claude commits fixes locally.
+- After the loop: release lock.
 - Each Claude fix session uses `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` (default 50) and `PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX`.
 
 #### Stage 2: Final test report (post-push)
@@ -393,10 +392,8 @@ After push and PR creation, `run_and_post_test_results()` runs both test suites 
 - **Integration tests**: If `tests/integration/` exists, follows the dev-env lock protocol (best-effort):
   1. Check if the dev-env lock endpoint (`http://localhost:9221/lock/status`) is reachable — skip gracefully if not.
   2. Acquire the advisory lock with owner `prauto-{worker_id}`.
-  3. Run `dev_env/dummy-data-reset.sh && dev_env/dummy-data-ingest.sh` before tests.
-  4. Run `uv run pytest tests/integration/ --tb=short` with `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1`.
-  5. Run `dev_env/dummy-data-reset.sh && dev_env/dummy-data-ingest.sh` after tests.
-  6. Release the advisory lock.
+  3. Run `uv run pytest tests/integration/ --tb=short` with `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` (`conftest.py` handles before/after dummy-data resets via Python utilities).
+  4. Release the advisory lock.
 - Results are posted on the PR as `prauto({worker_id}): {Type} Test Results — {Passed|Failed}` inside a `<details>` block.
 
 ### Squash-finalize action

@@ -4,9 +4,9 @@ Prerequisites:
 - Temporal port-forwarded to localhost:9205
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
-- Dummy data ingested via dev_env/dummy-data-ingest.sh
+- Dummy data ingested via conftest.py Python utilities
 
-Test-specific data extensions (inserted after dummy-data-reset.sh):
+Test-specific data extensions (inserted after baseline reset):
 - 1 IngestionConfig row for example_db.catalog.title_master (sources={}, dry-run)
 - 1 ValidationConfig row for example_db.catalog.title_master (completeness threshold 0.8)
 Both rows are cleaned up in fixture teardown.
