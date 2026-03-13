@@ -36,7 +36,7 @@ src/
 
 ## Tech stack rules
 
-- **Python 3.11+** — type hints on every function signature
+- **Python 3.13** — type hints on every function signature
 - **FastAPI** — use `APIRouter` in `src/api/routers/`; business logic stays in `src/backend/`
 - **Pydantic v2** — all request/response schemas and settings models
 - **SQLAlchemy 2.0** (async) — for PostgreSQL; Alembic for all migrations

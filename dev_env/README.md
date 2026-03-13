@@ -45,7 +45,10 @@ From the `dev_env/` directory:
 chmod +x install.sh uninstall.sh \
   datahub/install.sh datahub/uninstall.sh \
   dataspoke-infra/install.sh dataspoke-infra/uninstall.sh \
-  dataspoke-example/install.sh dataspoke-example/uninstall.sh
+  dataspoke-example/install.sh dataspoke-example/uninstall.sh \
+  dataspoke-lock/install.sh dataspoke-lock/uninstall.sh \
+  datahub-port-forward.sh dataspoke-port-forward.sh \
+  dummy-data-port-forward.sh lock-port-forward.sh
 
 ./install.sh
 ```

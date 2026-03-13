@@ -109,7 +109,7 @@ Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate
 |----------|--------|----------|
 | Read-only | Auto-allowed | `kubectl get`, `helm list`, `git log`, `docker ps` |
 | Reference docs | Auto-allowed | `WebSearch`, `WebFetch` to framework/tool documentation domains |
-| Skills | Auto-allowed / prompt | Most skills auto-allowed; `prauto-run-heartbeat` and `ref-setup` require user confirmation (side effects) |
+| Skills | Auto-allowed / prompt | Most skills auto-allowed; `prauto-run-heartbeat`, `ref-setup`, and `spec-to-bulk-issue` require user confirmation (side effects) |
 | Dev env scripts | Auto-allowed | `bash dev_env/install.sh`, `bash dev_env/uninstall.sh` |
 | Mutating | Prompt for confirmation | `kubectl apply`, `helm install`, `helm upgrade` |
 | Destructive | Always blocked | `kubectl delete namespace`, `rm -rf`, `sudo` |

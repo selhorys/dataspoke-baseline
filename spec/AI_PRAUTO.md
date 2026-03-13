@@ -148,12 +148,12 @@ crontab trigger
     │       └── if exhausted → post quota-paused on WIP issues → exit
     │
     ├── 5. Claim new issue ─────── (lib/issues.sh: find_all_claimed_issues, find_eligible_issue, claim_issue)
-    │       ├── count ALL open issues held by worker (any prauto: label) via find_all_claimed_issues
+    │       ├── count open issues held by worker (excludes ready-only issues) via find_all_claimed_issues
     │       ├── if count >= PRAUTO_OPEN_ISSUE_LIMIT → skip pickup
     │       └── otherwise → find oldest prauto:ready issue → claim (add prauto:wip, comment)
     │
     ├── 6. Process all claimed issues ── (lib/issues.sh: find_all_claimed_issues)
-    │       ├── query GitHub for ALL open issues assigned to worker (any prauto: label)
+    │       ├── query GitHub for open issues assigned to worker (any prauto: label except ready-only)
     │       ├── includes newly claimed issue from step 5
     │       ├── for each issue (oldest first), self-contained state machine:
     │       │   ├── prauto:done / prauto:failed → skip (terminal)
@@ -174,9 +174,9 @@ crontab trigger
     └── 7. Restore secrets + release lock  (EXIT trap: cleanup())
 ```
 
-**Claim-first, then process-all**: Step 5 calls `find_all_claimed_issues()` to count all open issues assigned to this worker with any `prauto:` label. If under `PRAUTO_OPEN_ISSUE_LIMIT`, it finds and claims a new issue. Step 6 re-fetches claimed issues (if a new one was claimed) and loops over **all** of them (oldest first). Each iteration is a self-contained state machine for one issue: WIP issues route through phase derivation (analysis, plan-approval, implementation, pr); review issues check for squash-finalize or feedback. Each issue needing active work is processed; issues in terminal (`done`/`failed`) or waiting states are skipped. The heartbeat exits after all claimed issues are processed or skipped.
+**Claim-first, then process-all**: Step 5 calls `find_all_claimed_issues()` to count open issues assigned to this worker with `prauto:` labels — excluding issues that carry only `prauto:ready` (restarted issues awaiting re-claim). If under `PRAUTO_OPEN_ISSUE_LIMIT`, it finds and claims a new issue. Step 6 re-fetches claimed issues (if a new one was claimed) and loops over **all** of them (oldest first). Each iteration is a self-contained state machine for one issue: WIP issues route through phase derivation (analysis, plan-approval, implementation, pr); review issues check for squash-finalize or feedback. Each issue needing active work is processed; issues in terminal (`done`/`failed`) or waiting states are skipped. The heartbeat exits after all claimed issues are processed or skipped.
 
-**Worktree isolation**: Every Claude session runs inside a dedicated git worktree at `.prauto/worktrees/I-{N}` (new issue) or `.prauto/worktrees/{branch}` (PR review). The main repo directory is never the working directory during Claude invocations. Each iteration cleans up its worktree before moving to the next issue; the EXIT trap serves as a safety net for unexpected exits.
+**Worktree isolation**: Every Claude session runs inside a dedicated git worktree at `.prauto/worktrees/I-{N}` (new issue) or `.prauto/worktrees/{branch-sanitized}` (PR review, slashes replaced with dashes). The main repo directory is never the working directory during Claude invocations. Each iteration cleans up its worktree before moving to the next issue; the EXIT trap serves as a safety net for unexpected exits.
 
 **Secrets handling**: `config.local.env` is copied to a temporary backup under `state/.secrets-$$/` before Claude runs. The original stays in place, protected by the `--disallowedTools` denylist entry. Secrets are sourced into shell env vars. The EXIT trap removes the temp backup.
 
@@ -313,7 +313,7 @@ Issues are discovered via `gh issue list` filtered by `prauto:ready` label, excl
 
 **Optimistic claim protocol**: (1) Check if `prauto:wip` already present — if so, back off. (2) Record pre-claim timestamp, add `prauto:wip` label. (3) Re-fetch after brief delay; only consider `Claimed` comments posted after the pre-claim timestamp (ignores stale comments from previous attempts). (4) If another worker claimed during the window, back off. (5) Remove `prauto:ready`, set assignee, post a fresh claim comment (always, even on re-claim). The timestamp-based race check supports issue restarts where old comments remain.
 
-When finding claimed issues, `find_all_claimed_issues()` returns all open issues assigned to this worker's `PRAUTO_GITHUB_ACTOR` that carry any `prauto:` label, sorted oldest-first.
+When finding claimed issues, `find_all_claimed_issues()` returns all open issues assigned to this worker's `PRAUTO_GITHUB_ACTOR` that carry `prauto:` labels — excluding issues that carry only `prauto:ready` (these are restarted issues awaiting re-claim and should not count toward the open limit). Sorted oldest-first.
 
 ### Issue body conventions
 
@@ -334,7 +334,7 @@ For best results, issues should include a clear description, references to relev
 | Squash commit | Generate final commit message | None (text generation only) | 1 |
 | Feedback response | Respond to plan counter-proposal | None (text generation only) | 1 |
 
-`--max-turns` is the primary guard against runaway sessions. Values are set in `config.local.env` (example defaults: 50 analysis, 150 implementation). `--max-budget-usd` can be added via `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS` / `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION` for API billing but has no effect on subscription plans.
+`--max-turns` is the primary guard against runaway sessions. Values are set in `config.local.env` (example defaults: 100 analysis, 400 implementation). `--max-budget-usd` can be added via `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS` / `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION` for API billing but has no effect on subscription plans.
 
 Every invocation starts a fresh session — no `--resume`. The rendered system prompt (`state/.system-append-rendered.md`) is passed via `--append-system-prompt-file`.
 
