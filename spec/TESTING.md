@@ -279,7 +279,16 @@ Integration tests do **not** require a running API server or Temporal worker —
 
 ### Directory Structure
 
-Test files are placed under `tests/integration/` using two naming patterns: `test_<feature>_service_integration.py` for service-level tests and `test_<feature>_integration.py` for infrastructure and cross-cutting tests. Shared fixtures (DB connections, DataHub/Redis/Qdrant/Temporal clients, Alembic migration, lock protocol, dummy-data reset, auth helpers) live in `conftest.py`.
+Test files are placed under `tests/integration/` using two naming patterns: `test_<feature>_service_integration.py` for service-level tests and `test_<feature>_integration.py` for infrastructure and cross-cutting tests.
+
+**`conftest.py` shared fixtures and helpers:**
+
+- **Infrastructure fixtures** (session/function scope): `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `temporal_client`, `kafka_brokers`, `datahub_kafka_brokers`
+- **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
+- **Mock fixtures**: `mock_cache` (AsyncMock Redis with get/set/publish/delete)
+- **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
+- **DataHub helpers**: `emit_test_dataset(client, *, urn, name, fields, with_ownership, with_tags)`, `soft_delete_test_dataset(client, urn)`
+- **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
 
 **Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka on port 9104, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
 
