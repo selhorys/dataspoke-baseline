@@ -111,6 +111,20 @@ def _get_datahub_session_token() -> str:
     return data.get("data", {}).get("token", "")
 
 
+def _resolve_datahub_token() -> str:
+    """Return a valid DataHub token, falling back to session login.
+
+    Mirrors the fallback logic used by the ``datahub_client`` fixture so that
+    hub-proxy tests can inject a working token into the mocked settings.
+    """
+    if _datahub_token:
+        return _datahub_token
+    try:
+        return _get_datahub_session_token()
+    except Exception:
+        return ""
+
+
 def _auth_headers() -> dict[str, str]:
     """Create JWT auth headers for integration test requests."""
     from src.api.auth.jwt import create_access_token
