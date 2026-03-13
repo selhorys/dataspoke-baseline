@@ -157,13 +157,13 @@ Integration tests support two execution modes:
 
 Follow these seven steps in order every time you run integration tests.
 
-> **Automation note:** When running via `uv run pytest tests/integration/`, `conftest.py` automates Steps 2, 3, 6, and 7 (lock acquire/release and dummy-data reset via Python utilities in `tests/integration/util/`). The manual commands below are for reference or when running outside pytest.
+> **Automation note:** When running via `uv run pytest tests/integration/`, `conftest.py` automates Steps 2 and 7 (lock acquire/release) at session scope, and Steps 3 and 6 (dummy-data reset) at module scope via the `module_dummy_data` fixture — resetting only schemas/topics declared by each test module. `conftest.py` also loads `dev_env/.env` automatically and runs `alembic upgrade head` to ensure the dataspoke schema is current. The manual commands below are for reference or when running outside pytest.
 
 #### Step 1 — Write test scenarios and code
 
 - Map scenarios to [Imazon](USE_CASE_en.md) domain entities (see [Test Data Design](#test-data-design)).
 - Place test files under `tests/integration/`, mirroring `src/` structure.
-- Naming: `test_<feature>_integration.py`
+- Naming: `test_<feature>_service_integration.py` for service-level tests, `test_<feature>_integration.py` for infrastructure and cross-cutting tests
 - Document any test-specific data additions in the test file's module-level docstring.
 
 #### Step 2 — Acquire the dev-env lock
@@ -203,7 +203,10 @@ The reset is idempotent: it drops all custom schemas `CASCADE`, recreates them, 
 For manual reset outside pytest:
 
 ```bash
-uv run python -m tests.integration.util --reset-all
+uv run python -m tests.integration.util --reset-all   # Full reset: PG + Kafka + DataHub
+uv run python -m tests.integration.util --pg           # PostgreSQL only
+uv run python -m tests.integration.util --kafka        # Kafka only
+uv run python -m tests.integration.util --datahub      # DataHub only
 ```
 
 See [`spec/feature/DEV_ENV.md §Dummy Data`](feature/DEV_ENV.md#dummy-data) for data details.
@@ -276,7 +279,9 @@ Integration tests do **not** require a running API server or Temporal worker —
 
 ### Directory Structure
 
-Test files are named `test_<feature>_service_integration.py` and placed under `tests/integration/`. Shared fixtures (DB connections, DataHub/Redis/Qdrant/Temporal clients, lock protocol, dummy-data reset) live in `conftest.py`.
+Test files are placed under `tests/integration/` using two naming patterns: `test_<feature>_service_integration.py` for service-level tests and `test_<feature>_integration.py` for infrastructure and cross-cutting tests. Shared fixtures (DB connections, DataHub/Redis/Qdrant/Temporal clients, Alembic migration, lock protocol, dummy-data reset, auth helpers) live in `conftest.py`.
+
+**Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka on port 9104, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
 
 ---
 
