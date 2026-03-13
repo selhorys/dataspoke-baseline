@@ -17,10 +17,6 @@ from httpx import ASGITransport, AsyncClient
 
 from .conftest import _auth_headers, _datahub_gms_url, _resolve_datahub_token
 
-DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(
-    {"ontology", "ingestion", "validation", "generation"}
-)
-
 _HEADERS = _auth_headers()
 _CAMEL_RE = re.compile(r"[a-z][A-Z]")
 
