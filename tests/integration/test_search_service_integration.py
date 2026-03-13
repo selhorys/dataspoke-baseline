@@ -13,17 +13,20 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import asyncio
 import os
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
 from src.shared.vector.client import QdrantManager
 
-from .conftest import _auth_headers
+from .conftest import (
+    _auth_headers,
+    emit_test_dataset,
+    override_app,
+    soft_delete_test_dataset,
+)
 
 _qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
 _qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
@@ -66,103 +69,31 @@ async def mock_llm():
 @pytest_asyncio.fixture
 async def test_dataset_urn(datahub_client):
     """Emit a self-contained Imazon test dataset for search integration testing."""
-    from datahub.metadata.schema_classes import (
-        DatasetPropertiesClass,
-        GlobalTagsClass,
-        OtherSchemaClass,
-        OwnerClass,
-        OwnershipClass,
-        OwnershipTypeClass,
-        SchemaFieldClass,
-        SchemaMetadataClass,
-        StatusClass,
-        TagAssociationClass,
-    )
-
     urn = _TEST_URN
-
-    await datahub_client.emit_aspect(urn, StatusClass(removed=False))
-    await datahub_client.emit_aspect(
-        urn,
-        DatasetPropertiesClass(
-            name="search_svc.orders",
-            description="Integration test dataset for SearchService",
-            customProperties={"source": "integration-test"},
-        ),
+    await emit_test_dataset(
+        datahub_client,
+        urn=urn,
+        name="search_svc.orders",
+        description="Integration test dataset for SearchService",
+        fields=[("order_id", "integer", False), ("customer_email", "text", False)],
+        with_ownership=True,
+        with_tags=True,
     )
-    await datahub_client.emit_aspect(
-        urn,
-        SchemaMetadataClass(
-            schemaName="search_svc.orders",
-            platform="urn:li:dataPlatform:postgres",
-            version=0,
-            hash="",
-            platformSchema=OtherSchemaClass(rawSchema=""),
-            fields=[
-                SchemaFieldClass(
-                    fieldPath="order_id",
-                    nativeDataType="integer",
-                    type={"type": {"type": "NUMBER"}},
-                    nullable=False,
-                ),
-                SchemaFieldClass(
-                    fieldPath="customer_email",
-                    nativeDataType="text",
-                    type={"type": {"type": "STRING"}},
-                    nullable=False,
-                ),
-            ],
-        ),
-    )
-    await datahub_client.emit_aspect(
-        urn,
-        OwnershipClass(
-            owners=[
-                OwnerClass(
-                    owner="urn:li:corpuser:testuser@example.com",
-                    type=OwnershipTypeClass.DATAOWNER,
-                ),
-            ]
-        ),
-    )
-    await datahub_client.emit_aspect(
-        urn,
-        GlobalTagsClass(tags=[TagAssociationClass(tag="urn:li:tag:integration-test")]),
-    )
-    await asyncio.sleep(3)
     yield urn
-    await datahub_client.emit_aspect(urn, StatusClass(removed=True))
+    await soft_delete_test_dataset(datahub_client, urn)
 
 
 @pytest_asyncio.fixture
 async def http_client(datahub_client, redis_client, qdrant_client, mock_llm, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
-    from src.api.dependencies import (
-        get_datahub,
-        get_db,
-        get_llm,
-        get_qdrant,
-        get_redis,
-    )
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_redis] = lambda: redis_client
-    app.dependency_overrides[get_qdrant] = lambda: qdrant_client
-    app.dependency_overrides[get_llm] = lambda: mock_llm
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
+    async with override_app(
+        datahub=datahub_client,
+        redis=redis_client,
+        qdrant=qdrant_client,
+        llm=mock_llm,
+        db=async_session,
     ) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

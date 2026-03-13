@@ -10,17 +10,24 @@ Port-forwards must be active before running:
 - Dummy-data ports on localhost:9102/9104 (dummy-data-port-forward.sh)
 """
 
+import asyncio
 import base64
 import json
 import os
 import subprocess
+import uuid
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 import pytest_asyncio
 import requests
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -262,7 +269,6 @@ def _reset_all_dummy_data() -> None:
     Per spec/TESTING.md Steps 3 & 6: always reset dummy data before and after
     integration test runs so the baseline state is clean.
     """
-    import asyncio
 
     from tests.integration.util import datahub, kafka, postgres
 
@@ -298,7 +304,6 @@ def module_dummy_data(request) -> None:
 
     Modules that declare no constants are no-ops.
     """
-    import asyncio
 
     from tests.integration.util import kafka, postgres
 
@@ -365,3 +370,225 @@ async def qdrant_manager():
         api_key=_qdrant_api_key,
         grpc_port=_qdrant_grpc_port,
     )
+
+
+# ── Shared mock fixtures ─────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture
+async def mock_cache():
+    """AsyncMock Redis cache with standard methods (get/set/publish/delete)."""
+    cache = AsyncMock()
+    cache.get = AsyncMock(return_value=None)
+    cache.set = AsyncMock()
+    cache.publish = AsyncMock()
+    cache.delete = AsyncMock()
+    return cache
+
+
+# ── Shared test helpers ──────────────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def override_app(
+    *,
+    datahub=None,
+    db=None,
+    redis=None,
+    llm=None,
+    qdrant=None,
+):
+    """Create an AsyncClient with FastAPI DI overrides for integration tests.
+
+    Usage in a test fixture::
+
+        @pytest_asyncio.fixture
+        async def http_client(datahub_client, async_session):
+            async with override_app(datahub=datahub_client, db=async_session) as client:
+                yield client
+    """
+    from src.api.main import app
+
+    if datahub is not None:
+        from src.api.dependencies import get_datahub
+
+        app.dependency_overrides[get_datahub] = lambda: datahub
+
+    if redis is not None:
+        from src.api.dependencies import get_redis
+
+        app.dependency_overrides[get_redis] = lambda: redis
+
+    if llm is not None:
+        from src.api.dependencies import get_llm
+
+        app.dependency_overrides[get_llm] = lambda: llm
+
+    if qdrant is not None:
+        from src.api.dependencies import get_qdrant
+
+        app.dependency_overrides[get_qdrant] = lambda: qdrant
+
+    if db is not None:
+        from src.api.dependencies import get_db
+
+        async def _override_db():
+            yield db
+
+        app.dependency_overrides[get_db] = _override_db
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        yield client
+
+    app.dependency_overrides.clear()
+
+
+def make_test_urn(service: str, suffix: str) -> str:
+    """Build a test dataset URN: ``imazon.test.<service>.<suffix>``."""
+    return f"urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.{service}.{suffix},DEV)"
+
+
+async def seed_events(
+    session,
+    *,
+    entity_type: str,
+    entity_id: str,
+    event_type: str | None = None,
+    count: int = 3,
+) -> list[str]:
+    """Insert test events into dataspoke.events and return their IDs."""
+    event_ids: list[str] = []
+    for i in range(count):
+        eid = str(uuid.uuid4())
+        event_ids.append(eid)
+        await session.execute(
+            text(
+                "INSERT INTO dataspoke.events"
+                " (id, entity_type, entity_id, event_type, status, detail, occurred_at)"
+                " VALUES (:id, :entity_type, :entity_id, :event_type,"
+                " :status, :detail, :occurred_at)"
+            ),
+            {
+                "id": eid,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "event_type": event_type or f"{entity_type}.completed",
+                "status": "success",
+                "detail": json.dumps({"run_id": str(uuid.uuid4()), "index": i}),
+                "occurred_at": datetime.now(tz=UTC),
+            },
+        )
+    await session.commit()
+    return event_ids
+
+
+async def cleanup_events(session, event_ids: list[str]) -> None:
+    """Delete events by their IDs."""
+    for eid in event_ids:
+        await session.execute(
+            text("DELETE FROM dataspoke.events WHERE id = :id"),
+            {"id": eid},
+        )
+    await session.commit()
+
+
+async def emit_test_dataset(
+    client,
+    *,
+    urn: str,
+    name: str,
+    description: str = "Integration test dataset",
+    fields: list[tuple[str, str, bool]] | None = None,
+    with_ownership: bool = False,
+    with_tags: bool = False,
+    wait_seconds: float = 3.0,
+) -> None:
+    """Emit standard DataHub aspects for a test dataset.
+
+    Args:
+        fields: list of (fieldPath, nativeDataType, nullable) tuples.
+            Defaults to [("id", "integer", False), ("name", "text", True)].
+    """
+    from datahub.metadata.schema_classes import (
+        DatasetPropertiesClass,
+        OtherSchemaClass,
+        SchemaFieldClass,
+        SchemaMetadataClass,
+        StatusClass,
+    )
+
+    if fields is None:
+        fields = [("id", "integer", False), ("name", "text", True)]
+
+    await client.emit_aspect(urn, StatusClass(removed=False))
+    await client.emit_aspect(
+        urn,
+        DatasetPropertiesClass(
+            name=name,
+            description=description,
+            customProperties={"source": "integration-test"},
+        ),
+    )
+
+    _type_map = {"integer": "NUMBER", "bigint": "NUMBER", "real": "NUMBER"}
+    schema_fields = [
+        SchemaFieldClass(
+            fieldPath=fp,
+            nativeDataType=nt,
+            type={"type": {"type": _type_map.get(nt, "STRING")}},
+            nullable=nl,
+        )
+        for fp, nt, nl in fields
+    ]
+
+    await client.emit_aspect(
+        urn,
+        SchemaMetadataClass(
+            schemaName=name,
+            platform="urn:li:dataPlatform:postgres",
+            version=0,
+            hash="",
+            platformSchema=OtherSchemaClass(rawSchema=""),
+            fields=schema_fields,
+        ),
+    )
+
+    if with_ownership:
+        from datahub.metadata.schema_classes import (
+            OwnerClass,
+            OwnershipClass,
+            OwnershipTypeClass,
+        )
+
+        await client.emit_aspect(
+            urn,
+            OwnershipClass(
+                owners=[
+                    OwnerClass(
+                        owner="urn:li:corpuser:testuser@example.com",
+                        type=OwnershipTypeClass.DATAOWNER,
+                    ),
+                ]
+            ),
+        )
+
+    if with_tags:
+        from datahub.metadata.schema_classes import GlobalTagsClass, TagAssociationClass
+
+        await client.emit_aspect(
+            urn,
+            GlobalTagsClass(tags=[TagAssociationClass(tag="urn:li:tag:integration-test")]),
+        )
+
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+
+
+async def soft_delete_test_dataset(client, urn: str) -> None:
+    """Soft-delete a test dataset in DataHub."""
+    from datahub.metadata.schema_classes import StatusClass
+
+    await client.emit_aspect(urn, StatusClass(removed=True))

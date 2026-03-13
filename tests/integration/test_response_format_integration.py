@@ -13,9 +13,8 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from .conftest import _auth_headers, _datahub_gms_url, _resolve_datahub_token
+from .conftest import _auth_headers, _datahub_gms_url, _resolve_datahub_token, override_app
 
 _HEADERS = _auth_headers()
 _CAMEL_RE = re.compile(r"[a-z][A-Z]")
@@ -24,30 +23,16 @@ _CAMEL_RE = re.compile(r"[a-z][A-Z]")
 @pytest_asyncio.fixture
 async def http_client(datahub_client, redis_client, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
-    from src.api.dependencies import get_datahub, get_db, get_redis
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_redis] = lambda: redis_client
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
     # Also patch hub proxy settings for DataHub pass-through tests
     hub_token = _resolve_datahub_token()
     with patch("src.api.routers.hub.settings") as mock_settings:
         mock_settings.datahub_gms_url = _datahub_gms_url
         mock_settings.datahub_token = hub_token if hub_token else ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://testserver",
+        async with override_app(
+            datahub=datahub_client, redis=redis_client, db=async_session
         ) as client:
             yield client
-
-    app.dependency_overrides.clear()
 
 
 def _assert_snake_case_keys(data: dict | list, path: str = "") -> None:

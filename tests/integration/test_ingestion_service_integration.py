@@ -11,20 +11,24 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import json
-import uuid
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers
+from .conftest import (
+    _auth_headers,
+    cleanup_events,
+    make_test_urn,
+    override_app,
+    seed_events,
+)
 
-_TEST_URN_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.ingestion"
+
+def _urn(suffix: str) -> str:
+    return make_test_urn("ingestion", suffix)
 
 
 @pytest_asyncio.fixture
@@ -39,24 +43,8 @@ async def mock_llm():
 @pytest_asyncio.fixture
 async def http_client(datahub_client, mock_llm, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
-    from src.api.dependencies import get_datahub, get_db, get_llm
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_llm] = lambda: mock_llm
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
+    async with override_app(datahub=datahub_client, llm=mock_llm, db=async_session) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -65,7 +53,7 @@ async def http_client(datahub_client, mock_llm, async_session):
 @pytest.mark.asyncio
 async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncSession):
     """PUT → GET → PATCH → GET → DELETE → GET (404)."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.crud_test,DEV)"
+    dataset_urn = _urn("crud_test")
     headers = _auth_headers()
 
     try:
@@ -137,8 +125,8 @@ async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncS
 @pytest.mark.asyncio
 async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
     """PUT 2 configs → GET list → verify pagination."""
-    urn1 = f"{_TEST_URN_PREFIX}.list_test_1,DEV)"
-    urn2 = f"{_TEST_URN_PREFIX}.list_test_2,DEV)"
+    urn1 = _urn("list_test_1")
+    urn2 = _urn("list_test_2")
     headers = _auth_headers()
 
     try:
@@ -177,7 +165,7 @@ async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession):
     """PUT config with sql_log → POST run dry_run=true → verify events."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.run_test,DEV)"
+    dataset_urn = _urn("run_test")
     headers = _auth_headers()
 
     try:
@@ -238,7 +226,7 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_run_ingestion_not_found(http_client):
     """POST run for unconfigured URN → 404."""
-    fake_urn = f"{_TEST_URN_PREFIX}.nonexistent,DEV)"
+    fake_urn = _urn("nonexistent")
     resp = await http_client.post(
         f"/api/v1/spoke/common/data/{fake_urn}/attr/ingestion/method/run",
         headers=_auth_headers(),
@@ -250,33 +238,12 @@ async def test_run_ingestion_not_found(http_client):
 @pytest.mark.asyncio
 async def test_ingestion_events_pagination(http_client, async_session: AsyncSession):
     """Seed 3 events → GET with limit=2 → verify pagination."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.events_test,DEV)"
+    dataset_urn = _urn("events_test")
     headers = _auth_headers()
-    event_ids = []
+
+    event_ids = await seed_events(async_session, entity_type="ingestion", entity_id=dataset_urn)
 
     try:
-        for i in range(3):
-            eid = uuid.uuid4()
-            event_ids.append(eid)
-            await async_session.execute(
-                text(
-                    "INSERT INTO dataspoke.events"
-                    " (id, entity_type, entity_id, event_type, status, detail, occurred_at)"
-                    " VALUES (:id, :entity_type, :entity_id, :event_type,"
-                    " :status, :detail, :occurred_at)"
-                ),
-                {
-                    "id": str(eid),
-                    "entity_type": "ingestion",
-                    "entity_id": dataset_urn,
-                    "event_type": "ingestion.completed",
-                    "status": "success",
-                    "detail": json.dumps({"run_id": str(uuid.uuid4()), "index": i}),
-                    "occurred_at": datetime.now(tz=UTC),
-                },
-            )
-        await async_session.commit()
-
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/event",
             headers=headers,
@@ -297,9 +264,4 @@ async def test_ingestion_events_pagination(http_client, async_session: AsyncSess
         body = resp.json()
         assert body["total_count"] == 3
     finally:
-        for eid in event_ids:
-            await async_session.execute(
-                text("DELETE FROM dataspoke.events WHERE id = :id"),
-                {"id": str(eid)},
-            )
-        await async_session.commit()
+        await cleanup_events(async_session, event_ids)

@@ -12,52 +12,27 @@ Prerequisites:
 """
 
 import json
-import uuid
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers
+from .conftest import (
+    _auth_headers,
+    cleanup_events,
+    override_app,
+    seed_events,
+)
 
 _DG_PREFIX = "/api/v1/spoke/dg/metric"
 _TEST_METRIC_PREFIX = "imazon.test.metrics"
 
 
 @pytest_asyncio.fixture
-async def mock_cache():
-    cache = AsyncMock()
-    cache.get = AsyncMock(return_value=None)
-    cache.set = AsyncMock()
-    cache.publish = AsyncMock()
-    cache.delete = AsyncMock()
-    return cache
-
-
-@pytest_asyncio.fixture
 async def http_client(datahub_client, mock_cache, async_session):
-    from src.api.dependencies import get_datahub, get_db, get_redis
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_redis] = lambda: mock_cache
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
+    async with override_app(datahub=datahub_client, redis=mock_cache, db=async_session) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -287,31 +262,15 @@ async def test_events_pagination(http_client, async_session: AsyncSession):
     """Seed events → GET with limit → verify total_count and page size."""
     metric_id = f"{_TEST_METRIC_PREFIX}.events_test"
     headers = _auth_headers()
-    event_ids = []
+
+    event_ids = await seed_events(
+        async_session,
+        entity_type="metric",
+        entity_id=metric_id,
+        event_type="metric.run.completed",
+    )
 
     try:
-        for i in range(3):
-            eid = uuid.uuid4()
-            event_ids.append(eid)
-            await async_session.execute(
-                text(
-                    "INSERT INTO dataspoke.events"
-                    " (id, entity_type, entity_id, event_type, status, detail, occurred_at)"
-                    " VALUES (:id, :entity_type, :entity_id, :event_type,"
-                    " :status, :detail, :occurred_at)"
-                ),
-                {
-                    "id": str(eid),
-                    "entity_type": "metric",
-                    "entity_id": metric_id,
-                    "event_type": "metric.run.completed",
-                    "status": "success",
-                    "detail": json.dumps({"run_id": str(uuid.uuid4()), "index": i}),
-                    "occurred_at": datetime.now(tz=UTC),
-                },
-            )
-        await async_session.commit()
-
         # Need metric definition to exist for the attr route
         await async_session.execute(
             text(
@@ -339,11 +298,7 @@ async def test_events_pagination(http_client, async_session: AsyncSession):
         assert body["total_count"] == 3
         assert len(body["events"]) == 2
     finally:
-        for eid in event_ids:
-            await async_session.execute(
-                text("DELETE FROM dataspoke.events WHERE id = :id"),
-                {"id": str(eid)},
-            )
+        await cleanup_events(async_session, event_ids)
         await async_session.execute(
             text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
             {"id": metric_id},

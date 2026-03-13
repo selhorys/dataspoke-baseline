@@ -15,31 +15,17 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers
+from .conftest import _auth_headers, override_app
 
 
 @pytest_asyncio.fixture
 async def http_client(async_session):
     """HTTP client with DI overrides pointing to dev-env PostgreSQL."""
-    from src.api.dependencies import get_db
-    from src.api.main import app
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
+    async with override_app(db=async_session) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

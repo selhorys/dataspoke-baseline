@@ -13,113 +13,45 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers
+from .conftest import (
+    _auth_headers,
+    emit_test_dataset,
+    override_app,
+    soft_delete_test_dataset,
+)
 
 
 @pytest_asyncio.fixture
 async def test_dataset_urn(datahub_client):
     """Emit a self-contained Imazon test dataset for service-level testing."""
-    from datahub.metadata.schema_classes import (
-        DatasetPropertiesClass,
-        GlobalTagsClass,
-        OtherSchemaClass,
-        OwnerClass,
-        OwnershipClass,
-        OwnershipTypeClass,
-        SchemaFieldClass,
-        SchemaMetadataClass,
-        StatusClass,
-        TagAssociationClass,
-    )
-
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.dataset_svc.users,DEV)"
-
-    await datahub_client.emit_aspect(urn, StatusClass(removed=False))
-    await datahub_client.emit_aspect(
-        urn,
-        DatasetPropertiesClass(
-            name="dataset_svc.users",
-            description="Integration test dataset for DatasetService",
-            customProperties={"source": "integration-test"},
-        ),
+    await emit_test_dataset(
+        datahub_client,
+        urn=urn,
+        name="dataset_svc.users",
+        description="Integration test dataset for DatasetService",
+        fields=[("id", "integer", False), ("email", "text", False)],
+        with_ownership=True,
+        with_tags=True,
     )
-    await datahub_client.emit_aspect(
-        urn,
-        SchemaMetadataClass(
-            schemaName="dataset_svc.users",
-            platform="urn:li:dataPlatform:postgres",
-            version=0,
-            hash="",
-            platformSchema=OtherSchemaClass(rawSchema=""),
-            fields=[
-                SchemaFieldClass(
-                    fieldPath="id",
-                    nativeDataType="integer",
-                    type={"type": {"type": "NUMBER"}},
-                    nullable=False,
-                ),
-                SchemaFieldClass(
-                    fieldPath="email",
-                    nativeDataType="text",
-                    type={"type": {"type": "STRING"}},
-                    nullable=False,
-                ),
-            ],
-        ),
-    )
-    await datahub_client.emit_aspect(
-        urn,
-        OwnershipClass(
-            owners=[
-                OwnerClass(
-                    owner="urn:li:corpuser:testuser@example.com",
-                    type=OwnershipTypeClass.DATAOWNER,
-                ),
-            ]
-        ),
-    )
-    await datahub_client.emit_aspect(
-        urn,
-        GlobalTagsClass(tags=[TagAssociationClass(tag="urn:li:tag:integration-test")]),
-    )
-    # Wait for ES indexing
-    await asyncio.sleep(3)
     yield urn
-    await datahub_client.emit_aspect(urn, StatusClass(removed=True))
+    await soft_delete_test_dataset(datahub_client, urn)
 
 
 @pytest_asyncio.fixture
 async def http_client(datahub_client, redis_client, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
-    from src.api.dependencies import get_datahub, get_db, get_redis
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_redis] = lambda: redis_client
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
+    async with override_app(datahub=datahub_client, redis=redis_client, db=async_session) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -185,10 +117,12 @@ async def test_get_dataset_events_with_seeded_event(
     event_id = uuid.uuid4()
     now = datetime.now(tz=UTC)
     await async_session.execute(
-        text("""
-            INSERT INTO dataspoke.events (id, entity_type, entity_id, event_type, status, detail, occurred_at)
-            VALUES (:id, :entity_type, :entity_id, :event_type, :status, :detail, :occurred_at)
-        """),
+        text(
+            "INSERT INTO dataspoke.events"
+            " (id, entity_type, entity_id, event_type, status, detail, occurred_at)"
+            " VALUES (:id, :entity_type, :entity_id, :event_type,"
+            " :status, :detail, :occurred_at)"
+        ),
         {
             "id": str(event_id),
             "entity_type": "dataset",

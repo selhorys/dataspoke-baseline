@@ -16,21 +16,16 @@ Prerequisites:
 
 import asyncio
 import os
+import uuid
 
 import pytest
 import pytest_asyncio
 
+from .conftest import emit_test_dataset, make_test_urn, soft_delete_test_dataset
+
 _llm_provider = os.environ.get("DATASPOKE_LLM_PROVIDER", "openai")
 _llm_api_key = os.environ.get("DATASPOKE_LLM_API_KEY", "")
 _llm_model = os.environ.get("DATASPOKE_LLM_MODEL", "gpt-4o-mini")
-
-_TEST_DATASET_URN_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.infra_clients_"
-
-
-def _unique_test_urn() -> str:
-    import uuid
-
-    return f"{_TEST_DATASET_URN_PREFIX}{uuid.uuid4().hex[:8]},DEV)"
 
 
 # --- DataHub ---
@@ -42,53 +37,18 @@ async def datahub_test_dataset(datahub_client):
 
     Uses a unique URN per run to avoid stale soft-delete state in the ES index.
     """
-    from datahub.metadata.schema_classes import (
-        DatasetPropertiesClass,
-        OtherSchemaClass,
-        SchemaFieldClass,
-        SchemaMetadataClass,
-        StatusClass,
+    suffix = f"infra_clients_{uuid.uuid4().hex[:8]}"
+    urn = make_test_urn("infra", suffix)
+    name = urn.split(",")[1]  # matches assertion in test_datahub_get_aspect_existing
+    await emit_test_dataset(
+        datahub_client,
+        urn=urn,
+        name=name,
+        description="Self-contained integration test fixture",
+        wait_seconds=1.0,
     )
-
-    urn = _unique_test_urn()
-    await datahub_client.emit_aspect(urn, StatusClass(removed=False))
-    await datahub_client.emit_aspect(
-        urn,
-        DatasetPropertiesClass(
-            name=urn.split(",")[1],
-            qualifiedName=urn.split(",")[1],
-            description="Self-contained integration test fixture",
-            customProperties={"source": "integration-test"},
-        ),
-    )
-    await datahub_client.emit_aspect(
-        urn,
-        SchemaMetadataClass(
-            schemaName=urn.split(",")[1],
-            platform="urn:li:dataPlatform:postgres",
-            version=0,
-            hash="",
-            platformSchema=OtherSchemaClass(rawSchema=""),
-            fields=[
-                SchemaFieldClass(
-                    fieldPath="id",
-                    nativeDataType="integer",
-                    type={"type": {"type": "NUMBER"}},
-                    nullable=False,
-                ),
-                SchemaFieldClass(
-                    fieldPath="name",
-                    nativeDataType="text",
-                    type={"type": {"type": "STRING"}},
-                    nullable=True,
-                ),
-            ],
-        ),
-    )
-    # Wait briefly for aspect writes to settle in the metadata store
-    await asyncio.sleep(1)
     yield urn
-    await datahub_client.emit_aspect(urn, StatusClass(removed=True))
+    await soft_delete_test_dataset(datahub_client, urn)
 
 
 async def test_datahub_connectivity(datahub_client) -> None:

@@ -12,20 +12,24 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import json
-import uuid
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers
+from .conftest import (
+    _auth_headers,
+    cleanup_events,
+    make_test_urn,
+    override_app,
+    seed_events,
+)
 
-_TEST_URN_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.generation"
+
+def _urn(suffix: str) -> str:
+    return make_test_urn("generation", suffix)
 
 
 @pytest_asyncio.fixture
@@ -54,25 +58,10 @@ async def mock_qdrant():
 @pytest_asyncio.fixture
 async def http_client(datahub_client, mock_llm, mock_qdrant, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
-    from src.api.dependencies import get_datahub, get_db, get_llm, get_qdrant
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_llm] = lambda: mock_llm
-    app.dependency_overrides[get_qdrant] = lambda: mock_qdrant
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
+    async with override_app(
+        datahub=datahub_client, llm=mock_llm, qdrant=mock_qdrant, db=async_session
     ) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -81,7 +70,7 @@ async def http_client(datahub_client, mock_llm, mock_qdrant, async_session):
 @pytest.mark.asyncio
 async def test_generation_config_crud_via_http(http_client, async_session: AsyncSession):
     """PUT -> GET -> PATCH -> GET -> DELETE -> GET (404)."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.crud_test,DEV)"
+    dataset_urn = _urn("crud_test")
     headers = _auth_headers()
 
     try:
@@ -153,8 +142,8 @@ async def test_generation_config_crud_via_http(http_client, async_session: Async
 @pytest.mark.asyncio
 async def test_list_generation_configs(http_client, async_session: AsyncSession):
     """PUT 2 configs -> GET list -> verify pagination."""
-    urn1 = f"{_TEST_URN_PREFIX}.list_test_1,DEV)"
-    urn2 = f"{_TEST_URN_PREFIX}.list_test_2,DEV)"
+    urn1 = _urn("list_test_1")
+    urn2 = _urn("list_test_2")
     headers = _auth_headers()
 
     try:
@@ -193,7 +182,7 @@ async def test_list_generation_configs(http_client, async_session: AsyncSession)
 @pytest.mark.asyncio
 async def test_generate_produces_result(http_client, async_session: AsyncSession):
     """PUT config -> POST generate -> GET results -> verify result."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.generate_test,DEV)"
+    dataset_urn = _urn("generate_test")
     headers = _auth_headers()
 
     try:
@@ -251,7 +240,7 @@ async def test_generate_produces_result(http_client, async_session: AsyncSession
 @pytest.mark.asyncio
 async def test_apply_after_approval(http_client, async_session: AsyncSession):
     """PUT config -> POST generate -> approve in DB -> POST apply -> verify applied_at."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.apply_test,DEV)"
+    dataset_urn = _urn("apply_test")
     headers = _auth_headers()
 
     try:
@@ -285,7 +274,8 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession):
         # Manually approve in DB
         await async_session.execute(
             text(
-                "UPDATE dataspoke.generation_results SET approval_status = 'approved' WHERE id = :id"
+                "UPDATE dataspoke.generation_results"
+                " SET approval_status = 'approved' WHERE id = :id"
             ),
             {"id": result_id},
         )
@@ -330,7 +320,7 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_generate_config_not_found(http_client):
     """POST generate for unconfigured URN -> 404."""
-    fake_urn = f"{_TEST_URN_PREFIX}.nonexistent,DEV)"
+    fake_urn = _urn("nonexistent")
     resp = await http_client.post(
         f"/api/v1/spoke/common/data/{fake_urn}/attr/gen/method/generate",
         headers=_auth_headers(),
@@ -341,33 +331,12 @@ async def test_generate_config_not_found(http_client):
 @pytest.mark.asyncio
 async def test_generation_events(http_client, async_session: AsyncSession):
     """Seed events -> GET events with limit -> verify pagination."""
-    dataset_urn = f"{_TEST_URN_PREFIX}.events_test,DEV)"
+    dataset_urn = _urn("events_test")
     headers = _auth_headers()
-    event_ids = []
+
+    event_ids = await seed_events(async_session, entity_type="generation", entity_id=dataset_urn)
 
     try:
-        for i in range(3):
-            eid = uuid.uuid4()
-            event_ids.append(eid)
-            await async_session.execute(
-                text(
-                    "INSERT INTO dataspoke.events"
-                    " (id, entity_type, entity_id, event_type, status, detail, occurred_at)"
-                    " VALUES (:id, :entity_type, :entity_id, :event_type,"
-                    " :status, :detail, :occurred_at)"
-                ),
-                {
-                    "id": str(eid),
-                    "entity_type": "generation",
-                    "entity_id": dataset_urn,
-                    "event_type": "generation.completed",
-                    "status": "success",
-                    "detail": json.dumps({"run_id": str(uuid.uuid4()), "index": i}),
-                    "occurred_at": datetime.now(tz=UTC),
-                },
-            )
-        await async_session.commit()
-
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/gen/event",
             headers=headers,
@@ -388,9 +357,4 @@ async def test_generation_events(http_client, async_session: AsyncSession):
         body = resp.json()
         assert body["total_count"] == 3
     finally:
-        for eid in event_ids:
-            await async_session.execute(
-                text("DELETE FROM dataspoke.events WHERE id = :id"),
-                {"id": str(eid)},
-            )
-        await async_session.commit()
+        await cleanup_events(async_session, event_ids)

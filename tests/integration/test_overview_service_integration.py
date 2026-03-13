@@ -19,11 +19,10 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers
+from .conftest import _auth_headers, override_app
 
 # ── Per-module dummy-data reset (see spec/TESTING.md §Per-Module) ─────────
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
@@ -32,24 +31,8 @@ DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 @pytest_asyncio.fixture
 async def http_client(datahub_client, redis_client, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
-    from src.api.dependencies import get_datahub, get_db, get_redis
-    from src.api.main import app
-
-    app.dependency_overrides[get_datahub] = lambda: datahub_client
-    app.dependency_overrides[get_redis] = lambda: redis_client
-
-    async def _override_db():
-        yield async_session
-
-    app.dependency_overrides[get_db] = _override_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
+    async with override_app(datahub=datahub_client, redis=redis_client, db=async_session) as client:
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # ── Config CRUD tests ─────────────────────────────────────────────────────
