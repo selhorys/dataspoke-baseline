@@ -1,12 +1,16 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
+from starlette.websockets import WebSocketDisconnect
 
 from src.api.auth.dependencies import require_common
+from src.api.auth.ws import ws_authenticate
 from src.api.dependencies import (
     get_dataset_service,
     get_generation_service,
     get_ingestion_service,
+    get_redis,
     get_validation_service,
 )
 from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse, QualityScoreResponse
@@ -527,9 +531,36 @@ async def get_gen_events(
 
 # ── WebSocket: validation progress stream ─────────────────────────────────────
 
+# Separate router without HTTP auth dependencies — WebSocket routes handle
+# authentication via the message-based handshake inside the handler.
+ws_router = APIRouter(prefix="/data", tags=["common/data"])
 
-@router.websocket("/{dataset_urn}/stream/validation")
+
+@ws_router.websocket("/{dataset_urn}/stream/validation")
 async def stream_validation(dataset_urn: str, websocket: WebSocket) -> None:
-    """Stub WebSocket — immediately closes with 1011 (internal error / not implemented)."""
+    """Stream validation progress via Redis pub/sub.
+
+    Protocol:
+    1. Client sends ``{"type": "auth", "token": "<jwt>"}``
+    2. Server replies ``{"type": "auth_ok"}`` then forwards Redis messages
+    3. Connection closes after a ``type=result`` message or client disconnect
+    """
+
     await websocket.accept()
-    await websocket.close(code=1011, reason="not implemented")
+
+    if not await ws_authenticate(websocket):
+        return
+
+    cache = get_redis()
+    channel = f"ws:validation:{dataset_urn}"
+    try:
+        async for message in cache.subscribe(channel):
+            await websocket.send_text(message)
+            payload = json.loads(message)
+            if payload.get("type") == "result":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await cache.close()
+        await websocket.close()

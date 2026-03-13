@@ -132,6 +132,7 @@ def create_app() -> FastAPI:
     # ── Spoke/common routes ────────────────────────────────────────────────────
     app.include_router(common_ontology.router, prefix=SPOKE_COMMON)
     app.include_router(common_data.router, prefix=SPOKE_COMMON)
+    app.include_router(common_data.ws_router, prefix=SPOKE_COMMON)
     app.include_router(common_ingestion.router, prefix=SPOKE_COMMON)
     app.include_router(common_validation.router, prefix=SPOKE_COMMON)
     app.include_router(common_gen.router, prefix=SPOKE_COMMON)
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
 
     # ── Spoke/dg routes ────────────────────────────────────────────────────────
     app.include_router(dg_metrics.router, prefix=SPOKE_DG)
+    app.include_router(dg_metrics.ws_router, prefix=SPOKE_DG)
     app.include_router(dg_overview.router, prefix=SPOKE_DG)
 
     # ── Hub pass-through routes ────────────────────────────────────────────────
