@@ -1,6 +1,5 @@
 """Unit tests for auth endpoints: /api/v1/auth/token, /refresh, /revoke."""
 
-import pytest
 from httpx import AsyncClient
 
 from tests.unit.api.conftest import auth_headers
@@ -10,7 +9,6 @@ AUTH_REFRESH = "/api/v1/auth/token/refresh"
 AUTH_REVOKE = "/api/v1/auth/token/revoke"
 
 
-@pytest.mark.asyncio
 async def test_valid_login_returns_access_token(client: AsyncClient) -> None:
     response = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
     assert response.status_code == 200
@@ -20,14 +18,12 @@ async def test_valid_login_returns_access_token(client: AsyncClient) -> None:
     assert body["expires_in"] > 0
 
 
-@pytest.mark.asyncio
 async def test_valid_login_sets_refresh_cookie(client: AsyncClient) -> None:
     response = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
     assert response.status_code == 200
     assert "refresh_token" in response.cookies
 
 
-@pytest.mark.asyncio
 async def test_invalid_credentials_returns_401(client: AsyncClient) -> None:
     response = await client.post(
         AUTH_TOKEN, json={"username": "admin", "password": "wrong-password"}
@@ -37,13 +33,11 @@ async def test_invalid_credentials_returns_401(client: AsyncClient) -> None:
     assert body["detail"]["error_code"] == "UNAUTHORIZED"
 
 
-@pytest.mark.asyncio
 async def test_refresh_without_cookie_returns_401(client: AsyncClient) -> None:
     response = await client.post(AUTH_REFRESH)
     assert response.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_refresh_with_valid_cookie_returns_new_token(client: AsyncClient) -> None:
     # First get a refresh cookie
     login_resp = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
@@ -58,7 +52,6 @@ async def test_refresh_with_valid_cookie_returns_new_token(client: AsyncClient) 
     assert "access_token" in body
 
 
-@pytest.mark.asyncio
 async def test_revoke_clears_cookie(client: AsyncClient) -> None:
     # Login to get a refresh token
     login_resp = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
@@ -69,14 +62,12 @@ async def test_revoke_clears_cookie(client: AsyncClient) -> None:
     assert revoke_resp.status_code == 204
 
 
-@pytest.mark.asyncio
 async def test_auth_required_route_without_token_returns_401(client: AsyncClient) -> None:
     """Accessing a protected route without a token must return 401."""
     response = await client.get("/api/v1/spoke/common/ontology")
     assert response.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_wrong_group_returns_403(client: AsyncClient) -> None:
     """A user without 'dg' group accessing /spoke/dg/* must get 403."""
     headers = auth_headers(groups=["de"])
@@ -84,7 +75,6 @@ async def test_wrong_group_returns_403(client: AsyncClient) -> None:
     assert response.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_admin_group_can_access_dg_routes(client: AsyncClient) -> None:
     """Admin users bypass group-tier restrictions."""
     from unittest.mock import AsyncMock, MagicMock
@@ -116,7 +106,6 @@ async def test_admin_group_can_access_dg_routes(client: AsyncClient) -> None:
         app.dependency_overrides.pop(get_redis, None)
 
 
-@pytest.mark.asyncio
 async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None:
     """Any valid group member can access /spoke/common/* routes."""
     from unittest.mock import AsyncMock, MagicMock

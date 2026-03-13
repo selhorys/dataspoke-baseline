@@ -3,7 +3,6 @@
 Unauthenticated requests to protected routes must return 401, not 501.
 """
 
-import pytest
 from httpx import AsyncClient
 
 from tests.unit.api.conftest import auth_headers
@@ -56,56 +55,47 @@ async def _assert_401(client: AsyncClient, method: str, path: str) -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_common_ontology_stubs_return_501(client: AsyncClient) -> None:
     for method, path in COMMON_ONTOLOGY_ROUTES:
         await _assert_501(client, method, path, _DE_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_common_data_stubs_return_501(client: AsyncClient) -> None:
     for method, path in COMMON_DATA_ROUTES:
         await _assert_501(client, method, path, _DE_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_common_ingestion_stubs_return_501(client: AsyncClient) -> None:
     for method, path in COMMON_INGESTION_ROUTES:
         await _assert_501(client, method, path, _DE_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_common_validation_stubs_return_501(client: AsyncClient) -> None:
     for method, path in COMMON_VALIDATION_ROUTES:
         await _assert_501(client, method, path, _DE_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_common_gen_stubs_return_501(client: AsyncClient) -> None:
     for method, path in COMMON_GEN_ROUTES:
         await _assert_501(client, method, path, _DE_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_common_search_stubs_return_501(client: AsyncClient) -> None:
     for method, path in COMMON_SEARCH_ROUTES:
         await _assert_501(client, method, path, _DE_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_dg_metric_stubs_return_501(client: AsyncClient) -> None:
     for method, path in DG_METRIC_ROUTES:
         await _assert_501(client, method, path, _DG_HEADERS)
 
 
-@pytest.mark.asyncio
 async def test_unauthenticated_common_routes_return_401(client: AsyncClient) -> None:
     """Protected routes without auth must return 401, not 501."""
     for method, path in COMMON_ONTOLOGY_ROUTES[:2]:
         await _assert_401(client, method, path)
 
 
-@pytest.mark.asyncio
 async def test_unauthenticated_dg_routes_return_401(client: AsyncClient) -> None:
     for method, path in DG_METRIC_ROUTES[:2]:
         await _assert_401(client, method, path)

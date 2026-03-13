@@ -2,16 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from src.backend.metrics.aggregator import aggregate_health_scores
-
-
-def _make_quality_score(overall: float):
-    score = MagicMock()
-    score.overall_score = overall
-    score.dimensions = {"completeness": overall}
-    return score
+from tests.unit.backend.conftest import make_quality_score_mock
 
 
 def _make_ownership(owner_urn: str | None):
@@ -31,30 +23,14 @@ def _make_dept_row(owner_urn: str, department: str):
     return row
 
 
-@pytest.fixture
-def datahub():
-    return AsyncMock()
-
-
-@pytest.fixture
-def db():
-    return AsyncMock()
-
-
-@pytest.fixture
-def cache():
-    return AsyncMock()
-
-
-@pytest.mark.asyncio
 @patch("src.backend.metrics.aggregator.compute_quality_score")
 async def test_aggregate_two_departments(mock_score, datahub, db, cache):
     datahub.enumerate_datasets = AsyncMock(return_value=["urn:ds1", "urn:ds2", "urn:ds3"])
 
     scores = {
-        "urn:ds1": _make_quality_score(80.0),
-        "urn:ds2": _make_quality_score(40.0),
-        "urn:ds3": _make_quality_score(60.0),
+        "urn:ds1": make_quality_score_mock(80.0),
+        "urn:ds2": make_quality_score_mock(40.0),
+        "urn:ds3": make_quality_score_mock(60.0),
     }
     mock_score.side_effect = lambda dh, urn, cache=None: scores[urn]
 
@@ -83,11 +59,10 @@ async def test_aggregate_two_departments(mock_score, datahub, db, cache):
     assert result["Analytics"].avg_score == 60.0
 
 
-@pytest.mark.asyncio
 @patch("src.backend.metrics.aggregator.compute_quality_score")
 async def test_aggregate_unknown_department(mock_score, datahub, db, cache):
     datahub.enumerate_datasets = AsyncMock(return_value=["urn:ds1"])
-    mock_score.return_value = _make_quality_score(70.0)
+    mock_score.return_value = make_quality_score_mock(70.0)
     datahub.get_aspect = AsyncMock(return_value=_make_ownership("owner:unknown"))
 
     # No department mapping
@@ -100,7 +75,6 @@ async def test_aggregate_unknown_department(mock_score, datahub, db, cache):
     assert result["Unknown"].dataset_count == 1
 
 
-@pytest.mark.asyncio
 async def test_aggregate_empty_datasets(datahub, db, cache):
     datahub.enumerate_datasets = AsyncMock(return_value=[])
 
@@ -108,13 +82,12 @@ async def test_aggregate_empty_datasets(datahub, db, cache):
     assert result == {}
 
 
-@pytest.mark.asyncio
 @patch("src.backend.metrics.aggregator.compute_quality_score")
 async def test_aggregate_handles_errors(mock_score, datahub, db, cache):
     datahub.enumerate_datasets = AsyncMock(return_value=["urn:ds1", "urn:ds2"])
 
     # First dataset fails, second succeeds
-    mock_score.side_effect = [Exception("DataHub error"), _make_quality_score(50.0)]
+    mock_score.side_effect = [Exception("DataHub error"), make_quality_score_mock(50.0)]
     datahub.get_aspect = AsyncMock(return_value=None)
 
     dept_result = MagicMock()

@@ -1,13 +1,14 @@
 """Unit tests for IngestionService (mocked infrastructure)."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.backend.ingestion.service import IngestionService
 from src.shared.exceptions import EntityNotFoundError
+from tests.unit.backend.conftest import make_event_row, mock_paginated_query, mock_scalar_query
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
 
@@ -33,38 +34,6 @@ def _make_config_row(
     return row
 
 
-def _make_event_row(
-    entity_id: str = _DATASET_URN,
-    event_type: str = "ingestion.completed",
-    status: str = "success",
-    minutes_ago: int = 5,
-):
-    row = MagicMock()
-    row.id = uuid.uuid4()
-    row.entity_type = "ingestion"
-    row.entity_id = entity_id
-    row.event_type = event_type
-    row.status = status
-    row.detail = {"source": "test"}
-    row.occurred_at = datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)
-    return row
-
-
-@pytest.fixture
-def datahub():
-    return AsyncMock()
-
-
-@pytest.fixture
-def db():
-    return AsyncMock()
-
-
-@pytest.fixture
-def llm():
-    return AsyncMock()
-
-
 @pytest.fixture
 def service(datahub, db, llm):
     return IngestionService(datahub=datahub, db=db, llm=llm)
@@ -73,12 +42,9 @@ def service(datahub, db, llm):
 # ── get_config ───────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_config_found(service, db):
     config_row = _make_config_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = config_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, config_row)
 
     config = await service.get_config(_DATASET_URN)
     assert config is not None
@@ -86,11 +52,8 @@ async def test_get_config_found(service, db):
     assert config.owner == "alice@example.com"
 
 
-@pytest.mark.asyncio
 async def test_get_config_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     config = await service.get_config("nonexistent")
     assert config is None
@@ -99,12 +62,8 @@ async def test_get_config_not_found(service, db):
 # ── upsert_config ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_upsert_config_creates_new(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
-
+    mock_scalar_query(db, None)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     await service.upsert_config(
@@ -118,12 +77,9 @@ async def test_upsert_config_creates_new(service, db):
     db.commit.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_upsert_config_updates_existing(service, db):
     existing_row = _make_config_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = existing_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, existing_row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     await service.upsert_config(
@@ -142,12 +98,9 @@ async def test_upsert_config_updates_existing(service, db):
 # ── patch_config ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_patch_config_applies_partial(service, db):
     existing_row = _make_config_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = existing_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, existing_row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
@@ -155,11 +108,8 @@ async def test_patch_config_applies_partial(service, db):
     db.commit.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_patch_config_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.patch_config("nonexistent", {"schedule": "0 12 * * *"})
@@ -169,23 +119,17 @@ async def test_patch_config_not_found(service, db):
 # ── delete_config ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_delete_config_success(service, db):
     existing_row = _make_config_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = existing_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, existing_row)
 
     await service.delete_config(_DATASET_URN)
     db.delete.assert_awaited_once_with(existing_row)
     db.commit.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_delete_config_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.delete_config("nonexistent")
@@ -195,32 +139,17 @@ async def test_delete_config_not_found(service, db):
 # ── list_configs ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_configs_paginated(service, db):
     rows = [_make_config_row(dataset_urn=f"urn:{i}") for i in range(3)]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 5
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, rows, total_count=5)
 
     configs, total = await service.list_configs(offset=0, limit=3)
     assert total == 5
     assert len(configs) == 3
 
 
-@pytest.mark.asyncio
 async def test_list_configs_empty(service, db):
-    count_result = MagicMock()
-    count_result.scalar.return_value = 0
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, [], total_count=0)
 
     configs, total = await service.list_configs()
     assert total == 0
@@ -230,15 +159,11 @@ async def test_list_configs_empty(service, db):
 # ── run ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_run_success(service, db, datahub):
     config_row = _make_config_row(
         sources={"sql_log": {"queries": ["SELECT * FROM orders.order_header"]}}
     )
-    # First call: get_config select, second: commit event
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = config_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, config_row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     result = await service.run(_DATASET_URN)
@@ -247,14 +172,11 @@ async def test_run_success(service, db, datahub):
     assert result.detail["dry_run"] is False
 
 
-@pytest.mark.asyncio
 async def test_run_dry_run(service, db, datahub):
     config_row = _make_config_row(
         sources={"sql_log": {"queries": ["SELECT * FROM catalog.title_master"]}}
     )
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = config_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, config_row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     result = await service.run(_DATASET_URN, dry_run=True)
@@ -262,15 +184,12 @@ async def test_run_dry_run(service, db, datahub):
     datahub.emit_aspect.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_run_with_llm_enrichment(service, db, datahub, llm):
     config_row = _make_config_row(
         deep_spec_enabled=True,
         sources={"sql_log": {"queries": ["SELECT * FROM catalog.title_master"]}},
     )
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = config_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, config_row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     llm.complete_json = AsyncMock(
@@ -282,18 +201,14 @@ async def test_run_with_llm_enrichment(service, db, datahub, llm):
     llm.complete_json.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_run_config_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.run("nonexistent")
     assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
 
 
-@pytest.mark.asyncio
 async def test_run_extractor_partial_failure(service, db, datahub):
     config_row = _make_config_row(
         sources={
@@ -301,9 +216,7 @@ async def test_run_extractor_partial_failure(service, db, datahub):
             "unknown_type": {"foo": "bar"},
         }
     )
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = config_row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, config_row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     result = await service.run(_DATASET_URN)
@@ -314,17 +227,17 @@ async def test_run_extractor_partial_failure(service, db, datahub):
 # ── get_events ───────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_events_paginated(service, db):
-    rows = [_make_event_row(minutes_ago=i) for i in range(3)]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 5
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    rows = [
+        make_event_row(
+            entity_type="ingestion",
+            event_type="ingestion.completed",
+            entity_id=_DATASET_URN,
+            minutes_ago=i,
+        )
+        for i in range(3)
+    ]
+    mock_paginated_query(db, rows, total_count=5)
 
     events, total = await service.get_events(_DATASET_URN, offset=0, limit=3)
     assert total == 5
@@ -332,15 +245,8 @@ async def test_get_events_paginated(service, db):
     assert events[0]["entity_type"] == "ingestion"
 
 
-@pytest.mark.asyncio
 async def test_get_events_empty(service, db):
-    count_result = MagicMock()
-    count_result.scalar.return_value = 0
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, [], total_count=0)
 
     events, total = await service.get_events(_DATASET_URN)
     assert total == 0

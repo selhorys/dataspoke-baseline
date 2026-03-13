@@ -2,7 +2,6 @@
 
 import time
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,37 +10,7 @@ from src.backend.validation.anomaly import (
     _profiles_to_dataframe,
     detect_anomalies,
 )
-
-
-def _mock_profile(
-    timestamp_ms: int,
-    row_count: int = 100,
-    null_proportions: list[float] | None = None,
-    col_count: int = 10,
-):
-    """Create a mock DatasetProfileClass with configurable timestamp and metrics."""
-    profile = MagicMock()
-    profile.timestampMillis = timestamp_ms
-    profile.rowCount = row_count
-    profile.columnCount = col_count
-    if null_proportions:
-        fps = []
-        for np_val in null_proportions:
-            fp = MagicMock()
-            fp.nullProportion = np_val
-            fps.append(fp)
-        profile.fieldProfiles = fps
-    else:
-        profile.fieldProfiles = []
-    return profile
-
-
-def _mock_operation(timestamp_ms: int):
-    """Create a mock OperationClass with configurable timestamp."""
-    op = MagicMock()
-    op.lastUpdatedTimestamp = timestamp_ms
-    op.timestampMillis = timestamp_ms
-    return op
+from tests.unit.backend.conftest import make_mock_operation, make_mock_profile
 
 
 def _make_sinusoidal_profiles(
@@ -62,14 +31,13 @@ def _make_sinusoidal_profiles(
         row_count = base_count + int(amplitude * math.sin(2 * math.pi * i / 7))
         if spike_day is not None and i == spike_day:
             row_count = spike_value
-        profiles.append(_mock_profile(ts_ms, row_count=row_count))
+        profiles.append(make_mock_profile(ts_ms, row_count=row_count))
     return profiles
 
 
 # ── Prophet-based detection ──────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_prophet_finds_outlier():
     """Synthetic sinusoidal timeseries with one injected spike; verify flagged."""
     profiles = _make_sinusoidal_profiles(n_days=30, spike_day=15, spike_value=5000)
@@ -80,7 +48,6 @@ async def test_detect_anomalies_prophet_finds_outlier():
     assert spike_detected
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_prophet_no_anomaly():
     """Clean sinusoidal timeseries with noise matching the seasonality; verify few anomalies."""
     profiles = _make_sinusoidal_profiles(n_days=30, amplitude=200)
@@ -90,11 +57,10 @@ async def test_detect_anomalies_prophet_no_anomaly():
     assert len(results) < len(profiles)
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_prophet_insufficient_data():
     """Fewer than 2 data points; verify empty result."""
     now_ms = int(time.time() * 1000)
-    profiles = [_mock_profile(now_ms, row_count=100)]
+    profiles = [make_mock_profile(now_ms, row_count=100)]
     results = await detect_anomalies(profiles, method="prophet")
     assert results == []
 
@@ -102,7 +68,6 @@ async def test_detect_anomalies_prophet_insufficient_data():
 # ── Isolation Forest detection ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_isolation_forest_finds_outlier():
     """Multi-feature profiles with one outlier row; verify flagged."""
     now = datetime.now(tz=UTC)
@@ -111,12 +76,12 @@ async def test_detect_anomalies_isolation_forest_finds_outlier():
         dt = now - timedelta(days=20 - i)
         ts_ms = int(dt.timestamp() * 1000)
         profiles.append(
-            _mock_profile(ts_ms, row_count=1000, null_proportions=[0.01, 0.02], col_count=10)
+            make_mock_profile(ts_ms, row_count=1000, null_proportions=[0.01, 0.02], col_count=10)
         )
     # Inject outlier
     outlier_ts = int((now - timedelta(days=5)).timestamp() * 1000)
     profiles.append(
-        _mock_profile(outlier_ts, row_count=50000, null_proportions=[0.95, 0.90], col_count=50)
+        make_mock_profile(outlier_ts, row_count=50000, null_proportions=[0.95, 0.90], col_count=50)
     )
 
     results = await detect_anomalies(profiles, method="isolation_forest")
@@ -126,7 +91,6 @@ async def test_detect_anomalies_isolation_forest_finds_outlier():
     assert outlier_found
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_isolation_forest_clean():
     """Uniform profiles; verify no anomalies."""
     now = datetime.now(tz=UTC)
@@ -135,7 +99,7 @@ async def test_detect_anomalies_isolation_forest_clean():
         dt = now - timedelta(days=20 - i)
         ts_ms = int(dt.timestamp() * 1000)
         profiles.append(
-            _mock_profile(ts_ms, row_count=1000, null_proportions=[0.01, 0.02], col_count=10)
+            make_mock_profile(ts_ms, row_count=1000, null_proportions=[0.01, 0.02], col_count=10)
         )
 
     results = await detect_anomalies(profiles, method="isolation_forest")
@@ -143,7 +107,6 @@ async def test_detect_anomalies_isolation_forest_clean():
     assert len(results) == 0
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_isolation_forest_insufficient_data():
     """Fewer than 5 points; verify empty result."""
     now = datetime.now(tz=UTC)
@@ -151,7 +114,7 @@ async def test_detect_anomalies_isolation_forest_insufficient_data():
     for i in range(3):
         dt = now - timedelta(days=3 - i)
         ts_ms = int(dt.timestamp() * 1000)
-        profiles.append(_mock_profile(ts_ms, row_count=1000))
+        profiles.append(make_mock_profile(ts_ms, row_count=1000))
 
     results = await detect_anomalies(profiles, method="isolation_forest")
     assert results == []
@@ -160,7 +123,6 @@ async def test_detect_anomalies_isolation_forest_insufficient_data():
 # ── Invalid method ───────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_detect_anomalies_invalid_method():
     """Unknown method string; verify raises ValueError."""
     profiles = _make_sinusoidal_profiles(n_days=10)
@@ -175,13 +137,13 @@ def test_profiles_to_dataframe():
     """Verify correct extraction of timestamp, row_count, null_ratio from mock profiles."""
     now = datetime.now(tz=UTC)
     profiles = [
-        _mock_profile(
+        make_mock_profile(
             int((now - timedelta(days=2)).timestamp() * 1000),
             row_count=500,
             null_proportions=[0.1, 0.3],
             col_count=5,
         ),
-        _mock_profile(
+        make_mock_profile(
             int((now - timedelta(days=1)).timestamp() * 1000),
             row_count=600,
             null_proportions=[0.2, 0.4],
@@ -201,8 +163,8 @@ def test_operations_to_dataframe():
     """Verify correct extraction of timestamp from mock operations."""
     now = datetime.now(tz=UTC)
     operations = [
-        _mock_operation(int((now - timedelta(hours=2)).timestamp() * 1000)),
-        _mock_operation(int((now - timedelta(hours=1)).timestamp() * 1000)),
+        make_mock_operation(int((now - timedelta(hours=2)).timestamp() * 1000)),
+        make_mock_operation(int((now - timedelta(hours=1)).timestamp() * 1000)),
     ]
     df = _operations_to_dataframe(operations)
     assert len(df) == 2

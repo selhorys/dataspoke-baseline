@@ -7,40 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.backend.overview.service import OverviewService, _classify_medallion
-
-
-def _make_concept_row(
-    name: str = "test_concept",
-    description: str = "A test concept",
-    parent_id: uuid.UUID | None = None,
-    status: str = "approved",
-):
-    row = MagicMock()
-    row.id = uuid.uuid4()
-    row.name = name
-    row.description = description
-    row.parent_id = parent_id
-    row.status = status
-    row.version = 1
-    row.created_at = datetime.now(tz=UTC)
-    row.updated_at = datetime.now(tz=UTC)
-    return row
-
-
-def _make_relationship_row(
-    concept_a: uuid.UUID | None = None,
-    concept_b: uuid.UUID | None = None,
-    relationship_type: str = "related_to",
-    confidence_score: float = 0.85,
-):
-    row = MagicMock()
-    row.id = uuid.uuid4()
-    row.concept_a = concept_a or uuid.uuid4()
-    row.concept_b = concept_b or uuid.uuid4()
-    row.relationship_type = relationship_type
-    row.confidence_score = confidence_score
-    row.created_at = datetime.now(tz=UTC)
-    return row
+from tests.unit.backend.conftest import (
+    make_concept_row,
+    make_quality_score_mock,
+    make_relationship_row,
+)
 
 
 def _make_dataset_concept_map_row(
@@ -68,27 +39,6 @@ def _make_config_row(
     row.filters = filters or {}
     row.updated_at = datetime.now(tz=UTC)
     return row
-
-
-def _mock_quality_score(overall: float):
-    score = MagicMock()
-    score.overall_score = overall
-    return score
-
-
-@pytest.fixture
-def db():
-    return AsyncMock()
-
-
-@pytest.fixture
-def datahub():
-    return AsyncMock()
-
-
-@pytest.fixture
-def cache():
-    return AsyncMock()
 
 
 @pytest.fixture
@@ -119,10 +69,9 @@ def test_medallion_gold_three_plus_upstream():
 # ── get_overview: concept nodes ───────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_assembles_concept_nodes(mock_quality, service, db, datahub):
-    concept_rows = [_make_concept_row(name=f"concept_{i}") for i in range(3)]
+    concept_rows = [make_concept_row(name=f"concept_{i}", status="approved") for i in range(3)]
 
     # DB queries: concepts, relationships, dataset_concept_map
     concepts_result = MagicMock()
@@ -145,10 +94,9 @@ async def test_get_overview_assembles_concept_nodes(mock_quality, service, db, d
 # ── get_overview: dataset nodes ───────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_assembles_dataset_nodes(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(75.0)
+    mock_quality.return_value = make_quality_score_mock(75.0)
 
     concepts_result = MagicMock()
     concepts_result.scalars.return_value.all.return_value = []
@@ -177,10 +125,9 @@ async def test_get_overview_assembles_dataset_nodes(mock_quality, service, db, d
 # ── get_overview: concept relationships ───────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_includes_concept_relationships(mock_quality, service, db, datahub):
-    rel_rows = [_make_relationship_row(), _make_relationship_row()]
+    rel_rows = [make_relationship_row(), make_relationship_row()]
 
     concepts_result = MagicMock()
     concepts_result.scalars.return_value.all.return_value = []
@@ -202,10 +149,9 @@ async def test_get_overview_includes_concept_relationships(mock_quality, service
 # ── get_overview: lineage edges ───────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_includes_lineage_edges(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(50.0)
+    mock_quality.return_value = make_quality_score_mock(50.0)
 
     concepts_result = MagicMock()
     concepts_result.scalars.return_value.all.return_value = []
@@ -236,10 +182,9 @@ async def test_get_overview_includes_lineage_edges(mock_quality, service, db, da
 # ── get_overview: concept-dataset edges ───────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_includes_concept_dataset_edges(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(80.0)
+    mock_quality.return_value = make_quality_score_mock(80.0)
 
     concept_id = uuid.uuid4()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.table,PROD)"
@@ -266,10 +211,9 @@ async def test_get_overview_includes_concept_dataset_edges(mock_quality, service
 # ── get_overview: medallion summary ───────────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_medallion_summary_counts(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(60.0)
+    mock_quality.return_value = make_quality_score_mock(60.0)
 
     concepts_result = MagicMock()
     concepts_result.scalars.return_value.all.return_value = []
@@ -302,10 +246,9 @@ async def test_medallion_summary_counts(mock_quality, service, db, datahub):
 # ── get_overview: blind spots ─────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_blind_spots_datasets_without_concept_mapping(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(70.0)
+    mock_quality.return_value = make_quality_score_mock(70.0)
 
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,PROD)"
     urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.b,PROD)"
@@ -331,10 +274,9 @@ async def test_blind_spots_datasets_without_concept_mapping(mock_quality, servic
     assert urn_c in snapshot.blind_spots
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_blind_spots_empty_when_all_mapped(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(80.0)
+    mock_quality.return_value = make_quality_score_mock(80.0)
 
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,PROD)"
     map_row = _make_dataset_concept_map_row(dataset_urn=urn)
@@ -354,10 +296,9 @@ async def test_blind_spots_empty_when_all_mapped(mock_quality, service, db, data
     assert snapshot.blind_spots == []
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_blind_spots_all_when_no_mappings(mock_quality, service, db, datahub):
-    mock_quality.return_value = _mock_quality_score(60.0)
+    mock_quality.return_value = make_quality_score_mock(60.0)
 
     urns = [
         "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,PROD)",
@@ -382,10 +323,13 @@ async def test_blind_spots_all_when_no_mappings(mock_quality, service, db, datah
 # ── get_overview: stats ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_overview_stats_calculated(mock_quality, service, db, datahub):
-    scores = [_mock_quality_score(80.0), _mock_quality_score(0.0), _mock_quality_score(60.0)]
+    scores = [
+        make_quality_score_mock(80.0),
+        make_quality_score_mock(0.0),
+        make_quality_score_mock(60.0),
+    ]
     mock_quality.side_effect = scores
 
     concepts_result = MagicMock()
@@ -410,7 +354,6 @@ async def test_overview_stats_calculated(mock_quality, service, db, datahub):
 # ── get_config ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_config_returns_existing(service, db):
     config_row = _make_config_row(layout="hierarchical", color_by="medallion")
     result_mock = MagicMock()
@@ -422,7 +365,6 @@ async def test_get_config_returns_existing(service, db):
     assert config.color_by == "medallion"
 
 
-@pytest.mark.asyncio
 async def test_get_config_creates_default_when_missing(service, db):
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = None
@@ -448,7 +390,6 @@ async def test_get_config_creates_default_when_missing(service, db):
 # ── patch_config ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_patch_config_updates_fields(service, db):
     config_row = _make_config_row()
     result_mock = MagicMock()
@@ -462,7 +403,6 @@ async def test_patch_config_updates_fields(service, db):
     assert db.commit.await_count == 1
 
 
-@pytest.mark.asyncio
 async def test_patch_config_partial_update(service, db):
     config_row = _make_config_row(layout="force", color_by="quality_score")
     result_mock = MagicMock()

@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import pytest
 from httpx import AsyncClient
 
 from tests.unit.api.conftest import auth_headers
@@ -29,7 +28,6 @@ def _mock_response(
 # ── GraphQL proxy ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_graphql_proxy_forwards_request(client: AsyncClient) -> None:
     mock_resp = _mock_response(content=b'{"data":{"listDatasets":[]}}')
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
@@ -52,7 +50,6 @@ async def test_graphql_proxy_forwards_request(client: AsyncClient) -> None:
     assert "/api/graphql" in call_kwargs[0][1]
 
 
-@pytest.mark.asyncio
 async def test_graphql_proxy_forwards_datahub_token(client: AsyncClient) -> None:
     mock_resp = _mock_response()
     with (
@@ -77,7 +74,6 @@ async def test_graphql_proxy_forwards_datahub_token(client: AsyncClient) -> None
     assert forwarded_headers["authorization"] == "Bearer dh-secret-token"
 
 
-@pytest.mark.asyncio
 async def test_graphql_proxy_handles_datahub_error(client: AsyncClient) -> None:
     mock_resp = _mock_response(status_code=500, content=b'{"error":"internal"}')
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
@@ -96,7 +92,6 @@ async def test_graphql_proxy_handles_datahub_error(client: AsyncClient) -> None:
     assert resp.json() == {"error": "internal"}
 
 
-@pytest.mark.asyncio
 async def test_graphql_proxy_handles_connect_error(client: AsyncClient) -> None:
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
@@ -115,7 +110,6 @@ async def test_graphql_proxy_handles_connect_error(client: AsyncClient) -> None:
     assert body["error_code"] == "DATAHUB_UNAVAILABLE"
 
 
-@pytest.mark.asyncio
 async def test_graphql_proxy_handles_timeout(client: AsyncClient) -> None:
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
@@ -137,7 +131,6 @@ async def test_graphql_proxy_handles_timeout(client: AsyncClient) -> None:
 # ── OpenAPI proxy ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_openapi_proxy_get(client: AsyncClient) -> None:
     mock_resp = _mock_response(content=b'{"entities":[]}')
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
@@ -157,7 +150,6 @@ async def test_openapi_proxy_get(client: AsyncClient) -> None:
     assert "/openapi/v3/entity/dataset" in call_kwargs[0][1]
 
 
-@pytest.mark.asyncio
 async def test_openapi_proxy_post(client: AsyncClient) -> None:
     mock_resp = _mock_response(status_code=201, content=b'{"urn":"urn:li:dataset:1"}')
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
@@ -177,7 +169,6 @@ async def test_openapi_proxy_post(client: AsyncClient) -> None:
     assert call_kwargs[0][0] == "POST"
 
 
-@pytest.mark.asyncio
 async def test_openapi_proxy_preserves_query_params(client: AsyncClient) -> None:
     mock_resp = _mock_response()
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
@@ -198,7 +189,6 @@ async def test_openapi_proxy_preserves_query_params(client: AsyncClient) -> None
     assert "count=10" in target_url
 
 
-@pytest.mark.asyncio
 async def test_openapi_proxy_preserves_status_code(client: AsyncClient) -> None:
     mock_resp = _mock_response(status_code=404, content=b'{"error":"not found"}')
     with patch("src.api.routers.hub.httpx.AsyncClient") as mock_cls:
@@ -218,13 +208,11 @@ async def test_openapi_proxy_preserves_status_code(client: AsyncClient) -> None:
 # ── Auth requirement ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_hub_graphql_requires_auth(client: AsyncClient) -> None:
     resp = await client.post(_GRAPHQL_URL, content=b"{}")
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_hub_openapi_requires_auth(client: AsyncClient) -> None:
     resp = await client.get(f"{_OPENAPI_BASE}/v3/entity/dataset")
     assert resp.status_code == 401

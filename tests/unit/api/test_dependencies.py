@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import get_datahub, get_db, get_llm, get_qdrant, get_redis
@@ -29,7 +28,6 @@ class TestInfraProviders:
         client = get_llm()
         assert client is not None
 
-    @pytest.mark.asyncio
     @patch("src.api.dependencies.SessionLocal")
     async def test_get_db_yields_session(self, mock_session_local: object) -> None:
         mock_session = AsyncMock(spec=AsyncSession)

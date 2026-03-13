@@ -12,7 +12,6 @@ import importlib
 import pkgutil
 import re
 
-import pytest
 from pydantic import BaseModel
 
 from src.api.schemas.common import ErrorResponse, PaginatedResponse, SingleResponse
@@ -94,7 +93,6 @@ def test_discovered_models_are_not_empty() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_no_remaining_501_stubs() -> None:
     """Verify no router handler raises 501 NOT_IMPLEMENTED."""
     import src.api.routers as routers_pkg

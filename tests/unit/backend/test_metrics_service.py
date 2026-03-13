@@ -8,6 +8,7 @@ import pytest
 
 from src.backend.metrics.service import MetricsService
 from src.shared.exceptions import ConflictError, EntityNotFoundError
+from tests.unit.backend.conftest import make_event_row, mock_paginated_query, mock_scalar_query
 
 
 def _make_definition_row(
@@ -57,43 +58,6 @@ def _make_result_row(
     return row
 
 
-def _make_event_row(
-    entity_id: str = "test.metric",
-    event_type: str = "metric.run.completed",
-    status: str = "success",
-    minutes_ago: int = 5,
-):
-    row = MagicMock()
-    row.id = uuid.uuid4()
-    row.entity_type = "metric"
-    row.entity_id = entity_id
-    row.event_type = event_type
-    row.status = status
-    row.detail = {"source": "test"}
-    row.occurred_at = datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)
-    return row
-
-
-@pytest.fixture
-def db():
-    return AsyncMock()
-
-
-@pytest.fixture
-def datahub():
-    return AsyncMock()
-
-
-@pytest.fixture
-def cache():
-    return AsyncMock()
-
-
-@pytest.fixture
-def notification():
-    return AsyncMock()
-
-
 @pytest.fixture
 def service(datahub, db, cache, notification):
     return MetricsService(datahub=datahub, db=db, cache=cache, notification=notification)
@@ -102,49 +66,26 @@ def service(datahub, db, cache, notification):
 # ── list_metrics ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_metrics_returns_paginated(service, db):
     rows = [_make_definition_row(metric_id=f"metric_{i}") for i in range(3)]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 5
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, rows, total_count=5)
 
     metrics, total = await service.list_metrics(offset=0, limit=3)
     assert total == 5
     assert len(metrics) == 3
 
 
-@pytest.mark.asyncio
 async def test_list_metrics_empty(service, db):
-    count_result = MagicMock()
-    count_result.scalar.return_value = 0
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, [], total_count=0)
 
     metrics, total = await service.list_metrics()
     assert total == 0
     assert metrics == []
 
 
-@pytest.mark.asyncio
 async def test_list_metrics_with_theme_filter(service, db):
     rows = [_make_definition_row(theme="quality")]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 1
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, rows, total_count=1)
 
     metrics, total = await service.list_metrics(theme_filter="quality")
     assert total == 1
@@ -152,17 +93,9 @@ async def test_list_metrics_with_theme_filter(service, db):
     assert metrics[0].theme == "quality"
 
 
-@pytest.mark.asyncio
 async def test_list_metrics_with_active_filter(service, db):
     rows = [_make_definition_row(active=True)]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 1
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, rows, total_count=1)
 
     metrics, total = await service.list_metrics(active_filter=True)
     assert total == 1
@@ -172,23 +105,17 @@ async def test_list_metrics_with_active_filter(service, db):
 # ── get_metric ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_metric_found(service, db):
     row = _make_definition_row(title="Doc Coverage")
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
 
     metric = await service.get_metric(row.id)
     assert metric.title == "Doc Coverage"
     assert metric.id == row.id
 
 
-@pytest.mark.asyncio
 async def test_get_metric_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.get_metric("nonexistent")
@@ -198,7 +125,6 @@ async def test_get_metric_not_found(service, db):
 # ── get_metric_attr ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_metric_attr_with_latest_result(service, db):
     def_row = _make_definition_row()
     result_row = _make_result_row(value=85.5)
@@ -216,7 +142,6 @@ async def test_get_metric_attr_with_latest_result(service, db):
     assert attr["latest_value"] == 85.5
 
 
-@pytest.mark.asyncio
 async def test_get_metric_attr_no_results(service, db):
     def_row = _make_definition_row()
 
@@ -236,11 +161,8 @@ async def test_get_metric_attr_no_results(service, db):
 # ── get_metric_config / upsert / patch / delete ─────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_upsert_metric_config_create(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     metric = await service.upsert_metric_config(
@@ -254,12 +176,9 @@ async def test_upsert_metric_config_create(service, db):
     assert db.commit.await_count == 1
 
 
-@pytest.mark.asyncio
 async def test_upsert_metric_config_update(service, db):
     existing = _make_definition_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = existing
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, existing)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     await service.upsert_metric_config(
@@ -274,12 +193,9 @@ async def test_upsert_metric_config_update(service, db):
     assert db.commit.await_count == 1
 
 
-@pytest.mark.asyncio
 async def test_patch_metric_config(service, db):
     row = _make_definition_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     await service.patch_metric_config(row.id, {"title": "Patched Title"})
@@ -287,33 +203,24 @@ async def test_patch_metric_config(service, db):
     assert db.commit.await_count == 1
 
 
-@pytest.mark.asyncio
 async def test_patch_metric_config_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError):
         await service.patch_metric_config("nonexistent", {"title": "x"})
 
 
-@pytest.mark.asyncio
 async def test_delete_metric_config(service, db):
     row = _make_definition_row()
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
 
     await service.delete_metric_config(row.id)
     db.delete.assert_called_once_with(row)
     assert db.commit.await_count == 1
 
 
-@pytest.mark.asyncio
 async def test_delete_metric_config_not_found(service, db):
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError):
         await service.delete_metric_config("nonexistent")
@@ -322,17 +229,9 @@ async def test_delete_metric_config_not_found(service, db):
 # ── get_results ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_results_paginated(service, db):
     rows = [_make_result_row() for _ in range(2)]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 10
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, rows, total_count=10)
 
     results, total = await service.get_results("test.metric", offset=0, limit=2)
     assert total == 10
@@ -342,7 +241,6 @@ async def test_get_results_paginated(service, db):
 # ── run ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_run_measures_and_persists(service, db, datahub):
     def_row = _make_definition_row()
 
@@ -365,7 +263,6 @@ async def test_run_measures_and_persists(service, db, datahub):
     assert db.commit.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_run_dry_run_skips_persist(service, db, datahub):
     def_row = _make_definition_row()
 
@@ -385,7 +282,6 @@ async def test_run_dry_run_skips_persist(service, db, datahub):
     assert db.commit.await_count == 0
 
 
-@pytest.mark.asyncio
 async def test_run_with_alarm_triggered(service, db, datahub, notification):
     def_row = _make_definition_row(
         alarm_enabled=True,
@@ -409,7 +305,6 @@ async def test_run_with_alarm_triggered(service, db, datahub, notification):
     notification.send_alarm.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_run_alarm_not_triggered(service, db, datahub):
     def_row = _make_definition_row(
         alarm_threshold={"operator": "gt", "value": 100},
@@ -431,7 +326,6 @@ async def test_run_alarm_not_triggered(service, db, datahub):
     assert db.commit.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_run_with_delta_findings(service, db, datahub):
     def_row = _make_definition_row(
         measurement_query={"type": "unowned_datasets"},
@@ -474,12 +368,9 @@ async def test_run_with_delta_findings(service, db, datahub):
 # ── activate / deactivate ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_activate_inactive_metric(service, db):
     row = _make_definition_row(active=False)
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     metric = await service.activate(row.id)
@@ -488,24 +379,18 @@ async def test_activate_inactive_metric(service, db):
     assert db.commit.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_activate_already_active_raises(service, db):
     row = _make_definition_row(active=True)
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
 
     with pytest.raises(ConflictError) as exc_info:
         await service.activate(row.id)
     assert exc_info.value.error_code == "ALREADY_ACTIVE"
 
 
-@pytest.mark.asyncio
 async def test_deactivate_active_metric(service, db):
     row = _make_definition_row(active=True)
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
     db.refresh = AsyncMock(side_effect=lambda obj: None)
 
     metric = await service.deactivate(row.id)
@@ -513,12 +398,9 @@ async def test_deactivate_active_metric(service, db):
     assert db.commit.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_deactivate_already_inactive_raises(service, db):
     row = _make_definition_row(active=False)
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result_mock)
+    mock_scalar_query(db, row)
 
     with pytest.raises(ConflictError) as exc_info:
         await service.deactivate(row.id)
@@ -559,18 +441,18 @@ def test_check_threshold_invalid_operator():
 # ── events ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_events(service, db):
     metric_id = "test.metric.events"
-    rows = [_make_event_row(entity_id=metric_id, minutes_ago=i) for i in range(3)]
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 5
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = rows
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    rows = [
+        make_event_row(
+            entity_type="metric",
+            event_type="metric.run.completed",
+            entity_id=metric_id,
+            minutes_ago=i,
+        )
+        for i in range(3)
+    ]
+    mock_paginated_query(db, rows, total_count=5)
 
     events, total = await service.get_events(metric_id, offset=0, limit=3)
     assert total == 5
@@ -578,17 +460,9 @@ async def test_get_events(service, db):
     assert events[0]["entity_type"] == "metric"
 
 
-@pytest.mark.asyncio
 async def test_get_events_with_time_range(service, db):
     metric_id = "test.metric"
-
-    count_result = MagicMock()
-    count_result.scalar.return_value = 0
-
-    rows_result = MagicMock()
-    rows_result.scalars.return_value.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    mock_paginated_query(db, [], total_count=0)
 
     now = datetime.now(tz=UTC)
     events, total = await service.get_events(

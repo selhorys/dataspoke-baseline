@@ -52,7 +52,6 @@ async def exc_client() -> AsyncClient:
         yield ac
 
 
-@pytest.mark.asyncio
 async def test_not_found_returns_404(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/test/not-found")
     assert resp.status_code == 404
@@ -62,7 +61,6 @@ async def test_not_found_returns_404(exc_client: AsyncClient) -> None:
     assert "trace_id" in body
 
 
-@pytest.mark.asyncio
 async def test_conflict_returns_409(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/test/conflict")
     assert resp.status_code == 409
@@ -70,7 +68,6 @@ async def test_conflict_returns_409(exc_client: AsyncClient) -> None:
     assert body["error_code"] == "DUPLICATE_CONFIG"
 
 
-@pytest.mark.asyncio
 async def test_datahub_returns_502(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/test/datahub")
     assert resp.status_code == 502
@@ -78,7 +75,6 @@ async def test_datahub_returns_502(exc_client: AsyncClient) -> None:
     assert body["error_code"] == "DATAHUB_UNAVAILABLE"
 
 
-@pytest.mark.asyncio
 async def test_storage_returns_503(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/test/storage")
     assert resp.status_code == 503
@@ -86,7 +82,6 @@ async def test_storage_returns_503(exc_client: AsyncClient) -> None:
     assert body["error_code"] == "STORAGE_UNAVAILABLE"
 
 
-@pytest.mark.asyncio
 async def test_generic_dataspoke_returns_500(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/test/generic")
     assert resp.status_code == 500
@@ -94,7 +89,6 @@ async def test_generic_dataspoke_returns_500(exc_client: AsyncClient) -> None:
     assert body["error_code"] == "INTERNAL_ERROR"
 
 
-@pytest.mark.asyncio
 async def test_trace_id_echoed(exc_client: AsyncClient) -> None:
     resp = await exc_client.get(
         "/test/not-found",
@@ -104,7 +98,6 @@ async def test_trace_id_echoed(exc_client: AsyncClient) -> None:
     assert body["trace_id"] == "trace-abc-123"
 
 
-@pytest.mark.asyncio
 async def test_error_response_has_required_fields(exc_client: AsyncClient) -> None:
     resp = await exc_client.get("/test/conflict")
     body = resp.json()

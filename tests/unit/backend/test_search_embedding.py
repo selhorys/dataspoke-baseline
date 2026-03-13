@@ -2,8 +2,6 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from src.backend.search.embedding import (
     _extract_name_from_urn,
     _extract_platform_from_urn,
@@ -70,7 +68,6 @@ class TestExtractHelpers:
 
 
 class TestGenerateEmbedding:
-    @pytest.mark.asyncio
     async def test_calls_llm_embed(self):
         llm = AsyncMock()
         llm.embed.return_value = [0.1] * 1536
@@ -112,7 +109,6 @@ class TestGenerateEmbedding:
         assert payload["dataset_urn"] == urn
         assert payload["platform"] == "postgres"
 
-    @pytest.mark.asyncio
     async def test_handles_missing_aspects(self):
         llm = AsyncMock()
         llm.embed.return_value = [0.0] * 1536

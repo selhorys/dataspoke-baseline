@@ -40,21 +40,18 @@ def _clear_overrides():
     app.dependency_overrides.clear()
 
 
-@pytest.mark.asyncio
 async def test_health_returns_200(client: AsyncClient) -> None:
     response = await client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
-@pytest.mark.asyncio
 async def test_health_no_auth_required(client: AsyncClient) -> None:
     """Health endpoint must be accessible without any Authorization header."""
     response = await client.get("/health")
     assert response.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_ready_all_ok() -> None:
     test_app = _override_ready_deps(datahub_ok=True, postgres_ok=True, redis_ok=True)
     async with AsyncClient(
@@ -70,7 +67,6 @@ async def test_ready_all_ok() -> None:
     assert body["checks"]["redis"] is True
 
 
-@pytest.mark.asyncio
 async def test_ready_degraded_when_one_fails() -> None:
     test_app = _override_ready_deps(datahub_ok=True, postgres_ok=False, redis_ok=True)
     async with AsyncClient(
@@ -84,7 +80,6 @@ async def test_ready_degraded_when_one_fails() -> None:
     assert body["checks"]["postgres"] is False
 
 
-@pytest.mark.asyncio
 async def test_ready_includes_checks_dict() -> None:
     test_app = _override_ready_deps()
     async with AsyncClient(
@@ -97,7 +92,6 @@ async def test_ready_includes_checks_dict() -> None:
     assert set(body["checks"].keys()) == {"datahub", "postgres", "redis"}
 
 
-@pytest.mark.asyncio
 async def test_ready_no_auth_required() -> None:
     test_app = _override_ready_deps()
     async with AsyncClient(

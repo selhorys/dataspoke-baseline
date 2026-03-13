@@ -24,7 +24,6 @@ def test_extractor_registry_maps_all_types():
 # ── ConfluenceExtractor ──────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_confluence_extractor_returns_descriptions():
     extractor = ConfluenceExtractor()
     mock_response = MagicMock()
@@ -62,7 +61,6 @@ async def test_confluence_extractor_returns_descriptions():
     assert "test" in result[0].content["body"]
 
 
-@pytest.mark.asyncio
 async def test_confluence_extractor_invalid_config():
     extractor = ConfluenceExtractor()
     with pytest.raises(DataSpokeError, match="missing config keys"):
@@ -72,7 +70,6 @@ async def test_confluence_extractor_invalid_config():
 # ── GitHubExtractor ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_github_extractor_returns_code_refs():
     extractor = GitHubExtractor()
     mock_response = MagicMock()
@@ -102,7 +99,6 @@ async def test_github_extractor_returns_code_refs():
     assert result[0].content["path"] == "db/schema.sql"
 
 
-@pytest.mark.asyncio
 async def test_github_extractor_invalid_config():
     extractor = GitHubExtractor()
     with pytest.raises(DataSpokeError, match="missing config keys"):
@@ -112,7 +108,6 @@ async def test_github_extractor_invalid_config():
 # ── ExcelExtractor ───────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_excel_extractor_returns_column_mapping_csv():
     csv_content = "column_name,data_type,description\nid,integer,Primary key\nname,text,User name"
     encoded = base64.b64encode(csv_content.encode()).decode()
@@ -126,7 +121,6 @@ async def test_excel_extractor_returns_column_mapping_csv():
     assert result[1].content["column_name"] == "name"
 
 
-@pytest.mark.asyncio
 async def test_excel_extractor_missing_config():
     extractor = ExcelExtractor()
     with pytest.raises(DataSpokeError, match="requires 'file_path' or 'file_content'"):
@@ -136,7 +130,6 @@ async def test_excel_extractor_missing_config():
 # ── SqlLogExtractor ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_sql_log_extractor_returns_lineage_edges():
     extractor = SqlLogExtractor()
     result = await extractor.extract(
@@ -156,21 +149,18 @@ async def test_sql_log_extractor_returns_lineage_edges():
     assert "orders.order_header" in tables
 
 
-@pytest.mark.asyncio
 async def test_sql_log_extractor_missing_queries():
     extractor = SqlLogExtractor()
     with pytest.raises(DataSpokeError, match="requires 'queries'"):
         await extractor.extract({})
 
 
-@pytest.mark.asyncio
 async def test_sql_log_extractor_invalid_queries_type():
     extractor = SqlLogExtractor()
     with pytest.raises(DataSpokeError, match="must be a list"):
         await extractor.extract({"queries": "SELECT 1"})
 
 
-@pytest.mark.asyncio
 async def test_sql_log_extractor_simple_select():
     extractor = SqlLogExtractor()
     result = await extractor.extract({"queries": ["SELECT a, b FROM my_table WHERE a > 1"]})

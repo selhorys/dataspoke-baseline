@@ -8,11 +8,6 @@ from src.backend.generation.analyzer import SourceCodeAnalyzer
 
 
 @pytest.fixture
-def llm():
-    return AsyncMock()
-
-
-@pytest.fixture
 def analyzer(llm):
     return SourceCodeAnalyzer(llm=llm)
 
@@ -20,7 +15,6 @@ def analyzer(llm):
 # ── diff_similar_tables ──────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_diff_similar_tables_overlapping_fields(analyzer):
     current_schema = [
         {"fieldPath": "id", "nativeDataType": "int"},
@@ -48,7 +42,6 @@ async def test_diff_similar_tables_overlapping_fields(analyzer):
     assert diff["type_mismatches"] == []
 
 
-@pytest.mark.asyncio
 async def test_diff_similar_tables_no_overlap(analyzer):
     current_schema = [
         {"fieldPath": "a", "nativeDataType": "int"},
@@ -70,7 +63,6 @@ async def test_diff_similar_tables_no_overlap(analyzer):
     assert diff["similar_only"] == ["x"]
 
 
-@pytest.mark.asyncio
 async def test_diff_similar_tables_type_mismatch(analyzer):
     current_schema = [
         {"fieldPath": "amount", "nativeDataType": "float"},
@@ -96,7 +88,6 @@ async def test_diff_similar_tables_type_mismatch(analyzer):
 # ── analyze ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_analyze_with_code_refs(analyzer, llm):
     mock_items = [
         MagicMock(content={"name": "main.py", "path": "src/main.py", "type": "file", "sha": "abc"}),
@@ -123,7 +114,6 @@ async def test_analyze_with_code_refs(analyzer, llm):
         llm.complete_json.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_analyze_empty_code_refs(analyzer, llm):
     with patch("src.backend.ingestion.extractors.GitHubExtractor") as MockExtractor:
         extractor_instance = AsyncMock()

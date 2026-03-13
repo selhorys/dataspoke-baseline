@@ -13,26 +13,6 @@ _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,P
 
 
 @pytest.fixture
-def datahub():
-    return AsyncMock()
-
-
-@pytest.fixture
-def cache():
-    return AsyncMock()
-
-
-@pytest.fixture
-def llm():
-    return AsyncMock()
-
-
-@pytest.fixture
-def qdrant():
-    return AsyncMock()
-
-
-@pytest.fixture
 def service(datahub, cache, llm, qdrant):
     return SearchService(datahub=datahub, cache=cache, llm=llm, qdrant=qdrant)
 
@@ -69,7 +49,6 @@ def _mock_datahub_enrichment(datahub: AsyncMock) -> None:
 
 
 class TestSearch:
-    @pytest.mark.asyncio
     async def test_returns_cached_result(self, service, cache, qdrant, llm):
         cached_data = {
             "datasets": [{"urn": _DATASET_URN, "name": "users", "score": 0.9}],
@@ -86,7 +65,6 @@ class TestSearch:
         qdrant.search.assert_not_called()
         llm.embed.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_cache_miss_queries_qdrant(self, service, cache, llm, qdrant, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
@@ -100,7 +78,6 @@ class TestSearch:
         assert len(result["datasets"]) == 1
         assert result["datasets"][0]["score"] == 0.95
 
-    @pytest.mark.asyncio
     async def test_enriches_with_datahub_metadata(self, service, cache, llm, qdrant, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
@@ -114,7 +91,6 @@ class TestSearch:
         assert "urn:li:corpuser:alice@example.com" in item["owners"]
         assert "production" in item["tags"]
 
-    @pytest.mark.asyncio
     async def test_without_sql_context(self, service, cache, llm, qdrant, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
@@ -126,7 +102,6 @@ class TestSearch:
         item = result["datasets"][0]
         assert item["sql_context"] is None
 
-    @pytest.mark.asyncio
     async def test_with_sql_context(self, service, cache, llm, qdrant, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
@@ -166,7 +141,6 @@ class TestSearch:
         assert len(item["sql_context"]["columns"]) == 1
         assert item["sql_context"]["columns"][0]["name"] == "id"
 
-    @pytest.mark.asyncio
     async def test_caches_result(self, service, cache, llm, qdrant, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
@@ -180,7 +154,6 @@ class TestSearch:
         assert call_args[0][0].startswith("search:")
         assert call_args[0][2] == 120  # TTL
 
-    @pytest.mark.asyncio
     async def test_empty_results(self, service, cache, llm, qdrant):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
@@ -193,7 +166,6 @@ class TestSearch:
 
 
 class TestReindex:
-    @pytest.mark.asyncio
     async def test_fetches_and_upserts(self, service, datahub, llm, qdrant):
         # DataHub aspects for reindex: first get_aspect (props check), then generate_embedding calls
         props = MagicMock()
@@ -231,14 +203,12 @@ class TestReindex:
         assert len(points) == 1
         assert points[0].payload["dataset_urn"] == _DATASET_URN
 
-    @pytest.mark.asyncio
     async def test_dataset_not_found(self, service, datahub):
         datahub.get_aspect.return_value = None
 
         with pytest.raises(EntityNotFoundError):
             await service.reindex(_DATASET_URN)
 
-    @pytest.mark.asyncio
     async def test_builds_correct_payload(self, service, datahub, llm, qdrant):
         props = MagicMock()
         props.name = "mydb.public.users"

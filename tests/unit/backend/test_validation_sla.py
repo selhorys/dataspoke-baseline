@@ -2,9 +2,7 @@
 
 import time
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import AsyncMock
 
 from src.backend.validation.sla import (
     SLATarget,
@@ -12,15 +10,7 @@ from src.backend.validation.sla import (
     check_sla,
     learn_thresholds,
 )
-
-
-def _mock_profile(timestamp_ms: int, row_count: int = 1000):
-    """Create a mock DatasetProfileClass with configurable timestamp."""
-    profile = MagicMock()
-    profile.timestampMillis = timestamp_ms
-    profile.rowCount = row_count
-    profile.fieldProfiles = []
-    return profile
+from tests.unit.backend.conftest import make_mock_profile
 
 
 def _make_profile_series(
@@ -44,14 +34,13 @@ def _make_profile_series(
         if day_multipliers:
             dow = dt.weekday()
             rc = int(base_count * day_multipliers.get(dow, 1.0))
-        profiles.append(_mock_profile(ts_ms, row_count=rc))
+        profiles.append(make_mock_profile(ts_ms, row_count=rc))
     return profiles
 
 
 # ── learn_thresholds ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_learn_thresholds_basic():
     """28 days of profiles; verify per-day baselines are computed."""
     profiles = _make_profile_series(n_days=28, base_count=1000)
@@ -64,7 +53,6 @@ async def test_learn_thresholds_basic():
     assert len(baseline.day_baselines) >= 4  # at least 4 distinct weekdays in 28 days
 
 
-@pytest.mark.asyncio
 async def test_learn_thresholds_monday_higher():
     """Monday profiles have higher row counts; verify Monday baseline is higher."""
     multipliers = {0: 2.0}  # Monday is 2x
@@ -80,7 +68,6 @@ async def test_learn_thresholds_monday_higher():
             assert monday_bl.expected_value > bl.expected_value
 
 
-@pytest.mark.asyncio
 async def test_learn_thresholds_insufficient_history():
     """3-day history; verify baseline still computed with available data."""
     profiles = _make_profile_series(n_days=3, base_count=500)
@@ -90,7 +77,6 @@ async def test_learn_thresholds_insufficient_history():
     assert len(baseline.day_baselines) >= 1
 
 
-@pytest.mark.asyncio
 async def test_learn_thresholds_empty():
     """Empty history returns None."""
     baseline = await learn_thresholds([])
@@ -100,12 +86,11 @@ async def test_learn_thresholds_empty():
 # ── check_sla ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_check_sla_fresh_and_healthy():
     """Dataset within all thresholds; no breach."""
     datahub = AsyncMock()
     now_ms = int(time.time() * 1000)
-    profiles = [_mock_profile(now_ms, row_count=1000)]
+    profiles = [make_mock_profile(now_ms, row_count=1000)]
 
     result = await check_sla(
         datahub=datahub,
@@ -119,7 +104,6 @@ async def test_check_sla_fresh_and_healthy():
     assert result.violations == [] or all("Pre-breach" not in v for v in result.violations)
 
 
-@pytest.mark.asyncio
 async def test_check_sla_freshness_breach():
     """Last operation >N hours ago; verify breach."""
     datahub = AsyncMock()
@@ -127,7 +111,7 @@ async def test_check_sla_freshness_breach():
     datahub.get_downstream_lineage = AsyncMock(return_value=["urn:downstream1"])
 
     old_ms = int((datetime.now(tz=UTC) - timedelta(hours=48)).timestamp() * 1000)
-    profiles = [_mock_profile(old_ms, row_count=1000)]
+    profiles = [make_mock_profile(old_ms, row_count=1000)]
 
     result = await check_sla(
         datahub=datahub,
@@ -140,7 +124,6 @@ async def test_check_sla_freshness_breach():
     assert any("Freshness breach" in v for v in result.violations)
 
 
-@pytest.mark.asyncio
 async def test_check_sla_quality_breach():
     """Quality score below threshold; verify breach."""
     datahub = AsyncMock()
@@ -148,7 +131,7 @@ async def test_check_sla_quality_breach():
     datahub.get_downstream_lineage = AsyncMock(return_value=[])
 
     now_ms = int(time.time() * 1000)
-    profiles = [_mock_profile(now_ms, row_count=1000)]
+    profiles = [make_mock_profile(now_ms, row_count=1000)]
 
     result = await check_sla(
         datahub=datahub,
@@ -161,7 +144,6 @@ async def test_check_sla_quality_breach():
     assert any("Quality breach" in v for v in result.violations)
 
 
-@pytest.mark.asyncio
 async def test_check_sla_pre_breach_prediction():
     """Declining update frequency approaching threshold; verify pre-breach detected."""
     datahub = AsyncMock()
@@ -173,7 +155,7 @@ async def test_check_sla_pre_breach_prediction():
     profiles = []
     for i in range(5):
         dt = now - timedelta(hours=20 + i * 10)  # 20h, 30h, 40h, 50h, 60h ago
-        profiles.append(_mock_profile(int(dt.timestamp() * 1000), row_count=1000))
+        profiles.append(make_mock_profile(int(dt.timestamp() * 1000), row_count=1000))
 
     result = await check_sla(
         datahub=datahub,
@@ -194,7 +176,6 @@ async def test_check_sla_pre_breach_prediction():
     assert isinstance(result.is_pre_breach, bool)
 
 
-@pytest.mark.asyncio
 async def test_check_sla_lineage_traversal():
     """When breaching, verify upstream/downstream lineage calls are made."""
     datahub = AsyncMock()
@@ -202,7 +183,7 @@ async def test_check_sla_lineage_traversal():
     datahub.get_downstream_lineage = AsyncMock(return_value=["urn:downstream1"])
 
     old_ms = int((datetime.now(tz=UTC) - timedelta(hours=48)).timestamp() * 1000)
-    profiles = [_mock_profile(old_ms, row_count=1000)]
+    profiles = [make_mock_profile(old_ms, row_count=1000)]
 
     result = await check_sla(
         datahub=datahub,
@@ -217,12 +198,11 @@ async def test_check_sla_lineage_traversal():
     assert result.impact_urns == ["urn:downstream1"]
 
 
-@pytest.mark.asyncio
 async def test_check_sla_auto_adjust_off():
     """auto_adjust_thresholds=False; verify learn_thresholds is not called."""
     datahub = AsyncMock()
     now_ms = int(time.time() * 1000)
-    profiles = [_mock_profile(now_ms, row_count=1000)]
+    profiles = [make_mock_profile(now_ms, row_count=1000)]
 
     result = await check_sla(
         datahub=datahub,

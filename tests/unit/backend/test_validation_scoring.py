@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.backend.validation.scoring import WEIGHTS, compute_quality_score
+from tests.unit.backend.conftest import make_mock_operation
 
 
 def _mock_schema(fields_with_desc: int = 5, fields_total: int = 10):
@@ -18,13 +19,6 @@ def _mock_schema(fields_with_desc: int = 5, fields_total: int = 10):
         fields.append(f)
     schema.fields = fields
     return schema
-
-
-def _mock_operation(timestamp_ms: int):
-    op = MagicMock()
-    op.lastUpdatedTimestamp = timestamp_ms
-    op.timestampMillis = timestamp_ms
-    return op
 
 
 def _mock_profile(null_proportions: list[float] | None = None, row_count: int = 100):
@@ -61,11 +55,6 @@ def _mock_tags(has_tags: bool = True):
 
 
 @pytest.fixture
-def datahub():
-    return AsyncMock()
-
-
-@pytest.fixture
 def cache():
     c = AsyncMock()
     c.get = AsyncMock(return_value=None)
@@ -84,7 +73,6 @@ def test_weight_distribution():
 # ── Perfect score ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_perfect_score(datahub, cache):
     """All aspects fully populated → score near 100."""
     import time
@@ -104,7 +92,7 @@ async def test_perfect_score(datahub, cache):
     async def _get_timeseries(urn, cls, limit=30):
         name = cls.__name__
         if name == "OperationClass":
-            return [_mock_operation(now_ms)]
+            return [make_mock_operation(now_ms)]
         if name == "DatasetProfileClass":
             return [_mock_profile(null_proportions=[0.0, 0.0], row_count=1000)]
         return []
@@ -121,7 +109,6 @@ async def test_perfect_score(datahub, cache):
 # ── Zero score ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_zero_score(datahub, cache):
     """All aspects missing → score 0."""
     datahub.get_aspect = AsyncMock(return_value=None)
@@ -136,7 +123,6 @@ async def test_zero_score(datahub, cache):
 # ── Completeness dimension ────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_completeness_dimension(datahub, cache):
     """Schema with 50% described fields → completeness ≈ 50."""
 
@@ -155,27 +141,25 @@ async def test_completeness_dimension(datahub, cache):
 # ── Freshness dimension ──────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_freshness_recent(datahub, cache):
     """Last operation 0 days ago → freshness 100."""
     import time
 
     now_ms = int(time.time() * 1000)
     datahub.get_aspect = AsyncMock(return_value=None)
-    datahub.get_timeseries = AsyncMock(return_value=[_mock_operation(now_ms)])
+    datahub.get_timeseries = AsyncMock(return_value=[make_mock_operation(now_ms)])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["freshness"] == 100.0
 
 
-@pytest.mark.asyncio
 async def test_freshness_stale(datahub, cache):
     """Last operation 30+ days ago → freshness 0."""
     import time
 
     old_ms = int((time.time() - 31 * 86400) * 1000)
     datahub.get_aspect = AsyncMock(return_value=None)
-    datahub.get_timeseries = AsyncMock(return_value=[_mock_operation(old_ms)])
+    datahub.get_timeseries = AsyncMock(return_value=[make_mock_operation(old_ms)])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["freshness"] == 0.0
@@ -184,7 +168,6 @@ async def test_freshness_stale(datahub, cache):
 # ── Schema stability ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_schema_stability_high(datahub, cache):
     """Schema present with fields → stability 100."""
 
@@ -200,7 +183,6 @@ async def test_schema_stability_high(datahub, cache):
     assert score.dimensions["schema_stability"] == 100.0
 
 
-@pytest.mark.asyncio
 async def test_schema_stability_no_schema(datahub, cache):
     """No schema → stability 0."""
     datahub.get_aspect = AsyncMock(return_value=None)
@@ -213,7 +195,6 @@ async def test_schema_stability_no_schema(datahub, cache):
 # ── Data quality dimension ────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_data_quality_good(datahub, cache):
     """Low null ratio → high score."""
     datahub.get_aspect = AsyncMock(return_value=None)
@@ -229,7 +210,6 @@ async def test_data_quality_good(datahub, cache):
     assert score.dimensions["data_quality"] >= 95.0
 
 
-@pytest.mark.asyncio
 async def test_data_quality_poor(datahub, cache):
     """High null ratio → low score."""
     datahub.get_aspect = AsyncMock(return_value=None)
@@ -248,7 +228,6 @@ async def test_data_quality_poor(datahub, cache):
 # ── Ownership & tags ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_ownership_tags_full(datahub, cache):
     """Has owner + tags → 100."""
 
@@ -266,7 +245,6 @@ async def test_ownership_tags_full(datahub, cache):
     assert score.dimensions["ownership_tags"] == 100.0
 
 
-@pytest.mark.asyncio
 async def test_ownership_tags_none(datahub, cache):
     """Missing both → 0."""
     datahub.get_aspect = AsyncMock(return_value=None)
@@ -279,7 +257,6 @@ async def test_ownership_tags_none(datahub, cache):
 # ── Cache behaviour ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_cache_hit(datahub, cache):
     """Score returned from Redis cache without calling DataHub."""
     cached_data = json.dumps(
@@ -301,7 +278,6 @@ async def test_cache_hit(datahub, cache):
     datahub.get_aspect.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_cache_miss_then_set(datahub, cache):
     """Cache miss → compute → write to cache."""
     cache.get = AsyncMock(return_value=None)
