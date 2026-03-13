@@ -1,9 +1,11 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, WebSocket, status
+from starlette.websockets import WebSocketDisconnect
 
 from src.api.auth.dependencies import require_dg
-from src.api.dependencies import get_metrics_service
+from src.api.auth.ws import ws_authenticate
+from src.api.dependencies import get_metrics_service, get_redis
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
     MetricAttrResponse,
@@ -222,9 +224,32 @@ async def get_metric_events(
 
 # ── WebSocket: metric update stream ───────────────────────────────────────────
 
+# Separate router without HTTP auth dependencies — WebSocket routes handle
+# authentication via the message-based handshake inside the handler.
+ws_router = APIRouter(prefix="/metric", tags=["dg/metric"])
 
-@router.websocket("/stream")
+
+@ws_router.websocket("/stream")
 async def stream_metrics(websocket: WebSocket) -> None:
-    """Stub WebSocket — immediately closes with 1011 (internal error / not implemented)."""
+    """Stream metric updates via Redis pub/sub.
+
+    Protocol:
+    1. Client sends ``{"type": "auth", "token": "<jwt>"}``
+    2. Server replies ``{"type": "auth_ok"}`` then forwards Redis messages
+    3. Connection stays open until the client disconnects
+    """
+
     await websocket.accept()
-    await websocket.close(code=1011, reason="not implemented")
+
+    if not await ws_authenticate(websocket):
+        return
+
+    cache = get_redis()
+    try:
+        async for message in cache.subscribe("ws:metric:updates"):
+            await websocket.send_text(message)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await cache.close()
+        await websocket.close()
