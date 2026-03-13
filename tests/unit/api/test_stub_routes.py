@@ -40,12 +40,8 @@ COMMON_SEARCH_ROUTES: list[tuple[str, str]] = []
 # ── DG/metric — implemented by MetricsService ────────────────────────────────
 DG_METRIC_ROUTES: list[tuple[str, str]] = []
 
-# ── DG/overview ────────────────────────────────────────────────────────────────
-DG_OVERVIEW_ROUTES = [
-    ("GET", "/api/v1/spoke/dg/overview"),
-    ("GET", "/api/v1/spoke/dg/overview/attr"),
-    ("PATCH", "/api/v1/spoke/dg/overview/attr"),
-]
+# ── DG/overview — implemented by OverviewService ──────────────────────────────
+DG_OVERVIEW_ROUTES: list[tuple[str, str]] = []
 
 
 async def _assert_501(client: AsyncClient, method: str, path: str, headers: dict) -> None:
