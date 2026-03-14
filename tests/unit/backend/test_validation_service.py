@@ -10,6 +10,7 @@ from src.backend.validation.service import ValidationService
 from src.shared.exceptions import EntityNotFoundError
 from tests.unit.backend.conftest import (
     make_event_row,
+    mock_db_refresh,
     mock_paginated_query,
     mock_scalar_query,
 )
@@ -87,7 +88,7 @@ async def test_get_config_not_found(service, db):
 
 async def test_upsert_config_creates_new(service, db):
     mock_scalar_query(db, None)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
@@ -103,7 +104,7 @@ async def test_upsert_config_creates_new(service, db):
 async def test_upsert_config_updates_existing(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
@@ -124,7 +125,7 @@ async def test_upsert_config_updates_existing(service, db):
 async def test_patch_config_applies_partial(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
     assert existing_row.schedule == "0 12 * * *"
@@ -217,7 +218,7 @@ async def test_get_results_time_range(service, db):
 async def test_run_success(service, db, datahub, cache):
     config_row = _make_config_row()
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     cache.get = AsyncMock(return_value=None)
     cache.set = AsyncMock()
@@ -237,7 +238,7 @@ async def test_run_success(service, db, datahub, cache):
 async def test_run_dry_run(service, db, datahub, cache):
     config_row = _make_config_row()
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     cache.get = AsyncMock(return_value=None)
     cache.set = AsyncMock()

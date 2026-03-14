@@ -11,6 +11,7 @@ from tests.unit.backend.conftest import (
     make_concept_row,
     make_quality_score_mock,
     make_relationship_row,
+    mock_db_refresh,
 )
 
 
@@ -395,7 +396,7 @@ async def test_patch_config_updates_fields(service, db):
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = config_row
     db.execute = AsyncMock(return_value=result_mock)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     config = await service.patch_config(layout="hierarchical")
     assert config.layout == "hierarchical"
@@ -408,7 +409,7 @@ async def test_patch_config_partial_update(service, db):
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = config_row
     db.execute = AsyncMock(return_value=result_mock)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     config = await service.patch_config(color_by="medallion")
     assert config.layout == "force"

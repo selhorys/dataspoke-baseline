@@ -8,7 +8,12 @@ import pytest
 
 from src.backend.ingestion.service import IngestionService
 from src.shared.exceptions import EntityNotFoundError
-from tests.unit.backend.conftest import make_event_row, mock_paginated_query, mock_scalar_query
+from tests.unit.backend.conftest import (
+    make_event_row,
+    mock_db_refresh,
+    mock_paginated_query,
+    mock_scalar_query,
+)
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
 
@@ -64,7 +69,7 @@ async def test_get_config_not_found(service, db):
 
 async def test_upsert_config_creates_new(service, db):
     mock_scalar_query(db, None)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
@@ -80,7 +85,7 @@ async def test_upsert_config_creates_new(service, db):
 async def test_upsert_config_updates_existing(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
@@ -101,7 +106,7 @@ async def test_upsert_config_updates_existing(service, db):
 async def test_patch_config_applies_partial(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
     assert existing_row.schedule == "0 12 * * *"
@@ -164,7 +169,7 @@ async def test_run_success(service, db, datahub):
         sources={"sql_log": {"queries": ["SELECT * FROM orders.order_header"]}}
     )
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     result = await service.run(_DATASET_URN)
     assert result.status in ("success", "partial")
@@ -177,7 +182,7 @@ async def test_run_dry_run(service, db, datahub):
         sources={"sql_log": {"queries": ["SELECT * FROM catalog.title_master"]}}
     )
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     result = await service.run(_DATASET_URN, dry_run=True)
     assert result.detail["dry_run"] is True
@@ -190,7 +195,7 @@ async def test_run_with_llm_enrichment(service, db, datahub, llm):
         sources={"sql_log": {"queries": ["SELECT * FROM catalog.title_master"]}},
     )
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     llm.complete_json = AsyncMock(
         return_value={"description": "Enriched desc", "tags": ["important"]}
@@ -217,7 +222,7 @@ async def test_run_extractor_partial_failure(service, db, datahub):
         }
     )
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     result = await service.run(_DATASET_URN)
     assert result.status == "partial"

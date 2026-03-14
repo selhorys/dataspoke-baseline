@@ -4,111 +4,71 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.validation.scoring import compute_quality_score
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import (
-    ConceptCategory,
-    ConceptRelationship,
-    DatasetConceptMap,
-    OverviewConfig,
-)
+from src.shared.db.models import ConceptCategory, DatasetConceptMap, OverviewConfig
+from src.shared.db.models import ConceptRelationship as ConceptRelationshipORM
 
 _CONCURRENCY_LIMIT = 10
 
 
-class GraphNode:
+class GraphNode(BaseModel):
     """A node in the overview graph (concept or dataset)."""
 
-    __slots__ = ("id", "type", "label", "metadata")
-
-    def __init__(self, id: str, type: str, label: str, metadata: dict[str, Any]) -> None:
-        self.id = id
-        self.type = type
-        self.label = label
-        self.metadata = metadata
+    id: str
+    type: str
+    label: str
+    metadata: dict[str, Any] = {}
 
 
-class GraphEdge:
+class GraphEdge(BaseModel):
     """An edge in the overview graph."""
 
-    __slots__ = ("source", "target", "type", "metadata")
-
-    def __init__(self, source: str, target: str, type: str, metadata: dict[str, Any]) -> None:
-        self.source = source
-        self.target = target
-        self.type = type
-        self.metadata = metadata
+    source: str
+    target: str
+    type: str
+    metadata: dict[str, Any] = {}
 
 
-class MedallionSummary:
+class MedallionSummary(BaseModel):
     """Counts per medallion layer."""
 
-    __slots__ = ("bronze", "silver", "gold")
-
-    def __init__(self, bronze: int = 0, silver: int = 0, gold: int = 0) -> None:
-        self.bronze = bronze
-        self.silver = silver
-        self.gold = gold
+    bronze: int = 0
+    silver: int = 0
+    gold: int = 0
 
 
-class SnapshotStats:
+class SnapshotStats(BaseModel):
     """Summary statistics for the overview snapshot."""
 
-    __slots__ = ("total_datasets", "monitored_datasets", "avg_quality_score", "issues_count")
-
-    def __init__(
-        self,
-        total_datasets: int = 0,
-        monitored_datasets: int = 0,
-        avg_quality_score: float = 0.0,
-        issues_count: int = 0,
-    ) -> None:
-        self.total_datasets = total_datasets
-        self.monitored_datasets = monitored_datasets
-        self.avg_quality_score = avg_quality_score
-        self.issues_count = issues_count
+    total_datasets: int = 0
+    monitored_datasets: int = 0
+    avg_quality_score: float = 0.0
+    issues_count: int = 0
 
 
-class OverviewSnapshot:
+class OverviewSnapshot(BaseModel):
     """Full graph topology snapshot."""
 
-    __slots__ = ("nodes", "edges", "medallion", "blind_spots", "stats")
-
-    def __init__(
-        self,
-        nodes: list[GraphNode],
-        edges: list[GraphEdge],
-        medallion: MedallionSummary,
-        blind_spots: list[str],
-        stats: SnapshotStats,
-    ) -> None:
-        self.nodes = nodes
-        self.edges = edges
-        self.medallion = medallion
-        self.blind_spots = blind_spots
-        self.stats = stats
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+    medallion: MedallionSummary
+    blind_spots: list[str] = []
+    stats: SnapshotStats
 
 
-class OverviewConfigRecord:
+class OverviewConfigRecord(BaseModel):
     """Value object mirroring the ORM OverviewConfig."""
 
-    __slots__ = ("layout", "color_by", "filters", "updated_at")
-
-    def __init__(
-        self,
-        layout: str,
-        color_by: str,
-        filters: dict[str, Any],
-        updated_at: datetime,
-    ) -> None:
-        self.layout = layout
-        self.color_by = color_by
-        self.filters = filters
-        self.updated_at = updated_at
+    layout: str
+    color_by: str
+    filters: dict[str, Any] = {}
+    updated_at: datetime
 
 
 def _classify_medallion(upstream_count: int) -> str:
@@ -155,7 +115,7 @@ class OverviewService:
                 )
             )
 
-        rel_rows = (await self._db.execute(select(ConceptRelationship))).scalars().all()
+        rel_rows = (await self._db.execute(select(ConceptRelationshipORM))).scalars().all()
         for row in rel_rows:
             edges.append(
                 GraphEdge(

@@ -12,12 +12,12 @@ with workflow.unsafe.imports_passed_through():
     from src.backend.metrics.service import MetricsService
     from src.shared.db.session import SessionLocal
     from src.shared.exceptions import DataSpokeError
-    from src.shared.notifications.service import NotificationService
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
         default_retry_policy,
         make_cache,
         make_datahub,
+        make_notification,
     )
 
 
@@ -32,7 +32,7 @@ async def run_metric_activity(metric_id: str) -> dict:
     """Run a single metric measurement."""
     datahub = make_datahub()
     cache = make_cache()
-    notification = NotificationService()
+    notification = make_notification()
     try:
         async with SessionLocal() as db:
             service = MetricsService(datahub=datahub, db=db, cache=cache, notification=notification)

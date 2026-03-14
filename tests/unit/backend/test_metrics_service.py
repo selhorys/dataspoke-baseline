@@ -8,7 +8,12 @@ import pytest
 
 from src.backend.metrics.service import MetricsService
 from src.shared.exceptions import ConflictError, EntityNotFoundError
-from tests.unit.backend.conftest import make_event_row, mock_paginated_query, mock_scalar_query
+from tests.unit.backend.conftest import (
+    make_event_row,
+    mock_db_refresh,
+    mock_paginated_query,
+    mock_scalar_query,
+)
 
 
 def _make_definition_row(
@@ -163,7 +168,7 @@ async def test_get_metric_attr_no_results(service, db):
 
 async def test_upsert_metric_config_create(service, db):
     mock_scalar_query(db, None)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     metric = await service.upsert_metric_config(
         metric_id="test.new",
@@ -179,7 +184,7 @@ async def test_upsert_metric_config_create(service, db):
 async def test_upsert_metric_config_update(service, db):
     existing = _make_definition_row()
     mock_scalar_query(db, existing)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_metric_config(
         metric_id=existing.id,
@@ -196,7 +201,7 @@ async def test_upsert_metric_config_update(service, db):
 async def test_patch_metric_config(service, db):
     row = _make_definition_row()
     mock_scalar_query(db, row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.patch_metric_config(row.id, {"title": "Patched Title"})
     assert row.title == "Patched Title"
@@ -371,7 +376,7 @@ async def test_run_with_delta_findings(service, db, datahub):
 async def test_activate_inactive_metric(service, db):
     row = _make_definition_row(active=False)
     mock_scalar_query(db, row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     metric = await service.activate(row.id)
     assert metric.active is True
@@ -391,7 +396,7 @@ async def test_activate_already_active_raises(service, db):
 async def test_deactivate_active_metric(service, db):
     row = _make_definition_row(active=True)
     mock_scalar_query(db, row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     metric = await service.deactivate(row.id)
     assert metric.active is False

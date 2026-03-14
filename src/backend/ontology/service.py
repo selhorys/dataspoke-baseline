@@ -4,94 +4,25 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
-from src.shared.db.models import ConceptCategory, ConceptRelationship, DatasetConceptMap, Event
+from src.shared.db.models import ConceptCategory, DatasetConceptMap, Event
+from src.shared.db.models import ConceptRelationship as ConceptRelationshipORM
 from src.shared.exceptions import ConflictError, EntityNotFoundError
+from src.shared.models.ontology import Concept as ConceptRecord
+from src.shared.models.ontology import ConceptRelationship as ConceptRelationshipRecord
 
 
-class ConceptRecord:
-    """Value object mirroring the ORM ConceptCategory."""
-
-    __slots__ = (
-        "id",
-        "name",
-        "description",
-        "parent_id",
-        "status",
-        "version",
-        "created_at",
-        "updated_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        name: str,
-        description: str,
-        parent_id: str | None,
-        status: str,
-        version: int,
-        created_at: datetime,
-        updated_at: datetime,
-    ) -> None:
-        self.id = id
-        self.name = name
-        self.description = description
-        self.parent_id = parent_id
-        self.status = status
-        self.version = version
-        self.created_at = created_at
-        self.updated_at = updated_at
-
-
-class ConceptRelationshipRecord:
-    """Value object mirroring the ORM ConceptRelationship."""
-
-    __slots__ = (
-        "id",
-        "concept_a",
-        "concept_b",
-        "relationship_type",
-        "confidence_score",
-        "created_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        concept_a: str,
-        concept_b: str,
-        relationship_type: str,
-        confidence_score: float,
-        created_at: datetime,
-    ) -> None:
-        self.id = id
-        self.concept_a = concept_a
-        self.concept_b = concept_b
-        self.relationship_type = relationship_type
-        self.confidence_score = confidence_score
-        self.created_at = created_at
-
-
-class ConceptAttr:
+class ConceptAttr(BaseModel):
     """Aggregated attributes for a concept."""
 
-    __slots__ = ("dataset_count", "avg_confidence", "relationships", "children")
-
-    def __init__(
-        self,
-        dataset_count: int,
-        avg_confidence: float,
-        relationships: list[ConceptRelationshipRecord],
-        children: list[ConceptRecord],
-    ) -> None:
-        self.dataset_count = dataset_count
-        self.avg_confidence = avg_confidence
-        self.relationships = relationships
-        self.children = children
+    dataset_count: int
+    avg_confidence: float
+    relationships: list[ConceptRelationshipRecord] = []
+    children: list[ConceptRecord] = []
 
 
 def _concept_from_row(row: ConceptCategory) -> ConceptRecord:
@@ -107,7 +38,7 @@ def _concept_from_row(row: ConceptCategory) -> ConceptRecord:
     )
 
 
-def _relationship_from_row(row: ConceptRelationship) -> ConceptRelationshipRecord:
+def _relationship_from_row(row: ConceptRelationshipORM) -> ConceptRelationshipRecord:
     return ConceptRelationshipRecord(
         id=str(row.id),
         concept_a=str(row.concept_a),
@@ -174,8 +105,8 @@ class OntologyService:
         avg_confidence = float(map_row.avg_conf)
 
         # Relationships where this concept is either side
-        rel_q = select(ConceptRelationship).where(
-            (ConceptRelationship.concept_a == uid) | (ConceptRelationship.concept_b == uid)
+        rel_q = select(ConceptRelationshipORM).where(
+            (ConceptRelationshipORM.concept_a == uid) | (ConceptRelationshipORM.concept_b == uid)
         )
         rel_result = await self._db.execute(rel_q)
         rel_rows = rel_result.scalars().all()

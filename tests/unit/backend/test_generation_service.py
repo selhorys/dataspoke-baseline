@@ -8,7 +8,12 @@ import pytest
 
 from src.backend.generation.service import GenerationService
 from src.shared.exceptions import ConflictError, EntityNotFoundError
-from tests.unit.backend.conftest import make_event_row, mock_paginated_query, mock_scalar_query
+from tests.unit.backend.conftest import (
+    make_event_row,
+    mock_db_refresh,
+    mock_paginated_query,
+    mock_scalar_query,
+)
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
 
@@ -87,7 +92,7 @@ async def test_get_config_not_found(service, db):
 
 async def test_upsert_config_creates_new(service, db):
     mock_scalar_query(db, None)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
@@ -103,7 +108,7 @@ async def test_upsert_config_creates_new(service, db):
 async def test_upsert_config_updates_existing(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
@@ -124,7 +129,7 @@ async def test_upsert_config_updates_existing(service, db):
 async def test_patch_config_applies_partial(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
     assert existing_row.schedule == "0 12 * * *"
@@ -206,7 +211,7 @@ async def test_get_results_empty(service, db):
 async def test_generate_builds_prompt_with_schema(service, db, datahub, llm):
     config_row = _make_config_row(code_refs=None)
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     # Mock DataHub aspects
     schema_mock = MagicMock()
@@ -241,7 +246,7 @@ async def test_generate_builds_prompt_with_schema(service, db, datahub, llm):
 async def test_generate_includes_code_refs_when_configured(service, db, datahub, llm):
     config_row = _make_config_row(code_refs={"owner": "org", "repo": "app", "token": "tok"})
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     datahub.get_aspect = AsyncMock(return_value=None)
 
@@ -267,7 +272,7 @@ async def test_generate_includes_code_refs_when_configured(service, db, datahub,
 async def test_generate_skips_code_refs_when_not_configured(service, db, datahub, llm):
     config_row = _make_config_row(code_refs=None)
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     datahub.get_aspect = AsyncMock(return_value=None)
 
@@ -294,7 +299,7 @@ async def test_generate_config_not_found(service, db):
 async def test_generate_produces_structured_proposals(service, db, datahub, llm):
     config_row = _make_config_row(code_refs=None)
     mock_scalar_query(db, config_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     datahub.get_aspect = AsyncMock(return_value=None)
 

@@ -11,6 +11,7 @@ from tests.unit.backend.conftest import (
     make_concept_row,
     make_event_row,
     make_relationship_row,
+    mock_db_refresh,
     mock_paginated_query,
     mock_scalar_query,
 )
@@ -128,7 +129,7 @@ async def test_get_concept_events(service, db):
 async def test_approve_pending_concept(service, db):
     concept_row = make_concept_row(status="pending", version=1)
     mock_scalar_query(db, concept_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     concept = await service.approve(str(concept_row.id))
     assert concept.status == "approved"
@@ -152,7 +153,7 @@ async def test_approve_already_approved_raises(service, db):
 async def test_reject_pending_concept(service, db):
     concept_row = make_concept_row(status="pending", version=1)
     mock_scalar_query(db, concept_row)
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    mock_db_refresh(db)
 
     concept = await service.reject(str(concept_row.id))
     assert concept.status == "rejected"

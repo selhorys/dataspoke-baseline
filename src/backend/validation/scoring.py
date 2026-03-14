@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.config import QUALITY_SCORE_CACHE_TTL
 from src.shared.datahub.client import DataHubClient
+from src.shared.models.quality import QualityScore
 
 # Dimension weights (must sum to 1.0)
 WEIGHTS: dict[str, float] = {
@@ -15,16 +16,6 @@ WEIGHTS: dict[str, float] = {
     "data_quality": 0.20,
     "ownership_tags": 0.15,
 }
-
-
-class QualityScore:
-    """Value object for a computed quality score."""
-
-    __slots__ = ("overall_score", "dimensions")
-
-    def __init__(self, overall_score: float, dimensions: dict[str, float]) -> None:
-        self.overall_score = overall_score
-        self.dimensions = dimensions
 
 
 async def compute_quality_score(

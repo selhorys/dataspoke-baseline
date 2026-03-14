@@ -27,6 +27,23 @@ def mock_scalar_query(db: AsyncMock, row: object | None) -> None:
     db.execute = AsyncMock(return_value=result_mock)
 
 
+def mock_db_refresh(db: AsyncMock) -> None:
+    """Set up db.refresh to populate server-default fields if missing."""
+
+    async def _refresh(obj: object) -> None:
+        if getattr(obj, "id", None) is None:
+            obj.id = uuid.uuid4()
+        if hasattr(obj, "status") and getattr(obj, "status") is None:
+            obj.status = "active"
+        now = datetime.now(tz=UTC)
+        if hasattr(obj, "created_at") and getattr(obj, "created_at") is None:
+            obj.created_at = now
+        if hasattr(obj, "updated_at") and getattr(obj, "updated_at") is None:
+            obj.updated_at = now
+
+    db.refresh = AsyncMock(side_effect=_refresh)
+
+
 # ── Event row factory ────────────────────────────────────────────────────────
 
 

@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,91 +17,40 @@ from src.shared.notifications.service import NotificationService
 _MAX_BREAKDOWN_AFFECTED = 100
 
 
-class MetricDefinitionRecord:
+class MetricDefinitionRecord(BaseModel):
     """Value object mirroring the ORM MetricDefinition."""
 
-    __slots__ = (
-        "id",
-        "title",
-        "description",
-        "theme",
-        "measurement_query",
-        "schedule",
-        "alarm_enabled",
-        "alarm_threshold",
-        "active",
-        "created_at",
-        "updated_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        title: str,
-        description: str,
-        theme: str,
-        measurement_query: dict[str, Any],
-        schedule: str | None,
-        alarm_enabled: bool,
-        alarm_threshold: dict[str, Any] | None,
-        active: bool,
-        created_at: datetime,
-        updated_at: datetime,
-    ) -> None:
-        self.id = id
-        self.title = title
-        self.description = description
-        self.theme = theme
-        self.measurement_query = measurement_query
-        self.schedule = schedule
-        self.alarm_enabled = alarm_enabled
-        self.alarm_threshold = alarm_threshold
-        self.active = active
-        self.created_at = created_at
-        self.updated_at = updated_at
+    id: str
+    title: str
+    description: str
+    theme: str
+    measurement_query: dict[str, Any]
+    schedule: str | None = None
+    alarm_enabled: bool
+    alarm_threshold: dict[str, Any] | None = None
+    active: bool
+    created_at: datetime
+    updated_at: datetime
 
 
-class MetricResultRecord:
+class MetricResultRecord(BaseModel):
     """Value object mirroring the ORM MetricResult."""
 
-    __slots__ = (
-        "id",
-        "metric_id",
-        "value",
-        "breakdown",
-        "alarm_triggered",
-        "run_id",
-        "measured_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        metric_id: str,
-        value: float,
-        breakdown: dict[str, Any] | None,
-        alarm_triggered: bool,
-        run_id: str,
-        measured_at: datetime,
-    ) -> None:
-        self.id = id
-        self.metric_id = metric_id
-        self.value = value
-        self.breakdown = breakdown
-        self.alarm_triggered = alarm_triggered
-        self.run_id = run_id
-        self.measured_at = measured_at
+    id: str
+    metric_id: str
+    value: float
+    breakdown: dict[str, Any] | None = None
+    alarm_triggered: bool
+    run_id: str
+    measured_at: datetime
 
 
-class MetricRunResult:
+class MetricRunResult(BaseModel):
     """Value object for the outcome of a metric run."""
 
-    __slots__ = ("run_id", "status", "detail")
-
-    def __init__(self, run_id: str, status: str, detail: dict[str, Any]) -> None:
-        self.run_id = run_id
-        self.status = status
-        self.detail = detail
+    run_id: str
+    status: str
+    detail: dict[str, Any]
 
 
 def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:

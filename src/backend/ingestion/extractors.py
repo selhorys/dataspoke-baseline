@@ -14,21 +14,19 @@ from typing import Any
 
 import httpx
 import sqlparse
+from pydantic import BaseModel
 from sqlparse.sql import Identifier, IdentifierList
 from sqlparse.tokens import DML, Keyword
 
 from src.shared.exceptions import DataSpokeError
 
 
-class ExtractedMetadata:
+class ExtractedMetadata(BaseModel):
     """Immutable value object representing a single piece of extracted metadata."""
 
-    __slots__ = ("metadata_type", "content", "source_ref")
-
-    def __init__(self, metadata_type: str, content: dict[str, Any], source_ref: str) -> None:
-        self.metadata_type = metadata_type
-        self.content = content
-        self.source_ref = source_ref
+    metadata_type: str
+    content: dict[str, Any]
+    source_ref: str
 
 
 class BaseExtractor(ABC):

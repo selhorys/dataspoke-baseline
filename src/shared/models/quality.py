@@ -4,10 +4,10 @@ from pydantic import BaseModel
 
 
 class QualityScore(BaseModel):
-    dataset_urn: str
     overall_score: float  # 0–100
     dimensions: dict[str, float]  # e.g. {"completeness": 85, "freshness": 70}
-    computed_at: datetime
+    dataset_urn: str | None = None
+    computed_at: datetime | None = None
 
 
 class QualityIssue(BaseModel):

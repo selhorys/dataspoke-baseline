@@ -11,6 +11,9 @@ from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event
 from src.shared.exceptions import EntityNotFoundError
+from src.shared.models.dataset import DatasetAttributes, DatasetSummary
+from src.shared.models.events import EventRecord
+from src.shared.models.quality import QualityScore
 
 _URN_PLATFORM_RE = re.compile(r"urn:li:dataset:\(urn:li:dataPlatform:([^,]+),")
 
@@ -18,78 +21,6 @@ _URN_PLATFORM_RE = re.compile(r"urn:li:dataset:\(urn:li:dataPlatform:([^,]+),")
 def _parse_platform(urn: str) -> str:
     m = _URN_PLATFORM_RE.search(urn)
     return m.group(1) if m else "unknown"
-
-
-class DatasetSummary:
-    __slots__ = ("urn", "name", "platform", "description", "owners", "tags")
-
-    def __init__(
-        self,
-        urn: str,
-        name: str,
-        platform: str,
-        description: str | None,
-        owners: list[str],
-        tags: list[str],
-    ) -> None:
-        self.urn = urn
-        self.name = name
-        self.platform = platform
-        self.description = description
-        self.owners = owners
-        self.tags = tags
-
-
-class QualityScore:
-    __slots__ = ("overall_score", "dimensions")
-
-    def __init__(self, overall_score: float, dimensions: dict[str, float]) -> None:
-        self.overall_score = overall_score
-        self.dimensions = dimensions
-
-
-class DatasetAttributes:
-    __slots__ = ("urn", "column_count", "fields", "owners", "tags", "description", "quality_score")
-
-    def __init__(
-        self,
-        urn: str,
-        column_count: int,
-        fields: list[str],
-        owners: list[str],
-        tags: list[str],
-        description: str | None,
-        quality_score: QualityScore | None,
-    ) -> None:
-        self.urn = urn
-        self.column_count = column_count
-        self.fields = fields
-        self.owners = owners
-        self.tags = tags
-        self.description = description
-        self.quality_score = quality_score
-
-
-class EventRecord:
-    __slots__ = ("id", "entity_type", "entity_id", "event_type", "status", "detail", "occurred_at")
-
-    def __init__(
-        self,
-        id: str,
-        entity_type: str,
-        entity_id: str,
-        event_type: str,
-        status: str,
-        detail: dict,
-        occurred_at: datetime,
-    ) -> None:
-        self.id = id
-        self.entity_type = entity_type
-        self.entity_id = entity_id
-        self.event_type = event_type
-        self.status = status
-        self.detail = detail
-        self.occurred_at = occurred_at
 
 
 class DatasetService:

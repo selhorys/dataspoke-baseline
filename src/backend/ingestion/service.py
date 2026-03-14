@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,53 +15,26 @@ from src.shared.exceptions import EntityNotFoundError
 from src.shared.llm.client import LLMClient
 
 
-class IngestionConfigRecord:
+class IngestionConfigRecord(BaseModel):
     """Value object mirroring the ORM IngestionConfig."""
 
-    __slots__ = (
-        "id",
-        "dataset_urn",
-        "sources",
-        "deep_spec_enabled",
-        "schedule",
-        "status",
-        "owner",
-        "created_at",
-        "updated_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        dataset_urn: str,
-        sources: dict[str, Any],
-        deep_spec_enabled: bool,
-        schedule: str | None,
-        status: str,
-        owner: str,
-        created_at: datetime,
-        updated_at: datetime,
-    ) -> None:
-        self.id = id
-        self.dataset_urn = dataset_urn
-        self.sources = sources
-        self.deep_spec_enabled = deep_spec_enabled
-        self.schedule = schedule
-        self.status = status
-        self.owner = owner
-        self.created_at = created_at
-        self.updated_at = updated_at
+    id: str
+    dataset_urn: str
+    sources: dict[str, Any]
+    deep_spec_enabled: bool
+    schedule: str | None = None
+    status: str
+    owner: str
+    created_at: datetime
+    updated_at: datetime
 
 
-class IngestionRunResult:
+class IngestionRunResult(BaseModel):
     """Value object for the outcome of an ingestion run."""
 
-    __slots__ = ("run_id", "status", "detail")
-
-    def __init__(self, run_id: str, status: str, detail: dict[str, Any]) -> None:
-        self.run_id = run_id
-        self.status = status
-        self.detail = detail
+    run_id: str
+    status: str
+    detail: dict[str, Any]
 
 
 def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:

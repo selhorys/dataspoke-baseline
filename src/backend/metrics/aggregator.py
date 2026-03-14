@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,22 +12,13 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import DepartmentMapping
 
 
-class DepartmentHealth:
+class DepartmentHealth(BaseModel):
     """Aggregated health metrics for a single department."""
 
-    __slots__ = ("department", "avg_score", "dataset_count", "worst_datasets")
-
-    def __init__(
-        self,
-        department: str,
-        avg_score: float,
-        dataset_count: int,
-        worst_datasets: list[dict[str, Any]],
-    ) -> None:
-        self.department = department
-        self.avg_score = avg_score
-        self.dataset_count = dataset_count
-        self.worst_datasets = worst_datasets
+    department: str
+    avg_score: float
+    dataset_count: int
+    worst_datasets: list[dict[str, Any]] = []
 
 
 async def aggregate_health_scores(

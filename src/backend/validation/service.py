@@ -5,105 +5,54 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.validation.scoring import QualityScore, compute_quality_score
+from src.backend.validation.scoring import compute_quality_score
 from src.shared.cache.client import RedisClient
 from src.shared.config import VALIDATION_RESULT_CACHE_TTL
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.exceptions import EntityNotFoundError
+from src.shared.models.quality import QualityScore
 
 
-class ValidationConfigRecord:
+class ValidationConfigRecord(BaseModel):
     """Value object mirroring the ORM ValidationConfig."""
 
-    __slots__ = (
-        "id",
-        "dataset_urn",
-        "rules",
-        "schedule",
-        "sla_target",
-        "status",
-        "owner",
-        "created_at",
-        "updated_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        dataset_urn: str,
-        rules: dict[str, Any],
-        schedule: str | None,
-        sla_target: dict[str, Any] | None,
-        status: str,
-        owner: str,
-        created_at: datetime,
-        updated_at: datetime,
-    ) -> None:
-        self.id = id
-        self.dataset_urn = dataset_urn
-        self.rules = rules
-        self.schedule = schedule
-        self.sla_target = sla_target
-        self.status = status
-        self.owner = owner
-        self.created_at = created_at
-        self.updated_at = updated_at
+    id: str
+    dataset_urn: str
+    rules: dict[str, Any]
+    schedule: str | None = None
+    sla_target: dict[str, Any] | None = None
+    status: str
+    owner: str
+    created_at: datetime
+    updated_at: datetime
 
 
-class ValidationRunResult:
+class ValidationRunResult(BaseModel):
     """Value object for the outcome of a validation run."""
 
-    __slots__ = ("run_id", "status", "detail")
-
-    def __init__(self, run_id: str, status: str, detail: dict[str, Any]) -> None:
-        self.run_id = run_id
-        self.status = status
-        self.detail = detail
+    run_id: str
+    status: str
+    detail: dict[str, Any]
 
 
-class ValidationResultRecord:
+class ValidationResultRecord(BaseModel):
     """Value object mirroring the ORM ValidationResult."""
 
-    __slots__ = (
-        "id",
-        "dataset_urn",
-        "quality_score",
-        "dimensions",
-        "issues",
-        "anomalies",
-        "recommendations",
-        "alternatives",
-        "run_id",
-        "measured_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        dataset_urn: str,
-        quality_score: float,
-        dimensions: dict[str, float],
-        issues: list[dict[str, Any]],
-        anomalies: list[dict[str, Any]],
-        recommendations: list[str],
-        alternatives: list[str],
-        run_id: str,
-        measured_at: datetime,
-    ) -> None:
-        self.id = id
-        self.dataset_urn = dataset_urn
-        self.quality_score = quality_score
-        self.dimensions = dimensions
-        self.issues = issues
-        self.anomalies = anomalies
-        self.recommendations = recommendations
-        self.alternatives = alternatives
-        self.run_id = run_id
-        self.measured_at = measured_at
+    id: str
+    dataset_urn: str
+    quality_score: float
+    dimensions: dict[str, float]
+    issues: list[dict[str, Any]] = []
+    anomalies: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    alternatives: list[str] = []
+    run_id: str
+    measured_at: datetime
 
 
 def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:

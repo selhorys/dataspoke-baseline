@@ -10,12 +10,12 @@ with workflow.unsafe.imports_passed_through():
     from src.backend.validation.sla import check_sla
     from src.shared.config import SLA_MONITOR_INTERVAL_MINUTES
     from src.shared.db.session import SessionLocal
-    from src.shared.notifications.service import NotificationService
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
         default_retry_policy,
         make_cache,
         make_datahub,
+        make_notification,
     )
 
 
@@ -88,7 +88,7 @@ async def send_sla_alerts_activity(alerts: list[dict], recipients: list[str]) ->
 
     from src.shared.notifications.models import SLAAlert
 
-    notification = NotificationService()
+    notification = make_notification()
 
     for alert_data in alerts:
         predicted_str = alert_data.get("predicted_breach_at")

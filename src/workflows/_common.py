@@ -47,3 +47,9 @@ def make_qdrant() -> QdrantManager:
         api_key=settings.qdrant_api_key,
         grpc_port=settings.qdrant_grpc_port,
     )
+
+
+def make_notification():
+    from src.shared.notifications.service import NotificationService
+
+    return NotificationService()

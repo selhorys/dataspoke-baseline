@@ -51,6 +51,12 @@ def get_llm() -> LLMClient:
     return LLMClient(settings.llm_provider, settings.llm_api_key, settings.llm_model)
 
 
+def get_notification():
+    from src.shared.notifications.service import NotificationService
+
+    return NotificationService()
+
+
 # ── Service providers (added as backend services are implemented) ──
 
 
@@ -114,11 +120,11 @@ async def get_metrics_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
+    notification=Depends(get_notification),
 ) -> "MetricsService":
     from src.backend.metrics.service import MetricsService
-    from src.shared.notifications.service import NotificationService
 
-    return MetricsService(datahub=datahub, db=db, cache=cache, notification=NotificationService())
+    return MetricsService(datahub=datahub, db=db, cache=cache, notification=notification)
 
 
 async def get_overview_service(

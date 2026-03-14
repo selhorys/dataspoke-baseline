@@ -24,88 +24,39 @@ class GenerationProposalSchema(BaseModel):
     suggested_tags: list[str]
 
 
-class GenerationConfigRecord:
+class GenerationConfigRecord(BaseModel):
     """Value object mirroring the ORM GenerationConfig."""
 
-    __slots__ = (
-        "id",
-        "dataset_urn",
-        "target_fields",
-        "code_refs",
-        "schedule",
-        "status",
-        "owner",
-        "created_at",
-        "updated_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        dataset_urn: str,
-        target_fields: dict[str, Any],
-        code_refs: dict[str, Any] | None,
-        schedule: str | None,
-        status: str,
-        owner: str,
-        created_at: datetime,
-        updated_at: datetime,
-    ) -> None:
-        self.id = id
-        self.dataset_urn = dataset_urn
-        self.target_fields = target_fields
-        self.code_refs = code_refs
-        self.schedule = schedule
-        self.status = status
-        self.owner = owner
-        self.created_at = created_at
-        self.updated_at = updated_at
+    id: str
+    dataset_urn: str
+    target_fields: dict[str, Any]
+    code_refs: dict[str, Any] | None = None
+    schedule: str | None = None
+    status: str
+    owner: str
+    created_at: datetime
+    updated_at: datetime
 
 
-class GenerationRunResult:
+class GenerationRunResult(BaseModel):
     """Value object for the outcome of a generation run."""
 
-    __slots__ = ("run_id", "status", "detail")
-
-    def __init__(self, run_id: str, status: str, detail: dict[str, Any]) -> None:
-        self.run_id = run_id
-        self.status = status
-        self.detail = detail
+    run_id: str
+    status: str
+    detail: dict[str, Any]
 
 
-class GenerationResultRecord:
+class GenerationResultRecord(BaseModel):
     """Value object mirroring the ORM GenerationResult."""
 
-    __slots__ = (
-        "id",
-        "dataset_urn",
-        "proposals",
-        "similar_diffs",
-        "approval_status",
-        "run_id",
-        "generated_at",
-        "applied_at",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        dataset_urn: str,
-        proposals: dict[str, Any],
-        similar_diffs: list[dict[str, Any]],
-        approval_status: str,
-        run_id: str,
-        generated_at: datetime,
-        applied_at: datetime | None,
-    ) -> None:
-        self.id = id
-        self.dataset_urn = dataset_urn
-        self.proposals = proposals
-        self.similar_diffs = similar_diffs
-        self.approval_status = approval_status
-        self.run_id = run_id
-        self.generated_at = generated_at
-        self.applied_at = applied_at
+    id: str
+    dataset_urn: str
+    proposals: dict[str, Any]
+    similar_diffs: list[dict[str, Any]] = []
+    approval_status: str
+    run_id: str
+    generated_at: datetime
+    applied_at: datetime | None = None
 
 
 def _config_from_row(row: GenerationConfig) -> GenerationConfigRecord:
