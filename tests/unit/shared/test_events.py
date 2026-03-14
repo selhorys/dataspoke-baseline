@@ -153,10 +153,10 @@ class TestEventRouter:
         await router.dispatch(event)
 
 
-# ── Handler Stubs ────────────────────────────────────────────────────────────
+# ── Handler Entity-Type Filtering ────────────────────────────────────────────
 
 
-class TestHandlerStubs:
+class TestHandlerEntityTypeFiltering:
     async def test_sync_vector_index_skips_non_dataset(self) -> None:
         event = _make_event(entity_type="chart", aspect_name="datasetProperties")
         # Should return silently without error

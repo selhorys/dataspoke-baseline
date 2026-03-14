@@ -2,6 +2,7 @@
 
 Subscribes to MCL topics, deserializes events, and routes them through
 the EventRouter. Commits offsets only after successful processing.
+Connects to Temporal at startup so handlers can start workflows.
 
 Usage:
     python -m src.shared.datahub.consumer
@@ -25,6 +26,23 @@ MCL_TOPICS = [
 ]
 
 
+async def _connect_temporal():
+    """Connect to Temporal server; return None if unreachable."""
+    try:
+        from temporalio.client import Client
+
+        addr = f"{settings.temporal_host}:{settings.temporal_port}"
+        client = await Client.connect(addr, namespace=settings.temporal_namespace)
+        logger.info("temporal_connected", address=addr)
+        return client
+    except Exception:
+        logger.warning(
+            "temporal_unavailable",
+            msg="handlers requiring Temporal will be no-ops",
+        )
+        return None
+
+
 async def run_consumer() -> None:
     """Main consumer loop — subscribe, poll, route, commit."""
     consumer = Consumer(
@@ -40,7 +58,8 @@ async def run_consumer() -> None:
     consumer.subscribe(MCL_TOPICS)
     logger.info("consumer_started", topics=MCL_TOPICS)
 
-    router = build_router()
+    temporal_client = await _connect_temporal()
+    router = build_router(temporal_client=temporal_client)
 
     try:
         while True:

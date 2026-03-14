@@ -1,11 +1,12 @@
-"""MCL event deserialization, aspect-based event router, and handler stubs.
+"""MCL event deserialization, aspect-based event router, and handler implementations.
 
 DataHub publishes MetadataChangeLog events to Kafka topics. This module
 deserializes those events, routes them by aspect name to registered handlers,
-and provides thin handler stubs that delegate to existing services.
+and delegates to downstream services and Temporal workflows.
 """
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -24,6 +25,11 @@ logger = structlog.get_logger(__name__)
 
 # Type alias for async handler functions
 Handler = Callable[["MetadataChangeLogEvent"], Coroutine[Any, Any, None]]
+
+# Module-level Temporal client, set by build_router()
+_temporal_client: Any = None
+
+TASK_QUEUE = "dataspoke-main"
 
 
 # ── MCL Pydantic Model ──────────────────────────────────────────────────────
@@ -107,11 +113,19 @@ class EventRouter:
                 )
 
 
-# ── Handler Stubs ────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _urn_to_workflow_id(urn: str) -> str:
+    """Create a short, stable identifier from a URN for Temporal workflow IDs."""
+    return hashlib.md5(urn.encode()).hexdigest()[:12]  # noqa: S324
+
+
+# ── Handler Implementations ─────────────────────────────────────────────────
 
 
 async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
-    """Re-generate vector embedding for the changed dataset."""
+    """Re-generate vector embedding for the changed dataset via EmbeddingSyncWorkflow."""
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -119,11 +133,27 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    # TODO: delegate to SearchService.reindex() or start EmbeddingSyncWorkflow
+    if _temporal_client is None:
+        return
+    from src.workflows.embedding_sync import EmbeddingSyncParams, EmbeddingSyncWorkflow
+
+    try:
+        await _temporal_client.start_workflow(
+            EmbeddingSyncWorkflow.run,
+            EmbeddingSyncParams(mode="single", dataset_urn=event.entity_urn),
+            id=f"embedding-sync-{_urn_to_workflow_id(event.entity_urn)}",
+            task_queue=TASK_QUEUE,
+        )
+    except Exception:
+        logger.exception(
+            "workflow_start_failed",
+            handler="sync_vector_index",
+            entity_urn=event.entity_urn,
+        )
 
 
 async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
-    """Detect new ontology clusters when schema changes."""
+    """Detect new ontology clusters when schema changes via OntologyRebuildWorkflow."""
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -131,11 +161,32 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    # TODO: delegate to OntologyService or start OntologyRebuildWorkflow
+    if _temporal_client is None:
+        return
+    from src.workflows.ontology import OntologyRebuildParams, OntologyRebuildWorkflow
+
+    try:
+        await _temporal_client.start_workflow(
+            OntologyRebuildWorkflow.run,
+            OntologyRebuildParams(),
+            id="ontology-rebuild",
+            task_queue=TASK_QUEUE,
+        )
+    except Exception:
+        logger.exception(
+            "workflow_start_failed",
+            handler="detect_new_clusters",
+            entity_urn=event.entity_urn,
+        )
 
 
 async def update_health_score(event: MetadataChangeLogEvent) -> None:
-    """Re-compute health score when ownership or tags change."""
+    """Re-compute health scores when ownership or tags change.
+
+    Calls aggregate_health_scores directly (no Temporal required) because
+    the aggregation needs the current event context and there is no
+    single-dataset workflow variant for health scoring.
+    """
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -143,11 +194,21 @@ async def update_health_score(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    # TODO: delegate to MetricsService.aggregate_health()
+    from src.backend.metrics.aggregator import aggregate_health_scores
+    from src.shared.db.session import SessionLocal
+    from src.workflows._common import make_cache, make_datahub
+
+    datahub = make_datahub()
+    cache = make_cache()
+    async with SessionLocal() as db:
+        await aggregate_health_scores(datahub=datahub, db=db, cache=cache)
 
 
 async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
-    """Run anomaly detection on new dataset profile data."""
+    """Run validation pipeline on new dataset profile data via ValidationWorkflow.
+
+    Only triggers if the dataset has an existing ValidationConfig.
+    """
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -155,11 +216,44 @@ async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    # TODO: delegate to ValidationService.run() or start ValidationWorkflow
+    if _temporal_client is None:
+        return
+    from sqlalchemy import select
+
+    from src.shared.db.models import ValidationConfig
+    from src.shared.db.session import SessionLocal
+    from src.workflows.validation import ValidationParams, ValidationWorkflow
+
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(ValidationConfig).where(ValidationConfig.dataset_urn == event.entity_urn)
+        )
+        config = result.scalar_one_or_none()
+
+    if config is None:
+        logger.info("no_validation_config", entity_urn=event.entity_urn)
+        return
+
+    try:
+        await _temporal_client.start_workflow(
+            ValidationWorkflow.run,
+            ValidationParams(dataset_urn=event.entity_urn),
+            id=f"validation-{_urn_to_workflow_id(event.entity_urn)}",
+            task_queue=TASK_QUEUE,
+        )
+    except Exception:
+        logger.exception(
+            "workflow_start_failed",
+            handler="trigger_quality_check",
+            entity_urn=event.entity_urn,
+        )
 
 
 async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
-    """Check freshness SLA when a new operation event arrives."""
+    """Check freshness SLA when a new operation event arrives via SLAMonitorWorkflow.
+
+    Only triggers if the dataset has a ValidationConfig with an sla_target.
+    """
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -167,14 +261,56 @@ async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    # TODO: delegate to SLAMonitorWorkflow or ValidationService
+    if _temporal_client is None:
+        return
+    from sqlalchemy import select
+
+    from src.shared.db.models import ValidationConfig
+    from src.shared.db.session import SessionLocal
+    from src.workflows.sla_monitor import SLAMonitorParams, SLAMonitorWorkflow
+
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(ValidationConfig).where(ValidationConfig.dataset_urn == event.entity_urn)
+        )
+        config = result.scalar_one_or_none()
+
+    if config is None or config.sla_target is None:
+        logger.info("no_sla_target", entity_urn=event.entity_urn)
+        return
+
+    try:
+        await _temporal_client.start_workflow(
+            SLAMonitorWorkflow.run,
+            SLAMonitorParams(
+                dataset_urn=event.entity_urn,
+                sla_target=config.sla_target,
+            ),
+            id=f"sla-monitor-{_urn_to_workflow_id(event.entity_urn)}",
+            task_queue=TASK_QUEUE,
+        )
+    except Exception:
+        logger.exception(
+            "workflow_start_failed",
+            handler="check_freshness_sla",
+            entity_urn=event.entity_urn,
+        )
 
 
 # ── Router Factory ───────────────────────────────────────────────────────────
 
 
-def build_router() -> EventRouter:
-    """Wire the routing table per spec (BACKEND.md:930-941)."""
+def build_router(*, temporal_client: Any = None) -> EventRouter:
+    """Wire the routing table per spec (BACKEND.md:930-941).
+
+    Args:
+        temporal_client: Optional Temporal client for starting workflows.
+            When None, handlers that require Temporal log the event but
+            do not start workflows.
+    """
+    global _temporal_client  # noqa: PLW0603
+    _temporal_client = temporal_client
+
     router = EventRouter()
     # Search (UC5)
     router.register("datasetProperties", sync_vector_index)
