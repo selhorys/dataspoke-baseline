@@ -15,7 +15,7 @@ Dummy-data dependencies:
 
 import json
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from confluent_kafka import Consumer, KafkaError, Producer, TopicPartition
@@ -406,10 +406,10 @@ class TestEventHandlerDispatch:
         build_router(temporal_client=mock_temporal)
 
         # Mock DB to return a ValidationConfig
-        mock_config = AsyncMock()
+        mock_config = MagicMock()
         mock_config.dataset_urn = _TEST_URN
 
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_config
 
         mock_session = AsyncMock()
@@ -434,7 +434,7 @@ class TestEventHandlerDispatch:
         mock_temporal = AsyncMock()
         build_router(temporal_client=mock_temporal)
 
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
 
         mock_session = AsyncMock()
@@ -457,10 +457,10 @@ class TestEventHandlerDispatch:
         mock_temporal = AsyncMock()
         build_router(temporal_client=mock_temporal)
 
-        mock_config = AsyncMock()
+        mock_config = MagicMock()
         mock_config.sla_target = {"freshness_hours": 24}
 
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_config
 
         mock_session = AsyncMock()
@@ -485,10 +485,10 @@ class TestEventHandlerDispatch:
         mock_temporal = AsyncMock()
         build_router(temporal_client=mock_temporal)
 
-        mock_config = AsyncMock()
+        mock_config = MagicMock()
         mock_config.sla_target = None
 
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_config
 
         mock_session = AsyncMock()
@@ -592,6 +592,9 @@ class TestExampleKafkaIntegration:
         try:
             consumer.subscribe([topic])
             _wait_for_assignment(consumer)
+            # Seek to beginning — _wait_for_assignment may have consumed messages
+            for tp in consumer.assignment():
+                consumer.seek(TopicPartition(tp.topic, tp.partition, 0))
 
             messages: list[dict] = []
             empty_polls = 0
@@ -623,6 +626,9 @@ class TestExampleKafkaIntegration:
         try:
             consumer.subscribe([topic])
             _wait_for_assignment(consumer)
+            # Seek to beginning — _wait_for_assignment may have consumed messages
+            for tp in consumer.assignment():
+                consumer.seek(TopicPartition(tp.topic, tp.partition, 0))
 
             consumed: list[dict] = []
             empty_polls = 0

@@ -278,7 +278,7 @@ All port-forward scripts run in background, write PIDs to dotfiles, and support 
 | example-postgres | `example-postgres:5432` | `localhost:9102` |
 | example-kafka | `example-kafka:9094` (EXTERNAL) | `localhost:9104` |
 
-All ports are configurable via `DATASPOKE_DEV_*_PORT` variables. The `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these localhost addresses.
+All ports are configurable via `DATASPOKE_DEV_*_PORT` / `*_BROKERS` variables. The `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these localhost addresses.
 
 ---
 

@@ -22,7 +22,9 @@ source "$SCRIPT_DIR/.env"
 NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 UI_PORT="${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_UI_PORT:-9002}"
 GMS_PORT="${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_GMS_PORT:-9004}"
-KAFKA_PORT="${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_KAFKA_PORT:-9005}"
+KAFKA_BROKERS="${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_KAFKA_BROKERS:-localhost:9005}"
+# Extract port from the first broker address (host:port)
+KAFKA_PORT="${KAFKA_BROKERS##*:}"
 
 # ---------------------------------------------------------------------------
 # --stop: kill running port-forwards and clean up
@@ -85,7 +87,7 @@ kubectl get svc "$GMS_SVC" -n "${NS}" >/dev/null 2>&1 \
   || error "Service '$GMS_SVC' not found in namespace '${NS}'."
 
 # Kafka pod (from datahub-prerequisites) — port-forward targets the EXTERNAL
-# listener (9095), which advertises localhost:9005 for host-side access.
+# listener (9095), which advertises the address in KAFKA_BROKERS for host-side access.
 # We forward to the pod directly (not the service) since the EXTERNAL port
 # is not exposed on the ClusterIP service.
 KAFKA_POD=$(kubectl get pods -n "${NS}" \
