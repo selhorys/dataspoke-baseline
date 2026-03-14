@@ -132,7 +132,7 @@ class OntologyService:
         limit: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
-            Event.entity_type == "ontology",
+            Event.entity_type == "concept",
             Event.entity_id == concept_id,
         )
 
@@ -222,7 +222,7 @@ class OntologyService:
         detail: dict[str, Any],
     ) -> None:
         event = Event(
-            entity_type="ontology",
+            entity_type="concept",
             entity_id=concept_id,
             event_type=event_type,
             status=status,

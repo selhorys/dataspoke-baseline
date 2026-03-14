@@ -226,7 +226,7 @@ async def test_generate_produces_result(http_client, async_session: AsyncSession
         )
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'generation'"
+                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'generation.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -306,7 +306,7 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession):
         )
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'generation'"
+                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'generation.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -334,7 +334,12 @@ async def test_generation_events(http_client, async_session: AsyncSession):
     dataset_urn = _urn("events_test")
     headers = _auth_headers()
 
-    event_ids = await seed_events(async_session, entity_type="generation", entity_id=dataset_urn)
+    event_ids = await seed_events(
+        async_session,
+        entity_type="dataset",
+        entity_id=dataset_urn,
+        event_type="generation.completed",
+    )
 
     try:
         resp = await http_client.get(

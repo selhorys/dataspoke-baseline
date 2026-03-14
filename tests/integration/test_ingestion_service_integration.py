@@ -212,7 +212,7 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession):
     finally:
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'ingestion'"
+                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'ingestion.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -241,7 +241,12 @@ async def test_ingestion_events_pagination(http_client, async_session: AsyncSess
     dataset_urn = _urn("events_test")
     headers = _auth_headers()
 
-    event_ids = await seed_events(async_session, entity_type="ingestion", entity_id=dataset_urn)
+    event_ids = await seed_events(
+        async_session,
+        entity_type="dataset",
+        entity_id=dataset_urn,
+        event_type="ingestion.completed",
+    )
 
     try:
         resp = await http_client.get(

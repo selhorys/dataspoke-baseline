@@ -107,7 +107,7 @@ async def test_concept_approve_reject_lifecycle(http_client, async_session: Asyn
         assert "concept.approved" in event_types
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'ontology'"),
+            text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'concept'"),
             {"id": concept_id},
         )
         await async_session.execute(
@@ -161,7 +161,7 @@ async def test_concept_reject_and_conflict(http_client, async_session: AsyncSess
         assert resp.status_code == 409
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'ontology'"),
+            text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'concept'"),
             {"id": concept_id},
         )
         await async_session.execute(

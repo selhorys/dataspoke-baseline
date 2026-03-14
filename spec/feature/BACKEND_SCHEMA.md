@@ -219,12 +219,20 @@ structure so clients can process them generically (see
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Event identifier |
-| `entity_type` | `TEXT` | `dataset`, `metric`, `concept` |
+| `entity_type` | `TEXT` | `dataset`, `metric`, `concept` — classifies the entity, not the feature domain |
 | `entity_id` | `TEXT` | URN or metric/concept ID |
-| `event_type` | `TEXT` | `ingestion_run`, `validation_run`, `generation_run`, `metric_run`, `concept_approved`, etc. |
+| `event_type` | `TEXT` | Dot-prefixed by domain: `ingestion.completed`, `validation.completed`, `generation.completed`, `generation.applied`, `metric.run.completed`, `metric.alarm.triggered`, `concept.approved`, `concept.rejected`, etc. |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |
+
+**Filtering convention**: `entity_type` identifies what the entity *is* (a
+dataset, a metric, a concept). Ingestion, validation, and generation are
+*attributes* of a dataset, so their events use `entity_type=dataset`. The
+dataset-level event endpoint (`GET .../data/{urn}/event`) filters by
+`entity_type=dataset` to return all event types for that dataset. Sub-resource
+event endpoints (e.g., `.../attr/ingestion/event`) additionally filter by
+`event_type` prefix (e.g., `ingestion.*`) to return only domain-specific events.
 
 #### `department_mapping`
 

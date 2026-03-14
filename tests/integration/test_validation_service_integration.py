@@ -245,7 +245,7 @@ async def test_run_validation_persists_result(http_client, async_session: AsyncS
         )
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'validation'"
+                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'validation.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -262,7 +262,12 @@ async def test_validation_events_pagination(http_client, async_session: AsyncSes
     dataset_urn = _urn("events_test")
     headers = _auth_headers()
 
-    event_ids = await seed_events(async_session, entity_type="validation", entity_id=dataset_urn)
+    event_ids = await seed_events(
+        async_session,
+        entity_type="dataset",
+        entity_id=dataset_urn,
+        event_type="validation.completed",
+    )
 
     try:
         resp = await http_client.get(

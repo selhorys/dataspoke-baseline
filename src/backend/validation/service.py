@@ -399,8 +399,9 @@ class ValidationService:
         to_dt: datetime | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
-            Event.entity_type == "validation",
+            Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
+            Event.event_type.startswith("validation."),
         )
 
         if from_dt is not None:
@@ -437,7 +438,7 @@ class ValidationService:
         detail: dict[str, Any],
     ) -> None:
         event = Event(
-            entity_type="validation",
+            entity_type="dataset",
             entity_id=dataset_urn,
             event_type=event_type,
             status=status,

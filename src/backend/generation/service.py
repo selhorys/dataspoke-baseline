@@ -431,8 +431,9 @@ class GenerationService:
         to_dt: datetime | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
-            Event.entity_type == "generation",
+            Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
+            Event.event_type.startswith("generation."),
         )
 
         if from_dt is not None:
@@ -469,7 +470,7 @@ class GenerationService:
         detail: dict[str, Any],
     ) -> None:
         event = Event(
-            entity_type="generation",
+            entity_type="dataset",
             entity_id=dataset_urn,
             event_type=event_type,
             status=status,
