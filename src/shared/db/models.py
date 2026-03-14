@@ -95,6 +95,7 @@ class ValidationResult(Base):
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
     quality_score: Mapped[float] = mapped_column(Float, nullable=False)
     dimensions: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    dimension_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     issues: Mapped[dict] = mapped_column(JSONB, nullable=False)
     anomalies: Mapped[dict] = mapped_column(JSONB, nullable=False)
     recommendations: Mapped[dict] = mapped_column(JSONB, nullable=False)

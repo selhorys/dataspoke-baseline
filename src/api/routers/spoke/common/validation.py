@@ -111,6 +111,7 @@ async def get_validation_result(
                 dataset_urn=r.dataset_urn,
                 quality_score=r.quality_score,
                 dimensions=r.dimensions,
+                dimension_details=r.dimension_details,
                 issues=r.issues,
                 anomalies=r.anomalies,
                 recommendations=r.recommendations,

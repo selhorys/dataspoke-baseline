@@ -85,6 +85,7 @@ async def get_dataset_attr(
         quality = QualityScoreResponse(
             overall_score=attrs.quality_score.overall_score,
             dimensions=attrs.quality_score.dimensions,
+            dimension_details=attrs.quality_score.dimension_details,
         )
     return DatasetAttributesResponse(
         urn=attrs.urn,

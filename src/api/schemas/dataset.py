@@ -1,5 +1,7 @@
 """Dataset summary and attributes response models."""
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
@@ -8,6 +10,7 @@ from src.api.schemas.common import PaginatedResponse, SingleResponse
 class QualityScoreResponse(BaseModel):
     overall_score: float
     dimensions: dict[str, float] = {}
+    dimension_details: dict[str, dict[str, Any]] | None = None
 
 
 class DatasetResponse(SingleResponse):

@@ -143,6 +143,31 @@ class DataHubClient:
         search_results = (result or {}).get("searchAcrossLineage", {}).get("searchResults", [])
         return [r["entity"]["urn"] for r in search_results]
 
+    async def get_schema_version_list(self, urn: str) -> list[dict[str, Any]]:
+        """Return schema version list via the Timeline GraphQL API.
+
+        Each entry has keys: semanticVersion (str), semanticVersionTimestamp (int ms).
+        """
+        query = """
+        query getSchemaVersionList($input: GetSchemaVersionListInput!) {
+            getSchemaVersionList(input: $input) {
+                semanticVersionList {
+                    semanticVersion
+                    semanticVersionTimestamp
+                }
+            }
+        }
+        """
+        try:
+            result = await self._with_retry(
+                self._graph.execute_graphql, query, variables={"input": {"datasetUrn": urn}}
+            )
+        except Exception:
+            return []
+        inner = (result or {}).get("getSchemaVersionList") or {}
+        version_list = inner.get("semanticVersionList") or []
+        return [v for v in version_list if v.get("semanticVersion")]
+
     async def enumerate_datasets(self, platform: str | None = None) -> list[str]:
         extra_filters = []
         if platform:

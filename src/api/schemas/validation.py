@@ -48,6 +48,7 @@ class ValidationResultResponse(SingleResponse):
     dataset_urn: str
     quality_score: float
     dimensions: dict[str, float]
+    dimension_details: dict[str, dict[str, Any]] | None = None
     issues: list[dict[str, Any]] = []
     anomalies: list[dict[str, Any]] = []
     recommendations: list[str] = []

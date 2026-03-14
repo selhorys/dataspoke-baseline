@@ -1,6 +1,7 @@
 """Unit tests for compute_quality_score (mocked DataHub + Redis)."""
 
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -54,6 +55,15 @@ def _mock_tags(has_tags: bool = True):
     return tags
 
 
+def _make_version_list(versions: list[tuple[str, int]]) -> list[dict]:
+    """Build a mock schema version list.
+
+    Args:
+        versions: list of (semanticVersion, timestampMillis) tuples.
+    """
+    return [{"semanticVersion": sv, "semanticVersionTimestamp": ts} for sv, ts in versions]
+
+
 @pytest.fixture
 def cache():
     c = AsyncMock()
@@ -75,8 +85,6 @@ def test_weight_distribution():
 
 async def test_perfect_score(datahub, cache):
     """All aspects fully populated → score near 100."""
-    import time
-
     now_ms = int(time.time() * 1000)
 
     async def _get_aspect(urn, cls):
@@ -99,6 +107,9 @@ async def test_perfect_score(datahub, cache):
 
     datahub.get_aspect = _get_aspect
     datahub.get_timeseries = _get_timeseries
+    datahub.get_schema_version_list = AsyncMock(
+        return_value=_make_version_list([("0.0.0-computed", now_ms)])
+    )
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.overall_score >= 95
@@ -113,6 +124,7 @@ async def test_zero_score(datahub, cache):
     """All aspects missing → score 0."""
     datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.overall_score == 0.0
@@ -133,6 +145,7 @@ async def test_completeness_dimension(datahub, cache):
 
     datahub.get_aspect = _get_aspect
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["completeness"] == 50.0
@@ -143,11 +156,10 @@ async def test_completeness_dimension(datahub, cache):
 
 async def test_freshness_recent(datahub, cache):
     """Last operation 0 days ago → freshness 100."""
-    import time
-
     now_ms = int(time.time() * 1000)
     datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[make_mock_operation(now_ms)])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["freshness"] == 100.0
@@ -155,11 +167,10 @@ async def test_freshness_recent(datahub, cache):
 
 async def test_freshness_stale(datahub, cache):
     """Last operation 30+ days ago → freshness 0."""
-    import time
-
     old_ms = int((time.time() - 31 * 86400) * 1000)
     datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[make_mock_operation(old_ms)])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["freshness"] == 0.0
@@ -168,25 +179,133 @@ async def test_freshness_stale(datahub, cache):
 # ── Schema stability ─────────────────────────────────────────────────────────
 
 
-async def test_schema_stability_high(datahub, cache):
-    """Schema present with fields → stability 100."""
-
-    async def _get_aspect(urn, cls):
-        if cls.__name__ == "SchemaMetadataClass":
-            return _mock_schema(fields_with_desc=3, fields_total=5)
-        return None
-
-    datahub.get_aspect = _get_aspect
+async def test_schema_stability_no_changes(datahub, cache):
+    """Single version (initial) → stability 100, zero changes."""
+    now_ms = int(time.time() * 1000)
+    datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(
+        return_value=_make_version_list([("0.0.0-computed", now_ms)])
+    )
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["schema_stability"] == 100.0
+    details = score.dimension_details["schema_stability"]
+    assert details["major_changes"] == 0
+    assert details["minor_changes"] == 0
 
 
 async def test_schema_stability_no_schema(datahub, cache):
-    """No schema → stability 0."""
+    """No schema versions → stability 0, no details."""
     datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
+
+    score = await compute_quality_score(datahub, "urn:test", cache=cache)
+    assert score.dimensions["schema_stability"] == 0.0
+    assert score.dimension_details is None
+
+
+async def test_schema_stability_minor_changes(datahub, cache):
+    """3 minor changes in last 30 days → score 97 (100 - 3*1)."""
+    now_ms = int(time.time() * 1000)
+    day_ms = 86400 * 1000
+    versions = _make_version_list(
+        [
+            ("0.0.0-computed", now_ms - 20 * day_ms),
+            ("0.1.0-computed", now_ms - 15 * day_ms),
+            ("0.2.0-computed", now_ms - 10 * day_ms),
+            ("0.3.0-computed", now_ms - 5 * day_ms),
+        ]
+    )
+    datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=versions)
+
+    score = await compute_quality_score(datahub, "urn:test", cache=cache)
+    assert score.dimensions["schema_stability"] == 97.0
+    details = score.dimension_details["schema_stability"]
+    assert details["major_changes"] == 0
+    assert details["minor_changes"] == 3
+
+
+async def test_schema_stability_major_changes(datahub, cache):
+    """2 major changes in last 30 days → score 80 (100 - 2*10)."""
+    now_ms = int(time.time() * 1000)
+    day_ms = 86400 * 1000
+    versions = _make_version_list(
+        [
+            ("0.0.0-computed", now_ms - 25 * day_ms),
+            ("1.0.0-computed", now_ms - 15 * day_ms),
+            ("2.0.0-computed", now_ms - 5 * day_ms),
+        ]
+    )
+    datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=versions)
+
+    score = await compute_quality_score(datahub, "urn:test", cache=cache)
+    assert score.dimensions["schema_stability"] == 80.0
+    details = score.dimension_details["schema_stability"]
+    assert details["major_changes"] == 2
+    assert details["minor_changes"] == 0
+
+
+async def test_schema_stability_mixed_changes(datahub, cache):
+    """1 major + 2 minor in last 30 days → score 88 (100 - 10 - 2)."""
+    now_ms = int(time.time() * 1000)
+    day_ms = 86400 * 1000
+    versions = _make_version_list(
+        [
+            ("0.0.0-computed", now_ms - 25 * day_ms),
+            ("0.1.0-computed", now_ms - 20 * day_ms),
+            ("0.2.0-computed", now_ms - 15 * day_ms),
+            ("1.0.0-computed", now_ms - 5 * day_ms),
+        ]
+    )
+    datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=versions)
+
+    score = await compute_quality_score(datahub, "urn:test", cache=cache)
+    assert score.dimensions["schema_stability"] == 88.0
+    details = score.dimension_details["schema_stability"]
+    assert details["major_changes"] == 1
+    assert details["minor_changes"] == 2
+
+
+async def test_schema_stability_old_changes_ignored(datahub, cache):
+    """Changes older than 30 days don't count."""
+    now_ms = int(time.time() * 1000)
+    day_ms = 86400 * 1000
+    versions = _make_version_list(
+        [
+            ("0.0.0-computed", now_ms - 60 * day_ms),
+            ("1.0.0-computed", now_ms - 45 * day_ms),  # older than 30d → ignored
+            ("2.0.0-computed", now_ms - 5 * day_ms),  # within 30d → counts
+        ]
+    )
+    datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=versions)
+
+    score = await compute_quality_score(datahub, "urn:test", cache=cache)
+    assert score.dimensions["schema_stability"] == 90.0
+    details = score.dimension_details["schema_stability"]
+    assert details["major_changes"] == 1
+    assert details["minor_changes"] == 0
+
+
+async def test_schema_stability_floor_at_zero(datahub, cache):
+    """Many changes clamp score at 0, not negative."""
+    now_ms = int(time.time() * 1000)
+    day_ms = 86400 * 1000
+    versions = _make_version_list(
+        [(f"{i}.0.0-computed", now_ms - (25 - i) * day_ms) for i in range(15)]
+    )
+    datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=versions)
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["schema_stability"] == 0.0
@@ -198,6 +317,7 @@ async def test_schema_stability_no_schema(datahub, cache):
 async def test_data_quality_good(datahub, cache):
     """Low null ratio → high score."""
     datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     async def _get_timeseries(urn, cls, limit=30):
         if cls.__name__ == "DatasetProfileClass":
@@ -213,6 +333,7 @@ async def test_data_quality_good(datahub, cache):
 async def test_data_quality_poor(datahub, cache):
     """High null ratio → low score."""
     datahub.get_aspect = AsyncMock(return_value=None)
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     async def _get_timeseries(urn, cls, limit=30):
         if cls.__name__ == "DatasetProfileClass":
@@ -240,6 +361,7 @@ async def test_ownership_tags_full(datahub, cache):
 
     datahub.get_aspect = _get_aspect
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["ownership_tags"] == 100.0
@@ -249,6 +371,7 @@ async def test_ownership_tags_none(datahub, cache):
     """Missing both → 0."""
     datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.dimensions["ownership_tags"] == 0.0
@@ -269,12 +392,16 @@ async def test_cache_hit(datahub, cache):
                 "data_quality": 70.0,
                 "ownership_tags": 100.0,
             },
+            "dimension_details": {
+                "schema_stability": {"major_changes": 0, "minor_changes": 0},
+            },
         }
     )
     cache.get = AsyncMock(return_value=cached_data)
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.overall_score == 85.0
+    assert score.dimension_details["schema_stability"]["major_changes"] == 0
     datahub.get_aspect.assert_not_awaited()
 
 
@@ -283,6 +410,7 @@ async def test_cache_miss_then_set(datahub, cache):
     cache.get = AsyncMock(return_value=None)
     datahub.get_aspect = AsyncMock(return_value=None)
     datahub.get_timeseries = AsyncMock(return_value=[])
+    datahub.get_schema_version_list = AsyncMock(return_value=[])
 
     score = await compute_quality_score(datahub, "urn:test", cache=cache)
     assert score.overall_score == 0.0
