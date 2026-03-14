@@ -10,7 +10,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from .conftest import _auth_headers, _datahub_gms_url, _resolve_datahub_token
+from tests.integration.conftest import _auth_headers, _datahub_gms_url, _resolve_datahub_token
 
 
 @pytest_asyncio.fixture

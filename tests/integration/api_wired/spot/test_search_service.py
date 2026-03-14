@@ -20,8 +20,7 @@ import pytest
 import pytest_asyncio
 
 from src.shared.vector.client import QdrantManager
-
-from .conftest import (
+from tests.integration.conftest import (
     _auth_headers,
     emit_test_dataset,
     override_app,

@@ -19,7 +19,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import (
+from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
     make_test_urn,

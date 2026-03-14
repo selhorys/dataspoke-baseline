@@ -14,7 +14,12 @@ from unittest.mock import patch
 import pytest
 import pytest_asyncio
 
-from .conftest import _auth_headers, _datahub_gms_url, _resolve_datahub_token, override_app
+from tests.integration.conftest import (
+    _auth_headers,
+    _datahub_gms_url,
+    _resolve_datahub_token,
+    override_app,
+)
 
 _HEADERS = _auth_headers()
 _CAMEL_RE = re.compile(r"[a-z][A-Z]")

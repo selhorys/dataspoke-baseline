@@ -15,9 +15,10 @@
 3. [Python Environment Setup](#python-environment-setup)
 4. [Unit Testing](#unit-testing)
 5. [Integration Testing](#integration-testing)
-6. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
-7. [Test Data Design](#test-data-design)
-8. [CI Behavior](#ci-behavior)
+6. [API-Wired Integration Testing](#api-wired-integration-testing)
+7. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
+8. [Test Data Design](#test-data-design)
+9. [CI Behavior](#ci-behavior)
 
 ---
 
@@ -45,15 +46,19 @@ tests/
 │   ├── shared/         # DataHub client wrapper, shared model tests
 │   ├── workflows/      # Temporal workflow tests (Temporal test framework)
 │   └── frontend/       # Jest tests (or co-located in src/frontend/)
-├── integration/        # Dev-env-backed integration tests
+├── integration/             # Dev-env-backed integration tests
 │   ├── util/                # Dummy-data reset/ingest utilities
 │   │   ├── fixtures/sql/    # SQL seed files (10 files: 00_schemas … 09_ebooknow)
 │   │   ├── fixtures/kafka/  # Kafka JSONL seed messages (orders, shipping, reviews)
 │   │   ├── postgres.py      # PostgreSQL reset functions (asyncpg, port 9102)
 │   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, port 9104)
 │   │   └── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
-│   ├── conftest.py
-│   └── test_*_integration.py
+│   ├── api_wired/           # API-wired integration tests (REST-only)
+│   │   ├── spot/            # Individual or small-sequence endpoint tests
+│   │   ├── story/           # Multi-step USE_CASE scenario tests (10–100 API calls)
+│   │   └── conftest.py      # API-wired-specific fixtures (extends root conftest)
+│   ├── conftest.py          # Root conftest: infra fixtures, lock, dummy-data lifecycle
+│   └── test_*_integration.py  # Non-API-wired tests (infra clients, Kafka, Temporal, etc.)
 └── e2e/                # Playwright end-to-end tests
 ```
 
@@ -162,8 +167,8 @@ Follow these seven steps in order every time you run integration tests.
 #### Step 1 — Write test scenarios and code
 
 - Map scenarios to [Imazon](USE_CASE_en.md) domain entities (see [Test Data Design](#test-data-design)).
-- Place test files under `tests/integration/`, mirroring `src/` structure.
-- Naming: `test_<feature>_service_integration.py` for service-level tests, `test_<feature>_integration.py` for infrastructure and cross-cutting tests
+- **Placement**: if the test exercises only REST API endpoints (no direct Python service imports), place it under `tests/integration/api_wired/` (see [API-Wired Integration Testing](#api-wired-integration-testing)). Otherwise, place it under `tests/integration/`.
+- Naming (non-api-wired): `test_<feature>_service_integration.py` for service-level tests, `test_<feature>_integration.py` for infrastructure and cross-cutting tests
 - Document any test-specific data additions in the test file's module-level docstring.
 
 #### Step 2 — Acquire the dev-env lock
@@ -277,11 +282,20 @@ cd dev_env
 
 Integration tests do **not** require a running API server or Temporal worker — they use in-process ASGI transport (`httpx.ASGITransport`) and spin up in-process Temporal workers via fixtures.
 
-### Directory Structure
+### Directory Structure & Classification
 
-Test files are placed under `tests/integration/` using two naming patterns: `test_<feature>_service_integration.py` for service-level tests and `test_<feature>_integration.py` for infrastructure and cross-cutting tests.
+Integration tests are split into two groups based on testing approach:
 
-**`conftest.py` shared fixtures and helpers:**
+| Group | Location | What It Tests | Approach |
+|-------|----------|---------------|----------|
+| **Non-API-wired** | `tests/integration/test_*.py` | Infrastructure clients, Kafka consumers, Temporal workflows, DB migrations | Direct Python function/SDK calls |
+| **API-wired** | `tests/integration/api_wired/` | API + backend as a combined unit | REST API calls only (see [API-Wired Integration Testing](#api-wired-integration-testing)) |
+
+A test belongs in `api_wired/` when its assertions use **only** REST API calls via `httpx.AsyncClient`. If the test also imports and calls backend service methods or infrastructure SDKs directly (beyond data seeding/cleanup), it belongs in the non-api-wired root.
+
+Non-api-wired naming: `test_<feature>_service_integration.py` for service-level tests, `test_<feature>_integration.py` for infrastructure and cross-cutting tests.
+
+**Root `conftest.py` (`tests/integration/conftest.py`) — shared fixtures and helpers:**
 
 - **Infrastructure fixtures** (session/function scope): `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `temporal_client`, `kafka_brokers`, `datahub_kafka_brokers`
 - **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
@@ -291,6 +305,63 @@ Test files are placed under `tests/integration/` using two naming patterns: `tes
 - **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
 
 **Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka on port 9104, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
+
+---
+
+## API-Wired Integration Testing
+
+API-wired tests are a subset of integration tests that exercise the **API server and backend services as a combined unit** using only REST API calls. No direct Python service imports are used in the test logic — the test interacts with the system exclusively through HTTP endpoints via `httpx.AsyncClient` (ASGI transport).
+
+### Scope
+
+API-wired tests verify that the full request path works end-to-end within the backend: HTTP routing → dependency injection → service logic → infrastructure → response serialization. They complement non-api-wired integration tests (which test infrastructure clients, Kafka consumers, Temporal workflows, etc. via direct Python calls) and E2E tests (which add a real browser).
+
+### Subtypes
+
+| Subtype | Directory | Scale | Purpose |
+|---------|-----------|-------|---------|
+| **Spot** | `tests/integration/api_wired/spot/` | 1–5 API calls per test | Individual endpoint CRUD, error cases, edge cases |
+| **Story** | `tests/integration/api_wired/story/` | 10–100 API calls per test | End-to-end scenario covering a [`USE_CASE`](USE_CASE_en.md) through a realistic sequence of API interactions |
+
+**Spot** tests target a single feature's API surface — e.g., create a metric config, retrieve it, update it, delete it. Each test function is self-contained and focused.
+
+**Story** tests replay a full use-case scenario as a user would experience it through the API. A story test for UC1 (Dataset Discovery) might: search for datasets → view dataset detail → trigger ingestion → poll for completion → verify generated metadata. Story tests reference a specific UC from `spec/USE_CASE_en.md` in their module docstring.
+
+### Naming
+
+- Spot: `test_<feature>.py` (e.g., `test_dataset_service.py`) — the `spot/` directory provides the context, no suffix needed.
+- Story: `test_<uc_id>_<short_name>.py` (e.g., `test_uc1_dataset_discovery.py`) — likewise, the `story/` directory provides the context.
+
+### conftest.py Structure (Option B)
+
+API-wired tests use a dedicated `tests/integration/api_wired/conftest.py` that **extends** the root `tests/integration/conftest.py`. pytest's conftest inheritance means all root fixtures (infrastructure, lifecycle, mock, data helpers) are automatically available in `api_wired/` without re-importing.
+
+The api-wired conftest provides fixtures specific to REST-based testing:
+
+- **`api_client`** — function-scoped async fixture that yields an `httpx.AsyncClient` configured with ASGI transport and dependency overrides via `override_app()`. Tests receive a ready-to-use HTTP client without boilerplate.
+- **`auth_headers`** — function-scoped fixture returning the standard auth headers dict, so tests can pass `headers=auth_headers` to every request.
+
+Tests in `spot/` and `story/` inherit from both conftest layers.
+
+### Running
+
+```bash
+# All integration tests (including api-wired)
+uv run pytest tests/integration/
+
+# Only api-wired tests
+uv run pytest tests/integration/api_wired/
+
+# Only spot tests
+uv run pytest tests/integration/api_wired/spot/
+
+# Only story tests
+uv run pytest tests/integration/api_wired/story/
+```
+
+### Workflow
+
+API-wired tests follow the same seven-step workflow as other integration tests (see [Integration Testing §Workflow](#workflow)). The same lock protocol, dummy-data reset, and module-level `DUMMY_DATA_*` constants apply.
 
 ---
 

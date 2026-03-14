@@ -22,7 +22,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .conftest import _auth_headers, override_app
+from tests.integration.conftest import _auth_headers, override_app
 
 # ── Per-module dummy-data reset (see spec/TESTING.md §Per-Module) ─────────
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
