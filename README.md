@@ -257,7 +257,7 @@ See [`spec/feature/DEV_ENV.md`](spec/feature/DEV_ENV.md) for the full variable l
 | [spec/feature/FRONTEND_DG.md](spec/feature/FRONTEND_DG.md) | Frontend: Data Governance workspace |
 | [spec/feature/DEV_ENV.md](spec/feature/DEV_ENV.md) | Dev environment specification |
 | [spec/feature/HELM_CHART.md](spec/feature/HELM_CHART.md) | Helm chart specification for production deployment |
-| [spec/TESTING.md](spec/TESTING.md) | Testing conventions: toolchain, unit/integration/E2E workflow, dev-env lock protocol |
+| [spec/TESTING.md](spec/TESTING.md) | Testing conventions: toolchain, unit/integration/api-wired integration/E2E workflow, dev-env lock protocol |
 
 ## License
 

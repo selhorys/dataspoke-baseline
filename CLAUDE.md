@@ -59,7 +59,7 @@ For end-to-end feature implementation, use subagents in this order:
 
 Each agent reads the spec and the output of previous agents as context.
 For spec authoring, use `/plan-doc` directly.
-For testing conventions (unit/integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
+For testing conventions (unit/integration/api-wired integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
 
 ## Integration Test Protocol
 
