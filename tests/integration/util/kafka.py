@@ -52,8 +52,9 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-_kafka_port = int(os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARD_PORT", "9104"))
-_kafka_bootstrap = f"localhost:{_kafka_port}"
+_kafka_bootstrap = os.environ.get(
+    "DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS", "localhost:9104"
+)
 
 # ---------------------------------------------------------------------------
 # Client factories

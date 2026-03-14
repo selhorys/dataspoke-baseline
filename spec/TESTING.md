@@ -51,7 +51,7 @@ tests/
 │   │   ├── fixtures/sql/    # SQL seed files (10 files: 00_schemas … 09_ebooknow)
 │   │   ├── fixtures/kafka/  # Kafka JSONL seed messages (orders, shipping, reviews)
 │   │   ├── postgres.py      # PostgreSQL reset functions (asyncpg, port 9102)
-│   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, port 9104)
+│   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, KAFKA_PORT_FORWARDED_BROKERS)
 │   │   └── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
 │   ├── api_wired/           # API-wired integration tests (REST-only)
 │   │   ├── spot/            # Individual or small-sequence endpoint tests
@@ -201,9 +201,9 @@ When an outer process (e.g. prauto) has already acquired the lock, set `DATASPOK
 
 Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty.
 
-`conftest.py` resets dummy data via Python utilities in `tests/integration/util/` — connecting directly to port-forwarded PostgreSQL (9102), Kafka (9104), and DataHub GMS (9004).
+`conftest.py` resets dummy data via Python utilities in `tests/integration/util/` — connecting directly to port-forwarded PostgreSQL (9102), Kafka (via `DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`), and DataHub GMS (9004).
 
-The reset is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. The ingest then registers the 17 example-postgres tables as DataHub dataset entities with `DatasetProperties` and `SchemaMetadata` aspects.
+The reset is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. The ingest then registers the 17 example-postgres tables and 3 example-kafka topics as DataHub dataset entities with `DatasetProperties` and `SchemaMetadata` aspects.
 
 For manual reset outside pytest:
 
@@ -304,7 +304,7 @@ Non-api-wired naming: `test_<feature>_service_integration.py` for service-level 
 - **DataHub helpers**: `emit_test_dataset(client, *, urn, name, fields, with_ownership, with_tags)`, `soft_delete_test_dataset(client, urn)`
 - **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
 
-**Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka on port 9104, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
+**Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka via `DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
 
 ---
 

@@ -168,7 +168,7 @@ Forward example PostgreSQL and Kafka:
 
 ### 8. Populate dummy data and register in DataHub
 
-Populate `example-postgres` and `example-kafka` with realistic Imazon use-case data and register tables in DataHub:
+Populate `example-postgres` and `example-kafka` with realistic Imazon use-case data and register datasets in DataHub:
 
 ```bash
 # From repo root (requires port-forwards for 9102, 9104, 9004):
@@ -181,7 +181,7 @@ This is **idempotent** — every run drops all custom schemas CASCADE and recrea
 
 - **PostgreSQL**: 11 schemas, 17 tables, ~600 rows covering UC1-UC7 scenarios (catalog, orders, customers, reviews, publishers, shipping, inventory, marketing, eBookNow products/content/storefront)
 - **Kafka**: 3 topics (`imazon.orders.events`, `imazon.shipping.updates`, `imazon.reviews.new`) with ~45 JSON messages
-- **DataHub**: 17 dataset entities with `DatasetProperties` + `SchemaMetadata` aspects (137 columns total)
+- **DataHub**: 20 dataset entities (17 PG tables + 3 Kafka topics) with `DatasetProperties` + `SchemaMetadata` aspects
 
 **Verify:**
 

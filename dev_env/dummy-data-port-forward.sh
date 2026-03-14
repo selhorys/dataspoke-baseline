@@ -21,7 +21,9 @@ source "$SCRIPT_DIR/.env"
 
 NS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 PG_PORT="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT:-9102}"
-KAFKA_PORT="${DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARD_PORT:-9104}"
+# Extract port from BROKERS var (take first entry, strip host:)
+_BROKERS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS:-localhost:9104}"
+KAFKA_PORT="${_BROKERS##*:}"
 
 # ---------------------------------------------------------------------------
 # --stop: kill running port-forwards and clean up

@@ -128,7 +128,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 | Helm chart versions | `*_CHART_VERSION` | DataHub prerequisites 0.2.1, DataHub 0.8.3 |
 | Port-forward ports | `*_PORT_FORWARD_*_PORT` | All configurable; defaults in 9xxx range |
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
-| Example data creds | `*_DUMMY_DATA_POSTGRES_*` | Dev-only |
+| Example data creds | `*_DUMMY_DATA_POSTGRES_*`, `*_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`, `*_DUMMY_DATA_KAFKA_INSTANCE` | Dev-only |
 | DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `*_TOKEN`, `*_KAFKA_BROKERS` | App runtime — `localhost` in dev |
 | Infrastructure | `DATASPOKE_POSTGRES_*`, `*_REDIS_*`, `*_QDRANT_*`, `*_TEMPORAL_*` | App runtime — `localhost` in dev |
 | LLM | `DATASPOKE_LLM_PROVIDER`, `*_API_KEY`, `*_MODEL` | App runtime |
@@ -284,7 +284,7 @@ All ports are configurable via `DATASPOKE_DEV_*_PORT` variables. The `DATASPOKE_
 
 ## Dummy Data
 
-The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka instances populated with Imazon use-case data (11 schemas, 17 tables, ~600 rows; 3 Kafka topics, ~45 messages). Seed files, ingestion logic, and data design details live in `tests/integration/util/` — see [`TESTING.md §Test Data Design`](../TESTING.md#test-data-design) for the full reference.
+The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka instances populated with Imazon use-case data (11 schemas, 17 tables, ~600 rows; 3 Kafka topics, ~45 messages). Both PG tables and Kafka topics are registered as DataHub dataset entities (20 total) with `DatasetProperties` and `SchemaMetadata` aspects. Seed files, ingestion logic, and data design details live in `tests/integration/util/` — see [`TESTING.md §Test Data Design`](../TESTING.md#test-data-design) for the full reference.
 
 ---
 

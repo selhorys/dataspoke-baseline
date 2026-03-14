@@ -1,6 +1,7 @@
 """DataHub dummy-data reset/ingest utilities for integration tests.
 
-Registers example-postgres tables as DataHub dataset entities.
+Registers example-postgres tables and example-kafka topics as DataHub
+dataset entities.
 
 Usage (as a module):
     uv run python -m tests.integration.util.datahub          # ingest
@@ -15,6 +16,7 @@ Environment variables (loaded from dev_env/.env if present):
     DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER     (default: postgres)
     DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
     DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB        (default: example_db)
+    DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE    (default: example_kafka)
 """
 
 from __future__ import annotations
@@ -43,9 +45,10 @@ from datahub.metadata.schema_classes import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-PLATFORM = "postgres"
+PG_PLATFORM = "postgres"
+KAFKA_PLATFORM = "kafka"
 ENV = "DEV"
-INSTANCE = "example_db"
+PG_INSTANCE = "example_db"
 
 TARGET_SCHEMAS: frozenset[str] = frozenset(
     {
@@ -124,6 +127,8 @@ _pg_user = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgr
 _pg_password = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
 _pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
 
+_kafka_instance = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
+
 # ---------------------------------------------------------------------------
 # Lazy token resolution — never called at module import time
 # ---------------------------------------------------------------------------
@@ -175,8 +180,14 @@ def _get_token() -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _make_urn(schema: str, table: str) -> str:
-    return f"urn:li:dataset:(urn:li:dataPlatform:{PLATFORM},{INSTANCE}.{schema}.{table},{ENV})"
+def _make_pg_urn(schema: str, table: str) -> str:
+    return (
+        f"urn:li:dataset:(urn:li:dataPlatform:{PG_PLATFORM},{PG_INSTANCE}.{schema}.{table},{ENV})"
+    )
+
+
+def _make_kafka_urn(topic: str) -> str:
+    return f"urn:li:dataset:(urn:li:dataPlatform:{KAFKA_PLATFORM},{_kafka_instance}.{topic},{ENV})"
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +228,7 @@ async def discover_tables(
 
     datasets: dict[str, list[dict]] = {}  # type: ignore[type-arg]
     for row in rows:
-        urn = _make_urn(row["table_schema"], row["table_name"])
+        urn = _make_pg_urn(row["table_schema"], row["table_name"])
         datasets.setdefault(urn, []).append(
             {
                 "schema": row["table_schema"],
@@ -237,23 +248,30 @@ async def discover_tables(
 
 
 def reset_datasets() -> int:
-    """Soft-delete all example_db datasets from DataHub. Returns count deleted."""
+    """Soft-delete all example_db and example_kafka datasets from DataHub.
+
+    Returns total count deleted across both platforms.
+    """
     token = _get_token()
     graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
     emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
-    urns = list(
-        graph.get_urns_by_filter(
-            entity_types=["dataset"],
-            platform=PLATFORM,
-        )
-    )
-    # Filter to only example_db datasets
-    prefix = f"urn:li:dataset:(urn:li:dataPlatform:{PLATFORM},{INSTANCE}."
-    urns = [u for u in urns if u.startswith(prefix)]
+    urns: list[str] = []
+
+    # PostgreSQL datasets
+    pg_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{PG_PLATFORM},{PG_INSTANCE}."
+    for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=PG_PLATFORM):
+        if u.startswith(pg_prefix):
+            urns.append(u)
+
+    # Kafka datasets
+    kafka_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{KAFKA_PLATFORM},{_kafka_instance}."
+    for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=KAFKA_PLATFORM):
+        if u.startswith(kafka_prefix):
+            urns.append(u)
 
     if not urns:
-        print(f"  No existing {INSTANCE} datasets to delete.")
+        print("  No existing dummy-data datasets to delete.")
         return 0
 
     for urn in urns:
@@ -288,7 +306,7 @@ def _build_schema_fields(columns: list[dict]) -> list[SchemaFieldClass]:  # type
     return fields
 
 
-async def ingest_datasets(schemas: frozenset[str] | None = None) -> int:
+async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
     """Discover tables and emit metadata to DataHub. Returns count ingested.
 
     Args:
@@ -321,12 +339,12 @@ async def ingest_datasets(schemas: frozenset[str] | None = None) -> int:
                 entityUrn=urn,
                 aspect=DatasetPropertiesClass(
                     name=f"{schema}.{table}",
-                    qualifiedName=f"{INSTANCE}.{schema}.{table}",
+                    qualifiedName=f"{PG_INSTANCE}.{schema}.{table}",
                     description=f"Imazon example table: {schema}.{table}",
                     customProperties={
                         "source": "dummy-data-ingest",
                         "schema": schema,
-                        "database": INSTANCE,
+                        "database": PG_INSTANCE,
                     },
                 ),
             )
@@ -338,7 +356,7 @@ async def ingest_datasets(schemas: frozenset[str] | None = None) -> int:
                 entityUrn=urn,
                 aspect=SchemaMetadataClass(
                     schemaName=f"{schema}.{table}",
-                    platform=f"urn:li:dataPlatform:{PLATFORM}",
+                    platform=f"urn:li:dataPlatform:{PG_PLATFORM}",
                     version=0,
                     hash="",
                     platformSchema=OtherSchemaClass(rawSchema=""),
@@ -348,7 +366,146 @@ async def ingest_datasets(schemas: frozenset[str] | None = None) -> int:
         )
 
     print(
-        f"  Ingested {len(datasets)} datasets ({sum(len(c) for c in datasets.values())} columns)."
+        f"  Ingested {len(datasets)} PG datasets "
+        f"({sum(len(c) for c in datasets.values())} columns)."
+    )
+    return len(datasets)
+
+
+# ---------------------------------------------------------------------------
+# Discover Kafka topic schemas from JSONL fixtures
+# ---------------------------------------------------------------------------
+
+_JSON_TO_DATAHUB_TYPE: dict[str, str] = {
+    "str": "STRING",
+    "int": "NUMBER",
+    "float": "NUMBER",
+    "bool": "BOOLEAN",
+    "list": "ARRAY",
+    "dict": "MAP",
+    "NoneType": "NULL",
+}
+
+
+def _discover_kafka_topics() -> dict[str, list[dict]]:  # type: ignore[type-arg]
+    """Return {urn: [field_dicts]} by scanning JSONL fixture files.
+
+    Unions all keys across all messages in each topic's JSONL file, inferring
+    field types from the first non-null occurrence.
+    """
+    from tests.integration.util.kafka import ALL_TOPICS
+
+    _kafka_fixtures_dir = Path(__file__).parent / "fixtures" / "kafka"
+    datasets: dict[str, list[dict]] = {}  # type: ignore[type-arg]
+
+    for topic, jsonl_file in ALL_TOPICS.items():
+        urn = _make_kafka_urn(topic)
+        # Union all keys, keep first non-null type per key
+        field_types: dict[str, str] = {}
+        fixture_path = _kafka_fixtures_dir / jsonl_file
+        for line in fixture_path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            msg = json.loads(line)
+            for key, value in msg.items():
+                if key not in field_types and value is not None:
+                    field_types[key] = type(value).__name__
+
+        fields = []
+        for ordinal, (key, py_type) in enumerate(field_types.items(), start=1):
+            fields.append(
+                {
+                    "name": key,
+                    "native_type": py_type,
+                    "ordinal": ordinal,
+                    "nullable": True,
+                }
+            )
+        datasets[urn] = fields
+
+    return datasets
+
+
+def _build_kafka_schema_fields(
+    fields: list[dict],  # type: ignore[type-arg]
+) -> list[SchemaFieldClass]:
+    result = []
+    for f in fields:
+        dh_type = _JSON_TO_DATAHUB_TYPE.get(f["native_type"], "STRING")
+        result.append(
+            SchemaFieldClass(
+                fieldPath=f["name"],
+                nativeDataType=f["native_type"],
+                type={"type": {"type": dh_type}},
+                nullable=f["nullable"],
+            )
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Ingest: emit DatasetProperties + SchemaMetadata for each Kafka topic
+# ---------------------------------------------------------------------------
+
+
+def ingest_kafka_datasets() -> int:
+    """Discover Kafka topics from JSONL fixtures and emit metadata to DataHub.
+
+    Returns count of datasets ingested.
+    """
+    token = _get_token()
+    datasets = _discover_kafka_topics()
+    if not datasets:
+        print("  No Kafka topics found in fixtures.")
+        return 0
+
+    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
+
+    for urn, fields in datasets.items():
+        # Extract topic name from URN
+        # URN format: urn:li:dataset:(urn:li:dataPlatform:kafka,{instance}.{topic},{ENV})
+        topic = urn.split(",")[1].split(".", 1)[1]
+
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=StatusClass(removed=False),
+            )
+        )
+
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=DatasetPropertiesClass(
+                    name=topic,
+                    qualifiedName=f"{_kafka_instance}.{topic}",
+                    description=f"Imazon example Kafka topic: {topic}",
+                    customProperties={
+                        "source": "dummy-data-ingest",
+                        "cluster": _kafka_instance,
+                    },
+                ),
+            )
+        )
+
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=SchemaMetadataClass(
+                    schemaName=topic,
+                    platform=f"urn:li:dataPlatform:{KAFKA_PLATFORM}",
+                    version=0,
+                    hash="",
+                    platformSchema=OtherSchemaClass(rawSchema=""),
+                    fields=_build_kafka_schema_fields(fields),
+                ),
+            )
+        )
+
+    print(
+        f"  Ingested {len(datasets)} Kafka datasets "
+        f"({sum(len(f) for f in datasets.values())} fields)."
     )
     return len(datasets)
 
@@ -361,18 +518,20 @@ async def ingest_datasets(schemas: frozenset[str] | None = None) -> int:
 async def reset_and_ingest(
     schemas: frozenset[str] | None = None,
 ) -> tuple[int, int]:
-    """Soft-delete existing datasets then ingest from example-postgres.
+    """Soft-delete existing datasets then ingest from both example-postgres
+    and example-kafka.
 
     Args:
-        schemas: Optional subset of schemas to ingest after reset.  Defaults
-                 to all TARGET_SCHEMAS.
+        schemas: Optional subset of PG schemas to ingest after reset.
+                 Defaults to all TARGET_SCHEMAS.
 
     Returns:
         A (deleted, ingested) tuple with the respective counts.
     """
     deleted = reset_datasets()
-    ingested = await ingest_datasets(schemas=schemas)
-    return deleted, ingested
+    pg_count = await ingest_pg_datasets(schemas=schemas)
+    kafka_count = ingest_kafka_datasets()
+    return deleted, pg_count + kafka_count
 
 
 # ---------------------------------------------------------------------------
@@ -392,8 +551,10 @@ async def async_main() -> None:
             return
 
     print("[INFO]  Ingesting example-postgres tables into DataHub...")
-    count = await ingest_datasets()
-    print(f"[INFO]  Done. {count} datasets registered in DataHub.")
+    pg_count = await ingest_pg_datasets()
+    print("[INFO]  Ingesting example-kafka topics into DataHub...")
+    kafka_count = ingest_kafka_datasets()
+    print(f"[INFO]  Done. {pg_count + kafka_count} datasets registered in DataHub.")
 
 
 if __name__ == "__main__":
