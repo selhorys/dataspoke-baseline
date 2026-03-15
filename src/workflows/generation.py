@@ -8,12 +8,12 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.exceptions import ApplicationError
 
     from src.backend.generation.service import GenerationService
-    from src.shared.db.session import SessionLocal
     from src.shared.exceptions import DataSpokeError
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
         default_retry_policy,
         make_datahub,
+        make_db_session,
         make_llm,
         make_qdrant,
     )
@@ -31,7 +31,7 @@ async def run_generation_activity(dataset_urn: str) -> dict:
     llm = make_llm()
     qdrant = make_qdrant()
     try:
-        async with SessionLocal() as db:
+        async with make_db_session() as db:
             service = GenerationService(datahub=datahub, db=db, llm=llm, qdrant=qdrant)
             result = await service.generate(dataset_urn)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}

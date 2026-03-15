@@ -8,12 +8,12 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.exceptions import ApplicationError
 
     from src.backend.ingestion.service import IngestionService
-    from src.shared.db.session import SessionLocal
     from src.shared.exceptions import DataSpokeError
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
         default_retry_policy,
         make_datahub,
+        make_db_session,
         make_llm,
     )
 
@@ -30,7 +30,7 @@ async def run_ingestion_activity(dataset_urn: str, dry_run: bool) -> dict:
     datahub = make_datahub()
     llm = make_llm()
     try:
-        async with SessionLocal() as db:
+        async with make_db_session() as db:
             service = IngestionService(datahub=datahub, db=db, llm=llm)
             result = await service.run(dataset_urn, dry_run=dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}

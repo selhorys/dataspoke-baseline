@@ -8,16 +8,17 @@ Test-specific data extensions (created and cleaned up within each test):
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
+- Temporal port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
-
-from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.workflows.ingestion import IngestionWorkflow, run_ingestion_activity
+from tests.integration.api_wired.conftest import make_temporal_worker, mock_llm
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
@@ -32,18 +33,26 @@ def _urn(suffix: str) -> str:
 
 
 @pytest_asyncio.fixture
-async def mock_llm():
-    llm = AsyncMock()
-    llm.complete_json = AsyncMock(
-        return_value={"description": "Enriched description", "tags": ["test-tag"]}
-    )
-    return llm
+async def temporal_worker(temporal_client, datahub_client, async_session):
+    async with make_temporal_worker(
+        temporal_client,
+        datahub_client,
+        db_session=async_session,
+        workflow_module="src.workflows.ingestion",
+        workflow_cls=IngestionWorkflow,
+        activity_fn=run_ingestion_activity,
+    ) as worker:
+        yield worker
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, mock_llm, async_session):
-    """HTTP client with real DI providers pointing to dev-env infra."""
-    async with override_app(datahub=datahub_client, llm=mock_llm, db=async_session) as client:
+async def http_client(datahub_client, async_session, temporal_client):
+    async with override_app(
+        datahub=datahub_client,
+        llm=mock_llm(),
+        db=async_session,
+        temporal=temporal_client,
+    ) as client:
         yield client
 
 
@@ -52,7 +61,7 @@ async def http_client(datahub_client, mock_llm, async_session):
 
 @pytest.mark.asyncio
 async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncSession):
-    """PUT → GET → PATCH → GET → DELETE → GET (404)."""
+    """PUT -> GET -> PATCH -> GET -> DELETE -> GET (404)."""
     dataset_urn = _urn("crud_test")
     headers = _auth_headers()
 
@@ -108,7 +117,7 @@ async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncS
         )
         assert resp.status_code == 204
 
-        # GET after delete → 404
+        # GET after delete -> 404
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
             headers=headers,
@@ -124,7 +133,7 @@ async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncS
 
 @pytest.mark.asyncio
 async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
-    """PUT 2 configs → GET list → verify pagination."""
+    """PUT 2 configs -> GET list -> verify pagination."""
     urn1 = _urn("list_test_1")
     urn2 = _urn("list_test_2")
     headers = _auth_headers()
@@ -163,8 +172,8 @@ async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession):
-    """PUT config with sql_log → POST run dry_run=true → verify events."""
+async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, temporal_worker):
+    """PUT config with sql_log -> POST run dry_run=true -> verify events."""
     dataset_urn = _urn("run_test")
     headers = _auth_headers()
 
@@ -224,8 +233,8 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_run_ingestion_not_found(http_client):
-    """POST run for unconfigured URN → 404."""
+async def test_run_ingestion_not_found(http_client, temporal_worker):
+    """POST run for unconfigured URN -> 404."""
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(
         f"/api/v1/spoke/common/data/{fake_urn}/attr/ingestion/method/run",
@@ -237,7 +246,7 @@ async def test_run_ingestion_not_found(http_client):
 
 @pytest.mark.asyncio
 async def test_ingestion_events_pagination(http_client, async_session: AsyncSession):
-    """Seed 3 events → GET with limit=2 → verify pagination."""
+    """Seed 3 events -> GET with limit=2 -> verify pagination."""
     dataset_urn = _urn("events_test")
     headers = _auth_headers()
 

@@ -8,13 +8,15 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.exceptions import ApplicationError
 
     from src.backend.validation.service import ValidationService
-    from src.shared.db.session import SessionLocal
     from src.shared.exceptions import DataSpokeError
     from src.workflows._common import (
         DEFAULT_ACTIVITY_TIMEOUT,
         default_retry_policy,
         make_cache,
         make_datahub,
+        make_db_session,
+        make_llm,
+        make_qdrant,
     )
 
 
@@ -33,7 +35,7 @@ async def run_validation_activity(dataset_urn: str, config_id: str | None, dry_r
     llm = make_llm()
     qdrant = make_qdrant()
     try:
-        async with SessionLocal() as db:
+        async with make_db_session() as db:
             service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
             result = await service.run(dataset_urn, config_id=config_id, dry_run=dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
