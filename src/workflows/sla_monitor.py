@@ -31,10 +31,12 @@ async def check_sla_activity(dataset_urn: str, sla_target: dict) -> dict:
     """Check SLA compliance for a single dataset."""
     datahub = make_datahub()
     cache = make_cache()
+    llm = make_llm()
+    qdrant = make_qdrant()
 
     async with SessionLocal() as db:
         # Get quality score via validation service
-        service = ValidationService(datahub=datahub, db=db, cache=cache)
+        service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
         quality_score = 0.0
         try:
             results, _ = await service.get_results(dataset_urn, limit=1)

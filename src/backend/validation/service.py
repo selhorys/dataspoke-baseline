@@ -11,11 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.validation.scoring import compute_quality_score
 from src.shared.cache.client import RedisClient
-from src.shared.config import VALIDATION_RESULT_CACHE_TTL
+from src.shared.config import (
+    EMBEDDING_COLLECTION,
+    SEARCH_SCORE_THRESHOLD,
+    VALIDATION_RESULT_CACHE_TTL,
+)
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.exceptions import EntityNotFoundError
+from src.shared.llm.client import LLMClient
 from src.shared.models.quality import QualityScore
+from src.shared.vector.client import QdrantManager
 
 
 class ValidationConfigRecord(BaseModel):
@@ -92,10 +98,14 @@ class ValidationService:
         datahub: DataHubClient,
         db: AsyncSession,
         cache: RedisClient,
+        llm: LLMClient,
+        qdrant: QdrantManager,
     ) -> None:
         self._datahub = datahub
         self._db = db
         self._cache = cache
+        self._llm = llm
+        self._qdrant = qdrant
 
     # ── Config CRUD ──────────────────────────────────────────────────────
 
@@ -317,9 +327,26 @@ class ValidationService:
             except Exception:
                 pass
 
-        # 6. Alternatives search (stub)
+        # 6. Qdrant similarity search for alternative healthy datasets
         alternatives: list[str] = []
-        # TODO: implement Qdrant similarity search for alternative datasets
+        try:
+            from src.backend.search.embedding import generate_embedding
+
+            embedding, _ = await generate_embedding(self._llm, self._datahub, dataset_urn)
+            scored_points = await self._qdrant.search(
+                collection=EMBEDDING_COLLECTION,
+                vector=embedding,
+                limit=6,
+                score_threshold=SEARCH_SCORE_THRESHOLD,
+            )
+            for pt in scored_points:
+                payload = pt.payload or {}
+                candidate_urn = payload.get("dataset_urn", "")
+                candidate_quality = payload.get("quality_score") or 0.0
+                if candidate_urn != dataset_urn and candidate_quality >= 50:
+                    alternatives.append(candidate_urn)
+        except Exception:
+            pass
 
         # Add SLA violations to recommendations
         if sla_check is not None and sla_check.violations:

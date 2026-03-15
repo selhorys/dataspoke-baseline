@@ -30,9 +30,11 @@ async def run_validation_activity(dataset_urn: str, config_id: str | None, dry_r
     """Run the full validation pipeline for a dataset."""
     datahub = make_datahub()
     cache = make_cache()
+    llm = make_llm()
+    qdrant = make_qdrant()
     try:
         async with SessionLocal() as db:
-            service = ValidationService(datahub=datahub, db=db, cache=cache)
+            service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
             result = await service.run(dataset_urn, config_id=config_id, dry_run=dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
     except DataSpokeError as exc:

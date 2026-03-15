@@ -274,9 +274,37 @@ class GenerationService:
                 str(u.dataset) for u in upstream_lineage.upstreams if hasattr(u, "dataset")
             ]
 
-        # 3. Similar datasets via Qdrant (skip if unavailable)
-        # TODO: implement embedding-based similar dataset search
+        # 3. Similar datasets via Qdrant embedding search
         similar_schemas: list[dict[str, Any]] = []
+        try:
+            from src.backend.search.embedding import generate_embedding
+
+            embedding, _ = await generate_embedding(self._llm, self._datahub, dataset_urn)
+            scored_points = await self._qdrant.search(
+                collection=EMBEDDING_COLLECTION,
+                vector=embedding,
+                limit=6,
+                score_threshold=SEARCH_SCORE_THRESHOLD,
+            )
+            for pt in scored_points:
+                payload = pt.payload or {}
+                candidate_urn = payload.get("dataset_urn", "")
+                if candidate_urn == dataset_urn:
+                    continue
+                sim_schema_meta = await self._datahub.get_aspect(candidate_urn, SchemaMetadataClass)
+                sim_fields: list[dict[str, Any]] = []
+                if sim_schema_meta and hasattr(sim_schema_meta, "fields"):
+                    sim_fields = [
+                        {
+                            "fieldPath": f.fieldPath,
+                            "nativeDataType": getattr(f, "nativeDataType", ""),
+                            "description": getattr(f, "description", "") or "",
+                        }
+                        for f in sim_schema_meta.fields
+                    ]
+                similar_schemas.append({"urn": candidate_urn, "fields": sim_fields})
+        except Exception:
+            pass
 
         # 4. Code reference analysis (if configured)
         code_insights: dict[str, Any] = {}

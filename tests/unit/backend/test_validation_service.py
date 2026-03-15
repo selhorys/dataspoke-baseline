@@ -59,8 +59,8 @@ def _make_result_row(
 
 
 @pytest.fixture
-def service(datahub, db, cache):
-    return ValidationService(datahub=datahub, db=db, cache=cache)
+def service(datahub, db, cache, llm, qdrant):
+    return ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
 
 
 # ── get_config ───────────────────────────────────────────────────────────────
