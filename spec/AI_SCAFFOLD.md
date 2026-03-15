@@ -7,10 +7,9 @@
 3. [Skills](#skills)
 4. [Subagents](#subagents)
 5. [Permissions](#permissions)
-6. [Hooks](#hooks)
-7. [Prauto](#prauto)
-8. [Building a Custom Spoke](#building-a-custom-spoke)
-9. [Design Principles](#design-principles)
+6. [Prauto](#prauto)
+7. [Building a Custom Spoke](#building-a-custom-spoke)
+8. [Design Principles](#design-principles)
 
 ---
 
@@ -45,9 +44,7 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── backend.md              # FastAPI/Python implementer
 │   ├── frontend.md             # Next.js/TypeScript implementer
 │   └── k8s-helm.md             # Helm/Kubernetes/Docker author
-├── hooks/
-│   └── auto-format.sh          # PostToolUse: auto-format Python (ruff) / TypeScript (prettier)
-├── settings.json               # Tool permissions + hook configuration
+├── settings.json               # Tool permissions
 └── settings.local.json         # Local overrides (machine-specific approvals)
 ```
 
@@ -72,13 +69,13 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | Skill | Purpose |
 |-------|---------|
 | `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `dev_env/.env` |
-| `plan-doc` | Route spec authorship to the correct tier (`spec/feature/` or `spec/feature/spoke/`) using the project's template and naming conventions |
-| `datahub-api` | Dual-mode: Q&A about DataHub's data model, or write/test Python code against DataHub APIs. Uses `ref/github/datahub/` source and live cluster. Requires `/ref-setup` first |
+| `plan-doc` | Write specification or planning documents in `spec/` following the project hierarchy and naming conventions |
+| `datahub-api` | Reference and coding guide for DataHub integration in backend development. Covers entities, aspects, lineage, URNs, ingestion/emission, GraphQL, REST, and the `acryl-datahub` SDK. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
 | `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
-| `ref-setup` | Download AI reference materials (DataHub v1.4.0 source) with interactive selection; monitor in background until complete |
-| `sync-spec-from-impl` | Compare specification documents against current implementation, identify drift, and reconcile. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref) or full sync across all scopes |
+| `ref-setup` | Download AI reference materials (external source code for AI assistant reference) with interactive selection; monitor in background until complete |
+| `sync-spec-from-impl` | Reverse-sync specs from implementation (impl → spec). Detects structural drift, naming mismatches, undocumented features, and stale references. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref, backend, frontend) or full sync |
 | `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
 | `spec-to-bulk-issue` | Analyze specs to find unimplemented components, write ordered issue tickets in `issues/`, revise existing issues, and optionally register them to GitHub with `prauto:ready` label |
 
@@ -115,17 +112,6 @@ Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate
 | Destructive | Always blocked | `kubectl delete namespace`, `rm -rf`, `sudo` |
 
 The full allow/deny lists are in `.claude/settings.json`. The settings file is the authoritative reference.
-
----
-
-## Hooks
-
-A single async hook (`auto-format.sh`) runs after every `Edit` or `Write` tool call:
-
-- **Python files** (`.py`): `uv run ruff check --fix` + `uv run ruff format` (falls back to bare `ruff` if `uv` is unavailable)
-- **TypeScript files** (`.ts`, `.tsx`): `npx prettier --write`
-
-Formatting is best-effort — if neither `uv` nor `ruff` is installed (for Python), or `npx` is not installed (for TypeScript), the hook silently exits. The hook is async (non-blocking) with a 15-second timeout.
 
 ---
 
