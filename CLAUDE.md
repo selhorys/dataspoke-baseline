@@ -53,9 +53,11 @@ For end-to-end feature implementation, use subagents in this order:
 
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
 2. `api-spec` agent — write OpenAPI spec in `api/`
-3. `backend` agent — implement API routes + services in `src/`
-4. `frontend` agent — build UI in `src/frontend/`
-5. `k8s-helm` agent — containerize and deploy (when ready)
+3. `backend` agent — implement API routes + services in `src/api/`, `src/backend/`, `src/shared/`
+4. `workflow` agent — implement Temporal workflows in `src/workflows/`
+5. `test` agent — write and run tests in `tests/`
+6. `frontend` agent — build UI in `src/frontend/`
+7. `k8s-helm` agent — containerize and deploy (when ready)
 
 Each agent reads the spec and the output of previous agents as context.
 For spec authoring, use `/plan-doc` directly.
@@ -92,5 +94,5 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 **Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `sync-spec-from-impl`, `sync-specs`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
-**Subagents**: `api-spec`, `backend`, `frontend`, `k8s-helm`
+**Subagents**: `api-spec`, `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

@@ -493,7 +493,7 @@ Each heartbeat run creates a per-issue session directory at `state/sessions/issu
 |---|---|
 | `CLAUDE.md` | Claude reads this automatically, giving prauto full project context |
 | `.claude/settings.json` | Tool permissions apply equally to prauto sessions |
-| `.claude/agents/` | Prauto prompts can instruct Claude to delegate to existing subagents |
+| `.claude/agents/` | Prauto prompts can instruct Claude to delegate to subagents (`api-spec`, `backend`, `workflow`, `test`, `frontend`, `k8s-helm`) |
 | `.claude/skills/` | Skills are available if Claude detects matching context |
 | `spec/` hierarchy | Analysis phase reads specs per CLAUDE.md instructions |
 
