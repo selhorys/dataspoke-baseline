@@ -14,7 +14,7 @@ router = APIRouter(
 
 
 @router.get("", response_model=SearchResponse)
-async def search(
+async def get_search(
     q: str = Query(..., min_length=1),
     sql_context: bool = Query(False),
     offset: int = Query(0, ge=0),
@@ -47,7 +47,7 @@ async def search(
 
 
 @router.post("/method/reindex", response_model=ReindexResponse)
-async def reindex(
+async def post_search_reindex(
     dataset_urn: str = Query(..., min_length=1),
     service: SearchService = Depends(get_search_service),
 ) -> ReindexResponse:

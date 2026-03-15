@@ -37,7 +37,7 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
 
 
 @router.get("", response_model=IngestionConfigListResponse)
-async def list_ingestion_configs(
+async def get_ingestion_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -86,7 +86,7 @@ async def patch_ingestion_config_attr(
 
 
 @router.post("/{dataset_urn}/method/run", response_model=RunResultResponse)
-async def run_ingestion(
+async def post_ingestion_run(
     dataset_urn: str,
     body: RunIngestionRequest,
     service: IngestionService = Depends(get_ingestion_service),

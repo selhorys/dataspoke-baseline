@@ -39,7 +39,7 @@ def _config_response(c) -> GenerationConfigResponse:  # noqa: ANN001
 
 
 @router.get("", response_model=GenerationConfigListResponse)
-async def list_gen_configs(
+async def get_gen_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -122,7 +122,7 @@ async def get_gen_result(
 
 
 @router.post("/{dataset_urn}/method/generate", response_model=RunResultResponse)
-async def run_gen(
+async def post_gen_generate(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> RunResultResponse:
@@ -135,7 +135,7 @@ async def run_gen(
 
 
 @router.post("/{dataset_urn}/method/apply", response_model=RunResultResponse)
-async def apply_gen(
+async def post_gen_apply(
     dataset_urn: str,
     body: ApplyGenerationRequest,
     service: GenerationService = Depends(get_generation_service),

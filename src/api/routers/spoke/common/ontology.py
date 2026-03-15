@@ -32,7 +32,7 @@ def _concept_response(c) -> ConceptResponse:  # noqa: ANN001
 
 
 @router.get("", response_model=ConceptListResponse)
-async def list_ontology_concepts(
+async def get_ontology_concepts(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     service: OntologyService = Depends(get_ontology_service),
@@ -47,7 +47,7 @@ async def list_ontology_concepts(
 
 
 @router.get("/{concept_id}", response_model=ConceptResponse)
-async def get_concept(
+async def get_ontology_concept(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptResponse:
@@ -56,7 +56,7 @@ async def get_concept(
 
 
 @router.get("/{concept_id}/attr", response_model=ConceptAttrResponse)
-async def get_concept_attr(
+async def get_ontology_concept_attr(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptAttrResponse:
@@ -81,7 +81,7 @@ async def get_concept_attr(
 
 
 @router.get("/{concept_id}/event", response_model=EventListResponse)
-async def get_concept_events(
+async def get_ontology_concept_events(
     concept_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -108,7 +108,7 @@ async def get_concept_events(
 
 
 @router.post("/{concept_id}/method/approve", response_model=ConceptResponse)
-async def approve_concept(
+async def post_ontology_concept_approve(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptResponse:
@@ -117,7 +117,7 @@ async def approve_concept(
 
 
 @router.post("/{concept_id}/method/reject", response_model=ConceptResponse)
-async def reject_concept(
+async def post_ontology_concept_reject(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptResponse:

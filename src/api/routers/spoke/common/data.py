@@ -59,7 +59,7 @@ _501 = HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Not im
 
 
 @router.get("/{dataset_urn}", response_model=DatasetResponse)
-async def get_dataset(
+async def get_data(
     dataset_urn: str,
     service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetResponse:
@@ -75,7 +75,7 @@ async def get_dataset(
 
 
 @router.get("/{dataset_urn}/attr", response_model=DatasetAttributesResponse)
-async def get_dataset_attr(
+async def get_data_attr(
     dataset_urn: str,
     service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetAttributesResponse:
@@ -99,7 +99,7 @@ async def get_dataset_attr(
 
 
 @router.get("/{dataset_urn}/event", response_model=EventListResponse)
-async def get_dataset_events(
+async def get_data_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -145,7 +145,7 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
 
 
 @router.get("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
-async def get_ingestion_conf(
+async def get_data_ingestion_conf(
     dataset_urn: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
@@ -156,7 +156,7 @@ async def get_ingestion_conf(
 
 
 @router.put("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
-async def put_ingestion_conf(
+async def put_data_ingestion_conf(
     dataset_urn: str,
     body: CreateIngestionConfigRequest,
     service: IngestionService = Depends(get_ingestion_service),
@@ -172,7 +172,7 @@ async def put_ingestion_conf(
 
 
 @router.patch("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
-async def patch_ingestion_conf(
+async def patch_data_ingestion_conf(
     dataset_urn: str,
     body: PatchIngestionConfigRequest,
     service: IngestionService = Depends(get_ingestion_service),
@@ -183,7 +183,7 @@ async def patch_ingestion_conf(
 
 
 @router.delete("/{dataset_urn}/attr/ingestion/conf", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ingestion_conf(
+async def delete_data_ingestion_conf(
     dataset_urn: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> None:
@@ -191,7 +191,7 @@ async def delete_ingestion_conf(
 
 
 @router.post("/{dataset_urn}/attr/ingestion/method/run", response_model=RunResultResponse)
-async def run_ingestion(
+async def post_data_ingestion_run(
     dataset_urn: str,
     body: RunIngestionRequest,
     service: IngestionService = Depends(get_ingestion_service),
@@ -205,7 +205,7 @@ async def run_ingestion(
 
 
 @router.get("/{dataset_urn}/attr/ingestion/event", response_model=EventListResponse)
-async def get_ingestion_events(
+async def get_data_ingestion_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -251,7 +251,7 @@ def _validation_config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
 
 
 @router.get("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
-async def get_validation_conf(
+async def get_data_validation_conf(
     dataset_urn: str,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
@@ -262,7 +262,7 @@ async def get_validation_conf(
 
 
 @router.put("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
-async def put_validation_conf(
+async def put_data_validation_conf(
     dataset_urn: str,
     body: CreateValidationConfigRequest,
     service: ValidationService = Depends(get_validation_service),
@@ -278,7 +278,7 @@ async def put_validation_conf(
 
 
 @router.patch("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
-async def patch_validation_conf(
+async def patch_data_validation_conf(
     dataset_urn: str,
     body: PatchValidationConfigRequest,
     service: ValidationService = Depends(get_validation_service),
@@ -289,7 +289,7 @@ async def patch_validation_conf(
 
 
 @router.delete("/{dataset_urn}/attr/validation/conf", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_validation_conf(
+async def delete_data_validation_conf(
     dataset_urn: str,
     service: ValidationService = Depends(get_validation_service),
 ) -> None:
@@ -297,7 +297,7 @@ async def delete_validation_conf(
 
 
 @router.get("/{dataset_urn}/attr/validation/result", response_model=ValidationResultListResponse)
-async def get_validation_result(
+async def get_data_validation_result(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -333,7 +333,7 @@ async def get_validation_result(
 @router.post(
     "/{dataset_urn}/attr/validation/method/run", response_model=ValidationRunResultResponse
 )
-async def run_validation(
+async def post_data_validation_run(
     dataset_urn: str,
     body: RunValidationRequest,
     service: ValidationService = Depends(get_validation_service),
@@ -347,7 +347,7 @@ async def run_validation(
 
 
 @router.get("/{dataset_urn}/attr/validation/event", response_model=EventListResponse)
-async def get_validation_events(
+async def get_data_validation_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -395,7 +395,7 @@ def _generation_config_response(c) -> GenerationConfigResponse:  # noqa: ANN001
 
 
 @router.get("/{dataset_urn}/attr/gen/conf", response_model=GenerationConfigResponse)
-async def get_gen_conf(
+async def get_data_gen_conf(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
@@ -406,7 +406,7 @@ async def get_gen_conf(
 
 
 @router.put("/{dataset_urn}/attr/gen/conf", response_model=GenerationConfigResponse)
-async def put_gen_conf(
+async def put_data_gen_conf(
     dataset_urn: str,
     body: CreateGenerationConfigRequest,
     service: GenerationService = Depends(get_generation_service),
@@ -422,7 +422,7 @@ async def put_gen_conf(
 
 
 @router.patch("/{dataset_urn}/attr/gen/conf", response_model=GenerationConfigResponse)
-async def patch_gen_conf(
+async def patch_data_gen_conf(
     dataset_urn: str,
     body: PatchGenerationConfigRequest,
     service: GenerationService = Depends(get_generation_service),
@@ -433,7 +433,7 @@ async def patch_gen_conf(
 
 
 @router.delete("/{dataset_urn}/attr/gen/conf", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_gen_conf(
+async def delete_data_gen_conf(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> None:
@@ -441,7 +441,7 @@ async def delete_gen_conf(
 
 
 @router.get("/{dataset_urn}/attr/gen/result", response_model=GenerationResultListResponse)
-async def get_gen_result(
+async def get_data_gen_result(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -473,7 +473,7 @@ async def get_gen_result(
 
 
 @router.post("/{dataset_urn}/attr/gen/method/generate", response_model=GenerationRunResultResponse)
-async def run_gen(
+async def post_data_gen_generate(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationRunResultResponse:
@@ -486,7 +486,7 @@ async def run_gen(
 
 
 @router.post("/{dataset_urn}/attr/gen/method/apply", response_model=GenerationRunResultResponse)
-async def apply_gen(
+async def post_data_gen_apply(
     dataset_urn: str,
     body: ApplyGenerationRequest,
     service: GenerationService = Depends(get_generation_service),
@@ -500,7 +500,7 @@ async def apply_gen(
 
 
 @router.get("/{dataset_urn}/attr/gen/event", response_model=EventListResponse)
-async def get_gen_events(
+async def get_data_gen_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -538,7 +538,7 @@ ws_router = APIRouter(prefix="/data", tags=["common/data"])
 
 
 @ws_router.websocket("/{dataset_urn}/stream/validation")
-async def stream_validation(dataset_urn: str, websocket: WebSocket) -> None:
+async def stream_data_validation(dataset_urn: str, websocket: WebSocket) -> None:
     """Stream validation progress via Redis pub/sub.
 
     Protocol:

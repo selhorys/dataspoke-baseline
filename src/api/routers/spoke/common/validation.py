@@ -39,7 +39,7 @@ def _config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
 
 
 @router.get("", response_model=ValidationConfigListResponse)
-async def list_validation_configs(
+async def get_validation_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -125,7 +125,7 @@ async def get_validation_result(
 
 
 @router.post("/{dataset_urn}/method/run", response_model=RunResultResponse)
-async def run_validation(
+async def post_validation_run(
     dataset_urn: str,
     body: RunValidationRequest,
     service: ValidationService = Depends(get_validation_service),

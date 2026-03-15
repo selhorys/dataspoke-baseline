@@ -162,6 +162,29 @@ A typical API request flows through four layers:
 | `src/workflows/` | `src/backend/`, `src/shared/` | `src/api/` |
 | `src/shared/` | — | `src/api/`, `src/backend/`, `src/workflows/` |
 
+### Route Handler Naming Convention
+
+Route handler function names must mirror the REST path they serve.
+
+**Rules:**
+
+1. **CRUD verb prefix** — use the HTTP method as the function prefix: `get_`, `post_`, `put_`, `patch_`, `delete_`. Never use domain verbs (`run_`, `activate_`, `apply_`, etc.) as prefix.
+2. **Explicit entity names** — include all entity names from the URL path so the function name is self-describing.
+3. **Omit meta classifiers** — path segments `attr` and `method` are structural classifiers; omit them from the function name.
+
+**Examples:**
+
+| Route | Function name |
+|-------|---------------|
+| `GET /metric/{id}/attr/conf` | `get_metric_conf` |
+| `GET /metric/{id}/attr/issue/{iid}` | `get_metric_issue` |
+| `GET /metric/{id}/event` | `get_metric_events` |
+| `POST /metric/{id}/method/deactivate` | `post_metric_deactivate` |
+| `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
+| `POST /data/{urn}/attr/gen/method/generate` | `post_data_gen_generate` |
+| `GET /validation` (list) | `get_validation_configs` |
+| `POST /search/method/reindex` | `post_search_reindex` |
+
 ### Service Pattern
 
 Every feature service follows the same structural pattern:
@@ -999,7 +1022,7 @@ Temporal Worker                    Redis                    FastAPI API
 
 | Redis Channel | Producer | Consumer | API WS Endpoint |
 |---------------|----------|----------|-----------------|
-| `ws:validation:{dataset_urn}` | `ValidationWorkflow` activities | `stream_validation` WS handler | `/spoke/common/data/{dataset_urn}/stream/validation` |
+| `ws:validation:{dataset_urn}` | `ValidationWorkflow` activities | `stream_data_validation` WS handler | `/spoke/common/data/{dataset_urn}/stream/validation` |
 | `ws:metric:updates` | `MetricsCollectionWorkflow` activities | `stream_metrics` WS handler | `/spoke/dg/metric/stream` |
 
 ### Producer Side (Temporal Activity)
@@ -1036,7 +1059,7 @@ messages to the connected client:
 ```python
 # src/api/routers/spoke/common/data.py
 @router.websocket("/{dataset_urn}/stream/validation")
-async def stream_validation(dataset_urn: str, websocket: WebSocket) -> None:
+async def stream_data_validation(dataset_urn: str, websocket: WebSocket) -> None:
     await websocket.accept()
     # Auth handshake (validate JWT from first message)
     ...

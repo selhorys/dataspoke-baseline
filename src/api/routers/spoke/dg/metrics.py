@@ -48,7 +48,7 @@ def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
 
 
 @router.get("", response_model=MetricDefinitionListResponse)
-async def list_metrics(
+async def get_metrics(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     theme: str | None = Query(default=None),
@@ -164,7 +164,7 @@ async def get_metric_result(
 
 
 @router.post("/{metric_id}/method/run", response_model=MetricRunResultResponse)
-async def run_metric(
+async def post_metric_run(
     metric_id: str,
     body: RunMetricRequest,
     service: MetricsService = Depends(get_metrics_service),
@@ -178,7 +178,7 @@ async def run_metric(
 
 
 @router.post("/{metric_id}/method/activate", response_model=MetricDefinitionResponse)
-async def activate_metric(
+async def post_metric_activate(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
@@ -187,7 +187,7 @@ async def activate_metric(
 
 
 @router.post("/{metric_id}/method/deactivate", response_model=MetricDefinitionResponse)
-async def deactivate_metric(
+async def post_metric_deactivate(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
@@ -249,7 +249,7 @@ def _metric_issue_response(m) -> MetricIssueResponse:  # noqa: ANN001
 
 
 @router.get("/{metric_id}/attr/issue", response_model=MetricIssueListResponse)
-async def list_metric_issues(
+async def get_metric_issues(
     metric_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -302,7 +302,7 @@ async def patch_metric_issue(
     "/{metric_id}/attr/issue/{metric_issue_id}/method/dismiss",
     response_model=MetricIssueResponse,
 )
-async def dismiss_metric_issue(
+async def post_metric_issue_dismiss(
     metric_id: str,  # noqa: ARG001
     metric_issue_id: str,
     body: DismissMetricIssueRequest | None = None,
