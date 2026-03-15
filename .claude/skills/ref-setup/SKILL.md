@@ -1,7 +1,7 @@
 ---
 name: ref-setup
 description: Download AI reference materials (external source code for AI assistant reference). Offers individual or all references.
-disable-model-invocation: true
+disable-model-invocation: false
 user-invocable: true
 allowed-tools: Bash(bash ref/*), Bash(ls *), Bash(test *), Bash(tail *), Bash(sleep *), Read
 ---

@@ -8,6 +8,8 @@ description: >-
   or removing dead links. Invoke this skill whenever you need to "update parent/sibling spec references",
   "keep specs consistent", or "propagate changes up/down the spec hierarchy",
   even without an explicit user request.
+disable-model-invocation: true
+user-invocable: true
 argument-hint: <spec-file-path> [new|modified|deleted]
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 ---

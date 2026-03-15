@@ -7,6 +7,8 @@ description: >-
   dev-env, helm-charts, api, ref, backend, frontend). Trigger when specs are outdated,
   the user wants to audit spec vs code, or implementation has changed and docs need
   catching up.
+disable-model-invocation: true
+user-invocable: true
 argument-hint: [prauto|ai-scaffold|dev-env|helm-charts|api|ref|backend|frontend|all]
 allowed-tools: Read, Write, Edit, Glob, Grep
 ---
