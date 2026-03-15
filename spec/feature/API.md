@@ -187,14 +187,14 @@ while DA or other teams may register simpler configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Config | UC1 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Trigger ingestion run (`?config_id=…&dry_run=true`) | Ingestion Execution | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Trigger ingestion run via Temporal (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation Config | UC2, UC3, UC6 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation Config | UC2, UC3, UC6 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get validation results (timeseries; `?from=…&to=…` for time range) | Online Data Validator | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger validation run (`?config_id=…&dry_run=true`) | Online Data Validator | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger validation run via Temporal (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | Online Data Validator | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Automated Doc Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Automated Doc Generation | UC4 |
@@ -231,7 +231,7 @@ management.
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (schedule, deep_spec_enabled flag, status, owner) | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Trigger ingestion run (`?dry_run=true` for no-write mode) | Ingestion Execution | UC1 |
+| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Trigger ingestion run via Temporal (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 
 #### Validation (`/spoke/common/validation`)
@@ -248,7 +248,7 @@ management.
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, status, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get validation results for this dataset (timeseries; `?from=…&to=…` for time range) | Online Data Validator | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger validation run (`?dry_run=true` for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger validation run via Temporal (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/event` | Validation event reports (success/failure notices) | Online Data Validator | UC2, UC3, UC6 |
 
 #### Generation (`/spoke/common/gen`)
@@ -425,8 +425,8 @@ definitions:
 - `attr` — Read or update a subset of resource attributes (configuration, thresholds,
   visualization settings). Use `GET` to read, `PATCH` to update partial fields.
 - `method` — Business actions that go beyond CRUD: `run`, `approve`, `reject`,
-  `apply`, `generate`, `reindex`. Always `POST`. Use `?dry_run=true` for no-write mode
-  instead of separate dry-run paths.
+  `apply`, `generate`, `reindex`. Always `POST`. Use `dry_run` in the request body
+  for no-write mode instead of separate dry-run paths.
 - `event` — Immutable history log of occurrences on a resource. Always `GET`; supports
   `offset`/`limit` pagination and `sort=occurred_at_desc` (default order, newest first).
   Supports `from`/`to` for time-range filtering. Sub-paths may be defined in feature specs
@@ -504,7 +504,7 @@ All errors follow the standard envelope:
 | `401 Unauthorized` | Missing or expired access token |
 | `403 Forbidden` | Valid token but insufficient group claim |
 | `404 Not Found` | Resource does not exist |
-| `409 Conflict` | Duplicate resource creation attempt |
+| `409 Conflict` | Duplicate resource or concurrent run attempt |
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation) |
 | `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |

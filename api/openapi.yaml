@@ -632,22 +632,16 @@ paths:
       operationId: runDatasetIngestion
       summary: Trigger ingestion run
       description: |
-        Enqueues an ingestion run via Temporal. Use `?dry_run=true` for no-write mode.
+        Enqueues an ingestion run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
       tags: [common]
       security:
         - BearerAuth: []
-      parameters:
-        - name: config_id
-          in: query
-          description: ID of the ingestion configuration to use
-          schema:
-            type: string
-        - name: dry_run
-          in: query
-          description: If true, perform a dry run without writing to DataHub
-          schema:
-            type: boolean
-            default: false
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
       responses:
         "200":
           description: Ingestion run triggered
@@ -867,23 +861,17 @@ paths:
       operationId: runDatasetValidation
       summary: Trigger validation run
       description: |
-        Enqueues a validation run via Temporal. Use `?dry_run=true` for no-write mode.
+        Enqueues a validation run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
         Real-time progress is available via the WebSocket stream.
       tags: [common]
       security:
         - BearerAuth: []
-      parameters:
-        - name: config_id
-          in: query
-          description: ID of the validation configuration to use
-          schema:
-            type: string
-        - name: dry_run
-          in: query
-          description: If true, compute results without persisting them
-          schema:
-            type: boolean
-            default: false
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
       responses:
         "200":
           description: Validation run triggered
@@ -1340,17 +1328,16 @@ paths:
     post:
       operationId: runIngestion
       summary: Trigger ingestion run
-      description: Use `?dry_run=true` for no-write mode.
+      description: Enqueues an ingestion run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
       tags: [common]
       security:
         - BearerAuth: []
-      parameters:
-        - name: dry_run
-          in: query
-          description: If true, perform a dry run without writing to DataHub
-          schema:
-            type: boolean
-            default: false
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
       responses:
         "200":
           description: Ingestion run triggered
@@ -1573,17 +1560,16 @@ paths:
     post:
       operationId: runValidation
       summary: Trigger validation run
-      description: Use `?dry_run=true` for no-write mode.
+      description: Enqueues a validation run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
       tags: [common]
       security:
         - BearerAuth: []
-      parameters:
-        - name: dry_run
-          in: query
-          description: If true, compute results without persisting them
-          schema:
-            type: boolean
-            default: false
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
       responses:
         "200":
           description: Validation run triggered
@@ -3038,6 +3024,14 @@ components:
     # ------------------------------------------------------------------
     # Primitives and shared building blocks
     # ------------------------------------------------------------------
+
+    RunRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: false
+          description: If true, perform a dry run without persisting results
 
     ErrorResponse:
       type: object
