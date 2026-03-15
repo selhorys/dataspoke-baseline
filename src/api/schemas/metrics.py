@@ -83,3 +83,37 @@ class MetricRunResultResponse(SingleResponse):
     run_id: str
     status: str
     detail: dict[str, Any] = {}
+
+
+# ── Metric Issues ────────────────────────────────────────────────────────
+
+
+class PatchMetricIssueRequest(BaseModel):
+    status: str | None = None
+    assignee: str | None = None
+    due_date: datetime | None = None
+
+
+class DismissMetricIssueRequest(BaseModel):
+    reason: str | None = None
+
+
+class MetricIssueResponse(SingleResponse):
+    metric_issue_id: str
+    metric_id: str
+    dataset_urn: str
+    issue_type: str
+    priority: str
+    status: str
+    assignee: str | None = None
+    description: str
+    estimated_fix_minutes: int
+    projected_score_impact: float
+    due_date: datetime | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MetricIssueListResponse(PaginatedResponse):
+    metric_issues: list[MetricIssueResponse] = []

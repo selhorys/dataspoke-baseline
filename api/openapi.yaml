@@ -2354,6 +2354,205 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
   # ==========================================================================
+  # DG — Metric Issues
+  # ==========================================================================
+
+  /spoke/dg/metric/{metric_id}/attr/issue:
+    parameters:
+      - $ref: "#/components/parameters/metric_id"
+    get:
+      operationId: listMetricIssues
+      summary: List metric issues
+      description: |
+        Auto-detected metric issues with lifecycle tracking. Filterable by
+        status, priority, issue_type, and assignee.
+      tags: [dg]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/sort"
+        - name: status
+          in: query
+          description: Filter by metric issue status
+          schema:
+            type: string
+            enum: [open, in_progress, resolved, dismissed]
+        - name: priority
+          in: query
+          description: Filter by metric issue priority
+          schema:
+            type: string
+            enum: [critical, high, medium]
+        - name: issue_type
+          in: query
+          description: Filter by metric issue type (e.g. missing_owner, no_description, stale)
+          schema:
+            type: string
+        - name: assignee
+          in: query
+          description: Filter by assignee email
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated metric issues list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricIssueList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}:
+    parameters:
+      - $ref: "#/components/parameters/metric_id"
+      - $ref: "#/components/parameters/metric_issue_id"
+    get:
+      operationId: getMetricIssue
+      summary: Get metric issue detail
+      description: |
+        Returns full metric issue detail including type, priority, status, assignee,
+        projected score impact, and estimated fix time.
+      tags: [dg]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Metric issue detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricIssueDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      operationId: patchMetricIssue
+      summary: Update metric issue fields
+      description: |
+        Update mutable metric issue fields: status (open, in_progress), assignee, due_date.
+        To dismiss a metric issue use the dedicated method/dismiss endpoint instead.
+      tags: [dg]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MetricIssuePatch"
+      responses:
+        "200":
+          description: Metric issue updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricIssueDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}/method/dismiss:
+    parameters:
+      - $ref: "#/components/parameters/metric_id"
+      - $ref: "#/components/parameters/metric_issue_id"
+    post:
+      operationId: dismissMetricIssue
+      summary: Dismiss metric issue
+      description: |
+        Mark a metric issue as dismissed — acknowledged but will not fix. This is a
+        deliberate business decision distinct from resolution (which is automatic).
+      tags: [dg]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Optional reason for dismissal
+      responses:
+        "200":
+          description: Metric issue dismissed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricIssueDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}/event:
+    parameters:
+      - $ref: "#/components/parameters/metric_id"
+      - $ref: "#/components/parameters/metric_issue_id"
+    get:
+      operationId: listMetricIssueEvents
+      summary: Get metric issue lifecycle events
+      description: |
+        Immutable log of metric issue lifecycle transitions: creation, status changes,
+        assignment changes, and dismissal reasons.
+      tags: [dg]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/sort_occurred_at"
+        - $ref: "#/components/parameters/from"
+        - $ref: "#/components/parameters/to"
+      responses:
+        "200":
+          description: Paginated metric issue event log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ==========================================================================
   # DG — Overview
   # ==========================================================================
 
@@ -2653,6 +2852,15 @@ components:
       schema:
         type: string
 
+    metric_issue_id:
+      name: metric_issue_id
+      in: path
+      required: true
+      description: Metric issue identifier (UUID)
+      schema:
+        type: string
+        format: uuid
+
     offset:
       name: offset
       in: query
@@ -2847,6 +3055,7 @@ components:
             - CONCEPT_NOT_FOUND
             - CONFIG_NOT_FOUND
             - METRIC_NOT_FOUND
+            - METRIC_ISSUE_NOT_FOUND
             - DUPLICATE_CONFIG
             - INGESTION_RUNNING
             - VALIDATION_RUNNING
@@ -3878,6 +4087,90 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/MetricResultItem"
+
+    # ------------------------------------------------------------------
+    # DG — Metric Issues
+    # ------------------------------------------------------------------
+
+    MetricIssueDetail:
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [metric_issue_id, metric_id, dataset_urn, issue_type, priority, status, description, created_at]
+          properties:
+            metric_issue_id:
+              type: string
+              format: uuid
+            metric_id:
+              type: string
+            dataset_urn:
+              type: string
+            issue_type:
+              type: string
+              description: "Metric issue category: missing_owner, no_description, stale, low_quality, no_tags, etc."
+            priority:
+              type: string
+              enum: [critical, high, medium]
+            status:
+              type: string
+              enum: [open, in_progress, resolved, dismissed]
+            assignee:
+              type: string
+              nullable: true
+              description: Assigned owner email (from DataHub ownership)
+            description:
+              type: string
+              description: Human-readable metric issue description
+            estimated_fix_minutes:
+              type: integer
+              nullable: true
+              description: Estimated time to resolve
+            projected_score_impact:
+              type: number
+              format: float
+              nullable: true
+              description: Health score points gained if resolved
+            due_date:
+              type: string
+              format: date-time
+              nullable: true
+            resolved_at:
+              type: string
+              format: date-time
+              nullable: true
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    MetricIssueList:
+      allOf:
+        - $ref: "#/components/schemas/PaginationMeta"
+        - type: object
+          required: [metric_issues]
+          properties:
+            metric_issues:
+              type: array
+              items:
+                $ref: "#/components/schemas/MetricIssueDetail"
+
+    MetricIssuePatch:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [open, in_progress]
+          description: "Manual status transitions (resolved and dismissed are handled by the system and method/dismiss respectively)"
+        assignee:
+          type: string
+          nullable: true
+          description: Reassign to a different owner email
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
 
     # ------------------------------------------------------------------
     # DG — Overview

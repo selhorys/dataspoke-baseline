@@ -308,6 +308,24 @@ rather than per-dataset observations.
 | `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events and alarm notices | Enterprise Metrics Dashboard | UC6 |
 | **WS** | `/spoke/dg/metric/stream` | Real-time metric update stream | Enterprise Metrics Dashboard | UC6 |
 
+##### Metric Issue (`/spoke/dg/metric/{metric_id}/attr/issue`)
+
+Auto-detected metadata issues with lifecycle tracking. Metric issues are created
+automatically when a measurement run detects gaps (e.g., datasets missing owners,
+descriptions, or tags) and auto-resolved when subsequent runs find the gap fixed.
+Unlike events (immutable log entries), metric issues are **stateful action items**
+with a four-state lifecycle (`open → in_progress → resolved | dismissed`), an
+assignee, and a due date. The `dismissed` transition is a manual business decision
+via the API; `resolved` is set automatically by the measurement pipeline.
+
+| Method | Path | Purpose | Feature | UC |
+|--------|------|---------|---------|-----|
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/issue` | List metric issues (paginated; filterable by `status`, `priority`, `issue_type`, `assignee`) | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}` | Get metric issue detail (type, priority, status, assignee, projected score impact) | Enterprise Metrics Dashboard | UC6 |
+| `PATCH` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}` | Update metric issue fields (`status`, `assignee`, `due_date`) | Enterprise Metrics Dashboard | UC6 |
+| `POST` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}/method/dismiss` | Dismiss metric issue — acknowledged, will not fix | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}/event` | Metric issue lifecycle events (status transitions, assignment changes) | Enterprise Metrics Dashboard | UC6 |
+
 #### Overview (`/spoke/dg/overview`)
 
 Additional perspectives on the data estate that cannot be expressed as per-metric
@@ -504,6 +522,7 @@ All errors follow the standard envelope:
 | `CONCEPT_NOT_FOUND` | 404 | Ontology concept ID not found |
 | `CONFIG_NOT_FOUND` | 404 | Ingestion config or validation config not found |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
+| `METRIC_ISSUE_NOT_FOUND` | 404 | Metric issue ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
 | `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
 | `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |

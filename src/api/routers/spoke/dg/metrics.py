@@ -8,13 +8,17 @@ from src.api.auth.ws import ws_authenticate
 from src.api.dependencies import get_metrics_service, get_redis
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
+    DismissMetricIssueRequest,
     MetricAttrResponse,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
+    MetricIssueListResponse,
+    MetricIssueResponse,
     MetricResultListResponse,
     MetricResultResponse,
     MetricRunResultResponse,
     PatchMetricConfigRequest,
+    PatchMetricIssueRequest,
     RunMetricRequest,
     UpsertMetricConfigRequest,
 )
@@ -202,6 +206,125 @@ async def get_metric_events(
 ) -> EventListResponse:
     events, total_count = await service.get_events(
         metric_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
+    )
+    return EventListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total_count,
+        events=[
+            EventResponse(
+                id=e["id"],
+                entity_type=e["entity_type"],
+                entity_id=e["entity_id"],
+                event_type=e["event_type"],
+                status=e["status"],
+                detail=e["detail"],
+                occurred_at=e["occurred_at"],
+            )
+            for e in events
+        ],
+    )
+
+
+# ── Metric Issues ────────────────────────────────────────────────────────────
+
+
+def _metric_issue_response(m) -> MetricIssueResponse:  # noqa: ANN001
+    return MetricIssueResponse(
+        metric_issue_id=m.id,
+        metric_id=m.metric_id,
+        dataset_urn=m.dataset_urn,
+        issue_type=m.issue_type,
+        priority=m.priority,
+        status=m.status,
+        assignee=m.assignee,
+        description=m.description,
+        estimated_fix_minutes=m.estimated_fix_minutes,
+        projected_score_impact=m.projected_score_impact,
+        due_date=m.due_date,
+        resolved_at=m.resolved_at,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+    )
+
+
+@router.get("/{metric_id}/attr/issue", response_model=MetricIssueListResponse)
+async def list_metric_issues(
+    metric_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    issue_status: str | None = Query(default=None, alias="status"),
+    priority: str | None = Query(default=None),
+    issue_type: str | None = Query(default=None),
+    assignee: str | None = Query(default=None),
+    service: MetricsService = Depends(get_metrics_service),
+) -> MetricIssueListResponse:
+    metric_issues, total_count = await service.list_metric_issues(
+        metric_id=metric_id,
+        offset=offset,
+        limit=limit,
+        status_filter=issue_status,
+        priority_filter=priority,
+        issue_type_filter=issue_type,
+        assignee_filter=assignee,
+    )
+    return MetricIssueListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total_count,
+        metric_issues=[_metric_issue_response(m) for m in metric_issues],
+    )
+
+
+@router.get("/{metric_id}/attr/issue/{metric_issue_id}", response_model=MetricIssueResponse)
+async def get_metric_issue(
+    metric_id: str,  # noqa: ARG001
+    metric_issue_id: str,
+    service: MetricsService = Depends(get_metrics_service),
+) -> MetricIssueResponse:
+    issue = await service.get_metric_issue(metric_issue_id)
+    return _metric_issue_response(issue)
+
+
+@router.patch("/{metric_id}/attr/issue/{metric_issue_id}", response_model=MetricIssueResponse)
+async def patch_metric_issue(
+    metric_id: str,  # noqa: ARG001
+    metric_issue_id: str,
+    body: PatchMetricIssueRequest,
+    service: MetricsService = Depends(get_metrics_service),
+) -> MetricIssueResponse:
+    patch = body.model_dump(exclude_unset=True)
+    issue = await service.update_metric_issue(metric_issue_id, patch)
+    return _metric_issue_response(issue)
+
+
+@router.post(
+    "/{metric_id}/attr/issue/{metric_issue_id}/method/dismiss",
+    response_model=MetricIssueResponse,
+)
+async def dismiss_metric_issue(
+    metric_id: str,  # noqa: ARG001
+    metric_issue_id: str,
+    body: DismissMetricIssueRequest | None = None,
+    service: MetricsService = Depends(get_metrics_service),
+) -> MetricIssueResponse:
+    reason = body.reason if body else None
+    issue = await service.dismiss_metric_issue(metric_issue_id, reason=reason)
+    return _metric_issue_response(issue)
+
+
+@router.get("/{metric_id}/attr/issue/{metric_issue_id}/event", response_model=EventListResponse)
+async def get_metric_issue_events(
+    metric_id: str,  # noqa: ARG001
+    metric_issue_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
+    service: MetricsService = Depends(get_metrics_service),
+) -> EventListResponse:
+    events, total_count = await service.get_metric_issue_events(
+        metric_issue_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
     )
     return EventListResponse(
         offset=offset,

@@ -349,7 +349,11 @@ async def test_run_with_delta_findings(service, db, datahub):
     prev_result = MagicMock()
     prev_result.scalar_one_or_none.return_value = prev_row
 
-    db.execute = AsyncMock(side_effect=[def_result, prev_result])
+    # _sync_metric_issues queries open issues for resolved URNs
+    resolved_issues_result = MagicMock()
+    resolved_issues_result.scalars.return_value.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[def_result, prev_result, resolved_issues_result])
     db.refresh = AsyncMock()
 
     # Current run: urn:2 unowned (urn:1 resolved, urn:2 new)
@@ -366,8 +370,8 @@ async def test_run_with_delta_findings(service, db, datahub):
 
     result = await service.run(def_row.id)
     assert result.status == "success"
-    # commit: result + run.completed + findings.detected (urn:2 is new)
-    assert db.commit.await_count >= 3
+    # commit: result + run.completed + findings.detected + _sync_metric_issues
+    assert db.commit.await_count >= 4
 
 
 # ── activate / deactivate ───────────────────────────────────────────────────

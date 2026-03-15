@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import Event, MetricDefinition, MetricResult
+from src.shared.db.models import Event, MetricDefinition, MetricIssue, MetricResult
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.shared.notifications.service import NotificationService
 
@@ -51,6 +51,54 @@ class MetricRunResult(BaseModel):
     run_id: str
     status: str
     detail: dict[str, Any]
+
+
+class MetricIssueRecord(BaseModel):
+    """Value object mirroring the ORM MetricIssue."""
+
+    id: str
+    metric_id: str
+    dataset_urn: str
+    issue_type: str
+    priority: str
+    status: str
+    assignee: str | None = None
+    description: str
+    estimated_fix_minutes: int
+    projected_score_impact: float
+    due_date: datetime | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# Mapping: metric_type → (issue_type, priority, estimated_fix_minutes)
+_METRIC_TYPE_TO_ISSUE: dict[str, tuple[str, str, int]] = {
+    "poorly_documented": ("no_description", "high", 10),
+    "stale_datasets": ("stale", "medium", 15),
+    "low_quality": ("low_quality", "critical", 30),
+    "unowned_datasets": ("missing_owner", "critical", 5),
+    "tag_coverage": ("no_tags", "medium", 5),
+}
+
+
+def _metric_issue_from_row(row: MetricIssue) -> MetricIssueRecord:
+    return MetricIssueRecord(
+        id=str(row.id),
+        metric_id=row.metric_id,
+        dataset_urn=row.dataset_urn,
+        issue_type=row.issue_type,
+        priority=row.priority,
+        status=row.status,
+        assignee=row.assignee,
+        description=row.description,
+        estimated_fix_minutes=row.estimated_fix_minutes,
+        projected_score_impact=row.projected_score_impact,
+        due_date=row.due_date,
+        resolved_at=row.resolved_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
 def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
@@ -368,6 +416,9 @@ class MetricsService:
             }
             await self._record_event(metric_id, "metric.findings.detected", "info", findings_detail)
 
+        # 7. Sync metric issues (auto-create / auto-resolve)
+        await self._sync_metric_issues(metric_id, breakdown, delta)
+
         return MetricRunResult(run_id=run_id, status="success", detail=detail)
 
     # ── Activate / Deactivate ────────────────────────────────────────────
@@ -469,6 +520,239 @@ class MetricsService:
             occurred_at=datetime.now(tz=UTC),
         )
         self._db.add(event)
+        await self._db.commit()
+
+    # ── Metric Issues ───────────────────────────────────────────────────
+
+    async def get_metric_issue(self, metric_issue_id: str) -> MetricIssueRecord:
+        result = await self._db.execute(
+            select(MetricIssue).where(MetricIssue.id == uuid.UUID(metric_issue_id))
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise EntityNotFoundError("metric_issue", metric_issue_id)
+        return _metric_issue_from_row(row)
+
+    async def list_metric_issues(
+        self,
+        metric_id: str,
+        offset: int = 0,
+        limit: int = 20,
+        status_filter: str | None = None,
+        priority_filter: str | None = None,
+        issue_type_filter: str | None = None,
+        assignee_filter: str | None = None,
+    ) -> tuple[list[MetricIssueRecord], int]:
+        base = select(MetricIssue).where(MetricIssue.metric_id == metric_id)
+        if status_filter is not None:
+            base = base.where(MetricIssue.status == status_filter)
+        if priority_filter is not None:
+            base = base.where(MetricIssue.priority == priority_filter)
+        if issue_type_filter is not None:
+            base = base.where(MetricIssue.issue_type == issue_type_filter)
+        if assignee_filter is not None:
+            base = base.where(MetricIssue.assignee == assignee_filter)
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        rows_q = base.order_by(MetricIssue.created_at.desc()).offset(offset).limit(limit)
+        result = await self._db.execute(rows_q)
+        rows = result.scalars().all()
+
+        return [_metric_issue_from_row(r) for r in rows], total_count
+
+    async def update_metric_issue(
+        self, metric_issue_id: str, patch: dict[str, Any]
+    ) -> MetricIssueRecord:
+        result = await self._db.execute(
+            select(MetricIssue).where(MetricIssue.id == uuid.UUID(metric_issue_id))
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise EntityNotFoundError("metric_issue", metric_issue_id)
+
+        old_status = row.status
+        old_assignee = row.assignee
+
+        for field in ("status", "assignee", "due_date"):
+            if field in patch:
+                setattr(row, field, patch[field])
+
+        row.updated_at = datetime.now(tz=UTC)
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+
+        # Record lifecycle events
+        if "status" in patch and patch["status"] != old_status:
+            await self._record_metric_issue_event(
+                str(row.id),
+                "metric_issue.status_changed",
+                "success",
+                {"from": old_status, "to": patch["status"]},
+            )
+        if "assignee" in patch and patch["assignee"] != old_assignee:
+            await self._record_metric_issue_event(
+                str(row.id),
+                "metric_issue.assigned",
+                "success",
+                {"from": old_assignee, "to": patch["assignee"]},
+            )
+
+        return _metric_issue_from_row(row)
+
+    async def dismiss_metric_issue(
+        self, metric_issue_id: str, reason: str | None = None
+    ) -> MetricIssueRecord:
+        result = await self._db.execute(
+            select(MetricIssue).where(MetricIssue.id == uuid.UUID(metric_issue_id))
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise EntityNotFoundError("metric_issue", metric_issue_id)
+
+        if row.status == "dismissed":
+            raise ConflictError(
+                "ALREADY_DISMISSED",
+                f"Metric issue '{metric_issue_id}' is already dismissed",
+            )
+
+        old_status = row.status
+        row.status = "dismissed"
+        row.updated_at = datetime.now(tz=UTC)
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+
+        await self._record_metric_issue_event(
+            str(row.id),
+            "metric_issue.dismissed",
+            "success",
+            {"from": old_status, "reason": reason},
+        )
+
+        return _metric_issue_from_row(row)
+
+    async def get_metric_issue_events(
+        self,
+        metric_issue_id: str,
+        offset: int = 0,
+        limit: int = 20,
+        from_dt: datetime | None = None,
+        to_dt: datetime | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        base = select(Event).where(
+            Event.entity_type == "metric_issue",
+            Event.entity_id == metric_issue_id,
+        )
+        if from_dt is not None:
+            base = base.where(Event.occurred_at >= from_dt)
+        if to_dt is not None:
+            base = base.where(Event.occurred_at <= to_dt)
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        result = await self._db.execute(rows_q)
+        rows = result.scalars().all()
+
+        events = [
+            {
+                "id": str(row.id),
+                "entity_type": row.entity_type,
+                "entity_id": row.entity_id,
+                "event_type": row.event_type,
+                "status": row.status,
+                "detail": row.detail,
+                "occurred_at": row.occurred_at,
+            }
+            for row in rows
+        ]
+        return events, total_count
+
+    async def _record_metric_issue_event(
+        self,
+        metric_issue_id: str,
+        event_type: str,
+        status: str,
+        detail: dict[str, Any],
+    ) -> None:
+        event = Event(
+            entity_type="metric_issue",
+            entity_id=metric_issue_id,
+            event_type=event_type,
+            status=status,
+            detail=detail,
+            occurred_at=datetime.now(tz=UTC),
+        )
+        self._db.add(event)
+        await self._db.commit()
+
+    async def _sync_metric_issues(
+        self,
+        metric_id: str,
+        breakdown: dict[str, Any],
+        delta: dict[str, Any] | None,
+    ) -> None:
+        """Auto-create issues for new findings and auto-resolve for fixed gaps."""
+        if delta is None:
+            return
+
+        metric_type = breakdown.get("metric_type", "")
+        issue_info = _METRIC_TYPE_TO_ISSUE.get(metric_type)
+        if issue_info is None:
+            return
+
+        issue_type, priority, est_minutes = issue_info
+
+        # Build lookup of affected datasets for descriptions
+        affected_map: dict[str, str] = {}
+        for d in breakdown.get("affected_datasets", []):
+            if "urn" in d:
+                affected_map[d["urn"]] = d.get("reason", issue_type)
+
+        # Count total affected for score impact estimate
+        total_affected = len(breakdown.get("affected_datasets", []))
+
+        # Auto-create issues for new findings
+        new_findings: list[str] = delta.get("new_findings", [])
+        for urn in new_findings:
+            score_impact = round(1.0 / max(total_affected, 1), 2)
+            row = MetricIssue(
+                metric_id=metric_id,
+                dataset_urn=urn,
+                issue_type=issue_type,
+                priority=priority,
+                status="open",
+                description=affected_map.get(urn, f"{issue_type}: {urn}"),
+                estimated_fix_minutes=est_minutes,
+                projected_score_impact=score_impact,
+            )
+            self._db.add(row)
+
+        # Auto-resolve issues for fixed gaps
+        resolved_urns: list[str] = delta.get("resolved_since_last", [])
+        if resolved_urns:
+            open_q = select(MetricIssue).where(
+                MetricIssue.metric_id == metric_id,
+                MetricIssue.dataset_urn.in_(resolved_urns),
+                MetricIssue.status.in_(["open", "in_progress"]),
+            )
+            result = await self._db.execute(open_q)
+            for issue_row in result.scalars().all():
+                issue_row.status = "resolved"
+                issue_row.resolved_at = datetime.now(tz=UTC)
+                issue_row.updated_at = datetime.now(tz=UTC)
+                self._db.add(issue_row)
+                await self._record_metric_issue_event(
+                    str(issue_row.id),
+                    "metric_issue.resolved",
+                    "success",
+                    {"metric_id": metric_id, "dataset_urn": issue_row.dataset_urn},
+                )
+
         await self._db.commit()
 
     # ── Measurement internals ────────────────────────────────────────────
