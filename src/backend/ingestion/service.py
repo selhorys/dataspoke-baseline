@@ -165,7 +165,6 @@ class IngestionService:
     # ── Run pipeline ─────────────────────────────────────────────────────
 
     async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult:
-        # TODO: dispatch to Temporal workflow
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("ingestion_config", dataset_urn)

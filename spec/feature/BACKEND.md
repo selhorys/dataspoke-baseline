@@ -933,7 +933,7 @@ async def main() -> None:
 3. **Timeouts**: Activity start-to-close timeout = 5 minutes (default); workflow execution timeout = 1 hour
 4. **Retry policy**: Max 3 attempts, 10s initial interval, 2.0 backoff coefficient
 5. **Heartbeating**: Long-running activities (bulk DataHub scans) heartbeat every 30s
-6. **Workflow ID convention**: `{feature}-{dataset_urn_or_metric_id}-{uuid}` for deduplication
+6. **Workflow ID convention**: `{feature}-{urn_hash}` where `urn_hash = md5(entity_urn)[:12]` — deterministic per entity for `REJECT_DUPLICATE` deduplication
 
 ### Concurrency Guards
 

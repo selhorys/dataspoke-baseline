@@ -16,6 +16,7 @@ Run: uv run pytest tests/integration/test_temporal_workflows_integration.py -v
 
 import asyncio
 from datetime import timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -141,6 +142,46 @@ async def _seed_workflow_configs():
 
 @pytest_asyncio.fixture(scope="module")
 async def temporal_worker(temporal_client):
+    """In-process worker with authenticated DataHub client and mocked LLM/Qdrant/cache."""
+    from tests.integration.conftest import _resolve_datahub_token
+
+    from src.shared.datahub.client import DataHubClient
+
+    datahub_client = DataHubClient(
+        gms_url="http://localhost:9004", token=_resolve_datahub_token()
+    )
+    _mock_llm = AsyncMock()
+    _mock_llm.complete = AsyncMock(return_value="test response")
+    _mock_llm.complete_json = AsyncMock(return_value={})
+
+    _mock_qdrant = AsyncMock()
+    _mock_qdrant.search = AsyncMock(return_value=[])
+
+    _mock_cache = AsyncMock()
+    _mock_cache.get = AsyncMock(return_value=None)
+    _mock_cache.set = AsyncMock()
+    _mock_cache.publish = AsyncMock()
+    _mock_cache.delete = AsyncMock()
+
+    # Patch make_datahub in every workflow module that registers activities,
+    # plus make_llm/make_qdrant/make_cache where needed by validation.
+    _modules = [
+        "src.workflows.ingestion",
+        "src.workflows.validation",
+        "src.workflows.embedding_sync",
+        "src.workflows.metrics",
+    ]
+    patches = []
+    for mod in _modules:
+        patches.append(patch(f"{mod}.make_datahub", return_value=datahub_client))
+    patches.append(patch("src.workflows.validation.make_llm", return_value=_mock_llm))
+    patches.append(patch("src.workflows.validation.make_qdrant", return_value=_mock_qdrant))
+    patches.append(patch("src.workflows.validation.make_cache", return_value=_mock_cache))
+    patches.append(patch("src.workflows.ingestion.make_llm", return_value=_mock_llm))
+
+    for p in patches:
+        p.start()
+
     worker = Worker(
         temporal_client,
         task_queue=TASK_QUEUE,
@@ -154,6 +195,9 @@ async def temporal_worker(temporal_client):
         await task
     except asyncio.CancelledError:
         pass
+
+    for p in patches:
+        p.stop()
 
 
 async def test_start_ingestion_workflow(temporal_client, temporal_worker):

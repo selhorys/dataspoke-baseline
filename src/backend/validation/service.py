@@ -239,7 +239,6 @@ class ValidationService:
         config_id: str | None = None,
         dry_run: bool = False,
     ) -> ValidationRunResult:
-        # TODO: dispatch to Temporal workflow
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("validation_config", dataset_urn)

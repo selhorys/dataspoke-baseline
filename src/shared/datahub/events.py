@@ -6,7 +6,6 @@ and delegates to downstream services and Temporal workflows.
 """
 
 import asyncio
-import hashlib
 import json
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -118,7 +117,9 @@ class EventRouter:
 
 def _urn_to_workflow_id(urn: str) -> str:
     """Create a short, stable identifier from a URN for Temporal workflow IDs."""
-    return hashlib.md5(urn.encode()).hexdigest()[:12]  # noqa: S324
+    from src.workflows._common import urn_to_workflow_id
+
+    return urn_to_workflow_id(urn)
 
 
 # ── Handler Implementations ─────────────────────────────────────────────────

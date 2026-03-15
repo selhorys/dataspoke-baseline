@@ -399,6 +399,7 @@ async def override_app(
     redis=None,
     llm=None,
     qdrant=None,
+    temporal=None,
 ):
     """Create an AsyncClient with FastAPI DI overrides for integration tests.
 
@@ -438,6 +439,14 @@ async def override_app(
             yield db
 
         app.dependency_overrides[get_db] = _override_db
+
+    if temporal is not None:
+        from src.api.dependencies import get_temporal_client
+
+        async def _override_temporal():
+            return temporal
+
+        app.dependency_overrides[get_temporal_client] = _override_temporal
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

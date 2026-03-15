@@ -228,7 +228,6 @@ class GenerationService:
     # ── Generate pipeline ────────────────────────────────────────────────
 
     async def generate(self, dataset_urn: str) -> GenerationRunResult:
-        # TODO: dispatch to Temporal workflow
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("generation_config", dataset_urn)

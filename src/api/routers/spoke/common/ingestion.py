@@ -1,9 +1,11 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
+from temporalio.client import Client as TemporalClient
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_ingestion_service
+from src.api.dependencies import get_ingestion_service, get_temporal_client
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import (
     IngestionConfigListResponse,
@@ -13,7 +15,9 @@ from src.api.schemas.ingestion import (
     RunResultResponse,
 )
 from src.backend.ingestion.service import IngestionService
-from src.shared.exceptions import EntityNotFoundError
+from src.shared.exceptions import ConflictError, EntityNotFoundError
+from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
+from src.workflows.ingestion import IngestionParams, IngestionWorkflow
 
 router = APIRouter(
     prefix="/ingestion",
@@ -89,13 +93,26 @@ async def patch_ingestion_config_attr(
 async def post_ingestion_run(
     dataset_urn: str,
     body: RunIngestionRequest,
-    service: IngestionService = Depends(get_ingestion_service),
+    temporal: TemporalClient = Depends(get_temporal_client),
 ) -> RunResultResponse:
-    result = await service.run(dataset_urn, dry_run=body.dry_run)
+    workflow_id = f"ingestion-{urn_to_workflow_id(dataset_urn)}"
+    try:
+        handle = await temporal.start_workflow(
+            IngestionWorkflow.run,
+            IngestionParams(dataset_urn=dataset_urn, dry_run=body.dry_run),
+            id=workflow_id,
+            task_queue=TASK_QUEUE,
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise ConflictError(
+            "INGESTION_RUNNING",
+            f"An ingestion run is already in progress for {dataset_urn}",
+        ) from exc
+    result = await await_workflow_result(handle)
     return RunResultResponse(
-        run_id=result.run_id,
-        status=result.status,
-        detail=result.detail,
+        run_id=result["run_id"],
+        status=result["status"],
+        detail=result["detail"],
     )
 
 

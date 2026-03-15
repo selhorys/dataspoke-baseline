@@ -1,9 +1,11 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
+from temporalio.client import Client as TemporalClient
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_generation_service
+from src.api.dependencies import get_generation_service, get_temporal_client
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.generation import (
     ApplyGenerationRequest,
@@ -15,7 +17,9 @@ from src.api.schemas.generation import (
     RunResultResponse,
 )
 from src.backend.generation.service import GenerationService
-from src.shared.exceptions import EntityNotFoundError
+from src.shared.exceptions import ConflictError, EntityNotFoundError
+from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
+from src.workflows.generation import GenerationParams, GenerationWorkflow
 
 router = APIRouter(
     prefix="/gen",
@@ -124,13 +128,26 @@ async def get_gen_result(
 @router.post("/{dataset_urn}/method/generate", response_model=RunResultResponse)
 async def post_gen_generate(
     dataset_urn: str,
-    service: GenerationService = Depends(get_generation_service),
+    temporal: TemporalClient = Depends(get_temporal_client),
 ) -> RunResultResponse:
-    result = await service.generate(dataset_urn)
+    workflow_id = f"generation-{urn_to_workflow_id(dataset_urn)}"
+    try:
+        handle = await temporal.start_workflow(
+            GenerationWorkflow.run,
+            GenerationParams(dataset_urn=dataset_urn),
+            id=workflow_id,
+            task_queue=TASK_QUEUE,
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise ConflictError(
+            "GENERATION_RUNNING",
+            f"A generation run is already in progress for {dataset_urn}",
+        ) from exc
+    result = await await_workflow_result(handle)
     return RunResultResponse(
-        run_id=result.run_id,
-        status=result.status,
-        detail=result.detail,
+        run_id=result["run_id"],
+        status=result["status"],
+        detail=result["detail"],
     )
 
 

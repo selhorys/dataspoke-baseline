@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from temporalio.client import Client as TemporalClient
 
 from src.api.config import settings
 from src.backend.dataset.service import DatasetService
@@ -21,6 +22,9 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import QdrantManager
+
+# Module-level Temporal client singleton (connected lazily on first use)
+_temporal_client: TemporalClient | None = None
 
 # ── Infrastructure client providers ──────────────────────────────
 
@@ -55,6 +59,17 @@ def get_notification():
     from src.shared.notifications.service import NotificationService
 
     return NotificationService()
+
+
+async def get_temporal_client() -> TemporalClient:
+    """Return a shared Temporal client, connecting lazily on first call."""
+    global _temporal_client  # noqa: PLW0603
+    if _temporal_client is None:
+        _temporal_client = await TemporalClient.connect(
+            f"{settings.temporal_host}:{settings.temporal_port}",
+            namespace=settings.temporal_namespace,
+        )
+    return _temporal_client
 
 
 # ── Service providers (added as backend services are implemented) ──
