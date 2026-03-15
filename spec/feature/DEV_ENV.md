@@ -293,14 +293,14 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~69%** → ~11.1 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~71%** → ~11.4 GiB RAM, ~7.75 CPU limits.
 
 ### Memory Budget (limits)
 
 | Component | Namespace | Mem Limit | Notes |
 |-----------|-----------|-----------|-------|
 | Elasticsearch | datahub-01 | 2560 Mi | 512m heap + off-heap |
-| Kafka (bitnami) | datahub-01 | 512 Mi | |
+| Kafka (bitnami) | datahub-01 | 768 Mi | 512m heap cap + reduced threads/retention |
 | ZooKeeper (bitnami) | datahub-01 | 256 Mi | |
 | MySQL (bitnami) | datahub-01 | 768 Mi | `mysql_upgrade` doubles memory |
 | datahub-gms | datahub-01 | 1536 Mi | -25% vs upstream |
@@ -317,9 +317,9 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~69%**
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 512 Mi | |
-| **Total** | | **~11.1 Gi** | |
+| **Total** | | **~11.4 Gi** | |
 
-~4.9 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~4.6 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 

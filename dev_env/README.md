@@ -257,12 +257,12 @@ App runtime variables point to `localhost` in dev (via port-forward) and to in-c
 
 ## Resource Budget
 
-This environment targets ~11.1 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~69% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
+This environment targets ~11.4 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~71% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
 
 | Component | Namespace | Memory Limit |
 |-----------|-----------|-------------|
 | Elasticsearch | datahub-01 | 2560 Mi |
-| Kafka (bitnami) | datahub-01 | 512 Mi |
+| Kafka (bitnami) | datahub-01 | 768 Mi |
 | ZooKeeper (bitnami) | datahub-01 | 256 Mi |
 | MySQL (prerequisites) | datahub-01 | 768 Mi |
 | datahub-gms | datahub-01 | 1536 Mi |
@@ -279,7 +279,7 @@ This environment targets ~11.1 GiB memory limits on an 8+ CPU / 16 GB RAM cluste
 | dev-lock | dataspoke-01 | 64 Mi |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi |
 | example-kafka | dataspoke-dummy-data-01 | 512 Mi |
-| **Total** | | **~11.1 Gi** |
+| **Total** | | **~11.4 Gi** |
 
 ## Troubleshooting
 
