@@ -257,7 +257,7 @@ App runtime variables point to `localhost` in dev (via port-forward) and to in-c
 
 ## Resource Budget
 
-This environment targets ~11.4 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~71% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
+This environment targets ~11.9 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~74% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
 
 | Component | Namespace | Memory Limit |
 |-----------|-----------|-------------|
@@ -278,8 +278,8 @@ This environment targets ~11.4 GiB memory limits on an 8+ CPU / 16 GB RAM cluste
 | redis | dataspoke-01 | 256 Mi |
 | dev-lock | dataspoke-01 | 64 Mi |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi |
-| example-kafka | dataspoke-dummy-data-01 | 512 Mi |
-| **Total** | | **~11.4 Gi** |
+| example-kafka | dataspoke-dummy-data-01 | 1024 Mi |
+| **Total** | | **~11.9 Gi** |
 
 ## Troubleshooting
 

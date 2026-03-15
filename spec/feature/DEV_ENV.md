@@ -161,7 +161,7 @@ Prerequisites resource sizing:
 | Component | Mem Limit | Notes |
 |-----------|-----------|-------|
 | Elasticsearch | 2560 Mi | Off-heap usage OOM-kills at 2Gi during startup |
-| Kafka | 512 Mi | Adequate for single-node dev |
+| Kafka | 768 Mi | 512m heap cap + reduced threads/retention |
 | ZooKeeper | 256 Mi | Adequate for single-node dev |
 | MySQL | 768 Mi | `mysql_upgrade` briefly doubles memory when persistence disabled |
 
@@ -293,7 +293,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~71%** → ~11.4 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~74%** → ~11.9 GiB RAM, ~7.75 CPU limits.
 
 ### Memory Budget (limits)
 
@@ -308,7 +308,7 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~71%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| temporal-server | dataspoke-01 | 512 Mi | 4 pods (frontend, history, matching, worker) |
+| temporal-server | dataspoke-01 | 512 Mi each | 4 pods (frontend, history, matching, worker) |
 | temporal-admintools | dataspoke-01 | 256 Mi | |
 | temporal-web | dataspoke-01 | 256 Mi | Temporal UI |
 | qdrant | dataspoke-01 | 1024 Mi | |
@@ -316,10 +316,10 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~71%**
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
-| example-kafka | dataspoke-dummy-data-01 | 512 Mi | |
-| **Total** | | **~11.4 Gi** | |
+| example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
+| **Total** | | **~11.9 Gi** | |
 
-~4.6 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~4.1 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 

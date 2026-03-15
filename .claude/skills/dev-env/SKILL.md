@@ -89,8 +89,8 @@ All actions start here:
 5. Show how to run DataSpoke app services on the host:
    - `source dev_env/.env`
    - Frontend: `cd src/frontend && npm run dev` (http://localhost:3000)
-   - API: `cd src/api && uvicorn main:app --reload --port 8000`
-   - Workers: `cd src/workflows && python -m worker`
+   - API: `uv run uvicorn src.api.main:app --reload --port 8000`
+   - Workers: `uv run python -m src.workflows.worker`
 6. **Ask the user** if they want to start port-forwarding now.
 
 ---
