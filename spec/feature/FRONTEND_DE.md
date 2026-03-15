@@ -103,7 +103,7 @@ Shows config, run history (events), and trigger controls.
 
 - **Edit Config** → opens config form modal. Submits via `PUT /spoke/common/data/{urn}/attr/ingestion/conf`.
 - **Run Now** → `POST /spoke/common/data/{urn}/attr/ingestion/method/run`
-- **Dry Run** → same endpoint with `?dry_run=true`
+- **Dry Run** → same endpoint with `dry_run` in request body
 - **Recent Runs** → `GET /spoke/common/data/{urn}/attr/ingestion/event`
 
 ### Config Editor

@@ -492,12 +492,12 @@ Each heartbeat run creates a per-issue session directory at `state/sessions/issu
 | Scaffold element | Integration |
 |---|---|
 | `CLAUDE.md` | Claude reads this automatically, giving prauto full project context |
-| `.claude/settings.json` hooks | `auto-format.sh` fires after Write/Edit in prauto sessions |
+| `.claude/settings.json` | Tool permissions apply equally to prauto sessions |
 | `.claude/agents/` | Prauto prompts can instruct Claude to delegate to existing subagents |
 | `.claude/skills/` | Skills are available if Claude detects matching context |
 | `spec/` hierarchy | Analysis phase reads specs per CLAUDE.md instructions |
 
-Prauto does not modify `.claude/settings.json`, `.claude/settings.local.json`, or `.claude/agents/`. It is self-contained in `.prauto/` — the only change to existing files is three lines in `.gitignore`. The scaffold serves interactive sessions; prauto serves unattended automation. Both use the same Claude Code engine, `CLAUDE.md` context, and auto-format hook.
+Prauto does not modify `.claude/settings.json`, `.claude/settings.local.json`, or `.claude/agents/`. It is self-contained in `.prauto/` — the only change to existing files is three lines in `.gitignore`. The scaffold serves interactive sessions; prauto serves unattended automation. Both use the same Claude Code engine and `CLAUDE.md` context.
 
 ---
 

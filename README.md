@@ -148,8 +148,8 @@ The scaffold lives in `.claude/` and makes AI-assisted development immediately p
 | Skill | Purpose |
 |-------|---------|
 | `k8s-work` | Kubernetes cluster management: health checks, continuous monitoring, kubectl/helm operations |
-| `plan-doc` | Route spec authorship to the correct tier in `spec/` |
-| `datahub-api` | DataHub data model Q&A and Python SDK code writing |
+| `plan-doc` | Write specification or planning documents in `spec/` following the project hierarchy and naming conventions |
+| `datahub-api` | Reference and coding guide for DataHub integration in backend development |
 | `prauto-check-status` | Prauto issue/PR status dashboard and next-heartbeat prediction |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; diagnoses and fixes errors |
 | `dev-env` | Dev environment management: install, uninstall, port-forward, status |
