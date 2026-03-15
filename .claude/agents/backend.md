@@ -22,39 +22,14 @@ Your job is to write production-quality Python code in `src/api/`, `src/backend/
 
 ```
 src/
-├── api/
-│   ├── main.py               # FastAPI application entry point
-│   ├── config.py              # API-level configuration
-│   ├── dependencies.py        # Dependency injection setup
-│   ├── routers/
-│   │   ├── health.py          # Health check endpoints
-│   │   ├── auth.py            # Authentication endpoints
-│   │   ├── hub.py             # DataHub proxy endpoints
-│   │   └── spoke/
-│   │       ├── common/        # data, ingestion, validation, search, gen, ontology
-│   │       └── dg/            # metrics, overview
-│   ├── schemas/               # Pydantic request/response models
-│   ├── middleware/             # logging, rate_limit
-│   └── auth/                  # jwt, ws, dependencies
-├── backend/
-│   ├── dataset/               # DatasetService
-│   ├── ingestion/             # IngestionService + extractors
-│   ├── validation/            # ValidationService + scoring, anomaly, sla
-│   ├── search/                # SearchService + embedding
-│   ├── ontology/              # OntologyService
-│   ├── metrics/               # MetricsService + aggregator
-│   ├── overview/              # OverviewService
-│   └── generation/            # GenerationService + analyzer
-└── shared/
-    ├── datahub/               # DataHubClient, consumer, events
-    ├── db/                    # SQLAlchemy models + async session
-    ├── vector/                # Qdrant client
-    ├── llm/                   # LLM client (LangChain)
-    ├── cache/                 # Redis client
-    ├── notifications/         # Email/alerts
-    ├── models/                # Shared Pydantic domain models
-    ├── config.py              # Shared configuration
-    └── exceptions.py          # Custom exceptions
+├── api/                       # FastAPI routers, schemas, middleware, auth
+│   ├── routers/spoke/         # One file per resource (common/ and dg/)
+│   └── schemas/               # Pydantic request/response models
+├── backend/                   # One subdirectory per feature domain (8 domains)
+│   └── {feature}/service.py   # Stateless service, constructor-injected deps
+└── shared/                    # Cross-cutting clients and models
+    ├── datahub/, db/, vector/, llm/, cache/, notifications/
+    └── models/                # Shared Pydantic domain models
 ```
 
 ## Tech stack rules

@@ -19,23 +19,21 @@ Your job is to write Temporal workflow and activity definitions in `src/workflow
 
 ```
 src/workflows/
-├── _common.py             # Shared utilities (retry config, activity wrappers)
-├── worker.py              # Temporal worker registration
-├── ingestion.py           # Extract → Transform → Enrich → Validate
-├── validation.py          # Fetch aspects → Score → Anomaly detect → Recommend
-├── sla_monitor.py         # Scheduled monitoring with threshold learning
-├── generation.py          # Analyze sources → Generate proposals → Queue for approval
-├── embedding_sync.py      # Daily full re-sync of dataset embeddings
-├── metrics.py             # Enumerate datasets → Compute health → Aggregate by dept
-└── ontology.py            # Classify datasets → Build hierarchy → Infer relationships
+├── _common.py          # Shared retry config and activity helpers
+├── worker.py           # Registers all workflows and activities
+└── {feature}.py        # One file per workflow (7 workflows)
 ```
 
 ## Temporal conventions
 
 - Use `temporalio` SDK — `@workflow.defn`, `@activity.defn` decorators
+- **Task queue**: `dataspoke-main` for all workflows
 - **Activities** call `src/backend/` service methods — keep activities thin (orchestration, not logic)
-- **Retry policy**: exponential backoff, max 3 attempts, 500ms initial interval (unless overridden per-activity)
-- **Workflow timeouts**: set `execution_timeout` on all workflows
+- **Retry policy**: max 3 attempts, **10s** initial interval, 2.0 backoff coefficient
+- **Activity timeout**: 5 min start-to-close (default)
+- **Workflow timeout**: 1 hour execution timeout on all workflows
+- **Heartbeating**: long-running activities (bulk DataHub scans) must heartbeat every 30s
+- **Workflow ID**: `{feature}-{urn_hash}` where `urn_hash = md5(entity_urn)[:12]` — deterministic per entity for `REJECT_DUPLICATE` deduplication. API returns 409 Conflict if a duplicate is rejected.
 - **Progress reporting**: long-running workflows publish progress to Redis pub/sub for WebSocket feeds (see `spec/feature/BACKEND.md` §WebSocket Feed)
 - **Idempotency**: activities must be safe to retry — use idempotency keys where needed
 - **Registration**: add new workflows and activities to `worker.py`

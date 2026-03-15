@@ -23,25 +23,11 @@ Your job is to write production-quality Next.js + TypeScript code in `src/fronte
 
 ```
 src/frontend/
-├── app/                   # Next.js App Router pages
-│   ├── layout.tsx         # Root layout (shell, providers)
-│   ├── page.tsx           # Portal landing (group selection)
-│   ├── login/             # Public login page
-│   ├── de/                # Data Engineering workspace
-│   ├── da/                # Data Analysis workspace
-│   ├── dg/                # Data Governance workspace
-│   └── settings/          # User preferences
-├── components/
-│   ├── ui/                # Primitives (buttons, inputs, modals, StatusBadge)
-│   ├── layout/            # Shell, sidebar, header, footer
-│   ├── search/            # SearchBar, result cards
-│   ├── data/              # DataTable, pagination, filters
-│   └── feedback/          # NotificationCenter, ConfirmDialog, toasts
-├── lib/
-│   ├── api/               # API client (wraps fetch, handles auth tokens)
-│   └── hooks/             # Custom React hooks (useAuth, useWebSocket, etc.)
-├── stores/                # Zustand stores (sidebar, modals, preferences)
-└── types/                 # TypeScript type definitions per domain
+├── app/                   # Next.js App Router (login, de/, da/, dg/, settings/)
+├── components/            # ui/, layout/, search/, data/, feedback/
+├── lib/                   # api/ client, hooks/
+├── stores/                # Zustand stores
+└── types/                 # TypeScript type definitions
 ```
 
 ## Tech stack rules

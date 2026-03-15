@@ -19,31 +19,13 @@ Your job is to write Helm charts, Dockerfiles, and dev environment scripts.
 ## Directory layout
 
 ```
-helm-charts/dataspoke/
-├── Chart.yaml, Chart.lock
-├── values.yaml                # Production defaults
-├── values-dev.yaml            # Dev overrides (app subcharts disabled, minimal resources)
-├── templates/
-│   ├── _helpers.tpl
-│   ├── configmap.yaml
-│   └── secrets.yaml
-├── subcharts/
-│   ├── api/                   # Deployment, Service, Ingress
-│   ├── frontend/              # Deployment, Service, Ingress
-│   └── workers/               # Deployment (no ingress)
-└── charts/                    # Packaged dependencies (PostgreSQL, Redis, Qdrant, Temporal)
+helm-charts/dataspoke/         # Umbrella chart (values.yaml, values-dev.yaml)
+├── templates/                 # ConfigMap, Secrets, _helpers.tpl
+├── subcharts/                 # api/, frontend/, workers/
+└── charts/                    # Packaged deps (PostgreSQL, Redis, Qdrant, Temporal)
 
-docker-images/
-└── api/Dockerfile             # FastAPI container image
-
-dev_env/
-├── .env                       # Configuration (DATASPOKE_DEV_* and DATASPOKE_*)
-├── install.sh, uninstall.sh   # Orchestration scripts
-├── datahub/                   # DataHub Helm install
-├── dataspoke-infra/           # DataSpoke infrastructure Helm install
-├── dataspoke-example/         # Example data sources (PostgreSQL, Kafka)
-├── dataspoke-lock/            # Advisory lock service
-└── *-port-forward.sh          # Port-forward scripts
+docker-images/                 # One Dockerfile per service
+dev_env/                       # Install/uninstall scripts, .env, port-forward scripts
 ```
 
 ## Helm rules
