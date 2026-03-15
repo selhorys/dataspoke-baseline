@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     temporal_host: str = "localhost"
     temporal_port: int = 7233
     temporal_namespace: str = "default"
+    temporal_ui_url: str = "http://localhost:8080"
 
     # LLM
     llm_provider: str = "openai"

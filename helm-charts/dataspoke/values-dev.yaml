@@ -71,12 +71,15 @@ temporal:
     replicaCount: 1
     resources:
       limits:
-        memory: 1024Mi
-        cpu: 500m
-      requests:
         memory: 512Mi
-        cpu: 100m
+        cpu: 250m
+      requests:
+        memory: 256Mi
+        cpu: 50m
     config:
+      # IMPORTANT: numHistoryShards is immutable after the first schema creation.
+      # To change it, drop and recreate the temporal DB.
+      numHistoryShards: 2
       persistence:
         defaultStore: default
         additionalStores: {}
@@ -88,8 +91,8 @@ temporal:
             port: 5432
             database: "temporal"
             # user/password: passed via --set from .env
-            maxConns: 20
-            maxIdleConns: 20
+            maxConns: 5
+            maxIdleConns: 5
             maxConnLifetime: "1h"
         visibility:
           driver: "sql"
@@ -99,9 +102,18 @@ temporal:
             port: 5432
             database: "temporal_visibility"
             # user/password: passed via --set from .env
-            maxConns: 20
-            maxIdleConns: 20
+            maxConns: 5
+            maxIdleConns: 5
             maxConnLifetime: "1h"
+  admintools:
+    enabled: true
+    resources:
+      limits:
+        memory: 256Mi
+        cpu: 100m
+      requests:
+        memory: 128Mi
+        cpu: 25m
   cassandra:
     enabled: false
   mysql:
@@ -122,7 +134,15 @@ temporal:
     update:
       enabled: true
   web:
-    enabled: false
+    enabled: true
+    replicaCount: 1
+    resources:
+      limits:
+        memory: 256Mi
+        cpu: 100m
+      requests:
+        memory: 128Mi
+        cpu: 25m
 
 # ---------------------------------------------------------------------------
 # ConfigMap/Secret: not created in dev (app reads env vars directly)

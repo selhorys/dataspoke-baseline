@@ -83,6 +83,7 @@ Credentials: `datahub` / `datahub`
 | Qdrant HTTP | localhost:9203 | Vector DB REST API |
 | Qdrant gRPC | localhost:9204 | Vector DB gRPC API |
 | Temporal | localhost:9205 | Workflow orchestration |
+| Temporal UI | localhost:9206 | Workflow inspection (Web UI) |
 | Lock API | localhost:9221 | Dev-env mutex (see §5) |
 
 ### 5. Lock the dev environment (multi-tester coordination)
@@ -269,7 +270,9 @@ This environment targets ~11.1 GiB memory limits on an 8+ CPU / 16 GB RAM cluste
 | datahub-mae-consumer | datahub-01 | 512 Mi |
 | datahub-mce-consumer | datahub-01 | 512 Mi |
 | datahub-actions | datahub-01 | 256 Mi |
-| temporal-server | dataspoke-01 | 1024 Mi |
+| temporal-server | dataspoke-01 | 512 Mi |
+| temporal-admintools | dataspoke-01 | 256 Mi |
+| temporal-web | dataspoke-01 | 256 Mi |
 | qdrant | dataspoke-01 | 1024 Mi |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi |
 | redis | dataspoke-01 | 256 Mi |

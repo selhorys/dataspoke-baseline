@@ -25,6 +25,7 @@ REDIS_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_REDIS_PORT:-9202}"
 QDRANT_HTTP_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_HTTP_PORT:-9203}"
 QDRANT_GRPC_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_GRPC_PORT:-9204}"
 TEMPORAL_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_TEMPORAL_PORT:-9205}"
+TEMPORAL_UI_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_TEMPORAL_UI_PORT:-9206}"
 
 # ---------------------------------------------------------------------------
 # --stop: kill running port-forwards and clean up
@@ -93,8 +94,12 @@ PIDS+=($!)
 kubectl port-forward --namespace "${NS}" svc/dataspoke-qdrant "${QDRANT_GRPC_PORT}:6334" >/dev/null 2>&1 &
 PIDS+=($!)
 
-# Temporal
+# Temporal gRPC
 kubectl port-forward --namespace "${NS}" svc/dataspoke-temporal-frontend "${TEMPORAL_PORT}:7233" >/dev/null 2>&1 &
+PIDS+=($!)
+
+# Temporal Web UI
+kubectl port-forward --namespace "${NS}" svc/dataspoke-temporal-web "${TEMPORAL_UI_PORT}:8080" >/dev/null 2>&1 &
 PIDS+=($!)
 
 # Write PIDs
@@ -128,6 +133,7 @@ echo "  Redis:       localhost:${REDIS_PORT}   (-> dataspoke-redis-master:6379)"
 echo "  Qdrant HTTP: localhost:${QDRANT_HTTP_PORT}   (-> dataspoke-qdrant:6333)"
 echo "  Qdrant gRPC: localhost:${QDRANT_GRPC_PORT}   (-> dataspoke-qdrant:6334)"
 echo "  Temporal:    localhost:${TEMPORAL_PORT}   (-> dataspoke-temporal-frontend:7233)"
+echo "  Temporal UI: localhost:${TEMPORAL_UI_PORT}   (-> dataspoke-temporal-web:8080)"
 echo ""
 echo "  PIDs: ${PIDS[*]} (saved to $PID_FILE)"
 echo "  Stop with: $0 --stop"

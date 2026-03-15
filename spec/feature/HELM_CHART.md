@@ -145,7 +145,8 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 - Application subcharts disabled — developers run them on the host
 - Single replicas, reduced resource limits
 - PostgreSQL initdb creates Temporal databases (`temporal`, `temporal_visibility`)
-- Temporal schema setup/migration jobs enabled; Web UI disabled
+- Temporal schema setup/migration jobs enabled; Web UI enabled
+- Temporal minimized for dev: `numHistoryShards: 2`, 5 max DB connections, reduced server/admintools/web resources
 - Redis replicas set to 0
 - ConfigMap/Secret not created
 

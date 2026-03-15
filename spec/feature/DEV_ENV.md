@@ -177,7 +177,9 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| temporal-server | Deployment | 1024 Mi | — |
+| temporal-server | Deployment | 512 Mi | — |
+| temporal-admintools | Deployment | 256 Mi | — |
+| temporal-web | Deployment | 256 Mi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
@@ -259,7 +261,7 @@ All port-forward scripts run in background, write PIDs to dotfiles, and support 
 | Script | Services | PID File |
 |--------|----------|----------|
 | `datahub-port-forward.sh` | UI (:9002), GMS (:9004), Kafka (:9005) | `.datahub-port-forward.pid` |
-| `dataspoke-port-forward.sh` | PG (:9201), Redis (:9202), Qdrant (:9203/:9204), Temporal (:9205) | `.dataspoke-port-forward.pid` |
+| `dataspoke-port-forward.sh` | PG (:9201), Redis (:9202), Qdrant (:9203/:9204), Temporal (:9205), Temporal UI (:9206) | `.dataspoke-port-forward.pid` |
 | `dummy-data-port-forward.sh` | example-postgres (:9102), example-kafka (:9104) | `.dummy-data-port-forward.pid` |
 | `lock-port-forward.sh` | dev-lock (:9221) | `.lock-port-forward.pid` |
 
@@ -274,6 +276,7 @@ All port-forward scripts run in background, write PIDs to dotfiles, and support 
 | Redis | `dataspoke-redis-master:6379` | `localhost:9202` |
 | Qdrant HTTP / gRPC | `dataspoke-qdrant:6333/6334` | `localhost:9203/9204` |
 | Temporal | `dataspoke-temporal-frontend:7233` | `localhost:9205` |
+| Temporal UI | `dataspoke-temporal-web:8080` | `localhost:9206` |
 | Lock API | `dev-lock:8080` | `localhost:9221` |
 | example-postgres | `example-postgres:5432` | `localhost:9102` |
 | example-kafka | `example-kafka:9094` (EXTERNAL) | `localhost:9104` |
@@ -305,7 +308,9 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~69%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| temporal-server | dataspoke-01 | 1024 Mi | |
+| temporal-server | dataspoke-01 | 512 Mi | 4 pods (frontend, history, matching, worker) |
+| temporal-admintools | dataspoke-01 | 256 Mi | |
+| temporal-web | dataspoke-01 | 256 Mi | Temporal UI |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |

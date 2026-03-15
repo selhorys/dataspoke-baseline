@@ -216,6 +216,7 @@ config:
     host: "dataspoke-temporal-frontend"
     port: "7233"
     namespace: "dataspoke"
+    uiUrl: "http://dataspoke-temporal-web:8080"
   llm:
     provider: "gemini"
     model: "gemini-2.0-flash"

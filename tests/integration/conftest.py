@@ -6,6 +6,7 @@ Port-forwards must be active before running:
 - Redis on localhost:9202 (dataspoke-port-forward.sh)
 - Qdrant on localhost:9203/9204 (dataspoke-port-forward.sh)
 - Temporal on localhost:9205 (dataspoke-port-forward.sh)
+- Temporal UI on localhost:9206 (dataspoke-port-forward.sh)
 - Lock service on localhost:9221 (lock-port-forward.sh)
 - Dummy-data ports on localhost:9102/9104 (dummy-data-port-forward.sh)
 """
@@ -90,6 +91,7 @@ _qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
 _temporal_host = os.environ.get("DATASPOKE_TEMPORAL_HOST", "localhost")
 _temporal_port = int(os.environ.get("DATASPOKE_TEMPORAL_PORT", "9205"))
 _temporal_namespace = os.environ.get("DATASPOKE_TEMPORAL_NAMESPACE", "dataspoke")
+_temporal_ui_url = os.environ.get("DATASPOKE_TEMPORAL_UI_URL", "http://localhost:9206")
 
 _lock_owner = os.environ.get(
     "DATASPOKE_LOCK_OWNER",

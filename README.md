@@ -101,6 +101,7 @@ dev_env/dataspoke-port-forward.sh    # DataSpoke infrastructure
 | Redis | localhost:9202 | per `dev_env/.env` |
 | Qdrant | localhost:9203 (HTTP), :9204 (gRPC) | — |
 | Temporal | localhost:9205 | — |
+| Temporal UI | localhost:9206 | — |
 
 ### 3. Run DataSpoke App Services
 
