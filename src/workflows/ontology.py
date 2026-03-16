@@ -1,8 +1,11 @@
 """Ontology rebuild workflow — classify datasets, build hierarchy, infer relationships."""
 
+import logging
 from dataclasses import dataclass
 
 from temporalio import activity, workflow
+
+logger = logging.getLogger(__name__)
 
 with workflow.unsafe.imports_passed_through():
     from src.backend.ontology.service import OntologyService
@@ -65,7 +68,7 @@ async def classify_datasets_activity() -> list[dict]:
                     }
                 )
         except Exception:
-            pass  # Best-effort classification
+            logger.warning("dataset_classification_failed", exc_info=True, extra={"dataset_urn": urn})
 
     return classifications
 
@@ -112,7 +115,7 @@ async def build_hierarchy_activity(classifications: list[dict]) -> list[dict]:
                     }
                 )
             except Exception:
-                pass
+                logger.warning("hierarchy_build_failed", exc_info=True, extra={"category": category_name})
 
         return hierarchy
 

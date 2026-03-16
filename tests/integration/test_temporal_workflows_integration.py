@@ -36,7 +36,9 @@ from src.workflows.embedding_sync import (
 from src.workflows.ingestion import (
     IngestionParams,
     IngestionWorkflow,
-    run_ingestion_activity,
+    emit_to_datahub_activity,
+    extract_metadata_activity,
+    record_ingestion_event_activity,
 )
 from src.workflows.metrics import (
     MetricsCollectionWorkflow,
@@ -66,7 +68,9 @@ ALL_WORKFLOWS = [
 ]
 
 ALL_ACTIVITIES = [
-    run_ingestion_activity,
+    extract_metadata_activity,
+    emit_to_datahub_activity,
+    record_ingestion_event_activity,
     run_validation_activity,
     enumerate_datasets_activity,
     reindex_batch_activity,

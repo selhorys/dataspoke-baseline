@@ -143,11 +143,11 @@ async def check_sla(
         try:
             root_cause_urns = await datahub.get_upstream_lineage(dataset_urn)
         except Exception:
-            pass
+            logger.warning("sla_upstream_lineage_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
         try:
             impact_urns = await datahub.get_downstream_lineage(dataset_urn)
         except Exception:
-            pass
+            logger.warning("sla_downstream_lineage_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
     return SLACheckResult(
         is_breaching=is_breaching,
@@ -244,7 +244,7 @@ async def _predict_breach_time(history: list, target: SLATarget) -> datetime | N
         if predicted is not None:
             return predicted
     except Exception:
-        pass
+        logger.warning("prophet_prediction_failed", exc_info=True)
 
     # Linear extrapolation fallback
     return _predict_breach_linear(timestamps, target)

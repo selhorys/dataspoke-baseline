@@ -1,8 +1,11 @@
 """Ingestion service — config CRUD, run pipeline, and event recording."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -166,18 +169,25 @@ class IngestionService:
 
         return [_record_from_row(r) for r in rows], total_count
 
-    # ── Run pipeline ─────────────────────────────────────────────────────
+    # ── Run pipeline (step-level) ─────────────────────────────────────────
 
-    async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult:
+    async def extract_metadata(self, dataset_urn: str, run_id: str) -> dict[str, Any]:
+        """Phase 1 — load config and extract metadata from all configured sources.
+
+        Returns a dict with keys:
+          - run_id: str
+          - metadata: list[dict]  (serialised ExtractedMetadata objects)
+          - errors: list[str]
+          - sources_processed: int
+          - deep_spec_enabled: bool
+        """
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("ingestion_config", dataset_urn)
 
-        run_id = str(uuid.uuid4())
         all_metadata: list[ExtractedMetadata] = []
         errors: list[str] = []
 
-        # Extract from each configured source
         for source_type, source_config in config.sources.items():
             extractor_cls = EXTRACTOR_REGISTRY.get(source_type)
             if extractor_cls is None:
@@ -190,15 +200,41 @@ class IngestionService:
             except Exception as exc:
                 errors.append(f"{source_type}: {exc}")
 
-        # Transform and emit to DataHub
+        return {
+            "run_id": run_id,
+            "metadata": [m.model_dump() for m in all_metadata],
+            "errors": errors,
+            "sources_processed": len(config.sources),
+            "deep_spec_enabled": config.deep_spec_enabled,
+        }
+
+    async def emit_metadata_to_datahub(
+        self,
+        dataset_urn: str,
+        extract_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Phase 2 — transform and emit extracted metadata to DataHub.
+
+        ``extract_result`` is the dict returned by :meth:`extract_metadata`.
+        Returns a dict with keys:
+          - status: str  ("success" | "partial" | "error")
+          - detail: dict
+        """
+        run_id: str = extract_result["run_id"]
+        raw_metadata: list[dict[str, Any]] = extract_result["metadata"]
+        errors: list[str] = extract_result["errors"]
+        sources_processed: int = extract_result["sources_processed"]
+        deep_spec_enabled: bool = extract_result["deep_spec_enabled"]
+
+        all_metadata = [ExtractedMetadata(**m) for m in raw_metadata]
+
         emit_error: str | None = None
-        if not dry_run and all_metadata:
+        if all_metadata:
             try:
-                await self._emit_to_datahub(dataset_urn, all_metadata, config.deep_spec_enabled)
+                await self._emit_to_datahub(dataset_urn, all_metadata, deep_spec_enabled)
             except Exception as exc:
                 emit_error = str(exc)
 
-        # Determine status
         if emit_error:
             status = "error"
         elif errors and not all_metadata:
@@ -210,20 +246,68 @@ class IngestionService:
 
         detail: dict[str, Any] = {
             "run_id": run_id,
-            "sources_processed": len(config.sources),
+            "sources_processed": sources_processed,
             "metadata_extracted": len(all_metadata),
-            "dry_run": dry_run,
+            "dry_run": False,
         }
         if errors:
             detail["extractor_errors"] = errors
         if emit_error:
             detail["emit_error"] = emit_error
 
-        # Record event
+        return {"status": status, "detail": detail}
+
+    async def record_ingestion_event(
+        self,
+        dataset_urn: str,
+        run_id: str,
+        status: str,
+        detail: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Phase 3 — record the ingestion event and return the final run result.
+
+        Returns a dict with keys: run_id, status, detail.
+        """
         event_type = "ingestion.completed" if status != "error" else "ingestion.failed"
         await self._record_event(dataset_urn, event_type, status, detail)
+        return {"run_id": run_id, "status": status, "detail": detail}
 
-        return IngestionRunResult(run_id=run_id, status=status, detail=detail)
+    async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult:
+        """Run the full ingestion pipeline in a single call (used for non-Temporal paths)."""
+        run_id = str(uuid.uuid4())
+
+        extract_result = await self.extract_metadata(dataset_urn, run_id)
+        errors: list[str] = extract_result["errors"]
+        raw_metadata: list[dict[str, Any]] = extract_result["metadata"]
+        all_metadata = [ExtractedMetadata(**m) for m in raw_metadata]
+
+        if not dry_run and all_metadata:
+            emit_result = await self.emit_metadata_to_datahub(dataset_urn, extract_result)
+            status = emit_result["status"]
+            detail = emit_result["detail"]
+            detail["dry_run"] = False
+        else:
+            if errors and not all_metadata:
+                status = "error"
+            elif errors:
+                status = "partial"
+            else:
+                status = "success"
+            detail = {
+                "run_id": run_id,
+                "sources_processed": extract_result["sources_processed"],
+                "metadata_extracted": len(all_metadata),
+                "dry_run": dry_run,
+            }
+            if errors:
+                detail["extractor_errors"] = errors
+
+        result = await self.record_ingestion_event(dataset_urn, run_id, status, detail)
+        return IngestionRunResult(
+            run_id=result["run_id"],
+            status=result["status"],
+            detail=result["detail"],
+        )
 
     async def _emit_to_datahub(
         self,
@@ -267,7 +351,7 @@ class IngestionService:
                 if "tags" in enrichment:
                     custom_props["suggested_tags"] = ", ".join(enrichment["tags"])
             except Exception:
-                pass  # LLM enrichment is best-effort
+                logger.warning("llm_enrichment_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         props = DatasetPropertiesClass(
             description=description,

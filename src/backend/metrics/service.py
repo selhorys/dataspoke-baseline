@@ -1,8 +1,11 @@
 """Metrics service — metric CRUD, run pipeline, alarm evaluation, and event recording."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -416,7 +419,7 @@ class MetricsService:
                         threshold=threshold_val,
                     )
                 except Exception:
-                    pass
+                    logger.warning("alarm_notification_failed", exc_info=True, extra={"metric_id": metric_id})
 
         # 6. Findings event
         new_findings = (delta or {}).get("new_findings", [])
@@ -747,7 +750,7 @@ class MetricsService:
                 if ownership and ownership.owners:
                     assignee = str(ownership.owners[0].owner)
             except Exception:
-                pass
+                logger.warning("ownership_lookup_failed", exc_info=True, extra={"dataset_urn": urn})
             row = MetricIssue(
                 metric_id=metric_id,
                 dataset_urn=urn,
@@ -893,6 +896,7 @@ class MetricsService:
                     if len(affected) >= _MAX_BREAKDOWN_AFFECTED:
                         break
             except Exception:
+                logger.warning("quality_score_failed", exc_info=True, extra={"dataset_urn": urn})
                 continue
 
         return float(len(affected)), {

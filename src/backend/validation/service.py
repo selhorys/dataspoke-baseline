@@ -1,9 +1,12 @@
 """Validation service — config CRUD, run pipeline, results, and event recording."""
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -326,11 +329,11 @@ class ValidationService:
             try:
                 upstream = await self._datahub.get_upstream_lineage(dataset_urn)
             except Exception:
-                pass
+                logger.warning("upstream_lineage_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
             try:
                 downstream = await self._datahub.get_downstream_lineage(dataset_urn)
             except Exception:
-                pass
+                logger.warning("downstream_lineage_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         # 6. Qdrant similarity search for alternative healthy datasets
         alternatives: list[str] = []
@@ -351,7 +354,7 @@ class ValidationService:
                 if candidate_urn != dataset_urn and candidate_quality >= 50:
                     alternatives.append(candidate_urn)
         except Exception:
-            pass
+            logger.warning("alternative_search_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         # Add SLA violations to recommendations
         if sla_check is not None and sla_check.violations:
@@ -388,7 +391,7 @@ class ValidationService:
                 json.dumps({"run_id": run_id, "status": "completed", "score": score.overall_score}),
             )
         except Exception:
-            pass
+            logger.warning("validation_pubsub_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         # 8. Cache result
         try:
@@ -398,7 +401,7 @@ class ValidationService:
                 ttl_seconds=VALIDATION_RESULT_CACHE_TTL,
             )
         except Exception:
-            pass
+            logger.warning("validation_cache_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         # 9. Persist result in PostgreSQL
         result_row = ValidationResult(

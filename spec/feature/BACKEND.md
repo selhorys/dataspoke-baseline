@@ -863,7 +863,7 @@ async def aggregate_health_scores(
 
 **Responsibilities**:
 - Assemble graph topology from ontology + lineage data
-- Medallion layer classification and coverage map
+- Medallion layer classification and coverage map (bronze = 0 upstreams, silver = 1–2 upstreams, gold = 3+ upstreams — based on `upstreamLineage` aspect)
 - Graph layout computation for visualization
 - Blind spot detection (datasets not covered by any concept)
 
@@ -880,7 +880,7 @@ class OverviewService:
 - Ontology graph (concept nodes + relationship edges)
 - Dataset nodes colored by quality score
 - Lineage edges from DataHub
-- Medallion layer classification (bronze/silver/gold based on lineage depth)
+- Medallion layer classification (see upstream-count rule above)
 - Blind spot list (datasets without concept mappings)
 
 ---
@@ -949,6 +949,21 @@ Some workflows must not run concurrently for the same entity:
 If a duplicate is rejected, the API returns `409 Conflict` with
 `INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` error codes.
 
+### IngestionWorkflow Activity Decomposition
+
+The `IngestionWorkflow` uses three sequential activities matching the pipeline
+phases for per-phase observability and partial-failure recovery:
+
+| Activity | Phase | Timeout | Purpose |
+|----------|-------|---------|---------|
+| `extract_metadata_activity` | 1 | 5 min | Load config, run per-source extractors, return metadata + errors |
+| `emit_to_datahub_activity` | 2 | 5 min | Transform metadata, apply LLM enrichment, emit to DataHub (skipped if `dry_run`) |
+| `record_ingestion_event_activity` | 3 | 5 min | Determine status, persist event to PostgreSQL, return final result |
+
+Each activity receives the output of the previous one. If extraction succeeds
+but emission fails, only the emission activity retries — extraction results are
+preserved.
+
 ---
 
 ## Kafka Consumers
@@ -986,17 +1001,22 @@ class EventRouter:
 | `MetadataChangeLog_Timeseries_v1` | `datasetProfile` | `trigger_quality_check` | Validation (UC2, UC3) |
 | `MetadataChangeLog_Timeseries_v1` | `operation` | `check_freshness_sla` | Validation (UC3) |
 
-### Consumer Process
+### Consumer Process (`src/shared/datahub/consumer.py`)
 
-The Kafka consumer runs as a separate process from the Temporal worker. By
-default, both are co-located in the `dataspoke-workers` deployment. For
-production workloads, the consumer can be deployed as an independent pod
-(`dataspoke-event-consumer`) for independent scaling and fault isolation — Kafka
-consumers scale by partition count while Temporal workers scale by workflow
-throughput. See [HELM_CHART §Component Matrix](HELM_CHART.md#component-matrix)
-for the `event-consumer.enabled` toggle.
+The Kafka consumer runs as `python -m src.shared.datahub.consumer`, separate
+from the Temporal worker. By default both are co-located in the
+`dataspoke-workers` deployment. For production workloads the consumer can be
+deployed as an independent pod (`dataspoke-event-consumer`) for independent
+scaling — Kafka consumers scale by partition count while Temporal workers scale
+by workflow throughput. See
+[HELM_CHART §Component Matrix](HELM_CHART.md#component-matrix) for the
+`event-consumer.enabled` toggle.
 
-Offsets are committed after successful processing (`enable.auto.commit=false`).
+- Uses `confluent-kafka` `Consumer` with `enable.auto.commit=False`
+- Commits offsets only after successful handler dispatch
+- Deserialization failures are logged and skipped (offset committed to avoid redelivery loops)
+- Handler failures leave the offset uncommitted for automatic redelivery
+- Poll timeout: configurable via `CONSUMER_POLL_TIMEOUT_S` (default 1.0s)
 
 ---
 
@@ -1165,6 +1185,25 @@ Registered as FastAPI exception handlers in `src/api/main.py`:
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER` |
 
 Error response format matches [API §Error Catalogue](API.md#error-catalogue).
+
+### Best-Effort Operations
+
+Certain non-critical operations execute on a best-effort basis — if they fail,
+the primary operation completes with reduced enrichment. All best-effort
+failures are logged at WARNING level with `exc_info=True` and relevant context
+(e.g., `dataset_urn`, `metric_id`).
+
+| Operation | Service | Fallback behaviour |
+|-----------|---------|-------------------|
+| LLM description enrichment | IngestionService | Dataset ingested without enriched description |
+| Upstream/downstream lineage lookup | ValidationService, SLA monitor | Recommendations lack dependency context |
+| Qdrant similarity search | ValidationService, GenerationService | No alternative dataset suggestions |
+| Redis pub/sub + cache write | ValidationService | WebSocket clients unnotified; next read hits DB |
+| LLM sample query generation | SearchService | SQL context returned without example query |
+| DataHub ownership lookup for issues | MetricsService | Metric issues created without assignee |
+| Prophet breach prediction | SLA monitor | Falls back to linear extrapolation |
+| LLM dataset classification | OntologyRebuildWorkflow | Dataset excluded from classification |
+| Quality score computation | Health score aggregator, MetricsService | Dataset excluded from aggregation |
 
 ---
 

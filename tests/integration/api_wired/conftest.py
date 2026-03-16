@@ -112,11 +112,12 @@ async def make_temporal_worker(
         stack.enter_context(patch(target, return_value=return_value))
 
     with stack:
+        activity_list = activity_fn if isinstance(activity_fn, list) else [activity_fn]
         worker = Worker(
             temporal_client,
             task_queue=TASK_QUEUE,
             workflows=[workflow_cls],
-            activities=[activity_fn],
+            activities=activity_list,
         )
         worker_task = asyncio.create_task(worker.run())
         try:

@@ -17,7 +17,12 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.workflows.ingestion import IngestionWorkflow, run_ingestion_activity
+from src.workflows.ingestion import (
+    IngestionWorkflow,
+    emit_to_datahub_activity,
+    extract_metadata_activity,
+    record_ingestion_event_activity,
+)
 from tests.integration.api_wired.conftest import make_temporal_worker, mock_llm
 from tests.integration.conftest import (
     _auth_headers,
@@ -40,7 +45,7 @@ async def temporal_worker(temporal_client, datahub_client, async_session):
         db_session=async_session,
         workflow_module="src.workflows.ingestion",
         workflow_cls=IngestionWorkflow,
-        activity_fn=run_ingestion_activity,
+        activity_fn=[extract_metadata_activity, emit_to_datahub_activity, record_ingestion_event_activity],
     ) as worker:
         yield worker
 

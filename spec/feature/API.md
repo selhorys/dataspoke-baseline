@@ -116,6 +116,17 @@ Users with `"admin"` in `groups` bypass group-tier restrictions and can call any
 Admin routes (user management, system configuration) live under `/api/v1/admin/…` and
 require the `"admin"` claim exclusively.
 
+### Known Limitations (Current Stub)
+
+The current authentication implementation uses a stub identity store:
+
+- **Single admin account**: Only one user (configured via `DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`) can authenticate. All other credentials are rejected.
+- **In-memory token revocation**: Revoked refresh tokens are stored in a process-local set. In multi-instance deployments, a revoked token may still be accepted by a different API instance.
+- **No group resolution**: The admin account receives all groups (`admin`, `de`, `da`, `dg`); non-admin users receive an empty group list.
+- **HTTP-only cookies**: The refresh token cookie uses `secure=False`. Production deployments must set `secure=True`.
+
+All stub code is marked with `TBD(user-accounts)` comments. See [BACKEND §User Account Management](BACKEND.md#user-account-management-tbd) for the planned migration path.
+
 ### Auth Flow
 
 ```

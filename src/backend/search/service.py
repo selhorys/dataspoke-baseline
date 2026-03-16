@@ -3,9 +3,12 @@
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from qdrant_client.models import PointStruct
 
@@ -175,6 +178,7 @@ class SearchService:
                     system="You are a SQL assistant. Return only valid SQL.",
                 )
             except Exception:
+                logger.warning("sample_query_generation_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
                 sample_query = None
 
         return {

@@ -1,14 +1,18 @@
 """Generation service — config CRUD, LLM-powered generate pipeline, apply flow, and events."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.generation.analyzer import SourceCodeAnalyzer
+from src.shared.config import EMBEDDING_COLLECTION, SEARCH_SCORE_THRESHOLD
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, GenerationConfig, GenerationResult
 from src.shared.exceptions import ConflictError, EntityNotFoundError
@@ -309,7 +313,7 @@ class GenerationService:
                     ]
                 similar_schemas.append({"urn": candidate_urn, "fields": sim_fields})
         except Exception:
-            pass
+            logger.warning("similar_schema_search_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         # 4. Code reference analysis (if configured)
         code_insights: dict[str, Any] = {}
@@ -318,7 +322,7 @@ class GenerationService:
             try:
                 code_insights = await analyzer.analyze(config.code_refs, schema_fields)
             except Exception:
-                pass
+                logger.warning("code_analysis_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
         # 5. Build LLM prompt
         field_info = "\n".join(

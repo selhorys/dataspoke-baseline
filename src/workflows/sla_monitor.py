@@ -1,9 +1,12 @@
 """SLA monitor workflow — periodic SLA checks with alerting."""
 
+import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
 
 from temporalio import activity, workflow
+
+logger = logging.getLogger(__name__)
 
 with workflow.unsafe.imports_passed_through():
     from src.backend.validation.service import ValidationService
@@ -45,7 +48,7 @@ async def check_sla_activity(dataset_urn: str, sla_target: dict) -> dict:
             if results:
                 quality_score = results[0].quality_score
         except Exception:
-            pass
+            logger.warning("sla_quality_score_lookup_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
 
     # Get dataset profile history for freshness analysis
     from datahub.metadata.schema_classes import DatasetProfileClass

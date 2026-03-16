@@ -282,6 +282,82 @@ cd dev_env
 
 Integration tests do **not** require a running API server or Temporal worker — they use in-process ASGI transport (`httpx.ASGITransport`) and spin up in-process Temporal workers via fixtures.
 
+### Temporal Integration Test Pitfalls
+
+Tests that exercise Temporal workflows (via `make_temporal_worker` or direct `temporal_client`) are prone to several failure modes. Follow these rules to avoid common issues:
+
+#### Sandbox restrictions in workflow code
+
+Temporal's Python SDK runs workflow `@workflow.run` methods inside a **deterministic sandbox** that blocks non-deterministic stdlib calls. The most common mistake is using `uuid.uuid4()` or `random.random()` inside workflow code:
+
+```python
+# WRONG — will hang or raise a sandbox restriction error
+@workflow.defn
+class MyWorkflow:
+    @workflow.run
+    async def run(self, params) -> dict:
+        run_id = str(uuid.uuid4())        # ❌ blocked by sandbox
+        ...
+
+# CORRECT — use the Temporal-provided deterministic equivalent
+@workflow.defn
+class MyWorkflow:
+    @workflow.run
+    async def run(self, params) -> dict:
+        run_id = str(workflow.uuid4())     # ✅ sandbox-safe
+        ...
+```
+
+Other sandbox-restricted calls include `datetime.now()` (use `workflow.now()`), `time.time()`, and `random.*`. All I/O must happen inside activities, never in workflow code.
+
+#### Temporal namespace
+
+The dev-env Temporal server uses namespace `dataspoke` (set via `DATASPOKE_TEMPORAL_NAMESPACE` in `dev_env/.env`). The `conftest.py` `temporal_client` fixture reads this from the environment. If `dev_env/.env` is not loaded (e.g., running from a worktree without it), the namespace defaults to `"default"` and all workflow operations will fail with "namespace not found".
+
+**Fix**: Ensure `dev_env/.env` is loaded before test collection. `conftest.py` handles this automatically, but tests run in isolation (e.g., via a subagent in a worktree) must source it explicitly.
+
+#### Stale workflow IDs cause 409 Conflict
+
+Workflows use `REJECT_DUPLICATE` ID reuse policy. If a previous test run left a workflow in `RUNNING` state (e.g., due to a hang or crash), subsequent runs with the same workflow ID will get `409 Conflict`.
+
+**Prevention**: Tests should use unique workflow IDs prefixed with `test-` and a short label. The `_cleanup_stale_workflows` fixture in `test_temporal_workflows_integration.py` demonstrates the pattern — terminate stale test workflows at module scope before starting new ones.
+
+**Recovery**: Terminate the stale workflow manually:
+```python
+handle = temporal_client.get_workflow_handle("<workflow-id>")
+await handle.terminate("cleanup stale test workflow")
+```
+
+Or via the Temporal UI at `http://localhost:9206`.
+
+#### DB session sharing across activities
+
+The `make_temporal_worker` helper patches `make_db_session` to return a `_TestSessionWrapper` that wraps the test's `async_session`. This means **all activities in the worker share the same SQLAlchemy session**. This is safe for sequential activities within a single workflow, but can cause issues if:
+
+- An activity commits and a subsequent activity expects a clean transaction
+- Two workflows run concurrently against the same worker (rare in tests)
+
+**Rule**: Design test workflows so activities execute sequentially (the normal case) and avoid concurrent workflow execution within a single test.
+
+#### Patching factory functions for multi-activity workflows
+
+When a workflow uses multiple activities (e.g., `IngestionWorkflow` has `extract_metadata_activity`, `emit_to_datahub_activity`, `record_ingestion_event_activity`), all activities must be registered with the worker and all factory patches must target the workflow module where the activities are defined:
+
+```python
+# CORRECT — pass all activities as a list
+async with make_temporal_worker(
+    temporal_client,
+    datahub_client,
+    db_session=async_session,
+    workflow_module="src.workflows.ingestion",
+    workflow_cls=IngestionWorkflow,
+    activity_fn=[extract_metadata_activity, emit_to_datahub_activity, record_ingestion_event_activity],
+) as worker:
+    ...
+```
+
+`make_temporal_worker` patches `make_datahub`, `make_llm`, and `make_db_session` in the specified `workflow_module`. Since all activities in a module import these factories from the same place, one set of patches covers all activities.
+
 ### Directory Structure & Classification
 
 Integration tests are split into two groups based on testing approach:

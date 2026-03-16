@@ -13,7 +13,12 @@ from src.workflows.embedding_sync import (
     reindex_batch_activity,
 )
 from src.workflows.generation import GenerationWorkflow, run_generation_activity
-from src.workflows.ingestion import IngestionWorkflow, run_ingestion_activity
+from src.workflows.ingestion import (
+    IngestionWorkflow,
+    emit_to_datahub_activity,
+    extract_metadata_activity,
+    record_ingestion_event_activity,
+)
 from src.workflows.metrics import (
     MetricsCollectionWorkflow,
     aggregate_health_activity,
@@ -54,7 +59,9 @@ async def main() -> None:
             OntologyRebuildWorkflow,
         ],
         activities=[
-            run_ingestion_activity,
+            extract_metadata_activity,
+            emit_to_datahub_activity,
+            record_ingestion_event_activity,
             run_validation_activity,
             check_sla_activity,
             send_sla_alerts_activity,

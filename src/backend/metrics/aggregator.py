@@ -1,6 +1,9 @@
 """Health score aggregation — compute per-department quality scores."""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -51,6 +54,7 @@ async def aggregate_health_scores(
         try:
             score = await compute_quality_score(datahub, urn, cache=cache)
         except Exception:
+            logger.warning("quality_score_failed", exc_info=True, extra={"dataset_urn": urn})
             continue
 
         # Determine department from dataset owner
