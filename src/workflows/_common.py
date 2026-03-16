@@ -1,4 +1,25 @@
-"""Shared constants, retry policy, and service factories for Temporal workflows."""
+"""Shared constants, retry policy, and service factories for Temporal workflows.
+
+Workflow ID Convention
+──────────────────────
+All Temporal workflow IDs follow the pattern ``{type}-{identifier}``:
+
+  ============  =============================  ==============================
+  Scope         Format                         Example
+  ============  =============================  ==============================
+  URN-scoped    ``{type}-{md5(urn)[:12]}``     ``ingestion-6eb5d0afa434``
+  Key-scoped    ``{type}-{key}``               ``metrics-imazon.freshness``
+  Singleton     ``{type}``                     ``ontology-rebuild``
+  Test          ``test-{type}-{short-label}``  ``test-ingestion-title-master``
+  ============  =============================  ==============================
+
+- ``type`` is a lowercase kebab-case workflow name matching the module
+  (``ingestion``, ``validation``, ``generation``, ``metrics``,
+  ``embedding-sync``, ``sla-monitor``, ``ontology-rebuild``).
+- Test IDs always start with ``test-`` so they can be identified and
+  cleaned up in the Temporal UI.  Use short, readable labels — never
+  embed full URNs.
+"""
 
 import hashlib
 from datetime import timedelta

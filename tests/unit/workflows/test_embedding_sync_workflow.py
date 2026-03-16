@@ -38,7 +38,7 @@ async def test_full_sync_batches(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             EmbeddingSyncWorkflow.run,
             EmbeddingSyncParams(mode="full"),
-            id="embedding-sync-test-1",
+            id="test-embedding-sync-full",
             task_queue=TASK_QUEUE,
         )
     assert result["status"] == "ok"
@@ -70,7 +70,7 @@ async def test_single_dataset_reindex(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             EmbeddingSyncWorkflow.run,
             EmbeddingSyncParams(mode="single", dataset_urn=_DATASET_URN),
-            id="embedding-sync-test-2",
+            id="test-embedding-sync-single",
             task_queue=TASK_QUEUE,
         )
     assert result["status"] == "ok"

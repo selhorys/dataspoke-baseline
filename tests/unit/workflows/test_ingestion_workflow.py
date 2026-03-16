@@ -27,7 +27,7 @@ async def test_happy_path(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             IngestionWorkflow.run,
             IngestionParams(dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)"),
-            id="ingestion-test-1",
+            id="test-ingestion-happy-path",
             task_queue=TASK_QUEUE,
         )
     assert result["status"] == "success"
@@ -52,7 +52,7 @@ async def test_dry_run_flag_propagated(env: WorkflowEnvironment):
                 dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)",
                 dry_run=True,
             ),
-            id="ingestion-test-2",
+            id="test-ingestion-dry-run",
             task_queue=TASK_QUEUE,
         )
     assert result["detail"]["dry_run"] is True
@@ -73,7 +73,7 @@ async def test_activity_failure_raises(env: WorkflowEnvironment):
                 IngestionParams(
                     dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)"
                 ),
-                id="ingestion-test-3",
+                id="test-ingestion-activity-failure",
                 task_queue=TASK_QUEUE,
             )
         assert "Connection refused" in str(exc_info.value.cause.cause)

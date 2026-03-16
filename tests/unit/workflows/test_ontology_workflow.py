@@ -54,7 +54,7 @@ async def test_full_rebuild(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             OntologyRebuildWorkflow.run,
             OntologyRebuildParams(),
-            id="ontology-test-1",
+            id="test-ontology-rebuild-full",
             task_queue=TASK_QUEUE,
         )
     assert result["classifications"] == 2
@@ -92,7 +92,7 @@ async def test_no_drift_detected(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             OntologyRebuildWorkflow.run,
             OntologyRebuildParams(),
-            id="ontology-test-2",
+            id="test-ontology-rebuild-no-drift",
             task_queue=TASK_QUEUE,
         )
     assert result["drift_detected"] is False
@@ -125,7 +125,7 @@ async def test_classification_failure_raises(env: WorkflowEnvironment):
             await env.client.execute_workflow(
                 OntologyRebuildWorkflow.run,
                 OntologyRebuildParams(),
-                id="ontology-test-3",
+                id="test-ontology-rebuild-classify-failure",
                 task_queue=TASK_QUEUE,
             )
         assert "DataHub unreachable" in str(exc_info.value.cause.cause)

@@ -31,7 +31,7 @@ async def test_happy_path(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             ValidationWorkflow.run,
             ValidationParams(dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)"),
-            id="validation-test-1",
+            id="test-validation-happy-path",
             task_queue=TASK_QUEUE,
         )
     assert result["status"] == "success"
@@ -56,7 +56,7 @@ async def test_dry_run_propagated(env: WorkflowEnvironment):
                 dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)",
                 dry_run=True,
             ),
-            id="validation-test-2",
+            id="test-validation-dry-run",
             task_queue=TASK_QUEUE,
         )
     assert captured_dry_run is True
@@ -76,7 +76,7 @@ async def test_activity_failure_raises(env: WorkflowEnvironment):
                 ValidationParams(
                     dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)"
                 ),
-                id="validation-test-3",
+                id="test-validation-activity-failure",
                 task_queue=TASK_QUEUE,
             )
         assert "DB unavailable" in str(exc_info.value.cause.cause)

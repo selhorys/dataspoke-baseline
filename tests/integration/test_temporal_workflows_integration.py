@@ -77,11 +77,11 @@ ALL_ACTIVITIES = [
 
 
 _TEST_WORKFLOW_IDS = [
-    f"integration-ingestion-{_IMAZON_DATASET_URN}",
-    f"integration-validation-{_IMAZON_DATASET_URN}",
-    f"integration-embedding-{_IMAZON_DATASET_URN}",
-    "integration-duplicate-test",
-    "integration-status-check",
+    "test-ingestion-title-master",
+    "test-validation-title-master",
+    "test-embedding-title-master",
+    "test-ingestion-duplicate",
+    "test-ingestion-status-check",
 ]
 
 
@@ -205,7 +205,7 @@ async def test_start_ingestion_workflow(temporal_client, temporal_worker):
     result = await temporal_client.execute_workflow(
         IngestionWorkflow.run,
         IngestionParams(dataset_urn=_IMAZON_DATASET_URN, dry_run=True),
-        id=f"integration-ingestion-{_IMAZON_DATASET_URN}",
+        id="test-ingestion-title-master",
         task_queue=TASK_QUEUE,
         execution_timeout=_WORKFLOW_TIMEOUT,
     )
@@ -226,7 +226,7 @@ async def test_validation_workflow_against_real_dataset(temporal_client, tempora
         result = await temporal_client.execute_workflow(
             ValidationWorkflow.run,
             ValidationParams(dataset_urn=_IMAZON_DATASET_URN, dry_run=True),
-            id=f"integration-validation-{_IMAZON_DATASET_URN}",
+            id="test-validation-title-master",
             task_queue=TASK_QUEUE,
             execution_timeout=_WORKFLOW_TIMEOUT,
         )
@@ -239,7 +239,7 @@ async def test_validation_workflow_against_real_dataset(temporal_client, tempora
 
 async def test_duplicate_workflow_rejected(temporal_client, temporal_worker):
     """Start a workflow, then try to start another with the same ID while it's running."""
-    workflow_id = "integration-duplicate-test"
+    workflow_id = "test-ingestion-duplicate"
 
     # Start the first workflow (ALLOW_DUPLICATE handles previously-used IDs)
     handle = await temporal_client.start_workflow(
@@ -274,7 +274,7 @@ async def test_embedding_sync_single_dataset(temporal_client, temporal_worker):
     result = await temporal_client.execute_workflow(
         EmbeddingSyncWorkflow.run,
         EmbeddingSyncParams(mode="single", dataset_urn=_IMAZON_DATASET_URN),
-        id=f"integration-embedding-{_IMAZON_DATASET_URN}",
+        id="test-embedding-title-master",
         task_queue=TASK_QUEUE,
         execution_timeout=_WORKFLOW_TIMEOUT,
     )
@@ -287,7 +287,7 @@ async def test_query_workflow_status(temporal_client, temporal_worker):
     handle = await temporal_client.start_workflow(
         IngestionWorkflow.run,
         IngestionParams(dataset_urn=_IMAZON_DATASET_URN, dry_run=True),
-        id="integration-status-check",
+        id="test-ingestion-status-check",
         task_queue=TASK_QUEUE,
         execution_timeout=_WORKFLOW_TIMEOUT,
     )

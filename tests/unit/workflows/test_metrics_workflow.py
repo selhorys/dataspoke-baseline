@@ -39,7 +39,7 @@ async def test_run_and_publish(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             MetricsCollectionWorkflow.run,
             MetricsParams(metric_id="metric-1"),
-            id="metrics-test-1",
+            id="test-metrics-run-publish",
             task_queue=TASK_QUEUE,
         )
     assert result["status"] == "success"
@@ -73,7 +73,7 @@ async def test_aggregate_health(env: WorkflowEnvironment):
         await env.client.execute_workflow(
             MetricsCollectionWorkflow.run,
             MetricsParams(metric_id="metric-1", aggregate=True),
-            id="metrics-test-2",
+            id="test-metrics-aggregate",
             task_queue=TASK_QUEUE,
         )
     assert aggregate_called
@@ -105,7 +105,7 @@ async def test_no_aggregate_by_default(env: WorkflowEnvironment):
         await env.client.execute_workflow(
             MetricsCollectionWorkflow.run,
             MetricsParams(metric_id="metric-1"),
-            id="metrics-test-3",
+            id="test-metrics-no-aggregate",
             task_queue=TASK_QUEUE,
         )
     assert not aggregate_called

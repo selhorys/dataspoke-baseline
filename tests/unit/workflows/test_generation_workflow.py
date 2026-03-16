@@ -31,7 +31,7 @@ async def test_happy_path(env: WorkflowEnvironment):
         result = await env.client.execute_workflow(
             GenerationWorkflow.run,
             GenerationParams(dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)"),
-            id="generation-test-1",
+            id="test-generation-happy-path",
             task_queue=TASK_QUEUE,
         )
     assert result["status"] == "success"
@@ -52,7 +52,7 @@ async def test_activity_failure_raises(env: WorkflowEnvironment):
                 GenerationParams(
                     dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)"
                 ),
-                id="generation-test-2",
+                id="test-generation-activity-failure",
                 task_queue=TASK_QUEUE,
             )
         assert "LLM API error" in str(exc_info.value.cause.cause)

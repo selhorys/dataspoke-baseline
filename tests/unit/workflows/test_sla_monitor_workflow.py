@@ -55,7 +55,7 @@ async def test_no_breach_no_alerts(env: WorkflowEnvironment):
                 sla_target=_SLA_TARGET,
                 alert_recipients=["ops@example.com"],
             ),
-            id="sla-test-1",
+            id="test-sla-monitor-no-breach",
             task_queue=TASK_QUEUE,
         )
         await asyncio.wait_for(check_done.wait(), timeout=10)
@@ -106,7 +106,7 @@ async def test_breach_sends_alert(env: WorkflowEnvironment):
                 sla_target=_SLA_TARGET,
                 alert_recipients=["ops@example.com"],
             ),
-            id="sla-test-2",
+            id="test-sla-monitor-breach-alert",
             task_queue=TASK_QUEUE,
         )
         await asyncio.wait_for(alert_done.wait(), timeout=10)
