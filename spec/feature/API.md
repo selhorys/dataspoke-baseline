@@ -456,10 +456,10 @@ Incoming Request
 │ 2. Request Logging      │  Log method, path, trace ID, client IP (before handler)
 ├─────────────────────────┤
 │ 3. Auth (JWT Validate)  │  Verify signature, expiry, extract claims
-│                         │  Skip for /health, /ready, /auth/*
+│                         │  Route-level Depends() — see note below
 ├─────────────────────────┤
 │ 4. Group Enforcement    │  Check groups claim against URI tier
-│                         │  Return 403 if insufficient
+│                         │  Route-level Depends() — see note below
 ├─────────────────────────┤
 │ 5. Rate Limiting        │  Token-bucket per user (Redis-backed)
 │                         │  Default: 120 req/min; burst: 20
@@ -472,6 +472,12 @@ Incoming Request
        ▼
 Outgoing Response
 ```
+
+> **Authentication and authorization (layers 3–4)** are implemented as
+> route-level dependencies (`Depends(require_common)`, `Depends(require_dg)`,
+> etc.) rather than blanket middleware. This approach allows unauthenticated
+> routes (`/health`, `/auth/*`) to coexist naturally without exclusion lists,
+> and gives each router explicit control over its required group membership.
 
 ### Trace ID
 
@@ -527,6 +533,7 @@ All errors follow the standard envelope:
 | `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
 | `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
+| `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL, Redis, or Qdrant connection failed |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |

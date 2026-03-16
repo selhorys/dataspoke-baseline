@@ -82,7 +82,7 @@ class IngestionService:
         deep_spec_enabled: bool,
         schedule: str | None,
         owner: str,
-    ) -> IngestionConfigRecord:
+    ) -> tuple[IngestionConfigRecord, bool]:
         result = await self._db.execute(
             select(IngestionConfig).where(IngestionConfig.dataset_urn == dataset_urn)
         )
@@ -95,6 +95,7 @@ class IngestionService:
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
+            created = False
         else:
             existing = IngestionConfig(
                 dataset_urn=dataset_urn,
@@ -104,10 +105,11 @@ class IngestionService:
                 owner=owner,
             )
             self._db.add(existing)
+            created = True
 
         await self._db.commit()
         await self._db.refresh(existing)
-        return _record_from_row(existing)
+        return _record_from_row(existing), created
 
     async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> IngestionConfigRecord:
         result = await self._db.execute(
@@ -148,6 +150,7 @@ class IngestionService:
         offset: int = 0,
         limit: int = 20,
         status_filter: str | None = None,
+        order_by: Any = None,
     ) -> tuple[list[IngestionConfigRecord], int]:
         base = select(IngestionConfig)
         if status_filter is not None:
@@ -156,7 +159,8 @@ class IngestionService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(IngestionConfig.created_at.desc()).offset(offset).limit(limit)
+        default_order = IngestionConfig.created_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -280,6 +284,7 @@ class IngestionService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == "dataset",
@@ -295,7 +300,8 @@ class IngestionService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

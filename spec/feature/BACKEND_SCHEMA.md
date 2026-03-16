@@ -71,6 +71,7 @@ Timeseries of validation run results.
 | `dataset_urn` | `TEXT` | Target dataset |
 | `quality_score` | `REAL` | Composite score 0–100 |
 | `dimensions` | `JSONB` | Per-dimension scores |
+| `dimension_details` | `JSONB` NULL | Per-dimension detailed breakdown |
 | `issues` | `JSONB` | Array of `QualityIssue` objects |
 | `anomalies` | `JSONB` | Array of `AnomalyResult` objects |
 | `recommendations` | `JSONB` | Array of recommendation strings |
@@ -163,6 +164,7 @@ Governance metric definitions.
 | `schedule` | `TEXT` NULL | Cron expression for scheduled measurement |
 | `alarm_enabled` | `BOOLEAN` | Enable threshold-based alerting |
 | `alarm_threshold` | `JSONB` NULL | Threshold configuration |
+| `alarm_recipients` | `JSONB` NULL | Email addresses to notify on alarm trigger |
 | `active` | `BOOLEAN` | Whether scheduled measurement is active |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |

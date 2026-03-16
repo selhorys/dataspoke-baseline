@@ -3,6 +3,7 @@
 import json
 import re
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,7 +95,23 @@ class DatasetService:
                 overall_score=data["overall_score"],
                 dimensions=data.get("dimensions", {}),
             )
-        # TODO: compute on demand when ValidationService is available
+        else:
+            # Fallback: read latest validation result from PostgreSQL
+            from src.shared.db.models import ValidationResult
+
+            latest_q = (
+                select(ValidationResult)
+                .where(ValidationResult.dataset_urn == dataset_urn)
+                .order_by(ValidationResult.measured_at.desc())
+                .limit(1)
+            )
+            latest = (await self._db.execute(latest_q)).scalar_one_or_none()
+            if latest:
+                quality_score = QualityScore(
+                    overall_score=latest.quality_score,
+                    dimensions=latest.dimensions,
+                    dimension_details=latest.dimension_details,
+                )
 
         return DatasetAttributes(
             urn=dataset_urn,
@@ -113,6 +130,7 @@ class DatasetService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[EventRecord], int]:
         base = select(Event).where(
             Event.entity_type == "dataset",
@@ -127,7 +145,8 @@ class DatasetService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

@@ -5,7 +5,7 @@ import asyncio
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from src.api.config import settings
+from src.shared.settings import settings
 from src.workflows._common import TASK_QUEUE
 from src.workflows.embedding_sync import (
     EmbeddingSyncWorkflow,

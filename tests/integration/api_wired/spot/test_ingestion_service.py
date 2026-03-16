@@ -78,7 +78,7 @@ async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncS
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
@@ -149,7 +149,7 @@ async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
                     "owner": "test@imazon.com",
                 },
             )
-            assert resp.status_code == 200
+            assert resp.status_code in (200, 201)
 
         resp = await http_client.get(
             "/api/v1/spoke/common/ingestion",
@@ -196,7 +196,7 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, t
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         # Run with dry_run=true
         resp = await http_client.post(

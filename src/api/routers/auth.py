@@ -11,52 +11,52 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# In-memory refresh token revocation set.
-# TODO: replace with Redis-backed set for multi-instance correctness.
+# TBD(user-accounts): Replace with Redis-backed set for multi-instance correctness
 _revoked_refresh_tokens: set[str] = set()
 
 _REFRESH_COOKIE = "refresh_token"
 _REFRESH_MAX_AGE = int(timedelta(days=settings.jwt_refresh_token_expire_days).total_seconds())
 
 
-def _verify_credentials(username: str, password: str) -> bool:
+def _verify_credentials(email: str, password: str) -> bool:
     """Stub credential check against the configured admin user.
 
-    TODO: replace with a real identity store (DB user table or LDAP).
+    TBD(user-accounts): Replace with DB/LDAP user lookup + bcrypt verify
     """
-    return username == settings.admin_username and password == settings.admin_password
+    return email == settings.admin_email and password == settings.admin_password
 
 
-def _get_user_groups(username: str) -> list[str]:
+def _get_user_groups(email: str) -> list[str]:
     """Return groups for a user.
 
-    TODO: look up groups from the identity store.
+    TBD(user-accounts): Look up groups from identity store
     """
-    if username == settings.admin_username:
+    if email == settings.admin_email:
         return list(settings.admin_groups)
     return []
 
 
 @router.post("/token", response_model=TokenResponse, status_code=status.HTTP_200_OK)
 async def issue_token(body: TokenRequest, response: Response) -> TokenResponse:
-    """Exchange username + password for access token + refresh token cookie."""
-    if not _verify_credentials(body.username, body.password):
+    """Exchange email + password for access token + refresh token cookie."""
+    if not _verify_credentials(body.email, body.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error_code": "UNAUTHORIZED", "message": "Invalid credentials."},
         )
 
-    groups = _get_user_groups(body.username)
+    groups = _get_user_groups(body.email)
+    # TBD(user-accounts): Read email from user record instead of using subject directly
     access_token, expires_in = create_access_token(
-        subject=body.username, groups=groups, email=f"{body.username}@example.com"
+        subject=body.email, groups=groups, email=body.email
     )
-    refresh_token = create_refresh_token(subject=body.username)
+    refresh_token = create_refresh_token(subject=body.email)
 
     response.set_cookie(
         key=_REFRESH_COOKIE,
         value=refresh_token,
         httponly=True,
-        secure=False,  # TODO: set True in production
+        secure=False,  # TBD(user-accounts): Set True via settings in production
         samesite="lax",
         max_age=_REFRESH_MAX_AGE,
         path="/auth/token",
@@ -107,8 +107,9 @@ async def refresh_token(
 
     subject: str = payload["sub"]
     groups = _get_user_groups(subject)
+    # TBD(user-accounts): Read email from user record instead of fabricating
     access_token, expires_in = create_access_token(
-        subject=subject, groups=groups, email=f"{subject}@example.com"
+        subject=subject, groups=groups, email=subject
     )
 
     # Rotate refresh token

@@ -1194,3 +1194,25 @@ tuning:
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Below this → pending human review |
 | `SLA_MONITOR_INTERVAL_MINUTES` | 30 | Default interval for SLA monitoring schedule |
 | `SLA_ALERT_BEFORE_MINUTES` | 120 | Default pre-breach alert lead time |
+
+---
+
+## User Account Management (TBD)
+
+> This section outlines the planned user identity and account features that will
+> replace the current stub admin authentication. All stub code is marked with
+> `TBD(user-accounts)` comments.
+
+### Planned Components
+
+- **User identity store**: PostgreSQL `users` table or external IdP integration
+  (LDAP, OIDC). Stores email, hashed password, group memberships.
+- **Password hashing**: bcrypt via `passlib` (already a dependency).
+- **Group membership management**: Admin routes under `/admin/…` for user CRUD
+  and group assignment.
+- **Redis-backed refresh token revocation**: Replace the in-memory
+  `_revoked_refresh_tokens` set with a Redis set for multi-instance correctness.
+- **Account information transfer**: Map DataSpoke users to DataHub owner URNs so
+  that auto-assigned metric issues and notification recipients resolve correctly.
+- **Cookie `secure` flag**: Tied to an environment/deployment config setting
+  (e.g., `DATASPOKE_COOKIE_SECURE=true`).

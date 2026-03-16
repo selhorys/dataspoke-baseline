@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
 from src.api.dependencies import get_ontology_service
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ontology import (
     ConceptAttrResponse,
@@ -10,6 +11,7 @@ from src.api.schemas.ontology import (
     ConceptResponse,
 )
 from src.backend.ontology.service import OntologyService
+from src.shared.db.models import ConceptCategory, Event
 
 router = APIRouter(
     prefix="/ontology",
@@ -35,9 +37,15 @@ def _concept_response(c) -> ConceptResponse:  # noqa: ANN001
 async def get_ontology_concepts(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptListResponse:
-    concepts, total_count = await service.list_concepts(offset=offset, limit=limit)
+    order_by = parse_sort(
+        sort,
+        {"name": ConceptCategory.name, "created_at": ConceptCategory.created_at},
+        None,
+    )
+    concepts, total_count = await service.list_concepts(offset=offset, limit=limit, order_by=order_by)
     return ConceptListResponse(
         offset=offset,
         limit=limit,
@@ -85,9 +93,13 @@ async def get_ontology_concept_events(
     concept_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     service: OntologyService = Depends(get_ontology_service),
 ) -> EventListResponse:
-    events, total_count = await service.get_concept_events(concept_id, offset=offset, limit=limit)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
+    events, total_count = await service.get_concept_events(
+        concept_id, offset=offset, limit=limit, order_by=order_by
+    )
     return EventListResponse(
         offset=offset,
         limit=limit,

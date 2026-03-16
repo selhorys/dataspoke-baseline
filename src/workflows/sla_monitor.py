@@ -15,7 +15,9 @@ with workflow.unsafe.imports_passed_through():
         default_retry_policy,
         make_cache,
         make_datahub,
+        make_llm,
         make_notification,
+        make_qdrant,
     )
 
 

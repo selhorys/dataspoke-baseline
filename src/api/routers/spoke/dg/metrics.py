@@ -1,11 +1,14 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, WebSocket, status
+from fastapi import APIRouter, Depends, Query, Response, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
+from temporalio.client import Client as TemporalClient
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_dg
 from src.api.auth.ws import ws_authenticate
-from src.api.dependencies import get_metrics_service, get_redis
+from src.api.schemas.common import parse_sort
+from src.api.dependencies import get_metrics_service, get_redis, get_temporal_client
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
     DismissMetricIssueRequest,
@@ -23,6 +26,10 @@ from src.api.schemas.metrics import (
     UpsertMetricConfigRequest,
 )
 from src.backend.metrics.service import MetricsService
+from src.shared.db.models import Event, MetricDefinition, MetricIssue, MetricResult
+from src.shared.exceptions import ConflictError
+from src.workflows._common import TASK_QUEUE, await_workflow_result
+from src.workflows.metrics import MetricsCollectionWorkflow, MetricsParams
 
 router = APIRouter(
     prefix="/metric",
@@ -41,6 +48,7 @@ def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
         schedule=m.schedule,
         alarm_enabled=m.alarm_enabled,
         alarm_threshold=m.alarm_threshold,
+        alarm_recipients=m.alarm_recipients,
         active=m.active,
         created_at=m.created_at,
         updated_at=m.updated_at,
@@ -51,12 +59,14 @@ def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
 async def get_metrics(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     theme: str | None = Query(default=None),
     active: bool | None = Query(default=None),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionListResponse:
+    order_by = parse_sort(sort, {"created_at": MetricDefinition.created_at}, None)
     metrics, total_count = await service.list_metrics(
-        offset=offset, limit=limit, theme_filter=theme, active_filter=active
+        offset=offset, limit=limit, theme_filter=theme, active_filter=active, order_by=order_by
     )
     return MetricDefinitionListResponse(
         offset=offset,
@@ -97,9 +107,10 @@ async def get_metric_conf(
 async def put_metric_conf(
     metric_id: str,
     body: UpsertMetricConfigRequest,
+    response: Response,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    metric = await service.upsert_metric_config(
+    metric, created = await service.upsert_metric_config(
         metric_id=metric_id,
         title=body.title,
         description=body.description,
@@ -108,8 +119,11 @@ async def put_metric_conf(
         schedule=body.schedule,
         alarm_enabled=body.alarm_enabled,
         alarm_threshold=body.alarm_threshold,
+        alarm_recipients=body.alarm_recipients,
         active=body.active,
     )
+    if created:
+        response.status_code = status.HTTP_201_CREATED
     return _definition_response(metric)
 
 
@@ -137,12 +151,14 @@ async def get_metric_result(
     metric_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricResultListResponse:
+    order_by = parse_sort(sort, {"measured_at": MetricResult.measured_at}, None)
     results, total_count = await service.get_results(
-        metric_id, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit
+        metric_id, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
     )
     return MetricResultListResponse(
         offset=offset,
@@ -167,13 +183,26 @@ async def get_metric_result(
 async def post_metric_run(
     metric_id: str,
     body: RunMetricRequest,
-    service: MetricsService = Depends(get_metrics_service),
+    temporal: TemporalClient = Depends(get_temporal_client),
 ) -> MetricRunResultResponse:
-    result = await service.run(metric_id, dry_run=body.dry_run)
+    workflow_id = f"metrics-{metric_id}"
+    try:
+        handle = await temporal.start_workflow(
+            MetricsCollectionWorkflow.run,
+            MetricsParams(metric_id=metric_id, dry_run=body.dry_run),
+            id=workflow_id,
+            task_queue=TASK_QUEUE,
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise ConflictError(
+            "METRIC_RUNNING",
+            f"A metric run is already in progress for {metric_id}",
+        ) from exc
+    result = await await_workflow_result(handle)
     return MetricRunResultResponse(
-        run_id=result.run_id,
-        status=result.status,
-        detail=result.detail,
+        run_id=result["run_id"],
+        status=result["status"],
+        detail=result["detail"],
     )
 
 
@@ -200,12 +229,14 @@ async def get_metric_events(
     metric_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> EventListResponse:
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
-        metric_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
+        metric_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
     )
     return EventListResponse(
         offset=offset,
@@ -253,12 +284,14 @@ async def get_metric_issues(
     metric_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     issue_status: str | None = Query(default=None, alias="status"),
     priority: str | None = Query(default=None),
     issue_type: str | None = Query(default=None),
     assignee: str | None = Query(default=None),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricIssueListResponse:
+    order_by = parse_sort(sort, {"created_at": MetricIssue.created_at}, None)
     metric_issues, total_count = await service.list_metric_issues(
         metric_id=metric_id,
         offset=offset,
@@ -267,6 +300,7 @@ async def get_metric_issues(
         priority_filter=priority,
         issue_type_filter=issue_type,
         assignee_filter=assignee,
+        order_by=order_by,
     )
     return MetricIssueListResponse(
         offset=offset,
@@ -319,12 +353,14 @@ async def get_metric_issue_events(
     metric_issue_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> EventListResponse:
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_metric_issue_events(
-        metric_issue_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
+        metric_issue_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
     )
     return EventListResponse(
         offset=offset,

@@ -1,13 +1,14 @@
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
 from temporalio.client import Client as TemporalClient
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
 from src.api.auth.ws import ws_authenticate
+from src.api.schemas.common import parse_sort
 from src.api.dependencies import (
     get_dataset_service,
     get_generation_service,
@@ -47,6 +48,7 @@ from src.backend.dataset.service import DatasetService
 from src.backend.generation.service import GenerationService
 from src.backend.ingestion.service import IngestionService
 from src.backend.validation.service import ValidationService
+from src.shared.db.models import Event, GenerationResult, ValidationResult
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
 from src.workflows.generation import GenerationParams, GenerationWorkflow
@@ -110,11 +112,15 @@ async def get_data_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: DatasetService = Depends(get_dataset_service),
 ) -> EventListResponse:
-    events, total_count = await service.get_events(dataset_urn, offset, limit, from_time, to_time)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
+    events, total_count = await service.get_events(
+        dataset_urn, offset, limit, from_time, to_time, order_by=order_by
+    )
     return EventListResponse(
         offset=offset,
         limit=limit,
@@ -166,15 +172,18 @@ async def get_data_ingestion_conf(
 async def put_data_ingestion_conf(
     dataset_urn: str,
     body: CreateIngestionConfigRequest,
+    response: Response,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
-    config = await service.upsert_config(
+    config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         sources=body.sources,
         deep_spec_enabled=body.deep_spec_enabled,
         schedule=body.schedule,
         owner=body.owner,
     )
+    if created:
+        response.status_code = status.HTTP_201_CREATED
     return _config_response(config)
 
 
@@ -229,11 +238,15 @@ async def get_data_ingestion_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> EventListResponse:
-    events, total_count = await service.get_events(dataset_urn, offset, limit, from_time, to_time)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
+    events, total_count = await service.get_events(
+        dataset_urn, offset, limit, from_time, to_time, order_by=order_by
+    )
     return EventListResponse(
         offset=offset,
         limit=limit,
@@ -285,15 +298,18 @@ async def get_data_validation_conf(
 async def put_data_validation_conf(
     dataset_urn: str,
     body: CreateValidationConfigRequest,
+    response: Response,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    config = await service.upsert_config(
+    config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         rules=body.rules,
         schedule=body.schedule,
         sla_target=body.sla_target,
         owner=body.owner,
     )
+    if created:
+        response.status_code = status.HTTP_201_CREATED
     return _validation_config_response(config)
 
 
@@ -321,12 +337,14 @@ async def get_data_validation_result(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
+    order_by = parse_sort(sort, {"measured_at": ValidationResult.measured_at}, None)
     results, total_count = await service.get_results(
-        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit
+        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
     )
     return ValidationResultListResponse(
         offset=offset,
@@ -384,12 +402,14 @@ async def get_data_validation_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> EventListResponse:
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
-        dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
+        dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
     )
     return EventListResponse(
         offset=offset,
@@ -442,15 +462,18 @@ async def get_data_gen_conf(
 async def put_data_gen_conf(
     dataset_urn: str,
     body: CreateGenerationConfigRequest,
+    response: Response,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
-    config = await service.upsert_config(
+    config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         target_fields=body.target_fields,
         code_refs=body.code_refs,
         schedule=body.schedule,
         owner=body.owner,
     )
+    if created:
+        response.status_code = status.HTTP_201_CREATED
     return _generation_config_response(config)
 
 
@@ -478,12 +501,14 @@ async def get_data_gen_result(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationResultListResponse:
+    order_by = parse_sort(sort, {"generated_at": GenerationResult.generated_at}, None)
     results, total_count = await service.get_results(
-        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit
+        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
     )
     return GenerationResultListResponse(
         offset=offset,
@@ -550,12 +575,14 @@ async def get_data_gen_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> EventListResponse:
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
-        dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
+        dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
     )
     return EventListResponse(
         offset=offset,

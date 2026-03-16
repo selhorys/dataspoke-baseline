@@ -68,13 +68,15 @@ class OntologyService:
         self,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[ConceptRecord], int]:
         base = select(ConceptCategory)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(ConceptCategory.name).offset(offset).limit(limit)
+        default_order = ConceptCategory.name
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -130,6 +132,7 @@ class OntologyService:
         concept_id: str,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == "concept",
@@ -139,7 +142,8 @@ class OntologyService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

@@ -28,6 +28,7 @@ class MetricDefinitionRecord(BaseModel):
     schedule: str | None = None
     alarm_enabled: bool
     alarm_threshold: dict[str, Any] | None = None
+    alarm_recipients: list[str] | None = None
     active: bool
     created_at: datetime
     updated_at: datetime
@@ -111,6 +112,7 @@ def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
         schedule=row.schedule,
         alarm_enabled=row.alarm_enabled,
         alarm_threshold=row.alarm_threshold,
+        alarm_recipients=row.alarm_recipients,
         active=row.active,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -160,6 +162,7 @@ class MetricsService:
         limit: int = 20,
         theme_filter: str | None = None,
         active_filter: bool | None = None,
+        order_by: Any = None,
     ) -> tuple[list[MetricDefinitionRecord], int]:
         base = select(MetricDefinition)
         if theme_filter is not None:
@@ -170,7 +173,8 @@ class MetricsService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(MetricDefinition.created_at.desc()).offset(offset).limit(limit)
+        default_order = MetricDefinition.created_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -227,8 +231,9 @@ class MetricsService:
         schedule: str | None = None,
         alarm_enabled: bool = False,
         alarm_threshold: dict[str, Any] | None = None,
+        alarm_recipients: list[str] | None = None,
         active: bool = True,
-    ) -> MetricDefinitionRecord:
+    ) -> tuple[MetricDefinitionRecord, bool]:
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
         )
@@ -242,9 +247,11 @@ class MetricsService:
             existing.schedule = schedule
             existing.alarm_enabled = alarm_enabled
             existing.alarm_threshold = alarm_threshold
+            existing.alarm_recipients = alarm_recipients
             existing.active = active
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
+            created = False
         else:
             existing = MetricDefinition(
                 id=metric_id,
@@ -255,13 +262,15 @@ class MetricsService:
                 schedule=schedule,
                 alarm_enabled=alarm_enabled,
                 alarm_threshold=alarm_threshold,
+                alarm_recipients=alarm_recipients,
                 active=active,
             )
             self._db.add(existing)
+            created = True
 
         await self._db.commit()
         await self._db.refresh(existing)
-        return _definition_from_row(existing)
+        return _definition_from_row(existing), created
 
     async def patch_metric_config(
         self, metric_id: str, patch: dict[str, Any]
@@ -281,6 +290,7 @@ class MetricsService:
             "schedule",
             "alarm_enabled",
             "alarm_threshold",
+            "alarm_recipients",
             "active",
         ):
             if field in patch and patch[field] is not None:
@@ -312,6 +322,7 @@ class MetricsService:
         to_dt: datetime | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[MetricResultRecord], int]:
         base = select(MetricResult).where(MetricResult.metric_id == metric_id)
 
@@ -323,7 +334,8 @@ class MetricsService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(MetricResult.measured_at.desc()).offset(offset).limit(limit)
+        default_order = MetricResult.measured_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -398,7 +410,7 @@ class MetricsService:
                 threshold_val = (definition.alarm_threshold or {}).get("value", value)
                 try:
                     await self._notification.send_alarm(
-                        recipients=[],
+                        recipients=definition.alarm_recipients or [],
                         metric_id=metric_id,
                         value=value,
                         threshold=threshold_val,
@@ -472,6 +484,7 @@ class MetricsService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == "metric",
@@ -486,7 +499,8 @@ class MetricsService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -542,6 +556,7 @@ class MetricsService:
         priority_filter: str | None = None,
         issue_type_filter: str | None = None,
         assignee_filter: str | None = None,
+        order_by: Any = None,
     ) -> tuple[list[MetricIssueRecord], int]:
         base = select(MetricIssue).where(MetricIssue.metric_id == metric_id)
         if status_filter is not None:
@@ -556,7 +571,8 @@ class MetricsService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(MetricIssue.created_at.desc()).offset(offset).limit(limit)
+        default_order = MetricIssue.created_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -641,6 +657,7 @@ class MetricsService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == "metric_issue",
@@ -654,7 +671,8 @@ class MetricsService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -720,12 +738,23 @@ class MetricsService:
         new_findings: list[str] = delta.get("new_findings", [])
         for urn in new_findings:
             score_impact = round(1.0 / max(total_affected, 1), 2)
+            # Auto-assign to dataset owner from DataHub
+            assignee = None
+            try:
+                from datahub.metadata.schema_classes import OwnershipClass
+
+                ownership = await self._datahub.get_aspect(urn, OwnershipClass)
+                if ownership and ownership.owners:
+                    assignee = str(ownership.owners[0].owner)
+            except Exception:
+                pass
             row = MetricIssue(
                 metric_id=metric_id,
                 dataset_urn=urn,
                 issue_type=issue_type,
                 priority=priority,
                 status="open",
+                assignee=assignee,
                 description=affected_map.get(urn, f"{issue_type}: {urn}"),
                 estimated_fix_minutes=est_minutes,
                 projected_score_impact=score_impact,

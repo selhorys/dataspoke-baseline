@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from temporalio.common import RetryPolicy
 
-from src.api.config import settings
+from src.shared.settings import settings
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal

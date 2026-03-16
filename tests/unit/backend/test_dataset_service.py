@@ -15,6 +15,7 @@ from tests.unit.backend.conftest import (
     make_datahub_tags,
     make_event_row,
     mock_paginated_query,
+    mock_scalar_query,
 )
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
@@ -123,7 +124,7 @@ async def test_get_attributes_with_schema_and_quality(service, datahub, cache):
     assert result.quality_score.dimensions == {"completeness": 0.9}
 
 
-async def test_get_attributes_quality_cache_miss(service, datahub, cache):
+async def test_get_attributes_quality_cache_miss(service, datahub, cache, db):
     props = make_datahub_props()
 
     async def fake_get_aspect(urn, cls):
@@ -134,12 +135,13 @@ async def test_get_attributes_quality_cache_miss(service, datahub, cache):
 
     datahub.get_aspect = AsyncMock(side_effect=fake_get_aspect)
     cache.get = AsyncMock(return_value=None)
+    mock_scalar_query(db, None)
 
     result = await service.get_attributes(_DATASET_URN)
     assert result.quality_score is None
 
 
-async def test_get_attributes_no_schema(service, datahub, cache):
+async def test_get_attributes_no_schema(service, datahub, cache, db):
     props = make_datahub_props()
 
     async def fake_get_aspect(urn, cls):
@@ -150,6 +152,7 @@ async def test_get_attributes_no_schema(service, datahub, cache):
 
     datahub.get_aspect = AsyncMock(side_effect=fake_get_aspect)
     cache.get = AsyncMock(return_value=None)
+    mock_scalar_query(db, None)
 
     result = await service.get_attributes(_DATASET_URN)
     assert result.column_count == 0

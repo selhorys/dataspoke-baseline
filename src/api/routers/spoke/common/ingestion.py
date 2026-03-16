@@ -6,6 +6,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
 from src.api.dependencies import get_ingestion_service, get_temporal_client
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import (
     IngestionConfigListResponse,
@@ -15,6 +16,7 @@ from src.api.schemas.ingestion import (
     RunResultResponse,
 )
 from src.backend.ingestion.service import IngestionService
+from src.shared.db.models import Event, IngestionConfig
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
 from src.workflows.ingestion import IngestionParams, IngestionWorkflow
@@ -44,10 +46,12 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
 async def get_ingestion_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigListResponse:
-    configs, total = await service.list_configs(offset, limit, status_filter)
+    order_by = parse_sort(sort, {"created_at": IngestionConfig.created_at}, None)
+    configs, total = await service.list_configs(offset, limit, status_filter, order_by=order_by)
     return IngestionConfigListResponse(
         offset=offset,
         limit=limit,
@@ -121,11 +125,15 @@ async def get_ingestion_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> EventListResponse:
-    events, total_count = await service.get_events(dataset_urn, offset, limit, from_time, to_time)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
+    events, total_count = await service.get_events(
+        dataset_urn, offset, limit, from_time, to_time, order_by=order_by
+    )
     return EventListResponse(
         offset=offset,
         limit=limit,

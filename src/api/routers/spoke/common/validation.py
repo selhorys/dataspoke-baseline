@@ -5,6 +5,7 @@ from temporalio.client import Client as TemporalClient
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
+from src.api.schemas.common import parse_sort
 from src.api.dependencies import get_temporal_client, get_validation_service
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.validation import (
@@ -17,6 +18,7 @@ from src.api.schemas.validation import (
     ValidationResultResponse,
 )
 from src.backend.validation.service import ValidationService
+from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
 from src.workflows.validation import ValidationParams, ValidationWorkflow
@@ -46,11 +48,13 @@ def _config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
 async def get_validation_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigListResponse:
+    order_by = parse_sort(sort, {"created_at": ValidationConfig.created_at}, None)
     configs, total_count = await service.list_configs(
-        offset=offset, limit=limit, status_filter=status_filter
+        offset=offset, limit=limit, status_filter=status_filter, order_by=order_by
     )
     return ValidationConfigListResponse(
         offset=offset,
@@ -98,12 +102,14 @@ async def get_validation_result(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
+    order_by = parse_sort(sort, {"measured_at": ValidationResult.measured_at}, None)
     results, total_count = await service.get_results(
-        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit
+        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
     )
     return ValidationResultListResponse(
         offset=offset,
@@ -160,12 +166,14 @@ async def get_validation_events(
     dataset_urn: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> EventListResponse:
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
-        dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time
+        dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
     )
     return EventListResponse(
         offset=offset,

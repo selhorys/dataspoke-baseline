@@ -125,7 +125,7 @@ class ValidationService:
         schedule: str | None,
         sla_target: dict[str, Any] | None,
         owner: str,
-    ) -> ValidationConfigRecord:
+    ) -> tuple[ValidationConfigRecord, bool]:
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
@@ -138,6 +138,7 @@ class ValidationService:
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
+            created = False
         else:
             existing = ValidationConfig(
                 dataset_urn=dataset_urn,
@@ -147,10 +148,11 @@ class ValidationService:
                 owner=owner,
             )
             self._db.add(existing)
+            created = True
 
         await self._db.commit()
         await self._db.refresh(existing)
-        return _config_from_row(existing)
+        return _config_from_row(existing), created
 
     async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> ValidationConfigRecord:
         result = await self._db.execute(
@@ -191,6 +193,7 @@ class ValidationService:
         offset: int = 0,
         limit: int = 20,
         status_filter: str | None = None,
+        order_by: Any = None,
     ) -> tuple[list[ValidationConfigRecord], int]:
         base = select(ValidationConfig)
         if status_filter is not None:
@@ -199,7 +202,8 @@ class ValidationService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(ValidationConfig.created_at.desc()).offset(offset).limit(limit)
+        default_order = ValidationConfig.created_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -214,6 +218,7 @@ class ValidationService:
         to_dt: datetime | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[ValidationResultRecord], int]:
         base = select(ValidationResult).where(ValidationResult.dataset_urn == dataset_urn)
 
@@ -225,7 +230,8 @@ class ValidationService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(ValidationResult.measured_at.desc()).offset(offset).limit(limit)
+        default_order = ValidationResult.measured_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -425,6 +431,7 @@ class ValidationService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == "dataset",
@@ -440,7 +447,8 @@ class ValidationService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

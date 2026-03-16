@@ -19,7 +19,7 @@ async def test_run_and_publish(env: WorkflowEnvironment):
     published = []
 
     @activity.defn(name="run_metric_activity")
-    async def mock_run(metric_id: str) -> dict:
+    async def mock_run(metric_id: str, dry_run: bool = False) -> dict:
         return {"run_id": "m-001", "status": "success", "detail": {"value": 42.0}}
 
     @activity.defn(name="aggregate_health_activity")
@@ -51,7 +51,7 @@ async def test_aggregate_health(env: WorkflowEnvironment):
     aggregate_called = False
 
     @activity.defn(name="run_metric_activity")
-    async def mock_run(metric_id: str) -> dict:
+    async def mock_run(metric_id: str, dry_run: bool = False) -> dict:
         return {"run_id": "m-002", "status": "success", "detail": {}}
 
     @activity.defn(name="aggregate_health_activity")
@@ -83,7 +83,7 @@ async def test_no_aggregate_by_default(env: WorkflowEnvironment):
     aggregate_called = False
 
     @activity.defn(name="run_metric_activity")
-    async def mock_run(metric_id: str) -> dict:
+    async def mock_run(metric_id: str, dry_run: bool = False) -> dict:
         return {"run_id": "m-003", "status": "success", "detail": {}}
 
     @activity.defn(name="aggregate_health_activity")

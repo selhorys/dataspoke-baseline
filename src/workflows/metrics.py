@@ -25,10 +25,11 @@ with workflow.unsafe.imports_passed_through():
 class MetricsParams:
     metric_id: str
     aggregate: bool = False
+    dry_run: bool = False
 
 
 @activity.defn
-async def run_metric_activity(metric_id: str) -> dict:
+async def run_metric_activity(metric_id: str, dry_run: bool = False) -> dict:
     """Run a single metric measurement."""
     datahub = make_datahub()
     cache = make_cache()
@@ -36,7 +37,7 @@ async def run_metric_activity(metric_id: str) -> dict:
     try:
         async with SessionLocal() as db:
             service = MetricsService(datahub=datahub, db=db, cache=cache, notification=notification)
-            result = await service.run(metric_id)
+            result = await service.run(metric_id, dry_run=dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
     except DataSpokeError as exc:
         raise ApplicationError(str(exc), type=exc.error_code, non_retryable=True) from exc
@@ -78,7 +79,7 @@ class MetricsCollectionWorkflow:
     async def run(self, params: MetricsParams) -> dict:
         result = await workflow.execute_activity(
             run_metric_activity,
-            args=[params.metric_id],
+            args=[params.metric_id, params.dry_run],
             start_to_close_timeout=DEFAULT_ACTIVITY_TIMEOUT,
             retry_policy=default_retry_policy(),
         )

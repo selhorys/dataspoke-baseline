@@ -18,6 +18,19 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+from contextlib import ExitStack
+from unittest.mock import AsyncMock, patch
+
+from temporalio.worker import Worker
+
+from src.workflows._common import TASK_QUEUE
+from src.workflows.metrics import (
+    MetricsCollectionWorkflow,
+    publish_metric_update_activity,
+    run_metric_activity,
+)
+from tests.integration.api_wired.conftest import mock_cache as _mock_cache
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
@@ -27,12 +40,52 @@ from tests.integration.conftest import (
 
 _DG_PREFIX = "/api/v1/spoke/dg/metric"
 _TEST_METRIC_PREFIX = "imazon.test.metrics"
+_WF_MODULE = "src.workflows.metrics"
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, mock_cache, async_session):
-    async with override_app(datahub=datahub_client, redis=mock_cache, db=async_session) as client:
+async def http_client(datahub_client, mock_cache, async_session, temporal_client):
+    async with override_app(
+        datahub=datahub_client, redis=mock_cache, db=async_session, temporal=temporal_client
+    ) as client:
         yield client
+
+
+@pytest_asyncio.fixture
+async def temporal_worker(temporal_client, datahub_client, async_session):
+    """In-process Temporal worker for metrics workflows.
+
+    Patches make_datahub, make_cache, make_notification, and SessionLocal
+    so the activity uses test-scoped clients.
+    """
+    from tests.integration.api_wired.conftest import _TestSessionWrapper
+
+    patches = {
+        f"{_WF_MODULE}.make_datahub": datahub_client,
+        f"{_WF_MODULE}.make_cache": _mock_cache(),
+        f"{_WF_MODULE}.make_notification": lambda: AsyncMock(),
+        f"{_WF_MODULE}.SessionLocal": _TestSessionWrapper(async_session),
+    }
+    stack = ExitStack()
+    for target, return_value in patches.items():
+        stack.enter_context(patch(target, return_value=return_value))
+
+    with stack:
+        worker = Worker(
+            temporal_client,
+            task_queue=TASK_QUEUE,
+            workflows=[MetricsCollectionWorkflow],
+            activities=[run_metric_activity, publish_metric_update_activity],
+        )
+        worker_task = asyncio.create_task(worker.run())
+        try:
+            yield worker
+        finally:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -57,7 +110,7 @@ async def test_metric_config_crud_via_http(http_client, async_session: AsyncSess
                 "schedule": "0 * * * *",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["title"] == "CRUD Test Metric"
         assert body["id"] == metric_id
@@ -109,7 +162,7 @@ async def test_metric_config_crud_via_http(http_client, async_session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_metric_run_and_result_persistence(http_client, async_session: AsyncSession):
+async def test_metric_run_and_result_persistence(http_client, async_session: AsyncSession, temporal_worker):
     """PUT config → POST run → GET results → verify persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_persist"
     headers = _auth_headers()
@@ -126,7 +179,7 @@ async def test_metric_run_and_result_persistence(http_client, async_session: Asy
                 "measurement_query": {"type": "dataset_count"},
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         # Run
         resp = await http_client.post(
@@ -167,7 +220,7 @@ async def test_metric_run_and_result_persistence(http_client, async_session: Asy
 
 
 @pytest.mark.asyncio
-async def test_metric_run_dry_run(http_client, async_session: AsyncSession):
+async def test_metric_run_dry_run(http_client, async_session: AsyncSession, temporal_worker):
     """POST run (dry_run=true) → verify no result persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_dry"
     headers = _auth_headers()
@@ -183,7 +236,7 @@ async def test_metric_run_dry_run(http_client, async_session: AsyncSession):
                 "measurement_query": {"type": "dataset_count"},
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         resp = await http_client.post(
             f"{_DG_PREFIX}/{metric_id}/method/run",
@@ -227,7 +280,7 @@ async def test_activate_deactivate(http_client, async_session: AsyncSession):
                 "active": True,
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
         assert resp.json()["active"] is True
 
         # Deactivate
@@ -325,7 +378,7 @@ async def test_metric_attr_endpoint(http_client, async_session: AsyncSession):
                 "schedule": "*/5 * * * *",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         resp = await http_client.get(
             f"{_DG_PREFIX}/{metric_id}/attr",

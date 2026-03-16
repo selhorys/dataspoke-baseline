@@ -16,6 +16,7 @@ class UpsertMetricConfigRequest(BaseModel):
     schedule: str | None = None
     alarm_enabled: bool = False
     alarm_threshold: dict[str, Any] | None = None
+    alarm_recipients: list[str] | None = None
     active: bool = True
 
 
@@ -27,6 +28,7 @@ class PatchMetricConfigRequest(BaseModel):
     schedule: str | None = None
     alarm_enabled: bool | None = None
     alarm_threshold: dict[str, Any] | None = None
+    alarm_recipients: list[str] | None = None
     active: bool | None = None
 
 
@@ -43,6 +45,7 @@ class MetricDefinitionResponse(SingleResponse):
     schedule: str | None
     alarm_enabled: bool
     alarm_threshold: dict[str, Any] | None
+    alarm_recipients: list[str] | None = None
     active: bool
     created_at: datetime
     updated_at: datetime

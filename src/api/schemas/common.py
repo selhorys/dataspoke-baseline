@@ -44,3 +44,23 @@ class TimeRangeParams(BaseModel):
     to_time: datetime | None = Field(default=None, alias="to")
 
     model_config = {"populate_by_name": True}
+
+
+def parse_sort(sort_param: str | None, allowed: dict[str, Any], default: Any) -> Any:
+    """Parse 'field_asc'/'field_desc' into SQLAlchemy order clause.
+
+    Args:
+        sort_param: User-supplied sort string, e.g. ``"created_at_desc"``
+        allowed: Mapping of field name -> SQLAlchemy column
+        default: Fallback order clause when sort_param is None or invalid
+    """
+    if sort_param is None:
+        return default
+    for suffix, method in (("_desc", "desc"), ("_asc", "asc")):
+        if sort_param.endswith(suffix):
+            field_name = sort_param[: -len(suffix)]
+            col = allowed.get(field_name)
+            if col is not None:
+                return getattr(col, method)()
+            break
+    return default

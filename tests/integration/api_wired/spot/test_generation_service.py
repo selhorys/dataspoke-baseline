@@ -94,7 +94,7 @@ async def test_generation_config_crud_via_http(http_client, async_session: Async
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
@@ -165,7 +165,7 @@ async def test_list_generation_configs(http_client, async_session: AsyncSession)
                     "owner": "test@imazon.com",
                 },
             )
-            assert resp.status_code == 200
+            assert resp.status_code in (200, 201)
 
         resp = await http_client.get(
             "/api/v1/spoke/common/gen",
@@ -204,7 +204,7 @@ async def test_generate_produces_result(http_client, async_session: AsyncSession
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         # Run generate
         resp = await http_client.post(
@@ -262,7 +262,7 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession, te
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         # Run generate
         resp = await http_client.post(

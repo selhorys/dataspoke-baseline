@@ -90,7 +90,7 @@ async def test_validation_config_crud_via_http(http_client, async_session: Async
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
@@ -161,7 +161,7 @@ async def test_list_validation_configs(http_client, async_session: AsyncSession)
                     "owner": "test@imazon.com",
                 },
             )
-            assert resp.status_code == 200
+            assert resp.status_code in (200, 201)
 
         resp = await http_client.get(
             "/api/v1/spoke/common/validation",
@@ -200,7 +200,7 @@ async def test_run_validation_dry_run(http_client, async_session: AsyncSession, 
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         # Run with dry_run=true
         resp = await http_client.post(
@@ -249,7 +249,7 @@ async def test_run_validation_persists_result(
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code in (200, 201)
 
         # Run without dry_run
         resp = await http_client.post(

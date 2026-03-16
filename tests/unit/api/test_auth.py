@@ -10,7 +10,7 @@ AUTH_REVOKE = "/api/v1/auth/token/revoke"
 
 
 async def test_valid_login_returns_access_token(client: AsyncClient) -> None:
-    response = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
+    response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     assert response.status_code == 200
     body = response.json()
     assert "access_token" in body
@@ -19,14 +19,14 @@ async def test_valid_login_returns_access_token(client: AsyncClient) -> None:
 
 
 async def test_valid_login_sets_refresh_cookie(client: AsyncClient) -> None:
-    response = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
+    response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     assert response.status_code == 200
     assert "refresh_token" in response.cookies
 
 
 async def test_invalid_credentials_returns_401(client: AsyncClient) -> None:
     response = await client.post(
-        AUTH_TOKEN, json={"username": "admin", "password": "wrong-password"}
+        AUTH_TOKEN, json={"email": "admin", "password": "wrong-password"}
     )
     assert response.status_code == 401
     body = response.json()
@@ -40,7 +40,7 @@ async def test_refresh_without_cookie_returns_401(client: AsyncClient) -> None:
 
 async def test_refresh_with_valid_cookie_returns_new_token(client: AsyncClient) -> None:
     # First get a refresh cookie
-    login_resp = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
+    login_resp = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     assert login_resp.status_code == 200
     refresh_cookie = login_resp.cookies.get("refresh_token")
     assert refresh_cookie is not None
@@ -54,7 +54,7 @@ async def test_refresh_with_valid_cookie_returns_new_token(client: AsyncClient) 
 
 async def test_revoke_clears_cookie(client: AsyncClient) -> None:
     # Login to get a refresh token
-    login_resp = await client.post(AUTH_TOKEN, json={"username": "admin", "password": "admin"})
+    login_resp = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     refresh_cookie = login_resp.cookies.get("refresh_token")
 
     # Revoke

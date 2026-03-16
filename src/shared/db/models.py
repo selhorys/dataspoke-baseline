@@ -249,6 +249,7 @@ class MetricDefinition(Base):
     schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
     alarm_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     alarm_threshold: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    alarm_recipients: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

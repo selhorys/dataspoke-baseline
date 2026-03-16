@@ -119,7 +119,7 @@ class GenerationService:
         code_refs: dict[str, Any] | None,
         schedule: str | None,
         owner: str,
-    ) -> GenerationConfigRecord:
+    ) -> tuple[GenerationConfigRecord, bool]:
         result = await self._db.execute(
             select(GenerationConfig).where(GenerationConfig.dataset_urn == dataset_urn)
         )
@@ -132,6 +132,7 @@ class GenerationService:
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
+            created = False
         else:
             existing = GenerationConfig(
                 dataset_urn=dataset_urn,
@@ -141,10 +142,11 @@ class GenerationService:
                 owner=owner,
             )
             self._db.add(existing)
+            created = True
 
         await self._db.commit()
         await self._db.refresh(existing)
-        return _config_from_row(existing)
+        return _config_from_row(existing), created
 
     async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> GenerationConfigRecord:
         result = await self._db.execute(
@@ -185,6 +187,7 @@ class GenerationService:
         offset: int = 0,
         limit: int = 20,
         status_filter: str | None = None,
+        order_by: Any = None,
     ) -> tuple[list[GenerationConfigRecord], int]:
         base = select(GenerationConfig)
         if status_filter is not None:
@@ -193,7 +196,8 @@ class GenerationService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(GenerationConfig.created_at.desc()).offset(offset).limit(limit)
+        default_order = GenerationConfig.created_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -208,6 +212,7 @@ class GenerationService:
         to_dt: datetime | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[GenerationResultRecord], int]:
         base = select(GenerationResult).where(GenerationResult.dataset_urn == dataset_urn)
 
@@ -219,7 +224,8 @@ class GenerationService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(GenerationResult.generated_at.desc()).offset(offset).limit(limit)
+        default_order = GenerationResult.generated_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
@@ -456,6 +462,7 @@ class GenerationService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == "dataset",
@@ -471,7 +478,8 @@ class GenerationService:
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

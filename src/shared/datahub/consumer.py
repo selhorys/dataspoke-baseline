@@ -13,7 +13,7 @@ import asyncio
 import structlog
 from confluent_kafka import Consumer, KafkaError
 
-from src.api.config import settings
+from src.shared.settings import settings
 from src.shared.config import CONSUMER_POLL_TIMEOUT_S
 from src.shared.datahub.events import build_router, deserialize_mcl
 from src.shared.exceptions import EventProcessingError
