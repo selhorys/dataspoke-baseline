@@ -947,7 +947,7 @@ Some workflows must not run concurrently for the same entity:
 | `MetricsCollectionWorkflow` | One per metric_id | Temporal workflow ID dedup |
 
 If a duplicate is rejected, the API returns `409 Conflict` with
-`INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` error codes.
+`INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` / `METRIC_RUNNING` error codes.
 
 ### IngestionWorkflow Activity Decomposition
 
@@ -1179,7 +1179,7 @@ Registered as FastAPI exception handlers in `src/api/main.py`:
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `CONCEPT_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER` |

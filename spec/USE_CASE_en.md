@@ -1403,7 +1403,7 @@ Key Discovery — Governance Blind Spot:
 ```
 DataSpoke Multi-Perspective Overview — Medallion Classification:
 
-Auto-classified (by lineage depth + naming patterns + schema analysis):
+Auto-classified (by upstream count + naming patterns + schema analysis):
 
 ┌──────────────┬────────┬──────────────────────────────────────────────┐
 │ Layer        │ Count  │ Characteristics                              │
@@ -1490,7 +1490,7 @@ for dataset_urn in dataset_urns:
 | **Ontology/Taxonomy Builder** *(shared with UC4)* | LLM-based service that maps every dataset to business ontology categories before graph rendering. Analyzes schema, descriptions, tags, and lineage via LLM API to assign primary/secondary categories. Same service used in UC4 for semantic clustering. See cross-cutting note below. | DataHub has no LLM-powered taxonomy construction |
 | **Graph Layout Engine** | Force-directed graph from lineage + LLM-inferred semantic relationship edges; nodes grouped by LLM-assigned ontology categories; interactive zoom/filter | DataHub has a basic lineage viewer, not a full-estate graph with semantic grouping |
 | **LLM Domain Classifier** | LLM analyzes schema + descriptions + lineage to auto-classify datasets into business domains; replaces embedding-only approach with richer semantic reasoning via LangChain | DataHub supports manual domain assignment only |
-| **Medallion Layer Detector** | Infer Bronze/Silver/Gold from lineage depth, naming patterns, and transformation complexity | DataHub stores tags but has no inference logic for medallion classification |
+| **Medallion Layer Detector** | Infer Bronze/Silver/Gold from upstream count (0 = bronze, 1–2 = silver, 3+ = gold via `upstreamLineage` aspect), naming patterns, and transformation complexity | DataHub stores tags but has no inference logic for medallion classification |
 | **Health Colorizer** | Map composite health scores to visual indicators (color, size, opacity) on graph nodes | DataHub has no visual health overlay capability |
 | **Blind Spot Analyzer** | Detect orphaned datasets, missing lineage, dead-end Bronze tables, unowned high-usage clusters | DataHub provides raw metadata but has no cross-dataset anomaly detection |
 

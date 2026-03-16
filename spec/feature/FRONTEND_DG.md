@@ -314,7 +314,7 @@ Tabular + visual view of Bronze/Silver/Gold layer distribution.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Layer detection | Auto-classified by backend (lineage depth + naming + schema) | Manual tagging doesn't scale to 700+ datasets |
+| Layer detection | Auto-classified by backend (upstream count + naming + schema; see [BACKEND §OverviewService](BACKEND.md#overviewservice)) | Manual tagging doesn't scale to 700+ datasets |
 | Conversion funnel | Visual flow diagram | CDO wants to see data refinement pipeline health |
 | Cleanup candidates | Sorted by staleness × zero-dependency | Highest-impact cleanup targets first |
 | Unknown triage | Link to Deep Ingestion (UC1) | Cross-feature integration drives adoption |
