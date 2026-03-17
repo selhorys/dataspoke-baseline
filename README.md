@@ -9,121 +9,189 @@ This repository delivers two artifacts:
 - **Baseline Product** — A pre-built implementation of essential features for an AI-era catalog, targeting DE, DA, and DG user groups.
 - **AI Scaffold** — Claude Code conventions, development specs, and utilities — including the PRauto autonomous PR system — that enable rapid construction of custom data catalogs with AI coding agents.
 
-This is the **baseline** or prototype. Fork or copy this repository to create a data catalog for your organization. An automated coding factory is a bonus.
+Fork or copy this repository to create a data catalog for your organization.
 
-## Architecture
+## Usage Guide
 
+### Prerequisites
+
+- **kubectl** + **Helm v3** installed and configured
+- A Kubernetes cluster with appropriate capacity (see resource sizing below)
+- A **separate DataHub instance** — DataSpoke connects to DataHub as an external dependency
+
+### Deploy to Production
+
+DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables all components: frontend, API, workers, and infrastructure (PostgreSQL, Redis, Qdrant, Temporal).
+
+#### 1. Build and push container images
+
+```bash
+# API (only docker image currently available)
+docker build -t <your-registry>/dataspoke/api:latest -f docker-images/api/Dockerfile .
+docker push <your-registry>/dataspoke/api:latest
+
+# Workers — TBD (docker-images/workers/ not yet created)
+# Frontend — TBD (docker-images/frontend/ not yet created; src/frontend/ not yet implemented)
 ```
-┌───────────────────────────────────────────────┐
-│                 DataSpoke UI                  │
-│         Portal: DE / DA / DG entry points     │
-└───────────────────────┬───────────────────────┘
-                        │
-┌───────────────────────▼───────────────────────┐
-│                DataSpoke API                  │
-│   /spoke/common/  /spoke/de|da|dg/  /hub/     │
-└───────────┬───────────────────────┬───────────┘
-            │                       │
-┌───────────▼───────────┐ ┌─────────▼───────────┐
-│       DataHub         │ │      DataSpoke      │
-│    (metadata SSOT)    │ │  Backend / Workers  │
-│                       │ │  + Shared Services  │
-└───────────────────────┘ └─────────────────────┘
+
+#### 2. Configure Helm values
+
+Copy `helm-charts/dataspoke/values.yaml` and customize for your environment. Key sections to review:
+
+**Container images** — point to your registry:
+
+```yaml
+api:
+  image:
+    repository: <your-registry>/dataspoke/api
+    tag: <your-tag>
+workers:
+  image:
+    repository: <your-registry>/dataspoke/workers
+    tag: <your-tag>
+frontend:
+  image:
+    repository: <your-registry>/dataspoke/frontend
+    tag: <your-tag>
 ```
 
-DataHub is deployed and managed **separately** — DataSpoke connects to it as an external dependency.
+**Ingress** — set your domain and TLS:
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js + TypeScript |
-| API | FastAPI (Python 3.13) |
-| Orchestration | Temporal |
-| Vector DB | Qdrant |
-| Operational DB | PostgreSQL |
-| Cache | Redis |
-| DataHub integration | `acryl-datahub` Python SDK + Kafka |
-| LLM integration | External API via LangChain |
+```yaml
+frontend:
+  ingress:
+    hosts:
+      - host: dataspoke.example.com
+        paths: [{ path: /, pathType: Prefix }]
+    tls:
+      - secretName: dataspoke-tls
+        hosts: [dataspoke.example.com]
+api:
+  ingress:
+    hosts:
+      - host: api.dataspoke.example.com
+        paths: [{ path: /api, pathType: Prefix }]
+```
 
-## Features
+**DataHub connection** — point to your existing DataHub instance:
 
-### Data Engineering (DE)
+```yaml
+config:
+  datahub:
+    gmsUrl: "http://<datahub-gms-host>:8080"
+    kafkaBrokers: "<datahub-kafka-host>:9092"
+```
 
-- **Deep Technical Spec Ingestion** — Collects platform-specific metadata (storage formats, Kafka replication, PL/SQL lineage) from Confluence, Excel, GitHub, and SQL logs.
-- **Online Data Validator** — Time-series quality scoring, anomaly detection (Prophet / Isolation Forest), SLA prediction, and dry-run validation without writing to the store.
-- **Automated Documentation Generation** — Generates docs from source code references, highlights differences between similar tables, and proposes enterprise-wide ontology standards.
+**Secrets** — credentials for infrastructure and external services:
 
-### Data Analysis (DA)
+```yaml
+secrets:
+  datahub:
+    token: ""          # DataHub personal access token
+  postgres:
+    user: "dataspoke"
+    password: ""       # Must set
+  redis:
+    password: ""       # Must set
+  llm:
+    apiKey: ""         # LLM provider API key
+  jwt:
+    secretKey: ""      # Must set for production auth
+```
 
-- **Natural Language Search** — Explore datasets using natural language queries; hybrid Qdrant vector + DataHub GraphQL search.
-- **Text-to-SQL Optimized Metadata** — Curated metadata (column profiles, join paths, sample queries) focused on enabling accurate SQL generation by AI tools.
-- **Online Data Validator** — Same as the DE group; shared across user groups.
+For production secrets management, consider using [External Secrets Operator](https://external-secrets.io/) to sync from AWS Secrets Manager, Vault, or GCP Secret Manager. Set `secrets.createSecret: false` and reference the externally-managed secret.
 
-### Data Governance (DG)
+**Resource sizing** — production defaults total ~5.5 CPU / ~8.5 Gi requests, ~11 CPU / ~17 Gi limits, plus 100 Gi PV for PostgreSQL and Qdrant. Adjust replicas and limits in `values.yaml` per component. See [`spec/feature/HELM_CHART.md` §Resource Sizing](spec/feature/HELM_CHART.md#resource-sizing) for the full breakdown.
 
-- **Enterprise Metrics Dashboard** — Time-series monitoring of dataset counts, availability ratios, health scores, and trends aggregated by department.
-- **Multi-Perspective Data Overview** — Taxonomy/ontology graph visualization with medallion-architecture classification and blind-spot detection.
+#### 3. Install
 
-## Getting Started
+```bash
+helm dependency build ./helm-charts/dataspoke
+helm upgrade --install dataspoke ./helm-charts/dataspoke \
+  --namespace dataspoke --create-namespace \
+  --values ./your-values.yaml
+```
+
+**Optional components**:
+- `event-consumer.enabled=true` — deploy Kafka consumer as a separate pod (default: co-located in workers). Enable for independent scaling in production.
+- `networkPolicy.enabled=true` — restrict egress to DataHub namespace only. Required in clusters with default-deny policies.
+
+See [`spec/feature/HELM_CHART.md`](spec/feature/HELM_CHART.md) for the full chart reference (structure, configuration flow, secrets management, ingress, network policy).
+
+## Development Guide
 
 ### Prerequisites
 
 - **kubectl** + **Helm v3** installed and configured
 - A local Kubernetes cluster (Docker Desktop, minikube, or kind) with **8+ CPUs / 16 GB RAM**
-- **Python 3.13** and **Node.js 18+** for running app services locally
-- [`uv`](https://github.com/astral-sh/uv) for Python dependency management
+- **Python 3.13** and [`uv`](https://github.com/astral-sh/uv) for Python dependency management
+- **Node.js 18+** for running the frontend (TBD — frontend not yet implemented)
 
-### 1. Configure and Install the Dev Environment
+### Dev Environment Setup
 
-The dev environment provisions **infrastructure dependencies** (DataHub, PostgreSQL, Redis, Qdrant, Temporal, example data sources) into a local Kubernetes cluster. DataSpoke application services run on the host.
+The dev environment provisions **infrastructure dependencies** (DataHub, PostgreSQL, Redis, Qdrant, Temporal, example data sources) into a local Kubernetes cluster. Application services run on the host or in-cluster depending on the testing mode.
+
+#### 1. Configure
 
 ```bash
-# Copy and edit config (set DATASPOKE_DEV_KUBE_CLUSTER to your cluster context name)
 cp dev_env/.env.example dev_env/.env
-
-# Install everything (~5–10 min first run)
-cd dev_env && ./install.sh
 ```
 
-> Using Claude Code? Run `/dev-env install` for guided end-to-end setup.
+Edit `dev_env/.env` — the minimum required change is setting your Kubernetes context:
 
-### 2. Start Port-Forwarding
+```bash
+DATASPOKE_DEV_KUBE_CLUSTER=docker-desktop   # or minikube, kind, etc.
+```
+
+The `.env` file contains two tiers of variables:
+
+| Prefix | Scope | Purpose |
+|--------|-------|---------|
+| `DATASPOKE_DEV_*` | Dev scripts only | Cluster context, namespace names, chart versions, port-forward ports |
+| `DATASPOKE_*` (no `DEV`) | App runtime | Infrastructure endpoints — `localhost` in dev, in-cluster addresses in prod |
+
+The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Infrastructure Helm values (resource limits, persistence sizes, Temporal configuration) are in `helm-charts/dataspoke/values-dev.yaml`. Credentials (PostgreSQL password, Redis password, etc.) are read from `dev_env/.env` and injected via `--set` at install time.
+
+See [`spec/feature/DEV_ENV.md` §Configuration](spec/feature/DEV_ENV.md#configuration) for the full variable listing.
+
+#### 2. Install
+
+```bash
+cd dev_env && ./install.sh    # ~5-10 min first run
+```
+
+> Using Claude Code? Run `/dev-env install` for guided setup.
+
+#### 3. Start Port-Forwarding
 
 ```bash
 dev_env/datahub-port-forward.sh      # DataHub UI + GMS
 dev_env/dataspoke-port-forward.sh    # DataSpoke infrastructure
+dev_env/dummy-data-port-forward.sh   # Example data sources
 ```
 
 | Service | URL / Address | Credentials |
 |---------|--------------|-------------|
 | DataHub UI | http://localhost:9002 | `datahub` / `datahub` |
-| DataHub GMS | http://localhost:9004 | — |
+| DataHub GMS | http://localhost:9004 | -- |
 | PostgreSQL | localhost:9201 | per `dev_env/.env` |
 | Redis | localhost:9202 | per `dev_env/.env` |
-| Qdrant | localhost:9203 (HTTP), :9204 (gRPC) | — |
-| Temporal | localhost:9205 | — |
-| Temporal UI | localhost:9206 | — |
+| Qdrant | localhost:9203 (HTTP), :9204 (gRPC) | -- |
+| Temporal | localhost:9205 | -- |
+| Temporal UI | localhost:9206 | -- |
+| Example PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` |
+| Example Kafka | localhost:9104 | -- |
 
-### 3. Run DataSpoke App Services
-
-> **Note**: `src/` does not exist yet. Use the AI scaffold subagents (`api-spec` → `backend` → `frontend`) to generate the application code first.
+#### 4. Populate Dummy Data
 
 ```bash
-source dev_env/.env
-
-# Install Python dependencies (from repo root)
-uv sync
-
-# Frontend
-cd src/frontend && npm run dev          # http://localhost:3000
-
-# API (from repo root)
-uv run uvicorn src.api.main:app --reload --port 8000
-
-# Workers (from repo root)
-uv run python -m src.workflows.worker
+# Requires port-forwards for 9102, 9104, 9004
+uv run python -m tests.integration.util --reset-all
 ```
 
-### 4. Verify
+Seeds example PostgreSQL (11 schemas, 17 tables, ~600 rows), Kafka (3 topics, ~45 messages), and DataHub (20 dataset entities) with Imazon use-case data. Idempotent — safe to re-run.
+
+#### 5. Verify
 
 ```bash
 source dev_env/.env
@@ -132,133 +200,115 @@ kubectl get pods -n $DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE
 kubectl get pods -n $DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE
 ```
 
-### Uninstall
+#### Uninstall
 
 ```bash
 cd dev_env && ./uninstall.sh
-# Or: /dev-env uninstall
 ```
 
-## AI Scaffold
+See [`dev_env/README.md`](dev_env/README.md) for lock service, namespace architecture, resource budgets, and troubleshooting.
 
-The scaffold lives in `.claude/` and makes AI-assisted development immediately productive from the first session. See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full reference.
+### Running DataSpoke (Testing Modes)
 
-### Skills
+Integration tests support two execution modes. See [`spec/TESTING.md` §Testing Modes](spec/TESTING.md#testing-modes) for full details.
 
-| Skill | Purpose |
-|-------|---------|
-| `k8s-work` | Kubernetes cluster management: health checks, continuous monitoring, kubectl/helm operations |
-| `plan-doc` | Write specification or planning documents in `spec/` following the project hierarchy and naming conventions |
-| `datahub-api` | Reference and coding guide for DataHub integration in backend development |
-| `prauto-check-status` | Prauto issue/PR status dashboard and next-heartbeat prediction |
-| `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; diagnoses and fixes errors |
-| `dev-env` | Dev environment management: install, uninstall, port-forward, status |
-| `ref-setup` | Download AI reference materials (`ref/`) with interactive selection |
-| `sync-spec-from-impl` | Reverse-sync specs from implementation; detect and fix spec drift |
-| `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs |
-| `spec-to-bulk-issue` | Bulk-create implementation issues from specs; revise and register to GitHub |
+#### Host Mode (default)
 
-### Subagents (specialized implementers)
+Application services run on the developer's machine, connecting to port-forwarded infrastructure. This is the standard development workflow — fast test-and-fix loop with no container rebuild needed.
 
-| Subagent | Scope |
-|----------|-------|
-| `api-spec` | OpenAPI 3.0 specs in `api/` |
-| `backend` | FastAPI/Python in `src/api/`, `src/backend/`, `src/workflows/`, `src/shared/` |
-| `frontend` | Next.js/TypeScript in `src/frontend/` |
-| `k8s-helm` | Helm charts, Dockerfiles, Kubernetes manifests |
+```bash
+source dev_env/.env
+uv sync
+
+# API
+uv run uvicorn src.api.main:app --reload --port 8000
+
+# Workers
+uv run python -m src.workflows.worker
+
+# Frontend — TBD (src/frontend/ not yet implemented)
+# cd src/frontend && npm run dev    # http://localhost:3000
+```
+
+#### In-Cluster Mode (on-demand)
+
+Deploys all components into the Kubernetes cluster using the umbrella Helm chart with application subcharts enabled. Use only when testing Kubernetes-specific behavior (health probes, ingress routing, resource limits, network policies).
+
+```bash
+helm upgrade --install dataspoke ./helm-charts/dataspoke \
+  --namespace "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}" \
+  --values ./helm-charts/dataspoke/values-dev.yaml \
+  --set frontend.enabled=true \
+  --set api.enabled=true \
+  --set workers.enabled=true \
+  --set config.createConfigMap=true \
+  --set secrets.createSecret=true
+```
+
+This mode is significantly slower to iterate — every code change requires a container rebuild and `helm upgrade`. See [`spec/feature/HELM_CHART.md` §In-Cluster Testing](spec/feature/HELM_CHART.md#in-cluster-testing).
+
+### Implementation Status
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| OpenAPI spec | Done | `api/openapi.yaml` |
+| API layer (FastAPI) | Done | `src/api/` |
+| Backend services | Done | `src/backend/`, `src/shared/` |
+| Temporal workflows | Done | `src/workflows/` |
+| Database migrations | Done | `migrations/` |
+| Docker image (API) | Done | `docker-images/api/` |
+| Docker image (Workers) | TBD | `docker-images/workers/` (planned) |
+| Docker image (Frontend) | TBD | `docker-images/frontend/` (planned) |
+| Helm charts | Done | `helm-charts/dataspoke/` |
+| Tests (unit + integration) | Done | `tests/` |
+| Frontend (Next.js) | TBD | `src/frontend/` (planned) |
+
+### Testing
+
+```bash
+# Unit tests (no dev environment needed)
+uv run pytest tests/unit/
+
+# Integration tests (requires port-forwards)
+uv run pytest tests/integration/
+```
+
+See [`spec/TESTING.md`](spec/TESTING.md) for conventions, toolchain, mocking rules, and the integration test lock protocol.
+
+### Implementation Workflow
+
+Use subagents in sequence to implement features:
+
+1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
+2. `api-spec` -- write OpenAPI spec in `api/`
+3. `backend` -- implement API routes + services
+4. `workflow` -- implement Temporal workflows
+5. `test` -- write and run tests
+6. `frontend` -- build UI
+7. `k8s-helm` -- containerize and deploy
+
+See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full scaffold reference (skills, subagents, permissions, PRauto).
 
 ### Building a Custom Spoke
 
 Fork this repository and adapt:
 
-1. Revise `spec/MANIFESTO_*.md` — redefine user groups, features, and product identity
-2. Run `/plan-doc` — update architecture and author feature specs
-3. Run `/dev-env install` — bring up the local environment
-4. Use `api-spec` → `backend` → `frontend` → `k8s-helm` subagents in sequence
+1. Revise `spec/MANIFESTO_*.md` -- redefine user groups, features, and product identity
+2. Run `/plan-doc` -- update architecture and author feature specs
+3. Run `/dev-env install` -- bring up the local environment
+4. Use subagents in sequence: `api-spec` -> `backend` -> `frontend` -> `k8s-helm`
 
-## Repository Structure
-
-```
-dataspoke-baseline/
-├── api/                    # Standalone OpenAPI 3.0 specs (API-first)
-├── dev_env/                # Local Kubernetes dev environment
-│   ├── .env                # All settings (gitignored)
-│   ├── install.sh / uninstall.sh
-│   ├── datahub/            # DataHub Helm install
-│   ├── dataspoke-infra/    # DataSpoke infrastructure (PG, Redis, Qdrant, Temporal)
-│   └── dataspoke-example/  # Example data sources (PG, Kafka)
-├── helm-charts/dataspoke/  # Umbrella Helm chart for production deployment
-├── spec/                   # Architecture and feature specifications
-│   ├── MANIFESTO_en.md     # Product identity (highest authority)
-│   ├── ARCHITECTURE.md     # System architecture, tech stack, feature mapping
-│   ├── TESTING.md          # Testing conventions, toolchain, integration test protocol
-│   ├── AI_SCAFFOLD.md      # Claude Code scaffold conventions
-│   ├── feature/            # Common feature specs (API, BACKEND, BACKEND_SCHEMA, FRONTEND_*, DEV_ENV, HELM_CHART)
-│   └── feature/spoke/      # User-group-specific feature specs (DE/DA/DG)
-├── .claude/                # AI coding scaffold (skills, commands, agents, hooks)
-├── .prauto/                # Autonomous PR worker (cron-driven issue-to-PR)
-├── ref/                    # External source for AI reference (gitignored)
-│
-│   --- planned (generated by scaffold subagents) ---
-│
-├── src/                    # Application source code (not yet created)
-│   ├── frontend/           # Next.js app (pages per user group: de, da, dg)
-│   ├── api/                # FastAPI routers, schemas, middleware
-│   ├── backend/            # Feature service implementations
-│   ├── workflows/          # Temporal workflow definitions
-│   └── shared/             # DataHub client, shared models, LLM integration
-├── docker-images/          # Dockerfiles (not yet created)
-├── tests/                  # Unit, integration, and E2E test suites (not yet created)
-├── migrations/             # Alembic database migrations (not yet created)
-├── pyproject.toml          # Python project metadata and dependencies (uv)
-├── uv.lock                 # Locked dependency versions (committed)
-└── .venv/                  # Python virtual environment (gitignored, created by uv sync)
-```
-
-## Environment Variables
-
-Two-tier naming convention:
-
-| Prefix | Scope | Who reads it |
-|--------|-------|-------------|
-| `DATASPOKE_DEV_*` | Dev environment only | `dev_env/*.sh` scripts |
-| `DATASPOKE_*` (no `DEV`) | Application runtime | DataSpoke app code |
-
-Key application variables:
-
-| Variable | Purpose |
-|----------|---------|
-| `DATASPOKE_DATAHUB_GMS_URL` | DataHub GMS endpoint |
-| `DATASPOKE_DATAHUB_TOKEN` | DataHub personal access token (empty in local dev) |
-| `DATASPOKE_DATAHUB_KAFKA_BROKERS` | Kafka brokers for event streaming |
-| `DATASPOKE_POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB` | Operational database |
-| `DATASPOKE_REDIS_HOST` / `_PORT` / `_PASSWORD` | Cache |
-| `DATASPOKE_QDRANT_HOST` / `_HTTP_PORT` / `_GRPC_PORT` | Vector database |
-| `DATASPOKE_TEMPORAL_HOST` / `_PORT` / `_NAMESPACE` | Workflow orchestration |
-| `DATASPOKE_LLM_PROVIDER` / `_API_KEY` / `_MODEL` | LLM integration |
-
-See [`spec/feature/DEV_ENV.md`](spec/feature/DEV_ENV.md) for the full variable listing.
-
-## Documentation
+### Key Specs
 
 | Document | Purpose |
 |----------|---------|
 | [spec/MANIFESTO_en.md](spec/MANIFESTO_en.md) | Product identity, user-group taxonomy |
-| [spec/ARCHITECTURE.md](spec/ARCHITECTURE.md) | System architecture, tech stack, deployment |
-| [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold conventions and utilities |
-| [spec/USE_CASE_en.md](spec/USE_CASE_en.md) | Conceptual scenarios by user group (UC1–UC8) |
+| [spec/ARCHITECTURE.md](spec/ARCHITECTURE.md) | System architecture, tech stack, repository structure, deployment |
+| [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, permissions, PRauto |
+| [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |
 | [spec/DATAHUB_INTEGRATION.md](spec/DATAHUB_INTEGRATION.md) | DataHub SDK/API patterns |
 | [spec/API_DESIGN_PRINCIPLE_en.md](spec/API_DESIGN_PRINCIPLE_en.md) | REST API conventions |
-| [spec/feature/API.md](spec/feature/API.md) | API layer design: routes, auth, middleware, error codes |
-| [spec/feature/BACKEND.md](spec/feature/BACKEND.md) | Backend layer: services, workflows, infrastructure integration |
-| [spec/feature/BACKEND_SCHEMA.md](spec/feature/BACKEND_SCHEMA.md) | Backend data contracts: PostgreSQL schema, Qdrant collections |
-| [spec/feature/FRONTEND_BASIC.md](spec/feature/FRONTEND_BASIC.md) | Frontend: basic layout, shared components, auth, routing |
-| [spec/feature/FRONTEND_DE.md](spec/feature/FRONTEND_DE.md) | Frontend: Data Engineering workspace |
-| [spec/feature/FRONTEND_DA.md](spec/feature/FRONTEND_DA.md) | Frontend: Data Analysis workspace |
-| [spec/feature/FRONTEND_DG.md](spec/feature/FRONTEND_DG.md) | Frontend: Data Governance workspace |
-| [spec/feature/DEV_ENV.md](spec/feature/DEV_ENV.md) | Dev environment specification |
-| [spec/feature/HELM_CHART.md](spec/feature/HELM_CHART.md) | Helm chart specification for production deployment |
-| [spec/TESTING.md](spec/TESTING.md) | Testing conventions: toolchain, unit/integration/api-wired integration/E2E workflow, dev-env lock protocol |
+| [spec/feature/](spec/feature/) | Feature specs (API, BACKEND, BACKEND_SCHEMA, FRONTEND_*, DEV_ENV, HELM_CHART) |
 
 ## License
 
