@@ -217,18 +217,26 @@ Integration tests support two execution modes. See [`spec/TESTING.md` §Testing 
 Application services run on the developer's machine, connecting to port-forwarded infrastructure. This is the standard development workflow — fast test-and-fix loop with no container rebuild needed.
 
 ```bash
-source dev_env/.env
-uv sync
+# Start all components (API + Worker + auto-migrate):
+./bin/dataspoke
 
-# API
-uv run uvicorn src.api.main:app --reload --port 8000
+# Backend only (skip frontend when it's added):
+./bin/dataspoke --backend-only
 
-# Workers
-uv run python -m src.workflows.worker
-
-# Frontend — TBD (src/frontend/ not yet implemented)
-# cd src/frontend && npm run dev    # http://localhost:3000
+# See all options:
+./bin/dataspoke --help
 ```
+
+<details><summary>Manual startup (individual commands)</summary>
+
+```bash
+source dev_env/.env
+uv run alembic upgrade head
+uv run uvicorn src.api.main:app --reload --port 8000
+uv run python -m src.workflows.worker
+```
+
+</details>
 
 #### In-Cluster Mode (on-demand)
 

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Convenience wrapper for: uv run -m src.cli
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+uv sync --directory "$SCRIPT_DIR" --quiet
+exec uv run --directory "$SCRIPT_DIR" -m src.cli "$@"

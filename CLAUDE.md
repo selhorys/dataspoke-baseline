@@ -15,6 +15,8 @@ cd dev_env && ./uninstall.sh  # Tear down everything
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and port-forwarding.
 
+Quick-start (host mode): `uv run -m src.cli` starts API + Worker + runs migrations. See `uv run -m src.cli --help` for options.
+
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). Two testing modes: **host** (default — app on host, infra in cluster) and **in-cluster** (on-demand — all components in K8s via `--set` flags). See `spec/TESTING.md §Testing Modes`.
 
 ## Key Design Decisions
