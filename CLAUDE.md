@@ -15,6 +15,8 @@ cd dev_env && ./uninstall.sh  # Tear down everything
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and port-forwarding.
 
+The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). Two testing modes: **host** (default — app on host, infra in cluster) and **in-cluster** (on-demand — all components in K8s via `--set` flags). See `spec/TESTING.md §Testing Modes`.
+
 ## Key Design Decisions
 
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core

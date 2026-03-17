@@ -2,7 +2,7 @@
 
 A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
 
-The cluster hosts only **infrastructure dependencies**. DataSpoke application services (frontend, API, workers) run on your host machine, connecting to port-forwarded infrastructure.
+By default, the cluster hosts only **infrastructure dependencies**. DataSpoke application services (frontend, API, workers) run on your host machine, connecting to port-forwarded infrastructure (host mode). For on-demand in-cluster testing, see [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
 
 ## Prerequisites
 
@@ -131,7 +131,7 @@ curl -s -X DELETE http://localhost:9221/lock
   Testers are expected to check the lock before starting sensitive operations.
 - If the previous holder's session crashed, use force-release (`DELETE /lock`).
 
-### 6. Run DataSpoke application services
+### 6. Run DataSpoke application services (host mode)
 
 Load environment variables and start services on the host:
 
