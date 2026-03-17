@@ -1,5 +1,5 @@
 # DataHub Helm values — dev sizing
-# Chart: datahub/datahub version 0.8.3 (app version v1.4.0)
+# Chart: datahub/datahub version 0.8.21 (app version v1.4.0.3)
 # Target cluster: 8 CPU / 14 GB RAM
 # Total memory limits (datahub services): ~3.6 GiB of ~7 GiB cluster-wide budget
 #

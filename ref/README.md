@@ -26,7 +26,7 @@ Reference materials are version-locked to match the DataSpoke development enviro
 
 | Component | Version | Location | Source |
 |-----------|---------|----------|--------|
-| DataHub OSS | v1.4.0 | `github/datahub/` | https://github.com/datahub-project/datahub |
+| DataHub OSS | v1.4.0.3 | `github/datahub/` | https://github.com/datahub-project/datahub |
 
 > **Note**: When `dev_env/.env` is updated with new DataHub versions, re-run the corresponding setup script to fetch matching source code.
 

@@ -158,7 +158,7 @@ kubectl get pods -n "${NS}"
 #   timeouts when datahub-system-update (a heavy JVM) takes 5-10 min.
 #   Instead, we install without --wait and poll for readiness ourselves.
 # ---------------------------------------------------------------------------
-DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.8.3}"
+DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.8.21}"
 info "Installing datahub (version ${DATAHUB_VERSION}) — no --wait, polling manually..."
 helm upgrade --install datahub datahub/datahub \
   --version "${DATAHUB_VERSION}" \
@@ -168,12 +168,10 @@ helm upgrade --install datahub datahub/datahub \
 
 # ---------------------------------------------------------------------------
 # Step 4: Wait for hook jobs to complete
+#   Chart 0.8.21+ removed the separate elasticsearch-setup-job and
+#   mysql-setup-job. All bootstrap work is now done by system-update.
 # ---------------------------------------------------------------------------
-info "Waiting for setup jobs and system-update..."
-
-# Short jobs: ES and MySQL setup (usually < 30s)
-wait_for_job "datahub-elasticsearch-setup-job" "$NS" 120
-wait_for_job "datahub-mysql-setup-job" "$NS" 120
+info "Waiting for system-update jobs..."
 
 # Heavy job: system-update bootstraps all metadata (5-10 min on dev clusters)
 wait_for_job "datahub-system-update" "$NS" 600

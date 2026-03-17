@@ -16,7 +16,7 @@ allowed-tools: Read, Grep, Glob, Bash(python3 *), Bash(pip3 *), Bash(curl *)
 If `ref/github/datahub` is **missing**, stop immediately and tell the user:
 
 > `ref/github/datahub` is not present. Run `/ref-setup` to download
-> the DataHub v1.4.0 source (shallow clone, ~1-3 min). Retry this task after it completes.
+> the DataHub v1.4.0.3 source (shallow clone, ~1-3 min). Retry this task after it completes.
 
 **Step 1 — Select operating mode:**
 
@@ -45,7 +45,7 @@ After Phase 1:
 
 ## Phase 2 — Reference Navigation
 
-The full DataHub source (v1.4.0) lives in `ref/github/datahub/`. Use the reference lookup table in [reference.md](reference.md) §Reference Lookup Table to find the right files.
+The full DataHub source (v1.4.0.3) lives in `ref/github/datahub/`. Use the reference lookup table in [reference.md](reference.md) §Reference Lookup Table to find the right files.
 
 **For Q&A mode**: read the relevant reference files, then write a clear answer with:
 - Exact field names, aspect names, URN formats

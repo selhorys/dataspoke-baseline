@@ -125,7 +125,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 | Category | Example variables | Notes |
 |----------|-------------------|-------|
 | Cluster & namespaces | `DATASPOKE_DEV_KUBE_CLUSTER`, `*_NAMESPACE` | Kubernetes context and 3 namespace names |
-| Helm chart versions | `*_CHART_VERSION` | DataHub prerequisites 0.2.1, DataHub 0.8.3 |
+| Helm chart versions | `*_CHART_VERSION` | DataHub prerequisites 0.2.1, DataHub 0.8.21 |
 | Port-forward ports | `*_PORT_FORWARD_*_PORT` | All configurable; defaults in 9xxx range |
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
 | Example data creds | `*_DUMMY_DATA_POSTGRES_*`, `*_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`, `*_DUMMY_DATA_KAFKA_INSTANCE` | Dev-only |
@@ -147,12 +147,12 @@ See `.env.example` for the complete listing with comments. Key categories:
 | Chart | Version | App Version |
 |-------|---------|-------------|
 | `datahub/datahub-prerequisites` | 0.2.1 | — |
-| `datahub/datahub` | 0.8.3 | v1.4.0 |
+| `datahub/datahub` | 0.8.21 | v1.4.0.3 |
 
 **Key decisions**:
 
 - **No Neo4j**: Elasticsearch provides full graph backend support including multi-hop lineage. Saves ~2 Gi RAM + 10 Gi PVC. Aligns with upstream defaults.
-- **No Schema Registry**: DataHub v1.4.0 uses an internal schema registry (`type: INTERNAL`).
+- **No Schema Registry**: DataHub v1.4.0.3 uses an internal schema registry (`type: INTERNAL`).
 - **No `--wait` on Helm install**: The `datahub-system-update` bootstrap job takes 5-10 minutes. Scripts use custom poll-based readiness checks instead.
 - **Relaxed liveness probes** on GMS and frontend to tolerate transient ES restarts.
 

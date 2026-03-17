@@ -19,7 +19,7 @@ dependencies = [
     "alembic>=1.14",
     # Infrastructure clients
     "aiosmtplib>=3.0",
-    "acryl-datahub>=0.14,<1.0",
+    "acryl-datahub>=1.4,<2.0",
     "redis[hiredis]>=5.2",
     "qdrant-client>=1.12",
     "langchain-core>=0.3",
