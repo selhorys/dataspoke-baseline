@@ -17,10 +17,10 @@
 
 ## Overview
 
-`helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components — application services and infrastructure dependencies — into a single installable unit. Two deployment profiles:
+`helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components — application services and infrastructure dependencies — into a single installable unit. The same chart serves both production and development — only the values file differs:
 
-- **Production** (`values.yaml`): All components enabled — frontend, API, workers, plus infrastructure.
-- **Dev** (`values-dev.yaml`): Infrastructure only — application subcharts disabled, reduced resources. Used by `dev_env/dataspoke-infra/install.sh`.
+- **Production** (`values.yaml`): All components enabled — frontend, API, workers, plus infrastructure. Deploy with `helm upgrade --install` and a customized values file for your environment.
+- **Dev** (`values-dev.yaml`): Infrastructure only — application subcharts disabled, reduced resources. Used by `dev_env/dataspoke-infra/install.sh`. Developers run application services on the host (host mode) or enable app subcharts via `--set` flags for on-demand in-cluster testing.
 
 ```
 Production Deployment                    Dev Deployment (dev_env)
@@ -230,8 +230,10 @@ A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namesp
 2. Register Helm repos (`bitnami`, `qdrant`, `temporal`) and build chart dependencies
 3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL auth and Temporal persistence credentials via `--set`
 
+The dev profile disables application subcharts (frontend, api, workers) because developers run them on the host during normal development (host mode). For on-demand in-cluster testing, enable these subcharts via `--set` flags — see [§In-Cluster Testing](#in-cluster-testing).
+
 This means:
-1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments
+1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments — both production and dev
 2. `dev_env/dataspoke-infra/` is a thin wrapper — no duplicate values files or templates
 3. Switching from dev to production is changing the values file, not the chart
 

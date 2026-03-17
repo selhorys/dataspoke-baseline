@@ -525,7 +525,18 @@ cd dev_env && ./uninstall.sh  # Tear down
 # Settings: dev_env/.env (DATASPOKE_DEV_* for cluster config, DATASPOKE_* for app config)
 ```
 
-The dev environment installs only **infrastructure dependencies** (PostgreSQL, Redis, Qdrant, Temporal) into the cluster. DataSpoke application services (frontend, API, workers) run on the developer's host, connecting to port-forwarded infrastructure services. See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md).
+The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Two testing modes are available:
+
+| Mode | App Services | When to Use |
+|------|-------------|-------------|
+| **Host (default)** | Run on host (`uvicorn`, `npm run dev`, Temporal worker) | Normal development — fast test-and-fix loop |
+| **In-cluster (on-demand)** | Deployed via Helm chart into K8s cluster | Kubernetes-specific testing only (health probes, ingress, network policy) |
+
+**Host mode** installs only infrastructure dependencies into the cluster. Application services run on the developer's host, connecting to port-forwarded infrastructure. This is the standard workflow — no container rebuild needed between iterations.
+
+**In-cluster mode** enables application subcharts on top of the dev profile via `--set` flags. Every code change requires a container rebuild and `helm upgrade`. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing) and [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
+
+See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for the full dev environment specification.
 
 The bundled dev environment is **NOT** for production. For production Kubernetes deployment, see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 
