@@ -43,7 +43,7 @@ src/
 
 ## Scope boundary
 
-Temporal workflows live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified workflow, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
+Kestra workflows live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified workflow, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
 
 ## Output expectations
 

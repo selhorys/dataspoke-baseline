@@ -632,7 +632,7 @@ paths:
       operationId: runDatasetIngestion
       summary: Trigger ingestion run
       description: |
-        Enqueues an ingestion run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
+        Enqueues an ingestion run via Kestra. Set `dry_run` to `true` in the body for no-write mode.
       tags: [common]
       security:
         - BearerAuth: []
@@ -861,7 +861,7 @@ paths:
       operationId: runDatasetValidation
       summary: Trigger validation run
       description: |
-        Enqueues a validation run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
+        Enqueues a validation run via Kestra. Set `dry_run` to `true` in the body for no-write mode.
         Real-time progress is available via the WebSocket stream.
       tags: [common]
       security:
@@ -1095,7 +1095,7 @@ paths:
     post:
       operationId: runDatasetGenerate
       summary: Trigger metadata generation run
-      description: Enqueues an LLM-powered metadata generation job via Temporal.
+      description: Enqueues an LLM-powered metadata generation job via Kestra.
       tags: [common]
       security:
         - BearerAuth: []
@@ -1328,7 +1328,7 @@ paths:
     post:
       operationId: runIngestion
       summary: Trigger ingestion run
-      description: Enqueues an ingestion run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
+      description: Enqueues an ingestion run via Kestra. Set `dry_run` to `true` in the body for no-write mode.
       tags: [common]
       security:
         - BearerAuth: []
@@ -1560,7 +1560,7 @@ paths:
     post:
       operationId: runValidation
       summary: Trigger validation run
-      description: Enqueues a validation run via Temporal. Set `dry_run` to `true` in the body for no-write mode.
+      description: Enqueues a validation run via Kestra. Set `dry_run` to `true` in the body for no-write mode.
       tags: [common]
       security:
         - BearerAuth: []
@@ -1792,7 +1792,7 @@ paths:
     post:
       operationId: runGenerate
       summary: Trigger generation run
-      description: Enqueues an LLM-powered metadata generation job via Temporal.
+      description: Enqueues an LLM-powered metadata generation job via Kestra.
       tags: [common]
       security:
         - BearerAuth: []
@@ -3149,7 +3149,7 @@ components:
             run_id:
               type: string
               format: uuid
-              description: Temporal workflow run identifier
+              description: Kestra execution run identifier
             status:
               type: string
               enum: [triggered, dry_run_completed]

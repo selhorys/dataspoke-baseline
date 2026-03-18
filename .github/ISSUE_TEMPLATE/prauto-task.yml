@@ -30,7 +30,7 @@ body:
       options:
         - label: OpenAPI spec (api/)
         - label: Backend - API routes and services
-        - label: Backend - Temporal workflows
+        - label: Backend - Kestra workflows
         - label: Backend - DataHub integration, PostgreSQL models, Qdrant vector search
         - label: Frontend UI
         - label: Helm charts / Kubernetes manifests

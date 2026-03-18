@@ -1,7 +1,7 @@
 """SLA monitor workflow — parameters and flow ID constant.
 
 Orchestration is handled by the Kestra flow definition in flows/sla_monitor.yaml.
-The Kestra flow uses a Schedule trigger (cron) instead of Temporal's continue_as_new.
+The Kestra flow uses a Schedule trigger (cron) for periodic execution.
 Business logic is in the internal activity endpoints.
 """
 

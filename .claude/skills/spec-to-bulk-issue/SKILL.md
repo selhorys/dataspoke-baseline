@@ -108,7 +108,7 @@ Write one markdown file per issue: `issues/{NN}_{slug}.md`
 
 - [ ] OpenAPI spec (api/)
 - [ ] Backend - API routes and services
-- [ ] Backend - Temporal workflows
+- [ ] Backend - Kestra workflows
 - [ ] Backend - DataHub integration, PostgreSQL models, Qdrant vector search
 - [ ] Frontend UI
 - [ ] Helm charts / Kubernetes manifests

@@ -21,7 +21,7 @@ Fork or copy this repository to create a data catalog for your organization.
 
 ### Deploy to Production
 
-DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables all components: frontend, API, workers, and infrastructure (PostgreSQL, Redis, Qdrant, Temporal).
+DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables all components: frontend, API, workers, and infrastructure (PostgreSQL, Redis, Qdrant, Kestra).
 
 #### 1. Build and push container images
 
@@ -129,7 +129,7 @@ See [`spec/feature/HELM_CHART.md`](spec/feature/HELM_CHART.md) for the full char
 
 ### Dev Environment Setup
 
-The dev environment provisions **infrastructure dependencies** (DataHub, PostgreSQL, Redis, Qdrant, Temporal, example data sources) into a local Kubernetes cluster. Application services run on the host or in-cluster depending on the testing mode.
+The dev environment provisions **infrastructure dependencies** (DataHub, PostgreSQL, Redis, Qdrant, Kestra, example data sources) into a local Kubernetes cluster. Application services run on the host or in-cluster depending on the testing mode.
 
 #### 1. Configure
 
@@ -150,7 +150,7 @@ The `.env` file contains two tiers of variables:
 | `DATASPOKE_DEV_*` | Dev scripts only | Cluster context, namespace names, chart versions, port-forward ports |
 | `DATASPOKE_*` (no `DEV`) | App runtime | Infrastructure endpoints — `localhost` in dev, in-cluster addresses in prod |
 
-The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Infrastructure Helm values (resource limits, persistence sizes, Temporal configuration) are in `helm-charts/dataspoke/values-dev.yaml`. Credentials (PostgreSQL password, Redis password, etc.) are read from `dev_env/.env` and injected via `--set` at install time.
+The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Infrastructure Helm values (resource limits, persistence sizes, Kestra configuration) are in `helm-charts/dataspoke/values-dev.yaml`. Credentials (PostgreSQL password, Redis password, etc.) are read from `dev_env/.env` and injected via `--set` at install time.
 
 See [`spec/feature/DEV_ENV.md` §Configuration](spec/feature/DEV_ENV.md#configuration) for the full variable listing.
 
@@ -177,8 +177,7 @@ dev_env/dummy-data-port-forward.sh   # Example data sources
 | PostgreSQL | localhost:9201 | per `dev_env/.env` |
 | Redis | localhost:9202 | per `dev_env/.env` |
 | Qdrant | localhost:9203 (HTTP), :9204 (gRPC) | -- |
-| Temporal | localhost:9205 | -- |
-| Temporal UI | localhost:9206 | -- |
+| Kestra (API + UI) | localhost:9205 | -- |
 | Example PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` |
 | Example Kafka | localhost:9104 | -- |
 
@@ -262,7 +261,7 @@ This mode is significantly slower to iterate — every code change requires a co
 | OpenAPI spec | Done | `api/openapi.yaml` |
 | API layer (FastAPI) | Done | `src/api/` |
 | Backend services | Done | `src/backend/`, `src/shared/` |
-| Temporal workflows | Done | `src/workflows/` |
+| Kestra workflows | Done | `src/workflows/` |
 | Database migrations | Done | `migrations/` |
 | Docker image (API) | Done | `docker-images/api/` |
 | Docker image (Workers) | TBD | `docker-images/workers/` (planned) |
@@ -290,7 +289,7 @@ Use subagents in sequence to implement features:
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
 2. `api-spec` -- write OpenAPI spec in `api/`
 3. `backend` -- implement API routes + services
-4. `workflow` -- implement Temporal workflows
+4. `workflow` -- implement Kestra workflows
 5. `test` -- write and run tests
 6. `frontend` -- build UI
 7. `k8s-helm` -- containerize and deploy

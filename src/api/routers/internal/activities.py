@@ -1,6 +1,6 @@
 """Internal activity endpoints — called by Kestra HTTP Request tasks.
 
-Each endpoint corresponds to a former Temporal activity. Business logic
+Each endpoint corresponds to a Kestra activity. Business logic
 remains in the backend service layer; these endpoints are thin wrappers
 that handle error translation to HTTP status codes.
 

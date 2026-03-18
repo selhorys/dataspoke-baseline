@@ -273,7 +273,7 @@ class IngestionService:
         return {"run_id": run_id, "status": status, "detail": detail}
 
     async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult:
-        """Run the full ingestion pipeline in a single call (used for non-Temporal paths)."""
+        """Run the full ingestion pipeline in a single call (used for non-Kestra paths)."""
         run_id = str(uuid.uuid4())
 
         extract_result = await self.extract_metadata(dataset_urn, run_id)

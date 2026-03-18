@@ -40,7 +40,7 @@ All actions start here:
    - Dev variables: `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`
    - Dev chart versions: `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION`
    - Dev credentials: `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_ROOT_PASSWORD`, `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_PASSWORD`
-   - Dev port-forwards: `DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT` through `..._TEMPORAL_UI_PORT`
+   - Dev port-forwards: `DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT` through `..._KESTRA_PORT`
    - App runtime: `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_POSTGRES_PORT`, `DATASPOKE_REDIS_HOST`, etc.
 3. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
 4. **Show the final `.env` content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if `.env` already has all required variables.)
@@ -83,7 +83,7 @@ All actions start here:
    ```
 4. Show access information:
    - **DataHub**: `./dev_env/datahub-port-forward.sh` → UI at `http://localhost:9002`, credentials `datahub / datahub`
-   - **DataSpoke infra**: `./dev_env/dataspoke-port-forward.sh` → PostgreSQL `:9201`, Redis `:9202`, Qdrant `:9203`/`:9204`, Temporal `:9205`, Temporal UI `:9206`
+   - **DataSpoke infra**: `./dev_env/dataspoke-port-forward.sh` → PostgreSQL `:9201`, Redis `:9202`, Qdrant `:9203`/`:9204`, Kestra `:9205`
    - **Dummy data**: `./dev_env/dummy-data-port-forward.sh` → PostgreSQL `:9102`, Kafka `:9104`
    - **Lock service**: `./dev_env/lock-port-forward.sh` → API `:9221`
 5. Show how to run DataSpoke app services on the host:

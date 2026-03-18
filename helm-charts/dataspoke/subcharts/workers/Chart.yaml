@@ -1,6 +1,6 @@
 apiVersion: v2
 name: workers
-description: DataSpoke Workers — Temporal worker processes
+description: DataSpoke Workers — Kestra activity worker processes
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
