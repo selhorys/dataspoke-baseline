@@ -32,6 +32,7 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── k8s-work/               # Kubernetes cluster management (health, monitoring, operations)
 │   ├── plan-doc/               # Spec document routing and authoring
 │   ├── datahub-api/            # DataHub data model Q&A and code writing
+│   ├── kestra-api/             # Kestra REST API reference and code writing
 │   ├── prauto-check-status/    # Prauto issue/PR status dashboard
 │   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
 │   ├── dev-env/                # Dev environment management (install, uninstall, port-forward, status)
@@ -57,7 +58,7 @@ The scaffold works alongside these structural elements:
 | `CLAUDE.md` | Root-level agent instructions: project context, spec hierarchy, implementation workflow |
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
 | `dev_env/` | Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
-| `ref/` | External source code for AI reference (DataHub v1.4.0.3 source, downloaded via `/ref-setup`) |
+| `ref/` | External source code for AI reference (DataHub v1.4.0.3, Kestra source, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
 | `api/` | Consolidated OpenAPI spec (`openapi.yaml`) |
 | `helm-charts/` | DataSpoke umbrella Helm chart with subcharts. See `spec/feature/HELM_CHART.md` |
@@ -73,6 +74,7 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `dev_env/.env` |
 | `plan-doc` | Write specification or planning documents in `spec/` following the project hierarchy and naming conventions |
 | `datahub-api` | Reference and coding guide for DataHub integration in backend development. Covers entities, aspects, lineage, URNs, ingestion/emission, GraphQL, REST, and the `acryl-datahub` SDK. Requires `/ref-setup` first |
+| `kestra-api` | Reference and coding guide for Kestra REST API integration in workflow development. Covers flows, executions, logs, KV store, triggers, and the KestraClient wrapper. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
 | `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
