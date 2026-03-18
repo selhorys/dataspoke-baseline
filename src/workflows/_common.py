@@ -1,8 +1,8 @@
-"""Shared constants, retry policy, and service factories for Temporal workflows.
+"""Shared constants and service factories for workflow activities.
 
 Workflow ID Convention
 ──────────────────────
-All Temporal workflow IDs follow the pattern ``{type}-{identifier}``:
+All workflow IDs follow the pattern ``{type}-{identifier}``:
 
   ============  =============================  ==============================
   Scope         Format                         Example
@@ -17,14 +17,11 @@ All Temporal workflow IDs follow the pattern ``{type}-{identifier}``:
   (``ingestion``, ``validation``, ``generation``, ``metrics``,
   ``embedding-sync``, ``sla-monitor``, ``ontology-rebuild``).
 - Test IDs always start with ``test-`` so they can be identified and
-  cleaned up in the Temporal UI.  Use short, readable labels — never
+  cleaned up in the Kestra UI.  Use short, readable labels — never
   embed full URNs.
 """
 
 import hashlib
-from datetime import timedelta
-
-from temporalio.common import RetryPolicy
 
 from src.shared.settings import settings
 from src.shared.cache.client import RedisClient
@@ -33,25 +30,10 @@ from src.shared.db.session import SessionLocal
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import QdrantManager
 
-TASK_QUEUE = "dataspoke-main"
-
 
 def urn_to_workflow_id(urn: str) -> str:
-    """Create a short, stable identifier from a URN for Temporal workflow IDs."""
+    """Create a short, stable identifier from a URN for workflow IDs."""
     return hashlib.md5(urn.encode()).hexdigest()[:12]  # noqa: S324
-
-
-DEFAULT_ACTIVITY_TIMEOUT = timedelta(minutes=5)
-DEFAULT_WORKFLOW_TIMEOUT = timedelta(hours=1)
-HEARTBEAT_TIMEOUT = timedelta(seconds=30)
-
-
-def default_retry_policy() -> RetryPolicy:
-    return RetryPolicy(
-        initial_interval=timedelta(seconds=10),
-        backoff_coefficient=2.0,
-        maximum_attempts=3,
-    )
 
 
 def make_datahub() -> DataHubClient:
@@ -80,7 +62,7 @@ def make_qdrant() -> QdrantManager:
 
 
 def make_db_session():
-    """Create a fresh AsyncSession for Temporal activity use.
+    """Create a fresh AsyncSession for activity use.
 
     Returns an AsyncSession usable as ``async with make_db_session() as db:``.
     Patchable in tests to inject a test-scoped session.
@@ -92,34 +74,3 @@ def make_notification():
     from src.shared.notifications.service import NotificationService
 
     return NotificationService()
-
-
-async def await_workflow_result(handle) -> dict:
-    """Await a Temporal workflow handle and unwrap activity errors.
-
-    Activities convert DataSpokeError → ApplicationError(type=error_code).
-    When the workflow fails, handle.result() raises WorkflowFailureError.
-    This helper unwraps the chain and re-raises the matching DataSpokeError
-    so that FastAPI exception handlers return the correct HTTP status.
-    """
-    from temporalio.client import WorkflowFailureError
-    from temporalio.exceptions import ActivityError, ApplicationError
-
-    from src.shared.exceptions import ConflictError, DataSpokeError, EntityNotFoundError
-
-    try:
-        return await handle.result()
-    except WorkflowFailureError as exc:
-        cause = exc.cause
-        if isinstance(cause, ActivityError):
-            cause = cause.cause
-        if isinstance(cause, ApplicationError) and cause.type:
-            error_code = cause.type
-            message = str(cause)
-            if error_code.endswith("_NOT_FOUND"):
-                entity_type = error_code.removesuffix("_NOT_FOUND").lower()
-                raise EntityNotFoundError(entity_type, message) from exc
-            if error_code.endswith("_RUNNING"):
-                raise ConflictError(error_code, message) from exc
-            raise DataSpokeError(message) from exc
-        raise

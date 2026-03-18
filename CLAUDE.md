@@ -9,13 +9,13 @@ DataSpoke is a sidecar extension to DataHub that provides user-group-specific fe
 ## Dev Environment
 
 ```bash
-cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Temporal)
+cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Kestra)
 cd dev_env && ./uninstall.sh  # Tear down everything
 ```
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and port-forwarding.
 
-Quick-start (host mode): `uv run -m src.cli` starts API + Worker + runs migrations. See `uv run -m src.cli --help` for options.
+Quick-start (host mode): `uv run -m src.cli` starts API + runs migrations. Workflow orchestration is handled by Kestra (running in K8s). See `uv run -m src.cli --help` for options.
 
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). Two testing modes: **host** (default — app on host, infra in cluster) and **in-cluster** (on-demand — all components in K8s via `--set` flags). See `spec/TESTING.md §Testing Modes`.
 
@@ -24,7 +24,7 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core
 - **API-first**: OpenAPI specs in `api/` as standalone artifacts; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
-- **Temporal** for orchestration, **Qdrant** for vector search, **PostgreSQL** for operational DB
+- **Kestra** for workflow orchestration (HTTP-triggered, YAML flows), **Qdrant** for vector search, **PostgreSQL** for operational DB
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
 - **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/feature/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows; `spec/feature/BACKEND_SCHEMA.md` for DB schema, Qdrant collections; `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
 
@@ -58,7 +58,7 @@ For end-to-end feature implementation, use subagents in this order:
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
 2. `api-spec` agent — write OpenAPI spec in `api/`
 3. `backend` agent — implement API routes + services in `src/api/`, `src/backend/`, `src/shared/`
-4. `workflow` agent — implement Temporal workflows in `src/workflows/`
+4. `workflow` agent — implement Kestra flow YAML in `src/workflows/flows/` and activity endpoints
 5. `test` agent — write and run tests in `tests/`
 6. `frontend` agent — build UI in `src/frontend/`
 7. `k8s-helm` agent — containerize and deploy (when ready)

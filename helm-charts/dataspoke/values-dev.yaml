@@ -34,9 +34,8 @@ postgresql:
       size: 10Gi
     initdb:
       scripts:
-        create-temporal-dbs.sql: |
-          CREATE DATABASE temporal;
-          CREATE DATABASE temporal_visibility;
+        create-kestra-db.sql: |
+          CREATE DATABASE kestra;
 
 redis:
   enabled: true
@@ -65,84 +64,40 @@ qdrant:
   persistence:
     size: 10Gi
 
-temporal:
+kestra:
   enabled: true
-  server:
-    replicaCount: 1
-    resources:
-      limits:
-        memory: 512Mi
-        cpu: 250m
-      requests:
-        memory: 256Mi
-        cpu: 50m
-    config:
-      # IMPORTANT: numHistoryShards is immutable after the first schema creation.
-      # To change it, drop and recreate the temporal DB.
-      numHistoryShards: 2
-      persistence:
-        defaultStore: default
-        additionalStores: {}
-        default:
-          driver: "sql"
-          sql:
-            driver: "postgres12"
-            host: "dataspoke-postgresql"
-            port: 5432
-            database: "temporal"
-            # user/password: passed via --set from .env
-            maxConns: 5
-            maxIdleConns: 5
-            maxConnLifetime: "1h"
-        visibility:
-          driver: "sql"
-          sql:
-            driver: "postgres12"
-            host: "dataspoke-postgresql"
-            port: 5432
-            database: "temporal_visibility"
-            # user/password: passed via --set from .env
-            maxConns: 5
-            maxIdleConns: 5
-            maxConnLifetime: "1h"
-  admintools:
-    enabled: true
-    resources:
-      limits:
-        memory: 256Mi
-        cpu: 100m
-      requests:
-        memory: 128Mi
-        cpu: 25m
-  cassandra:
+  deploymentType: STANDALONE
+  image:
+    tag: "v1.3.3"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+  dind:
     enabled: false
-  mysql:
-    enabled: false
-  postgresql:
-    enabled: false
-  elasticsearch:
-    enabled: false
-  prometheus:
-    enabled: false
-  grafana:
-    enabled: false
-  schema:
-    setup:
-      enabled: true
-    createDatabase:
-      enabled: true
-    update:
-      enabled: true
-  web:
-    enabled: true
-    replicaCount: 1
-    resources:
-      limits:
-        memory: 256Mi
-        cpu: 100m
-      requests:
-        memory: 128Mi
-        cpu: 25m
+  configurations:
+    application:
+      datasources:
+        postgres:
+          url: jdbc:postgresql://dataspoke-postgresql:5432/kestra
+          driverClassName: org.postgresql.Driver
+          # username/password: passed via --set from .env
+      kestra:
+        repository:
+          type: postgres
+        queue:
+          type: postgres
+        storage:
+          type: local
+          local:
+            basePath: /app/storage
+        server:
+          basic-auth:
+            username: dataspoke@dataspoke.local
+            password: DataSpoke1
 
 # ---------------------------------------------------------------------------
 # ConfigMap/Secret: not created in dev (app reads env vars directly)

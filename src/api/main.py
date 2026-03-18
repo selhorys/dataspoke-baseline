@@ -1,5 +1,8 @@
 """DataSpoke API — FastAPI application factory."""
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,6 +17,7 @@ from src.api.middleware.rate_limit import limiter
 from src.api.routers import auth as auth_router
 from src.api.routers import health
 from src.api.routers import hub as hub_router
+from src.api.routers.internal import activities as internal_activities
 from src.api.routers.spoke.common import (
     data as common_data,
 )
@@ -42,12 +46,32 @@ from src.shared.exceptions import (
     StorageUnavailableError,
 )
 
+logger = logging.getLogger(__name__)
+
 _TRACE_HEADER = "X-Trace-Id"
 
 API_PREFIX = "/api/v1"
 SPOKE_COMMON = f"{API_PREFIX}/spoke/common"
 SPOKE_DG = f"{API_PREFIX}/spoke/dg"
 HUB = f"{API_PREFIX}/hub"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Register Kestra flows at startup, close client on shutdown."""
+    from src.api.dependencies import get_kestra_client
+    from src.workflows.kestra.registry import register_all_flows
+
+    kestra = get_kestra_client()
+    try:
+        count = await register_all_flows(kestra)
+        logger.info("Registered %d Kestra flows", count)
+    except Exception:
+        logger.warning("Failed to register Kestra flows (Kestra may not be available)", exc_info=True)
+
+    yield
+
+    await kestra.close()
 
 
 def _error_json(request: Request, status: int, error_code: str, message: str) -> JSONResponse:
@@ -89,6 +113,7 @@ def create_app() -> FastAPI:
         description="Sidecar extension to DataHub — DataSpoke API server.",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     # ── State (needed by slowapi) ──────────────────────────────────────────────
@@ -128,6 +153,9 @@ def create_app() -> FastAPI:
 
     # ── Auth routes (no auth required) ────────────────────────────────────────
     app.include_router(auth_router.router, prefix=API_PREFIX)
+
+    # ── Internal activity endpoints (called by Kestra, no auth) ────────────────
+    app.include_router(internal_activities.router)
 
     # ── Spoke/common routes ────────────────────────────────────────────────────
     app.include_router(common_ontology.router, prefix=SPOKE_COMMON)

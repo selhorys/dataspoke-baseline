@@ -9,7 +9,7 @@ Test-specific data extensions (created and cleaned up within each test):
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
-- Temporal port-forwarded to localhost:9205
+- Kestra port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -18,9 +18,8 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.workflows.generation import GenerationWorkflow, run_generation_activity
 from tests.integration.api_wired.conftest import (
-    make_temporal_worker,
+    InlineKestraClient,
     mock_llm,
     mock_qdrant,
 )
@@ -38,36 +37,27 @@ _GEN_LLM_RETURN = {
     "suggested_tags": ["test"],
 }
 
-_WF_MODULE = "src.workflows.generation"
-
 
 def _urn(suffix: str) -> str:
     return make_test_urn("generation", suffix)
 
 
 @pytest_asyncio.fixture
-async def temporal_worker(temporal_client, datahub_client, async_session):
-    async with make_temporal_worker(
-        temporal_client,
-        datahub_client,
-        db_session=async_session,
-        workflow_module=_WF_MODULE,
-        workflow_cls=GenerationWorkflow,
-        activity_fn=run_generation_activity,
-        extra_patches={f"{_WF_MODULE}.make_qdrant": mock_qdrant()},
-    ) as worker:
-        yield worker
-
-
-@pytest_asyncio.fixture
-async def http_client(datahub_client, async_session, temporal_client):
+async def http_client(datahub_client, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
+    import src.api.dependencies as deps
+    deps._kestra_client = None
+    _llm = mock_llm(complete_json_return=_GEN_LLM_RETURN)
+    _qdrant = mock_qdrant()
+    inline_kestra = InlineKestraClient(
+        datahub=datahub_client, db=async_session, llm=_llm, qdrant=_qdrant,
+    )
     async with override_app(
         datahub=datahub_client,
-        llm=mock_llm(complete_json_return=_GEN_LLM_RETURN),
-        qdrant=mock_qdrant(),
+        llm=_llm,
+        qdrant=_qdrant,
         db=async_session,
-        temporal=temporal_client,
+        kestra=inline_kestra,
     ) as client:
         yield client
 
@@ -188,7 +178,7 @@ async def test_list_generation_configs(http_client, async_session: AsyncSession)
 
 
 @pytest.mark.asyncio
-async def test_generate_produces_result(http_client, async_session: AsyncSession, temporal_worker):
+async def test_generate_produces_result(http_client, async_session: AsyncSession, kestra_client):
     """PUT config -> POST generate -> GET results -> verify result."""
     dataset_urn = _urn("generate_test")
     headers = _auth_headers()
@@ -246,7 +236,7 @@ async def test_generate_produces_result(http_client, async_session: AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_apply_after_approval(http_client, async_session: AsyncSession, temporal_worker):
+async def test_apply_after_approval(http_client, async_session: AsyncSession, kestra_client):
     """PUT config -> POST generate -> approve in DB -> POST apply -> verify applied_at."""
     dataset_urn = _urn("apply_test")
     headers = _auth_headers()
@@ -326,7 +316,7 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession, te
 
 
 @pytest.mark.asyncio
-async def test_generate_config_not_found(http_client, temporal_worker):
+async def test_generate_config_not_found(http_client, kestra_client):
     """POST generate for unconfigured URN -> 404."""
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(

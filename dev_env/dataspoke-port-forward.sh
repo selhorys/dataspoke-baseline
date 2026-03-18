@@ -24,8 +24,7 @@ PG_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT:-9201}"
 REDIS_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_REDIS_PORT:-9202}"
 QDRANT_HTTP_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_HTTP_PORT:-9203}"
 QDRANT_GRPC_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_GRPC_PORT:-9204}"
-TEMPORAL_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_TEMPORAL_PORT:-9205}"
-TEMPORAL_UI_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_TEMPORAL_UI_PORT:-9206}"
+KESTRA_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_KESTRA_PORT:-9205}"
 
 # ---------------------------------------------------------------------------
 # --stop: kill running port-forwards and clean up
@@ -94,12 +93,8 @@ PIDS+=($!)
 kubectl port-forward --namespace "${NS}" svc/dataspoke-qdrant "${QDRANT_GRPC_PORT}:6334" >/dev/null 2>&1 &
 PIDS+=($!)
 
-# Temporal gRPC
-kubectl port-forward --namespace "${NS}" svc/dataspoke-temporal-frontend "${TEMPORAL_PORT}:7233" >/dev/null 2>&1 &
-PIDS+=($!)
-
-# Temporal Web UI
-kubectl port-forward --namespace "${NS}" svc/dataspoke-temporal-web "${TEMPORAL_UI_PORT}:8080" >/dev/null 2>&1 &
+# Kestra (API + UI on single port)
+kubectl port-forward --namespace "${NS}" svc/dataspoke-kestra "${KESTRA_PORT}:8080" >/dev/null 2>&1 &
 PIDS+=($!)
 
 # Write PIDs
@@ -132,8 +127,7 @@ echo "  PostgreSQL:  localhost:${PG_PORT}   (-> dataspoke-postgresql:5432)"
 echo "  Redis:       localhost:${REDIS_PORT}   (-> dataspoke-redis-master:6379)"
 echo "  Qdrant HTTP: localhost:${QDRANT_HTTP_PORT}   (-> dataspoke-qdrant:6333)"
 echo "  Qdrant gRPC: localhost:${QDRANT_GRPC_PORT}   (-> dataspoke-qdrant:6334)"
-echo "  Temporal:    localhost:${TEMPORAL_PORT}   (-> dataspoke-temporal-frontend:7233)"
-echo "  Temporal UI: localhost:${TEMPORAL_UI_PORT}   (-> dataspoke-temporal-web:8080)"
+echo "  Kestra:      localhost:${KESTRA_PORT}   (-> dataspoke-kestra:8080)"
 echo ""
 echo "  PIDs: ${PIDS[*]} (saved to $PID_FILE)"
 echo "  Stop with: $0 --stop"

@@ -1,8 +1,8 @@
 # DataSpoke Backend — Data Contracts
 
 > This document specifies the storage contracts shared across all DataSpoke
-> backend processes (API, Temporal workers, event consumers): PostgreSQL tables,
-> Qdrant vector collections, and related indexes.
+> backend processes (API server, Kestra activity endpoints, event consumers):
+> PostgreSQL tables, Qdrant vector collections, and related indexes.
 >
 > Companion to [BACKEND](BACKEND.md) (service logic, workflows, shared clients).
 > Architecture context in [ARCHITECTURE](../ARCHITECTURE.md).
@@ -76,7 +76,7 @@ Timeseries of validation run results.
 | `anomalies` | `JSONB` | Array of `AnomalyResult` objects |
 | `recommendations` | `JSONB` | Array of recommendation strings |
 | `alternatives` | `JSONB` | Similar healthy dataset URNs from Qdrant |
-| `run_id` | `UUID` | Temporal workflow run ID |
+| `run_id` | `UUID` | Kestra flow execution ID |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
 #### `generation_configs`
@@ -106,7 +106,7 @@ Historical generation results, pending approval.
 | `proposals` | `JSONB` | Proposed changes (field → value mappings) |
 | `similar_diffs` | `JSONB` | Diff summaries against similar tables |
 | `approval_status` | `TEXT` | `pending`, `approved`, `rejected` |
-| `run_id` | `UUID` | Temporal workflow run ID |
+| `run_id` | `UUID` | Kestra flow execution ID |
 | `generated_at` | `TIMESTAMPTZ` | |
 | `applied_at` | `TIMESTAMPTZ` NULL | When approved and applied |
 
@@ -180,7 +180,7 @@ Timeseries of metric measurements.
 | `value` | `REAL` | Measured numeric value |
 | `breakdown` | `JSONB` NULL | Per-department or per-platform breakdown |
 | `alarm_triggered` | `BOOLEAN` | Whether threshold was breached |
-| `run_id` | `UUID` | Temporal workflow run ID |
+| `run_id` | `UUID` | Kestra flow execution ID |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
 #### `metric_issues`

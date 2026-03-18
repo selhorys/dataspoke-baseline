@@ -2,7 +2,7 @@
 
 Subscribes to MCL topics, deserializes events, and routes them through
 the EventRouter. Commits offsets only after successful processing.
-Connects to Temporal at startup so handlers can start workflows.
+Creates a Kestra client at startup so handlers can trigger workflows.
 
 Usage:
     python -m src.shared.datahub.consumer
@@ -26,19 +26,21 @@ MCL_TOPICS = [
 ]
 
 
-async def _connect_temporal():
-    """Connect to Temporal server; return None if unreachable."""
+def _create_kestra_client():
+    """Create a Kestra client; return None if configuration is missing."""
     try:
-        from temporalio.client import Client
+        from src.workflows.kestra.client import KestraClient
 
-        addr = f"{settings.temporal_host}:{settings.temporal_port}"
-        client = await Client.connect(addr, namespace=settings.temporal_namespace)
-        logger.info("temporal_connected", address=addr)
+        client = KestraClient(
+            base_url=settings.kestra_url,
+            namespace=settings.kestra_namespace,
+        )
+        logger.info("kestra_client_created", url=settings.kestra_url)
         return client
     except Exception:
         logger.warning(
-            "temporal_unavailable",
-            msg="handlers requiring Temporal will be no-ops",
+            "kestra_unavailable",
+            msg="handlers requiring Kestra will be no-ops",
         )
         return None
 
@@ -58,8 +60,8 @@ async def run_consumer() -> None:
     consumer.subscribe(MCL_TOPICS)
     logger.info("consumer_started", topics=MCL_TOPICS)
 
-    temporal_client = await _connect_temporal()
-    router = build_router(temporal_client=temporal_client)
+    kestra_client = _create_kestra_client()
+    router = build_router(kestra_client=kestra_client)
 
     try:
         while True:

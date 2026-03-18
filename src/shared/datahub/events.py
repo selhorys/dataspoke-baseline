@@ -2,7 +2,7 @@
 
 DataHub publishes MetadataChangeLog events to Kafka topics. This module
 deserializes those events, routes them by aspect name to registered handlers,
-and delegates to downstream services and Temporal workflows.
+and delegates to downstream services and Kestra workflows.
 """
 
 import asyncio
@@ -25,10 +25,8 @@ logger = structlog.get_logger(__name__)
 # Type alias for async handler functions
 Handler = Callable[["MetadataChangeLogEvent"], Coroutine[Any, Any, None]]
 
-# Module-level Temporal client, set by build_router()
-_temporal_client: Any = None
-
-TASK_QUEUE = "dataspoke-main"
+# Module-level Kestra client, set by build_router()
+_kestra_client: Any = None
 
 
 # ── MCL Pydantic Model ──────────────────────────────────────────────────────
@@ -116,7 +114,7 @@ class EventRouter:
 
 
 def _urn_to_workflow_id(urn: str) -> str:
-    """Create a short, stable identifier from a URN for Temporal workflow IDs."""
+    """Create a short, stable identifier from a URN for workflow IDs."""
     from src.workflows._common import urn_to_workflow_id
 
     return urn_to_workflow_id(urn)
@@ -126,7 +124,7 @@ def _urn_to_workflow_id(urn: str) -> str:
 
 
 async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
-    """Re-generate vector embedding for the changed dataset via EmbeddingSyncWorkflow."""
+    """Re-generate vector embedding for the changed dataset via embedding-sync flow."""
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -134,16 +132,17 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    if _temporal_client is None:
+    if _kestra_client is None:
         return
-    from src.workflows.embedding_sync import EmbeddingSyncParams, EmbeddingSyncWorkflow
-
     try:
-        await _temporal_client.start_workflow(
-            EmbeddingSyncWorkflow.run,
-            EmbeddingSyncParams(mode="single", dataset_urn=event.entity_urn),
-            id=f"embedding-sync-{_urn_to_workflow_id(event.entity_urn)}",
-            task_queue=TASK_QUEUE,
+        await _kestra_client.trigger_execution(
+            "embedding-sync",
+            inputs={
+                "callback_base_url": "http://localhost:8000",
+                "mode": "single",
+                "dataset_urn": event.entity_urn,
+            },
+            labels={"workflow_id": f"embedding-sync-{_urn_to_workflow_id(event.entity_urn)}"},
         )
     except Exception:
         logger.exception(
@@ -154,7 +153,7 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
 
 
 async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
-    """Detect new ontology clusters when schema changes via OntologyRebuildWorkflow."""
+    """Detect new ontology clusters when schema changes via ontology-rebuild flow."""
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -162,16 +161,16 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    if _temporal_client is None:
+    if _kestra_client is None:
         return
-    from src.workflows.ontology import OntologyRebuildParams, OntologyRebuildWorkflow
-
     try:
-        await _temporal_client.start_workflow(
-            OntologyRebuildWorkflow.run,
-            OntologyRebuildParams(),
-            id="ontology-rebuild",
-            task_queue=TASK_QUEUE,
+        await _kestra_client.trigger_execution(
+            "ontology-rebuild",
+            inputs={
+                "callback_base_url": "http://localhost:8000",
+                "force": "false",
+            },
+            labels={"workflow_id": "ontology-rebuild"},
         )
     except Exception:
         logger.exception(
@@ -184,7 +183,7 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
 async def update_health_score(event: MetadataChangeLogEvent) -> None:
     """Re-compute health scores when ownership or tags change.
 
-    Calls aggregate_health_scores directly (no Temporal required) because
+    Calls aggregate_health_scores directly (no workflow required) because
     the aggregation needs the current event context and there is no
     single-dataset workflow variant for health scoring.
     """
@@ -206,7 +205,7 @@ async def update_health_score(event: MetadataChangeLogEvent) -> None:
 
 
 async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
-    """Run validation pipeline on new dataset profile data via ValidationWorkflow.
+    """Run validation pipeline on new dataset profile data via validation flow.
 
     Only triggers if the dataset has an existing ValidationConfig.
     """
@@ -217,13 +216,12 @@ async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    if _temporal_client is None:
+    if _kestra_client is None:
         return
     from sqlalchemy import select
 
     from src.shared.db.models import ValidationConfig
     from src.shared.db.session import SessionLocal
-    from src.workflows.validation import ValidationParams, ValidationWorkflow
 
     async with SessionLocal() as db:
         result = await db.execute(
@@ -236,11 +234,15 @@ async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
         return
 
     try:
-        await _temporal_client.start_workflow(
-            ValidationWorkflow.run,
-            ValidationParams(dataset_urn=event.entity_urn),
-            id=f"validation-{_urn_to_workflow_id(event.entity_urn)}",
-            task_queue=TASK_QUEUE,
+        await _kestra_client.trigger_execution(
+            "validation",
+            inputs={
+                "callback_base_url": "http://localhost:8000",
+                "dataset_urn": event.entity_urn,
+                "config_id": "",
+                "dry_run": "false",
+            },
+            labels={"workflow_id": f"validation-{_urn_to_workflow_id(event.entity_urn)}"},
         )
     except Exception:
         logger.exception(
@@ -251,7 +253,7 @@ async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
 
 
 async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
-    """Check freshness SLA when a new operation event arrives via SLAMonitorWorkflow.
+    """Check freshness SLA when a new operation event arrives via sla-monitor flow.
 
     Only triggers if the dataset has a ValidationConfig with an sla_target.
     """
@@ -262,13 +264,12 @@ async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    if _temporal_client is None:
+    if _kestra_client is None:
         return
     from sqlalchemy import select
 
     from src.shared.db.models import ValidationConfig
     from src.shared.db.session import SessionLocal
-    from src.workflows.sla_monitor import SLAMonitorParams, SLAMonitorWorkflow
 
     async with SessionLocal() as db:
         result = await db.execute(
@@ -281,14 +282,15 @@ async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
         return
 
     try:
-        await _temporal_client.start_workflow(
-            SLAMonitorWorkflow.run,
-            SLAMonitorParams(
-                dataset_urn=event.entity_urn,
-                sla_target=config.sla_target,
-            ),
-            id=f"sla-monitor-{_urn_to_workflow_id(event.entity_urn)}",
-            task_queue=TASK_QUEUE,
+        await _kestra_client.trigger_execution(
+            "sla-monitor",
+            inputs={
+                "callback_base_url": "http://localhost:8000",
+                "dataset_urn": event.entity_urn,
+                "sla_target": json.dumps(config.sla_target),
+                "alert_recipients": "[]",
+            },
+            labels={"workflow_id": f"sla-monitor-{_urn_to_workflow_id(event.entity_urn)}"},
         )
     except Exception:
         logger.exception(
@@ -301,16 +303,16 @@ async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
 # ── Router Factory ───────────────────────────────────────────────────────────
 
 
-def build_router(*, temporal_client: Any = None) -> EventRouter:
+def build_router(*, kestra_client: Any = None) -> EventRouter:
     """Wire the routing table per spec (BACKEND.md:930-941).
 
     Args:
-        temporal_client: Optional Temporal client for starting workflows.
-            When None, handlers that require Temporal log the event but
-            do not start workflows.
+        kestra_client: Optional Kestra client for triggering workflow executions.
+            When None, handlers that require Kestra log the event but
+            do not trigger workflows.
     """
-    global _temporal_client  # noqa: PLW0603
-    _temporal_client = temporal_client
+    global _kestra_client  # noqa: PLW0603
+    _kestra_client = kestra_client
 
     router = EventRouter()
     # Search (UC5)

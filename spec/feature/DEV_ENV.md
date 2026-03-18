@@ -42,7 +42,7 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 │  │                     │   │  dataspoke-01                │  │
 │  └─────────────────────┘   │  (infrastructure only)       │  │
 │                            │                              │  │
-│                            │  - temporal-server           │  │
+│                            │  - kestra                    │  │
 │                            │  - qdrant                    │  │
 │                            │  - postgresql                │  │
 │                            │  - redis                     │  │
@@ -53,7 +53,7 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 │  Host (outside cluster)                                      │
 │    dataspoke-frontend  (npm run dev, :3000)                  │
 │    dataspoke-api       (uvicorn, :8000)                      │
-│    dataspoke-workers   (temporal worker, connects to infra)  │
+│    (Kestra runs in cluster, accessed via port-forward)       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,7 +87,7 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 | Namespace | Purpose | Managed By |
 |-----------|---------|------------|
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
-| `dataspoke-01` | DataSpoke infrastructure (Temporal, Qdrant, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
+| `dataspoke-01` | DataSpoke infrastructure (Kestra, Qdrant, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 > Namespace names are **defaults** from `.env.example`. All scripts read them from environment variables and never hardcode them.
@@ -134,7 +134,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
 | Example data creds | `*_DUMMY_DATA_POSTGRES_*`, `*_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`, `*_DUMMY_DATA_KAFKA_INSTANCE` | Dev-only |
 | DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `*_TOKEN`, `*_KAFKA_BROKERS` | App runtime — `localhost` in dev |
-| Infrastructure | `DATASPOKE_POSTGRES_*`, `*_REDIS_*`, `*_QDRANT_*`, `*_TEMPORAL_*` | App runtime — `localhost` in dev |
+| Infrastructure | `DATASPOKE_POSTGRES_*`, `*_REDIS_*`, `*_QDRANT_*`, `*_KESTRA_*` | App runtime — `localhost` in dev |
 | LLM | `DATASPOKE_LLM_PROVIDER`, `*_API_KEY`, `*_MODEL` | App runtime |
 
 ### Policies
@@ -181,9 +181,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| temporal-server | Deployment | 512 Mi | — |
-| temporal-admintools | Deployment | 256 Mi | — |
-| temporal-web | Deployment | 256 Mi | — |
+| kestra | Deployment | 512 Mi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
@@ -265,7 +263,7 @@ All port-forward scripts run in background, write PIDs to dotfiles, and support 
 | Script | Services | PID File |
 |--------|----------|----------|
 | `datahub-port-forward.sh` | UI (:9002), GMS (:9004), Kafka (:9005) | `.datahub-port-forward.pid` |
-| `dataspoke-port-forward.sh` | PG (:9201), Redis (:9202), Qdrant (:9203/:9204), Temporal (:9205), Temporal UI (:9206) | `.dataspoke-port-forward.pid` |
+| `dataspoke-port-forward.sh` | PG (:9201), Redis (:9202), Qdrant (:9203/:9204), Kestra (:9205 — API + UI) | `.dataspoke-port-forward.pid` |
 | `dummy-data-port-forward.sh` | example-postgres (:9102), example-kafka (:9104) | `.dummy-data-port-forward.pid` |
 | `lock-port-forward.sh` | dev-lock (:9221) | `.lock-port-forward.pid` |
 
@@ -279,8 +277,7 @@ All port-forward scripts run in background, write PIDs to dotfiles, and support 
 | PostgreSQL (dataspoke) | `dataspoke-postgresql:5432` | `localhost:9201` |
 | Redis | `dataspoke-redis-master:6379` | `localhost:9202` |
 | Qdrant HTTP / gRPC | `dataspoke-qdrant:6333/6334` | `localhost:9203/9204` |
-| Temporal | `dataspoke-temporal-frontend:7233` | `localhost:9205` |
-| Temporal UI | `dataspoke-temporal-web:8080` | `localhost:9206` |
+| Kestra (API + UI) | `dataspoke-kestra:8080` | `localhost:9205` |
 | Lock API | `dev-lock:8080` | `localhost:9221` |
 | example-postgres | `example-postgres:5432` | `localhost:9102` |
 | example-kafka | `example-kafka:9094` (EXTERNAL) | `localhost:9104` |
@@ -297,7 +294,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~74%** → ~11.9 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~72%** → ~11.3 GiB RAM, ~7.75 CPU limits.
 
 ### Memory Budget (limits)
 
@@ -312,18 +309,16 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~74%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| temporal-server | dataspoke-01 | 512 Mi each | 4 pods (frontend, history, matching, worker) |
-| temporal-admintools | dataspoke-01 | 256 Mi | |
-| temporal-web | dataspoke-01 | 256 Mi | Temporal UI |
+| kestra | dataspoke-01 | 512 Mi | API + UI on single port |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~11.9 Gi** | |
+| **Total** | | **~11.3 Gi** | |
 
-~4.1 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~4.7 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 

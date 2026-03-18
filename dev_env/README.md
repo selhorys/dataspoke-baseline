@@ -82,8 +82,7 @@ Credentials: `datahub` / `datahub`
 | Redis | localhost:9202 | Cache, rate limiting |
 | Qdrant HTTP | localhost:9203 | Vector DB REST API |
 | Qdrant gRPC | localhost:9204 | Vector DB gRPC API |
-| Temporal | localhost:9205 | Workflow orchestration |
-| Temporal UI | localhost:9206 | Workflow inspection (Web UI) |
+| Kestra (API + UI) | localhost:9205 | Workflow orchestration and inspection |
 | Lock API | localhost:9221 | Dev-env mutex (see §5) |
 
 ### 5. Lock the dev environment (multi-tester coordination)
@@ -147,8 +146,8 @@ cd src/frontend && npm run dev          # http://localhost:3000
 # API (from repo root)
 uv run uvicorn src.api.main:app --reload --port 8000
 
-# Workers (from repo root)
-uv run python -m src.workflows.worker
+# Kestra runs in the cluster — no worker process needed on the host
+# Access Kestra UI at http://localhost:9205 (after port-forward)
 ```
 
 The `DATASPOKE_*` variables in `.env` point to `localhost` — the port-forwards connect them to the in-cluster infrastructure transparently.
@@ -224,7 +223,7 @@ Claude Code skill: `/dev-env uninstall`
 | Namespace | Purpose | Managed By |
 |-----------|---------|------------|
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
-| `dataspoke-01` | DataSpoke infrastructure (PostgreSQL, Redis, Qdrant, Temporal) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
+| `dataspoke-01` | DataSpoke infrastructure (PostgreSQL, Redis, Qdrant, Kestra) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 ## Directory Structure
@@ -257,7 +256,7 @@ App runtime variables point to `localhost` in dev (via port-forward) and to in-c
 
 ## Resource Budget
 
-This environment targets ~11.9 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~74% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
+This environment targets ~11.3 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~72% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
 
 | Component | Namespace | Memory Limit |
 |-----------|-----------|-------------|
@@ -270,16 +269,14 @@ This environment targets ~11.9 GiB memory limits on an 8+ CPU / 16 GB RAM cluste
 | datahub-mae-consumer | datahub-01 | 512 Mi |
 | datahub-mce-consumer | datahub-01 | 512 Mi |
 | datahub-actions | datahub-01 | 256 Mi |
-| temporal-server | dataspoke-01 | 512 Mi |
-| temporal-admintools | dataspoke-01 | 256 Mi |
-| temporal-web | dataspoke-01 | 256 Mi |
+| kestra | dataspoke-01 | 512 Mi |
 | qdrant | dataspoke-01 | 1024 Mi |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi |
 | redis | dataspoke-01 | 256 Mi |
 | dev-lock | dataspoke-01 | 64 Mi |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi |
-| **Total** | | **~11.9 Gi** |
+| **Total** | | **~11.3 Gi** |
 
 ## Troubleshooting
 

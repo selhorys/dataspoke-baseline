@@ -15,20 +15,19 @@ dependencies = [
     "structlog>=24",
     # Shared / data layer
     "sqlalchemy[asyncio]>=2.0",
-    "asyncpg>=0.30",
+    "asyncpg>=0.31",
     "alembic>=1.14",
     # Infrastructure clients
     "aiosmtplib>=3.0",
     "acryl-datahub>=1.4,<2.0",
     "redis[hiredis]>=5.2",
-    "qdrant-client>=1.12",
+    "qdrant-client>=1.17",
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
     "langchain-google-genai>=2",
     "langchain-anthropic>=0.3",
-    "temporalio>=1.7,<2.0",
     # Ingestion extractors
-    "confluent-kafka>=2.6",
+    "confluent-kafka>=2.13",
     "httpx>=0.28",
     "sqlparse>=0.5",
     "openpyxl>=3.1",

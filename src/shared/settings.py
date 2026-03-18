@@ -52,11 +52,11 @@ class Settings(BaseSettings):
     qdrant_grpc_port: int = 6334
     qdrant_api_key: str = ""
 
-    # Temporal
-    temporal_host: str = "localhost"
-    temporal_port: int = 7233
-    temporal_namespace: str = "default"
-    temporal_ui_url: str = "http://localhost:8080"
+    # Kestra
+    kestra_url: str = "http://localhost:8080"
+    kestra_namespace: str = "dataspoke"
+    kestra_user: str = ""
+    kestra_password: str = ""
 
     # LLM
     llm_provider: str = "openai"

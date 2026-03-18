@@ -1,0 +1,34 @@
+id: embedding-sync
+namespace: dataspoke
+description: "Reindex dataset vectors in Qdrant"
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+  - id: mode
+    type: STRING
+    defaults: "full"
+  - id: dataset_urn
+    type: STRING
+    defaults: ""
+
+tasks:
+  - id: enumerate_datasets
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/enumerate-datasets"
+    method: POST
+    contentType: application/json
+    body: |
+      {"mode": "{{ inputs.mode }}", "dataset_urn": "{{ inputs.dataset_urn }}"}
+
+  - id: reindex_batch
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/reindex-batch"
+    method: POST
+    contentType: application/json
+    body: |
+      {"dataset_urns": {{ outputs.enumerate_datasets.body }}}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S

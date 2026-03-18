@@ -5,15 +5,10 @@ by pytest).  Provides fixtures specific to REST-based testing so that spot
 and story tests get a ready-to-use auth header dict without boilerplate.
 """
 
-import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import ExitStack, asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-from temporalio.worker import Worker
 
-from src.workflows._common import TASK_QUEUE
 from tests.integration.conftest import _auth_headers
 
 
@@ -23,7 +18,7 @@ def auth_headers() -> dict[str, str]:
     return _auth_headers()
 
 
-# ── Mock factories for Temporal activity dependencies ─────────────────────────
+# ── Mock factories for activity dependencies ─────────────────────────
 
 
 def mock_qdrant() -> AsyncMock:
@@ -74,57 +69,136 @@ class _TestSessionWrapper:
         pass
 
 
-# ── Temporal worker helper ───────────────────────────────────────────────────
+# ── Inline Kestra mock ──────────────────────────────────────────────
 
 
-@asynccontextmanager
-async def make_temporal_worker(
-    temporal_client,
-    datahub_client,
-    *,
-    db_session=None,
-    workflow_module: str,
-    workflow_cls,
-    activity_fn,
-    extra_patches: dict[str, object] | None = None,
-) -> AsyncGenerator[Worker]:
-    """Start a function-scoped in-process Temporal worker with mocked factories.
+class InlineKestraClient:
+    """Mock Kestra client that executes workflow activities inline.
 
-    Patches ``make_datahub``, ``make_llm``, and ``make_db_session`` in
-    *workflow_module* so the activity uses the test's authenticated DataHub
-    client, deterministic mocks, and the test-scoped DB session (avoiding
-    stale connection-pool issues across pytest-asyncio event loops).
-
-    Additional patches (e.g. ``make_qdrant``, ``make_cache``) can be
-    supplied via *extra_patches*.
+    Instead of triggering a real Kestra flow (which would HTTP-callback to
+    the API server), this client calls the backend service methods directly.
+    This lets API-wired integration tests exercise the full route → service
+    path without requiring a running HTTP server reachable from Kestra.
     """
-    patches = {
-        f"{workflow_module}.make_datahub": datahub_client,
-        f"{workflow_module}.make_llm": mock_llm(),
-    }
-    if db_session is not None:
-        patches[f"{workflow_module}.make_db_session"] = _TestSessionWrapper(db_session)
-    if extra_patches:
-        patches.update(extra_patches)
 
-    stack = ExitStack()
-    for target, return_value in patches.items():
-        stack.enter_context(patch(target, return_value=return_value))
+    def __init__(self, *, datahub=None, db=None, llm=None, qdrant=None, cache=None, notification=None):
+        self._datahub = datahub
+        self._db = db
+        self._llm = llm
+        self._qdrant = qdrant
+        self._cache = cache
+        self._notification = notification
 
-    with stack:
-        activity_list = activity_fn if isinstance(activity_fn, list) else [activity_fn]
-        worker = Worker(
-            temporal_client,
-            task_queue=TASK_QUEUE,
-            workflows=[workflow_cls],
-            activities=activity_list,
+    async def check_no_duplicate(self, *args, **kwargs):
+        pass
+
+    async def find_running_executions(self, *args, **kwargs):
+        return []
+
+    async def trigger_and_wait(self, flow_id, inputs=None, **kwargs):
+        from src.workflows.kestra.models import ExecutionResponse
+
+        inputs = inputs or {}
+        result = await self._run_flow(flow_id, inputs)
+        return ExecutionResponse(
+            id=f"test-{flow_id}",
+            namespace="dataspoke",
+            flowId=flow_id,
+            state={"current": "SUCCESS"},
+            outputs=result,
         )
-        worker_task = asyncio.create_task(worker.run())
-        try:
-            yield worker
-        finally:
-            worker_task.cancel()
-            try:
-                await worker_task
-            except asyncio.CancelledError:
-                pass
+
+    async def trigger_execution(self, flow_id, inputs=None, **kwargs):
+        return await self.trigger_and_wait(flow_id, inputs=inputs)
+
+    async def _run_flow(self, flow_id, inputs):
+        if flow_id == "generation":
+            return await self._run_generation(inputs)
+        if flow_id == "ingestion":
+            return await self._run_ingestion(inputs)
+        if flow_id == "validation":
+            return await self._run_validation(inputs)
+        if flow_id == "metrics":
+            return await self._run_metrics(inputs)
+        return {}
+
+    def _resolve(self, name):
+        """Return provided dep or fall back to make_*() factory."""
+        val = getattr(self, f"_{name}", None)
+        if val is not None:
+            return val
+        from src.workflows import _common
+        factory = getattr(_common, f"make_{name}", None)
+        if factory:
+            return factory()
+        return None
+
+    async def _run_generation(self, inputs):
+        from src.backend.generation.service import GenerationService
+
+        service = GenerationService(
+            datahub=self._resolve("datahub"),
+            db=self._db,
+            llm=self._resolve("llm"),
+            qdrant=self._resolve("qdrant"),
+        )
+        result = await service.generate(inputs["dataset_urn"])
+        return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+
+    async def _run_ingestion(self, inputs):
+        import uuid
+
+        from src.backend.ingestion.service import IngestionService
+
+        service = IngestionService(
+            datahub=self._resolve("datahub"),
+            db=self._db,
+            llm=self._resolve("llm"),
+        )
+        run_id = inputs.get("run_id", str(uuid.uuid4()))
+        dry_run = inputs.get("dry_run", "false") == "true"
+        extract_result = await service.extract_metadata(inputs["dataset_urn"], run_id)
+        if dry_run:
+            detail = {
+                "dry_run": True,
+                "metadata_extracted": extract_result.get("sources_processed", 0),
+            }
+            event_result = await service.record_ingestion_event(
+                inputs["dataset_urn"], run_id, "success", detail
+            )
+            return event_result
+        emit_result = await service.emit_metadata_to_datahub(
+            inputs["dataset_urn"], extract_result
+        )
+        event_result = await service.record_ingestion_event(
+            inputs["dataset_urn"], run_id, "success", emit_result
+        )
+        return event_result
+
+    async def _run_validation(self, inputs):
+        from src.backend.validation.service import ValidationService
+
+        service = ValidationService(
+            datahub=self._resolve("datahub"),
+            db=self._db,
+            cache=self._resolve("cache") or mock_cache(),
+            llm=self._resolve("llm"),
+            qdrant=self._resolve("qdrant") or mock_qdrant(),
+        )
+        dry_run = inputs.get("dry_run", "false") == "true"
+        config_id = inputs.get("config_id") or None
+        result = await service.run(inputs["dataset_urn"], config_id=config_id, dry_run=dry_run)
+        return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+
+    async def _run_metrics(self, inputs):
+        from src.backend.metrics.service import MetricsService
+
+        service = MetricsService(
+            datahub=self._resolve("datahub"),
+            db=self._db,
+            cache=self._resolve("cache") or mock_cache(),
+            notification=self._resolve("notification"),
+        )
+        dry_run = inputs.get("dry_run", "false") == "true"
+        result = await service.run(inputs["metric_id"], dry_run=dry_run)
+        return {"run_id": result.run_id, "status": result.status, "detail": result.detail}

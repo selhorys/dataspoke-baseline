@@ -1,10 +1,9 @@
 import json
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
-from temporalio.client import Client as TemporalClient
-from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
 from src.api.auth.ws import ws_authenticate
@@ -13,8 +12,8 @@ from src.api.dependencies import (
     get_dataset_service,
     get_generation_service,
     get_ingestion_service,
+    get_kestra_client,
     get_redis,
-    get_temporal_client,
     get_validation_service,
 )
 from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse, QualityScoreResponse
@@ -49,11 +48,9 @@ from src.backend.generation.service import GenerationService
 from src.backend.ingestion.service import IngestionService
 from src.backend.validation.service import ValidationService
 from src.shared.db.models import Event, GenerationResult, ValidationResult
-from src.shared.exceptions import ConflictError, EntityNotFoundError
-from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
-from src.workflows.generation import GenerationParams, GenerationWorkflow
-from src.workflows.ingestion import IngestionParams, IngestionWorkflow
-from src.workflows.validation import ValidationParams, ValidationWorkflow
+from src.shared.exceptions import EntityNotFoundError
+from src.workflows._common import urn_to_workflow_id
+from src.workflows.kestra.client import KestraClient
 
 router = APIRouter(
     prefix="/data",
@@ -210,26 +207,27 @@ async def delete_data_ingestion_conf(
 async def post_data_ingestion_run(
     dataset_urn: str,
     body: RunIngestionRequest,
-    temporal: TemporalClient = Depends(get_temporal_client),
+    kestra: KestraClient = Depends(get_kestra_client),
 ) -> RunResultResponse:
-    workflow_id = f"ingestion-{urn_to_workflow_id(dataset_urn)}"
-    try:
-        handle = await temporal.start_workflow(
-            IngestionWorkflow.run,
-            IngestionParams(dataset_urn=dataset_urn, dry_run=body.dry_run),
-            id=workflow_id,
-            task_queue=TASK_QUEUE,
-        )
-    except WorkflowAlreadyStartedError as exc:
-        raise ConflictError(
-            "INGESTION_RUNNING",
-            f"An ingestion run is already in progress for {dataset_urn}",
-        ) from exc
-    result = await await_workflow_result(handle)
+    label_value = f"ingestion-{urn_to_workflow_id(dataset_urn)}"
+    await kestra.check_no_duplicate(
+        "ingestion", "workflow_id", label_value, "INGESTION_RUNNING"
+    )
+    execution = await kestra.trigger_and_wait(
+        "ingestion",
+        inputs={
+            "callback_base_url": "http://localhost:8000",
+            "dataset_urn": dataset_urn,
+            "dry_run": str(body.dry_run).lower(),
+            "run_id": str(uuid.uuid4()),
+        },
+        labels={"workflow_id": label_value},
+    )
+    outputs = execution.outputs or {}
     return RunResultResponse(
-        run_id=result["run_id"],
-        status=result["status"],
-        detail=result["detail"],
+        run_id=outputs.get("run_id", execution.id),
+        status=outputs.get("status", execution.status.value),
+        detail=outputs.get("detail", {}),
     )
 
 
@@ -374,26 +372,27 @@ async def get_data_validation_result(
 async def post_data_validation_run(
     dataset_urn: str,
     body: RunValidationRequest,
-    temporal: TemporalClient = Depends(get_temporal_client),
+    kestra: KestraClient = Depends(get_kestra_client),
 ) -> ValidationRunResultResponse:
-    workflow_id = f"validation-{urn_to_workflow_id(dataset_urn)}"
-    try:
-        handle = await temporal.start_workflow(
-            ValidationWorkflow.run,
-            ValidationParams(dataset_urn=dataset_urn, dry_run=body.dry_run),
-            id=workflow_id,
-            task_queue=TASK_QUEUE,
-        )
-    except WorkflowAlreadyStartedError as exc:
-        raise ConflictError(
-            "VALIDATION_RUNNING",
-            f"A validation run is already in progress for {dataset_urn}",
-        ) from exc
-    result = await await_workflow_result(handle)
+    label_value = f"validation-{urn_to_workflow_id(dataset_urn)}"
+    await kestra.check_no_duplicate(
+        "validation", "workflow_id", label_value, "VALIDATION_RUNNING"
+    )
+    execution = await kestra.trigger_and_wait(
+        "validation",
+        inputs={
+            "callback_base_url": "http://localhost:8000",
+            "dataset_urn": dataset_urn,
+            "config_id": "",
+            "dry_run": str(body.dry_run).lower(),
+        },
+        labels={"workflow_id": label_value},
+    )
+    outputs = execution.outputs or {}
     return ValidationRunResultResponse(
-        run_id=result["run_id"],
-        status=result["status"],
-        detail=result["detail"],
+        run_id=outputs.get("run_id", execution.id),
+        status=outputs.get("status", execution.status.value),
+        detail=outputs.get("detail", {}),
     )
 
 
@@ -533,26 +532,25 @@ async def get_data_gen_result(
 @router.post("/{dataset_urn}/attr/gen/method/generate", response_model=GenerationRunResultResponse)
 async def post_data_gen_generate(
     dataset_urn: str,
-    temporal: TemporalClient = Depends(get_temporal_client),
+    kestra: KestraClient = Depends(get_kestra_client),
 ) -> GenerationRunResultResponse:
-    workflow_id = f"generation-{urn_to_workflow_id(dataset_urn)}"
-    try:
-        handle = await temporal.start_workflow(
-            GenerationWorkflow.run,
-            GenerationParams(dataset_urn=dataset_urn),
-            id=workflow_id,
-            task_queue=TASK_QUEUE,
-        )
-    except WorkflowAlreadyStartedError as exc:
-        raise ConflictError(
-            "GENERATION_RUNNING",
-            f"A generation run is already in progress for {dataset_urn}",
-        ) from exc
-    result = await await_workflow_result(handle)
+    label_value = f"generation-{urn_to_workflow_id(dataset_urn)}"
+    await kestra.check_no_duplicate(
+        "generation", "workflow_id", label_value, "GENERATION_RUNNING"
+    )
+    execution = await kestra.trigger_and_wait(
+        "generation",
+        inputs={
+            "callback_base_url": "http://localhost:8000",
+            "dataset_urn": dataset_urn,
+        },
+        labels={"workflow_id": label_value},
+    )
+    outputs = execution.outputs or {}
     return GenerationRunResultResponse(
-        run_id=result["run_id"],
-        status=result["status"],
-        detail=result["detail"],
+        run_id=outputs.get("run_id", execution.id),
+        status=outputs.get("status", execution.status.value),
+        detail=outputs.get("detail", {}),
     )
 
 

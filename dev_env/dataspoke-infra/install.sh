@@ -85,7 +85,7 @@ add_repo_if_missing() {
 info "Adding/updating Helm repositories..."
 add_repo_if_missing bitnami  "https://charts.bitnami.com/bitnami"
 add_repo_if_missing qdrant   "https://qdrant.github.io/qdrant-helm"
-add_repo_if_missing temporal "https://go.temporal.io/helm-charts"
+add_repo_if_missing kestra   "https://helm.kestra.io/"
 helm repo update
 
 # ---------------------------------------------------------------------------
@@ -108,10 +108,8 @@ if [[ -d "$CHART_DIR" ]]; then
     --set postgresql.auth.username="${DATASPOKE_POSTGRES_USER}" \
     --set postgresql.auth.database="${DATASPOKE_POSTGRES_DB}" \
     --set redis.auth.existingSecret=dataspoke-redis-secret \
-    --set temporal.server.config.persistence.default.sql.user="${DATASPOKE_POSTGRES_USER}" \
-    --set temporal.server.config.persistence.default.sql.password="${DATASPOKE_POSTGRES_PASSWORD}" \
-    --set temporal.server.config.persistence.visibility.sql.user="${DATASPOKE_POSTGRES_USER}" \
-    --set temporal.server.config.persistence.visibility.sql.password="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set kestra.configurations.application.datasources.postgres.username="${DATASPOKE_POSTGRES_USER}" \
+    --set kestra.configurations.application.datasources.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --timeout 5m --wait
 else
@@ -120,19 +118,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Register Temporal namespace (idempotent)
+# Wait for Kestra to become ready
 # ---------------------------------------------------------------------------
-TEMPORAL_NS="${DATASPOKE_TEMPORAL_NAMESPACE:-dataspoke}"
-info "Waiting for Temporal frontend to become ready..."
-kubectl rollout status deployment/dataspoke-temporal-frontend -n "${NS}" --timeout=120s
-
-info "Registering Temporal namespace '${TEMPORAL_NS}'..."
-kubectl exec -n "${NS}" deploy/dataspoke-temporal-frontend -- \
-  tctl --namespace "${TEMPORAL_NS}" namespace describe >/dev/null 2>&1 \
-  || kubectl exec -n "${NS}" deploy/dataspoke-temporal-frontend -- \
-    tctl --namespace "${TEMPORAL_NS}" namespace register --retention 168h \
-  && info "Temporal namespace '${TEMPORAL_NS}' registered." \
-  || warn "Failed to register Temporal namespace '${TEMPORAL_NS}' — register manually."
+info "Waiting for Kestra to become ready..."
+kubectl rollout status deployment/dataspoke-kestra -n "${NS}" --timeout=120s \
+  && info "Kestra is ready." \
+  || warn "Kestra did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
 # Print access instructions
@@ -146,6 +137,5 @@ echo ""
 echo "  PostgreSQL: localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT:-9201}"
 echo "  Redis:      localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_REDIS_PORT:-9202}"
 echo "  Qdrant:     localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_HTTP_PORT:-9203} (HTTP), :${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_GRPC_PORT:-9204} (gRPC)"
-echo "  Temporal:   localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_TEMPORAL_PORT:-9205}"
-echo "  Temporal UI: localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_TEMPORAL_UI_PORT:-9206}"
+echo "  Kestra:     localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_KESTRA_PORT:-9205} (API + UI)"
 echo ""

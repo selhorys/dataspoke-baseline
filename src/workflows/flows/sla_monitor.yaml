@@ -1,0 +1,44 @@
+id: sla-monitor
+namespace: dataspoke
+description: "Periodic SLA monitoring with alerting"
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+  - id: dataset_urn
+    type: STRING
+  - id: sla_target
+    type: STRING
+  - id: alert_recipients
+    type: STRING
+    defaults: "[]"
+
+tasks:
+  - id: check_sla
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/check-sla"
+    method: POST
+    contentType: application/json
+    body: |
+      {"dataset_urn": "{{ inputs.dataset_urn }}", "sla_target": {{ inputs.sla_target }}}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S
+
+  - id: send_sla_alerts
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/send-sla-alerts"
+    method: POST
+    contentType: application/json
+    body: |
+      {"alerts": {{ outputs.check_sla.body }}, "recipients": {{ inputs.alert_recipients }}}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S
+
+triggers:
+  - id: sla_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "*/15 * * * *"

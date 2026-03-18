@@ -225,7 +225,7 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 | **보강 소스 커넥터** | Confluence, Excel/S3, 분류 체계 API에서 가져오기 | DataHub 커넥터는 데이터베이스/플랫폼 중심 |
 | **커스텀 추출기 프레임워크** | PL/SQL 리니지 파싱, CHECK 제약조건 추출 플러그인 | 스토어드 프로시저 본문 파싱은 DataHub 범위 밖 |
 | **필드 매핑 엔진** | Confluence 라벨 → 태그, Excel 컬럼 → 커스텀 속성 변환 | DataHub는 구조화된 aspect를 수용하지만 비정형 입력을 변환하지 않음 |
-| **오케스트레이션 (Temporal)** | 스케줄링, 단계별 재시도, 알림 | DataHub는 레시피를 원자적으로 실행; 다중 소스 오케스트레이션은 Temporal 필요 |
+| **오케스트레이션 (Kestra)** | 스케줄링, 단계별 재시도, 알림 | DataHub는 레시피를 원자적으로 실행; 다중 소스 오케스트레이션은 Kestra 필요 |
 | **벡터 인덱스 동기화** | 성공적 인제스천 시 임베딩 생성 → Qdrant | DataHub는 Elasticsearch 키워드 검색만 제공, 벡터 유사도 검색 없음 |
 
 #### 결과

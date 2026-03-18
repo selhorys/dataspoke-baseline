@@ -26,6 +26,10 @@ DATAHUB_VERSION="v1.4.0.3"  # Hard-coded mapping from chart 0.8.21
 DATAHUB_REPO="https://github.com/datahub-project/datahub.git"
 DATAHUB_DIR="${GITHUB_DIR}/datahub"
 
+KESTRA_VERSION="v1.3.3"
+KESTRA_REPO="https://github.com/kestra-io/kestra.git"
+KESTRA_DIR="${GITHUB_DIR}/kestra"
+
 # Color output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -100,10 +104,49 @@ setup_datahub() {
     echo "   - datahub-graphql-core/ # GraphQL API schemas"
 }
 
+# Download Kestra source code
+setup_kestra() {
+    log_info "Setting up Kestra reference (version ${KESTRA_VERSION})..."
+
+    mkdir -p "${GITHUB_DIR}"
+
+    if [[ -d "${KESTRA_DIR}" ]]; then
+        log_warn "Kestra directory already exists: ${KESTRA_DIR}"
+        read -p "   Remove and re-clone? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "${KESTRA_DIR}"
+        else
+            log_info "Skipping Kestra setup"
+            return 0
+        fi
+    fi
+
+    log_info "Cloning Kestra repository (this may take 2-5 minutes)..."
+    git clone --depth 1 --branch "${KESTRA_VERSION}" "${KESTRA_REPO}" "${KESTRA_DIR}"
+
+    log_info "Cleaning up unnecessary files for AI reference..."
+    cd "${KESTRA_DIR}"
+
+    rm -rf .git
+    rm -rf docker/
+    rm -rf ui/node_modules/
+
+    log_success "Kestra source code ready at ${KESTRA_DIR}"
+    log_info "Version: ${KESTRA_VERSION}"
+    log_info "Key directories for reference:"
+    echo "   - core/           # Core engine and execution model"
+    echo "   - jdbc/           # JDBC storage backends"
+    echo "   - webserver/      # REST API and controllers"
+    echo "   - script/         # Script plugin runners"
+    echo "   - plugin-core/    # Built-in plugins (HTTP, etc.)"
+}
+
 # Main setup logic
 setup_all() {
     log_info "Setting up all reference materials..."
     setup_datahub
+    setup_kestra
     log_success "All reference materials downloaded"
 }
 
@@ -111,6 +154,9 @@ setup_all() {
 case "${1:-}" in
     datahub)
         setup_datahub
+        ;;
+    kestra)
+        setup_kestra
         ;;
     --all)
         setup_all
@@ -122,11 +168,12 @@ case "${1:-}" in
         setup_all
         ;;
     *)
-        echo "Usage: $0 [datahub|--all|--clean]"
+        echo "Usage: $0 [datahub|kestra|--all|--clean]"
         echo ""
         echo "Options:"
         echo "  (no args)    Download all reference materials (default)"
         echo "  datahub      Download only DataHub source code"
+        echo "  kestra       Download only Kestra source code"
         echo "  --all        Download all reference materials (explicit)"
         echo "  --clean      Remove all downloaded content"
         exit 1

@@ -44,7 +44,7 @@ tests/
 │   ├── api/            # FastAPI route tests (no running server)
 │   ├── backend/        # Service logic tests
 │   ├── shared/         # DataHub client wrapper, shared model tests
-│   ├── workflows/      # Temporal workflow tests (Temporal test framework)
+│   ├── workflows/      # Kestra flow and activity endpoint tests
 │   └── frontend/       # Jest tests (or co-located in src/frontend/)
 ├── integration/             # Dev-env-backed integration tests
 │   ├── util/                # Dummy-data reset/ingest utilities
@@ -58,7 +58,7 @@ tests/
 │   │   ├── story/           # Multi-step USE_CASE scenario tests (10–100 API calls)
 │   │   └── conftest.py      # API-wired-specific fixtures (extends root conftest)
 │   ├── conftest.py          # Root conftest: infra fixtures, lock, dummy-data lifecycle
-│   └── test_*_integration.py  # Non-API-wired tests (infra clients, Kafka, Temporal, etc.)
+│   └── test_*_integration.py  # Non-API-wired tests (infra clients, Kafka, Kestra, etc.)
 └── e2e/                # Playwright end-to-end tests
 ```
 
@@ -85,7 +85,7 @@ When a backend feature adds or changes dependencies:
 
 ### Scope
 
-Unit tests verify business logic in isolation. They **must never** require a running dev environment — no real database, DataHub instance, Redis, Qdrant, Temporal, or Kafka connections.
+Unit tests verify business logic in isolation. They **must never** require a running dev environment — no real database, DataHub instance, Redis, Qdrant, Kestra, or Kafka connections.
 
 ### Python (Backend / API)
 
@@ -143,7 +143,7 @@ npx eslint src/        # from src/frontend/
 
 ## Integration Testing
 
-Integration tests run against the dev environment. They exercise real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Temporal, Redis, and the dummy-data sources.
+Integration tests run against the dev environment. They exercise real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Kestra, Redis, and the dummy-data sources.
 
 ### Testing Modes
 
@@ -151,12 +151,12 @@ Integration tests support two execution modes:
 
 | Mode | App Services | When to Use |
 |------|-------------|-------------|
-| **Host (default)** | Run on host (`uv run uvicorn`, `npm run dev`, `uv run python -m worker`) | Normal development — fast test-and-fix loop |
+| **Host (default)** | Run on host (`uv run uvicorn`, `npm run dev`); Kestra runs in cluster | Normal development — fast test-and-fix loop |
 | **In-cluster (on-demand)** | Deployed via Helm chart into K8s cluster | Testing Kubernetes-specific behavior only — when user explicitly requests it |
 
-**Host mode** is the standard workflow described below. Application services run on the developer's machine and connect to port-forwarded infrastructure. Reinstalling the Helm chart is not required between test iterations — only the host-running process needs to be restarted. This keeps the test-and-fix loop fast.
+**Host mode** is the standard workflow described below. Application services run on the developer's machine and connect to port-forwarded infrastructure. Kestra runs in the cluster and is accessed via port-forward. Reinstalling the Helm chart is not required between test iterations — only the host-running process needs to be restarted. This keeps the test-and-fix loop fast.
 
-**In-cluster mode** deploys all components (including frontend, API, and workers) into the Kubernetes cluster using the umbrella Helm chart with application subcharts enabled. This mode is significantly slower to iterate — every code change requires a container rebuild and helm upgrade. Use it only when the user explicitly requests it, for example to verify health probe behavior, ingress routing, resource limits, or network policy under real Kubernetes scheduling. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing) for the deployment command.
+**In-cluster mode** deploys all components (including frontend and API) into the Kubernetes cluster using the umbrella Helm chart with application subcharts enabled. This mode is significantly slower to iterate — every code change requires a container rebuild and helm upgrade. Use it only when the user explicitly requests it, for example to verify health probe behavior, ingress routing, resource limits, or network policy under real Kubernetes scheduling. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing) for the deployment command.
 
 ### Workflow
 
@@ -280,83 +280,31 @@ cd dev_env
 ./lock-port-forward.sh
 ```
 
-Integration tests do **not** require a running API server or Temporal worker — they use in-process ASGI transport (`httpx.ASGITransport`) and spin up in-process Temporal workers via fixtures.
+Integration tests do **not** require a running API server — they use in-process ASGI transport (`httpx.ASGITransport`). Kestra workflow tests call internal activity endpoints directly or use the Kestra REST API via `KestraClient`.
 
-### Temporal Integration Test Pitfalls
+### Kestra Integration Test Pitfalls
 
-Tests that exercise Temporal workflows (via `make_temporal_worker` or direct `temporal_client`) are prone to several failure modes. Follow these rules to avoid common issues:
+Tests that exercise Kestra workflows (via `KestraClient` or by calling internal activity endpoints directly) should follow these guidelines:
 
-#### Sandbox restrictions in workflow code
+#### Kestra connection
 
-Temporal's Python SDK runs workflow `@workflow.run` methods inside a **deterministic sandbox** that blocks non-deterministic stdlib calls. The most common mistake is using `uuid.uuid4()` or `random.random()` inside workflow code:
-
-```python
-# WRONG — will hang or raise a sandbox restriction error
-@workflow.defn
-class MyWorkflow:
-    @workflow.run
-    async def run(self, params) -> dict:
-        run_id = str(uuid.uuid4())        # ❌ blocked by sandbox
-        ...
-
-# CORRECT — use the Temporal-provided deterministic equivalent
-@workflow.defn
-class MyWorkflow:
-    @workflow.run
-    async def run(self, params) -> dict:
-        run_id = str(workflow.uuid4())     # ✅ sandbox-safe
-        ...
-```
-
-Other sandbox-restricted calls include `datetime.now()` (use `workflow.now()`), `time.time()`, and `random.*`. All I/O must happen inside activities, never in workflow code.
-
-#### Temporal namespace
-
-The dev-env Temporal server uses namespace `dataspoke` (set via `DATASPOKE_TEMPORAL_NAMESPACE` in `dev_env/.env`). The `conftest.py` `temporal_client` fixture reads this from the environment. If `dev_env/.env` is not loaded (e.g., running from a worktree without it), the namespace defaults to `"default"` and all workflow operations will fail with "namespace not found".
+The dev-env Kestra instance is accessed via port-forward on port 9205 (set via `DATASPOKE_KESTRA_PORT` in `dev_env/.env`). The `conftest.py` `kestra_client` fixture reads this from the environment. If `dev_env/.env` is not loaded (e.g., running from a worktree without it), the client cannot connect.
 
 **Fix**: Ensure `dev_env/.env` is loaded before test collection. `conftest.py` handles this automatically, but tests run in isolation (e.g., via a subagent in a worktree) must source it explicitly.
 
-#### Stale workflow IDs cause 409 Conflict
+#### Testing activity endpoints directly
 
-Workflows use `REJECT_DUPLICATE` ID reuse policy. If a previous test run left a workflow in `RUNNING` state (e.g., due to a hang or crash), subsequent runs with the same workflow ID will get `409 Conflict`.
+Kestra calls internal activity endpoints at `/api/v1/internal/activities/*` via HTTP Request tasks. Integration tests can call these endpoints directly via `httpx.AsyncClient` (ASGI transport) without needing Kestra to orchestrate. This is the preferred approach for testing activity logic in isolation.
 
-**Prevention**: Tests should use unique workflow IDs prefixed with `test-` and a short label. The `_cleanup_stale_workflows` fixture in `test_temporal_workflows_integration.py` demonstrates the pattern — terminate stale test workflows at module scope before starting new ones.
+#### Testing full Kestra flows
 
-**Recovery**: Terminate the stale workflow manually:
-```python
-handle = temporal_client.get_workflow_handle("<workflow-id>")
-await handle.terminate("cleanup stale test workflow")
-```
+To test the full flow orchestration (Kestra triggering activity endpoints), the Kestra instance must be running and the flow YAML must be deployed. Use `KestraClient` to trigger flows and poll for completion. Keep timeouts short (30s max) to avoid hanging tests.
 
-Or via the Temporal UI at `http://localhost:9206`.
+#### Stale flow executions
 
-#### DB session sharing across activities
+If a previous test run left a flow execution in `RUNNING` state, subsequent triggers may conflict depending on concurrency settings. Check for and cancel stale executions before starting new ones.
 
-The `make_temporal_worker` helper patches `make_db_session` to return a `_TestSessionWrapper` that wraps the test's `async_session`. This means **all activities in the worker share the same SQLAlchemy session**. This is safe for sequential activities within a single workflow, but can cause issues if:
-
-- An activity commits and a subsequent activity expects a clean transaction
-- Two workflows run concurrently against the same worker (rare in tests)
-
-**Rule**: Design test workflows so activities execute sequentially (the normal case) and avoid concurrent workflow execution within a single test.
-
-#### Patching factory functions for multi-activity workflows
-
-When a workflow uses multiple activities (e.g., `IngestionWorkflow` has `extract_metadata_activity`, `emit_to_datahub_activity`, `record_ingestion_event_activity`), all activities must be registered with the worker and all factory patches must target the workflow module where the activities are defined:
-
-```python
-# CORRECT — pass all activities as a list
-async with make_temporal_worker(
-    temporal_client,
-    datahub_client,
-    db_session=async_session,
-    workflow_module="src.workflows.ingestion",
-    workflow_cls=IngestionWorkflow,
-    activity_fn=[extract_metadata_activity, emit_to_datahub_activity, record_ingestion_event_activity],
-) as worker:
-    ...
-```
-
-`make_temporal_worker` patches `make_datahub`, `make_llm`, and `make_db_session` in the specified `workflow_module`. Since all activities in a module import these factories from the same place, one set of patches covers all activities.
+**Recovery**: Cancel stale executions via the Kestra REST API or the Kestra UI at `http://localhost:9205`.
 
 ### Directory Structure & Classification
 
@@ -364,7 +312,7 @@ Integration tests are split into two groups based on testing approach:
 
 | Group | Location | What It Tests | Approach |
 |-------|----------|---------------|----------|
-| **Non-API-wired** | `tests/integration/test_*.py` | Infrastructure clients, Kafka consumers, Temporal workflows, DB migrations | Direct Python function/SDK calls |
+| **Non-API-wired** | `tests/integration/test_*.py` | Infrastructure clients, Kafka consumers, Kestra flows, DB migrations | Direct Python function/SDK calls |
 | **API-wired** | `tests/integration/api_wired/` | API + backend as a combined unit | REST API calls only (see [API-Wired Integration Testing](#api-wired-integration-testing)) |
 
 A test belongs in `api_wired/` when its assertions use **only** REST API calls via `httpx.AsyncClient`. If the test also imports and calls backend service methods or infrastructure SDKs directly (beyond data seeding/cleanup), it belongs in the non-api-wired root.
@@ -373,7 +321,7 @@ Non-api-wired naming: `test_<feature>_service_integration.py` for service-level 
 
 **Root `conftest.py` (`tests/integration/conftest.py`) — shared fixtures and helpers:**
 
-- **Infrastructure fixtures** (session/function scope): `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `temporal_client`, `kafka_brokers`, `datahub_kafka_brokers`
+- **Infrastructure fixtures** (session/function scope): `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`
 - **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
 - **Mock fixtures**: `mock_cache` (AsyncMock Redis with get/set/publish/delete)
 - **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
@@ -390,7 +338,7 @@ API-wired tests are a subset of integration tests that exercise the **API server
 
 ### Scope
 
-API-wired tests verify that the full request path works end-to-end within the backend: HTTP routing → dependency injection → service logic → infrastructure → response serialization. They complement non-api-wired integration tests (which test infrastructure clients, Kafka consumers, Temporal workflows, etc. via direct Python calls) and E2E tests (which add a real browser).
+API-wired tests verify that the full request path works end-to-end within the backend: HTTP routing → dependency injection → service logic → infrastructure → response serialization. They complement non-api-wired integration tests (which test infrastructure clients, Kafka consumers, Kestra flows, etc. via direct Python calls) and E2E tests (which add a real browser).
 
 ### Subtypes
 

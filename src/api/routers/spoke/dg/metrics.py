@@ -2,13 +2,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Response, WebSocket, status
 from starlette.websockets import WebSocketDisconnect
-from temporalio.client import Client as TemporalClient
-from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_dg
 from src.api.auth.ws import ws_authenticate
 from src.api.schemas.common import parse_sort
-from src.api.dependencies import get_metrics_service, get_redis, get_temporal_client
+from src.api.dependencies import get_kestra_client, get_metrics_service, get_redis
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
     DismissMetricIssueRequest,
@@ -27,9 +25,7 @@ from src.api.schemas.metrics import (
 )
 from src.backend.metrics.service import MetricsService
 from src.shared.db.models import Event, MetricDefinition, MetricIssue, MetricResult
-from src.shared.exceptions import ConflictError
-from src.workflows._common import TASK_QUEUE, await_workflow_result
-from src.workflows.metrics import MetricsCollectionWorkflow, MetricsParams
+from src.workflows.kestra.client import KestraClient
 
 router = APIRouter(
     prefix="/metric",
@@ -183,26 +179,26 @@ async def get_metric_result(
 async def post_metric_run(
     metric_id: str,
     body: RunMetricRequest,
-    temporal: TemporalClient = Depends(get_temporal_client),
+    kestra: KestraClient = Depends(get_kestra_client),
 ) -> MetricRunResultResponse:
-    workflow_id = f"metrics-{metric_id}"
-    try:
-        handle = await temporal.start_workflow(
-            MetricsCollectionWorkflow.run,
-            MetricsParams(metric_id=metric_id, dry_run=body.dry_run),
-            id=workflow_id,
-            task_queue=TASK_QUEUE,
-        )
-    except WorkflowAlreadyStartedError as exc:
-        raise ConflictError(
-            "METRIC_RUNNING",
-            f"A metric run is already in progress for {metric_id}",
-        ) from exc
-    result = await await_workflow_result(handle)
+    label_value = f"metrics-{metric_id}"
+    await kestra.check_no_duplicate(
+        "metrics", "workflow_id", label_value, "METRIC_RUNNING"
+    )
+    execution = await kestra.trigger_and_wait(
+        "metrics",
+        inputs={
+            "callback_base_url": "http://localhost:8000",
+            "metric_id": metric_id,
+            "dry_run": str(body.dry_run).lower(),
+        },
+        labels={"workflow_id": label_value},
+    )
+    outputs = execution.outputs or {}
     return MetricRunResultResponse(
-        run_id=result["run_id"],
-        status=result["status"],
-        detail=result["detail"],
+        run_id=outputs.get("run_id", execution.id),
+        status=outputs.get("status", execution.status.value),
+        detail=outputs.get("detail", {}),
     )
 
 

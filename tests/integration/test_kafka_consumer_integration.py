@@ -292,9 +292,9 @@ class TestKafkaConsumerIntegration:
             _wait_for_assignment(consumer)
             _seek_to_end(consumer)
 
-            # Build router with mocked temporal client
-            mock_temporal = AsyncMock()
-            router = build_router(temporal_client=mock_temporal)
+            # Build router with mocked kestra client
+            mock_kestra = AsyncMock()
+            router = build_router(kestra_client=mock_kestra)
 
             for aspect in versioned_aspects:
                 test_id = uuid.uuid4().hex[:8]
@@ -307,7 +307,7 @@ class TestKafkaConsumerIntegration:
                 event = deserialize_mcl(received.value())
                 assert event.aspect_name == aspect
 
-                # Dispatch through the full router (handlers call mocked temporal)
+                # Dispatch through the full router (handlers call mocked kestra)
                 with (
                     patch(
                         "src.backend.metrics.aggregator.aggregate_health_scores",
@@ -328,13 +328,13 @@ class TestKafkaConsumerIntegration:
 
                 consumer.commit(message=received)
 
-            # Verify temporal workflows were started for temporal-backed handlers.
-            # ownership → update_health_score (no temporal), so only 3 aspects
-            # trigger temporal: datasetProperties (1), schemaMetadata (2),
-            # globalTags (1) = 4 workflow starts.
-            assert mock_temporal.start_workflow.await_count == 4
+            # Verify kestra executions were triggered for kestra-backed handlers.
+            # ownership → update_health_score (no kestra), so only 3 aspects
+            # trigger kestra: datasetProperties (1), schemaMetadata (2),
+            # globalTags (1) = 4 execution triggers.
+            assert mock_kestra.trigger_execution.await_count == 4
         finally:
-            build_router()  # Reset _temporal_client
+            build_router()  # Reset _kestra_client
             consumer.close()
 
 
@@ -350,36 +350,38 @@ class TestEventHandlerDispatch:
 
     @pytest.fixture(autouse=True)
     def _reset_router(self):
-        """Reset the module-level _temporal_client after each test."""
+        """Reset the module-level _kestra_client after each test."""
         yield
         build_router()
 
     @pytest.mark.asyncio
     async def test_sync_vector_index_starts_embedding_workflow(self) -> None:
-        """sync_vector_index starts EmbeddingSyncWorkflow in single mode."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        """sync_vector_index triggers embedding-sync flow in single mode."""
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         event = _make_mcl_event(aspect_name="datasetProperties")
         await sync_vector_index(event)
 
-        mock_temporal.start_workflow.assert_awaited_once()
-        call_kwargs = mock_temporal.start_workflow.call_args.kwargs
-        assert call_kwargs["task_queue"] == "dataspoke-main"
-        assert call_kwargs["id"].startswith("embedding-sync-")
+        mock_kestra.trigger_execution.assert_awaited_once()
+        call_args = mock_kestra.trigger_execution.call_args
+        assert call_args.args[0] == "embedding-sync"
+        assert "callback_base_url" in call_args.kwargs["inputs"]
+        assert call_args.kwargs["labels"]["workflow_id"].startswith("embedding-sync-")
 
     @pytest.mark.asyncio
     async def test_detect_new_clusters_starts_ontology_workflow(self) -> None:
-        """detect_new_clusters starts OntologyRebuildWorkflow with fixed ID."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        """detect_new_clusters triggers ontology-rebuild flow with fixed ID."""
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         event = _make_mcl_event(aspect_name="schemaMetadata")
         await detect_new_clusters(event)
 
-        mock_temporal.start_workflow.assert_awaited_once()
-        call_kwargs = mock_temporal.start_workflow.call_args.kwargs
-        assert call_kwargs["id"] == "ontology-rebuild"
+        mock_kestra.trigger_execution.assert_awaited_once()
+        call_args = mock_kestra.trigger_execution.call_args
+        assert call_args.args[0] == "ontology-rebuild"
+        assert call_args.kwargs["labels"]["workflow_id"] == "ontology-rebuild"
 
     @pytest.mark.asyncio
     async def test_update_health_score_calls_aggregator(self) -> None:
@@ -401,9 +403,9 @@ class TestEventHandlerDispatch:
 
     @pytest.mark.asyncio
     async def test_trigger_quality_check_starts_validation_workflow(self) -> None:
-        """trigger_quality_check starts ValidationWorkflow when config exists."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        """trigger_quality_check triggers validation flow when config exists."""
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         # Mock DB to return a ValidationConfig
         mock_config = MagicMock()
@@ -424,15 +426,16 @@ class TestEventHandlerDispatch:
             event = _make_mcl_event(aspect_name="datasetProfile")
             await trigger_quality_check(event)
 
-        mock_temporal.start_workflow.assert_awaited_once()
-        call_kwargs = mock_temporal.start_workflow.call_args.kwargs
-        assert call_kwargs["id"].startswith("validation-")
+        mock_kestra.trigger_execution.assert_awaited_once()
+        call_args = mock_kestra.trigger_execution.call_args
+        assert call_args.args[0] == "validation"
+        assert call_args.kwargs["labels"]["workflow_id"].startswith("validation-")
 
     @pytest.mark.asyncio
     async def test_trigger_quality_check_noop_without_config(self) -> None:
         """trigger_quality_check is a no-op when no ValidationConfig exists."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
@@ -449,13 +452,13 @@ class TestEventHandlerDispatch:
             event = _make_mcl_event(aspect_name="datasetProfile")
             await trigger_quality_check(event)
 
-        mock_temporal.start_workflow.assert_not_awaited()
+        mock_kestra.trigger_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_check_freshness_sla_starts_sla_workflow(self) -> None:
-        """check_freshness_sla starts SLAMonitorWorkflow when sla_target exists."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        """check_freshness_sla triggers sla-monitor flow when sla_target exists."""
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         mock_config = MagicMock()
         mock_config.sla_target = {"freshness_hours": 24}
@@ -475,15 +478,16 @@ class TestEventHandlerDispatch:
             event = _make_mcl_event(aspect_name="operation")
             await check_freshness_sla(event)
 
-        mock_temporal.start_workflow.assert_awaited_once()
-        call_kwargs = mock_temporal.start_workflow.call_args.kwargs
-        assert call_kwargs["id"].startswith("sla-monitor-")
+        mock_kestra.trigger_execution.assert_awaited_once()
+        call_args = mock_kestra.trigger_execution.call_args
+        assert call_args.args[0] == "sla-monitor"
+        assert call_args.kwargs["labels"]["workflow_id"].startswith("sla-monitor-")
 
     @pytest.mark.asyncio
     async def test_check_freshness_sla_noop_without_sla_target(self) -> None:
         """check_freshness_sla is a no-op when no sla_target configured."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         mock_config = MagicMock()
         mock_config.sla_target = None
@@ -503,29 +507,29 @@ class TestEventHandlerDispatch:
             event = _make_mcl_event(aspect_name="operation")
             await check_freshness_sla(event)
 
-        mock_temporal.start_workflow.assert_not_awaited()
+        mock_kestra.trigger_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_multi_handler_schema_metadata_dispatch(self) -> None:
         """schemaMetadata dispatches to both sync_vector_index and detect_new_clusters."""
-        mock_temporal = AsyncMock()
-        router = build_router(temporal_client=mock_temporal)
+        mock_kestra = AsyncMock()
+        router = build_router(kestra_client=mock_kestra)
 
         event = _make_mcl_event(aspect_name="schemaMetadata")
         await router.dispatch(event)
 
-        # Two workflow starts: EmbeddingSyncWorkflow + OntologyRebuildWorkflow
-        assert mock_temporal.start_workflow.await_count == 2
+        # Two execution triggers: embedding-sync + ontology-rebuild
+        assert mock_kestra.trigger_execution.await_count == 2
 
-        call_ids = [call.kwargs["id"] for call in mock_temporal.start_workflow.call_args_list]
-        assert any("embedding-sync-" in cid for cid in call_ids)
-        assert any(cid == "ontology-rebuild" for cid in call_ids)
+        call_flow_ids = [call.args[0] for call in mock_kestra.trigger_execution.call_args_list]
+        assert "embedding-sync" in call_flow_ids
+        assert "ontology-rebuild" in call_flow_ids
 
     @pytest.mark.asyncio
     async def test_non_dataset_entity_type_skipped(self) -> None:
         """Handlers skip events with non-dataset entity types."""
-        mock_temporal = AsyncMock()
-        build_router(temporal_client=mock_temporal)
+        mock_kestra = AsyncMock()
+        build_router(kestra_client=mock_kestra)
 
         for aspect, handler in [
             ("datasetProperties", sync_vector_index),
@@ -539,15 +543,15 @@ class TestEventHandlerDispatch:
             )
             await handler(event)
 
-        mock_temporal.start_workflow.assert_not_awaited()
+        mock_kestra.trigger_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_handlers_noop_without_temporal_client(self) -> None:
-        """Workflow-backed handlers are no-ops when no temporal client is configured."""
-        build_router()  # No temporal_client
+    async def test_handlers_noop_without_kestra_client(self) -> None:
+        """Workflow-backed handlers are no-ops when no kestra client is configured."""
+        build_router()  # No kestra_client
 
         event = _make_mcl_event(aspect_name="datasetProperties")
-        # Should not raise or attempt any workflow start
+        # Should not raise or attempt any execution trigger
         await sync_vector_index(event)
         await detect_new_clusters(_make_mcl_event(aspect_name="schemaMetadata"))
 

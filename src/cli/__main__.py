@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -76,15 +75,16 @@ _LINE = "\u2500" * 42
 
 
 def _print_banner(port: int, components: list[str], env_file: Path) -> None:
+    kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
     lines = [
         "",
         _LINE,
         "  DataSpoke Dev Server",
         _LINE,
-        f"  API:         http://localhost:{port}",
-        f"  Swagger:     http://localhost:{port}/docs",
-        f"  ReDoc:       http://localhost:{port}/redoc",
-        f"  Temporal UI: http://localhost:9206",
+        f"  API:       http://localhost:{port}",
+        f"  Swagger:   http://localhost:{port}/docs",
+        f"  ReDoc:     http://localhost:{port}/redoc",
+        f"  Kestra UI: {kestra_url}",
         "",
         f"  Components:  {', '.join(components)}",
         f"  Env:         {env_file}",
@@ -104,13 +104,6 @@ def _start_api(port: int, reload: bool) -> subprocess.Popen[bytes]:
     if reload:
         cmd.append("--reload")
     return subprocess.Popen(cmd, cwd=_PROJECT_ROOT)
-
-
-def _start_worker() -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        [sys.executable, "-m", "src.workflows.worker"],
-        cwd=_PROJECT_ROOT,
-    )
 
 
 def _shutdown(procs: list[subprocess.Popen[bytes]]) -> None:
@@ -151,7 +144,7 @@ def main() -> None:
         prog="dataspoke",
         description="Start the DataSpoke dev stack (default: all components).",
     )
-    parser.add_argument("--backend-only", action="store_true", help="Start only backend components (API + Worker)")
+    parser.add_argument("--backend-only", action="store_true", help="Start only backend components (API)")
     parser.add_argument("--skip-migrate", action="store_true", help="Skip Alembic migration")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--no-reload", action="store_true", help="Disable uvicorn auto-reload")
@@ -167,7 +160,7 @@ def main() -> None:
         _run_alembic()
 
     # 3. Determine components
-    components: list[str] = ["API", "Worker"]
+    components: list[str] = ["API"]
     if not args.backend_only:
         # Frontend not yet implemented — will be added here
         pass
@@ -178,7 +171,6 @@ def main() -> None:
     # 5. Start processes
     procs: list[subprocess.Popen[bytes]] = []
     procs.append(_start_api(args.port, reload=not args.no_reload))
-    procs.append(_start_worker())
     if not args.backend_only:
         # procs.append(_start_frontend())  # TODO: add when src/frontend/ is ready
         pass

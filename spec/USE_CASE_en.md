@@ -225,7 +225,7 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 | **Enrichment Source Connectors** | Fetch from Confluence, Excel/S3, taxonomy API | DataHub connectors are database/platform-focused |
 | **Custom Extractor Framework** | Plugin system for PL/SQL lineage parsing, CHECK constraint extraction | Parsing stored procedure bodies is outside DataHub's scope |
 | **Field Mapping Engine** | Map Confluence labels → tags, Excel columns → custom properties | DataHub accepts structured aspects but doesn't transform unstructured inputs |
-| **Orchestration (Temporal)** | Schedule, per-phase retry, notifications | DataHub runs recipes atomically; multi-source orchestration requires Temporal |
+| **Orchestration (Kestra)** | Schedule, per-phase retry, notifications | DataHub runs recipes atomically; multi-source orchestration requires Kestra |
 | **Vector Index Sync** | Generate embeddings → Qdrant on successful ingestion | DataHub has Elasticsearch keyword search, not vector similarity |
 
 #### Outcome

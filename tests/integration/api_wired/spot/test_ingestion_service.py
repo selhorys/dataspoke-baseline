@@ -8,7 +8,7 @@ Test-specific data extensions (created and cleaned up within each test):
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
-- Temporal port-forwarded to localhost:9205
+- Kestra port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -17,13 +17,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.workflows.ingestion import (
-    IngestionWorkflow,
-    emit_to_datahub_activity,
-    extract_metadata_activity,
-    record_ingestion_event_activity,
-)
-from tests.integration.api_wired.conftest import make_temporal_worker, mock_llm
+from tests.integration.api_wired.conftest import InlineKestraClient, mock_llm
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
@@ -38,27 +32,22 @@ def _urn(suffix: str) -> str:
 
 
 @pytest_asyncio.fixture
-async def temporal_worker(temporal_client, datahub_client, async_session):
-    async with make_temporal_worker(
-        temporal_client,
-        datahub_client,
-        db_session=async_session,
-        workflow_module="src.workflows.ingestion",
-        workflow_cls=IngestionWorkflow,
-        activity_fn=[extract_metadata_activity, emit_to_datahub_activity, record_ingestion_event_activity],
-    ) as worker:
-        yield worker
-
-
-@pytest_asyncio.fixture
-async def http_client(datahub_client, async_session, temporal_client):
+async def http_client(datahub_client, async_session):
+    # Reset the kestra client singleton so it gets created on this event loop
+    import src.api.dependencies as deps
+    deps._kestra_client = None
+    _llm = mock_llm()
+    inline_kestra = InlineKestraClient(
+        datahub=datahub_client, db=async_session, llm=_llm,
+    )
     async with override_app(
         datahub=datahub_client,
-        llm=mock_llm(),
+        llm=_llm,
         db=async_session,
-        temporal=temporal_client,
+        kestra=inline_kestra,
     ) as client:
         yield client
+    deps._kestra_client = None
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -177,7 +166,7 @@ async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, temporal_worker):
+async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, kestra_client):
     """PUT config with sql_log -> POST run dry_run=true -> verify events."""
     dataset_urn = _urn("run_test")
     headers = _auth_headers()
@@ -238,7 +227,7 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, t
 
 
 @pytest.mark.asyncio
-async def test_run_ingestion_not_found(http_client, temporal_worker):
+async def test_run_ingestion_not_found(http_client, kestra_client):
     """POST run for unconfigured URN -> 404."""
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(

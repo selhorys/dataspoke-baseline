@@ -1,111 +1,20 @@
-"""Unit tests for MetricsCollectionWorkflow using Temporal test framework."""
+"""Unit tests for metrics workflow params and flow ID."""
 
-import pytest
-from temporalio import activity
-from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import Worker
-
-from src.workflows._common import TASK_QUEUE
-from src.workflows.metrics import MetricsCollectionWorkflow, MetricsParams
+from src.workflows.metrics import FLOW_ID, MetricsParams
 
 
-@pytest.fixture
-async def env():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        yield env
+def test_flow_id():
+    assert FLOW_ID == "metrics"
 
 
-async def test_run_and_publish(env: WorkflowEnvironment):
-    published = []
-
-    @activity.defn(name="run_metric_activity")
-    async def mock_run(metric_id: str, dry_run: bool = False) -> dict:
-        return {"run_id": "m-001", "status": "success", "detail": {"value": 42.0}}
-
-    @activity.defn(name="aggregate_health_activity")
-    async def mock_aggregate() -> dict:
-        return {}
-
-    @activity.defn(name="publish_metric_update_activity")
-    async def mock_publish(result: dict) -> None:
-        published.append(result)
-
-    async with Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[MetricsCollectionWorkflow],
-        activities=[mock_run, mock_aggregate, mock_publish],
-    ):
-        result = await env.client.execute_workflow(
-            MetricsCollectionWorkflow.run,
-            MetricsParams(metric_id="metric-1"),
-            id="test-metrics-run-publish",
-            task_queue=TASK_QUEUE,
-        )
-    assert result["status"] == "success"
-    assert len(published) == 1
-    assert published[0]["run_id"] == "m-001"
+def test_params_defaults():
+    params = MetricsParams(metric_id="metric-1")
+    assert params.metric_id == "metric-1"
+    assert params.aggregate is False
+    assert params.dry_run is False
 
 
-async def test_aggregate_health(env: WorkflowEnvironment):
-    aggregate_called = False
-
-    @activity.defn(name="run_metric_activity")
-    async def mock_run(metric_id: str, dry_run: bool = False) -> dict:
-        return {"run_id": "m-002", "status": "success", "detail": {}}
-
-    @activity.defn(name="aggregate_health_activity")
-    async def mock_aggregate() -> dict:
-        nonlocal aggregate_called
-        aggregate_called = True
-        return {"engineering": {"avg_score": 75.0}}
-
-    @activity.defn(name="publish_metric_update_activity")
-    async def mock_publish(result: dict) -> None:
-        pass
-
-    async with Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[MetricsCollectionWorkflow],
-        activities=[mock_run, mock_aggregate, mock_publish],
-    ):
-        await env.client.execute_workflow(
-            MetricsCollectionWorkflow.run,
-            MetricsParams(metric_id="metric-1", aggregate=True),
-            id="test-metrics-aggregate",
-            task_queue=TASK_QUEUE,
-        )
-    assert aggregate_called
-
-
-async def test_no_aggregate_by_default(env: WorkflowEnvironment):
-    aggregate_called = False
-
-    @activity.defn(name="run_metric_activity")
-    async def mock_run(metric_id: str, dry_run: bool = False) -> dict:
-        return {"run_id": "m-003", "status": "success", "detail": {}}
-
-    @activity.defn(name="aggregate_health_activity")
-    async def mock_aggregate() -> dict:
-        nonlocal aggregate_called
-        aggregate_called = True
-        return {}
-
-    @activity.defn(name="publish_metric_update_activity")
-    async def mock_publish(result: dict) -> None:
-        pass
-
-    async with Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[MetricsCollectionWorkflow],
-        activities=[mock_run, mock_aggregate, mock_publish],
-    ):
-        await env.client.execute_workflow(
-            MetricsCollectionWorkflow.run,
-            MetricsParams(metric_id="metric-1"),
-            id="test-metrics-no-aggregate",
-            task_queue=TASK_QUEUE,
-        )
-    assert not aggregate_called
+def test_params_with_aggregate():
+    params = MetricsParams(metric_id="metric-1", aggregate=True, dry_run=True)
+    assert params.aggregate is True
+    assert params.dry_run is True

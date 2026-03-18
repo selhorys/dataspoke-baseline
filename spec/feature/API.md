@@ -39,8 +39,8 @@ structure that maps directly to the user-group taxonomy defined in the MANIFESTO
 ```
 
 The API is the only **HTTP-facing** component for external clients (the portal UI and
-AI agents). Backend services and Temporal workers also access DataHub, PostgreSQL, Redis,
-Qdrant, and Temporal directly but are not exposed over HTTP.
+AI agents). Backend services also access DataHub, PostgreSQL, Redis, and Qdrant directly.
+Kestra orchestrates workflows by calling internal activity endpoints on the API.
 
 In the future, DataSpoke may also expose **redefined DataHub functions** — blended endpoints that proxy DataHub's basic operations (e.g., dataset creation, metadata browsing) while simultaneously handling DataSpoke-specific data in a single call. These would appear under `/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
 
@@ -54,7 +54,7 @@ Browser / AI Agent
 └──────────────────┘
    │      │      │
    ▼      ▼      ▼
-DataHub  Postgres  Qdrant / Redis / Temporal
+DataHub  Postgres  Qdrant / Redis / Kestra
 ```
 
 ### API-First Design
@@ -198,14 +198,14 @@ while DA or other teams may register simpler configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Config | UC1 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Trigger ingestion run via Temporal (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Trigger ingestion run via Kestra (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation Config | UC2, UC3, UC6 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation Config | UC2, UC3, UC6 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get validation results (timeseries; `?from=…&to=…` for time range) | Online Data Validator | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger validation run via Temporal (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger validation run via Kestra (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | Online Data Validator | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Automated Doc Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Automated Doc Generation | UC4 |
@@ -242,7 +242,7 @@ management.
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (schedule, deep_spec_enabled flag, status, owner) | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Trigger ingestion run via Temporal (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
+| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Trigger ingestion run via Kestra (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 
 #### Validation (`/spoke/common/validation`)
@@ -259,7 +259,7 @@ management.
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, status, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get validation results for this dataset (timeseries; `?from=…&to=…` for time range) | Online Data Validator | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger validation run via Temporal (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger validation run via Kestra (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/event` | Validation event reports (success/failure notices) | Online Data Validator | UC2, UC3, UC6 |
 
 #### Generation (`/spoke/common/gen`)
@@ -525,7 +525,7 @@ All errors follow the standard envelope:
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation) |
 | `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
-| `503 Service Unavailable` | Temporal, PostgreSQL, or Qdrant connection failure |
+| `503 Service Unavailable` | Kestra, PostgreSQL, or Qdrant connection failure |
 
 ### Application Error Codes
 
@@ -593,7 +593,7 @@ Messages sent during a validation run:
 
 ### Metric Update Stream (`/spoke/dg/metric/stream`)
 
-Pushed when the Temporal metrics collection workflow emits an update:
+Pushed when the Kestra metrics collection flow emits an update:
 
 ```json
 {"type": "metric_update",

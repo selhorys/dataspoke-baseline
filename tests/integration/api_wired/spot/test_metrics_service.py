@@ -8,6 +8,7 @@ Test-specific data extensions (created and cleaned up within each test):
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
+- Kestra port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -17,20 +18,12 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from unittest.mock import AsyncMock
 
-import asyncio
-from contextlib import ExitStack
-from unittest.mock import AsyncMock, patch
-
-from temporalio.worker import Worker
-
-from src.workflows._common import TASK_QUEUE
-from src.workflows.metrics import (
-    MetricsCollectionWorkflow,
-    publish_metric_update_activity,
-    run_metric_activity,
+from tests.integration.api_wired.conftest import (
+    InlineKestraClient,
+    mock_cache as _mock_cache,
 )
-from tests.integration.api_wired.conftest import mock_cache as _mock_cache
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
@@ -40,52 +33,21 @@ from tests.integration.conftest import (
 
 _DG_PREFIX = "/api/v1/spoke/dg/metric"
 _TEST_METRIC_PREFIX = "imazon.test.metrics"
-_WF_MODULE = "src.workflows.metrics"
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, mock_cache, async_session, temporal_client):
+async def http_client(datahub_client, mock_cache, async_session):
+    import src.api.dependencies as deps
+    deps._kestra_client = None
+    inline_kestra = InlineKestraClient(
+        datahub=datahub_client, db=async_session, cache=mock_cache,
+    )
     async with override_app(
-        datahub=datahub_client, redis=mock_cache, db=async_session, temporal=temporal_client
+        datahub=datahub_client, redis=mock_cache, db=async_session,
+        kestra=inline_kestra,
     ) as client:
         yield client
-
-
-@pytest_asyncio.fixture
-async def temporal_worker(temporal_client, datahub_client, async_session):
-    """In-process Temporal worker for metrics workflows.
-
-    Patches make_datahub, make_cache, make_notification, and SessionLocal
-    so the activity uses test-scoped clients.
-    """
-    from tests.integration.api_wired.conftest import _TestSessionWrapper
-
-    patches = {
-        f"{_WF_MODULE}.make_datahub": datahub_client,
-        f"{_WF_MODULE}.make_cache": _mock_cache(),
-        f"{_WF_MODULE}.make_notification": lambda: AsyncMock(),
-        f"{_WF_MODULE}.SessionLocal": _TestSessionWrapper(async_session),
-    }
-    stack = ExitStack()
-    for target, return_value in patches.items():
-        stack.enter_context(patch(target, return_value=return_value))
-
-    with stack:
-        worker = Worker(
-            temporal_client,
-            task_queue=TASK_QUEUE,
-            workflows=[MetricsCollectionWorkflow],
-            activities=[run_metric_activity, publish_metric_update_activity],
-        )
-        worker_task = asyncio.create_task(worker.run())
-        try:
-            yield worker
-        finally:
-            worker_task.cancel()
-            try:
-                await worker_task
-            except asyncio.CancelledError:
-                pass
+    deps._kestra_client = None
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -162,7 +124,7 @@ async def test_metric_config_crud_via_http(http_client, async_session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_metric_run_and_result_persistence(http_client, async_session: AsyncSession, temporal_worker):
+async def test_metric_run_and_result_persistence(http_client, async_session: AsyncSession, kestra_client):
     """PUT config → POST run → GET results → verify persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_persist"
     headers = _auth_headers()
@@ -220,7 +182,7 @@ async def test_metric_run_and_result_persistence(http_client, async_session: Asy
 
 
 @pytest.mark.asyncio
-async def test_metric_run_dry_run(http_client, async_session: AsyncSession, temporal_worker):
+async def test_metric_run_dry_run(http_client, async_session: AsyncSession, kestra_client):
     """POST run (dry_run=true) → verify no result persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_dry"
     headers = _auth_headers()

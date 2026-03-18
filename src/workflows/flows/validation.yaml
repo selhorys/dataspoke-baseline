@@ -1,0 +1,28 @@
+id: validation
+namespace: dataspoke
+description: "Data quality validation pipeline"
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+  - id: dataset_urn
+    type: STRING
+  - id: config_id
+    type: STRING
+    defaults: ""
+  - id: dry_run
+    type: STRING
+    defaults: "false"
+
+tasks:
+  - id: run_validation
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/run-validation"
+    method: POST
+    contentType: application/json
+    body: |
+      {"dataset_urn": "{{ inputs.dataset_urn }}", "config_id": "{{ inputs.config_id }}", "dry_run": {{ inputs.dry_run }}}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S

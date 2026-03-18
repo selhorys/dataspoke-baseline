@@ -1,0 +1,55 @@
+id: metrics
+namespace: dataspoke
+description: "Metric collection, health aggregation, and update publishing"
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+  - id: metric_id
+    type: STRING
+  - id: aggregate
+    type: STRING
+    defaults: "false"
+  - id: dry_run
+    type: STRING
+    defaults: "false"
+
+tasks:
+  - id: run_metric
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/run-metric"
+    method: POST
+    contentType: application/json
+    body: |
+      {"metric_id": "{{ inputs.metric_id }}", "dry_run": {{ inputs.dry_run }}}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S
+
+  - id: aggregate_health
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.aggregate == 'true' }}"
+    then:
+      - id: do_aggregate
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/aggregate-health"
+        method: POST
+        contentType: application/json
+        body: "{}"
+        retry:
+          type: constant
+          maxAttempt: 3
+          interval: PT10S
+
+  - id: publish_metric_update
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/publish-metric-update"
+    method: POST
+    contentType: application/json
+    body: |
+      {{ outputs.run_metric.body }}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S

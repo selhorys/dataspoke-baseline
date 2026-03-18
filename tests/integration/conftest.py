@@ -5,8 +5,7 @@ Port-forwards must be active before running:
 - DataHub GMS on localhost:9004 (datahub-port-forward.sh)
 - Redis on localhost:9202 (dataspoke-port-forward.sh)
 - Qdrant on localhost:9203/9204 (dataspoke-port-forward.sh)
-- Temporal on localhost:9205 (dataspoke-port-forward.sh)
-- Temporal UI on localhost:9206 (dataspoke-port-forward.sh)
+- Kestra on localhost:9205 (dataspoke-port-forward.sh)
 - Lock service on localhost:9221 (lock-port-forward.sh)
 - Dummy-data ports on localhost:9102/9104 (dummy-data-port-forward.sh)
 """
@@ -88,10 +87,10 @@ _qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
 _qdrant_grpc_port = int(os.environ.get("DATASPOKE_QDRANT_GRPC_PORT", "9204"))
 _qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
 
-_temporal_host = os.environ.get("DATASPOKE_TEMPORAL_HOST", "localhost")
-_temporal_port = int(os.environ.get("DATASPOKE_TEMPORAL_PORT", "9205"))
-_temporal_namespace = os.environ.get("DATASPOKE_TEMPORAL_NAMESPACE", "dataspoke")
-_temporal_ui_url = os.environ.get("DATASPOKE_TEMPORAL_UI_URL", "http://localhost:9206")
+_kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
+_kestra_namespace = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
+_kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
+_kestra_password = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
 
 _lock_owner = os.environ.get(
     "DATASPOKE_LOCK_OWNER",
@@ -342,20 +341,28 @@ def module_dummy_data(request) -> None:
         _reset_pg_kafka()
 
 
-# ── Temporal fixture ─────────────────────────────────────────────────────────
+# ── Kestra fixture ───────────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture(scope="module")
-async def temporal_client():
-    """Connect to the dev-env Temporal server; skip if unreachable."""
-    from temporalio.client import Client
+async def kestra_client():
+    """Create a KestraClient pointing at the dev-env Kestra instance; skip if unreachable."""
+    from src.workflows.kestra.client import KestraClient
 
-    addr = f"{_temporal_host}:{_temporal_port}"
+    client = KestraClient(
+        base_url=_kestra_url,
+        namespace=_kestra_namespace,
+        username=_kestra_user,
+        password=_kestra_password,
+    )
     try:
-        client = await Client.connect(addr, namespace=_temporal_namespace)
+        # Quick health check
+        resp = await client._client.get("/api/v1/flows/search")
+        resp.raise_for_status()
     except Exception:
-        pytest.skip(f"Temporal not reachable at {addr}")
+        pytest.skip(f"Kestra not reachable at {_kestra_url}")
     yield client
+    await client.close()
 
 
 # ── Qdrant fixture ───────────────────────────────────────────────────────────
@@ -399,7 +406,7 @@ async def override_app(
     redis=None,
     llm=None,
     qdrant=None,
-    temporal=None,
+    kestra=None,
 ):
     """Create an AsyncClient with FastAPI DI overrides for integration tests.
 
@@ -440,13 +447,10 @@ async def override_app(
 
         app.dependency_overrides[get_db] = _override_db
 
-    if temporal is not None:
-        from src.api.dependencies import get_temporal_client
+    if kestra is not None:
+        from src.api.dependencies import get_kestra_client
 
-        async def _override_temporal():
-            return temporal
-
-        app.dependency_overrides[get_temporal_client] = _override_temporal
+        app.dependency_overrides[get_kestra_client] = lambda: kestra
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

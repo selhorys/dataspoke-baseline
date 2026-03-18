@@ -75,9 +75,8 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_QDRANT_HTTP_PORT` | `6333` | Qdrant HTTP port |
 | `DATASPOKE_QDRANT_GRPC_PORT` | `6334` | Qdrant gRPC port |
 | `DATASPOKE_QDRANT_API_KEY` | _(empty)_ | Qdrant API key |
-| `DATASPOKE_TEMPORAL_HOST` | `localhost` | Temporal frontend host |
-| `DATASPOKE_TEMPORAL_PORT` | `7233` | Temporal frontend port |
-| `DATASPOKE_TEMPORAL_NAMESPACE` | `default` | Temporal namespace |
+| `DATASPOKE_KESTRA_URL` | `http://localhost:8080` | Kestra API base URL |
+| `DATASPOKE_KESTRA_NAMESPACE` | `dataspoke` | Kestra flow namespace |
 | `DATASPOKE_LLM_PROVIDER` | `openai` | LLM provider name |
 | `DATASPOKE_LLM_API_KEY` | _(empty)_ | LLM provider API key |
 | `DATASPOKE_LLM_MODEL` | `gpt-4o` | LLM model identifier |

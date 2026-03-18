@@ -1,8 +1,8 @@
 # DataSpoke Backend
 
 > This document specifies the backend service layer — feature services, shared
-> libraries, Temporal workflows, and infrastructure integration patterns that sit
-> behind the API layer.
+> libraries, Kestra workflow definitions, and infrastructure integration patterns
+> that sit behind the API layer.
 > Data contracts (PostgreSQL schema, Qdrant collections) in
 > [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
 >
@@ -21,7 +21,7 @@
 3. [Layered Architecture](#layered-architecture)
 4. [Shared Services (`src/shared/`)](#shared-services-srcshared)
 5. [Feature Services (`src/backend/`)](#feature-services-srcbackend)
-6. [Temporal Workflows (`src/workflows/`)](#temporal-workflows-srcworkflows)
+6. [Kestra Workflows (`src/workflows/`)](#kestra-workflows-srcworkflows)
 7. [Kafka Consumers](#kafka-consumers)
 8. [WebSocket Feed Mechanism](#websocket-feed-mechanism)
 9. [Dependency Injection](#dependency-injection)
@@ -48,7 +48,7 @@ src/backend/              ← Feature service implementations
        │
        ├──► src/shared/   ← DataHub client, DB sessions, LLM client, Qdrant client
        │
-       └──► src/workflows/  ← Temporal workflow/activity definitions
+       └──► src/workflows/  ← Kestra flow YAML definitions + internal activity endpoints
 ```
 
 **Key rule**: Business logic lives in `src/backend/`, not in API route handlers.
@@ -125,16 +125,26 @@ src/
 │       ├── quality.py    # QualityScore, QualityIssue, AnomalyResult
 │       ├── ontology.py   # Concept, ConceptRelationship
 │       └── events.py     # EventRecord (base for all event types)
-└── workflows/            # Temporal workflow definitions
+└── workflows/            # Kestra workflow definitions + activity endpoints
     ├── __init__.py
-    ├── worker.py         # Temporal worker entry point
-    ├── ingestion.py      # Ingestion workflow + activities
-    ├── validation.py     # Validation workflow + activities
-    ├── sla_monitor.py    # SLA monitoring scheduled workflow + activities (UC3)
-    ├── generation.py     # Doc generation workflow + activities
-    ├── embedding_sync.py # Embedding maintenance workflow + activities
-    ├── metrics.py        # Metrics collection workflow + activities
-    └── ontology.py       # Ontology rebuild workflow + activities
+    ├── flows/            # Kestra YAML flow definitions
+    │   ├── ingestion.yaml
+    │   ├── validation.yaml
+    │   ├── sla_monitor.yaml
+    │   ├── generation.yaml
+    │   ├── embedding_sync.yaml
+    │   ├── metrics.yaml
+    │   └── ontology.yaml
+    ├── kestra/
+    │   └── client.py     # KestraClient — REST API wrapper (httpx)
+    ├── activities/       # Internal activity endpoint handlers
+    │   ├── ingestion.py  # Ingestion activity endpoints
+    │   ├── validation.py # Validation activity endpoints
+    │   ├── generation.py # Doc generation activity endpoints
+    │   ├── embedding.py  # Embedding sync activity endpoints
+    │   ├── metrics.py    # Metrics collection activity endpoints
+    │   └── ontology.py   # Ontology rebuild activity endpoints
+    └── router.py         # FastAPI router for /api/v1/internal/activities/*
 migrations/               # Alembic database migrations (repo root)
 ```
 
@@ -217,8 +227,8 @@ class FeatureService:
 ```
 
 Services are **stateless** — all state lives in PostgreSQL, Redis, or DataHub.
-This allows any API instance or Temporal worker to instantiate a service and
-call its methods.
+This allows any API instance or Kestra activity endpoint to instantiate a service
+and call its methods.
 
 ---
 
@@ -492,7 +502,7 @@ class DatasetService:
 
 **Responsibilities**:
 - CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`)
-- Trigger ingestion runs via Temporal workflow
+- Trigger ingestion runs via Kestra flow
 - Source-specific extractors (Confluence, GitHub, Excel, SQL logs)
 - Field mapping and enrichment using LLM
 
@@ -509,7 +519,7 @@ class IngestionService:
     async def get_events(self, dataset_urn: str, offset: int, limit: int) -> tuple[list[EventRecord], int]: ...
 ```
 
-**Run pipeline** (executed as Temporal workflow):
+**Run pipeline** (executed as Kestra flow via HTTP Request tasks):
 
 1. Load config from PostgreSQL
 2. Invoke extractor(s) for configured sources
@@ -604,7 +614,7 @@ async def detect_anomalies(
     ...
 ```
 
-**Validation Run Pipeline** (Temporal workflow):
+**Validation Run Pipeline** (Kestra flow):
 
 1. Fetch entity context (DataHub aspects + cached quality score)
 2. Compute quality score (calls `compute_quality_score`)
@@ -692,7 +702,7 @@ class GenerationService:
     async def get_events(self, dataset_urn: str, offset: int, limit: int) -> tuple[list[EventRecord], int]: ...
 ```
 
-**Generation Pipeline** (Temporal workflow):
+**Generation Pipeline** (Kestra flow):
 
 1. Read current DataHub aspects (schema, properties, lineage, tags)
 2. Find similar datasets via Qdrant embedding search
@@ -771,7 +781,7 @@ class OntologyService:
     async def reject(self, concept_id: str) -> Concept: ...
 ```
 
-**Taxonomy Build Pipeline** (Temporal workflow, scheduled weekly):
+**Taxonomy Build Pipeline** (Kestra flow, scheduled weekly):
 
 1. Enumerate all datasets from DataHub
 2. For each dataset: LLM classifies into business concept categories
@@ -885,84 +895,78 @@ class OverviewService:
 
 ---
 
-## Temporal Workflows (`src/workflows/`)
+## Kestra Workflows (`src/workflows/`)
 
-### Worker Entry Point (`src/workflows/worker.py`)
+### Architecture
 
-```python
-"""Temporal worker — registers all workflows and starts polling."""
+Kestra v1.3.3 serves as the workflow orchestration engine. Workflows are defined
+as **YAML flow definitions** in `src/workflows/flows/`. Each flow uses Kestra's
+`io.kestra.plugin.core.http.Request` tasks to call **internal activity
+endpoints** on the DataSpoke API at `/api/v1/internal/activities/*`. Kestra
+handles scheduling, retry, and execution — no separate worker process is needed.
 
-async def main() -> None:
-    client = await Client.connect(f"{TEMPORAL_HOST}:{TEMPORAL_PORT}",
-                                   namespace=TEMPORAL_NAMESPACE)
-    worker = Worker(
-        client,
-        task_queue="dataspoke-main",
-        workflows=[
-            IngestionWorkflow,
-            ValidationWorkflow,
-            SLAMonitorWorkflow,
-            GenerationWorkflow,
-            EmbeddingSyncWorkflow,
-            MetricsCollectionWorkflow,
-            OntologyRebuildWorkflow,
-        ],
-        activities=[
-            # All activity functions registered here
-        ],
-    )
-    await worker.run()
+```
+Kestra (in-cluster)                DataSpoke API (host or in-cluster)
+       │                                    │
+       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/ingestion/extract
+       │◄── JSON response ─────────────────│
+       │                                    │
+       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/ingestion/emit
+       │◄── JSON response ─────────────────│
 ```
 
-### Workflow Catalogue
+The `KestraClient` (`src/workflows/kestra/client.py`) wraps Kestra's REST API
+via `httpx` for triggering flows and polling execution status from the DataSpoke
+API layer.
 
-| Workflow | Task Queue | Trigger | Schedule |
-|----------|-----------|---------|----------|
-| `IngestionWorkflow` | `dataspoke-main` | API `POST .../method/run` | On-demand |
-| `ValidationWorkflow` | `dataspoke-main` | API `POST .../method/run`, Kafka event | On-demand + event-driven |
-| `SLAMonitorWorkflow` | `dataspoke-main` | Schedule (per-dataset, from `validation_configs.schedule`) | Scheduled (e.g., every 30 min for datasets with SLA targets) |
-| `GenerationWorkflow` | `dataspoke-main` | API `POST .../method/generate` | On-demand |
-| `EmbeddingSyncWorkflow` | `dataspoke-main` | Kafka event, API `POST .../method/reindex` | Event-driven + on-demand |
-| `MetricsCollectionWorkflow` | `dataspoke-main` | API `POST .../method/run`, schedule | On-demand + scheduled (configurable per metric) |
-| `OntologyRebuildWorkflow` | `dataspoke-main` | Schedule | Weekly (configurable) |
+### Flow Catalogue
+
+| Flow | File | Trigger | Schedule |
+|------|------|---------|----------|
+| `ingestion` | `flows/ingestion.yaml` | API `POST .../method/run` → `KestraClient.trigger()` | On-demand |
+| `validation` | `flows/validation.yaml` | API `POST .../method/run`, Kafka event | On-demand + event-driven |
+| `sla-monitor` | `flows/sla_monitor.yaml` | Kestra schedule trigger (per-dataset, from `validation_configs.schedule`) | Scheduled (e.g., every 30 min for datasets with SLA targets) |
+| `generation` | `flows/generation.yaml` | API `POST .../method/generate` | On-demand |
+| `embedding-sync` | `flows/embedding_sync.yaml` | Kafka event, API `POST .../method/reindex` | Event-driven + on-demand |
+| `metrics-collection` | `flows/metrics.yaml` | API `POST .../method/run`, Kestra schedule trigger | On-demand + scheduled (configurable per metric) |
+| `ontology-rebuild` | `flows/ontology.yaml` | Kestra schedule trigger | Weekly (configurable) |
 
 ### Workflow Design Conventions
 
-1. **Workflows are pure orchestration** — no I/O in workflow code; all I/O in activities
-2. **Activities are idempotent** — safe to retry on transient failures
-3. **Timeouts**: Activity start-to-close timeout = 5 minutes (default); workflow execution timeout = 1 hour
-4. **Retry policy**: Max 3 attempts, 10s initial interval, 2.0 backoff coefficient
-5. **Heartbeating**: Long-running activities (bulk DataHub scans) heartbeat every 30s
-6. **Workflow ID convention**: `{feature}-{urn_hash}` where `urn_hash = md5(entity_urn)[:12]` — deterministic per entity for `REJECT_DUPLICATE` deduplication
+1. **Flows are YAML-defined orchestration** — each task is an HTTP Request to an internal activity endpoint
+2. **Activity endpoints are idempotent** — safe to retry on transient failures
+3. **Timeouts**: Per-task timeout = 5 minutes (default); flow-level timeout = 1 hour
+4. **Retry policy**: Max 3 attempts, 10s initial interval, configured in flow YAML
+5. **Concurrency**: Kestra flow-level concurrency limits prevent duplicate runs per entity
 
 ### Concurrency Guards
 
-Some workflows must not run concurrently for the same entity:
+Some flows must not run concurrently for the same entity:
 
-| Workflow | Guard | Mechanism |
-|----------|-------|-----------|
-| `IngestionWorkflow` | One per dataset_urn | Temporal workflow ID dedup (`REJECT_DUPLICATE`) |
-| `ValidationWorkflow` | One per dataset_urn | Temporal workflow ID dedup |
-| `GenerationWorkflow` | One per dataset_urn | Temporal workflow ID dedup |
-| `MetricsCollectionWorkflow` | One per metric_id | Temporal workflow ID dedup |
+| Flow | Guard | Mechanism |
+|------|-------|-----------|
+| `ingestion` | One per dataset_urn | Kestra flow-level concurrency limit (keyed by `dataset_urn` input) |
+| `validation` | One per dataset_urn | Kestra flow-level concurrency limit |
+| `generation` | One per dataset_urn | Kestra flow-level concurrency limit |
+| `metrics-collection` | One per metric_id | Kestra flow-level concurrency limit |
 
 If a duplicate is rejected, the API returns `409 Conflict` with
 `INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` / `METRIC_RUNNING` error codes.
 
-### IngestionWorkflow Activity Decomposition
+### Ingestion Flow Activity Decomposition
 
-The `IngestionWorkflow` uses three sequential activities matching the pipeline
+The ingestion flow uses three sequential HTTP Request tasks matching the pipeline
 phases for per-phase observability and partial-failure recovery:
 
-| Activity | Phase | Timeout | Purpose |
-|----------|-------|---------|---------|
-| `extract_metadata_activity` | 1 | 5 min | Load config, run per-source extractors, return metadata + errors |
-| `emit_to_datahub_activity` | 2 | 5 min | Transform metadata, apply LLM enrichment, emit to DataHub (skipped if `dry_run`) |
-| `record_ingestion_event_activity` | 3 | 5 min | Determine status, persist event to PostgreSQL, return final result |
+| Activity Endpoint | Phase | Timeout | Purpose |
+|-------------------|-------|---------|---------|
+| `POST /internal/activities/ingestion/extract` | 1 | 5 min | Load config, run per-source extractors, return metadata + errors |
+| `POST /internal/activities/ingestion/emit` | 2 | 5 min | Transform metadata, apply LLM enrichment, emit to DataHub (skipped if `dry_run`) |
+| `POST /internal/activities/ingestion/record-event` | 3 | 5 min | Determine status, persist event to PostgreSQL, return final result |
 
-Each activity receives the output of the previous one. If extraction succeeds
-but emission fails, only the emission activity retries — extraction results are
-preserved.
+Each task receives the output of the previous one via Kestra's output passing.
+If extraction succeeds but emission fails, only the emission task retries —
+extraction results are preserved.
 
 ---
 
@@ -1004,11 +1008,10 @@ class EventRouter:
 ### Consumer Process (`src/shared/datahub/consumer.py`)
 
 The Kafka consumer runs as `python -m src.shared.datahub.consumer`, separate
-from the Temporal worker. By default both are co-located in the
-`dataspoke-workers` deployment. For production workloads the consumer can be
+from the API server. By default both are co-located in the
+`dataspoke-api` deployment. For production workloads the consumer can be
 deployed as an independent pod (`dataspoke-event-consumer`) for independent
-scaling — Kafka consumers scale by partition count while Temporal workers scale
-by workflow throughput. See
+scaling — Kafka consumers scale by partition count. See
 [HELM_CHART §Component Matrix](HELM_CHART.md#component-matrix) for the
 `event-consumer.enabled` toggle.
 
@@ -1024,14 +1027,14 @@ by workflow throughput. See
 
 The API layer exposes two WebSocket channels (see
 [API §WebSocket Channels](API.md#websocket-channels)). The backend feeds data
-to these channels via **Redis pub/sub**, which decouples the Temporal workflow
+to these channels via **Redis pub/sub**, which decouples the activity endpoint
 (producer) from the FastAPI WebSocket handler (consumer).
 
 ### Architecture
 
 ```
-Temporal Worker                    Redis                    FastAPI API
-(workflow activity)                                        (WS handler)
+Activity Endpoint                  Redis                    FastAPI API
+(called by Kestra)                                         (WS handler)
        │                             │                         │
        │── PUBLISH channel msg ────►│                         │
        │                             │── push to subscriber ──►│
@@ -1045,13 +1048,13 @@ Temporal Worker                    Redis                    FastAPI API
 | `ws:validation:{dataset_urn}` | `ValidationWorkflow` activities | `stream_data_validation` WS handler | `/spoke/common/data/{dataset_urn}/stream/validation` |
 | `ws:metric:updates` | `MetricsCollectionWorkflow` activities | `stream_metrics` WS handler | `/spoke/dg/metric/stream` |
 
-### Producer Side (Temporal Activity)
+### Producer Side (Activity Endpoint)
 
-Workflow activities publish progress and result messages as JSON to the
+Activity endpoints publish progress and result messages as JSON to the
 appropriate Redis channel:
 
 ```python
-# Inside a validation workflow activity
+# Inside a validation activity endpoint handler
 async def run_validation_activity(dataset_urn: str, config_id: str) -> dict:
     cache = RedisClient(...)
     channel = f"ws:validation:{dataset_urn}"
@@ -1124,22 +1127,25 @@ async def get_validation_service(
     return ValidationService(datahub=datahub, db=db, cache=cache)
 ```
 
-### Temporal Activities
+### Internal Activity Endpoints
 
-Temporal activities create their own service instances since they run outside
-the FastAPI request lifecycle:
+Activity endpoints run inside the FastAPI process and use standard FastAPI
+dependency injection. They are registered under `/api/v1/internal/activities/`
+and called by Kestra via HTTP Request tasks:
 
 ```python
-# src/workflows/validation.py
+# src/workflows/activities/validation.py
 
-@activity.defn
-async def run_validation_activity(dataset_urn: str, config_id: str) -> dict:
-    datahub = DataHubClient(settings.datahub_gms_url, settings.datahub_token)
-    async with SessionLocal() as db:
-        cache = RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
-        service = ValidationService(datahub=datahub, db=db, cache=cache)
-        result = await service.run(dataset_urn, config_id, dry_run=False)
-        return result.model_dump()
+@router.post("/validation/run")
+async def run_validation_activity(
+    request: ValidationRunRequest,
+    datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
+    cache: RedisClient = Depends(get_redis),
+) -> dict:
+    service = ValidationService(datahub=datahub, db=db, cache=cache)
+    result = await service.run(request.dataset_urn, request.config_id, dry_run=False)
+    return result.model_dump()
 ```
 
 ---

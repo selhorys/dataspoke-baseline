@@ -1,11 +1,9 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from temporalio.client import Client as TemporalClient
-from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_ingestion_service, get_temporal_client
+from src.api.dependencies import get_ingestion_service, get_kestra_client
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import (
@@ -17,9 +15,9 @@ from src.api.schemas.ingestion import (
 )
 from src.backend.ingestion.service import IngestionService
 from src.shared.db.models import Event, IngestionConfig
-from src.shared.exceptions import ConflictError, EntityNotFoundError
-from src.workflows._common import TASK_QUEUE, await_workflow_result, urn_to_workflow_id
-from src.workflows.ingestion import IngestionParams, IngestionWorkflow
+from src.shared.exceptions import EntityNotFoundError
+from src.workflows._common import urn_to_workflow_id
+from src.workflows.kestra.client import KestraClient
 
 router = APIRouter(
     prefix="/ingestion",
@@ -97,26 +95,33 @@ async def patch_ingestion_config_attr(
 async def post_ingestion_run(
     dataset_urn: str,
     body: RunIngestionRequest,
-    temporal: TemporalClient = Depends(get_temporal_client),
+    service: IngestionService = Depends(get_ingestion_service),
+    kestra: KestraClient = Depends(get_kestra_client),
 ) -> RunResultResponse:
-    workflow_id = f"ingestion-{urn_to_workflow_id(dataset_urn)}"
-    try:
-        handle = await temporal.start_workflow(
-            IngestionWorkflow.run,
-            IngestionParams(dataset_urn=dataset_urn, dry_run=body.dry_run),
-            id=workflow_id,
-            task_queue=TASK_QUEUE,
-        )
-    except WorkflowAlreadyStartedError as exc:
-        raise ConflictError(
-            "INGESTION_RUNNING",
-            f"An ingestion run is already in progress for {dataset_urn}",
-        ) from exc
-    result = await await_workflow_result(handle)
+    config = await service.get_config(dataset_urn)
+    if config is None:
+        raise EntityNotFoundError("ingestion_config", dataset_urn)
+    label_value = f"ingestion-{urn_to_workflow_id(dataset_urn)}"
+    await kestra.check_no_duplicate(
+        "ingestion", "workflow_id", label_value, "INGESTION_RUNNING"
+    )
+    import uuid
+
+    execution = await kestra.trigger_and_wait(
+        "ingestion",
+        inputs={
+            "callback_base_url": "http://localhost:8000",
+            "dataset_urn": dataset_urn,
+            "dry_run": str(body.dry_run).lower(),
+            "run_id": str(uuid.uuid4()),
+        },
+        labels={"workflow_id": label_value},
+    )
+    outputs = execution.outputs or {}
     return RunResultResponse(
-        run_id=result["run_id"],
-        status=result["status"],
-        detail=result["detail"],
+        run_id=outputs.get("run_id", execution.id),
+        status=outputs.get("status", execution.status.value),
+        detail=outputs.get("detail", {}),
     )
 
 

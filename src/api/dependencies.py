@@ -12,7 +12,6 @@ from collections.abc import AsyncGenerator
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from temporalio.client import Client as TemporalClient
 
 from src.api.config import settings
 from src.backend.dataset.service import DatasetService
@@ -22,9 +21,10 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import QdrantManager
+from src.workflows.kestra.client import KestraClient
 
-# Module-level Temporal client singleton (connected lazily on first use)
-_temporal_client: TemporalClient | None = None
+# Module-level Kestra client singleton (created lazily on first use)
+_kestra_client: KestraClient | None = None
 
 # ── Infrastructure client providers ──────────────────────────────
 
@@ -61,15 +61,17 @@ def get_notification():
     return NotificationService()
 
 
-async def get_temporal_client() -> TemporalClient:
-    """Return a shared Temporal client, connecting lazily on first call."""
-    global _temporal_client  # noqa: PLW0603
-    if _temporal_client is None:
-        _temporal_client = await TemporalClient.connect(
-            f"{settings.temporal_host}:{settings.temporal_port}",
-            namespace=settings.temporal_namespace,
+def get_kestra_client() -> KestraClient:
+    """Return a shared Kestra client singleton."""
+    global _kestra_client  # noqa: PLW0603
+    if _kestra_client is None:
+        _kestra_client = KestraClient(
+            base_url=settings.kestra_url,
+            namespace=settings.kestra_namespace,
+            username=settings.kestra_user,
+            password=settings.kestra_password,
         )
-    return _temporal_client
+    return _kestra_client
 
 
 # ── Service providers (added as backend services are implemented) ──

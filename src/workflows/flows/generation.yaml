@@ -1,0 +1,22 @@
+id: generation
+namespace: dataspoke
+description: "LLM-powered metadata generation"
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+  - id: dataset_urn
+    type: STRING
+
+tasks:
+  - id: run_generation
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/run-generation"
+    method: POST
+    contentType: application/json
+    body: |
+      {"dataset_urn": "{{ inputs.dataset_urn }}"}
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S
