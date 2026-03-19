@@ -59,13 +59,17 @@ HUB = f"{API_PREFIX}/hub"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Register Kestra flows at startup, close client on shutdown."""
+    import asyncio
+
     from src.api.dependencies import get_kestra_client
     from src.workflows.kestra.registry import register_all_flows
 
     kestra = get_kestra_client()
     try:
-        count = await register_all_flows(kestra)
+        count = await asyncio.wait_for(register_all_flows(kestra), timeout=15)
         logger.info("Registered %d Kestra flows", count)
+    except asyncio.TimeoutError:
+        logger.warning("Kestra flow registration timed out — Kestra may be unavailable")
     except Exception:
         logger.warning("Failed to register Kestra flows (Kestra may not be available)", exc_info=True)
 
