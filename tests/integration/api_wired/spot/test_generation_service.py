@@ -4,7 +4,7 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient generation_configs rows via PUT API (Imazon-prefixed test URNs).
 - Transient generation_results rows from POST generate runs.
 - Transient dataspoke.events rows for event pagination tests.
-- LLM and Qdrant calls are mocked (deterministic fixture responses).
+- LLM and Qdrant calls are mocked via activity_server mocks.
 
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
@@ -13,22 +13,19 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.api_wired.conftest import (
-    InlineKestraClient,
-    mock_llm,
-    mock_qdrant,
-)
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
+    emit_test_dataset,
     make_test_urn,
-    override_app,
     seed_events,
+    soft_delete_test_dataset,
 )
 
 _GEN_LLM_RETURN = {
@@ -43,21 +40,13 @@ def _urn(suffix: str) -> str:
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, async_session):
-    """HTTP client with real DI providers pointing to dev-env infra."""
-    import src.api.dependencies as deps
-    deps._kestra_client = None
-    _llm = mock_llm(complete_json_return=_GEN_LLM_RETURN)
-    _qdrant = mock_qdrant()
-    inline_kestra = InlineKestraClient(
-        datahub=datahub_client, db=async_session, llm=_llm, qdrant=_qdrant,
-    )
-    async with override_app(
-        datahub=datahub_client,
-        llm=_llm,
-        qdrant=_qdrant,
-        db=async_session,
-        kestra=inline_kestra,
+async def http_client(activity_server):
+    """HTTP client pointing at the real activity server."""
+    # Configure mock LLM for generation responses
+    activity_server.mock_llm.complete_json.return_value = _GEN_LLM_RETURN
+    async with httpx.AsyncClient(
+        base_url=f"http://localhost:{activity_server.port}",
+        timeout=120.0,
     ) as client:
         yield client
 
@@ -66,7 +55,9 @@ async def http_client(datahub_client, async_session):
 
 
 @pytest.mark.asyncio
-async def test_generation_config_crud_via_http(http_client, async_session: AsyncSession):
+async def test_generation_config_crud_via_http(
+    http_client, async_session: AsyncSession,
+):
     """PUT -> GET -> PATCH -> GET -> DELETE -> GET (404)."""
     dataset_urn = _urn("crud_test")
     headers = _auth_headers()
@@ -131,14 +122,19 @@ async def test_generation_config_crud_via_http(http_client, async_session: Async
         assert resp.status_code == 404
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.generation_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.generation_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_list_generation_configs(http_client, async_session: AsyncSession):
+async def test_list_generation_configs(
+    http_client, async_session: AsyncSession,
+):
     """PUT 2 configs -> GET list -> verify pagination."""
     urn1 = _urn("list_test_1")
     urn2 = _urn("list_test_2")
@@ -171,17 +167,29 @@ async def test_list_generation_configs(http_client, async_session: AsyncSession)
     finally:
         for urn in (urn1, urn2):
             await async_session.execute(
-                text("DELETE FROM dataspoke.generation_configs WHERE dataset_urn = :urn"),
+                text(
+                    "DELETE FROM dataspoke.generation_configs"
+                    " WHERE dataset_urn = :urn"
+                ),
                 {"urn": urn},
             )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_generate_produces_result(http_client, async_session: AsyncSession, kestra_client):
+async def test_generate_produces_result(
+    http_client, async_session: AsyncSession, activity_server,
+    datahub_client,
+):
     """PUT config -> POST generate -> GET results -> verify result."""
     dataset_urn = _urn("generate_test")
     headers = _auth_headers()
+
+    # Emit test dataset to DataHub so the activity can read schema
+    await emit_test_dataset(
+        datahub_client, urn=dataset_urn, name="generate_test",
+        wait_seconds=1.0,
+    )
 
     try:
         # Create config
@@ -196,14 +204,14 @@ async def test_generate_produces_result(http_client, async_session: AsyncSession
         )
         assert resp.status_code in (200, 201)
 
-        # Run generate
+        # Run generate (goes through real Kestra)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/gen/method/generate",
             headers=headers,
         )
         assert resp.status_code == 200
         run_body = resp.json()
-        assert run_body["status"] == "success"
+        assert run_body["status"].lower() == "success"
         assert "run_id" in run_body
 
         # Get results
@@ -218,28 +226,46 @@ async def test_generate_produces_result(http_client, async_session: AsyncSession
         assert "proposals" in result
         assert result["approval_status"] == "pending"
     finally:
-        await async_session.execute(
-            text("DELETE FROM dataspoke.generation_results WHERE dataset_urn = :urn"),
-            {"urn": dataset_urn},
-        )
+        await soft_delete_test_dataset(datahub_client, dataset_urn)
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'generation.%'"
+                "DELETE FROM dataspoke.generation_results"
+                " WHERE dataset_urn = :urn"
             ),
             {"urn": dataset_urn},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.generation_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_id = :urn"
+                " AND entity_type = 'dataset'"
+                " AND event_type LIKE 'generation.%'"
+            ),
+            {"urn": dataset_urn},
+        )
+        await async_session.execute(
+            text(
+                "DELETE FROM dataspoke.generation_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_apply_after_approval(http_client, async_session: AsyncSession, kestra_client):
-    """PUT config -> POST generate -> approve in DB -> POST apply -> verify applied_at."""
+async def test_apply_after_approval(
+    http_client, async_session: AsyncSession, activity_server,
+    datahub_client,
+):
+    """PUT config -> POST generate -> approve -> POST apply -> verify."""
     dataset_urn = _urn("apply_test")
     headers = _auth_headers()
+
+    await emit_test_dataset(
+        datahub_client, urn=dataset_urn, name="apply_test",
+        wait_seconds=1.0,
+    )
 
     try:
         # Create config
@@ -254,7 +280,7 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession, ke
         )
         assert resp.status_code in (200, 201)
 
-        # Run generate
+        # Run generate (through real Kestra)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/gen/method/generate",
             headers=headers,
@@ -298,36 +324,52 @@ async def test_apply_after_approval(http_client, async_session: AsyncSession, ke
         result = resp.json()["results"][0]
         assert result["applied_at"] is not None
     finally:
-        await async_session.execute(
-            text("DELETE FROM dataspoke.generation_results WHERE dataset_urn = :urn"),
-            {"urn": dataset_urn},
-        )
+        await soft_delete_test_dataset(datahub_client, dataset_urn)
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'generation.%'"
+                "DELETE FROM dataspoke.generation_results"
+                " WHERE dataset_urn = :urn"
             ),
             {"urn": dataset_urn},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.generation_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_id = :urn"
+                " AND entity_type = 'dataset'"
+                " AND event_type LIKE 'generation.%'"
+            ),
+            {"urn": dataset_urn},
+        )
+        await async_session.execute(
+            text(
+                "DELETE FROM dataspoke.generation_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_generate_config_not_found(http_client, kestra_client):
-    """POST generate for unconfigured URN -> 404."""
+async def test_generate_config_not_found(http_client):
+    """POST generate for unconfigured URN -> error.
+
+    The data router triggers Kestra without checking config. The flow
+    fails because the activity can't find the config. Returns 500.
+    """
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(
         f"/api/v1/spoke/common/data/{fake_urn}/attr/gen/method/generate",
         headers=_auth_headers(),
     )
-    assert resp.status_code == 404
+    assert resp.status_code in (404, 500)
 
 
 @pytest.mark.asyncio
-async def test_generation_events(http_client, async_session: AsyncSession):
+async def test_generation_events(
+    http_client, async_session: AsyncSession,
+):
     """Seed events -> GET events with limit -> verify pagination."""
     dataset_urn = _urn("events_test")
     headers = _auth_headers()

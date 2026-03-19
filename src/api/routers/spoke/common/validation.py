@@ -3,8 +3,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
-from src.api.schemas.common import parse_sort
 from src.api.dependencies import get_kestra_client, get_validation_service
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.validation import (
     PatchValidationConfigRequest,
@@ -18,6 +18,7 @@ from src.api.schemas.validation import (
 from src.backend.validation.service import ValidationService
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.exceptions import EntityNotFoundError
+from src.shared.settings import settings
 from src.workflows._common import urn_to_workflow_id
 from src.workflows.kestra.client import KestraClient
 
@@ -149,7 +150,7 @@ async def post_validation_run(
     execution = await kestra.trigger_and_wait(
         "validation",
         inputs={
-            "callback_base_url": "http://localhost:8000",
+            "callback_base_url": settings.kestra_callback_base_url,
             "dataset_urn": dataset_urn,
             "config_id": "",
             "dry_run": str(body.dry_run).lower(),

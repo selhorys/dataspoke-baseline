@@ -101,7 +101,7 @@ class KestraClient:
         """Set labels on an execution for deduplication queries."""
         label_list = [{"key": k, "value": v} for k, v in labels.items()]
         try:
-            resp = await self._client.post(
+            resp = await self._client.put(
                 f"/api/v1/executions/{execution_id}/labels",
                 json=label_list,
             )
@@ -155,6 +155,61 @@ class KestraClient:
         body = resp.json()
         results = body.get("results", [])
         return [ExecutionResponse(**r) for r in results]
+
+    async def kill_execution(self, execution_id: str) -> None:
+        """Kill a running execution. No-op if already terminal or not found."""
+        resp = await self._client.post(f"/api/v1/executions/{execution_id}/kill")
+        if resp.status_code in (404, 409):
+            return  # Not found or already in terminal state
+        resp.raise_for_status()
+
+    async def delete_execution(
+        self, execution_id: str, *, delete_logs: bool = True
+    ) -> None:
+        """Delete an execution and optionally its logs and storage."""
+        resp = await self._client.delete(
+            f"/api/v1/executions/{execution_id}",
+            params={
+                "deleteLogs": str(delete_logs).lower(),
+                "deleteMetrics": str(delete_logs).lower(),
+                "deleteStorage": str(delete_logs).lower(),
+            },
+        )
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
+
+    async def find_executions(
+        self,
+        flow_id: str | None = None,
+        state: str | None = None,
+        label_key: str | None = None,
+        label_value: str | None = None,
+        size: int = 100,
+    ) -> list[ExecutionResponse]:
+        """Search executions with flexible filters."""
+        params: dict = {"namespace": self.namespace, "size": size}
+        if flow_id:
+            params["flowId"] = flow_id
+        if state:
+            params["state"] = state
+        if label_key and label_value:
+            params["labels"] = f"{label_key}:{label_value}"
+
+        resp = await self._client.get("/api/v1/executions/search", params=params)
+        resp.raise_for_status()
+        body = resp.json()
+        results = body.get("results", [])
+        return [ExecutionResponse(**r) for r in results]
+
+    async def delete_flow(self, flow_id: str) -> None:
+        """Delete a flow. No-op if not found."""
+        resp = await self._client.delete(
+            f"/api/v1/flows/{self.namespace}/{flow_id}"
+        )
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
 
     # ── Convenience helpers ──────────────────────────────────────────
 

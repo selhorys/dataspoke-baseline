@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     kestra_namespace: str = "dataspoke"
     kestra_user: str = ""
     kestra_password: str = ""
+    kestra_callback_base_url: str = "http://localhost:8000"
 
     # LLM
     llm_provider: str = "openai"

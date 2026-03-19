@@ -5,8 +5,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from src.api.auth.dependencies import require_dg
 from src.api.auth.ws import ws_authenticate
-from src.api.schemas.common import parse_sort
 from src.api.dependencies import get_kestra_client, get_metrics_service, get_redis
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
     DismissMetricIssueRequest,
@@ -25,6 +25,7 @@ from src.api.schemas.metrics import (
 )
 from src.backend.metrics.service import MetricsService
 from src.shared.db.models import Event, MetricDefinition, MetricIssue, MetricResult
+from src.shared.settings import settings
 from src.workflows.kestra.client import KestraClient
 
 router = APIRouter(
@@ -188,7 +189,7 @@ async def post_metric_run(
     execution = await kestra.trigger_and_wait(
         "metrics",
         inputs={
-            "callback_base_url": "http://localhost:8000",
+            "callback_base_url": settings.kestra_callback_base_url,
             "metric_id": metric_id,
             "dry_run": str(body.dry_run).lower(),
         },
@@ -356,7 +357,8 @@ async def get_metric_issue_events(
 ) -> EventListResponse:
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_metric_issue_events(
-        metric_issue_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
+        metric_issue_id, offset=offset, limit=limit,
+        from_dt=from_time, to_dt=to_time, order_by=order_by
     )
     return EventListResponse(
         offset=offset,

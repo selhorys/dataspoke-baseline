@@ -16,6 +16,7 @@ from src.api.schemas.ingestion import (
 from src.backend.ingestion.service import IngestionService
 from src.shared.db.models import Event, IngestionConfig
 from src.shared.exceptions import EntityNotFoundError
+from src.shared.settings import settings
 from src.workflows._common import urn_to_workflow_id
 from src.workflows.kestra.client import KestraClient
 
@@ -110,7 +111,7 @@ async def post_ingestion_run(
     execution = await kestra.trigger_and_wait(
         "ingestion",
         inputs={
-            "callback_base_url": "http://localhost:8000",
+            "callback_base_url": settings.kestra_callback_base_url,
             "dataset_urn": dataset_urn,
             "dry_run": str(body.dry_run).lower(),
             "run_id": str(uuid.uuid4()),

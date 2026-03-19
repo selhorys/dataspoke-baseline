@@ -3,8 +3,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
-from src.api.schemas.common import parse_sort
 from src.api.dependencies import get_generation_service, get_kestra_client
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.generation import (
     ApplyGenerationRequest,
@@ -18,6 +18,7 @@ from src.api.schemas.generation import (
 from src.backend.generation.service import GenerationService
 from src.shared.db.models import Event, GenerationConfig, GenerationResult
 from src.shared.exceptions import EntityNotFoundError
+from src.shared.settings import settings
 from src.workflows._common import urn_to_workflow_id
 from src.workflows.kestra.client import KestraClient
 
@@ -145,7 +146,7 @@ async def post_gen_generate(
     execution = await kestra.trigger_and_wait(
         "generation",
         inputs={
-            "callback_base_url": "http://localhost:8000",
+            "callback_base_url": settings.kestra_callback_base_url,
             "dataset_urn": dataset_urn,
         },
         labels={"workflow_id": label_value},

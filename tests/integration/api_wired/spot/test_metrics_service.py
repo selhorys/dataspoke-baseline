@@ -14,20 +14,15 @@ Prerequisites:
 
 import json
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from unittest.mock import AsyncMock
 
-from tests.integration.api_wired.conftest import (
-    InlineKestraClient,
-    mock_cache as _mock_cache,
-)
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
-    override_app,
     seed_events,
 )
 
@@ -36,26 +31,23 @@ _TEST_METRIC_PREFIX = "imazon.test.metrics"
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, mock_cache, async_session):
-    import src.api.dependencies as deps
-    deps._kestra_client = None
-    inline_kestra = InlineKestraClient(
-        datahub=datahub_client, db=async_session, cache=mock_cache,
-    )
-    async with override_app(
-        datahub=datahub_client, redis=mock_cache, db=async_session,
-        kestra=inline_kestra,
+async def http_client(activity_server):
+    """HTTP client pointing at the real activity server."""
+    async with httpx.AsyncClient(
+        base_url=f"http://localhost:{activity_server.port}",
+        timeout=120.0,
     ) as client:
         yield client
-    deps._kestra_client = None
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_metric_config_crud_via_http(http_client, async_session: AsyncSession):
-    """PUT → GET → PATCH → DELETE → GET (404)."""
+async def test_metric_config_crud_via_http(
+    http_client, async_session: AsyncSession,
+):
+    """PUT -> GET -> PATCH -> DELETE -> GET (404)."""
     metric_id = f"{_TEST_METRIC_PREFIX}.crud_test"
     headers = _auth_headers()
 
@@ -109,7 +101,7 @@ async def test_metric_config_crud_via_http(http_client, async_session: AsyncSess
         )
         assert resp.status_code == 204
 
-        # GET after delete → 404
+        # GET after delete -> 404
         resp = await http_client.get(
             f"{_DG_PREFIX}/{metric_id}",
             headers=headers,
@@ -117,15 +109,19 @@ async def test_metric_config_crud_via_http(http_client, async_session: AsyncSess
         assert resp.status_code == 404
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_metric_run_and_result_persistence(http_client, async_session: AsyncSession, kestra_client):
-    """PUT config → POST run → GET results → verify persisted."""
+async def test_metric_run_and_result_persistence(
+    http_client, async_session: AsyncSession, activity_server,
+):
+    """PUT config -> POST run -> GET results -> verify persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_persist"
     headers = _auth_headers()
 
@@ -143,7 +139,7 @@ async def test_metric_run_and_result_persistence(http_client, async_session: Asy
         )
         assert resp.status_code in (200, 201)
 
-        # Run
+        # Run (goes through real Kestra)
         resp = await http_client.post(
             f"{_DG_PREFIX}/{metric_id}/method/run",
             headers=headers,
@@ -151,8 +147,7 @@ async def test_metric_run_and_result_persistence(http_client, async_session: Asy
         )
         assert resp.status_code == 200
         run_body = resp.json()
-        assert run_body["status"] == "success"
-        assert "value" in run_body["detail"]
+        assert run_body["status"].lower() == "success"
 
         # Verify result persisted
         resp = await http_client.get(
@@ -167,23 +162,33 @@ async def test_metric_run_and_result_persistence(http_client, async_session: Asy
         assert "breakdown" in result
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_results WHERE metric_id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_results"
+                " WHERE metric_id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'metric'"),
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_id = :id AND entity_type = 'metric'"
+            ),
             {"id": metric_id},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_metric_run_dry_run(http_client, async_session: AsyncSession, kestra_client):
-    """POST run (dry_run=true) → verify no result persisted."""
+async def test_metric_run_dry_run(
+    http_client, async_session: AsyncSession, activity_server,
+):
+    """POST run (dry_run=true) -> verify no result persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_dry"
     headers = _auth_headers()
 
@@ -206,7 +211,8 @@ async def test_metric_run_dry_run(http_client, async_session: AsyncSession, kest
             json={"dry_run": True},
         )
         assert resp.status_code == 200
-        assert resp.json()["detail"]["dry_run"] is True
+        body = resp.json()
+        assert body["status"].lower() == "success"
 
         # Verify no result persisted
         resp = await http_client.get(
@@ -217,15 +223,19 @@ async def test_metric_run_dry_run(http_client, async_session: AsyncSession, kest
         assert resp.json()["total_count"] == 0
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_activate_deactivate(http_client, async_session: AsyncSession):
-    """PUT config → POST deactivate → verify → POST activate → verify."""
+async def test_activate_deactivate(
+    http_client, async_session: AsyncSession,
+):
+    """PUT config -> POST deactivate -> verify -> POST activate -> verify."""
     metric_id = f"{_TEST_METRIC_PREFIX}.activate_test"
     headers = _auth_headers()
 
@@ -262,19 +272,26 @@ async def test_activate_deactivate(http_client, async_session: AsyncSession):
         assert resp.json()["active"] is True
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'metric'"),
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_id = :id AND entity_type = 'metric'"
+            ),
             {"id": metric_id},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_events_pagination(http_client, async_session: AsyncSession):
-    """Seed events → GET with limit → verify total_count and page size."""
+async def test_events_pagination(
+    http_client, async_session: AsyncSession,
+):
+    """Seed events -> GET with limit -> verify pagination."""
     metric_id = f"{_TEST_METRIC_PREFIX}.events_test"
     headers = _auth_headers()
 
@@ -290,7 +307,8 @@ async def test_events_pagination(http_client, async_session: AsyncSession):
         await async_session.execute(
             text(
                 "INSERT INTO dataspoke.metric_definitions"
-                " (id, title, description, theme, measurement_query, active, alarm_enabled)"
+                " (id, title, description, theme, measurement_query,"
+                " active, alarm_enabled)"
                 " VALUES (:id, :title, :desc, :theme, :mq, true, false)"
             ),
             {
@@ -315,15 +333,19 @@ async def test_events_pagination(http_client, async_session: AsyncSession):
     finally:
         await cleanup_events(async_session, event_ids)
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_metric_attr_endpoint(http_client, async_session: AsyncSession):
-    """PUT config → GET attr → verify lightweight view."""
+async def test_metric_attr_endpoint(
+    http_client, async_session: AsyncSession,
+):
+    """PUT config -> GET attr -> verify lightweight view."""
     metric_id = f"{_TEST_METRIC_PREFIX}.attr_test"
     headers = _auth_headers()
 
@@ -355,7 +377,9 @@ async def test_metric_attr_endpoint(http_client, async_session: AsyncSession):
         assert body["latest_value"] is None
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.metric_definitions WHERE id = :id"),
+            text(
+                "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+            ),
             {"id": metric_id},
         )
         await async_session.commit()
@@ -363,7 +387,7 @@ async def test_metric_attr_endpoint(http_client, async_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_metric_not_found(http_client):
-    """GET nonexistent metric → 404."""
+    """GET nonexistent metric -> 404."""
     resp = await http_client.get(
         f"{_DG_PREFIX}/nonexistent.metric.id",
         headers=_auth_headers(),

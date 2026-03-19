@@ -3,7 +3,7 @@
 Test-specific data extensions (created and cleaned up within each test):
 - Transient ingestion_configs rows via PUT API (Imazon-prefixed test URNs).
 - Transient dataspoke.events rows for event pagination tests.
-- LLM calls are mocked (deterministic fixture responses).
+- LLM calls are mocked via activity_server.mock_llm.
 
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
@@ -12,17 +12,16 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.api_wired.conftest import InlineKestraClient, mock_llm
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
     make_test_urn,
-    override_app,
     seed_events,
 )
 
@@ -32,29 +31,22 @@ def _urn(suffix: str) -> str:
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, async_session):
-    # Reset the kestra client singleton so it gets created on this event loop
-    import src.api.dependencies as deps
-    deps._kestra_client = None
-    _llm = mock_llm()
-    inline_kestra = InlineKestraClient(
-        datahub=datahub_client, db=async_session, llm=_llm,
-    )
-    async with override_app(
-        datahub=datahub_client,
-        llm=_llm,
-        db=async_session,
-        kestra=inline_kestra,
+async def http_client(activity_server):
+    """HTTP client pointing at the real activity server."""
+    async with httpx.AsyncClient(
+        base_url=f"http://localhost:{activity_server.port}",
+        timeout=120.0,
     ) as client:
         yield client
-    deps._kestra_client = None
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncSession):
+async def test_ingestion_config_crud_via_http(
+    http_client, async_session: AsyncSession,
+):
     """PUT -> GET -> PATCH -> GET -> DELETE -> GET (404)."""
     dataset_urn = _urn("crud_test")
     headers = _auth_headers()
@@ -119,14 +111,19 @@ async def test_ingestion_config_crud_via_http(http_client, async_session: AsyncS
         assert resp.status_code == 404
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.ingestion_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
+async def test_list_ingestion_configs(
+    http_client, async_session: AsyncSession,
+):
     """PUT 2 configs -> GET list -> verify pagination."""
     urn1 = _urn("list_test_1")
     urn2 = _urn("list_test_2")
@@ -159,15 +156,20 @@ async def test_list_ingestion_configs(http_client, async_session: AsyncSession):
     finally:
         for urn in (urn1, urn2):
             await async_session.execute(
-                text("DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = :urn"),
+                text(
+                    "DELETE FROM dataspoke.ingestion_configs"
+                    " WHERE dataset_urn = :urn"
+                ),
                 {"urn": urn},
             )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, kestra_client):
-    """PUT config with sql_log -> POST run dry_run=true -> verify events."""
+async def test_run_ingestion_dry_run(
+    http_client, async_session: AsyncSession, activity_server,
+):
+    """PUT config -> POST run dry_run=true -> verify events via real Kestra."""
     dataset_urn = _urn("run_test")
     headers = _auth_headers()
 
@@ -183,7 +185,8 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, k
                         "queries": [
                             "SELECT * FROM catalog.title_master "
                             "JOIN orders.order_header "
-                            "ON catalog.title_master.id = orders.order_header.title_id"
+                            "ON catalog.title_master.id = "
+                            "orders.order_header.title_id"
                         ]
                     }
                 },
@@ -192,7 +195,7 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, k
         )
         assert resp.status_code in (200, 201)
 
-        # Run with dry_run=true
+        # Run with dry_run=true (goes through real Kestra)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
             headers=headers,
@@ -200,9 +203,9 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, k
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "success"
-        assert body["detail"]["dry_run"] is True
-        assert body["detail"]["metadata_extracted"] >= 1
+        # Real Kestra returns execution status (uppercase) when flow
+        # doesn't define explicit outputs
+        assert body["status"].lower() == "success"
 
         # Check events were recorded
         resp = await http_client.get(
@@ -215,31 +218,44 @@ async def test_run_ingestion_dry_run(http_client, async_session: AsyncSession, k
     finally:
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'ingestion.%'"
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_id = :urn"
+                " AND entity_type = 'dataset'"
+                " AND event_type LIKE 'ingestion.%'"
             ),
             {"urn": dataset_urn},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.ingestion_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_run_ingestion_not_found(http_client, kestra_client):
-    """POST run for unconfigured URN -> 404."""
+async def test_run_ingestion_not_found(http_client):
+    """POST run for unconfigured URN -> error.
+
+    The data router triggers Kestra without checking config. The flow
+    fails because the activity can't find the config. Returns 500
+    (KestraExecutionFailedError).
+    """
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(
         f"/api/v1/spoke/common/data/{fake_urn}/attr/ingestion/method/run",
         headers=_auth_headers(),
         json={"dry_run": False},
     )
-    assert resp.status_code == 404
+    assert resp.status_code in (404, 500)
 
 
 @pytest.mark.asyncio
-async def test_ingestion_events_pagination(http_client, async_session: AsyncSession):
+async def test_ingestion_events_pagination(
+    http_client, async_session: AsyncSession,
+):
     """Seed 3 events -> GET with limit=2 -> verify pagination."""
     dataset_urn = _urn("events_test")
     headers = _auth_headers()

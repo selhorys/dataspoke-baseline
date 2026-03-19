@@ -19,6 +19,7 @@ from src.shared.exceptions import (
     EventProcessingError,
     StorageUnavailableError,
 )
+from src.shared.settings import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -138,7 +139,7 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
         await _kestra_client.trigger_execution(
             "embedding-sync",
             inputs={
-                "callback_base_url": "http://localhost:8000",
+                "callback_base_url": settings.kestra_callback_base_url,
                 "mode": "single",
                 "dataset_urn": event.entity_urn,
             },
@@ -167,7 +168,7 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
         await _kestra_client.trigger_execution(
             "ontology-rebuild",
             inputs={
-                "callback_base_url": "http://localhost:8000",
+                "callback_base_url": settings.kestra_callback_base_url,
                 "force": "false",
             },
             labels={"workflow_id": "ontology-rebuild"},
@@ -237,7 +238,7 @@ async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
         await _kestra_client.trigger_execution(
             "validation",
             inputs={
-                "callback_base_url": "http://localhost:8000",
+                "callback_base_url": settings.kestra_callback_base_url,
                 "dataset_urn": event.entity_urn,
                 "config_id": "",
                 "dry_run": "false",
@@ -285,7 +286,7 @@ async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
         await _kestra_client.trigger_execution(
             "sla-monitor",
             inputs={
-                "callback_base_url": "http://localhost:8000",
+                "callback_base_url": settings.kestra_callback_base_url,
                 "dataset_urn": event.entity_urn,
                 "sla_target": json.dumps(config.sla_target),
                 "alert_recipients": "[]",

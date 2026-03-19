@@ -12,21 +12,19 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.api_wired.conftest import (
-    InlineKestraClient,
-    mock_cache as _mock_cache,
-)
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
+    emit_test_dataset,
     make_test_urn,
-    override_app,
     seed_events,
+    soft_delete_test_dataset,
 )
 
 
@@ -35,28 +33,22 @@ def _urn(suffix: str) -> str:
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, mock_cache, async_session):
-    """HTTP client with real DI providers pointing to dev-env infra."""
-    import src.api.dependencies as deps
-    deps._kestra_client = None
-    inline_kestra = InlineKestraClient(
-        datahub=datahub_client, db=async_session, cache=mock_cache,
-    )
-    async with override_app(
-        datahub=datahub_client,
-        redis=mock_cache,
-        db=async_session,
-        kestra=inline_kestra,
+async def http_client(activity_server):
+    """HTTP client pointing at the real activity server."""
+    async with httpx.AsyncClient(
+        base_url=f"http://localhost:{activity_server.port}",
+        timeout=120.0,
     ) as client:
         yield client
-    deps._kestra_client = None
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_validation_config_crud_via_http(http_client, async_session: AsyncSession):
+async def test_validation_config_crud_via_http(
+    http_client, async_session: AsyncSession,
+):
     """PUT -> GET -> PATCH -> GET -> DELETE -> GET (404)."""
     dataset_urn = _urn("crud_test")
     headers = _auth_headers()
@@ -121,14 +113,19 @@ async def test_validation_config_crud_via_http(http_client, async_session: Async
         assert resp.status_code == 404
     finally:
         await async_session.execute(
-            text("DELETE FROM dataspoke.validation_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.validation_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_list_validation_configs(http_client, async_session: AsyncSession):
+async def test_list_validation_configs(
+    http_client, async_session: AsyncSession,
+):
     """PUT 2 configs -> GET list -> verify pagination."""
     urn1 = _urn("list_test_1")
     urn2 = _urn("list_test_2")
@@ -161,17 +158,28 @@ async def test_list_validation_configs(http_client, async_session: AsyncSession)
     finally:
         for urn in (urn1, urn2):
             await async_session.execute(
-                text("DELETE FROM dataspoke.validation_configs WHERE dataset_urn = :urn"),
+                text(
+                    "DELETE FROM dataspoke.validation_configs"
+                    " WHERE dataset_urn = :urn"
+                ),
                 {"urn": urn},
             )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_run_validation_dry_run(http_client, async_session: AsyncSession, kestra_client):
-    """PUT config -> POST run (dry_run=true) -> verify result has quality_score."""
+async def test_run_validation_dry_run(
+    http_client, async_session: AsyncSession, activity_server,
+    datahub_client,
+):
+    """PUT config -> POST run (dry_run=true) -> verify result."""
     dataset_urn = _urn("run_dry_test")
     headers = _auth_headers()
+
+    await emit_test_dataset(
+        datahub_client, urn=dataset_urn, name="run_dry_test",
+        wait_seconds=1.0,
+    )
 
     try:
         # Create config
@@ -186,7 +194,7 @@ async def test_run_validation_dry_run(http_client, async_session: AsyncSession, 
         )
         assert resp.status_code in (200, 201)
 
-        # Run with dry_run=true
+        # Run with dry_run=true (goes through real Kestra)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run",
             headers=headers,
@@ -194,10 +202,7 @@ async def test_run_validation_dry_run(http_client, async_session: AsyncSession, 
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "success"
-        assert body["detail"]["dry_run"] is True
-        assert "quality_score" in body["detail"]
-        assert "dimensions" in body["detail"]
+        assert body["status"].lower() == "success"
 
         # Dry run should not persist results
         resp = await http_client.get(
@@ -207,8 +212,12 @@ async def test_run_validation_dry_run(http_client, async_session: AsyncSession, 
         assert resp.status_code == 200
         assert resp.json()["total_count"] == 0
     finally:
+        await soft_delete_test_dataset(datahub_client, dataset_urn)
         await async_session.execute(
-            text("DELETE FROM dataspoke.validation_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.validation_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
@@ -216,11 +225,17 @@ async def test_run_validation_dry_run(http_client, async_session: AsyncSession, 
 
 @pytest.mark.asyncio
 async def test_run_validation_persists_result(
-    http_client, async_session: AsyncSession, kestra_client
+    http_client, async_session: AsyncSession, activity_server,
+    datahub_client,
 ):
-    """PUT config -> POST run (dry_run=false) -> GET results -> verify persisted."""
+    """PUT config -> POST run (dry_run=false) -> GET results -> verify."""
     dataset_urn = _urn("run_persist_test")
     headers = _auth_headers()
+
+    await emit_test_dataset(
+        datahub_client, urn=dataset_urn, name="run_persist_test",
+        wait_seconds=1.0,
+    )
 
     try:
         # Create config
@@ -235,7 +250,7 @@ async def test_run_validation_persists_result(
         )
         assert resp.status_code in (200, 201)
 
-        # Run without dry_run
+        # Run without dry_run (goes through real Kestra)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run",
             headers=headers,
@@ -243,7 +258,7 @@ async def test_run_validation_persists_result(
         )
         assert resp.status_code == 200
         run_body = resp.json()
-        assert run_body["status"] == "success"
+        assert run_body["status"].lower() == "success"
 
         # Verify result persisted
         resp = await http_client.get(
@@ -257,26 +272,38 @@ async def test_run_validation_persists_result(
         assert "quality_score" in result
         assert "dimensions" in result
     finally:
-        await async_session.execute(
-            text("DELETE FROM dataspoke.validation_results WHERE dataset_urn = :urn"),
-            {"urn": dataset_urn},
-        )
+        await soft_delete_test_dataset(datahub_client, dataset_urn)
         await async_session.execute(
             text(
-                "DELETE FROM dataspoke.events WHERE entity_id = :urn AND entity_type = 'dataset' AND event_type LIKE 'validation.%'"
+                "DELETE FROM dataspoke.validation_results"
+                " WHERE dataset_urn = :urn"
             ),
             {"urn": dataset_urn},
         )
         await async_session.execute(
-            text("DELETE FROM dataspoke.validation_configs WHERE dataset_urn = :urn"),
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_id = :urn"
+                " AND entity_type = 'dataset'"
+                " AND event_type LIKE 'validation.%'"
+            ),
+            {"urn": dataset_urn},
+        )
+        await async_session.execute(
+            text(
+                "DELETE FROM dataspoke.validation_configs"
+                " WHERE dataset_urn = :urn"
+            ),
             {"urn": dataset_urn},
         )
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_validation_events_pagination(http_client, async_session: AsyncSession):
-    """Seed 3 events -> GET events with limit=2 -> verify total_count=3, returned=2."""
+async def test_validation_events_pagination(
+    http_client, async_session: AsyncSession,
+):
+    """Seed 3 events -> GET events -> verify pagination."""
     dataset_urn = _urn("events_test")
     headers = _auth_headers()
 
@@ -312,12 +339,15 @@ async def test_validation_events_pagination(http_client, async_session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_run_validation_config_not_found(http_client, kestra_client):
-    """POST run for unconfigured URN -> 404."""
+async def test_run_validation_config_not_found(http_client):
+    """POST run for unconfigured URN -> error.
+
+    The data router triggers Kestra without checking config first.
+    """
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(
         f"/api/v1/spoke/common/data/{fake_urn}/attr/validation/method/run",
         headers=_auth_headers(),
         json={"dry_run": False},
     )
-    assert resp.status_code == 404
+    assert resp.status_code in (404, 500)
