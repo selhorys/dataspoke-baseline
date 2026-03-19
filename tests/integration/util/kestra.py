@@ -131,6 +131,24 @@ async def cleanup_test_executions(
     return deleted
 
 
+async def cleanup_flows(client: KestraClient) -> int:
+    """Delete all DataSpoke flows from the test namespace.
+
+    Returns the number of flows deleted.
+    """
+    deleted = 0
+    for flow_id in ALL_FLOW_IDS:
+        try:
+            flow = await client.get_flow(flow_id)
+            if flow is not None:
+                await client.delete_flow(flow_id)
+                deleted += 1
+                logger.info("Deleted flow %s", flow_id)
+        except Exception:
+            logger.warning("Failed to delete flow %s", flow_id, exc_info=True)
+    return deleted
+
+
 async def ensure_flows_registered(client: KestraClient) -> int:
     """Register all DataSpoke flows and return the count."""
     return await register_all_flows(client)

@@ -371,10 +371,11 @@ async def kestra_client():
     """Create a KestraClient pointing at the dev-env Kestra instance; skip if unreachable.
 
     On setup: registers all flows and kills stale running executions.
-    On teardown: cleans up test executions.
+    On teardown: cleans up test executions and deletes deployed flows.
     """
     from src.workflows.kestra.client import KestraClient
     from tests.integration.util.kestra import (
+        cleanup_flows,
         cleanup_test_executions,
         ensure_flows_registered,
         kill_running_executions,
@@ -399,8 +400,9 @@ async def kestra_client():
 
     yield client
 
-    # Clean up test executions after the module
+    # Clean up test executions and flow definitions after the module
     await cleanup_test_executions(client)
+    await cleanup_flows(client)
     await client.close()
 
 

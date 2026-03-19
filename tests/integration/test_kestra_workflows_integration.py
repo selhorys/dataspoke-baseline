@@ -54,12 +54,17 @@ def _test_label(suffix: str) -> str:
 
 
 @pytest_asyncio.fixture(scope="module", autouse=True)
-async def _seed_workflow_configs():
-    """Seed IngestionConfig and ValidationConfig for the test dataset."""
-    from src.shared.db.models import IngestionConfig, ValidationConfig
-    from src.shared.db.session import SessionLocal
+async def _seed_workflow_configs(async_engine):
+    """Seed IngestionConfig and ValidationConfig for the test dataset.
 
-    async with SessionLocal() as db:
+    Uses the conftest's NullPool engine to avoid event-loop mismatch with
+    the app's global pooled engine.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.shared.db.models import IngestionConfig, ValidationConfig
+
+    async with AsyncSession(async_engine) as db:
         await db.execute(
             delete(IngestionConfig).where(IngestionConfig.dataset_urn == _IMAZON_DATASET_URN)
         )
@@ -85,7 +90,7 @@ async def _seed_workflow_configs():
 
     yield
 
-    async with SessionLocal() as db:
+    async with AsyncSession(async_engine) as db:
         await db.execute(
             delete(IngestionConfig).where(IngestionConfig.dataset_urn == _IMAZON_DATASET_URN)
         )
