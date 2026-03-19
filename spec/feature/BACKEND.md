@@ -125,8 +125,16 @@ src/
 │       ├── quality.py    # QualityScore, QualityIssue, AnomalyResult
 │       ├── ontology.py   # Concept, ConceptRelationship
 │       └── events.py     # EventRecord (base for all event types)
-└── workflows/            # Kestra workflow definitions + activity endpoints
+└── workflows/            # Kestra workflow definitions + workflow helper modules
     ├── __init__.py
+    ├── _common.py        # Shared workflow helpers (HTTP task builders, etc.)
+    ├── ingestion.py      # Ingestion workflow helpers
+    ├── validation.py     # Validation workflow helpers
+    ├── generation.py     # Doc generation workflow helpers
+    ├── embedding_sync.py # Embedding sync workflow helpers
+    ├── metrics.py        # Metrics workflow helpers
+    ├── sla_monitor.py    # SLA monitor workflow helpers
+    ├── ontology.py       # Ontology rebuild workflow helpers
     ├── flows/            # Kestra YAML flow definitions
     │   ├── ingestion.yaml
     │   ├── validation.yaml
@@ -134,17 +142,12 @@ src/
     │   ├── generation.yaml
     │   ├── embedding_sync.yaml
     │   ├── metrics.yaml
-    │   └── ontology.yaml
-    ├── kestra/
-    │   └── client.py     # KestraClient — REST API wrapper (httpx)
-    ├── activities/       # Internal activity endpoint handlers
-    │   ├── ingestion.py  # Ingestion activity endpoints
-    │   ├── validation.py # Validation activity endpoints
-    │   ├── generation.py # Doc generation activity endpoints
-    │   ├── embedding.py  # Embedding sync activity endpoints
-    │   ├── metrics.py    # Metrics collection activity endpoints
-    │   └── ontology.py   # Ontology rebuild activity endpoints
-    └── router.py         # FastAPI router for /api/v1/internal/activities/*
+    │   └── ontology_rebuild.yaml
+    └── kestra/
+        ├── client.py     # KestraClient — REST API wrapper (httpx)
+        ├── errors.py     # Kestra-specific exception types
+        ├── models.py     # Pydantic models for Kestra API requests/responses
+        └── registry.py   # Flow registry and namespace management
 migrations/               # Alembic database migrations (repo root)
 ```
 
@@ -254,6 +257,7 @@ class DataHubClient:
     async def get_downstream_lineage(self, urn: str) -> list[str]: ...
     async def get_upstream_lineage(self, urn: str) -> list[str]: ...
     async def enumerate_datasets(self, platform: str | None = None) -> list[str]: ...
+    async def get_schema_version_list(self, urn: str) -> list[dict[str, Any]]: ...
 
     # ── Write ─────────────────────────────────────────────────────────────
     async def emit_aspect(self, urn: str, aspect: Any) -> None: ...
@@ -429,6 +433,7 @@ class QualityScore(BaseModel):
     dataset_urn: str
     overall_score: float          # 0–100
     dimensions: dict[str, float]  # e.g. {"completeness": 85, "freshness": 70, ...}
+    dimension_details: dict[str, Any] | None = None  # Per-dimension breakdown details
     computed_at: datetime
 
 class QualityIssue(BaseModel):
@@ -908,10 +913,10 @@ handles scheduling, retry, and execution — no separate worker process is neede
 ```
 Kestra (in-cluster)                DataSpoke API (host or in-cluster)
        │                                    │
-       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/ingestion/extract
+       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/extract-metadata
        │◄── JSON response ─────────────────│
        │                                    │
-       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/ingestion/emit
+       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/emit-to-datahub
        │◄── JSON response ─────────────────│
 ```
 
@@ -929,7 +934,7 @@ API layer.
 | `generation` | `flows/generation.yaml` | API `POST .../method/generate` | On-demand |
 | `embedding-sync` | `flows/embedding_sync.yaml` | Kafka event, API `POST .../method/reindex` | Event-driven + on-demand |
 | `metrics-collection` | `flows/metrics.yaml` | API `POST .../method/run`, Kestra schedule trigger | On-demand + scheduled (configurable per metric) |
-| `ontology-rebuild` | `flows/ontology.yaml` | Kestra schedule trigger | Weekly (configurable) |
+| `ontology-rebuild` | `flows/ontology_rebuild.yaml` | Kestra schedule trigger | Weekly (configurable) |
 
 ### Workflow Design Conventions
 
@@ -960,9 +965,9 @@ phases for per-phase observability and partial-failure recovery:
 
 | Activity Endpoint | Phase | Timeout | Purpose |
 |-------------------|-------|---------|---------|
-| `POST /internal/activities/ingestion/extract` | 1 | 5 min | Load config, run per-source extractors, return metadata + errors |
-| `POST /internal/activities/ingestion/emit` | 2 | 5 min | Transform metadata, apply LLM enrichment, emit to DataHub (skipped if `dry_run`) |
-| `POST /internal/activities/ingestion/record-event` | 3 | 5 min | Determine status, persist event to PostgreSQL, return final result |
+| `POST /internal/activities/extract-metadata` | 1 | 5 min | Load config, run per-source extractors, return metadata + errors |
+| `POST /internal/activities/emit-to-datahub` | 2 | 5 min | Transform metadata, apply LLM enrichment, emit to DataHub (skipped if `dry_run`) |
+| `POST /internal/activities/record-ingestion-event` | 3 | 5 min | Determine status, persist event to PostgreSQL, return final result |
 
 Each task receives the output of the previous one via Kestra's output passing.
 If extraction succeeds but emission fails, only the emission task retries —
@@ -1123,8 +1128,10 @@ async def get_validation_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
+    llm: LLMClient = Depends(get_llm),
+    qdrant: QdrantManager = Depends(get_qdrant),
 ) -> ValidationService:
-    return ValidationService(datahub=datahub, db=db, cache=cache)
+    return ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
 ```
 
 ### Internal Activity Endpoints
@@ -1134,16 +1141,18 @@ dependency injection. They are registered under `/api/v1/internal/activities/`
 and called by Kestra via HTTP Request tasks:
 
 ```python
-# src/workflows/activities/validation.py
+# src/api/routers/internal/activities.py
 
-@router.post("/validation/run")
+@router.post("/run-validation")
 async def run_validation_activity(
     request: ValidationRunRequest,
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
+    llm: LLMClient = Depends(get_llm),
+    qdrant: QdrantManager = Depends(get_qdrant),
 ) -> dict:
-    service = ValidationService(datahub=datahub, db=db, cache=cache)
+    service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
     result = await service.run(request.dataset_urn, request.config_id, dry_run=False)
     return result.model_dump()
 ```

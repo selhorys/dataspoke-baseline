@@ -17,7 +17,7 @@ from src.backend.search.embedding import (
     _extract_platform_from_urn,
     generate_embedding,
 )
-from src.shared.cache.client import RedisClient
+from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.config import (
     EMBEDDING_COLLECTION,
     SEARCH_RESULT_CACHE_TTL,
@@ -198,6 +198,21 @@ class SearchService:
             raise EntityNotFoundError("dataset", dataset_urn)
 
         embedding, payload = await generate_embedding(self._llm, self._datahub, dataset_urn)
+
+        # Best-effort: populate quality_score from Redis cache if available.
+        # A cache miss or error is acceptable — the score will be backfilled on
+        # the next validation run that writes to QUALITY_CACHE_KEY.
+        try:
+            cache_key = QUALITY_CACHE_KEY.format(dataset_urn=dataset_urn)
+            raw_score = await self._cache.get(cache_key)
+            if raw_score is not None:
+                payload["quality_score"] = float(raw_score)
+        except Exception:
+            logger.warning(
+                "quality_score_cache_lookup_failed",
+                exc_info=True,
+                extra={"dataset_urn": dataset_urn},
+            )
 
         point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, dataset_urn))
         payload["updated_at"] = datetime.now(tz=UTC).isoformat()

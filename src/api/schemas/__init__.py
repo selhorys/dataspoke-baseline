@@ -2,7 +2,6 @@
 
 from src.api.schemas.common import (
     ErrorResponse,
-    NotImplementedResponse,
     PaginatedResponse,
     PaginationParams,
     SingleResponse,
@@ -72,7 +71,6 @@ from src.api.schemas.validation import (
 __all__ = [
     # common
     "ErrorResponse",
-    "NotImplementedResponse",
     "PaginatedResponse",
     "PaginationParams",
     "SingleResponse",

@@ -27,12 +27,6 @@ class SingleResponse(BaseModel):
     resp_time: datetime = Field(default_factory=_now_utc)
 
 
-class NotImplementedResponse(BaseModel):
-    error_code: str = "NOT_IMPLEMENTED"
-    message: str = "This endpoint is not yet implemented."
-    detail: Any = None
-
-
 class PaginationParams(BaseModel):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=100)

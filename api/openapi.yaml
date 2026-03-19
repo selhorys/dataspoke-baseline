@@ -251,17 +251,17 @@ paths:
       - $ref: "#/components/parameters/concept_id"
     get:
       operationId: getOntologyConcept
-      summary: Get concept detail and relationships
+      summary: Get concept detail
       tags: [common]
       security:
         - BearerAuth: []
       responses:
         "200":
-          description: Concept detail with relationships
+          description: Concept record
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OntologyConceptDetail"
+                $ref: "#/components/schemas/OntologyConcept"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -346,19 +346,13 @@ paths:
       tags: [common]
       security:
         - BearerAuth: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ConceptApproveRequest"
       responses:
         "200":
-          description: Concept approved
+          description: Concept approved — returns the updated concept record
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/OntologyConcept"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -381,19 +375,13 @@ paths:
       tags: [common]
       security:
         - BearerAuth: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ConceptRejectRequest"
       responses:
         "200":
-          description: Concept rejected
+          description: Concept rejected — returns the updated concept record
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/OntologyConcept"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1131,7 +1119,7 @@ paths:
       security:
         - BearerAuth: []
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1142,7 +1130,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/RunTriggered"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1758,11 +1746,19 @@ paths:
     get:
       operationId: getGenResult
       summary: Get generation results for dataset
-      description: Returns historical generation results. Use `?from=…&to=…` to narrow the time range.
+      description: |
+        Returns historical generation results. Use `?latest=true` to return only the most
+        recent result. Use `?from=…&to=…` to narrow the time range.
       tags: [common]
       security:
         - BearerAuth: []
       parameters:
+        - name: latest
+          in: query
+          description: If true, return only the most recent result
+          schema:
+            type: boolean
+            default: false
         - $ref: "#/components/parameters/offset"
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/sort_occurred_at"
@@ -1827,7 +1823,7 @@ paths:
       security:
         - BearerAuth: []
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1838,7 +1834,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/RunTriggered"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1957,11 +1953,11 @@ paths:
             type: string
       responses:
         "200":
-          description: Reindex job triggered
+          description: Reindex completed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/ReindexResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1983,7 +1979,7 @@ paths:
     get:
       operationId: listMetrics
       summary: List all governance metrics
-      description: Paginated list of metrics. Filterable by theme and status.
+      description: Paginated list of metrics. Filterable by theme and active flag.
       tags: [dg]
       security:
         - BearerAuth: []
@@ -1996,12 +1992,11 @@ paths:
           description: Filter by metric theme
           schema:
             type: string
-        - name: status
+        - name: active
           in: query
-          description: Filter by metric active status
+          description: Filter by active flag
           schema:
-            type: string
-            enum: [active, inactive]
+            type: boolean
       responses:
         "200":
           description: Paginated list of metrics
@@ -2023,18 +2018,18 @@ paths:
       - $ref: "#/components/parameters/metric_id"
     get:
       operationId: getMetric
-      summary: Get metric summary
-      description: Returns identity, theme, and active status.
+      summary: Get metric definition
+      description: Returns the full metric definition record.
       tags: [dg]
       security:
         - BearerAuth: []
       responses:
         "200":
-          description: Metric summary
+          description: Metric definition
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MetricSummary"
+                $ref: "#/components/schemas/MetricConf"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2232,6 +2227,12 @@ paths:
       tags: [dg]
       security:
         - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
       responses:
         "200":
           description: Metric measurement run triggered
@@ -2263,11 +2264,11 @@ paths:
         - BearerAuth: []
       responses:
         "200":
-          description: Metric activated
+          description: Metric activated — returns the updated metric definition
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/MetricConf"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2290,11 +2291,11 @@ paths:
         - BearerAuth: []
       responses:
         "200":
-          description: Metric deactivated
+          description: Metric deactivated — returns the updated metric definition
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MethodResponse"
+                $ref: "#/components/schemas/MetricConf"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2574,7 +2575,7 @@ paths:
     get:
       operationId: getDgOverviewAttr
       summary: Get visualization configuration
-      description: Returns layout, coloring, and filter settings for the overview.
+      description: Returns layout, color_by, and filter settings for the overview.
       tags: [dg]
       security:
         - BearerAuth: []
@@ -2596,6 +2597,7 @@ paths:
     patch:
       operationId: patchDgOverviewAttr
       summary: Update visualization configuration
+      description: Update layout algorithm, color-by field, or active filters.
       tags: [dg]
       security:
         - BearerAuth: []
@@ -3096,26 +3098,34 @@ components:
 
     # A uniform event item shared across all event endpoints.
     EventItem:
-      type: object
-      required: [event_id, event_type, status, occurred_at]
-      properties:
-        event_id:
-          type: string
-          format: uuid
-        event_type:
-          type: string
-          description: "Category of the event, e.g. ingestion_run, validation_run, generation_run, concept_approved"
-        status:
-          type: string
-          enum: [success, failure, warning, info]
-        occurred_at:
-          type: string
-          format: date-time
-          description: ISO 8601 UTC timestamp
-        detail:
-          type: object
-          description: Event-type-specific payload
-          additionalProperties: true
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [id, entity_type, entity_id, event_type, status, occurred_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            entity_type:
+              type: string
+              description: "Type of the entity that generated the event, e.g. dataset, concept, metric"
+            entity_id:
+              type: string
+              description: Identifier of the entity (URN or UUID)
+            event_type:
+              type: string
+              description: "Category of the event, e.g. ingestion_run, validation_run, generation_run, concept_approved"
+            status:
+              type: string
+              description: "Event outcome, e.g. success, failure, warning, info"
+            occurred_at:
+              type: string
+              format: date-time
+              description: ISO 8601 UTC timestamp
+            detail:
+              type: object
+              description: Event-type-specific payload
+              additionalProperties: true
 
     EventList:
       allOf:
@@ -3148,13 +3158,14 @@ components:
           properties:
             run_id:
               type: string
-              format: uuid
               description: Kestra execution run identifier
             status:
               type: string
-              enum: [triggered, dry_run_completed]
-            dry_run:
-              type: boolean
+              description: "Run status, e.g. triggered, dry_run_completed, SUCCESS, FAILED"
+            detail:
+              type: object
+              description: Additional run detail from Kestra outputs
+              additionalProperties: true
 
     # ------------------------------------------------------------------
     # System
@@ -3177,16 +3188,14 @@ components:
           enum: [ok, degraded]
         checks:
           type: object
+          description: Per-dependency reachability flags
           properties:
             datahub:
-              type: string
-              enum: [ok, error]
+              type: boolean
             postgres:
-              type: string
-              enum: [ok, error]
+              type: boolean
             redis:
-              type: string
-              enum: [ok, error]
+              type: boolean
 
     # ------------------------------------------------------------------
     # Auth
@@ -3223,29 +3232,32 @@ components:
     # ------------------------------------------------------------------
 
     OntologyConcept:
-      type: object
-      required: [concept_id, name, status, created_at]
-      properties:
-        concept_id:
-          type: string
-        name:
-          type: string
-        description:
-          type: string
-        parent_id:
-          type: string
-          nullable: true
-        status:
-          type: string
-          enum: [active, pending, rejected]
-        confidence_score:
-          type: number
-          format: float
-          minimum: 0
-          maximum: 1
-        created_at:
-          type: string
-          format: date-time
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [id, name, status, version, created_at, updated_at]
+          properties:
+            id:
+              type: string
+              description: Concept identifier (UUID)
+            name:
+              type: string
+            description:
+              type: string
+            parent_id:
+              type: string
+              nullable: true
+            status:
+              type: string
+              enum: [active, pending, rejected]
+            version:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
 
     OntologyConceptList:
       allOf:
@@ -3258,46 +3270,49 @@ components:
               items:
                 $ref: "#/components/schemas/OntologyConcept"
 
-    OntologyConceptDetail:
+    ConceptRelationship:
       allOf:
-        - $ref: "#/components/schemas/OntologyConcept"
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
+          required: [id, concept_a, concept_b, relationship_type, confidence_score, created_at]
           properties:
-            relationships:
-              type: array
-              items:
-                type: object
-                required: [related_concept_id, relationship_type]
-                properties:
-                  related_concept_id:
-                    type: string
-                  relationship_type:
-                    type: string
-                    enum: [parent, child, related, synonym]
+            id:
+              type: string
+            concept_a:
+              type: string
+            concept_b:
+              type: string
+            relationship_type:
+              type: string
+            confidence_score:
+              type: number
+              format: float
+            created_at:
+              type: string
+              format: date-time
 
     OntologyConceptAttr:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [concept_id, confidence_score, status]
+          required: [concept_id, dataset_count, avg_confidence]
           properties:
             concept_id:
               type: string
-            parent_id:
-              type: string
-              nullable: true
-            confidence_score:
+            dataset_count:
+              type: integer
+              description: Number of datasets tagged with this concept
+            avg_confidence:
               type: number
               format: float
-              minimum: 0
-              maximum: 1
-            status:
-              type: string
-              enum: [active, pending, rejected]
-            updated_at:
-              type: string
-              format: date-time
+            relationships:
+              type: array
+              items:
+                $ref: "#/components/schemas/ConceptRelationship"
+            children:
+              type: array
+              items:
+                $ref: "#/components/schemas/OntologyConcept"
 
     ConceptApproveRequest:
       type: object
@@ -3319,7 +3334,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [urn, name]
+          required: [urn, name, platform]
           properties:
             urn:
               type: string
@@ -3340,36 +3355,46 @@ components:
               type: array
               items:
                 type: string
-            quality_score:
-              type: integer
-              minimum: 0
-              maximum: 100
-              nullable: true
+
+    QualityScore:
+      type: object
+      required: [overall_score]
+      properties:
+        overall_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+        dimensions:
+          type: object
+          description: Per-dimension quality scores (e.g. completeness, freshness)
+          additionalProperties:
+            type: number
+            format: float
+        dimension_details:
+          type: object
+          description: Optional detailed breakdown per dimension
+          nullable: true
+          additionalProperties:
+            type: object
+            additionalProperties: true
 
     DatasetAttr:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [urn]
+          required: [urn, column_count]
           properties:
             urn:
               type: string
-            schema_summary:
-              type: object
-              properties:
-                field_count:
-                  type: integer
-                fields:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      type:
-                        type: string
-                      nullable:
-                        type: boolean
+            column_count:
+              type: integer
+              description: Number of schema fields
+            fields:
+              type: array
+              description: List of field names
+              items:
+                type: string
             owners:
               type: array
               items:
@@ -3378,57 +3403,46 @@ components:
               type: array
               items:
                 type: string
-            glossary_terms:
-              type: array
-              items:
-                type: string
-            last_modified:
+            description:
               type: string
-              format: date-time
+              nullable: true
+            quality_score:
+              $ref: "#/components/schemas/QualityScore"
               nullable: true
 
     # ------------------------------------------------------------------
     # Ingestion Configuration
     # ------------------------------------------------------------------
 
-    IngestionConfBase:
-      type: object
-      required: [dataset_urn, source_type]
-      properties:
-        dataset_urn:
-          type: string
-        source_type:
-          type: string
-          description: "Ingestion source type, e.g. snowflake, bigquery, confluence"
-        schedule:
-          type: string
-          description: Cron expression for scheduled ingestion
-          nullable: true
-        deep_spec_enabled:
-          type: boolean
-          default: false
-          description: Enable deep technical spec extraction
-        config_body:
-          type: object
-          description: Source-specific configuration (arbitrary JSON)
-          additionalProperties: true
-        owner:
-          type: string
-          nullable: true
-
     IngestionConf:
       allOf:
-        - $ref: "#/components/schemas/IngestionConfBase"
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [config_id, status, created_at]
+          required: [id, dataset_urn, sources, deep_spec_enabled, status, owner, created_at, updated_at]
           properties:
-            config_id:
+            id:
               type: string
               format: uuid
+              description: Ingestion config identifier
+            dataset_urn:
+              type: string
+            sources:
+              type: object
+              description: Source-specific configuration (arbitrary JSON keyed by source name)
+              additionalProperties: true
+            deep_spec_enabled:
+              type: boolean
+              default: false
+              description: Enable deep technical spec extraction
+            schedule:
+              type: string
+              description: Cron expression for scheduled ingestion
+              nullable: true
             status:
               type: string
               enum: [active, inactive, error]
+            owner:
+              type: string
             created_at:
               type: string
               format: date-time
@@ -3437,21 +3451,38 @@ components:
               format: date-time
 
     IngestionConfWrite:
-      allOf:
-        - $ref: "#/components/schemas/IngestionConfBase"
+      type: object
+      required: [dataset_urn, sources, owner]
+      properties:
+        dataset_urn:
+          type: string
+        sources:
+          type: object
+          description: Source-specific configuration (arbitrary JSON)
+          additionalProperties: true
+        deep_spec_enabled:
+          type: boolean
+          default: false
+        schedule:
+          type: string
+          nullable: true
+        owner:
+          type: string
 
     IngestionConfPatch:
       type: object
       properties:
+        sources:
+          type: object
+          additionalProperties: true
+          nullable: true
         schedule:
           type: string
           nullable: true
         deep_spec_enabled:
           type: boolean
-        config_body:
-          type: object
-          additionalProperties: true
-        owner:
+          nullable: true
+        status:
           type: string
           nullable: true
 
@@ -3459,9 +3490,9 @@ components:
       allOf:
         - $ref: "#/components/schemas/PaginationMeta"
         - type: object
-          required: [ingestion_configs]
+          required: [configs]
           properties:
-            ingestion_configs:
+            configs:
               type: array
               items:
                 $ref: "#/components/schemas/IngestionConf"
@@ -3470,22 +3501,29 @@ components:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [config_id, status]
+          required: [id, dataset_urn, sources, deep_spec_enabled, status, owner, created_at, updated_at]
           properties:
-            config_id:
+            id:
               type: string
               format: uuid
+            dataset_urn:
+              type: string
+            sources:
+              type: object
+              additionalProperties: true
+            deep_spec_enabled:
+              type: boolean
             schedule:
               type: string
               nullable: true
-            deep_spec_enabled:
-              type: boolean
             status:
               type: string
               enum: [active, inactive, error]
             owner:
               type: string
-              nullable: true
+            created_at:
+              type: string
+              format: date-time
             updated_at:
               type: string
               format: date-time
@@ -3493,12 +3531,17 @@ components:
     IngestionConfAttrPatch:
       type: object
       properties:
+        sources:
+          type: object
+          additionalProperties: true
+          nullable: true
         schedule:
           type: string
           nullable: true
         deep_spec_enabled:
           type: boolean
-        owner:
+          nullable: true
+        status:
           type: string
           nullable: true
 
@@ -3506,60 +3549,38 @@ components:
     # Validation Configuration
     # ------------------------------------------------------------------
 
-    ValidationRule:
-      type: object
-      required: [rule_id, rule_type]
-      properties:
-        rule_id:
-          type: string
-        rule_type:
-          type: string
-          description: "Rule type, e.g. not_null, uniqueness, freshness, custom_sql"
-        field:
-          type: string
-          nullable: true
-        threshold:
-          type: number
-          format: float
-          nullable: true
-        params:
-          type: object
-          additionalProperties: true
-
-    ValidationConfBase:
-      type: object
-      required: [dataset_urn]
-      properties:
-        dataset_urn:
-          type: string
-        rules:
-          type: array
-          items:
-            $ref: "#/components/schemas/ValidationRule"
-        schedule:
-          type: string
-          description: Cron expression for scheduled validation
-          nullable: true
-        result_retention_days:
-          type: integer
-          default: 90
-        owner:
-          type: string
-          nullable: true
-
     ValidationConf:
       allOf:
-        - $ref: "#/components/schemas/ValidationConfBase"
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [config_id, status, created_at]
+          required: [id, dataset_urn, rules, status, owner, created_at, updated_at]
           properties:
-            config_id:
+            id:
               type: string
               format: uuid
+              description: Validation config identifier
+            dataset_urn:
+              type: string
+            rules:
+              type: object
+              description: |
+                Opaque JSONB validation rules dictionary. Structure is defined by the
+                validation engine and may vary per dataset.
+              additionalProperties: true
+            schedule:
+              type: string
+              description: Cron expression for scheduled validation
+              nullable: true
+            sla_target:
+              type: object
+              description: SLA quality score target (e.g. {score: 90, window_days: 7})
+              nullable: true
+              additionalProperties: true
             status:
               type: string
               enum: [active, inactive, error]
+            owner:
+              type: string
             created_at:
               type: string
               format: date-time
@@ -3568,22 +3589,40 @@ components:
               format: date-time
 
     ValidationConfWrite:
-      allOf:
-        - $ref: "#/components/schemas/ValidationConfBase"
+      type: object
+      required: [dataset_urn, rules, owner]
+      properties:
+        dataset_urn:
+          type: string
+        rules:
+          type: object
+          description: Opaque JSONB validation rules dictionary
+          additionalProperties: true
+        schedule:
+          type: string
+          nullable: true
+        sla_target:
+          type: object
+          nullable: true
+          additionalProperties: true
+        owner:
+          type: string
 
     ValidationConfPatch:
       type: object
       properties:
         rules:
-          type: array
-          items:
-            $ref: "#/components/schemas/ValidationRule"
+          type: object
+          additionalProperties: true
+          nullable: true
         schedule:
           type: string
           nullable: true
-        result_retention_days:
-          type: integer
-        owner:
+        sla_target:
+          type: object
+          nullable: true
+          additionalProperties: true
+        status:
           type: string
           nullable: true
 
@@ -3591,9 +3630,9 @@ components:
       allOf:
         - $ref: "#/components/schemas/PaginationMeta"
         - type: object
-          required: [validation_configs]
+          required: [configs]
           properties:
-            validation_configs:
+            configs:
               type: array
               items:
                 $ref: "#/components/schemas/ValidationConf"
@@ -3602,83 +3641,112 @@ components:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [config_id, status]
+          required: [id, dataset_urn, rules, status, owner, created_at, updated_at]
           properties:
-            config_id:
+            id:
               type: string
               format: uuid
-            rule_count:
-              type: integer
+            dataset_urn:
+              type: string
+            rules:
+              type: object
+              additionalProperties: true
             schedule:
               type: string
               nullable: true
-            result_retention_days:
-              type: integer
+            sla_target:
+              type: object
+              nullable: true
+              additionalProperties: true
             status:
               type: string
               enum: [active, inactive, error]
             owner:
               type: string
-              nullable: true
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
 
     ValidationConfAttrPatch:
       type: object
       properties:
+        rules:
+          type: object
+          additionalProperties: true
+          nullable: true
         schedule:
           type: string
           nullable: true
-        result_retention_days:
-          type: integer
-        owner:
+        sla_target:
+          type: object
+          nullable: true
+          additionalProperties: true
+        status:
           type: string
           nullable: true
 
     ValidationResultItem:
-      type: object
-      required: [result_id, dataset_urn, quality_score, occurred_at]
-      properties:
-        result_id:
-          type: string
-          format: uuid
-        dataset_urn:
-          type: string
-        quality_score:
-          type: integer
-          minimum: 0
-          maximum: 100
-        issues:
-          type: array
-          items:
-            type: object
-            properties:
-              type:
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [id, dataset_urn, quality_score, dimensions, run_id, measured_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            dataset_urn:
+              type: string
+            quality_score:
+              type: number
+              format: float
+              description: Overall quality score (0.0–100.0)
+            dimensions:
+              type: object
+              description: Per-dimension quality scores (e.g. completeness, freshness, accuracy)
+              additionalProperties:
+                type: number
+                format: float
+            dimension_details:
+              type: object
+              description: Optional detailed breakdown per dimension
+              nullable: true
+              additionalProperties:
+                type: object
+                additionalProperties: true
+            issues:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            anomalies:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            recommendations:
+              type: array
+              items:
                 type: string
-              severity:
+            alternatives:
+              type: array
+              items:
                 type: string
-                enum: [critical, warning, info]
-              detail:
-                type: string
-              field:
-                type: string
-                nullable: true
-        recommendations:
-          type: array
-          items:
-            type: string
-        occurred_at:
-          type: string
-          format: date-time
-        run_id:
-          type: string
-          format: uuid
+            run_id:
+              type: string
+            measured_at:
+              type: string
+              format: date-time
 
     ValidationResultList:
       allOf:
         - $ref: "#/components/schemas/PaginationMeta"
         - type: object
-          required: [validation_results]
+          required: [results]
           properties:
-            validation_results:
+            results:
               type: array
               items:
                 $ref: "#/components/schemas/ValidationResultItem"
@@ -3687,73 +3755,80 @@ components:
     # Generation Configuration
     # ------------------------------------------------------------------
 
-    GenTargetField:
-      type: object
-      required: [field_name]
-      properties:
-        field_name:
-          type: string
-          description: "Target metadata field, e.g. description, glossary_terms, tags"
-        overwrite_existing:
-          type: boolean
-          default: false
-
-    GenConfBase:
-      type: object
-      required: [dataset_urn]
-      properties:
-        dataset_urn:
-          type: string
-        target_fields:
-          type: array
-          items:
-            $ref: "#/components/schemas/GenTargetField"
-        period:
-          type: string
-          description: Cron expression for scheduled generation
-          nullable: true
-        owner:
-          type: string
-          nullable: true
-
     GenConf:
       allOf:
-        - $ref: "#/components/schemas/GenConfBase"
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [config_id, status, created_at]
+          required: [id, dataset_urn, target_fields, status, owner, created_at, updated_at]
           properties:
-            config_id:
+            id:
               type: string
               format: uuid
+              description: Generation config identifier
+            dataset_urn:
+              type: string
+            target_fields:
+              type: object
+              description: |
+                Target metadata fields configuration (arbitrary JSON). Keys are field names
+                (e.g. description, tags), values hold generation parameters.
+              additionalProperties: true
+            code_refs:
+              type: object
+              description: Code reference context for generation (arbitrary JSON)
+              nullable: true
+              additionalProperties: true
+            schedule:
+              type: string
+              description: Cron expression for scheduled generation
+              nullable: true
             status:
               type: string
               enum: [active, inactive, error]
+            owner:
+              type: string
             created_at:
               type: string
               format: date-time
             updated_at:
               type: string
               format: date-time
-            latest_result:
-              $ref: "#/components/schemas/GenResultItem"
-              nullable: true
 
     GenConfWrite:
-      allOf:
-        - $ref: "#/components/schemas/GenConfBase"
+      type: object
+      required: [dataset_urn, target_fields, owner]
+      properties:
+        dataset_urn:
+          type: string
+        target_fields:
+          type: object
+          description: Target metadata fields configuration (arbitrary JSON)
+          additionalProperties: true
+        code_refs:
+          type: object
+          nullable: true
+          additionalProperties: true
+        schedule:
+          type: string
+          nullable: true
+        owner:
+          type: string
 
     GenConfPatch:
       type: object
       properties:
         target_fields:
-          type: array
-          items:
-            $ref: "#/components/schemas/GenTargetField"
-        period:
+          type: object
+          additionalProperties: true
+          nullable: true
+        code_refs:
+          type: object
+          additionalProperties: true
+          nullable: true
+        schedule:
           type: string
           nullable: true
-        owner:
+        status:
           type: string
           nullable: true
 
@@ -3761,9 +3836,9 @@ components:
       allOf:
         - $ref: "#/components/schemas/PaginationMeta"
         - type: object
-          required: [gen_configs]
+          required: [configs]
           properties:
-            gen_configs:
+            configs:
               type: array
               items:
                 $ref: "#/components/schemas/GenConf"
@@ -3772,16 +3847,21 @@ components:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [config_id, status]
+          required: [id, dataset_urn, target_fields, status, owner, created_at, updated_at]
           properties:
-            config_id:
+            id:
               type: string
               format: uuid
+            dataset_urn:
+              type: string
             target_fields:
-              type: array
-              items:
-                $ref: "#/components/schemas/GenTargetField"
-            period:
+              type: object
+              additionalProperties: true
+            code_refs:
+              type: object
+              nullable: true
+              additionalProperties: true
+            schedule:
               type: string
               nullable: true
             status:
@@ -3789,64 +3869,89 @@ components:
               enum: [active, inactive, error]
             owner:
               type: string
-              nullable: true
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
 
     GenConfAttrPatch:
       type: object
       properties:
         target_fields:
-          type: array
-          items:
-            $ref: "#/components/schemas/GenTargetField"
-        period:
+          type: object
+          additionalProperties: true
+          nullable: true
+        code_refs:
+          type: object
+          additionalProperties: true
+          nullable: true
+        schedule:
           type: string
           nullable: true
-        owner:
+        status:
           type: string
           nullable: true
 
     GenResultItem:
-      type: object
-      required: [result_id, dataset_urn, status, occurred_at]
-      properties:
-        result_id:
-          type: string
-          format: uuid
-        dataset_urn:
-          type: string
-        status:
-          type: string
-          enum: [pending_review, approved, rejected, applied]
-        generated_fields:
-          type: object
-          description: Map of field name to generated value
-          additionalProperties:
-            type: string
-        occurred_at:
-          type: string
-          format: date-time
-        run_id:
-          type: string
-          format: uuid
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [id, dataset_urn, proposals, approval_status, run_id, generated_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            dataset_urn:
+              type: string
+            proposals:
+              type: object
+              description: LLM-generated metadata proposals keyed by field name
+              additionalProperties: true
+            similar_diffs:
+              type: array
+              description: Similar past generation diffs for context
+              items:
+                type: object
+                additionalProperties: true
+            approval_status:
+              type: string
+              enum: [pending, approved, rejected, applied]
+              default: pending
+            run_id:
+              type: string
+            generated_at:
+              type: string
+              format: date-time
+            applied_at:
+              type: string
+              format: date-time
+              nullable: true
 
     GenResultList:
       allOf:
         - $ref: "#/components/schemas/PaginationMeta"
         - type: object
-          required: [gen_results]
+          required: [results]
           properties:
-            gen_results:
+            results:
               type: array
               items:
                 $ref: "#/components/schemas/GenResultItem"
 
     GenApplyRequest:
       type: object
+      required: [result_id]
       properties:
         result_id:
           type: string
           format: uuid
-          description: Specific result to apply. If omitted, applies the latest approved result.
+          description: ID of the generation result to apply
+        confirm:
+          type: boolean
+          default: true
+          description: Must be true to confirm the apply operation
 
     # ------------------------------------------------------------------
     # Search
@@ -3924,26 +4029,69 @@ components:
               items:
                 $ref: "#/components/schemas/SearchResultItem"
 
+    ReindexResponse:
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              description: "Outcome of the reindex operation, e.g. indexed, skipped"
+            message:
+              type: string
+              default: ""
+
     # ------------------------------------------------------------------
     # DG — Metric
     # ------------------------------------------------------------------
 
-    MetricSummary:
+    MetricConf:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [metric_id, title, theme, active]
+          required: [id, title, description, theme, measurement_query, alarm_enabled, active, created_at, updated_at]
           properties:
-            metric_id:
+            id:
               type: string
+              format: uuid
+              description: Metric definition identifier
             title:
+              type: string
+            description:
               type: string
             theme:
               type: string
               description: "Metric theme, e.g. documentation, ownership, freshness, errors"
+            measurement_query:
+              type: object
+              description: Opaque measurement query definition (arbitrary JSON)
+              additionalProperties: true
+            schedule:
+              type: string
+              description: Cron expression for scheduled measurement
+              nullable: true
+            alarm_enabled:
+              type: boolean
+              default: false
+            alarm_threshold:
+              type: object
+              description: Alarm threshold configuration (arbitrary JSON, e.g. {operator: lt, value: 80})
+              nullable: true
+              additionalProperties: true
+            alarm_recipients:
+              type: array
+              description: List of email addresses to notify on alarm
+              nullable: true
+              items:
+                type: string
+                format: email
             active:
               type: boolean
             created_at:
+              type: string
+              format: date-time
+            updated_at:
               type: string
               format: date-time
 
@@ -3956,19 +4104,22 @@ components:
             metrics:
               type: array
               items:
-                $ref: "#/components/schemas/MetricSummary"
+                $ref: "#/components/schemas/MetricConf"
 
     MetricAttr:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [metric_id, theme, active]
+          required: [id, title, theme, active, alarm_enabled]
           properties:
-            metric_id:
+            id:
+              type: string
+              format: uuid
+            title:
               type: string
             theme:
               type: string
-            period:
+            schedule:
               type: string
               description: Cron expression for scheduled measurement
               nullable: true
@@ -3976,108 +4127,122 @@ components:
               type: boolean
             alarm_enabled:
               type: boolean
+            latest_value:
+              type: number
+              format: float
+              nullable: true
+              description: Most recent measured value
+            latest_measured_at:
+              type: string
+              format: date-time
+              nullable: true
 
-    MetricConfBase:
+    MetricConfWrite:
       type: object
-      required: [title, theme]
+      required: [title, description, theme, measurement_query]
       properties:
         title:
           type: string
-        theme:
-          type: string
         description:
           type: string
-          nullable: true
-        period:
+        theme:
           type: string
-          description: Cron expression for scheduled measurement
+        measurement_query:
+          type: object
+          description: Opaque measurement query definition (arbitrary JSON)
+          additionalProperties: true
+        schedule:
+          type: string
           nullable: true
         alarm_enabled:
           type: boolean
           default: false
         alarm_threshold:
-          type: number
-          format: float
-          nullable: true
-          description: Trigger alarm when measured value exceeds this threshold
-        filters:
           type: object
-          description: Optional filter criteria (e.g. medallion layer, domain)
+          nullable: true
           additionalProperties: true
-
-    MetricConf:
-      allOf:
-        - $ref: "#/components/schemas/MetricConfBase"
-        - $ref: "#/components/schemas/RespTimeMixin"
-        - type: object
-          required: [metric_id, active, created_at]
-          properties:
-            metric_id:
-              type: string
-            active:
-              type: boolean
-            created_at:
-              type: string
-              format: date-time
-            updated_at:
-              type: string
-              format: date-time
-
-    MetricConfWrite:
-      allOf:
-        - $ref: "#/components/schemas/MetricConfBase"
+        alarm_recipients:
+          type: array
+          nullable: true
+          items:
+            type: string
+            format: email
+        active:
+          type: boolean
+          default: true
 
     MetricConfPatch:
       type: object
       properties:
         title:
           type: string
+          nullable: true
         description:
           type: string
           nullable: true
-        period:
+        theme:
+          type: string
+          nullable: true
+        measurement_query:
+          type: object
+          additionalProperties: true
+          nullable: true
+        schedule:
           type: string
           nullable: true
         alarm_enabled:
           type: boolean
-        alarm_threshold:
-          type: number
-          format: float
           nullable: true
-        filters:
+        alarm_threshold:
           type: object
           additionalProperties: true
+          nullable: true
+        alarm_recipients:
+          type: array
+          nullable: true
+          items:
+            type: string
+            format: email
+        active:
+          type: boolean
+          nullable: true
 
     MetricResultItem:
-      type: object
-      required: [result_id, metric_id, value, occurred_at]
-      properties:
-        result_id:
-          type: string
-          format: uuid
-        metric_id:
-          type: string
-        value:
-          type: number
-          format: float
-          description: Numeric measurement value
-        alarm:
-          type: boolean
-          description: True if the value triggered the alarm threshold
-        occurred_at:
-          type: string
-          format: date-time
-        run_id:
-          type: string
-          format: uuid
+      allOf:
+        - $ref: "#/components/schemas/RespTimeMixin"
+        - type: object
+          required: [id, metric_id, value, alarm_triggered, run_id, measured_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            metric_id:
+              type: string
+            value:
+              type: number
+              format: float
+              description: Numeric measurement value
+            breakdown:
+              type: object
+              description: Optional breakdown of the metric value
+              nullable: true
+              additionalProperties: true
+            alarm_triggered:
+              type: boolean
+              description: True if the value triggered the alarm threshold
+            run_id:
+              type: string
+            measured_at:
+              type: string
+              format: date-time
 
     MetricResultList:
       allOf:
         - $ref: "#/components/schemas/PaginationMeta"
         - type: object
-          required: [metric_results]
+          required: [results]
           properties:
-            metric_results:
+            results:
               type: array
               items:
                 $ref: "#/components/schemas/MetricResultItem"
@@ -4117,12 +4282,10 @@ components:
               description: Human-readable metric issue description
             estimated_fix_minutes:
               type: integer
-              nullable: true
-              description: Estimated time to resolve
+              description: Estimated time to resolve (minutes)
             projected_score_impact:
               type: number
               format: float
-              nullable: true
               description: Health score points gained if resolved
             due_date:
               type: string
@@ -4172,39 +4335,74 @@ components:
 
     DgOverviewNode:
       type: object
-      required: [urn, name, medallion_layer]
+      required: [id, type, label]
       properties:
-        urn:
+        id:
           type: string
-        name:
+          description: Node identifier (URN or UUID)
+        type:
           type: string
-        medallion_layer:
+          description: Node type (e.g. dataset, domain, owner)
+        label:
           type: string
-          enum: [bronze, silver, gold, unknown]
-        quality_score:
-          type: integer
-          nullable: true
-        domain:
-          type: string
-          nullable: true
+        metadata:
+          type: object
+          description: Arbitrary node metadata
+          additionalProperties: true
 
     DgOverviewEdge:
       type: object
-      required: [source_urn, target_urn, relationship]
+      required: [source, target, type]
       properties:
-        source_urn:
+        source:
           type: string
-        target_urn:
+          description: Source node identifier
+        target:
           type: string
-        relationship:
+          description: Target node identifier
+        type:
           type: string
-          enum: [upstream, downstream, related]
+          description: Edge relationship type (e.g. upstream, downstream)
+        metadata:
+          type: object
+          description: Arbitrary edge metadata
+          additionalProperties: true
+
+    MedallionSummary:
+      type: object
+      properties:
+        bronze:
+          type: integer
+          default: 0
+        silver:
+          type: integer
+          default: 0
+        gold:
+          type: integer
+          default: 0
+
+    DatasetSummaryStats:
+      type: object
+      properties:
+        total_datasets:
+          type: integer
+          default: 0
+        monitored_datasets:
+          type: integer
+          default: 0
+        avg_quality_score:
+          type: number
+          format: float
+          default: 0.0
+        issues_count:
+          type: integer
+          default: 0
 
     DgOverview:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [nodes, edges, medallion_coverage]
+          required: [nodes, edges, medallion, blind_spots, stats]
           properties:
             nodes:
               type: array
@@ -4214,55 +4412,50 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/DgOverviewEdge"
-            medallion_coverage:
-              type: object
-              description: Dataset count per medallion layer
-              properties:
-                bronze:
-                  type: integer
-                silver:
-                  type: integer
-                gold:
-                  type: integer
-                unknown:
-                  type: integer
+            medallion:
+              $ref: "#/components/schemas/MedallionSummary"
             blind_spots:
               type: array
               items:
                 type: string
-              description: Urns of datasets with no ownership or description
+              description: Identifiers of datasets with no ownership or description
+            stats:
+              $ref: "#/components/schemas/DatasetSummaryStats"
 
     DgOverviewAttr:
       allOf:
         - $ref: "#/components/schemas/RespTimeMixin"
         - type: object
-          required: [layout, coloring]
+          required: [layout, color_by, filters, stats]
           properties:
             layout:
               type: string
-              enum: [force_directed, hierarchical, radial]
-              default: force_directed
-            coloring:
+              default: force
+              description: Graph layout algorithm
+            color_by:
               type: string
-              enum: [quality_score, medallion_layer, domain]
               default: quality_score
+              description: Field used to colour nodes
             filters:
               type: object
-              description: Active filter selections (e.g. domain, medallion layer)
+              description: Active filter selections
               additionalProperties: true
+            stats:
+              $ref: "#/components/schemas/DatasetSummaryStats"
 
     DgOverviewAttrPatch:
       type: object
       properties:
         layout:
           type: string
-          enum: [force_directed, hierarchical, radial]
-        coloring:
+          nullable: true
+        color_by:
           type: string
-          enum: [quality_score, medallion_layer, domain]
+          nullable: true
         filters:
           type: object
           additionalProperties: true
+          nullable: true
 
     # ------------------------------------------------------------------
     # Hub pass-through

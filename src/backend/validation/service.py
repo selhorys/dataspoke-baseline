@@ -56,6 +56,7 @@ class ValidationResultRecord(BaseModel):
     dataset_urn: str
     quality_score: float
     dimensions: dict[str, float]
+    dimension_details: dict[str, Any] | None = None
     issues: list[dict[str, Any]] = []
     anomalies: list[dict[str, Any]] = []
     recommendations: list[str] = []
@@ -84,6 +85,7 @@ def _result_from_row(row: ValidationResult) -> ValidationResultRecord:
         dataset_urn=row.dataset_urn,
         quality_score=row.quality_score,
         dimensions=row.dimensions,
+        dimension_details=row.dimension_details,
         issues=row.issues,
         anomalies=row.anomalies,
         recommendations=row.recommendations,

@@ -15,6 +15,7 @@ from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, MetricDefinition, MetricIssue, MetricResult
 from src.shared.exceptions import ConflictError, EntityNotFoundError
+from src.shared.notifications.models import ActionItem
 from src.shared.notifications.service import NotificationService
 
 _MAX_BREAKDOWN_AFFECTED = 100
@@ -739,6 +740,7 @@ class MetricsService:
 
         # Auto-create issues for new findings
         new_findings: list[str] = delta.get("new_findings", [])
+        created_issues: list[MetricIssue] = []
         for urn in new_findings:
             score_impact = round(1.0 / max(total_affected, 1), 2)
             # Auto-assign to dataset owner from DataHub
@@ -763,6 +765,7 @@ class MetricsService:
                 projected_score_impact=score_impact,
             )
             self._db.add(row)
+            created_issues.append(row)
 
         # Auto-resolve issues for fixed gaps
         resolved_urns: list[str] = delta.get("resolved_since_last", [])
@@ -786,6 +789,36 @@ class MetricsService:
                 )
 
         await self._db.commit()
+
+        # Best-effort: email newly created issues to their assignees
+        if self._notification is not None and created_issues:
+            # Group by assignee, skipping issues with no owner email
+            issues_by_assignee: dict[str, list[MetricIssue]] = {}
+            for issue in created_issues:
+                if issue.assignee:
+                    issues_by_assignee.setdefault(issue.assignee, []).append(issue)
+
+            for owner_email, owner_issues in issues_by_assignee.items():
+                action_items = [
+                    ActionItem(
+                        dataset_urn=i.dataset_urn,
+                        issue_type=i.issue_type,
+                        priority=i.priority,
+                        description=i.description,
+                        estimated_fix_minutes=i.estimated_fix_minutes,
+                        projected_score_impact=i.projected_score_impact,
+                        due_date=i.due_date,
+                    )
+                    for i in owner_issues
+                ]
+                try:
+                    await self._notification.send_action_items(owner_email, action_items)
+                except Exception:
+                    logger.warning(
+                        "action_items_notification_failed",
+                        exc_info=True,
+                        extra={"owner_email": owner_email, "metric_id": metric_id},
+                    )
 
     # ── Measurement internals ────────────────────────────────────────────
 

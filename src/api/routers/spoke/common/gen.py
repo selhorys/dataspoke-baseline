@@ -99,6 +99,7 @@ async def patch_gen_config_attr(
 @router.get("/{dataset_urn}/attr/result", response_model=GenerationResultListResponse)
 async def get_gen_result(
     dataset_urn: str,
+    latest: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
@@ -106,9 +107,11 @@ async def get_gen_result(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationResultListResponse:
+    effective_limit = 1 if latest else limit
+    effective_offset = 0 if latest else offset
     order_by = parse_sort(sort, {"generated_at": GenerationResult.generated_at}, None)
     results, total_count = await service.get_results(
-        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
+        dataset_urn, from_dt=from_time, to_dt=to_time, offset=effective_offset, limit=effective_limit, order_by=order_by
     )
     return GenerationResultListResponse(
         offset=offset,

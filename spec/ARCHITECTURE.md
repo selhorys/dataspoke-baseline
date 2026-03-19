@@ -177,7 +177,7 @@ Core computational layer. For the full backend specification — layered archite
 
 ```
 src/backend/        # Feature service implementations
-src/workflows/      # Kestra flow definitions + internal activity endpoints
+src/workflows/      # Kestra flow definitions (YAML) + workflow helper modules
 src/shared/         # DataHub client wrappers, shared models, LLM integration
 ```
 
@@ -555,7 +555,7 @@ dataspoke-baseline/
 │   ├── frontend/       # Next.js (pages per user group: de, da, dg)
 │   ├── api/            # FastAPI (routers per user group, schemas, middleware)
 │   ├── backend/        # Feature service implementations
-│   ├── workflows/      # Kestra flow definitions (YAML) + internal activity endpoints
+│   ├── workflows/      # Kestra flow definitions (YAML) + workflow helper modules
 │   └── shared/         # DataHub client, shared models, LLM integration
 ├── tests/              # Unit, integration, E2E test suites
 ├── ref/                # External source for AI reference (git-ignored)

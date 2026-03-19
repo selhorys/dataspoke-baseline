@@ -320,6 +320,68 @@ class SendSLAAlertsRequest(BaseModel):
     recipients: list[str]
 
 
+def _build_recommended_actions(violations: list[str], is_breaching: bool) -> list[str]:
+    """Return context-aware recommended actions derived from violation strings.
+
+    Rules (applied in order, multiple may match):
+    - "Freshness breach"  → upstream schedule + source availability checks
+    - "Quality breach"    → schema change + completeness gap investigation
+    - "Pre-breach"        → proactive trending + threshold-adjustment reminder
+    - "Row count" / "baseline" → historical comparison + filtering-change check
+    Fallback "Investigate upstream pipelines" is always appended when no rule
+    matched so that recipients always have at least one action item.
+    If ``is_breaching`` is True, an escalation action is added at the end.
+    """
+    actions: list[str] = []
+    matched = False
+
+    combined = " ".join(violations).lower()
+
+    if "freshness breach" in combined:
+        actions.extend(
+            [
+                "Check upstream pipeline schedules",
+                "Verify source system availability",
+            ]
+        )
+        matched = True
+
+    if "quality breach" in combined:
+        actions.extend(
+            [
+                "Review recent schema changes",
+                "Investigate data completeness gaps",
+            ]
+        )
+        matched = True
+
+    if "pre-breach" in combined:
+        actions.extend(
+            [
+                "Proactively investigate trending metrics",
+                "Consider adjusting SLA thresholds if pattern is recurring",
+            ]
+        )
+        matched = True
+
+    if "row count" in combined or "baseline" in combined:
+        actions.extend(
+            [
+                "Compare with historical patterns",
+                "Check for upstream data filtering changes",
+            ]
+        )
+        matched = True
+
+    if not matched:
+        actions.append("Investigate upstream pipelines")
+
+    if is_breaching:
+        actions.append("Escalate to data platform team")
+
+    return actions
+
+
 @router.post("/send-sla-alerts")
 async def send_sla_alerts(body: SendSLAAlertsRequest) -> dict:
     from datetime import UTC, datetime
@@ -333,12 +395,14 @@ async def send_sla_alerts(body: SendSLAAlertsRequest) -> dict:
         predicted_dt = (
             datetime.fromisoformat(predicted_str) if predicted_str else datetime.now(tz=UTC)
         )
+        violations: list[str] = alert_data.get("violations", [])
+        is_breaching: bool = bool(alert_data.get("is_breaching", False))
         alert = SLAAlert(
             dataset_urn=alert_data["dataset_urn"],
             sla_name="freshness",
             predicted_breach_at=predicted_dt,
-            root_cause="; ".join(alert_data.get("violations", [])),
-            recommended_actions=["Investigate upstream pipelines"],
+            root_cause="; ".join(violations),
+            recommended_actions=_build_recommended_actions(violations, is_breaching),
         )
         await notification.send_sla_alert(body.recipients, alert)
 

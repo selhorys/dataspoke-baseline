@@ -21,6 +21,12 @@ def _get_user_key(request: Request) -> str:
 
 
 storage_uri = f"redis://{settings.redis_host}:{settings.redis_port}"
-limiter = Limiter(key_func=_get_user_key, storage_uri=storage_uri)
-
-DEFAULT_LIMIT = f"{settings.rate_limit_per_minute}/minute"
+limiter = Limiter(
+    key_func=_get_user_key,
+    storage_uri=storage_uri,
+    default_limits=[f"{settings.rate_limit_per_minute}/minute"],
+    # Fall back to in-process memory storage when Redis is unreachable so that
+    # a transient Redis outage (or the unit-test environment where Redis is
+    # absent) does not turn every request into an unhandled exception.
+    in_memory_fallback_enabled=True,
+)

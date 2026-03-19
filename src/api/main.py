@@ -91,7 +91,7 @@ async def _handle_conflict(request: Request, exc: ConflictError) -> JSONResponse
 
 
 async def _handle_validation(request: Request, exc: PydanticValidationError) -> JSONResponse:
-    return _error_json(request, 422, "VALIDATION_ERROR", str(exc))
+    return _error_json(request, 422, "INVALID_PARAMETER", str(exc))
 
 
 async def _handle_datahub(request: Request, exc: DataHubUnavailableError) -> JSONResponse:

@@ -49,6 +49,7 @@ def _make_result_row(
     row.dataset_urn = dataset_urn
     row.quality_score = quality_score
     row.dimensions = {"completeness": 80.0, "freshness": 70.0}
+    row.dimension_details = None
     row.issues = [{"dimension": "freshness", "score": 70.0}]
     row.anomalies = []
     row.recommendations = ["Check freshness"]

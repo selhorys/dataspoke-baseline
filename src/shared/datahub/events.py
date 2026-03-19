@@ -134,6 +134,7 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
         aspect_name=event.aspect_name,
     )
     if _kestra_client is None:
+        logger.warning("kestra_unavailable_skipping", handler="sync_vector_index", entity_urn=event.entity_urn)
         return
     try:
         await _kestra_client.trigger_execution(
@@ -163,6 +164,7 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
         aspect_name=event.aspect_name,
     )
     if _kestra_client is None:
+        logger.warning("kestra_unavailable_skipping", handler="detect_new_clusters", entity_urn=event.entity_urn)
         return
     try:
         await _kestra_client.trigger_execution(
@@ -218,6 +220,7 @@ async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
         aspect_name=event.aspect_name,
     )
     if _kestra_client is None:
+        logger.warning("kestra_unavailable_skipping", handler="trigger_quality_check", entity_urn=event.entity_urn)
         return
     from sqlalchemy import select
 
@@ -266,6 +269,7 @@ async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
         aspect_name=event.aspect_name,
     )
     if _kestra_client is None:
+        logger.warning("kestra_unavailable_skipping", handler="check_freshness_sla", entity_urn=event.entity_urn)
         return
     from sqlalchemy import select
 

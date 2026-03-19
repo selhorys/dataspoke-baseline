@@ -102,7 +102,7 @@ async def hub_graphql(request: Request) -> Response:
 
 @router.api_route(
     "/openapi/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
 )
 async def hub_openapi(request: Request, path: str) -> Response:
     """Proxy REST requests to DataHub GMS OpenAPI surface."""
