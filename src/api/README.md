@@ -3,7 +3,7 @@
 FastAPI service that acts as the single HTTP ingress for all DataSpoke clients — the portal UI and external AI agents.
 
 API prefix: `/api/v1`
-Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/…`, `/api/v1/auth/…`
+Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/…`, `/api/v1/auth/…`, `/api/v1/internal/…`
 
 ---
 

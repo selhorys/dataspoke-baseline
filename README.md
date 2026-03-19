@@ -232,7 +232,8 @@ Application services run on the developer's machine, connecting to port-forwarde
 source dev_env/.env
 uv run alembic upgrade head
 uv run uvicorn src.api.main:app --reload --port 8000
-uv run python -m src.workflows.worker
+# Workflows are orchestrated by Kestra (running in the K8s cluster).
+# Access Kestra UI at http://localhost:9205 after port-forwarding.
 ```
 
 </details>
