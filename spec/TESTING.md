@@ -52,7 +52,8 @@ tests/
 │   │   ├── fixtures/kafka/  # Kafka JSONL seed messages (orders, shipping, reviews)
 │   │   ├── postgres.py      # PostgreSQL reset functions (asyncpg, port 9102)
 │   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, KAFKA_PORT_FORWARDED_BROKERS)
-│   │   └── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
+│   │   ├── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
+│   │   └── kestra.py        # Kestra test helpers (flow lifecycle, ActivityServer)
 │   ├── api_wired/           # API-wired integration tests (REST-only)
 │   │   ├── spot/            # Individual or small-sequence endpoint tests
 │   │   ├── story/           # Multi-step USE_CASE scenario tests (10–100 API calls)
@@ -288,7 +289,7 @@ Tests that exercise Kestra workflows (via `KestraClient` or by calling internal 
 
 #### Kestra connection
 
-The dev-env Kestra instance is accessed via port-forward on port 9205 (set via `DATASPOKE_KESTRA_PORT` in `dev_env/.env`). The `conftest.py` `kestra_client` fixture reads this from the environment. If `dev_env/.env` is not loaded (e.g., running from a worktree without it), the client cannot connect.
+The dev-env Kestra instance is accessed via port-forward on port 9205 (set via `DATASPOKE_KESTRA_URL` in `dev_env/.env`). The `conftest.py` `kestra_client` fixture reads this from the environment. If `dev_env/.env` is not loaded (e.g., running from a worktree without it), the client cannot connect.
 
 **Fix**: Ensure `dev_env/.env` is loaded before test collection. `conftest.py` handles this automatically, but tests run in isolation (e.g., via a subagent in a worktree) must source it explicitly.
 
@@ -306,6 +307,19 @@ If a previous test run left a flow execution in `RUNNING` state, subsequent trig
 
 **Recovery**: Cancel stale executions via the Kestra REST API or the Kestra UI at `http://localhost:9205`.
 
+#### Kestra test utilities (`tests/integration/util/kestra.py`)
+
+The `kestra.py` module provides helpers for managing Kestra state during tests:
+
+- `kill_running_executions(client, flow_id)` — kill stale executions and wait for termination
+- `cleanup_test_executions(client, flow_id)` — find and delete test executions by label prefix
+- `cleanup_flows(client)` — delete all DataSpoke flows from the test namespace
+- `ensure_flows_registered(client)` — register all flow YAML via the registry
+- `wait_for_execution_terminal(client, execution_id)` — poll until terminal state without raising on failure
+- `ActivityServer` — runs a real uvicorn HTTP server (default port 8765) for Kestra activity callbacks during full-flow tests. Patches `make_*` factories in `src.api.routers.internal.activities` so LLM, Qdrant, cache, and notification use test mocks while DataHub and DB use real dev-env connections. Exposes `mock_llm`, `mock_qdrant`, `mock_cache`, `mock_notification` for per-test reconfiguration.
+
+The `kestra_client` fixture (module-scoped) registers all flows and kills stale executions on setup, then cleans up test executions and deletes flows on teardown. The `activity_server` fixture (session-scoped) wraps `ActivityServer` for the entire test run.
+
 ### Directory Structure & Classification
 
 Integration tests are split into two groups based on testing approach:
@@ -321,12 +335,12 @@ Non-api-wired naming: `test_<feature>_service_integration.py` for service-level 
 
 **Root `conftest.py` (`tests/integration/conftest.py`) — shared fixtures and helpers:**
 
-- **Infrastructure fixtures** (session/function scope): `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`
+- **Infrastructure fixtures** (session/function scope): `integration_db_url`, `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`, `activity_server`
 - **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
 - **Mock fixtures**: `mock_cache` (AsyncMock Redis with get/set/publish/delete)
-- **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
-- **DataHub helpers**: `emit_test_dataset(client, *, urn, name, fields, with_ownership, with_tags)`, `soft_delete_test_dataset(client, urn)`
-- **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
+- **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant, kestra)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
+- **DataHub helpers**: `emit_test_dataset(client, *, urn, name, description, fields, with_ownership, with_tags, wait_seconds)`, `soft_delete_test_dataset(client, urn)`
+- **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id, event_type, count)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
 
 **Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka via `DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
 
@@ -356,14 +370,15 @@ API-wired tests verify that the full request path works end-to-end within the ba
 - Spot: `test_<feature>.py` (e.g., `test_dataset_service.py`) — the `spot/` directory provides the context, no suffix needed.
 - Story: `test_<uc_id>_<short_name>.py` (e.g., `test_uc1_dataset_discovery.py`) — likewise, the `story/` directory provides the context.
 
-### conftest.py Structure (Option B)
+### conftest.py Structure
 
 API-wired tests use a dedicated `tests/integration/api_wired/conftest.py` that **extends** the root `tests/integration/conftest.py`. pytest's conftest inheritance means all root fixtures (infrastructure, lifecycle, mock, data helpers) are automatically available in `api_wired/` without re-importing.
 
-The api-wired conftest provides fixtures specific to REST-based testing:
+The api-wired conftest provides:
 
-- **`api_client`** — function-scoped async fixture that yields an `httpx.AsyncClient` configured with ASGI transport and dependency overrides via `override_app()`. Tests receive a ready-to-use HTTP client without boilerplate.
-- **`auth_headers`** — function-scoped fixture returning the standard auth headers dict, so tests can pass `headers=auth_headers` to every request.
+- **`auth_headers`** — function-scoped fixture returning the standard JWT auth headers dict, so tests can pass `headers=auth_headers` to every request.
+
+Each test module creates its own `http_client` fixture using the root conftest's `override_app()` context manager with the specific DI overrides needed for that module's tests. This pattern gives each module explicit control over which real infrastructure clients are injected.
 
 Tests in `spot/` and `story/` inherit from both conftest layers.
 
