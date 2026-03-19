@@ -43,7 +43,9 @@ src/
 
 ## Scope boundary
 
-Kestra workflows live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified workflow, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
+Internal activity endpoints (`/api/v1/internal/activities/*`) live in `src/api/routers/internal/activities.py` and are **in scope** for this agent — they use FastAPI dependency injection and delegate to `src/backend/` services.
+
+Kestra flow YAML and workflow helper modules live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified flow definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
 
 ## Output expectations
 

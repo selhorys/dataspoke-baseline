@@ -27,7 +27,7 @@ tests/
 ├── integration/
 │   ├── conftest.py            # Root fixtures (auto-resets dummy data)
 │   ├── api_wired/
-│   │   ├── conftest.py        # api_client, auth_headers fixtures
+│   │   ├── conftest.py        # auth_headers fixture
 │   │   ├── spot/              # Individual endpoint CRUD + error cases
 │   │   └── story/             # Multi-step USE_CASE scenario tests
 │   └── util/
