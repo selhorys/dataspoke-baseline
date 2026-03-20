@@ -23,11 +23,6 @@ import pytest_asyncio
 
 from .conftest import emit_test_dataset, make_test_urn, soft_delete_test_dataset
 
-_llm_provider = os.environ.get("DATASPOKE_LLM_PROVIDER", "openai")
-_llm_api_key = os.environ.get("DATASPOKE_LLM_API_KEY", "")
-_llm_model = os.environ.get("DATASPOKE_LLM_MODEL", "gpt-4o-mini")
-
-
 # --- DataHub ---
 
 
@@ -145,10 +140,15 @@ async def test_qdrant_collection_lifecycle(qdrant_manager) -> None:
 # --- LLM ---
 
 
-@pytest.mark.skipif(not _llm_api_key, reason="DATASPOKE_LLM_API_KEY not set")
 async def test_llm_complete() -> None:
     from src.shared.llm.client import LLMClient
 
-    client = LLMClient(provider=_llm_provider, api_key=_llm_api_key, model=_llm_model)
+    api_key = os.environ.get("DATASPOKE_LLM_API_KEY", "")
+    if not api_key:
+        pytest.skip("DATASPOKE_LLM_API_KEY not set")
+
+    provider = os.environ.get("DATASPOKE_LLM_PROVIDER", "openai")
+    model = os.environ.get("DATASPOKE_LLM_MODEL", "gpt-4o-mini")
+    client = LLMClient(provider=provider, api_key=api_key, model=model)
     result = await client.complete("Say hello in one word.")
     assert len(result) > 0
