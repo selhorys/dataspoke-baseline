@@ -69,16 +69,19 @@ kestra:
   deploymentType: STANDALONE
   image:
     tag: "v1.3.3"
-  resources:
-    requests:
-      cpu: 250m
-      memory: 1024Mi
-    limits:
-      cpu: "1"
-      memory: 2560Mi
-  extraEnv:
-    - name: _JAVA_OPTIONS
-      value: "-Xms512m -Xmx1536m"
+  common:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 768Mi
+      limits:
+        cpu: "1"
+        memory: 1536Mi
+    jvm:
+      extraOpts: "-Xms256m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+  deployments:
+    standalone:
+      workerThreads: 4
   dind:
     enabled: false
   configurations:
@@ -97,10 +100,26 @@ kestra:
           type: local
           local:
             basePath: /app/storage
+        tutorial-flows:
+          enabled: false
+        anonymous-usage-report:
+          enabled: false
         server:
           basic-auth:
             username: dataspoke@dataspoke.local
             password: DataSpoke1
+          liveness:
+            interval: 30s
+            heartbeatInterval: 10s
+        jdbc:
+          queues:
+            min-poll-interval: 100ms
+            max-poll-interval: 1000ms
+            poll-switch-interval: 300s
+          cleaner:
+            initial-delay: 2h
+            fixed-delay: 4h
+            retention: 1d
 
 # ---------------------------------------------------------------------------
 # ConfigMap/Secret: not created in dev (app reads env vars directly)

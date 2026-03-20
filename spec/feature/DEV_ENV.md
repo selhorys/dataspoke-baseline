@@ -181,7 +181,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| kestra | Deployment | 512 Mi | — |
+| kestra | Deployment | 1536 Mi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
@@ -294,7 +294,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~72%** → ~11.3 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~77%** → ~12.3 GiB RAM, ~7.75 CPU limits.
 
 ### Memory Budget (limits)
 
@@ -309,16 +309,16 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~72%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| kestra | dataspoke-01 | 512 Mi | API + UI on single port |
+| kestra | dataspoke-01 | 1536 Mi | 1024m heap + G1GC; polling/cleaner/telemetry tuned for dev |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~11.3 Gi** | |
+| **Total** | | **~12.3 Gi** | |
 
-~4.7 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~3.7 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 
