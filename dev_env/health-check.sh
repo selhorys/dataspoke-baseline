@@ -6,8 +6,10 @@
 # application layer — not just that a port-forward process exists.
 #
 # Usage:
-#   ./dev_env/health-check.sh           # Check all services
-#   ./dev_env/health-check.sh --quick   # TCP-only (skip deep checks)
+#   ./dev_env/health-check.sh                   # Check all; prompt to release held lock
+#   ./dev_env/health-check.sh --quick           # TCP-only (skip deep checks)
+#   ./dev_env/health-check.sh --keep-lock       # Don't touch an existing lock
+#   ./dev_env/health-check.sh --force-release   # Release held lock without prompting
 #
 # Exit codes: 0 = all healthy, 1 = one or more unhealthy
 # ---------------------------------------------------------------------------
@@ -15,7 +17,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QUICK=false
-[[ "${1:-}" == "--quick" ]] && QUICK=true
+KEEP_LOCK=false
+FORCE_RELEASE=false
+for arg in "$@"; do
+  case "$arg" in
+    --quick) QUICK=true ;;
+    --keep-lock) KEEP_LOCK=true ;;
+    --force-release) FORCE_RELEASE=true ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Load configuration
@@ -292,6 +302,21 @@ except Exception as e:
   fi
 }
 
+_release_lock() {
+  local owner="$1" message="$2"
+  local release_resp
+  release_resp=$(curl -sf -X POST --connect-timeout 3 --max-time 5 \
+    -H 'Content-Type: application/json' \
+    -d "{\"owner\": \"${owner}\"}" \
+    "http://localhost:${LOCK_PORT}/lock/release" 2>/dev/null) || true
+  if echo "$release_resp" | grep -q '"locked" *: *false'; then
+    _info "released lock from '${owner}' (${message})"
+  else
+    _fail "dev-env lock held by '${owner}' — failed to release"
+    ((FAILURES++))
+  fi
+}
+
 check_lock_service() {
   local label="lock-service (localhost:${LOCK_PORT})"
   if ! _tcp_check "localhost" "$LOCK_PORT"; then
@@ -317,7 +342,25 @@ check_lock_service() {
     if [[ -n "$locked" ]]; then
       owner=$(echo "$lock_json" | sed -n 's/.*"owner" *: *"\([^"]*\)".*/\1/p')
       message=$(echo "$lock_json" | sed -n 's/.*"message" *: *"\([^"]*\)".*/\1/p')
-      _info "dev-env lock held by '${owner}' (${message})"
+      if $KEEP_LOCK; then
+        _info "dev-env lock held by '${owner}' (${message}) — kept (--keep-lock)"
+      elif $FORCE_RELEASE; then
+        # --force-release: release without asking
+        _release_lock "$owner" "$message"
+      else
+        # Interactive: ask the user
+        echo ""
+        _info "dev-env lock held by '${owner}' (${message})"
+        printf "  Release this lock? [y/N] "
+        local answer
+        read -r answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+          _release_lock "$owner" "$message"
+        else
+          _fail "dev-env lock held by '${owner}' — integration tests will skip"
+          ((FAILURES++))
+        fi
+      fi
     else
       _info "dev-env lock is free"
     fi
