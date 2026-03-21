@@ -76,9 +76,9 @@ kestra:
         memory: 768Mi
       limits:
         cpu: "1"
-        memory: 1536Mi
+        memory: 2560Mi
     jvm:
-      extraOpts: "-Xms256m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms512m -Xmx2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
   deployments:
     standalone:
       workerThreads: 4
