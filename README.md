@@ -219,27 +219,18 @@ Integration tests support two execution modes. See [`spec/TESTING.md` §Testing 
 Application services run on the developer's machine, connecting to port-forwarded infrastructure. This is the standard development workflow — fast test-and-fix loop with no container rebuild needed.
 
 ```bash
+# Install/sync dependencies first:
+uv sync
+
 # Start all components (API + Worker + auto-migrate):
-./bin/dataspoke
+uv run -m src.cli
 
 # Backend only (skip frontend when it's added):
-./bin/dataspoke --backend-only
+uv run -m src.cli --backend-only
 
 # See all options:
-./bin/dataspoke --help
+uv run -m src.cli --help
 ```
-
-<details><summary>Manual startup (individual commands)</summary>
-
-```bash
-source dev_env/.env
-uv run alembic upgrade head
-uv run uvicorn src.api.main:app --reload --port 8000
-# Workflows are orchestrated by Kestra (running in the K8s cluster).
-# Access Kestra UI at http://localhost:9205 after port-forwarding.
-```
-
-</details>
 
 #### In-Cluster Mode (on-demand)
 

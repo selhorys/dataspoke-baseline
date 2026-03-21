@@ -2,7 +2,6 @@
 
 Usage:
     uv run -m src.cli [options]
-    ./bin/dataspoke [options]
 """
 
 from __future__ import annotations
