@@ -3,17 +3,14 @@
 Tests the real Kestra REST API: flow management, execution lifecycle,
 label-based deduplication, status querying, and cleanup operations.
 
+Uses ActivityServer for real activity callbacks so executions complete
+quickly as SUCCESS instead of timing out on unreachable URLs.
+
 Prerequisites:
 - Kestra port-forwarded to localhost:9205
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Dummy data ingested via module_dummy_data fixture (catalog schema)
-
-Note: Kestra flows call back to activity endpoints via HTTP.  When the
-DataSpoke API server is not running (typical for integration tests), the
-activity tasks will fail.  These tests verify Kestra **orchestration**
-(trigger, poll, label, kill, cleanup) — not activity business logic.
-Activity logic is covered by API-wired integration tests.
 
 Run: uv run pytest tests/integration/test_kestra_workflows_integration.py -v
 """
@@ -53,6 +50,18 @@ def _test_label(suffix: str) -> str:
     return f"{_TEST_LABEL_PREFIX}{suffix}-{uuid.uuid4().hex[:8]}"
 
 
+def _ingestion_inputs(activity_server, **overrides) -> dict:
+    """Build standard ingestion flow inputs using ActivityServer callback."""
+    inputs = {
+        "callback_base_url": activity_server.callback_url,
+        "dataset_urn": _IMAZON_DATASET_URN,
+        "dry_run": "true",
+        "run_id": str(uuid.uuid4()),
+    }
+    inputs.update(overrides)
+    return inputs
+
+
 @pytest_asyncio.fixture(scope="module", autouse=True)
 async def _seed_workflow_configs(async_engine):
     """Seed IngestionConfig and ValidationConfig for the test dataset.
@@ -62,15 +71,13 @@ async def _seed_workflow_configs(async_engine):
     """
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.shared.db.models import IngestionConfig, ValidationConfig
+    from src.shared.db.models import GenerationConfig, IngestionConfig, ValidationConfig
 
     async with AsyncSession(async_engine) as db:
-        await db.execute(
-            delete(IngestionConfig).where(IngestionConfig.dataset_urn == _IMAZON_DATASET_URN)
-        )
-        await db.execute(
-            delete(ValidationConfig).where(ValidationConfig.dataset_urn == _IMAZON_DATASET_URN)
-        )
+        for Model in (IngestionConfig, ValidationConfig, GenerationConfig):
+            await db.execute(
+                delete(Model).where(Model.dataset_urn == _IMAZON_DATASET_URN)
+            )
         db.add(
             IngestionConfig(
                 dataset_urn=_IMAZON_DATASET_URN,
@@ -86,17 +93,22 @@ async def _seed_workflow_configs(async_engine):
                 owner="integration-test",
             )
         )
+        db.add(
+            GenerationConfig(
+                dataset_urn=_IMAZON_DATASET_URN,
+                target_fields={"description": True},
+                owner="integration-test",
+            )
+        )
         await db.commit()
 
     yield
 
     async with AsyncSession(async_engine) as db:
-        await db.execute(
-            delete(IngestionConfig).where(IngestionConfig.dataset_urn == _IMAZON_DATASET_URN)
-        )
-        await db.execute(
-            delete(ValidationConfig).where(ValidationConfig.dataset_urn == _IMAZON_DATASET_URN)
-        )
+        for Model in (IngestionConfig, ValidationConfig, GenerationConfig):
+            await db.execute(
+                delete(Model).where(Model.dataset_urn == _IMAZON_DATASET_URN)
+            )
         await db.commit()
 
 
@@ -144,17 +156,12 @@ async def test_each_flow_has_tasks(kestra_client: KestraClient):
 # ── Execution Lifecycle ──────────────────────────────────────────────────────
 
 
-async def test_trigger_execution(kestra_client: KestraClient):
+async def test_trigger_execution(kestra_client: KestraClient, activity_server):
     """trigger_execution should return an ExecutionResponse with a valid ID."""
     label = _test_label("trigger")
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -167,53 +174,31 @@ async def test_trigger_execution(kestra_client: KestraClient):
         ExecutionStatus.QUEUED,
     )
 
-    # Wait for completion (activity will likely fail — that's expected)
     terminal_status = await wait_for_execution_terminal(
         kestra_client, execution.id, timeout_seconds=60
     )
-    assert terminal_status in (
-        ExecutionStatus.SUCCESS,
-        ExecutionStatus.WARNING,
-        ExecutionStatus.FAILED,
-        ExecutionStatus.KILLED,
-    )
+    assert terminal_status == ExecutionStatus.SUCCESS
 
 
-async def test_trigger_and_wait_returns_terminal(kestra_client: KestraClient):
-    """trigger_and_wait should poll until terminal and return or raise."""
+async def test_trigger_and_wait_returns_terminal(kestra_client: KestraClient, activity_server):
+    """trigger_and_wait should poll until terminal and return."""
     label = _test_label("trigger-wait")
-    try:
-        execution = await kestra_client.trigger_and_wait(
-            "ingestion",
-            inputs={
-                "callback_base_url": "http://localhost:8000",
-                "dataset_urn": _IMAZON_DATASET_URN,
-                "dry_run": "true",
-                "run_id": str(uuid.uuid4()),
-            },
-            labels={"workflow_id": label},
-            timeout_seconds=60,
-        )
-        # If SUCCESS/WARNING, execution is returned
-        assert execution.is_terminal
-        assert execution.status in (ExecutionStatus.SUCCESS, ExecutionStatus.WARNING)
-    except KestraExecutionFailedError as exc:
-        # Activity callback failure is expected when no API server is running
-        assert exc.flow_id == "ingestion"
-        assert exc.execution_id
+    execution = await kestra_client.trigger_and_wait(
+        "ingestion",
+        inputs=_ingestion_inputs(activity_server),
+        labels={"workflow_id": label},
+        timeout_seconds=60,
+    )
+    assert execution.is_terminal
+    assert execution.status == ExecutionStatus.SUCCESS
 
 
-async def test_get_execution_status(kestra_client: KestraClient):
+async def test_get_execution_status(kestra_client: KestraClient, activity_server):
     """get_execution should return current status for a triggered execution."""
     label = _test_label("status")
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -225,18 +210,13 @@ async def test_get_execution_status(kestra_client: KestraClient):
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
 
 
-async def test_execution_inputs_preserved(kestra_client: KestraClient):
+async def test_execution_inputs_preserved(kestra_client: KestraClient, activity_server):
     """Execution should preserve the inputs that were passed."""
     run_id = str(uuid.uuid4())
     label = _test_label("inputs")
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": run_id,
-        },
+        inputs=_ingestion_inputs(activity_server, run_id=run_id),
         labels={"workflow_id": label},
     )
 
@@ -261,18 +241,13 @@ async def test_check_no_duplicate_passes_when_clean(kestra_client: KestraClient)
     )
 
 
-async def test_check_no_duplicate_detects_running(kestra_client: KestraClient):
+async def test_check_no_duplicate_detects_running(kestra_client: KestraClient, activity_server):
     """check_no_duplicate should raise ConflictError if a running execution has the label."""
     label = _test_label("dup-detect")
 
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -306,18 +281,13 @@ async def test_find_running_executions(kestra_client: KestraClient):
 # ── Kill and Cleanup ─────────────────────────────────────────────────────────
 
 
-async def test_kill_execution(kestra_client: KestraClient):
+async def test_kill_execution(kestra_client: KestraClient, activity_server):
     """kill_execution should terminate a running execution."""
     label = _test_label("kill")
 
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -336,18 +306,13 @@ async def test_kill_execution(kestra_client: KestraClient):
     )
 
 
-async def test_kill_execution_idempotent(kestra_client: KestraClient):
+async def test_kill_execution_idempotent(kestra_client: KestraClient, activity_server):
     """kill_execution should not raise for already-terminated executions."""
     label = _test_label("kill-idem")
 
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -357,18 +322,13 @@ async def test_kill_execution_idempotent(kestra_client: KestraClient):
     await kestra_client.kill_execution(execution.id)
 
 
-async def test_delete_execution(kestra_client: KestraClient):
+async def test_delete_execution(kestra_client: KestraClient, activity_server):
     """delete_execution should remove a completed execution."""
     label = _test_label("delete")
 
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -391,18 +351,13 @@ async def test_delete_execution_not_found(kestra_client: KestraClient):
 # ── find_executions ──────────────────────────────────────────────────────────
 
 
-async def test_find_executions_by_flow(kestra_client: KestraClient):
+async def test_find_executions_by_flow(kestra_client: KestraClient, activity_server):
     """find_executions should filter by flow ID."""
     label = _test_label("find-flow")
 
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
@@ -459,13 +414,13 @@ async def test_delete_and_recreate_flow(kestra_client: KestraClient):
 # ── Multiple Flow Types ──────────────────────────────────────────────────────
 
 
-async def test_trigger_validation_flow(kestra_client: KestraClient):
+async def test_trigger_validation_flow(kestra_client: KestraClient, activity_server):
     """Trigger validation flow and verify execution lifecycle."""
     label = _test_label("validation")
     execution = await kestra_client.trigger_execution(
         "validation",
         inputs={
-            "callback_base_url": "http://localhost:8000",
+            "callback_base_url": activity_server.callback_url,
             "dataset_urn": _IMAZON_DATASET_URN,
             "dry_run": "true",
         },
@@ -478,21 +433,16 @@ async def test_trigger_validation_flow(kestra_client: KestraClient):
     terminal_status = await wait_for_execution_terminal(
         kestra_client, execution.id, timeout_seconds=60
     )
-    assert terminal_status in (
-        ExecutionStatus.SUCCESS,
-        ExecutionStatus.WARNING,
-        ExecutionStatus.FAILED,
-        ExecutionStatus.KILLED,
-    )
+    assert terminal_status == ExecutionStatus.SUCCESS
 
 
-async def test_trigger_generation_flow(kestra_client: KestraClient):
+async def test_trigger_generation_flow(kestra_client: KestraClient, activity_server):
     """Trigger generation flow and verify execution lifecycle."""
     label = _test_label("generation")
     execution = await kestra_client.trigger_execution(
         "generation",
         inputs={
-            "callback_base_url": "http://localhost:8000",
+            "callback_base_url": activity_server.callback_url,
             "dataset_urn": _IMAZON_DATASET_URN,
         },
         labels={"workflow_id": label},
@@ -504,12 +454,7 @@ async def test_trigger_generation_flow(kestra_client: KestraClient):
     terminal_status = await wait_for_execution_terminal(
         kestra_client, execution.id, timeout_seconds=60
     )
-    assert terminal_status in (
-        ExecutionStatus.SUCCESS,
-        ExecutionStatus.WARNING,
-        ExecutionStatus.FAILED,
-        ExecutionStatus.KILLED,
-    )
+    assert terminal_status == ExecutionStatus.SUCCESS
 
 
 # ── Cleanup Utility Tests ───────────────────────────────────────────────────
@@ -523,18 +468,13 @@ async def test_kill_running_executions_utility(kestra_client: KestraClient):
     assert killed >= 0
 
 
-async def test_cleanup_test_executions_utility(kestra_client: KestraClient):
+async def test_cleanup_test_executions_utility(kestra_client: KestraClient, activity_server):
     """cleanup_test_executions utility should delete test-labeled executions."""
     # Create a test execution, wait for it, then clean up
     label = f"{_TEST_LABEL_PREFIX}cleanup-util-{uuid.uuid4().hex[:8]}"
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
@@ -548,17 +488,12 @@ async def test_cleanup_test_executions_utility(kestra_client: KestraClient):
 # ── Timeout Handling ─────────────────────────────────────────────────────────
 
 
-async def test_wait_for_execution_timeout(kestra_client: KestraClient):
+async def test_wait_for_execution_timeout(kestra_client: KestraClient, activity_server):
     """wait_for_execution with very short timeout should raise KestraTimeoutError."""
     label = _test_label("timeout")
     execution = await kestra_client.trigger_execution(
         "ingestion",
-        inputs={
-            "callback_base_url": "http://localhost:8000",
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
+        inputs=_ingestion_inputs(activity_server),
         labels={"workflow_id": label},
     )
 

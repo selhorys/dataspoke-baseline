@@ -198,6 +198,7 @@ def _default_mock_llm() -> AsyncMock:
     m = AsyncMock()
     m.complete = AsyncMock(return_value="test response")
     m.complete_json = AsyncMock(return_value={})
+    m.embed = AsyncMock(return_value=[0.0] * 1536)
     return m
 
 

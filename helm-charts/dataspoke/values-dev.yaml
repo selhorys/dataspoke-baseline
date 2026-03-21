@@ -72,13 +72,21 @@ kestra:
   common:
     resources:
       requests:
-        cpu: 250m
-        memory: 768Mi
+        cpu: 500m
+        memory: 2Gi
       limits:
-        cpu: "1"
-        memory: 2560Mi
+        cpu: "2"
+        memory: 4Gi
     jvm:
-      extraOpts: "-Xms512m -Xmx2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms512m -Xmx3g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+    startupProbe:
+      httpGet:
+        path: /health
+        port: management
+      initialDelaySeconds: 5
+      periodSeconds: 2
+      timeoutSeconds: 3
+      failureThreshold: 150
   deployments:
     standalone:
       workerThreads: 4

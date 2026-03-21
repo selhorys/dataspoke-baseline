@@ -144,11 +144,11 @@ kestra:
     tag: "v1.3.3"
   resources:
     requests:
-      cpu: 500m
-      memory: 1024Mi
+      cpu: "2"
+      memory: 4Gi
     limits:
-      cpu: "1"
-      memory: 2048Mi
+      cpu: "3"
+      memory: 8Gi
   dind:
     enabled: false
   configurations:

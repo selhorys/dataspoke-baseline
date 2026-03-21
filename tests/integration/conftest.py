@@ -400,9 +400,9 @@ async def kestra_client():
 
     yield client
 
-    # Clean up test executions and flow definitions after the module
+    # Clean up test executions only — leave flow definitions in place
+    # to avoid expensive delete/re-register churn between modules.
     await cleanup_test_executions(client)
-    await cleanup_flows(client)
     await client.close()
 
 
