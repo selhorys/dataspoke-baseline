@@ -93,6 +93,8 @@ secrets:
     password: ""       # Must set
   redis:
     password: ""       # Must set
+  qdrant:
+    apiKey: ""         # Qdrant API key (if auth enabled)
   llm:
     apiKey: ""         # LLM provider API key
   jwt:
@@ -168,6 +170,7 @@ cd dev_env && ./install.sh    # ~5-10 min first run
 dev_env/datahub-port-forward.sh      # DataHub UI + GMS
 dev_env/dataspoke-port-forward.sh    # DataSpoke infrastructure
 dev_env/dummy-data-port-forward.sh   # Example data sources
+dev_env/lock-port-forward.sh         # Dev-env advisory lock service
 ```
 
 | Service | URL / Address | Credentials |
@@ -180,6 +183,7 @@ dev_env/dummy-data-port-forward.sh   # Example data sources
 | Kestra (API + UI) | localhost:9205 | -- |
 | Example PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` |
 | Example Kafka | localhost:9104 | -- |
+| Lock Service | localhost:9221 | -- |
 
 #### 4. Populate Dummy Data
 
@@ -193,11 +197,19 @@ Seeds example PostgreSQL (11 schemas, 17 tables, ~600 rows), Kafka (3 topics, ~4
 #### 5. Verify
 
 ```bash
+./dev_env/health-check.sh            # Recommended: checks all services are reachable and responding
+```
+
+<details><summary>Manual verification (kubectl)</summary>
+
+```bash
 source dev_env/.env
 kubectl get pods -n $DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE
 kubectl get pods -n $DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE
 kubectl get pods -n $DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE
 ```
+
+</details>
 
 #### Uninstall
 
