@@ -22,7 +22,7 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 ## Key Design Decisions
 
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core
-- **API-first**: OpenAPI specs in `api/` as standalone artifacts; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
+- **API-first**: FastAPI implementation in `src/api/` is the SSOT for the API contract; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
 - **Kestra** for workflow orchestration (HTTP-triggered, YAML flows), **Qdrant** for vector search, **PostgreSQL** for operational DB
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
@@ -56,12 +56,11 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 For end-to-end feature implementation, use subagents in this order:
 
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
-2. `api-spec` agent — write OpenAPI spec in `api/`
-3. `backend` agent — implement API routes + services in `src/api/`, `src/backend/`, `src/shared/`
-4. `workflow` agent — implement Kestra flow YAML in `src/workflows/flows/` and activity endpoints
-5. `test` agent — write and run tests in `tests/`
-6. `frontend` agent — build UI in `src/frontend/`
-7. `k8s-helm` agent — containerize and deploy (when ready)
+2. `backend` agent — implement API routes + services in `src/api/`, `src/backend/`, `src/shared/`
+3. `workflow` agent — implement Kestra flow YAML in `src/workflows/flows/` and activity endpoints
+4. `test` agent — write and run tests in `tests/`
+5. `frontend` agent — build UI in `src/frontend/`
+6. `k8s-helm` agent — containerize and deploy (when ready)
 
 Each agent reads the spec and the output of previous agents as context.
 For spec authoring, use `/plan-doc` directly.
@@ -105,5 +104,5 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 **Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `kestra-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `sync-spec-from-impl`, `sync-specs`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/`, `kestra-api` requires `ref/github/kestra/` — run `/ref-setup` once if not present.)_
-**Subagents**: `api-spec`, `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
+**Subagents**: `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

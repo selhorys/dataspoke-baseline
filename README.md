@@ -253,7 +253,6 @@ This mode is significantly slower to iterate — every code change requires a co
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| OpenAPI spec | Done | `api/openapi.yaml` |
 | API layer (FastAPI) | Done | `src/api/` |
 | Backend services | Done | `src/backend/`, `src/shared/` |
 | Kestra workflows | Done | `src/workflows/` |
@@ -293,12 +292,11 @@ See [`spec/TESTING.md`](spec/TESTING.md) for conventions, toolchain, mocking rul
 Use subagents in sequence to implement features:
 
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
-2. `api-spec` -- write OpenAPI spec in `api/`
-3. `backend` -- implement API routes + services
-4. `workflow` -- implement Kestra workflows
-5. `test` -- write and run tests
-6. `frontend` -- build UI
-7. `k8s-helm` -- containerize and deploy
+2. `backend` -- implement API routes + services
+3. `workflow` -- implement Kestra workflows
+4. `test` -- write and run tests
+5. `frontend` -- build UI
+6. `k8s-helm` -- containerize and deploy
 
 See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full scaffold reference (skills, subagents, permissions, PRauto).
 
@@ -309,7 +307,7 @@ Fork this repository and adapt:
 1. Revise `spec/MANIFESTO_*.md` -- redefine user groups, features, and product identity
 2. Run `/plan-doc` -- update architecture and author feature specs
 3. Run `/dev-env install` -- bring up the local environment
-4. Use subagents in sequence: `api-spec` -> `backend` -> `frontend` -> `k8s-helm`
+4. Use subagents in sequence: `backend` -> `frontend` -> `k8s-helm`
 
 ### Key Specs
 

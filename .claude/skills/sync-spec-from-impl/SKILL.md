@@ -31,7 +31,7 @@ Implementation is the actual code, scripts, and configs that *do things*:
 - `.prauto/` scripts, libraries, prompts, and config files
 - `dev_env/` scripts, manifests, and helpers
 - `helm-charts/` chart definitions, values, and templates
-- `api/` OpenAPI spec (`openapi.yaml`)
+- `src/api/` routers, schemas, middleware (FastAPI implementation as API SSOT)
 - `src/` application code (api, backend, frontend) and `tests/` directories
 - **Detailed logic** in SKILL.md files (the workflow instruction body — everything below the declarations)
 - `ref/` system (reference materials and setup scripts)
@@ -60,7 +60,7 @@ Select scopes to sync (comma-separated numbers or keywords):
   3. ai-scaffold  — CLAUDE.md, .claude/ settings, hooks, agents, all skills
   4. dev-env      — dev_env/ scripts, DEV_ENV spec
   5. helm-charts  — Helm chart definitions and specs
-  6. api          — API specs, OpenAPI, src/api/ code
+  6. api          — API specs, src/api/ code
   7. ref          — ref/ setup scripts and reference materials
   8. backend      — Backend services, Kestra workflows (TBD)
   9. frontend     — Next.js frontend code (TBD)
@@ -78,7 +78,7 @@ The directories below are **starting points** — always glob the actual tree to
 | `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `CLAUDE.md`, all skill declarations across `.claude/skills/` | `.claude/` settings/hooks/agents, all skill logic bodies |
 | `dev-env` | `spec/feature/DEV_ENV.md`, dev-env skill declaration, `dev_env/README.md` | `dev_env/` scripts and helpers, dev-env skill logic body |
 | `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/` charts, values, and templates |
-| `api` | `spec/feature/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `api/` OpenAPI spec, `src/api/` routers/schemas/auth/middleware |
+| `api` | `spec/feature/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
 | `ref` | `spec/AI_SCAFFOLD.md` (ref section), ref-setup skill declaration, `ref/README.md` | `ref/` setup scripts and reference materials, ref-setup skill logic body |
 | `backend` | TBD | TBD |
 | `frontend` | TBD | TBD |

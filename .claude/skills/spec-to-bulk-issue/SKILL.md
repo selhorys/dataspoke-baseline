@@ -47,7 +47,6 @@ src/**/*.py
 src/**/*.ts
 tests/**/*.py
 migrations/**/*
-api/**/*.yaml
 ```
 
 Read the key implementation files (especially `src/api/main.py`, router files, service files) to understand what is already implemented vs. what returns stubs/501s.
@@ -106,7 +105,6 @@ Write one markdown file per issue: `issues/{NN}_{slug}.md`
 
 ### Implementation Scope
 
-- [ ] OpenAPI spec (api/)
 - [ ] Backend - API routes and services
 - [ ] Backend - Kestra workflows
 - [ ] Backend - DataHub integration, PostgreSQL models, Qdrant vector search

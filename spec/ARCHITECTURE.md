@@ -67,7 +67,7 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 
 1. **DataHub-backed SSOT** — DataHub stores metadata; DataSpoke extends without modifying core.
 2. **Three-Tier API Routing** — Common features under `/spoke/common/`, user-group features under `/spoke/[de|da|dg]/`, DataHub pass-through under `/hub/`.
-3. **API-First** — Standalone OpenAPI specs in `api/` enable parallel frontend/backend development and AI-agent iteration.
+3. **API-First** — The FastAPI implementation in `src/api/` is the single source of truth for the API contract, with auto-generated OpenAPI docs enabling parallel frontend development and AI-agent iteration.
 4. **Layer Separation** — Four components (UI, API, Backend/Pipeline, DataHub) are independently scalable and replaceable.
 5. **Cloud-Native** — Kubernetes-ready with containerized deployments.
 6. **Blended API/UI for Convenience** — DataSpoke may re-expose DataHub's basic functions through its own API and UI layer, combining DataHub-native and DataSpoke-specific metadata in a single call (see [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overview)).
@@ -93,10 +93,10 @@ All REST APIs conform to [`API_DESIGN_PRINCIPLE_en.md`](API_DESIGN_PRINCIPLE_en.
 
 ### 3. API-First Design
 
-API documentation exists as **standalone artifacts** in `api/` (OpenAPI 3.0 + markdown):
-- AI agents iterate on API specs without running the backend.
-- Frontend development starts before backend implementation.
-- Contract testing and mocking without running services.
+The FastAPI implementation in `src/api/` is the **single source of truth** for the API contract. FastAPI auto-generates OpenAPI 3.0 documentation from Pydantic models and route definitions:
+- AI agents read route definitions and Pydantic schemas directly from `src/api/` for accurate, always-in-sync API knowledge.
+- Frontend development references the live Swagger UI (`/docs`) or reads `src/api/routers/` for the current contract.
+- Feature specs in `spec/feature/API.md` define the architectural route catalogue; the implementation must conform to it.
 
 ### 4. Layer Separation
 
@@ -544,7 +544,6 @@ The bundled dev environment is **NOT** for production. For production Kubernetes
 
 ```
 dataspoke-baseline/
-├── api/                # Standalone OpenAPI 3.0 specs (API-first)
 ├── dev_env/            # Kubernetes dev environment
 ├── helm-charts/        # Kubernetes deployment manifests
 ├── docker-images/      # Dockerfiles for each service (multi-stage builds)
@@ -578,7 +577,7 @@ dataspoke-baseline/
 | Vector DB | Qdrant | Self-hostable, Rust perf, simple binary | Weaviate (if multi-tenancy or GraphQL needed), Pinecone (managed only) |
 | Orchestration | Kestra | YAML flow definitions, HTTP Request tasks, built-in UI, single-port deployment | Temporal (heavier infra), Airflow (if existing infra or batch DAGs required) |
 | Operational DB | PostgreSQL | ACID, JSONB, mature ecosystem | MongoDB (no ACID for critical operational data) |
-| API documentation | Standalone OpenAPI in `api/` | AI agents iterate without backend; contract testing | Inline docs only (blocks parallel development) |
+| API documentation | FastAPI auto-generated OpenAPI + Pydantic schemas as SSOT | Always-in-sync docs; AI agents read route definitions directly | Standalone OpenAPI file (requires manual sync) |
 
 ### Architectural Choices
 

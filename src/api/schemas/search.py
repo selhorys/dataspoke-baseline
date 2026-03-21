@@ -1,4 +1,4 @@
-"""Vector search request/response models aligned with OpenAPI spec."""
+"""Vector search request/response models for the search API."""
 
 from pydantic import BaseModel
 

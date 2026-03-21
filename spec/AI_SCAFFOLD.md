@@ -41,7 +41,6 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
 │   └── spec-to-bulk-issue/    # Bulk-create implementation issues from specs
 ├── agents/                     # Subagent system prompts (model: sonnet)
-│   ├── api-spec.md             # OpenAPI spec author
 │   ├── backend.md              # FastAPI/Python implementer (routes, services, shared libs)
 │   ├── workflow.md             # Kestra flow YAML + workflow helper module implementer
 │   ├── test.md                 # Test writer and runner (unit, integration, API-wired)
@@ -60,7 +59,6 @@ The scaffold works alongside these structural elements:
 | `dev_env/` | Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
 | `ref/` | External source code for AI reference (DataHub v1.4.0.3, Kestra source, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
-| `api/` | Consolidated OpenAPI spec (`openapi.yaml`) |
 | `helm-charts/` | DataSpoke umbrella Helm chart with subcharts. See `spec/feature/HELM_CHART.md` |
 
 ---
@@ -93,14 +91,13 @@ Subagents are specialized Claude instances with focused system prompts. The main
 
 | Subagent | Scope | Tools |
 |----------|-------|-------|
-| `api-spec` | OpenAPI 3.0 specs in `api/openapi.yaml` (single consolidated file). Reads feature specs and `API_DESIGN_PRINCIPLE_en.md` for conventions | Read, Write, Edit, Glob, Grep |
 | `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs for architecture. Runs `pytest` to self-verify | Read, Write, Edit, Glob, Grep, Bash |
 | `workflow` | Kestra flow YAML definitions in `src/workflows/flows/` and workflow parameter modules in `src/workflows/`. Orchestrates `src/backend/` service methods via HTTP Request tasks. Runs workflow tests to self-verify | Read, Write, Edit, Glob, Grep, Bash |
 | `test` | Tests across all layers in `tests/` (unit, integration, API-wired, E2E). Follows `spec/TESTING.md` for pyramid, mocking rules, assertion rules, and integration test protocol | Read, Write, Edit, Glob, Grep, Bash |
 | `frontend` | Next.js/TypeScript code in `src/frontend/`. Reads `FRONTEND_*.md` specs for workspace layouts. Runs `npm test` and `tsc` to self-verify | Read, Write, Edit, Glob, Grep, Bash |
 | `k8s-helm` | Helm charts, Dockerfiles, Kubernetes manifests, dev environment scripts. Reads `HELM_CHART.md` and `DEV_ENV.md` for deployment topology | Read, Write, Edit, Glob, Grep, Bash |
 
-The standard implementation workflow sequences these agents: spec → `api-spec` → `backend` → `workflow` → `test` → `frontend` → `k8s-helm`. Each reads the spec and the output of previous agents as context. See `CLAUDE.md` §Implementation Workflow.
+The standard implementation workflow sequences these agents: spec → `backend` → `workflow` → `test` → `frontend` → `k8s-helm`. Each reads the spec and the output of previous agents as context. See `CLAUDE.md` §Implementation Workflow.
 
 ---
 
@@ -182,7 +179,7 @@ The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke
 1. **Revise the manifesto** — redefine user groups and feature scope
 2. **Run `/plan-doc`** — update architectural specs, then common and spoke feature specs
 3. **Run `/dev-env install`** — bring up the DataHub environment
-4. **Use subagents** in order: `api-spec` → `backend` → `workflow` → `test` → `frontend` → `k8s-helm`
+4. **Use subagents** in order: `backend` → `workflow` → `test` → `frontend` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
@@ -196,7 +193,7 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
 3. **User-group-driven organization** — Features, API routes, and UI entry points are organized by user group (DE, DA, DG), mirroring the MANIFESTO's structure.
 
-4. **API-first development** — The `api-spec` subagent produces OpenAPI specs before backend implementation begins, following the three-tier URI pattern.
+4. **API-first development** — The `backend` subagent implements API routes as the single source of truth for the API contract, following the three-tier URI pattern defined in feature specs. FastAPI auto-generates OpenAPI documentation from the implementation.
 
 5. **Least privilege** — Agents read and inspect freely but cannot change shared state without user confirmation. Destructive cluster operations are blocked.
 

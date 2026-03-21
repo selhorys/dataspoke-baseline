@@ -28,7 +28,6 @@ body:
       label: Implementation Scope
       description: Which part of the implementation is most affected?
       options:
-        - label: OpenAPI spec (api/)
         - label: Backend - API routes and services
         - label: Backend - Kestra workflows
         - label: Backend - DataHub integration, PostgreSQL models, Qdrant vector search
