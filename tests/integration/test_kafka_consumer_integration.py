@@ -93,7 +93,6 @@ def _make_consumer(brokers: str, group_id: str | None = None) -> Consumer:
             "group.id": group_id or _unique_group_id(),
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
-            "enable.partition.eof": True,
             "session.timeout.ms": 10000,
         }
     )
