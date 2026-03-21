@@ -191,6 +191,7 @@ config:
   kestra:
     url: "http://dataspoke-kestra:8080"
     namespace: "dataspoke"
+    callbackBaseUrl: "http://dataspoke-api:8000"
   llm:
     provider: "gemini"
     model: "gemini-2.0-flash"

@@ -18,6 +18,7 @@ data:
   DATASPOKE_QDRANT_GRPC_PORT: {{ .Values.config.qdrant.grpcPort | quote }}
   DATASPOKE_KESTRA_URL: {{ .Values.config.kestra.url | quote }}
   DATASPOKE_KESTRA_NAMESPACE: {{ .Values.config.kestra.namespace | quote }}
+  DATASPOKE_KESTRA_CALLBACK_BASE_URL: {{ .Values.config.kestra.callbackBaseUrl | quote }}
   DATASPOKE_LLM_PROVIDER: {{ .Values.config.llm.provider | quote }}
   DATASPOKE_LLM_MODEL: {{ .Values.config.llm.model | quote }}
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
