@@ -1,9 +1,9 @@
 ---
 name: dev-env
-description: Manage the kubernetes-based DataSpoke development environment — install, uninstall, port-forward, and check status.
+description: Manage the kubernetes-based DataSpoke development environment — configure, install, port-forward, health-check, and uninstall.
 disable-model-invocation: false
 user-invocable: true
-argument-hint: [install|uninstall|port-forward|status] [component...]
+argument-hint: [configure|install|uninstall|port-forward|health-check] [component...]
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -13,10 +13,11 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 
 | Action | Trigger keywords |
 |--------|-----------------|
-| **install** | `install`, `setup`, `up`, `create` |
-| **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
+| **configure** | `configure`, `config`, `setup`, `env` |
+| **install** | `install`, `up`, `create` |
 | **port-forward** | `port-forward`, `forward`, `pf`, `ports` |
-| **status** | `status`, `check`, `health`, `monitor` |
+| **health-check** | `health-check`, `health`, `check`, `status`, `monitor` |
+| **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
 
 ### Component names
 
@@ -31,11 +32,9 @@ When the user specifies components, match against these names. If no components 
 
 ---
 
-## Shared — Load configuration
+## Action: configure
 
-All actions start here:
-
-1. Read `dev_env/.env`. If it does not exist, create it from the template in `spec/feature/DEV_ENV.md` § Configuration.
+1. Read `dev_env/.env`. If it does not exist, create it from `dev_env/.env.example`.
 2. If it already exists, verify all required variables are present:
    - Dev variables: `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`
    - Dev chart versions: `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION`
@@ -48,6 +47,8 @@ All actions start here:
 ---
 
 ## Action: install
+
+Run `configure` first if `dev_env/.env` does not exist or is missing required variables.
 
 ### Pre-flight checks
 
@@ -156,6 +157,12 @@ If the user asks to stop port-forwarding:
 
 ---
 
-## Action: status
+## Action: health-check
 
-Invoke the `/k8s-work` skill, passing along any focus area from the user's request.
+1. Run `./dev_env/health-check.sh` and report the results.
+2. Supported flags:
+   - `--quick` — TCP-only checks (skip deep application-layer probes)
+   - `--keep-lock` — don't touch an existing dev-env lock
+   - `--force-release` — release a held lock without prompting
+3. If any service is unhealthy, show the reinstall command from CLAUDE.md's "Integration Test Protocol" table.
+4. For deeper cluster-level diagnostics, invoke the `/k8s-work` skill.

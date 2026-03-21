@@ -185,16 +185,7 @@ dev_env/lock-port-forward.sh         # Dev-env advisory lock service
 | Example Kafka | localhost:9104 | -- |
 | Lock Service | localhost:9221 | -- |
 
-#### 4. Populate Dummy Data
-
-```bash
-# Requires port-forwards for 9102, 9104, 9004
-uv run python -m tests.integration.util --reset-all
-```
-
-Seeds example PostgreSQL (11 schemas, 17 tables, ~600 rows), Kafka (3 topics, ~45 messages), and DataHub (20 dataset entities) with Imazon use-case data. Idempotent — safe to re-run.
-
-#### 5. Verify
+#### 4. Verify
 
 ```bash
 ./dev_env/health-check.sh            # Recommended: checks all services are reachable and responding
@@ -284,6 +275,17 @@ This mode is significantly slower to iterate — every code change requires a co
 | Frontend (Next.js) | TBD | `src/frontend/` (planned) |
 
 ### Testing
+
+#### Populate Dummy Data
+
+```bash
+# Requires port-forwards for 9102, 9104, 9004
+uv run python -m tests.integration.util --reset-all
+```
+
+Seeds example PostgreSQL (11 schemas, 17 tables, ~600 rows), Kafka (3 topics, ~45 messages), and DataHub (20 dataset entities) with Imazon use-case data. Idempotent — safe to re-run.
+
+#### Run Tests
 
 ```bash
 # Unit tests (no dev environment needed)
