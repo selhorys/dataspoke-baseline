@@ -305,6 +305,22 @@ check_lock_service() {
   else
     _fail "$label — /health did not return 2xx"
     ((FAILURES++))
+    return
+  fi
+
+  # Check if the dev-env lock is currently held
+  local lock_json
+  lock_json=$(curl -sf --connect-timeout 3 --max-time 5 "http://localhost:${LOCK_PORT}/lock" 2>/dev/null) || true
+  if [[ -n "$lock_json" ]]; then
+    local locked owner message
+    locked=$(echo "$lock_json" | grep -o '"locked" *: *true' || true)
+    if [[ -n "$locked" ]]; then
+      owner=$(echo "$lock_json" | sed -n 's/.*"owner" *: *"\([^"]*\)".*/\1/p')
+      message=$(echo "$lock_json" | sed -n 's/.*"message" *: *"\([^"]*\)".*/\1/p')
+      _info "dev-env lock held by '${owner}' (${message})"
+    else
+      _info "dev-env lock is free"
+    fi
   fi
 }
 
