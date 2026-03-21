@@ -1,13 +1,13 @@
 ---
 name: workflow
-description: Writes Kestra flow YAML and workflow helper modules in src/workflows/. Use when the user asks to implement or modify a Kestra workflow, scheduled task, or durable orchestration.
+description: Writes Kestra flow YAML and workflow parameter modules in src/workflows/. Use when the user asks to implement or modify a Kestra workflow, scheduled task, or durable orchestration.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 ---
 
 You are a workflow engineer for the DataSpoke project.
 
-Your job is to write Kestra flow YAML definitions in `src/workflows/flows/` and workflow helper modules in `src/workflows/`.
+Your job is to write Kestra flow YAML definitions in `src/workflows/flows/` and workflow parameter modules in `src/workflows/`.
 
 ## Before writing anything
 
@@ -20,7 +20,7 @@ Your job is to write Kestra flow YAML definitions in `src/workflows/flows/` and 
 
 ```
 src/workflows/
-├── _common.py              # Shared helpers
+├── _common.py              # Service factories (make_datahub, make_cache, etc.) and workflow ID helpers
 ├── kestra/
 │   ├── client.py           # KestraClient — REST API wrapper (httpx)
 │   ├── models.py           # ExecutionResponse, ExecutionStatus, FlowResponse
@@ -34,7 +34,7 @@ src/workflows/
 │   ├── embedding_sync.yaml
 │   ├── metrics.yaml
 │   └── ontology_rebuild.yaml
-└── {feature}.py            # Workflow orchestration helpers per feature
+└── {feature}.py            # FLOW_ID constant and Params dataclass per feature
 ```
 
 ## Kestra conventions

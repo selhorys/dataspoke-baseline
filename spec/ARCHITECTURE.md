@@ -555,7 +555,7 @@ dataspoke-baseline/
 │   ├── frontend/       # Next.js (pages per user group: de, da, dg)
 │   ├── api/            # FastAPI (routers per user group, schemas, middleware)
 │   ├── backend/        # Feature service implementations
-│   ├── workflows/      # Kestra flow definitions (YAML) + workflow helper modules
+│   ├── workflows/      # Kestra flow YAML definitions, parameter dataclasses, and kestra/ client subpackage
 │   └── shared/         # DataHub client, shared models, LLM integration
 ├── tests/              # Unit, integration, E2E test suites
 ├── ref/                # External source for AI reference (git-ignored)

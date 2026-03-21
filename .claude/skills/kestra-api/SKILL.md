@@ -44,7 +44,7 @@ If `ref/github/kestra` is **missing**, stop immediately and tell the user:
 | Raw Kestra REST API | `ref/github/kestra/openapi.yml`, controller source in `ref/github/kestra/webserver/` |
 | DataSpoke KestraClient | `src/workflows/kestra/client.py`, `src/workflows/kestra/models.py`, `src/workflows/kestra/errors.py` |
 | Flow YAML definitions | `src/workflows/flows/*.yaml` |
-| Activity endpoints (called by Kestra) | `src/workflows/activities/`, `spec/feature/BACKEND.md` |
+| Activity endpoints (called by Kestra) | `src/api/routers/internal/activities.py`, `spec/feature/BACKEND.md` |
 
 After Phase 1:
 - **Q&A** routes to Phase 2 → answer → done.

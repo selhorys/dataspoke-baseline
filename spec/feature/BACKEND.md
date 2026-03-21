@@ -118,23 +118,26 @@ src/
 │   │   └── client.py     # Redis client wrapper
 │   ├── notifications/    # Notification engine
 │   │   ├── __init__.py
+│   │   ├── config.py     # Notification channel configuration
+│   │   ├── models.py     # SLAAlert, ActionItem and other notification models
 │   │   └── service.py    # NotificationService — email, in-app alerts
+│   ├── settings.py       # Pydantic Settings class (reads DATASPOKE_* env vars)
 │   └── models/           # Shared Pydantic domain models (not API schemas)
 │       ├── __init__.py
 │       ├── dataset.py    # DatasetSummary, DatasetAttributes
 │       ├── quality.py    # QualityScore, QualityIssue, AnomalyResult
 │       ├── ontology.py   # Concept, ConceptRelationship
 │       └── events.py     # EventRecord (base for all event types)
-└── workflows/            # Kestra workflow definitions + workflow helper modules
+└── workflows/            # Kestra flow YAML definitions, parameter dataclasses, and kestra/ client subpackage
     ├── __init__.py
-    ├── _common.py        # Shared workflow helpers (HTTP task builders, etc.)
-    ├── ingestion.py      # Ingestion workflow helpers
-    ├── validation.py     # Validation workflow helpers
-    ├── generation.py     # Doc generation workflow helpers
-    ├── embedding_sync.py # Embedding sync workflow helpers
-    ├── metrics.py        # Metrics workflow helpers
-    ├── sla_monitor.py    # SLA monitor workflow helpers
-    ├── ontology.py       # Ontology rebuild workflow helpers
+    ├── _common.py        # Shared service factories (make_datahub, make_cache, etc.) and workflow ID helpers
+    ├── ingestion.py      # FLOW_ID constant and IngestionParams dataclass
+    ├── validation.py     # FLOW_ID constant and ValidationParams dataclass
+    ├── generation.py     # FLOW_ID constant and GenerationParams dataclass
+    ├── embedding_sync.py # FLOW_ID constant and EmbeddingSyncParams dataclass
+    ├── metrics.py        # FLOW_ID constant and MetricsParams dataclass
+    ├── sla_monitor.py    # FLOW_ID constant and SLAMonitorParams dataclass
+    ├── ontology.py       # FLOW_ID constant and OntologyRebuildParams dataclass
     ├── flows/            # Kestra YAML flow definitions
     │   ├── ingestion.yaml
     │   ├── validation.yaml
@@ -920,9 +923,24 @@ Kestra (in-cluster)                DataSpoke API (host or in-cluster)
        │◄── JSON response ─────────────────│
 ```
 
-The `KestraClient` (`src/workflows/kestra/client.py`) wraps Kestra's REST API
-via `httpx` for triggering flows and polling execution status from the DataSpoke
-API layer.
+### Kestra Client Subpackage (`src/workflows/kestra/`)
+
+The `kestra/` subpackage wraps Kestra's REST API via `httpx`:
+
+- **`client.py`** — `KestraClient` with methods for flow CRUD
+  (`create_or_update_flow`, `get_flow`, `delete_flow`), execution lifecycle
+  (`trigger_execution`, `wait_for_execution`, `trigger_and_wait`), label-based
+  dedup (`check_no_duplicate`, `find_running_executions`), and cleanup
+  (`kill_execution`, `delete_execution`, `find_executions`).
+- **`models.py`** — `ExecutionResponse` (with `status` and `is_terminal`
+  properties), `ExecutionStatus` enum (CREATED, RUNNING, SUCCESS, FAILED,
+  KILLED, etc.), `FlowResponse`.
+- **`errors.py`** — `KestraExecutionFailedError` (raised when execution
+  completes with FAILED status), `KestraTimeoutError` (raised when polling
+  exceeds timeout), `parse_execution_error()` (extracts human-readable error
+  from failed execution response).
+- **`registry.py`** — `register_all_flows()` reads all YAML files from
+  `src/workflows/flows/` and registers them with Kestra via `create_or_update_flow`.
 
 ### Flow Catalogue
 
@@ -933,7 +951,7 @@ API layer.
 | `sla-monitor` | `flows/sla_monitor.yaml` | Kestra schedule trigger (per-dataset, from `validation_configs.schedule`) | Scheduled (e.g., every 30 min for datasets with SLA targets) |
 | `generation` | `flows/generation.yaml` | API `POST .../method/generate` | On-demand |
 | `embedding-sync` | `flows/embedding_sync.yaml` | Kafka event, API `POST .../method/reindex` | Event-driven + on-demand |
-| `metrics-collection` | `flows/metrics.yaml` | API `POST .../method/run`, Kestra schedule trigger | On-demand + scheduled (configurable per metric) |
+| `metrics` | `flows/metrics.yaml` | API `POST .../method/run`, Kestra schedule trigger | On-demand + scheduled (configurable per metric) |
 | `ontology-rebuild` | `flows/ontology_rebuild.yaml` | Kestra schedule trigger | Weekly (configurable) |
 
 ### Workflow Design Conventions
@@ -942,20 +960,23 @@ API layer.
 2. **Activity endpoints are idempotent** — safe to retry on transient failures
 3. **Timeouts**: Per-task timeout = 5 minutes (default); flow-level timeout = 1 hour
 4. **Retry policy**: Max 3 attempts, 10s initial interval, configured in flow YAML
-5. **Concurrency**: Kestra flow-level concurrency limits prevent duplicate runs per entity
+5. **Concurrency**: Label-based dedup via `KestraClient.check_no_duplicate()` prevents duplicate runs per entity
 
 ### Concurrency Guards
 
-Some flows must not run concurrently for the same entity:
+Some flows must not run concurrently for the same entity. The API layer
+enforces this via `KestraClient.check_no_duplicate()`, which queries Kestra's
+execution search API for running executions with matching labels before
+triggering a new one.
 
-| Flow | Guard | Mechanism |
-|------|-------|-----------|
-| `ingestion` | One per dataset_urn | Kestra flow-level concurrency limit (keyed by `dataset_urn` input) |
-| `validation` | One per dataset_urn | Kestra flow-level concurrency limit |
-| `generation` | One per dataset_urn | Kestra flow-level concurrency limit |
-| `metrics-collection` | One per metric_id | Kestra flow-level concurrency limit |
+| Flow | Guard | Label Key | Label Value |
+|------|-------|-----------|-------------|
+| `ingestion` | One per dataset_urn | `workflow_id` | `ingestion-{md5(urn)[:12]}` |
+| `validation` | One per dataset_urn | `workflow_id` | `validation-{md5(urn)[:12]}` |
+| `generation` | One per dataset_urn | `workflow_id` | `generation-{md5(urn)[:12]}` |
+| `metrics` | One per metric_id | `workflow_id` | `metrics-{metric_id}` |
 
-If a duplicate is rejected, the API returns `409 Conflict` with
+If a duplicate is detected, the API returns `409 Conflict` with
 `INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` / `METRIC_RUNNING` error codes.
 
 ### Ingestion Flow Activity Decomposition
@@ -1136,26 +1157,35 @@ async def get_validation_service(
 
 ### Internal Activity Endpoints
 
-Activity endpoints run inside the FastAPI process and use standard FastAPI
-dependency injection. They are registered under `/api/v1/internal/activities/`
-and called by Kestra via HTTP Request tasks:
+Activity endpoints run inside the FastAPI process but use **factory functions**
+from `src/workflows/_common.py` instead of FastAPI `Depends()`. This decouples
+them from the FastAPI DI graph — the same factories can be used from any
+context (tests, CLI, etc.). They are registered under
+`/api/v1/internal/activities/` and called by Kestra via HTTP Request tasks:
 
 ```python
 # src/api/routers/internal/activities.py
 
+from src.workflows._common import make_datahub, make_cache, make_db_session, make_llm, make_qdrant
+
 @router.post("/run-validation")
-async def run_validation_activity(
-    request: ValidationRunRequest,
-    datahub: DataHubClient = Depends(get_datahub),
-    db: AsyncSession = Depends(get_db),
-    cache: RedisClient = Depends(get_redis),
-    llm: LLMClient = Depends(get_llm),
-    qdrant: QdrantManager = Depends(get_qdrant),
-) -> dict:
-    service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
-    result = await service.run(request.dataset_urn, request.config_id, dry_run=False)
-    return result.model_dump()
+async def run_validation(body: RunValidationRequest) -> dict:
+    datahub = make_datahub()
+    cache = make_cache()
+    llm = make_llm()
+    qdrant = make_qdrant()
+    try:
+        async with make_db_session() as db:
+            service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
+            result = await service.run(body.dataset_urn, config_id=body.config_id, dry_run=body.dry_run)
+            return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+    except DataSpokeError as exc:
+        return _error_response(exc)
 ```
+
+Error handling uses `_error_response()` which maps `DataSpokeError` to
+`400` (non-retryable) or `500` (retryable) JSON responses. This lets Kestra
+distinguish between errors worth retrying and permanent failures.
 
 ---
 
