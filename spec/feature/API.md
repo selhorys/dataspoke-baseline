@@ -466,14 +466,14 @@ Incoming Request
 ├─────────────────────────┤
 │ 2. Request Logging      │  Log method, path, trace ID, client IP (before handler)
 ├─────────────────────────┤
-│ 3. Auth (JWT Validate)  │  Verify signature, expiry, extract claims
+│ 3. Rate Limiting        │  SlowAPI fixed-window per user (Redis; in-memory fallback)
+│                         │  Default: 120 req/min
+├─────────────────────────┤
+│ 4. Auth (JWT Validate)  │  Verify signature, expiry, extract claims
 │                         │  Route-level Depends() — see note below
 ├─────────────────────────┤
-│ 4. Group Enforcement    │  Check groups claim against URI tier
+│ 5. Group Enforcement    │  Check groups claim against URI tier
 │                         │  Route-level Depends() — see note below
-├─────────────────────────┤
-│ 5. Rate Limiting        │  Token-bucket per user (Redis-backed)
-│                         │  Default: 120 req/min; burst: 20
 ├─────────────────────────┤
 │ 6. Route Handler        │  FastAPI dependency injection + business logic
 ├─────────────────────────┤
@@ -484,7 +484,11 @@ Incoming Request
 Outgoing Response
 ```
 
-> **Authentication and authorization (layers 3–4)** are implemented as
+> **Rate limiting (layer 3)** runs as Starlette middleware before any route
+> handler, so unauthenticated clients are rate-limited too. The per-user key
+> is extracted from the JWT `sub` claim when present, falling back to client IP.
+>
+> **Authentication and authorization (layers 4–5)** are implemented as
 > route-level dependencies (`Depends(require_common)`, `Depends(require_dg)`,
 > etc.) rather than blanket middleware. This approach allows unauthenticated
 > routes (`/health`, `/auth/*`) to coexist naturally without exclusion lists,

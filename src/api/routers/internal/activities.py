@@ -27,7 +27,7 @@ from src.workflows._common import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/internal/activities", tags=["internal/activities"])
+router = APIRouter(prefix="/internal/activities", tags=["internal/activities"])
 
 
 def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:

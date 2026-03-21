@@ -52,7 +52,7 @@ tests/
 - **Test data**: All scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies.
 
 ### Kestra workflow test notes (read before writing any workflow/activity test)
-- **Architecture**: Kestra orchestrates workflows via HTTP Request tasks that call internal activity endpoints (`/api/v1/internal/activities/*`). Tests for activities are effectively FastAPI endpoint tests.
+- **Architecture**: Kestra orchestrates workflows via HTTP Request tasks that call internal activity endpoints (`/internal/activities/*`). Tests for activities are effectively FastAPI endpoint tests.
 - **DB session sharing**: Activity endpoints share a DB session within each request. Design tests so activities execute sequentially.
 - **Factory patching target**: Patches target `src.api.routers.internal.activities` — the module where `make_llm`, `make_qdrant`, `make_cache`, `make_notification` are imported. Always verify the patch target matches the import path.
 - **ActivityServer**: For full Kestra flow tests, the `activity_server` fixture (session-scoped) runs a real uvicorn server with mocked LLM/Qdrant/cache/notification while using real DataHub and DB. See `tests/integration/util/kestra.py`.

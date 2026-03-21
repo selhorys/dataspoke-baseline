@@ -16,7 +16,7 @@ inputs:
 tasks:
   - id: extract_metadata
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/extract-metadata"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/extract-metadata"
     method: POST
     contentType: application/json
     body: |
@@ -32,7 +32,7 @@ tasks:
     then:
       - id: record_dry_run
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/record-ingestion-event"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/record-ingestion-event"
         method: POST
         contentType: application/json
         body: |
@@ -40,7 +40,7 @@ tasks:
     else:
       - id: emit_to_datahub
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/emit-to-datahub"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/emit-to-datahub"
         method: POST
         contentType: application/json
         body: |
@@ -52,7 +52,7 @@ tasks:
 
       - id: record_ingestion_event
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/record-ingestion-event"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/record-ingestion-event"
         method: POST
         contentType: application/json
         body: |

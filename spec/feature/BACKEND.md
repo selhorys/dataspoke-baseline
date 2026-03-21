@@ -910,16 +910,16 @@ class OverviewService:
 Kestra v1.3.3 serves as the workflow orchestration engine. Workflows are defined
 as **YAML flow definitions** in `src/workflows/flows/`. Each flow uses Kestra's
 `io.kestra.plugin.core.http.Request` tasks to call **internal activity
-endpoints** on the DataSpoke API at `/api/v1/internal/activities/*`. Kestra
+endpoints** on the DataSpoke API at `/internal/activities/*`. Kestra
 handles scheduling, retry, and execution — no separate worker process is needed.
 
 ```
 Kestra (in-cluster)                DataSpoke API (host or in-cluster)
        │                                    │
-       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/extract-metadata
+       │── HTTP Request task ──────────────►│ POST /internal/activities/extract-metadata
        │◄── JSON response ─────────────────│
        │                                    │
-       │── HTTP Request task ──────────────►│ POST /api/v1/internal/activities/emit-to-datahub
+       │── HTTP Request task ──────────────►│ POST /internal/activities/emit-to-datahub
        │◄── JSON response ─────────────────│
 ```
 
@@ -1161,7 +1161,7 @@ Activity endpoints run inside the FastAPI process but use **factory functions**
 from `src/workflows/_common.py` instead of FastAPI `Depends()`. This decouples
 them from the FastAPI DI graph — the same factories can be used from any
 context (tests, CLI, etc.). They are registered under
-`/api/v1/internal/activities/` and called by Kestra via HTTP Request tasks:
+`/internal/activities/` and called by Kestra via HTTP Request tasks:
 
 ```python
 # src/api/routers/internal/activities.py

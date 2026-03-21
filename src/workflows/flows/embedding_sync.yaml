@@ -15,7 +15,7 @@ inputs:
 tasks:
   - id: enumerate_datasets
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/enumerate-datasets"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/enumerate-datasets"
     method: POST
     contentType: application/json
     body: |
@@ -23,7 +23,7 @@ tasks:
 
   - id: reindex_batch
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/reindex-batch"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/reindex-batch"
     method: POST
     contentType: application/json
     body: |

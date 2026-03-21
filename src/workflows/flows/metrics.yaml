@@ -17,7 +17,7 @@ inputs:
 tasks:
   - id: run_metric
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/run-metric"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/run-metric"
     method: POST
     contentType: application/json
     body: |
@@ -33,7 +33,7 @@ tasks:
     then:
       - id: do_aggregate
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/aggregate-health"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/aggregate-health"
         method: POST
         contentType: application/json
         body: "{}"
@@ -44,7 +44,7 @@ tasks:
 
   - id: publish_metric_update
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/publish-metric-update"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/publish-metric-update"
     method: POST
     contentType: application/json
     body: |

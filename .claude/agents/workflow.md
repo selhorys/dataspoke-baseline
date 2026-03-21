@@ -40,7 +40,7 @@ src/workflows/
 ## Kestra conventions
 
 - **Flow YAML**: all flows live in `src/workflows/flows/` and use namespace `dataspoke`
-- **Tasks**: use `io.kestra.plugin.core.http.Request` to call internal activity endpoints at `/api/v1/internal/activities/*`
+- **Tasks**: use `io.kestra.plugin.core.http.Request` to call internal activity endpoints at `/internal/activities/*`
 - **Inputs**: always include `callback_base_url` (for host/in-cluster flexibility), entity key (e.g. `dataset_urn`), and `run_id`
 - **Retry policy**: max 3 attempts, 10s constant interval, configured per task in flow YAML
 - **Timeouts**: per-task timeout = 5 min (default); flow-level timeout = 1 hour
@@ -53,7 +53,7 @@ src/workflows/
 
 ## Scope boundary
 
-Business logic lives in `src/backend/` services (handled by the **backend** agent). Internal activity endpoints (`/api/v1/internal/activities/*`) live in `src/api/routers/internal/activities.py` and are also handled by the backend agent. If you need a new service method or activity endpoint, note the needed interface and defer to the backend agent.
+Business logic lives in `src/backend/` services (handled by the **backend** agent). Internal activity endpoints (`/internal/activities/*`) live in `src/api/routers/internal/activities.py` and are also handled by the backend agent. If you need a new service method or activity endpoint, note the needed interface and defer to the backend agent.
 
 ## After completing a task
 

@@ -159,7 +159,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router, prefix=API_PREFIX)
 
     # ── Internal activity endpoints (called by Kestra, no auth) ────────────────
-    app.include_router(internal_activities.router)
+    app.include_router(internal_activities.router, include_in_schema=False)
 
     # ── Spoke/common routes ────────────────────────────────────────────────────
     app.include_router(common_ontology.router, prefix=SPOKE_COMMON)

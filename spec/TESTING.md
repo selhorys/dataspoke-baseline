@@ -321,7 +321,7 @@ The dev-env Kestra instance is accessed via port-forward on port 9205 (set via `
 
 #### Testing activity endpoints directly
 
-Kestra calls internal activity endpoints at `/api/v1/internal/activities/*` via HTTP Request tasks. Integration tests can call these endpoints directly via `httpx.AsyncClient` (ASGI transport) without needing Kestra to orchestrate. This is the preferred approach for testing activity logic in isolation.
+Kestra calls internal activity endpoints at `/internal/activities/*` via HTTP Request tasks. Integration tests can call these endpoints directly via `httpx.AsyncClient` (ASGI transport) without needing Kestra to orchestrate. This is the preferred approach for testing activity logic in isolation.
 
 #### Testing full Kestra flows
 

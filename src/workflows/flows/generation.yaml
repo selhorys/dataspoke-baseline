@@ -11,7 +11,7 @@ inputs:
 tasks:
   - id: run_generation
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/api/v1/internal/activities/run-generation"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/run-generation"
     method: POST
     contentType: application/json
     body: |

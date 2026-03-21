@@ -3,7 +3,7 @@
 FastAPI service that acts as the single HTTP ingress for all DataSpoke clients — the portal UI and external AI agents.
 
 API prefix: `/api/v1`
-Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/…`, `/api/v1/auth/…`, `/api/v1/internal/…`
+Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/…`, `/api/v1/auth/…`, `/internal/…`
 
 ---
 
@@ -56,7 +56,7 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
 | `DATASPOKE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token lifetime (minutes) |
 | `DATASPOKE_JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime (days) |
-| `DATASPOKE_ADMIN_USERNAME` | `admin` | Stub admin username |
+| `DATASPOKE_ADMIN_EMAIL` | `admin` | Stub admin email |
 | `DATASPOKE_ADMIN_PASSWORD` | `admin` | Stub admin password |
 | `DATASPOKE_CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins (JSON list) |
 | `DATASPOKE_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per minute per client |
