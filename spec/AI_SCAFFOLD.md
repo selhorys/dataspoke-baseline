@@ -35,7 +35,7 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── kestra-api/             # Kestra REST API reference and code writing
 │   ├── prauto-check-status/    # Prauto issue/PR status dashboard
 │   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
-│   ├── dev-env/                # Dev environment management (install, uninstall, port-forward, status)
+│   ├── dev-env/                # Dev environment management (configure, install, port-forward, health-check, run-dataspoke-test-mode, uninstall)
 │   ├── ref-setup/              # Download AI reference materials
 │   ├── sync-spec-from-impl/     # Spec ↔ implementation synchronization
 │   ├── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
@@ -77,7 +77,7 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `kestra-api` | Reference and coding guide for Kestra REST API integration in workflow development. Covers flows, executions, logs, KV store, triggers, and the KestraClient wrapper. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
-| `dev-env` | Dev environment management: install (full or partial), uninstall (full or partial), start/stop port-forwarding, cluster status check. Accepts action + optional component list as arguments |
+| `dev-env` | Dev environment management: configure, install (full or partial), uninstall (full or partial), start/stop port-forwarding, health-check, and run-dataspoke-test-mode (host-mode app via `uv run -m src.cli`). Accepts action + optional component/options as arguments |
 | `ref-setup` | Download AI reference materials (external source code for AI assistant reference) with interactive selection; monitor in background until complete |
 | `sync-spec-from-impl` | Reverse-sync specs from implementation (impl → spec). Detects structural drift, naming mismatches, undocumented features, and stale references. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref, backend, frontend) or full sync |
 | `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |

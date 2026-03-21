@@ -132,25 +132,25 @@ curl -s -X DELETE http://localhost:9221/lock
 
 ### 6. Run DataSpoke application services (host mode)
 
-Load environment variables and start services on the host:
+Start application services on the host using the CLI (from repo root):
 
 ```bash
-source .env
+# Install Python dependencies first
+uv sync
 
-# Install Python dependencies (from repo root)
-cd .. && uv sync
+# Start all components (API + auto-migrate):
+uv run -m src.cli
 
-# Frontend
-cd src/frontend && npm run dev          # http://localhost:3000
+# Backend only (skip frontend when it's added):
+uv run -m src.cli --backend-only
 
-# API (from repo root)
-uv run uvicorn src.api.main:app --reload --port 8000
-
-# Kestra runs in the cluster — no worker process needed on the host
-# Access Kestra UI at http://localhost:9205 (after port-forward)
+# See all options (--port, --skip-migrate, --no-reload, --env-file):
+uv run -m src.cli --help
 ```
 
-The `DATASPOKE_*` variables in `.env` point to `localhost` — the port-forwards connect them to the in-cluster infrastructure transparently.
+> Using Claude Code? Run `/dev-env run-dataspoke-test-mode` (supports the same options).
+
+The `DATASPOKE_*` variables in `.env` point to `localhost` — the port-forwards connect them to the in-cluster infrastructure transparently. Kestra runs in the cluster and is accessed via port-forward at http://localhost:9205.
 
 ### 7. Access example data sources
 

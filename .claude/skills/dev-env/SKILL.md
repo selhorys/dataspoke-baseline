@@ -1,9 +1,9 @@
 ---
 name: dev-env
-description: Manage the kubernetes-based DataSpoke development environment — configure, install, port-forward, health-check, and uninstall.
+description: Manage the kubernetes-based DataSpoke development environment — configure, install, port-forward, health-check, run-dataspoke-test-mode, and uninstall.
 disable-model-invocation: false
 user-invocable: true
-argument-hint: [configure|install|uninstall|port-forward|health-check] [component...]
+argument-hint: [configure|install|uninstall|port-forward|health-check|run-dataspoke-test-mode] [options...]
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -17,6 +17,7 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 | **install** | `install`, `up`, `create` |
 | **port-forward** | `port-forward`, `forward`, `pf`, `ports` |
 | **health-check** | `health-check`, `health`, `check`, `status`, `monitor` |
+| **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `host-mode`, `backend-only` |
 | **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
 
 ### Component names
@@ -166,3 +167,48 @@ If the user asks to stop port-forwarding:
    - `--force-release` — release a held lock without prompting
 3. If any service is unhealthy, show the reinstall command from CLAUDE.md's "Integration Test Protocol" table.
 4. For deeper cluster-level diagnostics, invoke the `/k8s-work` skill.
+
+---
+
+## Action: run-dataspoke-test-mode
+
+Run DataSpoke application services on the host in test/development mode, connecting to port-forwarded infrastructure in the Kubernetes cluster.
+
+### Pre-flight
+
+1. Verify `dev_env/.env` exists. If not, run **configure** first.
+2. Run `./dev_env/health-check.sh --quick` to confirm infrastructure is reachable. If it fails, suggest running `/dev-env health-check` or `/dev-env install` and stop.
+3. Run `uv sync` to ensure Python dependencies are up to date.
+
+### Option parsing
+
+Parse `$ARGUMENTS` and the user's request for these options:
+
+| Option | CLI flag | Default | Description |
+|--------|----------|---------|-------------|
+| `backend-only` | `--backend-only` | off | Start only backend (API); skip frontend when it exists |
+| `skip-migrate` | `--skip-migrate` | off | Skip Alembic database migration on startup |
+| `port <N>` | `--port <N>` | `8000` | API listen port |
+| `no-reload` | `--no-reload` | off | Disable uvicorn auto-reload (hot-reloading) |
+| `env-file <path>` | `--env-file <path>` | `dev_env/.env` | Path to `.env` file |
+
+### Start
+
+1. Build the command from parsed options:
+   ```bash
+   uv run -m src.cli [--backend-only] [--skip-migrate] [--port N] [--no-reload] [--env-file PATH]
+   ```
+2. Run the command **in the background** so the conversation remains interactive.
+3. Wait a few seconds, then read the background task output to confirm the banner appeared and the server started successfully.
+4. Report the running state to the user:
+   - API URL (`http://localhost:<port>`)
+   - Swagger UI (`http://localhost:<port>/docs`)
+   - Components started
+   - How to stop: user can press Ctrl+C or ask to stop
+
+### Stop
+
+If the user asks to stop the running DataSpoke process:
+
+1. Find the background task and stop it.
+2. Confirm the process has exited.
