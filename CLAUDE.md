@@ -71,7 +71,14 @@ For testing conventions (unit/integration/api-wired integration/E2E, toolchain, 
 
 Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
-**Infrastructure**: host mode against port-forwarded dev-env infra. Ensure port-forwards are active before running tests.
+**Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. It verifies all port-forwarded peripherals are reachable AND responding (not just that port-forward processes exist). Do not proceed if any check fails — reinstall the failing component's subsystem:
+
+| Failing service | Reinstall |
+|---|---|
+| dataspoke-postgresql, redis, qdrant, kestra | `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh` |
+| datahub-gms, datahub-kafka | `cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh` |
+| example-postgres, example-kafka | `cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh` |
+| lock-service | `cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh` |
 
 **Lock protocol**: acquire the dev-env advisory lock before any state-mutating operation.
 

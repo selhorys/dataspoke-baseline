@@ -281,6 +281,32 @@ cd dev_env
 ./lock-port-forward.sh
 ```
 
+Then run the health check to verify all services are actually responding (a port-forward process can be alive while the backing pod is unhealthy):
+
+```bash
+./dev_env/health-check.sh
+```
+
+The script probes each service at the application layer — PostgreSQL via `pg_isready`, Redis via `PING`, Qdrant via `/healthz`, Kestra via the flows API, DataHub GMS via `/health`, Kafka via metadata request, and the lock service via `/health`. Use `--quick` for TCP-only checks. Do not proceed if any check fails.
+
+If a service is unhealthy, reinstall its subsystem (stop the relevant port-forward first with `--stop`, then uninstall + install, then restart the port-forward):
+
+| Failing service | Subsystem directory |
+|---|---|
+| dataspoke-postgresql, dataspoke-redis, dataspoke-qdrant, dataspoke-kestra | `dev_env/dataspoke-infra/` |
+| datahub-gms, datahub-kafka | `dev_env/datahub/` |
+| example-postgres, example-kafka | `dev_env/dataspoke-example/` |
+| lock-service | `dev_env/dataspoke-lock/` |
+
+```bash
+# Example: reinstall dataspoke infra after Kestra failure
+cd dev_env
+./dataspoke-port-forward.sh --stop
+bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
+./dataspoke-port-forward.sh
+./health-check.sh
+```
+
 Integration tests do **not** require a running API server — they use in-process ASGI transport (`httpx.ASGITransport`). Kestra workflow tests call internal activity endpoints directly or use the Kestra REST API via `KestraClient`.
 
 ### Kestra Integration Test Pitfalls
