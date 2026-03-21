@@ -93,6 +93,7 @@ def _make_consumer(brokers: str, group_id: str | None = None) -> Consumer:
             "group.id": group_id or _unique_group_id(),
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
+            "enable.partition.eof": True,
             "session.timeout.ms": 10000,
         }
     )
@@ -102,10 +103,10 @@ def _make_producer(brokers: str) -> Producer:
     return Producer({"bootstrap.servers": brokers})
 
 
-def _wait_for_assignment(consumer: Consumer, *, max_polls: int = 10) -> None:
+def _wait_for_assignment(consumer: Consumer, *, max_wait_s: float = 10.0) -> None:
     """Poll until the consumer has at least one partition assigned."""
-    for _ in range(max_polls):
-        consumer.poll(timeout=1.0)
+    for _ in range(int(max_wait_s / 0.1)):
+        consumer.poll(timeout=0.1)
         if consumer.assignment():
             return
     pytest.skip("Consumer never received partition assignment")
@@ -131,7 +132,7 @@ def _poll_for_test_message(
     consumer: Consumer,
     test_id: str,
     *,
-    max_polls: int = 30,
+    max_wait_s: float = 30.0,
 ) -> "tuple[object, dict] | None":
     """Poll until we find the JSON message matching test_id, skipping Avro/binary messages.
 
@@ -139,8 +140,8 @@ def _poll_for_test_message(
     This helper safely skips non-JSON messages and looks for our specific test payload.
     Call after _seek_to_end() to avoid scanning the full topic history.
     """
-    for _ in range(max_polls):
-        msg = consumer.poll(timeout=1.0)
+    for _ in range(int(max_wait_s / 0.2)):
+        msg = consumer.poll(timeout=0.2)
         if msg is None or msg.error():
             continue
         try:
@@ -174,7 +175,7 @@ class TestKafkaConsumerIntegration:
         consumer = _make_consumer(datahub_kafka_brokers)
         try:
             consumer.subscribe([_VERSIONED_TOPIC])
-            msg = consumer.poll(timeout=5.0)
+            msg = consumer.poll(timeout=2.0)
             # msg is None (no messages) or a valid message — either is fine
             if msg is not None and msg.error():
                 assert msg.error().code() == KafkaError._PARTITION_EOF
@@ -571,7 +572,7 @@ class TestExampleKafkaIntegration:
         consumer = _make_consumer(kafka_brokers)
         try:
             consumer.subscribe(["imazon.orders.events"])
-            msg = consumer.poll(timeout=5.0)
+            msg = consumer.poll(timeout=2.0)
             if msg is not None and msg.error():
                 assert msg.error().code() == KafkaError._PARTITION_EOF
         finally:
@@ -603,7 +604,7 @@ class TestExampleKafkaIntegration:
             messages: list[dict] = []
             empty_polls = 0
             while empty_polls < 10:
-                msg = consumer.poll(timeout=1.0)
+                msg = consumer.poll(timeout=0.2)
                 if msg is None:
                     empty_polls += 1
                     continue
@@ -637,7 +638,7 @@ class TestExampleKafkaIntegration:
             consumed: list[dict] = []
             empty_polls = 0
             while empty_polls < 10 and len(consumed) < len(expected):
-                msg = consumer.poll(timeout=1.0)
+                msg = consumer.poll(timeout=0.2)
                 if msg is None:
                     empty_polls += 1
                     continue
@@ -663,7 +664,7 @@ class TestExampleKafkaIntegration:
             consumer.subscribe(["imazon.orders.events"])
             _wait_for_assignment(consumer)
 
-            msg = consumer.poll(timeout=5.0)
+            msg = consumer.poll(timeout=2.0)
             if msg is None or msg.error():
                 pytest.skip("No messages available in orders topic")
 
