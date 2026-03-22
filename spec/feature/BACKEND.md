@@ -988,21 +988,29 @@ The `kestra/` subpackage wraps Kestra's REST API via `httpx`:
 2. **Activity endpoints are idempotent** — safe to retry on transient failures
 3. **Timeouts**: Per-task timeout = 5 minutes (default); flow-level timeout = 1 hour
 4. **Retry policy**: Max 3 attempts, 10s initial interval, configured in flow YAML
-5. **Concurrency**: Label-based dedup via `KestraClient.check_no_duplicate()` prevents duplicate runs per entity
+5. **Concurrency**: Per-entity guards prevent duplicate runs (mechanism varies by flow type)
 
 ### Concurrency Guards
 
-Some flows must not run concurrently for the same entity. The API layer
-enforces this via `KestraClient.check_no_duplicate()`, which queries Kestra's
-execution search API for running executions with matching labels before
-triggering a new one.
+Some flows must not run concurrently for the same entity. Two mechanisms are used:
+
+**Redis SET NX** (for direct-execution flows):
+
+| Flow | Guard | Redis Key | TTL |
+|------|-------|-----------|-----|
+| `ingestion` | One per dataset_urn | `ingestion:running:{dataset_urn}` | 1 hour |
+
+The API route handler acquires the lock via `RedisClient.set_nx()` before calling `IngestionService.run()` and releases it on completion.
+
+**Kestra label-based dedup** (for Kestra-orchestrated flows):
 
 | Flow | Guard | Label Key | Label Value |
 |------|-------|-----------|-------------|
-| `ingestion` | One per dataset_urn | `workflow_id` | `ingestion-{md5(urn)[:12]}` |
 | `validation` | One per dataset_urn | `workflow_id` | `validation-{md5(urn)[:12]}` |
 | `generation` | One per dataset_urn | `workflow_id` | `generation-{md5(urn)[:12]}` |
 | `metrics` | One per metric_id | `workflow_id` | `metrics-{metric_id}` |
+
+The API layer calls `KestraClient.check_no_duplicate()`, which queries Kestra's execution search API for running executions with matching labels before triggering a new one.
 
 If a duplicate is detected, the API returns `409 Conflict` with
 `INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` / `METRIC_RUNNING` error codes.

@@ -37,11 +37,13 @@ Stores per-dataset ingestion configuration.
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `sources` | `JSONB` | Array of source configurations |
-| `deep_spec_enabled` | `BOOLEAN` | Enable LLM enrichment |
-| `schedule` | `TEXT` NULL | Cron expression for scheduled runs |
+| `source_type` | `TEXT` | Ingestion source identifier (`postgres`, `mysql`, `bigquery`, etc.) |
+| `location` | `JSONB` | Connection details (`host`, `port`, `database`, `username`, `secret_ref`) |
+| `periodic` | `BOOLEAN` | Enable cron-triggered execution via Kestra |
+| `schedule` | `TEXT` NULL | Cron expression (required when `periodic=true`) |
+| `enrichment_sources` | `JSONB` NULL | External enrichment source configs (TBD) |
+| `custom_extractors` | `JSONB` NULL | Custom extractor plugin configs (TBD) |
 | `status` | `TEXT` | `active`, `paused`, `draft` |
-| `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
 

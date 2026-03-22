@@ -105,10 +105,11 @@ def test_generated_yaml_list_datasets_body_contains_schedule(sample_yaml):
     assert "0 2 * * *" in list_task["body"]
 
 
-def test_generated_yaml_has_each_sequential_task(sample_yaml):
+def test_generated_yaml_has_each_parallel_task(sample_yaml):
     tasks = sample_yaml["tasks"]
     each_task = next(t for t in tasks if t["id"] == "run_each")
-    assert each_task["type"] == "io.kestra.plugin.core.flow.EachSequential"
+    assert each_task["type"] == "io.kestra.plugin.core.flow.EachParallel"
+    assert each_task["concurrency"] == 5
 
 
 def test_generated_yaml_each_sequential_has_run_ingestion(sample_yaml):

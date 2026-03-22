@@ -200,7 +200,7 @@ while DA or other teams may register simpler configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Config | UC1 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Trigger ingestion run via Kestra (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation Config | UC2, UC3, UC6 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation Config | UC2, UC3, UC6 |
@@ -242,9 +242,9 @@ management.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (schedule, deep_spec_enabled flag, status, owner) | Ingestion Config | UC1 |
+| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (source_type, location, periodic, schedule, status) | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Trigger ingestion run via Kestra (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
+| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 
 #### Validation (`/spoke/common/validation`)

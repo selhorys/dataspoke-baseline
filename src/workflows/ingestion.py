@@ -49,8 +49,9 @@ tasks:
       interval: PT10S
 
   - id: run_each
-    type: io.kestra.plugin.core.flow.EachSequential
+    type: io.kestra.plugin.core.flow.EachParallel
     value: "{{ outputs.list_datasets.body }}"
+    concurrency: 5
     tasks:
       - id: run_ingestion
         type: io.kestra.plugin.core.http.Request
