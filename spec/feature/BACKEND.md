@@ -510,9 +510,50 @@ class DatasetService:
 
 **Responsibilities**:
 - CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`)
-- Trigger ingestion runs via Kestra flow
-- Source-specific extractors (Confluence, GitHub, Excel, SQL logs)
-- Field mapping and enrichment using LLM
+- Periodic (cron-triggered) and manual (on-demand) ingestion execution
+- Metadata ingestion via DataHub standard sources and (future) custom sources
+- Metadata enrichment from external sources and custom extractors (TBD)
+
+**Ingestion config model** (`ingestion_configs` table):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `id` | UUID | yes | auto | Primary key |
+| `dataset_urn` | text | yes | — | Unique; one config per dataset |
+| `source_type` | text | yes | — | Ingestion source identifier (see available sources below) |
+| `location` | JSONB | yes | — | Connection details for the source (e.g., `{"host", "port", "database", "username", "secret_ref"}`) |
+| `enrichment_sources` | JSONB | no | `null` | External enrichment source configs (TBD — see below) |
+| `custom_extractors` | JSONB | no | `null` | Custom extractor plugin configs (TBD — see below) |
+| `periodic` | boolean | yes | `false` | Enable cron-triggered execution via Kestra |
+| `schedule` | text | no | `null` | Cron expression (required when `periodic=true`, e.g., `0 2 * * *`) |
+| `status` | text | yes | `"draft"` | Config lifecycle status |
+| `created_at` | timestamptz | yes | `now()` | — |
+| `updated_at` | timestamptz | yes | `now()` | — |
+
+When `periodic` is `true`, `schedule` must contain a valid cron expression. The API layer validates this constraint on PUT/PATCH.
+
+**Available `source_type` values**:
+
+DataHub standard ingestion sources (via `acryl-datahub` SDK):
+
+| `source_type` | Platform | Description |
+|---------------|----------|-------------|
+| `postgres` | PostgreSQL | Tables, views, schemas |
+| `mysql` | MySQL | Tables, views, schemas |
+| `oracle` | Oracle | Tables, views, stored procedures |
+| `bigquery` | BigQuery | Datasets, tables, views |
+| `snowflake` | Snowflake | Databases, schemas, tables |
+| `kafka` | Kafka | Topics, schemas |
+
+Custom ingestion sources: TBD — no custom sources available yet. Will follow the same `source_type` registration pattern.
+
+**`enrichment_sources`** (TBD):
+
+Per UC1 spec, enrichment sources augment dataset metadata from external non-database sources (Confluence, Excel, APIs). Each source has a `type`, connection parameters, and `fields_mapping`. Detailed schema and implementation deferred.
+
+**`custom_extractors`** (TBD):
+
+Per UC1 spec, custom extractors are user-provided Python plugin functions for processing that built-in connectors cannot handle (e.g., PL/SQL lineage parsing, CHECK constraint extraction). Detailed plugin framework deferred.
 
 **Service interface**:
 
@@ -523,36 +564,21 @@ class IngestionService:
     async def patch_config(self, dataset_urn: str, patch: dict) -> IngestionConfig: ...
     async def delete_config(self, dataset_urn: str) -> None: ...
     async def list_configs(self, offset: int, limit: int, filters: dict) -> tuple[list[IngestionConfig], int]: ...
-    async def run(self, dataset_urn: str, config_id: str | None, dry_run: bool) -> IngestionRun: ...
+    async def list_periodic_configs(self) -> list[IngestionConfig]: ...
+    async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult: ...
     async def get_events(self, dataset_urn: str, offset: int, limit: int) -> tuple[list[EventRecord], int]: ...
 ```
 
-**Run pipeline** (executed as Kestra flow via HTTP Request tasks):
+**Run pipeline** (`IngestionService.run()`):
 
 1. Load config from PostgreSQL
-2. Invoke extractor(s) for configured sources
-3. Transform extracted data → DataHub aspects
-4. LLM-enrich descriptions and tags (if `deep_spec_enabled`)
-5. Validate transformed aspects (schema checks, deduplication)
-6. Write aspects to DataHub via `DataHubClient.emit_aspect()` (skip if `dry_run`)
-7. Record run event (success/failure) in PostgreSQL
+2. Run DataHub ingestion for `source_type` (via `acryl-datahub` SDK)
+3. Run enrichment sources, if configured (TBD)
+4. Run custom extractors, if configured (TBD)
+5. Validate and emit aspects to DataHub (skip if `dry_run`)
+6. Record run event (success/partial/error) in PostgreSQL
 
-**Extractors** (`src/backend/ingestion/extractors.py`):
-
-| Extractor | Input Source | Output |
-|-----------|-------------|--------|
-| `ConfluenceExtractor` | Confluence API | Business descriptions, data dictionary |
-| `GitHubExtractor` | GitHub API (repos, PRs) | Code references, README context |
-| `ExcelExtractor` | Uploaded Excel/CSV | Column mapping, business glossary |
-| `SqlLogExtractor` | SQL query logs / PL/SQL | Lineage edges, transformation logic |
-
-Each extractor implements:
-
-```python
-class BaseExtractor(ABC):
-    @abstractmethod
-    async def extract(self, source_config: dict) -> list[ExtractedMetadata]: ...
-```
+Both Kestra periodic triggers and the manual API (`POST .../attr/ingestion/method/run`) call `IngestionService.run()`.
 
 ### Validation Service (`src/backend/validation/`)
 
@@ -939,14 +965,16 @@ The `kestra/` subpackage wraps Kestra's REST API via `httpx`:
   completes with FAILED status), `KestraTimeoutError` (raised when polling
   exceeds timeout), `parse_execution_error()` (extracts human-readable error
   from failed execution response).
-- **`registry.py`** — `register_all_flows()` reads all YAML files from
-  `src/workflows/flows/` and registers them with Kestra via `create_or_update_flow`.
+- **`registry.py`** — `register_all_flows()` registers static YAML flows from
+  `src/workflows/flows/` and dynamically generated flows (e.g., periodic
+  ingestion flows grouped by cron schedule) via `create_or_update_flow`.
 
 ### Flow Catalogue
 
 | Flow | File | Trigger | Schedule |
 |------|------|---------|----------|
-| `ingestion` | `flows/ingestion.yaml` | API `POST .../method/run` → `KestraClient.trigger()` | On-demand |
+| `ingestion-config-sync` | `flows/ingestion_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
+| `ingestion-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual `POST .../method/run` | Per-config `periodic` + `schedule` |
 | `validation` | `flows/validation.yaml` | API `POST .../method/run`, Kafka event | On-demand + event-driven |
 | `sla-monitor` | `flows/sla_monitor.yaml` | Kestra schedule trigger (per-dataset, from `validation_configs.schedule`) | Scheduled (e.g., every 30 min for datasets with SLA targets) |
 | `generation` | `flows/generation.yaml` | API `POST .../method/generate` | On-demand |
@@ -979,20 +1007,59 @@ triggering a new one.
 If a duplicate is detected, the API returns `409 Conflict` with
 `INGESTION_RUNNING` / `VALIDATION_RUNNING` / `GENERATION_RUNNING` / `METRIC_RUNNING` error codes.
 
-### Ingestion Flow Activity Decomposition
+### Ingestion Workflow
 
-The ingestion flow uses three sequential HTTP Request tasks matching the pipeline
-phases for per-phase observability and partial-failure recovery:
+Ingestion supports two trigger modes configured per dataset via `ingestion_configs.periodic`:
 
-| Activity Endpoint | Phase | Timeout | Purpose |
-|-------------------|-------|---------|---------|
-| `POST /internal/activities/extract-metadata` | 1 | 5 min | Load config, run per-source extractors, return metadata + errors |
-| `POST /internal/activities/emit-to-datahub` | 2 | 5 min | Transform metadata, apply LLM enrichment, emit to DataHub (skipped if `dry_run`) |
-| `POST /internal/activities/record-ingestion-event` | 3 | 5 min | Determine status, persist event to PostgreSQL, return final result |
+| Mode | Trigger | How |
+|------|---------|-----|
+| **Periodic** | Kestra cron schedule | Datasets with the same `schedule` value are grouped into a single Kestra flow |
+| **Manual** | User HTTP request | `POST .../attr/ingestion/method/run` calls `IngestionService.run()` directly |
 
-Each task receives the output of the previous one via Kestra's output passing.
-If extraction succeeds but emission fails, only the emission task retries —
-extraction results are preserved.
+#### Periodic Ingestion Flow Generation
+
+DataSpoke dynamically generates one Kestra flow per unique cron schedule. The sync runs:
+
+- **On backend startup** — initial registration
+- **Via `ingestion-config-sync` workflow** — a static Kestra flow (cron `*/10 * * * *` by default, adjustable in Kestra UI) that calls `POST /internal/activities/sync-periodic-ingestion-flows` to pick up config changes
+
+Sync logic (`sync_periodic_ingestion_flows()`):
+
+1. Query distinct `schedule` values from configs where `periodic = true`
+2. For each unique schedule, generate a flow with:
+   - **ID**: `ingestion-periodic-{hash(schedule)}` (e.g., `ingestion-periodic-a1b2c3`)
+   - **Cron trigger**: the schedule value
+   - **Task 1** — `POST /internal/activities/list-periodic-datasets` with `{"schedule": "<cron>"}` → returns `["urn:...", ...]`
+   - **Task 2** — `EachParallel` over the returned URNs (concurrency limit: 5), each calling `POST /api/v1/spoke/common/data/{urn}/attr/ingestion/method/run` with `{"dry_run": false}` (service account auth)
+3. Register (create or update) each generated flow via `KestraClient.create_or_update_flow()`
+4. Delete any `ingestion-periodic-*` flows whose schedule no longer has matching configs
+
+The flow fetches the dataset list dynamically at execution time, so the sync only needs to run when unique schedule values change (new schedule added, last config for a schedule removed).
+
+#### Example
+
+Given configs:
+
+| dataset_urn | periodic | schedule |
+|---|---|---|
+| `...catalog.title_master` | true | `0 2 * * *` |
+| `...catalog.editions` | true | `0 2 * * *` |
+| `...orders.order_items` | true | `0 6 * * *` |
+| `...reviews.user_ratings` | false | null |
+
+After startup, Kestra has:
+
+| Flow ID | Type | Cron | Datasets served |
+|---------|------|------|-----------------|
+| `ingestion-config-sync` | static | `*/10 * * * *` | — (manages other flows) |
+| `ingestion-periodic-{hash("0 2 * * *")}` | dynamic | `0 2 * * *` | `title_master`, `editions` |
+| `ingestion-periodic-{hash("0 6 * * *")}` | dynamic | `0 6 * * *` | `order_items` |
+
+`user_ratings` has no flow — manual-only via `POST .../method/run`.
+
+#### Manual Ingestion
+
+`POST /api/v1/spoke/common/data/{urn}/attr/ingestion/method/run` calls `IngestionService.run()` directly. The same endpoint is called by both users and the Kestra `EachParallel` tasks — concurrency is guarded per dataset URN.
 
 ---
 
