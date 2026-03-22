@@ -21,19 +21,8 @@ Your job is to write Kestra flow YAML definitions in `src/workflows/flows/` and 
 ```
 src/workflows/
 ├── _common.py              # Service factories (make_datahub, make_cache, etc.) and workflow ID helpers
-├── kestra/
-│   ├── client.py           # KestraClient — REST API wrapper (httpx)
-│   ├── models.py           # ExecutionResponse, ExecutionStatus, FlowResponse
-│   ├── errors.py           # KestraExecutionFailedError, KestraTimeoutError
-│   └── registry.py         # Flow deployment registry
-├── flows/                  # Kestra YAML flow definitions
-│   ├── ingestion.yaml
-│   ├── validation.yaml
-│   ├── sla_monitor.yaml
-│   ├── generation.yaml
-│   ├── embedding_sync.yaml
-│   ├── metrics.yaml
-│   └── ontology_rebuild.yaml
+├── kestra/                 # KestraClient REST wrapper, models, errors, flow deployment registry
+├── flows/                  # Static Kestra YAML flow definitions (+ dynamic periodic ingestion flows at runtime)
 └── {feature}.py            # FLOW_ID constant and Params dataclass per feature
 ```
 
@@ -44,10 +33,10 @@ src/workflows/
 - **Inputs**: always include `callback_base_url` (for host/in-cluster flexibility), entity key (e.g. `dataset_urn`), and `run_id`
 - **Retry policy**: max 3 attempts, 10s constant interval, configured per task in flow YAML
 - **Timeouts**: per-task timeout = 5 min (default); flow-level timeout = 1 hour
-- **Concurrency**: use labels + `KestraClient.check_no_duplicate()` for per-entity deduplication. API returns 409 Conflict if a duplicate is running
+- **Concurrency**: two mechanisms — Redis SET NX for ingestion (per-dataset guard), Kestra label-based `KestraClient.check_no_duplicate()` for validation/generation/metrics flows. API returns 409 Conflict if a duplicate is running
 - **Output passing**: each task receives the output of the previous one via Kestra's output variables (e.g. `{{ outputs.extract_metadata.body }}`)
 - **KestraClient**: use `src/workflows/kestra/client.py` to trigger flows and poll execution status from the API layer
-- **Flow deployment**: `registry.py` deploys flow YAML to Kestra on startup via `create_or_update_flow()`
+- **Flow deployment**: `registry.py` deploys static flow YAML to Kestra on startup via `create_or_update_flow()`. Dynamic periodic ingestion flows (`ingestion-periodic-*`) are synced separately via the `ingestion-config-sync` cron flow or at app startup
 - **Progress reporting**: long-running flows publish progress to Redis pub/sub for WebSocket feeds (see `spec/feature/BACKEND.md` §WebSocket Feed)
 - **Idempotency**: activity endpoints must be safe to retry — use idempotency keys where needed
 

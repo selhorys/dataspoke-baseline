@@ -167,7 +167,7 @@ Core computational layer. For the full backend specification — layered archite
 
 | Domain | Capabilities |
 |--------|-------------|
-| Ingestion (DE) | Multi-source enrichment, custom extractors, PL/SQL lineage parsing |
+| Ingestion (DE) | Periodic (cron) and on-demand metadata ingestion via DataHub standard sources, enrichment sources and custom extractors (TBD) |
 | Validation (DE/DA) | Quality scoring, time-series anomaly detection (Prophet, Isolation Forest), SLA prediction |
 | Documentation (DE) | LLM-powered semantic clustering, source code analysis, ontology proposals |
 | Search (DA) | Embedding generation, vector similarity (Qdrant), NL query parsing |
@@ -213,10 +213,10 @@ For SDK entry points, aspect catalog, error handling, and configuration, see [`D
 Covers UC1 (Deep Ingestion) → event-driven downstream processing.
 
 ```
-External Sources                    DataSpoke Backend               DataHub
-(Confluence, Excel, APIs,   ──►    Ingestion Service        ──►   GMS
- GitHub repos, SQL logs)           (extract, transform,            (persist aspects,
-                                    LLM-enrich, validate)          emit MCE/MAE)
+Data Sources                        DataSpoke Backend               DataHub
+(PostgreSQL, MySQL,         ──►    Ingestion Service        ──►   GMS
+ BigQuery, etc.)                   (DataHub SDK ingestion,         (persist aspects,
+                                    enrichment TBD)                emit MCE/MAE)
                                                                       │
                                    Event Consumers           ◄──   Kafka
                                    ├─ Vector DB Sync (DA)
@@ -321,7 +321,7 @@ DE features are served through `/spoke/common/` routes (dataset-centric operatio
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
-| Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service, Custom Extractors, Field Mapping Engine | Kestra, DataHub SDK, Qdrant |
+| Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service | Kestra (periodic + config sync), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Online Data Validator | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Quality Score Engine, Anomaly Detection, SLA Predictor | PostgreSQL, Redis, Prophet/IF |
 | Automated Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Ontology Builder (shared), Source Code Analyzer, Consistency Engine | LLM API, Qdrant, PostgreSQL |
 
@@ -355,7 +355,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 | Concern | Infrastructure | Consumers |
 |---------|---------------|-----------|
 | Kafka Event Consumers | Kafka (shared with DataHub) | Vector DB sync (DA), validator triggers (DE), metrics update (DG), ontology re-index |
-| Kestra Flows | Kestra | Scheduled ingestion (DE), anomaly detection (DE), embedding maintenance (DA), metrics collection (DG) |
+| Kestra Flows | Kestra | Periodic ingestion + config sync (DE), anomaly detection (DE), embedding maintenance (DA), metrics collection (DG) |
 | PostgreSQL Operational Tables | PostgreSQL | Ingestion configs/runs, quality rules/results, health scores, ontology graph, user preferences |
 | Redis Caching | Redis | Validation result cache (AI agent loops), API response cache, rate limiting |
 

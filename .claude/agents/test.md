@@ -25,16 +25,12 @@ tests/
 │   ├── shared/                # Integration client tests (mocked external services)
 │   └── workflows/             # Kestra workflow tests (mocked activities)
 ├── integration/
-│   ├── conftest.py            # Root fixtures (auto-resets dummy data)
+│   ├── conftest.py            # Root fixtures (infra, lifecycle, mocks, data helpers)
+│   ├── test_*_integration.py  # Non-api-wired tests (infra clients, Kafka, Kestra, etc.)
 │   ├── api_wired/
-│   │   ├── conftest.py        # auth_headers fixture
 │   │   ├── spot/              # Individual endpoint CRUD + error cases
 │   │   └── story/             # Multi-step USE_CASE scenario tests
-│   └── util/
-│       ├── __main__.py        # CLI: --reset-all, --pg, --kafka, --datahub
-│       └── fixtures/
-│           ├── sql/           # SQL seed data
-│           └── kafka/         # Kafka JSONL messages
+│   └── util/                  # Dummy-data reset helpers + ActivityServer + fixtures
 └── conftest.py                # Shared pytest configuration
 ```
 
