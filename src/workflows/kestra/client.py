@@ -202,6 +202,17 @@ class KestraClient:
         results = body.get("results", [])
         return [ExecutionResponse(**r) for r in results]
 
+    async def list_flows(self, prefix: str | None = None) -> list[dict]:
+        """List all flows in the namespace, optionally filtered by ID prefix."""
+        resp = await self._client.get(f"/api/v1/flows/{self.namespace}")
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        flows = resp.json()
+        if prefix:
+            flows = [f for f in flows if f.get("id", "").startswith(prefix)]
+        return flows
+
     async def delete_flow(self, flow_id: str) -> None:
         """Delete a flow. No-op if not found."""
         resp = await self._client.delete(

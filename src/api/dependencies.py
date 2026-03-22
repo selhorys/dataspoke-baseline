@@ -88,9 +88,8 @@ async def get_dataset_service(
 async def get_ingestion_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
-    llm: LLMClient = Depends(get_llm),
 ) -> IngestionService:
-    return IngestionService(datahub=datahub, db=db, llm=llm)
+    return IngestionService(datahub=datahub, db=db)
 
 
 async def get_validation_service(

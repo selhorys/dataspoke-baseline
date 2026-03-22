@@ -1,8 +1,66 @@
 """Source code analyzer for similar-table diffing and code reference analysis."""
 
+from abc import ABC, abstractmethod
 from typing import Any
 
+import httpx
+from pydantic import BaseModel
+
+from src.shared.exceptions import DataSpokeError
 from src.shared.llm.client import LLMClient
+
+
+class _ExtractedItem(BaseModel):
+    """Minimal value object representing a single code item extracted from GitHub."""
+
+    content: dict[str, Any]
+    source_ref: str
+
+
+class GitHubExtractor(ABC):
+    """Extracts code references from a GitHub repository for generation analysis."""
+
+    REQUIRED_KEYS = ("owner", "repo", "token")
+
+    @abstractmethod
+    async def extract(self, source_config: dict[str, Any]) -> list[_ExtractedItem]: ...
+
+
+class _GitHubExtractorImpl(GitHubExtractor):
+    async def extract(self, source_config: dict[str, Any]) -> list[_ExtractedItem]:
+        missing = [k for k in self.REQUIRED_KEYS if k not in source_config]
+        if missing:
+            raise DataSpokeError(f"GitHubExtractor missing config keys: {missing}")
+
+        owner = source_config["owner"]
+        repo = source_config["repo"]
+        token = source_config["token"]
+        path = source_config.get("path", "")
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPError as exc:
+            raise DataSpokeError(f"GitHub API error: {exc}") from exc
+
+        items = data if isinstance(data, list) else [data]
+        return [
+            _ExtractedItem(
+                content={
+                    "name": item.get("name", ""),
+                    "path": item.get("path", ""),
+                    "type": item.get("type", ""),
+                    "sha": item.get("sha", ""),
+                },
+                source_ref=item.get("html_url", f"https://github.com/{owner}/{repo}"),
+            )
+            for item in items
+        ]
 
 
 class SourceCodeAnalyzer:
@@ -25,9 +83,7 @@ class SourceCodeAnalyzer:
         Returns:
             Dict mapping field paths to code-informed descriptions.
         """
-        from src.backend.ingestion.extractors import GitHubExtractor
-
-        extractor = GitHubExtractor()
+        extractor = _GitHubExtractorImpl()
         items = await extractor.extract(code_refs)
 
         if not items:

@@ -103,10 +103,18 @@ def _make_producer(brokers: str) -> Producer:
 
 
 def _wait_for_assignment(consumer: Consumer, *, max_wait_s: float = 10.0) -> None:
-    """Poll until the consumer has at least one partition assigned."""
+    """Poll until the consumer has at least one partition assigned.
+
+    After assignment is received, performs additional polls so that
+    librdkafka's internal partition fetch state initialises — without
+    this, an immediate ``consumer.seek()`` can hit ``_STATE`` errors.
+    """
     for _ in range(int(max_wait_s / 0.1)):
         consumer.poll(timeout=0.1)
         if consumer.assignment():
+            # Extra polls to let fetch state settle before seek
+            for _ in range(5):
+                consumer.poll(timeout=0.1)
             return
     pytest.skip("Consumer never received partition assignment")
 

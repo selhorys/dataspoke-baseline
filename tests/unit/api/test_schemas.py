@@ -74,23 +74,25 @@ class TestIngestionSchemas:
     def test_create_request_round_trip(self) -> None:
         req = CreateIngestionConfigRequest(
             dataset_urn="urn:li:dataset:test",
-            sources={"type": "postgres"},
-            owner="admin",
+            source_type="postgres",
+            location={"host": "localhost", "port": 5432, "database": "testdb"},
         )
         data = req.model_dump()
         parsed = CreateIngestionConfigRequest.model_validate(data)
         assert parsed.dataset_urn == req.dataset_urn
-        assert parsed.deep_spec_enabled is False
+        assert parsed.periodic is False
 
     def test_config_response_has_resp_time(self) -> None:
         resp = IngestionConfigResponse(
             id="1",
             dataset_urn="urn:li:dataset:test",
-            sources={},
-            deep_spec_enabled=False,
+            source_type="postgres",
+            location={"host": "localhost"},
+            periodic=False,
             schedule=None,
+            enrichment_sources=None,
+            custom_extractors=None,
             status="active",
-            owner="admin",
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )

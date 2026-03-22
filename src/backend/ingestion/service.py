@@ -5,17 +5,16 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.ingestion.extractors import EXTRACTOR_REGISTRY, ExtractedMetadata
+from src.backend.ingestion.extractors import run_datahub_ingestion
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, IngestionConfig
 from src.shared.exceptions import EntityNotFoundError
-from src.shared.llm.client import LLMClient
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionConfigRecord(BaseModel):
@@ -23,11 +22,13 @@ class IngestionConfigRecord(BaseModel):
 
     id: str
     dataset_urn: str
-    sources: dict[str, Any]
-    deep_spec_enabled: bool
+    source_type: str
+    location: dict[str, Any]
+    periodic: bool
     schedule: str | None = None
+    enrichment_sources: dict[str, Any] | None = None
+    custom_extractors: dict[str, Any] | None = None
     status: str
-    owner: str
     created_at: datetime
     updated_at: datetime
 
@@ -44,11 +45,13 @@ def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:
     return IngestionConfigRecord(
         id=str(row.id),
         dataset_urn=row.dataset_urn,
-        sources=row.sources,
-        deep_spec_enabled=row.deep_spec_enabled,
+        source_type=row.source_type,
+        location=row.location,
+        periodic=row.periodic,
         schedule=row.schedule,
+        enrichment_sources=row.enrichment_sources,
+        custom_extractors=row.custom_extractors,
         status=row.status,
-        owner=row.owner,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -61,11 +64,9 @@ class IngestionService:
         self,
         datahub: DataHubClient,
         db: AsyncSession,
-        llm: LLMClient,
     ) -> None:
         self._datahub = datahub
         self._db = db
-        self._llm = llm
 
     # ── Config CRUD ──────────────────────────────────────────────────────
 
@@ -81,10 +82,12 @@ class IngestionService:
     async def upsert_config(
         self,
         dataset_urn: str,
-        sources: dict[str, Any],
-        deep_spec_enabled: bool,
+        source_type: str,
+        location: dict[str, Any],
+        periodic: bool,
         schedule: str | None,
-        owner: str,
+        enrichment_sources: dict[str, Any] | None = None,
+        custom_extractors: dict[str, Any] | None = None,
     ) -> tuple[IngestionConfigRecord, bool]:
         result = await self._db.execute(
             select(IngestionConfig).where(IngestionConfig.dataset_urn == dataset_urn)
@@ -92,20 +95,24 @@ class IngestionService:
         existing = result.scalar_one_or_none()
 
         if existing:
-            existing.sources = sources
-            existing.deep_spec_enabled = deep_spec_enabled
+            existing.source_type = source_type
+            existing.location = location
+            existing.periodic = periodic
             existing.schedule = schedule
-            existing.owner = owner
+            existing.enrichment_sources = enrichment_sources
+            existing.custom_extractors = custom_extractors
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
             created = False
         else:
             existing = IngestionConfig(
                 dataset_urn=dataset_urn,
-                sources=sources,
-                deep_spec_enabled=deep_spec_enabled,
+                source_type=source_type,
+                location=location,
+                periodic=periodic,
                 schedule=schedule,
-                owner=owner,
+                enrichment_sources=enrichment_sources,
+                custom_extractors=custom_extractors,
             )
             self._db.add(existing)
             created = True
@@ -122,12 +129,18 @@ class IngestionService:
         if row is None:
             raise EntityNotFoundError("ingestion_config", dataset_urn)
 
-        if "sources" in patch and patch["sources"] is not None:
-            row.sources = patch["sources"]
-        if "deep_spec_enabled" in patch and patch["deep_spec_enabled"] is not None:
-            row.deep_spec_enabled = patch["deep_spec_enabled"]
-        if "schedule" in patch and patch["schedule"] is not None:
+        if "source_type" in patch and patch["source_type"] is not None:
+            row.source_type = patch["source_type"]
+        if "location" in patch and patch["location"] is not None:
+            row.location = patch["location"]
+        if "periodic" in patch and patch["periodic"] is not None:
+            row.periodic = patch["periodic"]
+        if "schedule" in patch:
             row.schedule = patch["schedule"]
+        if "enrichment_sources" in patch:
+            row.enrichment_sources = patch["enrichment_sources"]
+        if "custom_extractors" in patch:
+            row.custom_extractors = patch["custom_extractors"]
         if "status" in patch and patch["status"] is not None:
             row.status = patch["status"]
         row.updated_at = datetime.now(tz=UTC)
@@ -163,201 +176,82 @@ class IngestionService:
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = IngestionConfig.created_at.desc()
-        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
         return [_record_from_row(r) for r in rows], total_count
 
-    # ── Run pipeline (step-level) ─────────────────────────────────────────
+    async def list_periodic_configs(self) -> list[IngestionConfigRecord]:
+        """Return all configs where periodic=true."""
+        result = await self._db.execute(
+            select(IngestionConfig).where(IngestionConfig.periodic.is_(True))
+        )
+        rows = result.scalars().all()
+        return [_record_from_row(r) for r in rows]
 
-    async def extract_metadata(self, dataset_urn: str, run_id: str) -> dict[str, Any]:
-        """Phase 1 — load config and extract metadata from all configured sources.
+    async def list_periodic_datasets(self, schedule: str) -> list[str]:
+        """Return dataset URNs where periodic=true and schedule matches the given cron expression."""
+        result = await self._db.execute(
+            select(IngestionConfig.dataset_urn).where(
+                IngestionConfig.periodic.is_(True),
+                IngestionConfig.schedule == schedule,
+            )
+        )
+        return list(result.scalars().all())
 
-        Returns a dict with keys:
-          - run_id: str
-          - metadata: list[dict]  (serialised ExtractedMetadata objects)
-          - errors: list[str]
-          - sources_processed: int
-          - deep_spec_enabled: bool
+    # ── Run pipeline ──────────────────────────────────────────────────────
+
+    async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult:
+        """Run the full ingestion pipeline.
+
+        1. Load config from PostgreSQL.
+        2. Call run_datahub_ingestion() for source_type via acryl-datahub SDK.
+        3. Skip enrichment/custom extractors (TBD).
+        4. If not dry_run, emit results to DataHub.
+        5. Record run event in PostgreSQL.
+        6. Return IngestionRunResult.
         """
+        run_id = str(uuid.uuid4())
+
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("ingestion_config", dataset_urn)
 
-        all_metadata: list[ExtractedMetadata] = []
-        errors: list[str] = []
+        ingestion_result = await run_datahub_ingestion(
+            source_type=config.source_type,
+            location=config.location,
+            dataset_urn=dataset_urn,
+            dry_run=dry_run,
+        )
 
-        for source_type, source_config in config.sources.items():
-            extractor_cls = EXTRACTOR_REGISTRY.get(source_type)
-            if extractor_cls is None:
-                errors.append(f"Unknown source type: {source_type}")
-                continue
-            try:
-                extractor = extractor_cls()
-                extracted = await extractor.extract(source_config)
-                all_metadata.extend(extracted)
-            except Exception as exc:
-                errors.append(f"{source_type}: {exc}")
+        errors = ingestion_result.errors
+        warnings = ingestion_result.warnings
 
-        return {
-            "run_id": run_id,
-            "metadata": [m.model_dump() for m in all_metadata],
-            "errors": errors,
-            "sources_processed": len(config.sources),
-            "deep_spec_enabled": config.deep_spec_enabled,
-        }
-
-    async def emit_metadata_to_datahub(
-        self,
-        dataset_urn: str,
-        extract_result: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Phase 2 — transform and emit extracted metadata to DataHub.
-
-        ``extract_result`` is the dict returned by :meth:`extract_metadata`.
-        Returns a dict with keys:
-          - status: str  ("success" | "partial" | "error")
-          - detail: dict
-        """
-        run_id: str = extract_result["run_id"]
-        raw_metadata: list[dict[str, Any]] = extract_result["metadata"]
-        errors: list[str] = extract_result["errors"]
-        sources_processed: int = extract_result["sources_processed"]
-        deep_spec_enabled: bool = extract_result["deep_spec_enabled"]
-
-        all_metadata = [ExtractedMetadata(**m) for m in raw_metadata]
-
-        emit_error: str | None = None
-        if all_metadata:
-            try:
-                await self._emit_to_datahub(dataset_urn, all_metadata, deep_spec_enabled)
-            except Exception as exc:
-                emit_error = str(exc)
-
-        if emit_error:
+        if errors:
             status = "error"
-        elif errors and not all_metadata:
-            status = "error"
-        elif errors:
-            status = "partial"
         else:
             status = "success"
 
         detail: dict[str, Any] = {
             "run_id": run_id,
-            "sources_processed": sources_processed,
-            "metadata_extracted": len(all_metadata),
-            "dry_run": False,
+            "source_type": config.source_type,
+            "entities_ingested": ingestion_result.entities_ingested,
+            "dry_run": dry_run,
         }
         if errors:
-            detail["extractor_errors"] = errors
-        if emit_error:
-            detail["emit_error"] = emit_error
+            detail["errors"] = errors
+        if warnings:
+            detail["warnings"] = warnings
 
-        return {"status": status, "detail": detail}
-
-    async def record_ingestion_event(
-        self,
-        dataset_urn: str,
-        run_id: str,
-        status: str,
-        detail: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Phase 3 — record the ingestion event and return the final run result.
-
-        Returns a dict with keys: run_id, status, detail.
-        """
         event_type = "ingestion.completed" if status != "error" else "ingestion.failed"
         await self._record_event(dataset_urn, event_type, status, detail)
-        return {"run_id": run_id, "status": status, "detail": detail}
 
-    async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult:
-        """Run the full ingestion pipeline in a single call (used for non-Kestra paths)."""
-        run_id = str(uuid.uuid4())
-
-        extract_result = await self.extract_metadata(dataset_urn, run_id)
-        errors: list[str] = extract_result["errors"]
-        raw_metadata: list[dict[str, Any]] = extract_result["metadata"]
-        all_metadata = [ExtractedMetadata(**m) for m in raw_metadata]
-
-        if not dry_run and all_metadata:
-            emit_result = await self.emit_metadata_to_datahub(dataset_urn, extract_result)
-            status = emit_result["status"]
-            detail = emit_result["detail"]
-            detail["dry_run"] = False
-        else:
-            if errors and not all_metadata:
-                status = "error"
-            elif errors:
-                status = "partial"
-            else:
-                status = "success"
-            detail = {
-                "run_id": run_id,
-                "sources_processed": extract_result["sources_processed"],
-                "metadata_extracted": len(all_metadata),
-                "dry_run": dry_run,
-            }
-            if errors:
-                detail["extractor_errors"] = errors
-
-        result = await self.record_ingestion_event(dataset_urn, run_id, status, detail)
-        return IngestionRunResult(
-            run_id=result["run_id"],
-            status=result["status"],
-            detail=result["detail"],
-        )
-
-    async def _emit_to_datahub(
-        self,
-        dataset_urn: str,
-        metadata: list[ExtractedMetadata],
-        deep_spec_enabled: bool,
-    ) -> None:
-        from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-        custom_props: dict[str, str] = {"source": "dataspoke"}
-        descriptions: list[str] = []
-        code_refs: list[str] = []
-        lineage_tables: list[str] = []
-
-        for m in metadata:
-            if m.metadata_type == "description":
-                title = m.content.get("title", "")
-                descriptions.append(title)
-            elif m.metadata_type == "code_ref":
-                code_refs.append(m.content.get("path", m.source_ref))
-            elif m.metadata_type == "lineage_edge":
-                lineage_tables.extend(m.content.get("tables", []))
-
-        if code_refs:
-            custom_props["code_references"] = ", ".join(code_refs)
-        if lineage_tables:
-            custom_props["lineage_sources"] = ", ".join(lineage_tables)
-
-        description = "; ".join(descriptions) if descriptions else None
-
-        if deep_spec_enabled and metadata:
-            try:
-                enrichment = await self._llm.complete_json(
-                    prompt=f"Enrich dataset description from: {descriptions}. "
-                    f"Code refs: {code_refs}. Lineage: {lineage_tables}.",
-                    system="Generate a concise enriched description and suggest tags. "
-                    "Return JSON with keys: description (str), tags (list[str]).",
-                )
-                if "description" in enrichment:
-                    description = enrichment["description"]
-                if "tags" in enrichment:
-                    custom_props["suggested_tags"] = ", ".join(enrichment["tags"])
-            except Exception:
-                logger.warning("llm_enrichment_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
-
-        props = DatasetPropertiesClass(
-            description=description,
-            customProperties=custom_props,
-        )
-        await self._datahub.emit_aspect(dataset_urn, props)
+        return IngestionRunResult(run_id=run_id, status=status, detail=detail)
 
     # ── Events ───────────────────────────────────────────────────────────
 
@@ -385,7 +279,11 @@ class IngestionService:
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = Event.occurred_at.desc()
-        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

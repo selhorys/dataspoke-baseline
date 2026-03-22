@@ -1,9 +1,8 @@
-"""Integration tests for IngestionService against dev-env infrastructure.
+"""Integration tests for IngestionService config CRUD against dev-env infrastructure.
 
 Test-specific data extensions (created and cleaned up within each test):
 - Transient ingestion_configs rows via PUT API (Imazon-prefixed test URNs).
 - Transient dataspoke.events rows for event pagination tests.
-- LLM calls are mocked via activity_server.mock_llm.
 
 Prerequisites:
 - PostgreSQL port-forwarded to localhost:9201
@@ -58,16 +57,23 @@ async def test_ingestion_config_crud_via_http(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "sources": {"sql_log": {"queries": ["SELECT 1 FROM test_table"]}},
-                "deep_spec_enabled": False,
+                "source_type": "postgres",
+                "location": {
+                    "host": "localhost",
+                    "port": 9201,
+                    "database": "example_db",
+                    "username": "postgres",
+                    "secret_ref": "dev/example-postgres-password",
+                },
+                "periodic": False,
                 "schedule": "0 0 * * *",
-                "owner": "test@imazon.com",
             },
         )
         assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
-        assert body["owner"] == "test@imazon.com"
+        assert body["source_type"] == "postgres"
+        assert body["periodic"] is False
         assert body["schedule"] == "0 0 * * *"
         config_id = body["id"]
 
@@ -136,8 +142,15 @@ async def test_list_ingestion_configs(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "sources": {"sql_log": {"queries": ["SELECT 1"]}},
-                    "owner": "test@imazon.com",
+                    "source_type": "postgres",
+                    "location": {
+                        "host": "localhost",
+                        "port": 9201,
+                        "database": "example_db",
+                        "username": "postgres",
+                        "secret_ref": "dev/example-postgres-password",
+                    },
+                    "periodic": False,
                 },
             )
             assert resp.status_code in (200, 201)
@@ -167,9 +180,9 @@ async def test_list_ingestion_configs(
 
 @pytest.mark.asyncio
 async def test_run_ingestion_dry_run(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
 ):
-    """PUT config -> POST run dry_run=true -> verify events via real Kestra."""
+    """PUT config -> POST run dry_run=true -> verify events recorded directly (no Kestra)."""
     dataset_urn = _urn("run_test")
     headers = _auth_headers()
 
@@ -180,22 +193,20 @@ async def test_run_ingestion_dry_run(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "sources": {
-                    "sql_log": {
-                        "queries": [
-                            "SELECT * FROM catalog.title_master "
-                            "JOIN orders.order_header "
-                            "ON catalog.title_master.id = "
-                            "orders.order_header.title_id"
-                        ]
-                    }
+                "source_type": "postgres",
+                "location": {
+                    "host": "localhost",
+                    "port": 9201,
+                    "database": "example_db",
+                    "username": "postgres",
+                    "secret_ref": "dev/example-postgres-password",
                 },
-                "owner": "test@imazon.com",
+                "periodic": False,
             },
         )
         assert resp.status_code in (200, 201)
 
-        # Run with dry_run=true (goes through real Kestra)
+        # Run with dry_run=true (direct pipeline — no Kestra involved)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
             headers=headers,
@@ -203,9 +214,8 @@ async def test_run_ingestion_dry_run(
         )
         assert resp.status_code == 200
         body = resp.json()
-        # Real Kestra returns execution status (uppercase) when flow
-        # doesn't define explicit outputs
-        assert body["status"].lower() == "success"
+        assert body["status"] == "success"
+        assert body["detail"]["dry_run"] is True
 
         # Check events were recorded
         resp = await http_client.get(
@@ -237,11 +247,10 @@ async def test_run_ingestion_dry_run(
 
 @pytest.mark.asyncio
 async def test_run_ingestion_not_found(http_client):
-    """POST run for unconfigured URN -> error.
+    """POST run for unconfigured URN -> 404 INGESTION_CONFIG_NOT_FOUND.
 
-    The data router triggers Kestra without checking config. The flow
-    fails because the activity can't find the config. Returns 500
-    (KestraExecutionFailedError).
+    IngestionService.run() raises EntityNotFoundError when no config
+    exists for the requested dataset URN. The router translates this to 404.
     """
     fake_urn = _urn("nonexistent")
     resp = await http_client.post(
@@ -249,7 +258,7 @@ async def test_run_ingestion_not_found(http_client):
         headers=_auth_headers(),
         json={"dry_run": False},
     )
-    assert resp.status_code in (404, 500)
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

@@ -1,168 +1,104 @@
-"""Unit tests for ingestion extractors."""
-
-import base64
-from unittest.mock import AsyncMock, MagicMock, patch
+"""Unit tests for DataHub SDK-based ingestion extractors."""
 
 import pytest
 
 from src.backend.ingestion.extractors import (
-    EXTRACTOR_REGISTRY,
-    ConfluenceExtractor,
-    ExcelExtractor,
-    GitHubExtractor,
-    SqlLogExtractor,
+    SUPPORTED_SOURCE_TYPES,
+    IngestionResult,
+    build_ingestion_recipe,
+    run_datahub_ingestion,
 )
-from src.shared.exceptions import DataSpokeError
 
-# ── Registry ──────────────────────────────────────────────────────────────────
-
-
-def test_extractor_registry_maps_all_types():
-    assert set(EXTRACTOR_REGISTRY.keys()) == {"confluence", "github", "excel", "sql_log"}
+# ── SUPPORTED_SOURCE_TYPES ────────────────────────────────────────────────────
 
 
-# ── ConfluenceExtractor ──────────────────────────────────────────────────────
-
-
-async def test_confluence_extractor_returns_descriptions():
-    extractor = ConfluenceExtractor()
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "results": [
-            {
-                "title": "Dataset Overview",
-                "body": {"storage": {"value": "<p>This is a test</p>"}},
-                "_links": {"webui": "/pages/123"},
-            }
-        ]
-    }
-    mock_response.raise_for_status = MagicMock()
-
-    with patch("src.backend.ingestion.extractors.httpx.AsyncClient") as mock_client_cls:
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        result = await extractor.extract(
-            {
-                "base_url": "https://wiki.example.com",
-                "space_key": "DS",
-                "username": "user",
-                "api_token": "token",
-            }
-        )
-
-    assert len(result) == 1
-    assert result[0].metadata_type == "description"
-    assert result[0].content["title"] == "Dataset Overview"
-    assert "test" in result[0].content["body"]
-
-
-async def test_confluence_extractor_invalid_config():
-    extractor = ConfluenceExtractor()
-    with pytest.raises(DataSpokeError, match="missing config keys"):
-        await extractor.extract({"base_url": "https://wiki.example.com"})
-
-
-# ── GitHubExtractor ──────────────────────────────────────────────────────────
-
-
-async def test_github_extractor_returns_code_refs():
-    extractor = GitHubExtractor()
-    mock_response = MagicMock()
-    mock_response.json.return_value = [
-        {
-            "name": "schema.sql",
-            "path": "db/schema.sql",
-            "type": "file",
-            "sha": "abc123",
-            "html_url": "https://github.com/org/repo/blob/main/db/schema.sql",
-        }
-    ]
-    mock_response.raise_for_status = MagicMock()
-
-    with patch("src.backend.ingestion.extractors.httpx.AsyncClient") as mock_client_cls:
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        result = await extractor.extract({"owner": "org", "repo": "repo", "token": "ghp_test"})
-
-    assert len(result) == 1
-    assert result[0].metadata_type == "code_ref"
-    assert result[0].content["name"] == "schema.sql"
-    assert result[0].content["path"] == "db/schema.sql"
-
-
-async def test_github_extractor_invalid_config():
-    extractor = GitHubExtractor()
-    with pytest.raises(DataSpokeError, match="missing config keys"):
-        await extractor.extract({"owner": "org"})
-
-
-# ── ExcelExtractor ───────────────────────────────────────────────────────────
-
-
-async def test_excel_extractor_returns_column_mapping_csv():
-    csv_content = "column_name,data_type,description\nid,integer,Primary key\nname,text,User name"
-    encoded = base64.b64encode(csv_content.encode()).decode()
-
-    extractor = ExcelExtractor()
-    result = await extractor.extract({"file_content": encoded, "file_name": "schema.csv"})
-
-    assert len(result) == 2
-    assert result[0].metadata_type == "column_mapping"
-    assert result[0].content["column_name"] == "id"
-    assert result[1].content["column_name"] == "name"
-
-
-async def test_excel_extractor_missing_config():
-    extractor = ExcelExtractor()
-    with pytest.raises(DataSpokeError, match="requires 'file_path' or 'file_content'"):
-        await extractor.extract({})
-
-
-# ── SqlLogExtractor ──────────────────────────────────────────────────────────
-
-
-async def test_sql_log_extractor_returns_lineage_edges():
-    extractor = SqlLogExtractor()
-    result = await extractor.extract(
-        {
-            "queries": [
-                "SELECT * FROM catalog.title_master "
-                "JOIN orders.order_header "
-                "ON catalog.title_master.id = orders.order_header.title_id"
-            ]
-        }
+def test_supported_source_types_contains_expected():
+    assert {"postgres", "mysql", "oracle", "bigquery", "snowflake", "kafka"}.issubset(
+        SUPPORTED_SOURCE_TYPES
     )
 
-    assert len(result) == 1
-    assert result[0].metadata_type == "lineage_edge"
-    tables = result[0].content["tables"]
-    assert "catalog.title_master" in tables
-    assert "orders.order_header" in tables
+
+# ── build_ingestion_recipe ────────────────────────────────────────────────────
 
 
-async def test_sql_log_extractor_missing_queries():
-    extractor = SqlLogExtractor()
-    with pytest.raises(DataSpokeError, match="requires 'queries'"):
-        await extractor.extract({})
+def test_build_recipe_postgres():
+    location = {"host": "db.example.com", "port": 5432, "database": "mydb", "username": "user", "secret_ref": "s3cr3t"}
+    recipe = build_ingestion_recipe("postgres", location, "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)")
+    assert recipe["source"]["type"] == "postgres"
+    assert recipe["source"]["config"]["host_port"] == "db.example.com:5432"
+    assert recipe["source"]["config"]["database"] == "mydb"
+    assert recipe["source"]["config"]["username"] == "user"
+    assert recipe["sink"]["type"] == "datahub-rest"
 
 
-async def test_sql_log_extractor_invalid_queries_type():
-    extractor = SqlLogExtractor()
-    with pytest.raises(DataSpokeError, match="must be a list"):
-        await extractor.extract({"queries": "SELECT 1"})
+def test_build_recipe_mysql():
+    location = {"host": "mysql.example.com", "port": 3306, "database": "shop", "username": "root", "secret_ref": "pw"}
+    recipe = build_ingestion_recipe("mysql", location, "urn:li:dataset:(urn:li:dataPlatform:mysql,shop.orders,PROD)")
+    assert recipe["source"]["type"] == "mysql"
+    assert recipe["source"]["config"]["host_port"] == "mysql.example.com:3306"
 
 
-async def test_sql_log_extractor_simple_select():
-    extractor = SqlLogExtractor()
-    result = await extractor.extract({"queries": ["SELECT a, b FROM my_table WHERE a > 1"]})
-    assert len(result) == 1
-    assert "my_table" in result[0].content["tables"]
+def test_build_recipe_bigquery():
+    location = {"project_id": "my-gcp-project"}
+    recipe = build_ingestion_recipe("bigquery", location, "urn:li:dataset:(urn:li:dataPlatform:bigquery,my-gcp-project.ds.tbl,PROD)")
+    assert recipe["source"]["type"] == "bigquery"
+    assert recipe["source"]["config"]["project_id"] == "my-gcp-project"
+
+
+def test_build_recipe_snowflake():
+    location = {"account_id": "xy12345.us-east-1", "username": "svc", "secret_ref": "snowpw"}
+    recipe = build_ingestion_recipe("snowflake", location, "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.schema.tbl,PROD)")
+    assert recipe["source"]["type"] == "snowflake"
+    assert recipe["source"]["config"]["account_id"] == "xy12345.us-east-1"
+
+
+def test_build_recipe_kafka():
+    location = {"bootstrap_servers": "kafka:9092"}
+    recipe = build_ingestion_recipe("kafka", location, "urn:li:dataset:(urn:li:dataPlatform:kafka,my-topic,PROD)")
+    assert recipe["source"]["type"] == "kafka"
+    assert recipe["source"]["config"]["connection"]["bootstrap"] == "kafka:9092"
+
+
+def test_build_recipe_unsupported_type_raises():
+    with pytest.raises(ValueError, match="Unsupported source_type"):
+        build_ingestion_recipe("unsupported_db", {}, "urn:li:dataset:x")
+
+
+# ── run_datahub_ingestion ─────────────────────────────────────────────────────
+
+
+async def test_run_datahub_ingestion_returns_result_for_known_source():
+    location = {"host": "db.example.com", "port": 5432, "database": "mydb", "username": "user", "secret_ref": "pw"}
+    result = await run_datahub_ingestion(
+        source_type="postgres",
+        location=location,
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)",
+        dry_run=False,
+    )
+    assert isinstance(result, IngestionResult)
+    assert result.errors == []
+    assert result.entities_ingested == 1
+
+
+async def test_run_datahub_ingestion_dry_run_yields_zero_entities():
+    location = {"host": "db.example.com", "port": 5432, "database": "mydb", "username": "user", "secret_ref": "pw"}
+    result = await run_datahub_ingestion(
+        source_type="postgres",
+        location=location,
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)",
+        dry_run=True,
+    )
+    assert result.entities_ingested == 0
+    assert result.errors == []
+
+
+async def test_run_datahub_ingestion_unsupported_source_returns_error():
+    result = await run_datahub_ingestion(
+        source_type="unknown_source",
+        location={},
+        dataset_urn="urn:li:dataset:x",
+        dry_run=False,
+    )
+    assert result.entities_ingested == 0
+    assert len(result.errors) == 1
+    assert "Unsupported source_type" in result.errors[0]

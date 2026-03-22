@@ -92,6 +92,9 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 - Never hardcode surrogate IDs — look up by stable natural key (ISBN, URN, email)
 - Never assert on wall-clock timestamps — assert on relative ordering or freshness windows
 
+**Output rules**:
+- Never truncate integration test output (no `| tail`, `| head`, or piping through filters) — always show the complete pytest output
+
 ## Testing prauto
 
 Due to Claude's nested-run limit, testing `.prauto/heartbeat.sh` from inside a Claude Code session requires unsetting the `CLAUDECODE` env var:

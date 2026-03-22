@@ -50,13 +50,12 @@ def _test_label(suffix: str) -> str:
     return f"{_TEST_LABEL_PREFIX}{suffix}-{uuid.uuid4().hex[:8]}"
 
 
-def _ingestion_inputs(activity_server, **overrides) -> dict:
-    """Build standard ingestion flow inputs using ActivityServer callback."""
+def _validation_inputs(activity_server, **overrides) -> dict:
+    """Build standard validation flow inputs using ActivityServer callback."""
     inputs = {
         "callback_base_url": activity_server.callback_url,
         "dataset_urn": _IMAZON_DATASET_URN,
         "dry_run": "true",
-        "run_id": str(uuid.uuid4()),
     }
     inputs.update(overrides)
     return inputs
@@ -81,9 +80,9 @@ async def _seed_workflow_configs(async_engine):
         db.add(
             IngestionConfig(
                 dataset_urn=_IMAZON_DATASET_URN,
-                sources={},
-                deep_spec_enabled=False,
-                owner="integration-test",
+                source_type="postgres",
+                location={"host": "localhost", "port": 9201, "database": "example_db", "username": "postgres", "secret_ref": "dev/example-postgres-password"},
+                periodic=False,
             )
         )
         db.add(
@@ -123,9 +122,9 @@ async def test_all_flows_registered(kestra_client: KestraClient):
 
 async def test_get_flow_returns_correct_structure(kestra_client: KestraClient):
     """get_flow should return flow with expected fields."""
-    flow = await kestra_client.get_flow("ingestion")
+    flow = await kestra_client.get_flow("validation")
     assert flow is not None
-    assert flow["id"] == "ingestion"
+    assert flow["id"] == "validation"
     assert flow["namespace"] == "dataspoke"
     assert "tasks" in flow
     assert "inputs" in flow
@@ -138,11 +137,11 @@ async def test_get_flow_not_found(kestra_client: KestraClient):
 
 
 async def test_flow_has_expected_inputs(kestra_client: KestraClient):
-    """Ingestion flow should have the required input parameters."""
-    flow = await kestra_client.get_flow("ingestion")
+    """Validation flow should have the required input parameters."""
+    flow = await kestra_client.get_flow("validation")
     assert flow is not None
     input_ids = {inp["id"] for inp in flow["inputs"]}
-    assert {"callback_base_url", "dataset_urn", "dry_run", "run_id"} <= input_ids
+    assert {"callback_base_url", "dataset_urn", "dry_run"} <= input_ids
 
 
 async def test_each_flow_has_tasks(kestra_client: KestraClient):
@@ -160,14 +159,14 @@ async def test_trigger_execution(kestra_client: KestraClient, activity_server):
     """trigger_execution should return an ExecutionResponse with a valid ID."""
     label = _test_label("trigger")
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
     assert execution.id
     assert execution.namespace == "dataspoke"
-    assert execution.flowId == "ingestion"
+    assert execution.flowId == "validation"
     assert execution.status in (
         ExecutionStatus.CREATED,
         ExecutionStatus.RUNNING,
@@ -184,8 +183,8 @@ async def test_trigger_and_wait_returns_terminal(kestra_client: KestraClient, ac
     """trigger_and_wait should poll until terminal and return."""
     label = _test_label("trigger-wait")
     execution = await kestra_client.trigger_and_wait(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
         timeout_seconds=60,
     )
@@ -197,14 +196,14 @@ async def test_get_execution_status(kestra_client: KestraClient, activity_server
     """get_execution should return current status for a triggered execution."""
     label = _test_label("status")
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
     status_resp = await kestra_client.get_execution(execution.id)
     assert status_resp.id == execution.id
-    assert status_resp.flowId == "ingestion"
+    assert status_resp.flowId == "validation"
     assert status_resp.status is not None
 
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
@@ -212,18 +211,16 @@ async def test_get_execution_status(kestra_client: KestraClient, activity_server
 
 async def test_execution_inputs_preserved(kestra_client: KestraClient, activity_server):
     """Execution should preserve the inputs that were passed."""
-    run_id = str(uuid.uuid4())
     label = _test_label("inputs")
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server, run_id=run_id),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
     fetched = await kestra_client.get_execution(execution.id)
     assert fetched.inputs is not None
     assert fetched.inputs.get("dataset_urn") == _IMAZON_DATASET_URN
-    assert fetched.inputs.get("run_id") == run_id
     assert fetched.inputs.get("dry_run") == "true"
 
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
@@ -237,7 +234,7 @@ async def test_check_no_duplicate_passes_when_clean(kestra_client: KestraClient)
     unique_label = _test_label("no-dup-clean")
     # Should not raise
     await kestra_client.check_no_duplicate(
-        "ingestion", "workflow_id", unique_label, "INGESTION_RUNNING"
+        "validation", "workflow_id", unique_label, "VALIDATION_RUNNING"
     )
 
 
@@ -246,8 +243,8 @@ async def test_check_no_duplicate_detects_running(kestra_client: KestraClient, a
     label = _test_label("dup-detect")
 
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -258,7 +255,7 @@ async def test_check_no_duplicate_detects_running(kestra_client: KestraClient, a
     try:
         # If execution is still running, this should raise ConflictError
         await kestra_client.check_no_duplicate(
-            "ingestion", "workflow_id", label, "INGESTION_RUNNING"
+            "validation", "workflow_id", label, "VALIDATION_RUNNING"
         )
         # If it didn't raise, the execution finished very quickly — that's OK
     except ConflictError:
@@ -271,10 +268,10 @@ async def test_check_no_duplicate_detects_running(kestra_client: KestraClient, a
 async def test_find_running_executions(kestra_client: KestraClient):
     """find_running_executions should find executions by flow ID."""
     # Any currently-running executions should be findable
-    result = await kestra_client.find_running_executions("ingestion")
+    result = await kestra_client.find_running_executions("validation")
     assert isinstance(result, list)
     for execution in result:
-        assert execution.flowId == "ingestion"
+        assert execution.flowId == "validation"
         assert execution.status == ExecutionStatus.RUNNING
 
 
@@ -286,8 +283,8 @@ async def test_kill_execution(kestra_client: KestraClient, activity_server):
     label = _test_label("kill")
 
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -311,8 +308,8 @@ async def test_kill_execution_idempotent(kestra_client: KestraClient, activity_s
     label = _test_label("kill-idem")
 
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -327,8 +324,8 @@ async def test_delete_execution(kestra_client: KestraClient, activity_server):
     label = _test_label("delete")
 
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -356,22 +353,22 @@ async def test_find_executions_by_flow(kestra_client: KestraClient, activity_ser
     label = _test_label("find-flow")
 
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
 
-    results = await kestra_client.find_executions(flow_id="ingestion")
+    results = await kestra_client.find_executions(flow_id="validation")
     assert len(results) >= 1
-    assert all(r.flowId == "ingestion" for r in results)
+    assert all(r.flowId == "validation" for r in results)
 
 
 async def test_find_executions_by_state(kestra_client: KestraClient):
     """find_executions with state filter should return matching executions."""
     # Query for any terminal state
     results = await kestra_client.find_executions(
-        flow_id="ingestion", state="SUCCESS"
+        flow_id="validation", state="SUCCESS"
     )
     for r in results:
         assert r.status == ExecutionStatus.SUCCESS
@@ -385,15 +382,15 @@ async def test_create_update_flow_idempotent(kestra_client: KestraClient):
     from pathlib import Path
 
     flows_dir = Path(__file__).resolve().parents[2] / "src/workflows/flows"
-    flow_yaml = (flows_dir / "ingestion.yaml").read_text()
+    flow_yaml = (flows_dir / "validation.yaml").read_text()
 
     result = await kestra_client.create_or_update_flow(flow_yaml)
-    assert result["id"] == "ingestion"
+    assert result["id"] == "validation"
     assert result["namespace"] == "dataspoke"
 
     # Second call should also succeed (update path)
     result2 = await kestra_client.create_or_update_flow(flow_yaml)
-    assert result2["id"] == "ingestion"
+    assert result2["id"] == "validation"
 
 
 async def test_delete_and_recreate_flow(kestra_client: KestraClient):
@@ -463,7 +460,7 @@ async def test_trigger_generation_flow(kestra_client: KestraClient, activity_ser
 async def test_kill_running_executions_utility(kestra_client: KestraClient):
     """kill_running_executions utility should handle the flow gracefully."""
     # This may or may not find anything to kill — either way should not raise
-    killed = await kill_running_executions(kestra_client, "ingestion")
+    killed = await kill_running_executions(kestra_client, "validation")
     assert isinstance(killed, int)
     assert killed >= 0
 
@@ -473,14 +470,14 @@ async def test_cleanup_test_executions_utility(kestra_client: KestraClient, acti
     # Create a test execution, wait for it, then clean up
     label = f"{_TEST_LABEL_PREFIX}cleanup-util-{uuid.uuid4().hex[:8]}"
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
     await wait_for_execution_terminal(kestra_client, execution.id, timeout_seconds=60)
 
     deleted = await cleanup_test_executions(
-        kestra_client, "ingestion", label_prefix=_TEST_LABEL_PREFIX
+        kestra_client, "validation", label_prefix=_TEST_LABEL_PREFIX
     )
     assert isinstance(deleted, int)
 
@@ -492,8 +489,8 @@ async def test_wait_for_execution_timeout(kestra_client: KestraClient, activity_
     """wait_for_execution with very short timeout should raise KestraTimeoutError."""
     label = _test_label("timeout")
     execution = await kestra_client.trigger_execution(
-        "ingestion",
-        inputs=_ingestion_inputs(activity_server),
+        "validation",
+        inputs=_validation_inputs(activity_server),
         labels={"workflow_id": label},
     )
 
@@ -502,7 +499,7 @@ async def test_wait_for_execution_timeout(kestra_client: KestraClient, activity_
         with pytest.raises(KestraTimeoutError):
             await kestra_client.wait_for_execution(
                 execution.id,
-                flow_id="ingestion",
+                flow_id="validation",
                 timeout_seconds=0.1,
                 poll_interval=0.05,
             )

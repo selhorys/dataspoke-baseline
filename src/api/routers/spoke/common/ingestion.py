@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_ingestion_service, get_kestra_client
+from src.api.dependencies import get_ingestion_service, get_redis
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import (
@@ -14,11 +14,9 @@ from src.api.schemas.ingestion import (
     RunResultResponse,
 )
 from src.backend.ingestion.service import IngestionService
+from src.shared.cache.client import RedisClient
 from src.shared.db.models import Event, IngestionConfig
-from src.shared.exceptions import EntityNotFoundError
-from src.shared.settings import settings
-from src.workflows._common import urn_to_workflow_id
-from src.workflows.kestra.client import KestraClient
+from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 router = APIRouter(
     prefix="/ingestion",
@@ -31,11 +29,13 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
     return IngestionConfigResponse(
         id=c.id if isinstance(c.id, str) else str(c.id),
         dataset_urn=c.dataset_urn,
-        sources=c.sources,
-        deep_spec_enabled=c.deep_spec_enabled,
+        source_type=c.source_type,
+        location=c.location,
+        periodic=c.periodic,
         schedule=c.schedule,
+        enrichment_sources=c.enrichment_sources,
+        custom_extractors=c.custom_extractors,
         status=c.status,
-        owner=c.owner,
         created_at=c.created_at,
         updated_at=c.updated_at,
     )
@@ -97,33 +97,20 @@ async def post_ingestion_run(
     dataset_urn: str,
     body: RunIngestionRequest,
     service: IngestionService = Depends(get_ingestion_service),
-    kestra: KestraClient = Depends(get_kestra_client),
+    cache: RedisClient = Depends(get_redis),
 ) -> RunResultResponse:
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
-    label_value = f"ingestion-{urn_to_workflow_id(dataset_urn)}"
-    await kestra.check_no_duplicate(
-        "ingestion", "workflow_id", label_value, "INGESTION_RUNNING"
-    )
-    import uuid
-
-    execution = await kestra.trigger_and_wait(
-        "ingestion",
-        inputs={
-            "callback_base_url": settings.kestra_callback_base_url,
-            "dataset_urn": dataset_urn,
-            "dry_run": str(body.dry_run).lower(),
-            "run_id": str(uuid.uuid4()),
-        },
-        labels={"workflow_id": label_value},
-    )
-    outputs = execution.outputs or {}
-    return RunResultResponse(
-        run_id=outputs.get("run_id", execution.id),
-        status=outputs.get("status", execution.status.value),
-        detail=outputs.get("detail", {}),
-    )
+    lock_key = f"ingestion:running:{dataset_urn}"
+    acquired = await cache.set_nx(lock_key, "1", ttl_seconds=3600)
+    if not acquired:
+        raise ConflictError("INGESTION_RUNNING", f"Ingestion is already running for {dataset_urn}")
+    try:
+        result = await service.run(dataset_urn, dry_run=body.dry_run)
+        return RunResultResponse(run_id=result.run_id, status=result.status, detail=result.detail)
+    finally:
+        await cache.delete(lock_key)
 
 
 @router.get("/{dataset_urn}/event", response_model=EventListResponse)

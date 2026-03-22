@@ -1,0 +1,24 @@
+id: ingestion-config-sync
+namespace: dataspoke
+description: "Periodic sync of ingestion config — generates/updates/deletes ingestion-periodic-* flows"
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+    defaults: "http://host.docker.internal:8000"
+
+triggers:
+  - id: cron
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "*/10 * * * *"
+
+tasks:
+  - id: sync
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/internal/activities/sync-periodic-ingestion-flows"
+    method: POST
+    contentType: application/json
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S

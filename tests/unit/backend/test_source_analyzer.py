@@ -93,7 +93,7 @@ async def test_analyze_with_code_refs(analyzer, llm):
         MagicMock(content={"name": "main.py", "path": "src/main.py", "type": "file", "sha": "abc"}),
     ]
 
-    with patch("src.backend.ingestion.extractors.GitHubExtractor") as MockExtractor:
+    with patch("src.backend.generation.analyzer._GitHubExtractorImpl") as MockExtractor:
         extractor_instance = AsyncMock()
         extractor_instance.extract = AsyncMock(return_value=mock_items)
         MockExtractor.return_value = extractor_instance
@@ -115,7 +115,7 @@ async def test_analyze_with_code_refs(analyzer, llm):
 
 
 async def test_analyze_empty_code_refs(analyzer, llm):
-    with patch("src.backend.ingestion.extractors.GitHubExtractor") as MockExtractor:
+    with patch("src.backend.generation.analyzer._GitHubExtractorImpl") as MockExtractor:
         extractor_instance = AsyncMock()
         extractor_instance.extract = AsyncMock(return_value=[])
         MockExtractor.return_value = extractor_instance

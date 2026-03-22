@@ -39,68 +39,50 @@ def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:
     )
 
 
-# ── Ingestion activities ─────────────────────────────────────────────────────
+# ── Ingestion periodic activities ────────────────────────────────────────────
 
 
-class ExtractMetadataRequest(BaseModel):
-    dataset_urn: str
-    run_id: str
+class ListPeriodicDatasetsRequest(BaseModel):
+    schedule: str
 
 
-@router.post("/extract-metadata")
-async def extract_metadata(body: ExtractMetadataRequest) -> dict:
+@router.post("/list-periodic-datasets")
+async def list_periodic_datasets(body: ListPeriodicDatasetsRequest) -> list[str]:
     from src.backend.ingestion.service import IngestionService
 
     datahub = make_datahub()
-    llm = make_llm()
     try:
         async with make_db_session() as db:
-            service = IngestionService(datahub=datahub, db=db, llm=llm)
-            return await service.extract_metadata(body.dataset_urn, body.run_id)
+            service = IngestionService(datahub=datahub, db=db)
+            return await service.list_periodic_datasets(body.schedule)
     except DataSpokeError as exc:
         return _error_response(exc)
 
 
-class EmitToDatahubRequest(BaseModel):
-    dataset_urn: str
-    extract_result: dict
+@router.post("/sync-periodic-ingestion-flows")
+async def sync_periodic_ingestion_flows() -> dict:
+    from src.shared.settings import settings
+    from src.workflows.ingestion import sync_periodic_ingestion_flows as _sync
+    from src.workflows.kestra.client import KestraClient
 
-
-@router.post("/emit-to-datahub")
-async def emit_to_datahub(body: EmitToDatahubRequest) -> dict:
-    from src.backend.ingestion.service import IngestionService
-
-    datahub = make_datahub()
-    llm = make_llm()
+    kestra = KestraClient(
+        base_url=settings.kestra_url,
+        namespace=settings.kestra_namespace,
+        username=settings.kestra_user,
+        password=settings.kestra_password,
+    )
     try:
         async with make_db_session() as db:
-            service = IngestionService(datahub=datahub, db=db, llm=llm)
-            return await service.emit_metadata_to_datahub(body.dataset_urn, body.extract_result)
-    except DataSpokeError as exc:
-        return _error_response(exc)
-
-
-class RecordIngestionEventRequest(BaseModel):
-    dataset_urn: str
-    run_id: str
-    status: str
-    detail: dict
-
-
-@router.post("/record-ingestion-event")
-async def record_ingestion_event(body: RecordIngestionEventRequest) -> dict:
-    from src.backend.ingestion.service import IngestionService
-
-    datahub = make_datahub()
-    llm = make_llm()
-    try:
-        async with make_db_session() as db:
-            service = IngestionService(datahub=datahub, db=db, llm=llm)
-            return await service.record_ingestion_event(
-                body.dataset_urn, body.run_id, body.status, body.detail
+            result = await _sync(
+                kestra_client=kestra,
+                db=db,
+                callback_base_url=settings.kestra_callback_base_url,
             )
+            return result
     except DataSpokeError as exc:
         return _error_response(exc)
+    finally:
+        await kestra.close()
 
 
 # ── Validation activity ──────────────────────────────────────────────────────

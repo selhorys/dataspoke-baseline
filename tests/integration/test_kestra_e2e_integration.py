@@ -71,9 +71,9 @@ async def _seed_e2e_configs(async_engine, activity_server):
         # Seed configs
         db.add(IngestionConfig(
             dataset_urn=_IMAZON_DATASET_URN,
-            sources={},
-            deep_spec_enabled=False,
-            owner="e2e-test",
+            source_type="postgres",
+            location={"host": "localhost", "port": 9201, "database": "example_db", "username": "postgres", "secret_ref": "dev/example-postgres-password"},
+            periodic=False,
         ))
         db.add(ValidationConfig(
             dataset_urn=_IMAZON_DATASET_URN,
@@ -147,24 +147,6 @@ async def _configure_mocks(activity_server):
 
 
 # ── E2E Tests ──────────────────────────────────────────────────────────────
-
-
-async def test_ingestion_dry_run_e2e(
-    kestra_client: KestraClient, activity_server
-):
-    """Ingestion flow (dry_run) should complete successfully via activity callbacks."""
-    execution = await kestra_client.trigger_and_wait(
-        "ingestion",
-        inputs={
-            "callback_base_url": activity_server.callback_url,
-            "dataset_urn": _IMAZON_DATASET_URN,
-            "dry_run": "true",
-            "run_id": str(uuid.uuid4()),
-        },
-        labels={"workflow_id": _test_label("ingestion")},
-        timeout_seconds=120,
-    )
-    assert execution.status == ExecutionStatus.SUCCESS
 
 
 async def test_validation_dry_run_e2e(

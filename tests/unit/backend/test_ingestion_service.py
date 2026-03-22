@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,32 +16,37 @@ from tests.unit.backend.conftest import (
 )
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
+_LOCATION = {"host": "db.example.com", "port": 5432, "database": "mydb", "username": "user", "secret_ref": "pw"}
 
 
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
-    sources: dict | None = None,
-    deep_spec_enabled: bool = False,
+    source_type: str = "postgres",
+    location: dict | None = None,
+    periodic: bool = False,
     schedule: str | None = "0 0 * * *",
+    enrichment_sources: dict | None = None,
+    custom_extractors: dict | None = None,
     status: str = "draft",
-    owner: str = "alice@example.com",
 ):
     row = MagicMock()
     row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
-    row.sources = sources or {"sql_log": {"queries": ["SELECT 1"]}}
-    row.deep_spec_enabled = deep_spec_enabled
+    row.source_type = source_type
+    row.location = location or _LOCATION
+    row.periodic = periodic
     row.schedule = schedule
+    row.enrichment_sources = enrichment_sources
+    row.custom_extractors = custom_extractors
     row.status = status
-    row.owner = owner
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row
 
 
 @pytest.fixture
-def service(datahub, db, llm):
-    return IngestionService(datahub=datahub, db=db, llm=llm)
+def service(datahub, db):
+    return IngestionService(datahub=datahub, db=db)
 
 
 # ── get_config ───────────────────────────────────────────────────────────────
@@ -54,7 +59,8 @@ async def test_get_config_found(service, db):
     config = await service.get_config(_DATASET_URN)
     assert config is not None
     assert config.dataset_urn == _DATASET_URN
-    assert config.owner == "alice@example.com"
+    assert config.source_type == "postgres"
+    assert config.location == _LOCATION
 
 
 async def test_get_config_not_found(service, db):
@@ -73,10 +79,10 @@ async def test_upsert_config_creates_new(service, db):
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        sources={"sql_log": {"queries": ["SELECT 1"]}},
-        deep_spec_enabled=False,
+        source_type="postgres",
+        location=_LOCATION,
+        periodic=False,
         schedule=None,
-        owner="alice@example.com",
     )
     db.add.assert_called_once()
     db.commit.assert_awaited_once()
@@ -87,23 +93,44 @@ async def test_upsert_config_updates_existing(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
+    new_location = {"host": "newdb.example.com", "port": 5432, "database": "newdb", "username": "admin", "secret_ref": "newpw"}
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        sources={"github": {"owner": "o", "repo": "r", "token": "t"}},
-        deep_spec_enabled=True,
+        source_type="mysql",
+        location=new_location,
+        periodic=True,
         schedule="0 6 * * *",
-        owner="bob@example.com",
     )
     db.add.assert_called_once()
     db.commit.assert_awaited_once()
-    assert existing_row.sources == {"github": {"owner": "o", "repo": "r", "token": "t"}}
-    assert existing_row.owner == "bob@example.com"
+    assert existing_row.source_type == "mysql"
+    assert existing_row.location == new_location
+    assert existing_row.periodic is True
+    assert existing_row.schedule == "0 6 * * *"
+
+
+async def test_upsert_config_with_optional_fields(service, db):
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    enrichment = {"confluence": {"base_url": "https://wiki.example.com"}}
+    custom = {"plugin_a": {"class": "mymodule.MyExtractor"}}
+    await service.upsert_config(
+        dataset_urn=_DATASET_URN,
+        source_type="postgres",
+        location=_LOCATION,
+        periodic=False,
+        schedule=None,
+        enrichment_sources=enrichment,
+        custom_extractors=custom,
+    )
+    db.add.assert_called_once()
 
 
 # ── patch_config ─────────────────────────────────────────────────────────────
 
 
-async def test_patch_config_applies_partial(service, db):
+async def test_patch_config_applies_schedule(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
@@ -111,6 +138,34 @@ async def test_patch_config_applies_partial(service, db):
     await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
     assert existing_row.schedule == "0 12 * * *"
     db.commit.assert_awaited_once()
+
+
+async def test_patch_config_applies_source_type(service, db):
+    existing_row = _make_config_row()
+    mock_scalar_query(db, existing_row)
+    mock_db_refresh(db)
+
+    await service.patch_config(_DATASET_URN, {"source_type": "mysql"})
+    assert existing_row.source_type == "mysql"
+
+
+async def test_patch_config_applies_periodic_and_schedule(service, db):
+    existing_row = _make_config_row(periodic=False)
+    mock_scalar_query(db, existing_row)
+    mock_db_refresh(db)
+
+    await service.patch_config(_DATASET_URN, {"periodic": True, "schedule": "0 2 * * *"})
+    assert existing_row.periodic is True
+    assert existing_row.schedule == "0 2 * * *"
+
+
+async def test_patch_config_applies_status(service, db):
+    existing_row = _make_config_row(status="draft")
+    mock_scalar_query(db, existing_row)
+    mock_db_refresh(db)
+
+    await service.patch_config(_DATASET_URN, {"status": "active"})
+    assert existing_row.status == "active"
 
 
 async def test_patch_config_not_found(service, db):
@@ -161,49 +216,96 @@ async def test_list_configs_empty(service, db):
     assert configs == []
 
 
+# ── list_periodic_datasets ────────────────────────────────────────────────────
+
+
+async def test_list_periodic_datasets_returns_urns(service, db):
+    urns = [
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,db1.public.t1,PROD)",
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,db1.public.t2,PROD)",
+    ]
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = urns
+    db.execute = AsyncMock(return_value=result_mock)
+
+    datasets = await service.list_periodic_datasets("0 2 * * *")
+    assert datasets == urns
+
+
+async def test_list_periodic_datasets_empty(service, db):
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = []
+    db.execute = AsyncMock(return_value=result_mock)
+
+    datasets = await service.list_periodic_datasets("0 2 * * *")
+    assert datasets == []
+
+
 # ── run ──────────────────────────────────────────────────────────────────────
 
 
-async def test_run_success(service, db, datahub):
-    config_row = _make_config_row(
-        sources={"sql_log": {"queries": ["SELECT * FROM orders.order_header"]}}
-    )
+async def test_run_success(service, db):
+    config_row = _make_config_row()
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
-    result = await service.run(_DATASET_URN)
-    assert result.status in ("success", "partial")
+    from src.backend.ingestion.extractors import IngestionResult
+
+    with patch(
+        "src.backend.ingestion.service.run_datahub_ingestion",
+        new=AsyncMock(
+            return_value=IngestionResult(entities_ingested=5, errors=[], warnings=[])
+        ),
+    ):
+        result = await service.run(_DATASET_URN)
+
+    assert result.status == "success"
     assert result.run_id
     assert result.detail["dry_run"] is False
+    assert result.detail["entities_ingested"] == 5
 
 
-async def test_run_dry_run(service, db, datahub):
-    config_row = _make_config_row(
-        sources={"sql_log": {"queries": ["SELECT * FROM catalog.title_master"]}}
-    )
+async def test_run_dry_run(service, db):
+    config_row = _make_config_row()
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
-    result = await service.run(_DATASET_URN, dry_run=True)
+    from src.backend.ingestion.extractors import IngestionResult
+
+    with patch(
+        "src.backend.ingestion.service.run_datahub_ingestion",
+        new=AsyncMock(
+            return_value=IngestionResult(entities_ingested=0, errors=[], warnings=[])
+        ),
+    ):
+        result = await service.run(_DATASET_URN, dry_run=True)
+
     assert result.detail["dry_run"] is True
-    datahub.emit_aspect.assert_not_awaited()
+    assert result.detail["entities_ingested"] == 0
 
 
-async def test_run_with_llm_enrichment(service, db, datahub, llm):
-    config_row = _make_config_row(
-        deep_spec_enabled=True,
-        sources={"sql_log": {"queries": ["SELECT * FROM catalog.title_master"]}},
-    )
+async def test_run_ingestion_error(service, db):
+    config_row = _make_config_row()
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
-    llm.complete_json = AsyncMock(
-        return_value={"description": "Enriched desc", "tags": ["important"]}
-    )
+    from src.backend.ingestion.extractors import IngestionResult
 
-    result = await service.run(_DATASET_URN)
-    assert result.status in ("success", "partial")
-    llm.complete_json.assert_awaited_once()
+    with patch(
+        "src.backend.ingestion.service.run_datahub_ingestion",
+        new=AsyncMock(
+            return_value=IngestionResult(
+                entities_ingested=0,
+                errors=["Connection refused"],
+                warnings=[],
+            )
+        ),
+    ):
+        result = await service.run(_DATASET_URN)
+
+    assert result.status == "error"
+    assert "errors" in result.detail
+    assert "Connection refused" in result.detail["errors"]
 
 
 async def test_run_config_not_found(service, db):
@@ -214,28 +316,13 @@ async def test_run_config_not_found(service, db):
     assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
 
 
-async def test_run_extractor_partial_failure(service, db, datahub):
-    config_row = _make_config_row(
-        sources={
-            "sql_log": {"queries": ["SELECT * FROM orders.order_header"]},
-            "unknown_type": {"foo": "bar"},
-        }
-    )
-    mock_scalar_query(db, config_row)
-    mock_db_refresh(db)
-
-    result = await service.run(_DATASET_URN)
-    assert result.status == "partial"
-    assert "extractor_errors" in result.detail
-
-
 # ── get_events ───────────────────────────────────────────────────────────────
 
 
 async def test_get_events_paginated(service, db):
     rows = [
         make_event_row(
-            entity_type="ingestion",
+            entity_type="dataset",
             event_type="ingestion.completed",
             entity_id=_DATASET_URN,
             minutes_ago=i,
@@ -247,7 +334,7 @@ async def test_get_events_paginated(service, db):
     events, total = await service.get_events(_DATASET_URN, offset=0, limit=3)
     assert total == 5
     assert len(events) == 3
-    assert events[0]["entity_type"] == "ingestion"
+    assert events[0]["event_type"] == "ingestion.completed"
 
 
 async def test_get_events_empty(service, db):

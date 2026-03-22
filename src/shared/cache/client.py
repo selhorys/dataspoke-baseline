@@ -28,6 +28,11 @@ class RedisClient:
     async def set(self, key: str, value: str, ttl_seconds: int = 300) -> None:
         await self._redis.set(key, value, ex=ttl_seconds)
 
+    async def set_nx(self, key: str, value: str, ttl_seconds: int = 300) -> bool:
+        """Set key only if it does not exist. Returns True if set, False if already exists."""
+        result = await self._redis.set(key, value, ex=ttl_seconds, nx=True)
+        return result is not None
+
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
 

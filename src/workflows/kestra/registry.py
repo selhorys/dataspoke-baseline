@@ -14,6 +14,10 @@ async def register_all_flows(client: KestraClient) -> int:
     """Read all YAML files from src/workflows/flows/ and register them with Kestra.
 
     Returns the number of flows registered.
+
+    Note: Dynamic periodic ingestion flows are synced separately via the
+    ``ingestion-config-sync`` Kestra flow (cron) or at app startup via
+    ``sync_periodic_ingestion_flows()``.
     """
     if not FLOWS_DIR.is_dir():
         logger.warning("Flows directory not found: %s", FLOWS_DIR)
