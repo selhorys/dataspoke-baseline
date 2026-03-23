@@ -2,6 +2,10 @@ id: embedding-sync
 namespace: dataspoke
 description: "Reindex dataset vectors in Qdrant"
 
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -20,6 +24,9 @@ tasks:
     contentType: application/json
     body: |
       {"mode": "{{ inputs.mode }}", "dataset_urn": "{{ inputs.dataset_urn }}"}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
 
   - id: reindex_batch
     type: io.kestra.plugin.core.http.Request
@@ -28,6 +35,9 @@ tasks:
     contentType: application/json
     body: |
       {"dataset_urns": {{ outputs.enumerate_datasets.body }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3

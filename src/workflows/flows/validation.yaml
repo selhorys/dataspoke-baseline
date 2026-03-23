@@ -2,6 +2,10 @@ id: validation
 namespace: dataspoke
 description: "Data quality validation pipeline"
 
+concurrency:
+  limit: 2
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -22,6 +26,9 @@ tasks:
     contentType: application/json
     body: |
       {"dataset_urn": "{{ inputs.dataset_urn }}", "config_id": "{{ inputs.config_id }}", "dry_run": {{ inputs.dry_run }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3

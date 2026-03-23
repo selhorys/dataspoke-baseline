@@ -100,9 +100,23 @@ kestra:
       periodSeconds: 2
       timeoutSeconds: 3
       failureThreshold: 150
+    livenessProbe:
+      httpGet:
+        path: /health/liveness
+        port: management
+      periodSeconds: 10
+      timeoutSeconds: 10
+      failureThreshold: 6
+    readinessProbe:
+      httpGet:
+        path: /health/readiness
+        port: management
+      periodSeconds: 10
+      timeoutSeconds: 10
+      failureThreshold: 6
   deployments:
     standalone:
-      workerThreads: 4
+      workerThreads: 8
   dind:
     enabled: false
   configurations:
@@ -112,6 +126,8 @@ kestra:
           url: jdbc:postgresql://dataspoke-postgresql:5432/kestra
           driverClassName: org.postgresql.Driver
           # username/password: passed via --set from .env
+          maximumPoolSize: 30
+          minimumIdle: 5
       kestra:
         repository:
           type: postgres

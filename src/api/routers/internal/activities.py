@@ -77,6 +77,7 @@ async def sync_periodic_ingestion_flows() -> dict:
                 kestra_client=kestra,
                 db=db,
                 callback_base_url=settings.kestra_callback_base_url,
+                concurrent=settings.kestra_ingestion_concurrent,
             )
             return result
     except DataSpokeError as exc:

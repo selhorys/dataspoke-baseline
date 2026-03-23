@@ -145,13 +145,17 @@ def main() -> None:
     )
     parser.add_argument("--backend-only", action="store_true", help="Start only backend components (API)")
     parser.add_argument("--skip-migrate", action="store_true", help="Skip Alembic migration")
-    parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
+    parser.add_argument("--port", type=int, default=None, help="API port (default: DATASPOKE_API_PORT or 8000)")
     parser.add_argument("--no-reload", action="store_true", help="Disable uvicorn auto-reload")
     parser.add_argument("--env-file", default="dev_env/.env", help="Path to .env file (default: dev_env/.env)")
     args = parser.parse_args()
 
     # 1. Load environment
     env_path = _load_dotenv(args.env_file)
+
+    # Resolve API port: CLI flag > env var > default
+    if args.port is None:
+        args.port = int(os.environ.get("DATASPOKE_API_PORT", "8000"))
 
     # 2. Run migrations
     if not args.skip_migrate:

@@ -2,6 +2,10 @@ id: generation
 namespace: dataspoke
 description: "LLM-powered metadata generation"
 
+concurrency:
+  limit: 2
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -16,6 +20,9 @@ tasks:
     contentType: application/json
     body: |
       {"dataset_urn": "{{ inputs.dataset_urn }}"}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3

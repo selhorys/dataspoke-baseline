@@ -2,6 +2,10 @@ id: ontology-rebuild
 namespace: dataspoke
 description: "Multi-step ontology rebuild: classify, hierarchy, relationships, drift"
 
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -17,6 +21,9 @@ tasks:
     contentType: application/json
     body: |
       {"force": {{ inputs.force }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3
@@ -29,6 +36,9 @@ tasks:
     contentType: application/json
     body: |
       {"classifications": {{ outputs.classify_datasets.body }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3
@@ -41,6 +51,9 @@ tasks:
     contentType: application/json
     body: |
       {"hierarchy": {{ outputs.build_hierarchy.body }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3
@@ -53,6 +66,9 @@ tasks:
     contentType: application/json
     body: |
       {"current_hierarchy": {{ outputs.build_hierarchy.body }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3

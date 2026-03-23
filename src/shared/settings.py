@@ -5,6 +5,7 @@ backend, api) can import them without violating the layered architecture
 rule.
 """
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
     admin_email: str = "admin"
     admin_password: str = "admin"
     admin_groups: list[str] = ["admin", "de", "da", "dg"]
+
+    # Application ports
+    api_port: int = 8000
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
@@ -57,12 +61,19 @@ class Settings(BaseSettings):
     kestra_namespace: str = "dataspoke"
     kestra_user: str = ""
     kestra_password: str = ""
-    kestra_callback_base_url: str = "http://localhost:8000"
+    kestra_callback_base_url: str = ""
+    kestra_ingestion_concurrent: int = 5
 
     # LLM
     llm_provider: str = "openai"
     llm_api_key: str = ""
     llm_model: str = "gpt-4o"
+
+    @model_validator(mode="after")
+    def _derive_callback_url(self) -> "Settings":
+        if not self.kestra_callback_base_url:
+            self.kestra_callback_base_url = f"http://localhost:{self.api_port}"
+        return self
 
 
 settings = Settings()

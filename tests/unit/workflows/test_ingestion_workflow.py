@@ -109,7 +109,7 @@ def test_generated_yaml_has_each_parallel_task(sample_yaml):
     tasks = sample_yaml["tasks"]
     each_task = next(t for t in tasks if t["id"] == "run_each")
     assert each_task["type"] == "io.kestra.plugin.core.flow.EachParallel"
-    assert each_task["concurrency"] == 5
+    assert each_task["concurrent"] == 5
 
 
 def test_generated_yaml_each_sequential_has_run_ingestion(sample_yaml):

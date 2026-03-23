@@ -28,7 +28,7 @@ class KestraClient:
         self.base_url = base_url.rstrip("/")
         self.namespace = namespace
         auth = httpx.BasicAuth(username, password) if username else None
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0, auth=auth)
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=60.0, auth=auth)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -203,12 +203,23 @@ class KestraClient:
         return [ExecutionResponse(**r) for r in results]
 
     async def list_flows(self, prefix: str | None = None) -> list[dict]:
-        """List all flows in the namespace, optionally filtered by ID prefix."""
-        resp = await self._client.get(f"/api/v1/flows/{self.namespace}")
+        """List flows in the namespace, optionally filtered by ID prefix.
+
+        Uses the search endpoint which is lighter than fetching full flow
+        sources via GET /api/v1/flows/{namespace}.
+        """
+        params: dict = {
+            "namespace": self.namespace,
+            "size": 100,
+        }
+        if prefix:
+            params["q"] = prefix
+        resp = await self._client.get("/api/v1/flows/search", params=params)
         if resp.status_code == 404:
             return []
         resp.raise_for_status()
-        flows = resp.json()
+        body = resp.json()
+        flows = body.get("results", [])
         if prefix:
             flows = [f for f in flows if f.get("id", "").startswith(prefix)]
         return flows

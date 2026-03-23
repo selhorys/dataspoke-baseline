@@ -238,7 +238,7 @@ class ActivityServer:
     Usage::
 
         async with ActivityServer() as server:
-            # server.callback_url → "http://host.docker.internal:8765"
+            # server.callback_url → "http://host.docker.internal:8000"
             # server.mock_llm, server.mock_qdrant, etc. are accessible
             server.mock_llm.complete_json.return_value = {"key": "val"}
             ...
@@ -247,10 +247,10 @@ class ActivityServer:
     def __init__(
         self,
         *,
-        port: int = 8765,
+        port: int | None = None,
         callback_host: str | None = None,
     ):
-        self.port = port
+        self.port = port or int(os.environ.get("DATASPOKE_API_PORT", "8000"))
         self.callback_host = callback_host or os.environ.get(
             "DATASPOKE_TEST_CALLBACK_HOST", "host.docker.internal"
         )
@@ -284,6 +284,11 @@ class ActivityServer:
         os.environ["DATASPOKE_KESTRA_CALLBACK_BASE_URL"] = (
             self.callback_url
         )
+
+        # Reduce EachParallel concurrency to 1 during tests to avoid
+        # overwhelming the dev-env Kestra instance.
+        self._original_ingestion_concurrent = _settings.kestra_ingestion_concurrent
+        _settings.kestra_ingestion_concurrent = 1
 
         # Ensure DataHub token is available for activity endpoints.
         # The test conftest uses a session-token fallback that the
@@ -365,6 +370,7 @@ class ActivityServer:
 
         _settings.kestra_callback_base_url = self._original_callback_url
         _settings.datahub_token = self._original_datahub_token
+        _settings.kestra_ingestion_concurrent = self._original_ingestion_concurrent
         os.environ.pop("DATASPOKE_KESTRA_CALLBACK_BASE_URL", None)
         logger.info("ActivityServer stopped")
 

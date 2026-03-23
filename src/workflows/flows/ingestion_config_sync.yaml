@@ -2,6 +2,10 @@ id: ingestion-config-sync
 namespace: dataspoke
 description: "Periodic sync of ingestion config — generates/updates/deletes ingestion-periodic-* flows"
 
+concurrency:
+  limit: 1
+  behavior: CANCEL
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -11,6 +15,7 @@ triggers:
   - id: cron
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "*/10 * * * *"
+    disabled: true
 
 tasks:
   - id: sync
@@ -18,6 +23,9 @@ tasks:
     uri: "{{ inputs.callback_base_url }}/internal/activities/sync-periodic-ingestion-flows"
     method: POST
     contentType: application/json
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3

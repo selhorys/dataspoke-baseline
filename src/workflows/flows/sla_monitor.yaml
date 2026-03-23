@@ -2,6 +2,10 @@ id: sla-monitor
 namespace: dataspoke
 description: "Periodic SLA monitoring with alerting"
 
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -28,6 +32,9 @@ tasks:
         contentType: application/json
         body: |
           {"dataset_urn": "{{ inputs.dataset_urn }}", "sla_target": {{ inputs.sla_target }}}
+        options:
+          connectTimeout: PT5S
+          readTimeout: PT30S
         retry:
           type: constant
           maxAttempt: 3
@@ -40,6 +47,9 @@ tasks:
         contentType: application/json
         body: |
           {"alerts": {{ outputs.guard_dataset_urn.check_sla.body }}, "recipients": {{ inputs.alert_recipients }}}
+        options:
+          connectTimeout: PT5S
+          readTimeout: PT30S
         retry:
           type: constant
           maxAttempt: 3
@@ -49,3 +59,4 @@ triggers:
   - id: sla_schedule
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "*/15 * * * *"
+    disabled: true

@@ -25,6 +25,10 @@ id: $flow_id
 namespace: dataspoke
 description: "Periodic ingestion for schedule: $schedule"
 
+concurrency:
+  limit: 2
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -43,6 +47,9 @@ tasks:
     contentType: application/json
     body: |
       {"schedule": "$schedule"}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3
@@ -51,7 +58,7 @@ tasks:
   - id: run_each
     type: io.kestra.plugin.core.flow.EachParallel
     value: "{{ outputs.list_datasets.body }}"
-    concurrency: 5
+    concurrent: $concurrent
     tasks:
       - id: run_ingestion
         type: io.kestra.plugin.core.http.Request
@@ -60,6 +67,9 @@ tasks:
         contentType: application/json
         body: |
           {"dry_run": false}
+        options:
+          connectTimeout: PT5S
+          readTimeout: PT30S
         retry:
           type: constant
           maxAttempt: 3
@@ -78,7 +88,11 @@ def schedule_to_flow_id(schedule: str) -> str:
     return f"{PERIODIC_FLOW_PREFIX}{digest}"
 
 
-def generate_periodic_flow_yaml(schedule: str, callback_base_url: str) -> str:
+def generate_periodic_flow_yaml(
+    schedule: str,
+    callback_base_url: str,
+    concurrent: int = 5,
+) -> str:
     """Generate the YAML source for a periodic ingestion flow.
 
     The returned YAML contains Kestra ``{{ expression }}`` placeholders that
@@ -88,6 +102,7 @@ def generate_periodic_flow_yaml(schedule: str, callback_base_url: str) -> str:
         flow_id=schedule_to_flow_id(schedule),
         schedule=schedule,
         callback_base_url=callback_base_url,
+        concurrent=concurrent,
     )
 
 
@@ -95,6 +110,7 @@ async def sync_periodic_ingestion_flows(
     kestra_client,
     db,
     callback_base_url: str,
+    concurrent: int = 5,
 ) -> dict:
     """Sync periodic ingestion flows in Kestra based on current configs.
 
@@ -125,7 +141,9 @@ async def sync_periodic_ingestion_flows(
     created: list[str] = []
     for schedule in active_schedules:
         flow_id = schedule_to_flow_id(schedule)
-        flow_yaml = generate_periodic_flow_yaml(schedule, callback_base_url)
+        flow_yaml = generate_periodic_flow_yaml(
+            schedule, callback_base_url, concurrent=concurrent,
+        )
         try:
             await kestra_client.create_or_update_flow(flow_yaml)
             created.append(flow_id)

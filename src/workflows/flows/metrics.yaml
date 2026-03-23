@@ -2,6 +2,10 @@ id: metrics
 namespace: dataspoke
 description: "Metric collection, health aggregation, and update publishing"
 
+concurrency:
+  limit: 2
+  behavior: QUEUE
+
 inputs:
   - id: callback_base_url
     type: STRING
@@ -22,6 +26,9 @@ tasks:
     contentType: application/json
     body: |
       {"metric_id": "{{ inputs.metric_id }}", "dry_run": {{ inputs.dry_run }}}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3
@@ -37,6 +44,9 @@ tasks:
         method: POST
         contentType: application/json
         body: "{}"
+        options:
+          connectTimeout: PT5S
+          readTimeout: PT30S
         retry:
           type: constant
           maxAttempt: 3
@@ -49,6 +59,9 @@ tasks:
     contentType: application/json
     body: |
       {{ outputs.run_metric.body }}
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
     retry:
       type: constant
       maxAttempt: 3
