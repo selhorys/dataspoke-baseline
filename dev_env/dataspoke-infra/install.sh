@@ -121,7 +121,7 @@ fi
 # Wait for Kestra to become ready
 # ---------------------------------------------------------------------------
 info "Waiting for Kestra to become ready..."
-kubectl rollout status deployment/dataspoke-kestra -n "${NS}" --timeout=120s \
+kubectl rollout status deployment/dataspoke-kestra-standalone -n "${NS}" --timeout=120s \
   && info "Kestra is ready." \
   || warn "Kestra did not become ready in time — check pod logs."
 

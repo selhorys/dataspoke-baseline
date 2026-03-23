@@ -142,6 +142,20 @@ kestra:
   deploymentType: STANDALONE
   image:
     tag: "v1.3.3"
+  common:
+    initContainers:
+      - name: wait-for-postgresql
+        image: busybox:1.37
+        command:
+          - sh
+          - -c
+          - |
+            echo "Waiting for PostgreSQL at dataspoke-postgresql:5432..."
+            until nc -z dataspoke-postgresql 5432; do
+              echo "  PostgreSQL not ready — retrying in 2s"
+              sleep 2
+            done
+            echo "PostgreSQL is reachable."
   resources:
     requests:
       cpu: "2"
