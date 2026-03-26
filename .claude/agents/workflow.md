@@ -40,6 +40,19 @@ src/workflows/
 - **Progress reporting**: long-running flows publish progress to Redis pub/sub for WebSocket feeds (see `spec/feature/BACKEND.md` §WebSocket Feed)
 - **Idempotency**: activity endpoints must be safe to retry — use idempotency keys where needed
 
+## Invocation modes
+
+### Initial implementation
+The prompt includes a feature spec and optionally an architect's implementation plan.
+When a plan is provided, follow its flow IDs, input schemas, activity sequences, and acceptance criteria. When no plan is provided, follow the spec directly.
+
+### Fix pass (reviewer feedback)
+The prompt includes reviewer findings from a previous implementation pass.
+For each finding:
+1. Read the finding and the affected file
+2. If valid — fix the issue
+3. If false positive — note why in your completion report
+
 ## Scope boundary
 
 Business logic lives in `src/backend/` services (handled by the **backend** agent). Internal activity endpoints (`/internal/activities/*`) live in `src/api/routers/internal/activities.py` and are also handled by the backend agent. If you need a new service method or activity endpoint, note the needed interface and defer to the backend agent.
@@ -47,3 +60,11 @@ Business logic lives in `src/backend/` services (handled by the **backend** agen
 ## After completing a task
 
 Run `uv run pytest tests/unit/workflows/` to verify.
+
+## Completion report
+
+End your work with a structured summary:
+- **Files changed**: list of created/modified files with one-line descriptions
+- **Tests**: which tests were run and their pass/fail status
+- **Deferred**: items that need another agent (backend service methods, activity endpoints, etc.)
+- **Fix pass notes** (if applicable): which reviewer findings were addressed vs disputed

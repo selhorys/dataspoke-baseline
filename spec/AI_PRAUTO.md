@@ -87,6 +87,8 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │   ├── system-append.md        # System prompt addendum for prauto identity
 │   ├── issue-analysis.md       # Prompt: analyze issue, produce plan
 │   ├── implementation.md       # Prompt: implement the plan
+│   ├── code-review.md          # Prompt: independent code review (generator-evaluator pattern)
+│   ├── review-fix.md           # Prompt: address code review findings
 │   ├── integration-fix.md      # Prompt: fix integration test failures
 │   ├── pr-review.md            # Prompt: address PR reviewer feedback
 │   ├── feedback-response.md    # Prompt: respond to plan feedback
@@ -102,6 +104,9 @@ This is implemented via `get_ready_label_timestamp()`, which queries the GitHub 
 │               ├── plan.md                   # Full plan written by Claude via Write tool
 │               ├── analysis.txt              # Analysis phase output (copy of plan.md)
 │               ├── implementation.json       # Implementation phase output
+│               ├── code-review.md            # Code review output (written by Claude via Write tool)
+│               ├── code-review.txt           # Code review output (copy)
+│               ├── review-fix.json           # Review fix phase output
 │               ├── integration-fix.json      # Integration fix phase output
 │               ├── review.json               # PR review phase output
 │               ├── complete.json             # Job completion record
@@ -372,9 +377,21 @@ In the step 6 processing loop, issues with the `prauto:review` label are checked
 
 Testing happens in two stages: an **integration fix loop** before the PR is created, and a **final test report** after push.
 
+#### Code review phase (generator-evaluator pattern)
+
+After implementation but before integration tests, a **fresh Claude context** independently reviews the generated code against the spec and plan. This implements the generator-evaluator separation pattern from [Anthropic's harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps) — self-evaluation fails because models praise their own work; an independent context produces genuinely critical assessments.
+
+- `run_code_review()` invokes Claude with **read-only tools** (`REVIEW_ALLOWED_TOOLS`: Read, Glob, Grep, git commands, pytest) — the reviewer can inspect and test but cannot modify code.
+- The reviewer evaluates against 5 weighted criteria: spec compliance (high), architecture adherence (high), code quality (medium), completeness (medium), inter-component consistency (medium).
+- The prompt instructs Claude to Write findings to a `{review_file}` path and output a final `VERDICT: APPROVE` or `VERDICT: REVISE` line.
+- Verdict is parsed via grep. If parsing fails, defaults to APPROVE (fail-open — don't block the pipeline on a parsing error).
+- If REVISE: `run_review_fix()` invokes a separate Claude session with `IMPLEMENTATION_ALLOWED_TOOLS` to address the findings. Max 1 fix iteration.
+- Controlled by `PRAUTO_CODE_REVIEW_ENABLED` (default `true`). Set to `false` to skip.
+- Turn limits: `PRAUTO_CLAUDE_MAX_TURNS_CODE_REVIEW` (default 30), `PRAUTO_CLAUDE_MAX_TURNS_REVIEW_FIX` (falls back to `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION`).
+
 #### Stage 1: Integration fix loop (pre-push)
 
-After implementation (or PR review), but before pushing, `run_integration_test_fix()` runs a fix loop for integration tests. This uses the same three-step pipeline as the main flow — the `implement_and_finalize()` helper calls `run_implementation()` → `run_integration_test_fix()` → `finalize_issue_pr()`. The PR review feedback path in `heartbeat.sh` also calls `run_integration_test_fix()` between `run_pr_review()` and push.
+After implementation and code review (see below), but before pushing, `run_integration_test_fix()` runs a fix loop for integration tests. The `implement_and_finalize()` helper calls `run_implementation()` → `run_code_review()` → [`run_review_fix()` if REVISE] → `run_integration_test_fix()` → `finalize_issue_pr()`. The PR review feedback path in `heartbeat.sh` also calls `run_integration_test_fix()` between `run_pr_review()` and push.
 
 - Skips gracefully if `tests/integration/` does not exist or the dev-env lock endpoint is unreachable.
 - Acquires the dev-env advisory lock, then loops up to `PRAUTO_INTEGRATION_FIX_MAX_RETRIES` times (default 2):
@@ -412,13 +429,15 @@ Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger 
 
 ## Prompt Templates
 
-Seven prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, plan_file, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body and a `plan_file` path where Claude must Write the completed plan; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
+Nine prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, plan_file, review_file, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body and a `plan_file` path where Claude must Write the completed plan; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
 
 | Template | Phase | Purpose | Context | Key instructions |
 |----------|-------|---------|---------|------------------|
 | `system-append.md` | All | Worker identity addendum | — | Declares autonomous mode, forbids pushing, requires conventional commits, mandates spec reading |
 | `issue-analysis.md` | Analysis | Read issue + codebase, produce plan | Issue body, plan_file path | Produce plan (files/order/patterns/tests/risks), Write full plan to `{plan_file}`. No code changes. |
 | `implementation.md` | Implementation | Write code per plan | Plan only | Check branch for existing work first, follow specs and patterns, write tests, run formatters, commit but don't push |
+| `code-review.md` | Code review | Independent review of implementation | Plan + diff stat, review_file path | Evaluate against 5 criteria (spec compliance, architecture, quality, completeness, consistency), Write findings to `{review_file}`, output `VERDICT: APPROVE` or `VERDICT: REVISE` |
+| `review-fix.md` | Review fix | Address code review findings | Plan + review findings | Fix each valid finding, dispute false positives in commit message, commit but don't push |
 | `integration-fix.md` | Integration fix | Fix integration test failures | Test output | Read failing tests, diagnose root cause, fix source code, re-run tests, commit |
 | `pr-review.md` | PR review | Address reviewer feedback | Plan + reviewer comments | Make requested changes, answer questions, produce reviewer-facing response summary |
 | `feedback-response.md` | Plan feedback | Respond to plan counter-proposal | — | Address each feedback point, acknowledge suggestions, keep under 500 words (1-turn, no tools) |
@@ -442,6 +461,7 @@ Before posting certain comments, the worker checks for an existing comment match
 | Quota pause | `Paused` | Yes — `has_quota_paused_comment` |
 | Heartbeat | `Heartbeat` | **No** — each heartbeat intentionally posts a new marker for retry counting |
 | Implementation start | `Heartbeat — implementation starting` | **No** — each implementation entry posts a new marker |
+| Code review REVISE | `Heartbeat — code review: REVISE, running fix pass` | **No** — each fix pass posts a new marker |
 | Integration fix attempt | `Heartbeat — integration test fix loop: attempt N/max` | **No** — each attempt posts a new marker |
 | Review response | `Review response` | **No** — multiple responses are valid across review rounds |
 | Feedback response | `Feedback response` | **No** — multiple responses are valid across plan revisions |
@@ -460,7 +480,7 @@ The claim protocol uses check-then-add with a timestamp-based verification windo
 
 ### Session directories
 
-Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{yyyyMMDD}-{HHmmss}-{uuid8}/` (e.g., `issue-42/20260303-135959-05bb59b7/`). All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), plan file (`plan.md`), phase outputs (`analysis.txt`, `implementation.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a timestamped subdirectory containing the first 8 characters of a UUID for uniqueness. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
+Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{yyyyMMDD}-{HHmmss}-{uuid8}/` (e.g., `issue-42/20260303-135959-05bb59b7/`). All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), plan file (`plan.md`), phase outputs (`analysis.txt`, `implementation.json`, `code-review.md`, `code-review.txt`, `review-fix.json`, `integration-fix.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a timestamped subdirectory containing the first 8 characters of a UUID for uniqueness. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
 
 ---
 
@@ -468,7 +488,7 @@ Each heartbeat run creates a per-issue session directory at `state/sessions/issu
 
 | Layer | Restriction | Mechanism |
 |-------|-------------|-----------|
-| Claude CLI tools | Phase-specific whitelists | `--allowedTools` / `--disallowedTools` |
+| Claude CLI tools | Phase-specific whitelists | `--allowedTools` / `--disallowedTools` (analysis: read-only; implementation/review-fix: read+write; code-review: read-only+pytest) |
 | Network access | No web fetch, curl, wget | Disallowed tools |
 | Cluster access | No kubectl, helm | Disallowed tools |
 | Destructive ops | No rm -rf, sudo | Disallowed tools |
@@ -493,7 +513,7 @@ Each heartbeat run creates a per-issue session directory at `state/sessions/issu
 |---|---|
 | `CLAUDE.md` | Claude reads this automatically, giving prauto full project context |
 | `.claude/settings.json` | Tool permissions apply equally to prauto sessions |
-| `.claude/agents/` | Prauto prompts can instruct Claude to delegate to subagents (`backend`, `workflow`, `test`, `frontend`, `k8s-helm`) |
+| `.claude/agents/` | Prauto prompts can instruct Claude to delegate to subagents (`architect`, `reviewer`, `backend`, `workflow`, `test`, `frontend`, `k8s-helm`) |
 | `.claude/skills/` | Skills are available if Claude detects matching context |
 | `spec/` hierarchy | Analysis phase reads specs per CLAUDE.md instructions |
 

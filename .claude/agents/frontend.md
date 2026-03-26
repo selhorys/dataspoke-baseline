@@ -48,6 +48,27 @@ src/frontend/
 - Hooks: `lib/hooks/use<HookName>.ts`
 - Types: `types/<domain>.ts`
 
+## Invocation modes
+
+### Initial implementation
+The prompt includes a feature spec and optionally an architect's implementation plan.
+When a plan is provided, follow its component list, page routes, API client contracts, and acceptance criteria. When no plan is provided, follow the spec directly.
+
+### Fix pass (reviewer feedback)
+The prompt includes reviewer findings from a previous implementation pass.
+For each finding:
+1. Read the finding and the affected file
+2. If valid — fix the issue
+3. If false positive — note why in your completion report
+
 ## After completing a task
 
 Run `npm test` (or the relevant subset) and `npx tsc --noEmit` to verify.
+
+## Completion report
+
+End your work with a structured summary:
+- **Files changed**: list of created/modified files with one-line descriptions
+- **Tests**: which tests were run and their pass/fail status
+- **Deferred**: items that need another agent (backend API endpoints, shared types, etc.)
+- **Fix pass notes** (if applicable): which reviewer findings were addressed vs disputed

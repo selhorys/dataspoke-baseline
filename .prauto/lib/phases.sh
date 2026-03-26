@@ -212,7 +212,7 @@ run_integration_test_fix() {
   info "Dev-env lock released after integration test fix loop."
 }
 
-# Combined helper: implement → integration test fix loop → finalize PR.
+# Combined helper: implement → code review → [fix if REVISE] → integration test fix loop → finalize PR.
 # Usage: implement_and_finalize <issue_number> <branch> <plan> <issue_title>
 implement_and_finalize() {
   local issue_number="$1" branch="$2" plan="$3" issue_title="$4"
@@ -221,6 +221,17 @@ implement_and_finalize() {
     --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — implementation starting" \
     2>/dev/null || warn "Failed to post implementation start comment on issue #${issue_number}."
   run_implementation "$issue_number" "$branch" "$plan"
+  # Code review phase (generator-evaluator separation)
+  run_code_review "$issue_number" "$branch" "$plan"
+  if [[ "$REVIEW_VERDICT" == "REVISE" ]]; then
+    info "Code review verdict: REVISE. Running fix pass..."
+    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+      --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — code review: REVISE, running fix pass" \
+      2>/dev/null || warn "Failed to post code review comment on issue #${issue_number}."
+    run_review_fix "$issue_number" "$branch" "$plan" "$REVIEW_OUTPUT"
+  else
+    info "Code review verdict: ${REVIEW_VERDICT}. Proceeding to integration tests."
+  fi
   run_integration_test_fix "$issue_number" "$branch"
   finalize_issue_pr "$branch" "$issue_number" "$issue_title"
 }

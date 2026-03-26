@@ -7,6 +7,8 @@ ANALYSIS_ALLOWED_TOOLS='Read,Write,Glob,Grep,Bash(git log *),Bash(git diff *),Ba
 
 IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *)'
 
+REVIEW_ALLOWED_TOOLS='Read,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(uv run pytest *)'
+
 DENY_TOOLS='Bash(git push *),Bash(rm -rf *),Bash(sudo *),Bash(kubectl *),Bash(helm *),Bash(curl *),Bash(wget *),Bash(gh *),Read(.prauto/config.local.env),Read(.prauto/state/*),WebFetch,WebSearch'
 
 # Substitute template variables in a prompt file.
@@ -215,6 +217,112 @@ run_implementation() {
     local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
     echo "$CLAUDE_OUTPUT" > "${session_out_dir}/implementation.json"
     info "Implementation claude session saved: ${CLAUDE_SESSION_ID}"
+  fi
+}
+
+# Phase 2a: Code review (generator-evaluator separation).
+# A fresh Claude context critically reviews the implementation against spec and plan.
+# Usage: run_code_review <issue_number> <branch> <plan>
+# Sets: REVIEW_OUTPUT, REVIEW_VERDICT, REVIEW_SESSION_ID
+run_code_review() {
+  local issue_number="$1"
+  local branch="$2"
+  local plan="$3"
+
+  # Skip if disabled
+  if [[ "${PRAUTO_CODE_REVIEW_ENABLED:-true}" != "true" ]]; then
+    info "Code review phase disabled. Skipping."
+    REVIEW_VERDICT="APPROVE"
+    REVIEW_OUTPUT=""
+    return 0
+  fi
+
+  # Collect diff for the reviewer
+  local diff_stat
+  diff_stat=$(git diff --stat "origin/${PRAUTO_BASE_BRANCH}..HEAD" 2>/dev/null || echo "(no diff available)")
+
+  local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+  local review_file="${session_out_dir}/code-review.md"
+
+  local prompt
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/code-review.md" \
+    "number=${issue_number}" \
+    "branch=${branch}" \
+    "base_branch=${PRAUTO_BASE_BRANCH}" \
+    "plan=${plan}" \
+    "diff_stat=${diff_stat}" \
+    "review_file=${review_file}")
+
+  local max_turns="${PRAUTO_CLAUDE_MAX_TURNS_CODE_REVIEW:-30}"
+  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_CODE_REVIEW:-}"
+
+  info "Running code review (max_turns=${max_turns})..."
+  if ! invoke_claude "$prompt" "$REVIEW_ALLOWED_TOOLS" "$max_turns" "$budget"; then
+    warn "Code review produced no usable output for issue #${issue_number}. Defaulting to APPROVE."
+    REVIEW_VERDICT="APPROVE"
+    REVIEW_OUTPUT=""
+    REVIEW_SESSION_ID="$CLAUDE_SESSION_ID"
+    return 0
+  fi
+
+  REVIEW_SESSION_ID="$CLAUDE_SESSION_ID"
+
+  # Prefer the review file written by Claude via Write tool over .result
+  if [[ -f "$review_file" ]] && [[ -s "$review_file" ]]; then
+    REVIEW_OUTPUT=$(cat "$review_file")
+    info "Code review captured from file ($(wc -c < "$review_file") bytes)."
+  else
+    warn "Review file not found at ${review_file}. Falling back to .result output."
+    REVIEW_OUTPUT="$CLAUDE_OUTPUT"
+  fi
+
+  # Parse verdict from last VERDICT: line (fail-open: default to APPROVE)
+  REVIEW_VERDICT=$(echo "$REVIEW_OUTPUT" | grep -oP '^VERDICT:\s*\K\S+' | tail -1)
+  if [[ -z "$REVIEW_VERDICT" ]]; then
+    warn "Could not parse verdict from review output. Defaulting to APPROVE."
+    REVIEW_VERDICT="APPROVE"
+  fi
+
+  info "Code review verdict: ${REVIEW_VERDICT}"
+
+  # Save to session dir
+  echo "$REVIEW_OUTPUT" > "${session_out_dir}/code-review.txt"
+  if [[ -n "$REVIEW_SESSION_ID" ]]; then
+    info "Code review claude session saved: ${REVIEW_SESSION_ID}"
+  fi
+}
+
+# Phase 2a-fix: Address code review findings.
+# Only invoked when review verdict is REVISE.
+# Usage: run_review_fix <issue_number> <branch> <plan> <review_output>
+# Sets: REVIEW_FIX_SESSION_ID
+run_review_fix() {
+  local issue_number="$1"
+  local branch="$2"
+  local plan="$3"
+  local review_output="$4"
+
+  local prompt
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/review-fix.md" \
+    "number=${issue_number}" \
+    "branch=${branch}" \
+    "plan=${plan}" \
+    "review_output=${review_output}" \
+    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
+    "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
+
+  local max_turns="${PRAUTO_CLAUDE_MAX_TURNS_REVIEW_FIX:-${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-100}}"
+  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_REVIEW_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
+
+  info "Running review fix pass (max_turns=${max_turns})..."
+  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$max_turns" "$budget"
+
+  REVIEW_FIX_SESSION_ID="$CLAUDE_SESSION_ID"
+
+  if [[ -n "$CLAUDE_SESSION_ID" ]]; then
+    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/review-fix.json"
+    info "Review fix claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 

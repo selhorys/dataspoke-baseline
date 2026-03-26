@@ -46,3 +46,10 @@ dev_env/                       # Install/uninstall scripts, .env, port-forward s
 ## Dev script conventions
 
 Match `dev_env/datahub/install.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `lib/helpers.sh` and `.env`.
+
+## Completion report
+
+End your work with a structured summary:
+- **Files changed**: list of created/modified files with one-line descriptions
+- **Verification**: which `helm template` / `helm lint` / `docker build` checks were run and their results
+- **Deferred**: items that need another agent or manual testing (cluster deployment, port-forward validation)

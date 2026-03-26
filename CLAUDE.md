@@ -53,16 +53,20 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 
 ## Implementation Workflow
 
-For end-to-end feature implementation, use subagents in this order:
+The scaffold uses a **planner → generator → evaluator** architecture. Generators write code and self-test; an independent reviewer evaluates the output against the spec and plan. This separation prevents the self-praise failure mode where agents approve their own mediocre work.
+
+For end-to-end feature implementation:
 
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
-2. `backend` agent — implement API routes + services in `src/api/`, `src/backend/`, `src/shared/`
-3. `workflow` agent — implement Kestra flow YAML in `src/workflows/flows/` and activity endpoints
-4. `test` agent — write and run tests in `tests/`
-5. `frontend` agent — build UI in `src/frontend/`
-6. `k8s-helm` agent — containerize and deploy (when ready)
+2. `architect` agent (opus) — produce an implementation plan with files, contracts, and acceptance criteria
+3. `backend` agent → `reviewer` agent → [fix pass if REVISE verdict, max 1 iteration]
+4. `workflow` agent → `reviewer` agent → [fix pass if REVISE verdict, max 1 iteration]
+5. `test` agent — write and run tests (can also verify specific reviewer findings)
+6. `frontend` agent → `reviewer` agent → [fix pass if REVISE verdict, max 1 iteration]
+7. `k8s-helm` agent — containerize and deploy (when ready, no review loop)
 
-Each agent reads the spec and the output of previous agents as context.
+Each generator receives the architect's plan as context. The reviewer receives the plan + generator's completion report + changed files. If the reviewer's verdict is REVISE, the generator is re-invoked with the findings for a fix pass. If issues persist after one fix pass, they are escalated to the user.
+
 For spec authoring, use `/plan-doc` directly.
 For testing conventions (unit/integration/api-wired integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
 
@@ -107,5 +111,5 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 **Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `kestra-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `sync-spec-from-impl`, `sync-specs`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/`, `kestra-api` requires `ref/github/kestra/` — run `/ref-setup` once if not present.)_
-**Subagents**: `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
+**Subagents**: `architect` (planner, opus), `reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

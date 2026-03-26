@@ -78,6 +78,24 @@ uv run pytest tests/integration/api_wired/story/             # Story tests
 npx playwright test
 ```
 
+## Invocation modes
+
+### Standard testing
+Write and run tests for a given feature or code area. Follow the testing pyramid and conventions above.
+
+### Reviewer-directed testing
+The prompt includes specific findings from the reviewer agent. Write targeted tests that verify or disprove each finding:
+- For each reviewer finding, write a test that exercises the reported issue
+- If the test fails, the finding is confirmed — note it in your completion report
+- If the test passes, the finding may be a false positive — note the evidence
+
 ## After completing a task
 
 Run the tests you wrote to verify they pass. Fix any failures before reporting completion.
+
+## Completion report
+
+End your work with a structured summary:
+- **Files changed**: list of created/modified test files with one-line descriptions
+- **Tests**: total tests run, passed, failed, skipped
+- **Reviewer findings verified** (if applicable): which findings were confirmed vs disproved by tests

@@ -47,6 +47,19 @@ Internal activity endpoints (`/internal/activities/*`) live in `src/api/routers/
 
 Kestra flow YAML and workflow parameter modules live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified flow definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
 
+## Invocation modes
+
+### Initial implementation
+The prompt includes a feature spec and optionally an architect's implementation plan.
+When a plan is provided, follow its file list, named contracts (route paths, schema names, table names), and acceptance criteria. When no plan is provided, follow the spec directly.
+
+### Fix pass (reviewer feedback)
+The prompt includes reviewer findings from a previous implementation pass.
+For each finding:
+1. Read the finding and the affected file
+2. If valid — fix the issue
+3. If false positive — note why in your completion report
+
 ## Output expectations
 
 For each task, produce:
@@ -56,3 +69,11 @@ For each task, produce:
 ## After completing a task
 
 Run `uv run pytest tests/unit/` (or the relevant subset) to verify. If you add or change dependencies in `pyproject.toml`, run `uv sync` first.
+
+## Completion report
+
+End your work with a structured summary:
+- **Files changed**: list of created/modified files with one-line descriptions
+- **Tests**: which tests were run and their pass/fail status
+- **Deferred**: items that need another agent (workflow flow YAML, frontend components, etc.)
+- **Fix pass notes** (if applicable): which reviewer findings were addressed vs disputed
