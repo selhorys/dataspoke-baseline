@@ -24,17 +24,23 @@ Prerequisites:
 import asyncio
 import os
 
-import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.workflows.kestra.client import KestraClient
-from src.workflows.ingestion import PERIODIC_FLOW_PREFIX, schedule_to_flow_id
-from tests.integration.conftest import (
-    _auth_headers,
-    make_test_urn,
+from src.workflows.ingestion import schedule_to_flow_id
+from tests.integration.conftest import _auth_headers
+from tests.integration.api_wired.spot.conftest import (
+    EXAMPLE_KAFKA_IDENTIFIER,
+    EXAMPLE_KAFKA_LOCATOR,
+    EXAMPLE_PG_AUTH,
+    EXAMPLE_PG_IDENTIFIER,
+    EXAMPLE_PG_LOCATOR,
+    delete_ingestion_config_db,
+    delete_ingestion_events_db,
+    delete_kestra_flow,
+    make_ingestion_urn,
 )
 
 # Triggers module_dummy_data fixture to reset and re-ingest the catalog schema
@@ -56,53 +62,14 @@ _GENRE_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:postgres,"
     "example_db.catalog.genre_hierarchy,DEV)"
 )
-
-# Example postgres connection (dev-env dummy data source) — split into 3 fields
-# Env vars are loaded from dev_env/.env by conftest.py
-EXAMPLE_PG_LOCATOR = {
-    "host": "localhost",
-    "port": int(os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT", "9102")),
-}
-EXAMPLE_PG_IDENTIFIER = {
-    "database": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db"),
-    "schema_name": "catalog",
-}
-EXAMPLE_PG_AUTH = {
-    "username": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres"),
-    "password": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", ""),
-}
-
-# Example kafka connection (dev-env dummy data source)
-EXAMPLE_KAFKA_LOCATOR = {
-    "bootstrap_servers": os.environ.get(
-        "DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS", "localhost:9104"
-    ),
-}
-EXAMPLE_KAFKA_IDENTIFIER = {
-    "topic": "imazon.orders.events",
-    "cluster": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka"),
-}
-
 _KAFKA_ORDERS_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:kafka,"
     "example_kafka.imazon.orders.events,DEV)"
 )
 
-_UNSET = object()  # sentinel to distinguish "not passed" from explicit None
-
 
 def _urn(suffix: str) -> str:
-    return make_test_urn("ingestion", suffix)
-
-
-@pytest_asyncio.fixture
-async def http_client(activity_server):
-    """HTTP client pointing at the real activity server."""
-    async with httpx.AsyncClient(
-        base_url=f"http://localhost:{activity_server.port}",
-        timeout=120.0,
-    ) as client:
-        yield client
+    return make_ingestion_urn(suffix)
 
 
 @pytest_asyncio.fixture
@@ -116,82 +83,6 @@ async def kestra_client():
     )
     yield client
     await client.close()
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-async def _put_config(
-    client: httpx.AsyncClient,
-    dataset_urn: str,
-    *,
-    source_type: str = "POSTGRESQL",
-    locator: dict | None = None,
-    identifier: dict | None = None,
-    auth: object = _UNSET,
-    periodic: bool = False,
-    schedule: str | None = None,
-) -> None:
-    """PUT an ingestion config and assert success."""
-    resolved_auth = EXAMPLE_PG_AUTH if auth is _UNSET else auth
-    payload: dict = {
-        "dataset_urn": dataset_urn,
-        "source_type": source_type,
-        "locator": locator or EXAMPLE_PG_LOCATOR,
-        "identifier": identifier or EXAMPLE_PG_IDENTIFIER,
-        "periodic": periodic,
-    }
-    if resolved_auth is not None:
-        payload["auth"] = resolved_auth
-    if schedule is not None:
-        payload["schedule"] = schedule
-    resp = await client.put(
-        f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
-        headers=_auth_headers(),
-        json=payload,
-    )
-    assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
-
-
-async def _delete_config(
-    client: httpx.AsyncClient,
-    dataset_urn: str,
-) -> None:
-    """DELETE an ingestion config (idempotent — ignores 404)."""
-    resp = await client.delete(
-        f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
-        headers=_auth_headers(),
-    )
-    assert resp.status_code in (204, 404), f"DELETE config failed: {resp.text}"
-
-
-async def _delete_config_db(session: AsyncSession, dataset_urn: str) -> None:
-    """Directly remove a config row from PostgreSQL (for finally blocks)."""
-    await session.execute(
-        text("DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = :urn"),
-        {"urn": dataset_urn},
-    )
-
-
-async def _delete_events_db(session: AsyncSession, dataset_urn: str) -> None:
-    """Remove ingestion events for a dataset URN (for finally blocks)."""
-    await session.execute(
-        text(
-            "DELETE FROM dataspoke.events"
-            " WHERE entity_id = :urn"
-            " AND entity_type = 'dataset'"
-            " AND event_type LIKE 'ingestion.%'"
-        ),
-        {"urn": dataset_urn},
-    )
-
-
-async def _delete_kestra_flow(kestra_client, flow_id: str) -> None:
-    """Delete a Kestra flow; ignores errors if not found."""
-    try:
-        await kestra_client.delete_flow(flow_id)
-    except Exception:
-        pass
 
 
 # ── Test cases ────────────────────────────────────────────────────────────────
@@ -217,12 +108,19 @@ async def test_run_ingestion_via_public_api(
     headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client,
-            dataset_urn,
-            source_type="POSTGRESQL",
-            periodic=False,
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": dataset_urn,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": False,
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
@@ -241,8 +139,7 @@ async def test_run_ingestion_via_public_api(
             headers=headers,
         )
         assert resp.status_code == 200
-        events_body = resp.json()
-        assert events_body["total_count"] >= 1
+        assert resp.json()["total_count"] >= 1
 
         # Verify metadata landed in DataHub
         schema = await datahub_client.get_aspect(dataset_urn, SchemaMetadataClass)
@@ -254,8 +151,8 @@ async def test_run_ingestion_via_public_api(
         assert "dataspoke-ingestion" in (props.customProperties or {}).get("source", "")
 
     finally:
-        await _delete_events_db(async_session, dataset_urn)
-        await _delete_config_db(async_session, dataset_urn)
+        await delete_ingestion_events_db(async_session, dataset_urn)
+        await delete_ingestion_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -274,12 +171,19 @@ async def test_run_ingestion_dry_run(
     headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client,
-            dataset_urn,
-            source_type="POSTGRESQL",
-            periodic=False,
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": dataset_urn,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": False,
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
@@ -292,8 +196,8 @@ async def test_run_ingestion_dry_run(
         assert body["detail"]["dry_run"] is True
 
     finally:
-        await _delete_events_db(async_session, dataset_urn)
-        await _delete_config_db(async_session, dataset_urn)
+        await delete_ingestion_events_db(async_session, dataset_urn)
+        await delete_ingestion_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -313,24 +217,71 @@ async def test_list_periodic_datasets(
     urn_b = _urn("periodic_b")
     urn_c = _urn("periodic_c")
     urn_d = _urn("periodic_d")
+    headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client, urn_a,
-            periodic=True, schedule="0 2 * * *",
+        # A: periodic, schedule="0 2 * * *"
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{urn_a}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": urn_a,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": True,
+                "schedule": "0 2 * * *",
+            },
         )
-        await _put_config(
-            http_client, urn_b,
-            periodic=True, schedule="0 2 * * *",
+        assert resp.status_code in (200, 201), f"PUT config A failed: {resp.text}"
+
+        # B: periodic, schedule="0 2 * * *"
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{urn_b}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": urn_b,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": True,
+                "schedule": "0 2 * * *",
+            },
         )
-        await _put_config(
-            http_client, urn_c,
-            periodic=True, schedule="0 6 * * *",
+        assert resp.status_code in (200, 201), f"PUT config B failed: {resp.text}"
+
+        # C: periodic, schedule="0 6 * * *" (different schedule)
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{urn_c}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": urn_c,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": True,
+                "schedule": "0 6 * * *",
+            },
         )
-        await _put_config(
-            http_client, urn_d,
-            periodic=False,
+        assert resp.status_code in (200, 201), f"PUT config C failed: {resp.text}"
+
+        # D: periodic=false (not periodic)
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{urn_d}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": urn_d,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": False,
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT config D failed: {resp.text}"
 
         resp = await http_client.post(
             "/internal/activities/list-periodic-datasets",
@@ -346,7 +297,7 @@ async def test_list_periodic_datasets(
 
     finally:
         for urn in (urn_a, urn_b, urn_c, urn_d):
-            await _delete_config_db(async_session, urn)
+            await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 
 
@@ -365,20 +316,41 @@ async def test_sync_creates_flows_per_schedule(
     """
     flow_id_02 = schedule_to_flow_id("0 2 * * *")
     flow_id_06 = schedule_to_flow_id("0 6 * * *")
+    headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client, _CATALOG_URN,
-            periodic=True, schedule="0 2 * * *",
+        # title_master + editions: schedule="0 2 * * *"
+        for urn in (_CATALOG_URN, _EDITIONS_URN):
+            resp = await http_client.put(
+                f"/api/v1/spoke/common/data/{urn}/attr/ingestion/conf",
+                headers=headers,
+                json={
+                    "dataset_urn": urn,
+                    "source_type": "POSTGRESQL",
+                    "locator": EXAMPLE_PG_LOCATOR,
+                    "identifier": EXAMPLE_PG_IDENTIFIER,
+                    "auth": EXAMPLE_PG_AUTH,
+                    "periodic": True,
+                    "schedule": "0 2 * * *",
+                },
+            )
+            assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
+
+        # genre_hierarchy: schedule="0 6 * * *"
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": _GENRE_URN,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": True,
+                "schedule": "0 6 * * *",
+            },
         )
-        await _put_config(
-            http_client, _EDITIONS_URN,
-            periodic=True, schedule="0 2 * * *",
-        )
-        await _put_config(
-            http_client, _GENRE_URN,
-            periodic=True, schedule="0 6 * * *",
-        )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         resp = await http_client.post(
             "/internal/activities/sync-periodic-ingestion-flows",
@@ -395,10 +367,10 @@ async def test_sync_creates_flows_per_schedule(
         assert flow_06 is not None, f"Flow {flow_id_06} not found in Kestra"
 
     finally:
-        await _delete_kestra_flow(kestra_client, flow_id_02)
-        await _delete_kestra_flow(kestra_client, flow_id_06)
+        await delete_kestra_flow(kestra_client, flow_id_02)
+        await delete_kestra_flow(kestra_client, flow_id_06)
         for urn in (_CATALOG_URN, _EDITIONS_URN, _GENRE_URN):
-            await _delete_config_db(async_session, urn)
+            await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 
 
@@ -414,24 +386,34 @@ async def test_sync_removes_stale_flows(
     Cleanup: Delete any remaining test configs.
     """
     flow_id_03 = schedule_to_flow_id("0 3 * * *")
+    headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client, _CATALOG_URN,
-            periodic=True, schedule="0 3 * * *",
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{_CATALOG_URN}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": _CATALOG_URN,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": True,
+                "schedule": "0 3 * * *",
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         # First sync — creates the flow
         resp = await http_client.post(
             "/internal/activities/sync-periodic-ingestion-flows",
         )
         assert resp.status_code == 200
-        # Verify flow was created
         flow_before = await kestra_client.get_flow(flow_id_03)
         assert flow_before is not None, f"Flow {flow_id_03} was not created on first sync"
 
         # Delete the config
-        await _delete_config_db(async_session, _CATALOG_URN)
+        await delete_ingestion_config_db(async_session, _CATALOG_URN)
         await async_session.commit()
 
         # Second sync — should delete the stale flow
@@ -447,8 +429,8 @@ async def test_sync_removes_stale_flows(
         assert flow_after is None, f"Flow {flow_id_03} still exists after second sync"
 
     finally:
-        await _delete_kestra_flow(kestra_client, flow_id_03)
-        await _delete_config_db(async_session, _CATALOG_URN)
+        await delete_kestra_flow(kestra_client, flow_id_03)
+        await delete_ingestion_config_db(async_session, _CATALOG_URN)
         await async_session.commit()
 
 
@@ -458,7 +440,7 @@ async def test_sync_updates_on_schedule_change(
 ):
     """Patching a dataset's schedule creates the new flow and retains the old one if still needed.
 
-    Setup: 3 datasets on "0 2 * * *", sync → one flow.
+    Setup: 3 datasets on "0 2 * * *", sync -> one flow.
     Action: PATCH genre_hierarchy to "0 6 * * *", sync again.
     Assertions:
     - Flow for "0 2 * * *" still exists (title_master + editions remain).
@@ -473,10 +455,20 @@ async def test_sync_updates_on_schedule_change(
 
     try:
         for urn in (_CATALOG_URN, _EDITIONS_URN, _GENRE_URN):
-            await _put_config(
-                http_client, urn,
-                periodic=True, schedule="0 2 * * *",
+            resp = await http_client.put(
+                f"/api/v1/spoke/common/data/{urn}/attr/ingestion/conf",
+                headers=headers,
+                json={
+                    "dataset_urn": urn,
+                    "source_type": "POSTGRESQL",
+                    "locator": EXAMPLE_PG_LOCATOR,
+                    "identifier": EXAMPLE_PG_IDENTIFIER,
+                    "auth": EXAMPLE_PG_AUTH,
+                    "periodic": True,
+                    "schedule": "0 2 * * *",
+                },
             )
+            assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         # First sync — one flow for "0 2 * * *"
         resp = await http_client.post(
@@ -527,10 +519,10 @@ async def test_sync_updates_on_schedule_change(
         assert _EDITIONS_URN not in urns_06
 
     finally:
-        await _delete_kestra_flow(kestra_client, flow_id_02)
-        await _delete_kestra_flow(kestra_client, flow_id_06)
+        await delete_kestra_flow(kestra_client, flow_id_02)
+        await delete_kestra_flow(kestra_client, flow_id_06)
         for urn in (_CATALOG_URN, _EDITIONS_URN, _GENRE_URN):
-            await _delete_config_db(async_session, urn)
+            await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 
 
@@ -549,14 +541,22 @@ async def test_concurrency_guard_prevents_duplicate(
     headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client, dataset_urn,
-            source_type="POSTGRESQL",
-            periodic=False,
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": dataset_urn,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": False,
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         # Fire both requests concurrently; the second should race into a locked state
-        async def _run() -> httpx.Response:
+        async def _run():
             return await http_client.post(
                 f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
                 headers=headers,
@@ -585,8 +585,8 @@ async def test_concurrency_guard_prevents_duplicate(
             await redis_client.delete(lock_key)
         except Exception:
             pass
-        await _delete_events_db(async_session, dataset_urn)
-        await _delete_config_db(async_session, dataset_urn)
+        await delete_ingestion_events_db(async_session, dataset_urn)
+        await delete_ingestion_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -615,15 +615,18 @@ async def test_run_kafka_ingestion(
     headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client,
-            dataset_urn,
-            source_type="KAFKA",
-            locator=EXAMPLE_KAFKA_LOCATOR,
-            identifier=EXAMPLE_KAFKA_IDENTIFIER,
-            auth=None,
-            periodic=False,
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": dataset_urn,
+                "source_type": "KAFKA",
+                "locator": EXAMPLE_KAFKA_LOCATOR,
+                "identifier": EXAMPLE_KAFKA_IDENTIFIER,
+                "periodic": False,
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         # Verify the stored config has the expected KAFKA shape
         resp = await http_client.get(
@@ -659,8 +662,8 @@ async def test_run_kafka_ingestion(
         assert props.name == "imazon.orders.events"
 
     finally:
-        await _delete_events_db(async_session, dataset_urn)
-        await _delete_config_db(async_session, dataset_urn)
+        await delete_ingestion_events_db(async_session, dataset_urn)
+        await delete_ingestion_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -682,21 +685,39 @@ async def test_mixed_source_types_in_periodic_sync(
     flow_id = schedule_to_flow_id(schedule)
     pg_urn = _CATALOG_URN
     kafka_urn = _urn("kafka_periodic")
+    headers = _auth_headers()
 
     try:
-        await _put_config(
-            http_client, pg_urn,
-            source_type="POSTGRESQL",
-            periodic=True, schedule=schedule,
+        # POSTGRESQL config
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{pg_urn}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": pg_urn,
+                "source_type": "POSTGRESQL",
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
+                "periodic": True,
+                "schedule": schedule,
+            },
         )
-        await _put_config(
-            http_client, kafka_urn,
-            source_type="KAFKA",
-            locator=EXAMPLE_KAFKA_LOCATOR,
-            identifier=EXAMPLE_KAFKA_IDENTIFIER,
-            auth=None,
-            periodic=True, schedule=schedule,
+        assert resp.status_code in (200, 201), f"PUT PG config failed: {resp.text}"
+
+        # KAFKA config
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{kafka_urn}/attr/ingestion/conf",
+            headers=headers,
+            json={
+                "dataset_urn": kafka_urn,
+                "source_type": "KAFKA",
+                "locator": EXAMPLE_KAFKA_LOCATOR,
+                "identifier": EXAMPLE_KAFKA_IDENTIFIER,
+                "periodic": True,
+                "schedule": schedule,
+            },
         )
+        assert resp.status_code in (200, 201), f"PUT Kafka config failed: {resp.text}"
 
         resp = await http_client.post(
             "/internal/activities/sync-periodic-ingestion-flows",
@@ -718,7 +739,7 @@ async def test_mixed_source_types_in_periodic_sync(
         assert kafka_urn in result, f"Expected Kafka URN in result: {result}"
 
     finally:
-        await _delete_kestra_flow(kestra_client, flow_id)
-        await _delete_config_db(async_session, pg_urn)
-        await _delete_config_db(async_session, kafka_urn)
+        await delete_kestra_flow(kestra_client, flow_id)
+        await delete_ingestion_config_db(async_session, pg_urn)
+        await delete_ingestion_config_db(async_session, kafka_urn)
         await async_session.commit()

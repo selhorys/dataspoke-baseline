@@ -53,6 +53,11 @@ tests/
 - **Factory patching target**: Patches target `src.api.routers.internal.activities` — the module where `make_llm`, `make_qdrant`, `make_cache`, `make_notification` are imported. Always verify the patch target matches the import path.
 - **ActivityServer**: For full Kestra flow tests, the `activity_server` fixture (session-scoped) runs a real uvicorn server with mocked LLM/Qdrant/cache/notification while using real DataHub and DB. See `tests/integration/util/kestra.py`.
 
+### API-wired test readability (critical)
+- **Inline API calls**: Write `http_client.put(…, json={…})` with the full request dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`, `create_dataset()`).
+- **Shared cleanup helpers**: Database cleanup functions (`delete_*_db`), connection constants, and conftest fixtures **may** be extracted — these are boilerplate that does not carry test intent.
+- **Rationale**: The request payload _is_ the test's intent. Hiding it behind a helper obscures what the test actually verifies.
+
 ### Assertion rules (critical)
 - Never hardcode row counts — query actual counts within the test
 - Never hardcode surrogate IDs — look up by stable natural key (ISBN, URN, email)

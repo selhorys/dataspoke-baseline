@@ -11,37 +11,26 @@ Prerequisites:
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import httpx
 import pytest
-import pytest_asyncio
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
-    make_test_urn,
     seed_events,
 )
-
-# Shared payload fragments for POSTGRESQL source type
-_PG_LOCATOR = {"host": "localhost", "port": 9201}
-_PG_IDENTIFIER = {"database": "example_db"}
-_PG_AUTH = {"username": "postgres", "secret_ref": "dev/example-postgres-password"}
+from tests.integration.api_wired.spot.conftest import (
+    EXAMPLE_PG_AUTH,
+    EXAMPLE_PG_IDENTIFIER,
+    EXAMPLE_PG_LOCATOR,
+    delete_ingestion_config_db,
+    delete_ingestion_events_db,
+    make_ingestion_urn,
+)
 
 
 def _urn(suffix: str) -> str:
-    return make_test_urn("ingestion", suffix)
-
-
-@pytest_asyncio.fixture
-async def http_client(activity_server):
-    """HTTP client pointing at the real activity server."""
-    async with httpx.AsyncClient(
-        base_url=f"http://localhost:{activity_server.port}",
-        timeout=120.0,
-    ) as client:
-        yield client
+    return make_ingestion_urn(suffix)
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -63,9 +52,9 @@ async def test_ingestion_config_crud_via_http(
             json={
                 "dataset_urn": dataset_urn,
                 "source_type": "POSTGRESQL",
-                "locator": _PG_LOCATOR,
-                "identifier": _PG_IDENTIFIER,
-                "auth": _PG_AUTH,
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
                 "periodic": False,
                 "schedule": "0 0 * * *",
             },
@@ -117,13 +106,7 @@ async def test_ingestion_config_crud_via_http(
         )
         assert resp.status_code == 404
     finally:
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.ingestion_configs"
-                " WHERE dataset_urn = :urn"
-            ),
-            {"urn": dataset_urn},
-        )
+        await delete_ingestion_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -144,13 +127,13 @@ async def test_list_ingestion_configs(
                 json={
                     "dataset_urn": urn,
                     "source_type": "POSTGRESQL",
-                    "locator": _PG_LOCATOR,
-                    "identifier": _PG_IDENTIFIER,
-                    "auth": _PG_AUTH,
+                    "locator": EXAMPLE_PG_LOCATOR,
+                    "identifier": EXAMPLE_PG_IDENTIFIER,
+                    "auth": EXAMPLE_PG_AUTH,
                     "periodic": False,
                 },
             )
-            assert resp.status_code in (200, 201)
+            assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         resp = await http_client.get(
             "/api/v1/spoke/common/ingestion",
@@ -165,13 +148,7 @@ async def test_list_ingestion_configs(
         assert urn2 in urns
     finally:
         for urn in (urn1, urn2):
-            await async_session.execute(
-                text(
-                    "DELETE FROM dataspoke.ingestion_configs"
-                    " WHERE dataset_urn = :urn"
-                ),
-                {"urn": urn},
-            )
+            await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 
 
@@ -191,13 +168,13 @@ async def test_run_ingestion_dry_run(
             json={
                 "dataset_urn": dataset_urn,
                 "source_type": "POSTGRESQL",
-                "locator": _PG_LOCATOR,
-                "identifier": _PG_IDENTIFIER,
-                "auth": _PG_AUTH,
+                "locator": EXAMPLE_PG_LOCATOR,
+                "identifier": EXAMPLE_PG_IDENTIFIER,
+                "auth": EXAMPLE_PG_AUTH,
                 "periodic": False,
             },
         )
-        assert resp.status_code in (200, 201)
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         # Run with dry_run=true (direct pipeline — no Kestra involved)
         resp = await http_client.post(
@@ -216,25 +193,10 @@ async def test_run_ingestion_dry_run(
             headers=headers,
         )
         assert resp.status_code == 200
-        events_body = resp.json()
-        assert events_body["total_count"] >= 1
+        assert resp.json()["total_count"] >= 1
     finally:
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.events"
-                " WHERE entity_id = :urn"
-                " AND entity_type = 'dataset'"
-                " AND event_type LIKE 'ingestion.%'"
-            ),
-            {"urn": dataset_urn},
-        )
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.ingestion_configs"
-                " WHERE dataset_urn = :urn"
-            ),
-            {"urn": dataset_urn},
-        )
+        await delete_ingestion_events_db(async_session, dataset_urn)
+        await delete_ingestion_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 

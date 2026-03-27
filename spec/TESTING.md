@@ -424,6 +424,14 @@ uv run pytest tests/integration/api_wired/spot/
 uv run pytest tests/integration/api_wired/story/
 ```
 
+### Readability Principle
+
+API-wired tests (spot and story) prioritize **readability over DRY** for HTTP request calls. Each test must show the full request payload inline so a reader can understand the test without jumping to helper definitions.
+
+- **Inline API calls**: Write `http_client.put(…, json={…})` with the full dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`).
+- **Shared cleanup helpers**: Database cleanup functions (`delete_*_db`), connection constants, and `conftest.py` fixtures **may** be extracted — these are boilerplate that does not carry test intent.
+- **Rationale**: The request payload _is_ the test's intent. Hiding it behind a helper obscures what the test actually verifies and forces readers to cross-reference definitions.
+
 ### Workflow
 
 API-wired tests follow the same seven-step workflow as other integration tests (see [Integration Testing §Workflow](#workflow)). The same lock protocol, dummy-data reset, and module-level `DUMMY_DATA_*` constants apply.
