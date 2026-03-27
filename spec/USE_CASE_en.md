@@ -58,7 +58,7 @@ Standard Oracle connector output: 500 tables with column types and keys — noth
 # PUT /api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf
 dataspoke.ingestion.register_config({
   "name": "oracle_book_catalog_enriched",
-  "source_type": "oracle",
+  "source_type": "ORACLE",
   "schedule": "0 2 * * *",  # Daily at 2 AM
 
   "enrichment_sources": [

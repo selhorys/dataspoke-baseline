@@ -121,7 +121,9 @@ def test_dataset_concept_map_composite_pk() -> None:
 
 def test_jsonb_columns() -> None:
     jsonb_checks = [
-        (IngestionConfig, "location"),
+        (IngestionConfig, "locator"),
+        (IngestionConfig, "identifier"),
+        (IngestionConfig, "auth"),
         (ValidationConfig, "rules"),
         (ValidationConfig, "sla_target"),
         (ValidationResult, "dimensions"),

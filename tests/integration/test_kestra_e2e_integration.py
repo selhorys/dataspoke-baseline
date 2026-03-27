@@ -71,8 +71,10 @@ async def _seed_e2e_configs(async_engine, activity_server):
         # Seed configs
         db.add(IngestionConfig(
             dataset_urn=_IMAZON_DATASET_URN,
-            source_type="postgres",
-            location={"host": "localhost", "port": 9201, "database": "example_db", "username": "postgres", "secret_ref": "dev/example-postgres-password"},
+            source_type="POSTGRESQL",
+            locator={"host": "localhost", "port": 9201},
+            identifier={"database": "example_db"},
+            auth={"username": "postgres", "secret_ref": "dev/example-postgres-password"},
             periodic=False,
         ))
         db.add(ValidationConfig(

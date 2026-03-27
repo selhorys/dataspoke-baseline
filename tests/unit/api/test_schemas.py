@@ -74,20 +74,51 @@ class TestIngestionSchemas:
     def test_create_request_round_trip(self) -> None:
         req = CreateIngestionConfigRequest(
             dataset_urn="urn:li:dataset:test",
-            source_type="postgres",
-            location={"host": "localhost", "port": 5432, "database": "testdb"},
+            source_type="POSTGRESQL",
+            locator={"host": "localhost", "port": 5432},
+            identifier={"database": "testdb"},
+            auth={"username": "user", "secret_ref": "pw"},
         )
         data = req.model_dump()
         parsed = CreateIngestionConfigRequest.model_validate(data)
         assert parsed.dataset_urn == req.dataset_urn
         assert parsed.periodic is False
 
+    def test_create_request_kafka_no_auth(self) -> None:
+        req = CreateIngestionConfigRequest(
+            dataset_urn="urn:li:dataset:test",
+            source_type="KAFKA",
+            locator={"bootstrap_servers": "kafka:9092"},
+            identifier={"topic": "my-topic"},
+        )
+        assert req.auth is None
+
+    def test_create_request_invalid_source_type(self) -> None:
+        with pytest.raises(ValidationError):
+            CreateIngestionConfigRequest(
+                dataset_urn="urn:li:dataset:test",
+                source_type="UNSUPPORTED",
+                locator={},
+                identifier={},
+            )
+
+    def test_create_request_missing_auth_for_postgresql(self) -> None:
+        with pytest.raises(ValidationError, match="auth is required"):
+            CreateIngestionConfigRequest(
+                dataset_urn="urn:li:dataset:test",
+                source_type="POSTGRESQL",
+                locator={"host": "localhost", "port": 5432},
+                identifier={"database": "testdb"},
+            )
+
     def test_config_response_has_resp_time(self) -> None:
         resp = IngestionConfigResponse(
             id="1",
             dataset_urn="urn:li:dataset:test",
-            source_type="postgres",
-            location={"host": "localhost"},
+            source_type="POSTGRESQL",
+            locator={"host": "localhost", "port": 5432},
+            identifier={"database": "testdb"},
+            auth={"username": "user", "secret_ref": "pw"},
             periodic=False,
             schedule=None,
             enrichment_sources=None,

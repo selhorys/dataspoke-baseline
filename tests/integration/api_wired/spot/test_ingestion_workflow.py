@@ -40,6 +40,8 @@ from tests.integration.conftest import (
 # Triggers module_dummy_data fixture to reset and re-ingest the catalog schema
 # in both PostgreSQL and DataHub before this module's tests run.
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
+# Ensure Kafka topics have seed messages for schema inference
+DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
 
 # Canonical Imazon dataset URNs registered by the dummy data fixture
 _CATALOG_URN = (
@@ -55,14 +57,38 @@ _GENRE_URN = (
     "example_db.catalog.genre_hierarchy,DEV)"
 )
 
-# Example postgres connection (dev-env dummy data source)
-EXAMPLE_PG_LOCATION = {
+# Example postgres connection (dev-env dummy data source) — split into 3 fields
+# Env vars are loaded from dev_env/.env by conftest.py
+EXAMPLE_PG_LOCATOR = {
     "host": "localhost",
-    "port": 9201,
-    "database": "example_db",
-    "username": "postgres",
-    "secret_ref": "dev/example-postgres-password",
+    "port": int(os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT", "9102")),
 }
+EXAMPLE_PG_IDENTIFIER = {
+    "database": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db"),
+    "schema_name": "catalog",
+}
+EXAMPLE_PG_AUTH = {
+    "username": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres"),
+    "password": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", ""),
+}
+
+# Example kafka connection (dev-env dummy data source)
+EXAMPLE_KAFKA_LOCATOR = {
+    "bootstrap_servers": os.environ.get(
+        "DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS", "localhost:9104"
+    ),
+}
+EXAMPLE_KAFKA_IDENTIFIER = {
+    "topic": "imazon.orders.events",
+    "cluster": os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka"),
+}
+
+_KAFKA_ORDERS_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:kafka,"
+    "example_kafka.imazon.orders.events,DEV)"
+)
+
+_UNSET = object()  # sentinel to distinguish "not passed" from explicit None
 
 
 def _urn(suffix: str) -> str:
@@ -99,18 +125,24 @@ async def _put_config(
     client: httpx.AsyncClient,
     dataset_urn: str,
     *,
-    source_type: str = "postgres",
-    location: dict | None = None,
+    source_type: str = "POSTGRESQL",
+    locator: dict | None = None,
+    identifier: dict | None = None,
+    auth: object = _UNSET,
     periodic: bool = False,
     schedule: str | None = None,
 ) -> None:
     """PUT an ingestion config and assert success."""
+    resolved_auth = EXAMPLE_PG_AUTH if auth is _UNSET else auth
     payload: dict = {
         "dataset_urn": dataset_urn,
         "source_type": source_type,
-        "location": location or EXAMPLE_PG_LOCATION,
+        "locator": locator or EXAMPLE_PG_LOCATOR,
+        "identifier": identifier or EXAMPLE_PG_IDENTIFIER,
         "periodic": periodic,
     }
+    if resolved_auth is not None:
+        payload["auth"] = resolved_auth
     if schedule is not None:
         payload["schedule"] = schedule
     resp = await client.put(
@@ -167,16 +199,20 @@ async def _delete_kestra_flow(kestra_client, flow_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_run_ingestion_via_public_api(
-    http_client, async_session: AsyncSession
+    http_client, async_session: AsyncSession, datahub_client
 ):
-    """POST run on a configured dataset executes the pipeline and records events.
+    """POST run on a configured dataset executes the pipeline, records events,
+    and emits schema metadata to DataHub.
 
-    Setup: PUT ingestion config for title_master (source_type=postgres).
+    Setup: PUT ingestion config for title_master (source_type=POSTGRESQL).
     Action: POST .../method/run with dry_run=false.
     Assertions: 200, run_id present, status == "success",
-                GET events returns total_count >= 1.
+                GET events returns total_count >= 1,
+                DataHub has SchemaMetadataClass with fields.
     Cleanup: DELETE config + events.
     """
+    from datahub.metadata.schema_classes import DatasetPropertiesClass, SchemaMetadataClass
+
     dataset_urn = _CATALOG_URN
     headers = _auth_headers()
 
@@ -184,8 +220,7 @@ async def test_run_ingestion_via_public_api(
         await _put_config(
             http_client,
             dataset_urn,
-            source_type="postgres",
-            location=EXAMPLE_PG_LOCATION,
+            source_type="POSTGRESQL",
             periodic=False,
         )
 
@@ -197,7 +232,8 @@ async def test_run_ingestion_via_public_api(
         assert resp.status_code == 200, f"Run failed: {resp.text}"
         body = resp.json()
         assert "run_id" in body
-        assert body["status"] == "success"
+        assert body["status"] == "success", f"Ingestion failed: {body.get('detail')}"
+        assert body["detail"]["entities_ingested"] >= 1
 
         # Check events were recorded
         resp = await http_client.get(
@@ -207,6 +243,15 @@ async def test_run_ingestion_via_public_api(
         assert resp.status_code == 200
         events_body = resp.json()
         assert events_body["total_count"] >= 1
+
+        # Verify metadata landed in DataHub
+        schema = await datahub_client.get_aspect(dataset_urn, SchemaMetadataClass)
+        assert schema is not None, "SchemaMetadataClass not found in DataHub after ingestion"
+        assert len(schema.fields) > 0, "No schema fields emitted to DataHub"
+
+        props = await datahub_client.get_aspect(dataset_urn, DatasetPropertiesClass)
+        assert props is not None, "DatasetPropertiesClass not found in DataHub after ingestion"
+        assert "dataspoke-ingestion" in (props.customProperties or {}).get("source", "")
 
     finally:
         await _delete_events_db(async_session, dataset_urn)
@@ -232,8 +277,7 @@ async def test_run_ingestion_dry_run(
         await _put_config(
             http_client,
             dataset_urn,
-            source_type="postgres",
-            location=EXAMPLE_PG_LOCATION,
+            source_type="POSTGRESQL",
             periodic=False,
         )
 
@@ -244,7 +288,7 @@ async def test_run_ingestion_dry_run(
         )
         assert resp.status_code == 200, f"Dry run failed: {resp.text}"
         body = resp.json()
-        assert body["status"] == "success"
+        assert body["status"] == "success", f"Ingestion failed: {body.get('detail')}"
         assert body["detail"]["dry_run"] is True
 
     finally:
@@ -507,8 +551,7 @@ async def test_concurrency_guard_prevents_duplicate(
     try:
         await _put_config(
             http_client, dataset_urn,
-            source_type="postgres",
-            location=EXAMPLE_PG_LOCATION,
+            source_type="POSTGRESQL",
             periodic=False,
         )
 
@@ -544,4 +587,138 @@ async def test_concurrency_guard_prevents_duplicate(
             pass
         await _delete_events_db(async_session, dataset_urn)
         await _delete_config_db(async_session, dataset_urn)
+        await async_session.commit()
+
+
+# ── Kafka source type tests ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_kafka_ingestion(
+    http_client, async_session: AsyncSession, datahub_client
+):
+    """PUT a KAFKA config and POST run — verify schema lands in DataHub.
+
+    Validates that source_type=KAFKA (locator with bootstrap_servers,
+    identifier with topic/cluster, no auth) works end-to-end: config
+    creation, pipeline execution, and DataHub aspect emission.
+
+    Setup: PUT ingestion config for a Kafka topic (no auth required).
+    Action: POST .../method/run with dry_run=false.
+    Assertions: 200, status == "success", entities_ingested >= 1,
+                DataHub has SchemaMetadataClass with inferred fields.
+    Cleanup: DELETE config + events.
+    """
+    from datahub.metadata.schema_classes import DatasetPropertiesClass, SchemaMetadataClass
+
+    dataset_urn = _KAFKA_ORDERS_URN
+    headers = _auth_headers()
+
+    try:
+        await _put_config(
+            http_client,
+            dataset_urn,
+            source_type="KAFKA",
+            locator=EXAMPLE_KAFKA_LOCATOR,
+            identifier=EXAMPLE_KAFKA_IDENTIFIER,
+            auth=None,
+            periodic=False,
+        )
+
+        # Verify the stored config has the expected KAFKA shape
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
+            headers=headers,
+        )
+        assert resp.status_code == 200, f"GET config failed: {resp.text}"
+        config_body = resp.json()
+        assert config_body["source_type"] == "KAFKA"
+        assert config_body["locator"]["bootstrap_servers"] == "localhost:9104"
+        assert config_body["identifier"]["topic"] == "imazon.orders.events"
+        assert config_body["auth"] is None
+
+        # Run real ingestion (not dry_run)
+        resp = await http_client.post(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
+            headers=headers,
+            json={"dry_run": False},
+        )
+        assert resp.status_code == 200, f"Kafka run failed: {resp.text}"
+        body = resp.json()
+        assert body["status"] == "success", f"Ingestion failed: {body.get('detail')}"
+        assert body["detail"]["source_type"] == "KAFKA"
+        assert body["detail"]["entities_ingested"] >= 1
+
+        # Verify metadata landed in DataHub
+        schema = await datahub_client.get_aspect(dataset_urn, SchemaMetadataClass)
+        assert schema is not None, "SchemaMetadataClass not found in DataHub after Kafka ingestion"
+        assert len(schema.fields) > 0, "No schema fields inferred from Kafka messages"
+
+        props = await datahub_client.get_aspect(dataset_urn, DatasetPropertiesClass)
+        assert props is not None, "DatasetPropertiesClass not found in DataHub after Kafka ingestion"
+        assert props.name == "imazon.orders.events"
+
+    finally:
+        await _delete_events_db(async_session, dataset_urn)
+        await _delete_config_db(async_session, dataset_urn)
+        await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_mixed_source_types_in_periodic_sync(
+    http_client, async_session: AsyncSession, kestra_client
+):
+    """Periodic sync groups configs by schedule regardless of source_type.
+
+    Setup: PUT POSTGRESQL config (title_master) and KAFKA config (transient URN),
+           both periodic with the same schedule.
+    Action: POST sync-periodic-ingestion-flows.
+    Assertions:
+    - One flow created for the shared schedule.
+    - list-periodic-datasets returns both URNs.
+    Cleanup: Delete flow + configs.
+    """
+    schedule = "0 4 * * *"
+    flow_id = schedule_to_flow_id(schedule)
+    pg_urn = _CATALOG_URN
+    kafka_urn = _urn("kafka_periodic")
+
+    try:
+        await _put_config(
+            http_client, pg_urn,
+            source_type="POSTGRESQL",
+            periodic=True, schedule=schedule,
+        )
+        await _put_config(
+            http_client, kafka_urn,
+            source_type="KAFKA",
+            locator=EXAMPLE_KAFKA_LOCATOR,
+            identifier=EXAMPLE_KAFKA_IDENTIFIER,
+            auth=None,
+            periodic=True, schedule=schedule,
+        )
+
+        resp = await http_client.post(
+            "/internal/activities/sync-periodic-ingestion-flows",
+        )
+        assert resp.status_code == 200, f"sync failed: {resp.text}"
+        body = resp.json()
+        assert flow_id in body.get("created", []), (
+            f"Expected {flow_id} in created: {body}"
+        )
+
+        # Both URNs should appear for the shared schedule
+        resp = await http_client.post(
+            "/internal/activities/list-periodic-datasets",
+            json={"schedule": schedule},
+        )
+        assert resp.status_code == 200
+        result = resp.json()
+        assert pg_urn in result, f"Expected PG URN in result: {result}"
+        assert kafka_urn in result, f"Expected Kafka URN in result: {result}"
+
+    finally:
+        await _delete_kestra_flow(kestra_client, flow_id)
+        await _delete_config_db(async_session, pg_urn)
+        await _delete_config_db(async_session, kafka_urn)
         await async_session.commit()

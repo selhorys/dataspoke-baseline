@@ -23,7 +23,9 @@ class IngestionConfigRecord(BaseModel):
     id: str
     dataset_urn: str
     source_type: str
-    location: dict[str, Any]
+    locator: dict[str, Any]
+    identifier: dict[str, Any]
+    auth: dict[str, Any] | None = None
     periodic: bool
     schedule: str | None = None
     enrichment_sources: dict[str, Any] | None = None
@@ -46,7 +48,9 @@ def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:
         id=str(row.id),
         dataset_urn=row.dataset_urn,
         source_type=row.source_type,
-        location=row.location,
+        locator=row.locator,
+        identifier=row.identifier,
+        auth=row.auth,
         periodic=row.periodic,
         schedule=row.schedule,
         enrichment_sources=row.enrichment_sources,
@@ -83,7 +87,9 @@ class IngestionService:
         self,
         dataset_urn: str,
         source_type: str,
-        location: dict[str, Any],
+        locator: dict[str, Any],
+        identifier: dict[str, Any],
+        auth: dict[str, Any] | None,
         periodic: bool,
         schedule: str | None,
         enrichment_sources: dict[str, Any] | None = None,
@@ -96,7 +102,9 @@ class IngestionService:
 
         if existing:
             existing.source_type = source_type
-            existing.location = location
+            existing.locator = locator
+            existing.identifier = identifier
+            existing.auth = auth
             existing.periodic = periodic
             existing.schedule = schedule
             existing.enrichment_sources = enrichment_sources
@@ -108,7 +116,9 @@ class IngestionService:
             existing = IngestionConfig(
                 dataset_urn=dataset_urn,
                 source_type=source_type,
-                location=location,
+                locator=locator,
+                identifier=identifier,
+                auth=auth,
                 periodic=periodic,
                 schedule=schedule,
                 enrichment_sources=enrichment_sources,
@@ -131,8 +141,12 @@ class IngestionService:
 
         if "source_type" in patch and patch["source_type"] is not None:
             row.source_type = patch["source_type"]
-        if "location" in patch and patch["location"] is not None:
-            row.location = patch["location"]
+        if "locator" in patch and patch["locator"] is not None:
+            row.locator = patch["locator"]
+        if "identifier" in patch and patch["identifier"] is not None:
+            row.identifier = patch["identifier"]
+        if "auth" in patch:
+            row.auth = patch["auth"]
         if "periodic" in patch and patch["periodic"] is not None:
             row.periodic = patch["periodic"]
         if "schedule" in patch:
@@ -223,8 +237,11 @@ class IngestionService:
             raise EntityNotFoundError("ingestion_config", dataset_urn)
 
         ingestion_result = await run_datahub_ingestion(
+            datahub=self._datahub,
             source_type=config.source_type,
-            location=config.location,
+            locator=config.locator,
+            identifier=config.identifier,
+            auth=config.auth,
             dataset_urn=dataset_urn,
             dry_run=dry_run,
         )

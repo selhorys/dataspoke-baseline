@@ -1,21 +1,24 @@
 # Workflow Spot Testing — Ingestion
 
-API-wired spot integration tests for the ingestion workflow. Tests exercise the full request path (HTTP → service → infrastructure) using real dev-env peripherals, with LLM responses mocked.
+API-wired spot integration tests for the ingestion workflow. Tests exercise the full request path (HTTP → service → real source extraction → DataHub emission) using real dev-env peripherals, with LLM responses mocked.
 
 > Other workflows (validation, generation, metrics, embedding-sync, sla-monitor, ontology-rebuild) will be added later.
 
 ## Prerequisites
 
-- PostgreSQL port-forwarded to `localhost:9201`
+- DataSpoke PostgreSQL port-forwarded to `localhost:9201`
+- Example PostgreSQL (dummy data) port-forwarded to `localhost:9102`
+- Example Kafka port-forwarded to `localhost:9104`
 - DataHub GMS port-forwarded to `localhost:9004`
 - Kestra port-forwarded to `localhost:9205`
-- Dummy data ingested (Imazon `catalog` schema)
+- Redis port-forwarded to `localhost:9202`
+- Dummy data ingested (Imazon `catalog` schema + `imazon.orders.events` topic)
 
 ## Test File
 
 `tests/integration/api_wired/spot/test_ingestion_workflow.py`
 
-Separate from `test_ingestion_service.py` (which tests config CRUD). This file focuses on workflow orchestration: the run endpoint, the `ingestion-config-sync` flow's activity endpoint (`sync-periodic-ingestion-flows`), periodic flow generation, and the sync lifecycle.
+Separate from `test_ingestion_service.py` (which tests config CRUD). This file focuses on workflow orchestration: the run endpoint (real extraction + DataHub emission), the `ingestion-config-sync` flow's activity endpoint (`sync-periodic-ingestion-flows`), periodic flow generation, and the sync lifecycle.
 
 ## Fixtures
 
@@ -26,6 +29,7 @@ Separate from `test_ingestion_service.py` (which tests config CRUD). This file f
 | `activity_server` | session | Real HTTP server; provides `mock_llm` for patching |
 | `async_session` | function | PostgreSQL session for assertions and cleanup |
 | `auth_headers` | function | JWT headers (`de`, `da`, `dg` groups) |
+| `datahub_client` | function | `DataHubClient` for verifying aspects landed in DataHub |
 
 ### Module-level
 
@@ -36,42 +40,47 @@ Separate from `test_ingestion_service.py` (which tests config CRUD). This file f
 
 ```python
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
+DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
 
-# Shared location for all test ingestion configs (example-postgres in dev-env)
-EXAMPLE_PG_LOCATION = {
-    "host": "localhost",
-    "port": 9201,
-    "database": "example_db",
-    "username": "postgres",
-    "secret_ref": "dev/example-postgres-password",
-}
+# PostgreSQL connection — resolved from dev_env/.env
+EXAMPLE_PG_LOCATOR = {"host": "localhost", "port": <DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT>}
+EXAMPLE_PG_IDENTIFIER = {"database": <DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB>, "schema_name": "catalog"}
+EXAMPLE_PG_AUTH = {"username": <DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER>, "password": <DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD>}
+
+# Kafka connection — resolved from dev_env/.env
+EXAMPLE_KAFKA_LOCATOR = {"bootstrap_servers": <DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS>}
+EXAMPLE_KAFKA_IDENTIFIER = {"topic": "imazon.orders.events", "cluster": <DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE>}
 ```
 
 ### Datasets
 
-The `module_dummy_data` fixture (triggered by `DUMMY_DATA_DATAHUB_SCHEMAS`) pre-registers the Imazon `catalog` schema datasets in DataHub with `SchemaMetadata`, `DatasetProperties`, and `Status` aspects. Tests use these already-registered datasets:
+The `module_dummy_data` fixture (triggered by `DUMMY_DATA_DATAHUB_SCHEMAS` and `DUMMY_DATA_TOPICS`) pre-registers the Imazon `catalog` schema datasets in DataHub and seeds Kafka topic messages. Tests use these already-registered datasets:
 
-| Dataset URN | Rows | Used for |
-|-------------|------|----------|
-| `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)` | 30 | Run tests (test 1, 2, 7) |
-| `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)` | 40 | Same-cron group (tests 4, 5, 6) |
-| `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.genre_hierarchy,DEV)` | 15 | Same-cron group (tests 4, 5, 6) |
+| Dataset URN | Source | Used for |
+|-------------|--------|----------|
+| `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)` | PostgreSQL | Run tests (test 1, 2, 7) |
+| `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)` | PostgreSQL | Same-cron group (tests 4, 5, 6) |
+| `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.genre_hierarchy,DEV)` | PostgreSQL | Same-cron group (tests 4, 5, 6) |
+| `urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)` | Kafka | Kafka ingestion test (test 8) |
 
-Transient test URNs via `make_test_urn("ingestion", "<suffix>")` for config-only lifecycle tests (test 3) where DataHub metadata is not needed.
+Transient test URNs via `make_test_urn("ingestion", "<suffix>")` for config-only lifecycle tests (test 3, 9) where DataHub metadata is not needed.
 
 ## Test Cases
 
 ### 1. `test_run_ingestion_via_public_api`
 
-Verify that `POST .../method/run` executes the full pipeline directly.
+Verify that `POST .../method/run` executes the full pipeline: connects to example-postgres, discovers schema, emits aspects to DataHub.
 
-**Setup**: PUT ingestion config for `title_master` (`source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`, `periodic=false`)
+**Setup**: PUT ingestion config for `title_master` (`source_type="POSTGRESQL"`, `periodic=false`)
 
 **Action**: `POST /api/v1/spoke/common/data/{urn}/attr/ingestion/method/run` with `{"dry_run": false}`
 
 **Assertions**:
 - 200 response with `run_id` and `status == "success"`
+- `entities_ingested >= 1`
 - `GET .../attr/ingestion/event` returns `total_count >= 1`
+- DataHub `SchemaMetadataClass` exists with `fields` count > 0
+- DataHub `DatasetPropertiesClass` has `customProperties.source == "dataspoke-ingestion"`
 
 **Cleanup**: DELETE config + events
 
@@ -91,7 +100,7 @@ Verify that `POST .../method/run` executes the full pipeline directly.
 
 Verify `POST /internal/activities/list-periodic-datasets` returns correct URNs.
 
-**Setup** (transient URNs — config-only, no DataHub metadata needed; all `source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`):
+**Setup** (transient URNs — config-only, no DataHub metadata needed; all `source_type="POSTGRESQL"`):
 - PUT config A: `periodic=true`, `schedule="0 2 * * *"`
 - PUT config B: `periodic=true`, `schedule="0 2 * * *"`
 - PUT config C: `periodic=true`, `schedule="0 6 * * *"`
@@ -109,7 +118,7 @@ Verify `POST /internal/activities/list-periodic-datasets` returns correct URNs.
 
 Verify the sync endpoint generates one Kestra flow per unique schedule.
 
-**Setup** (3 real catalog datasets, all `source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`, same schedule for 2):
+**Setup** (3 real catalog datasets, all `source_type="POSTGRESQL"`, same schedule for 2):
 - PUT config for `title_master`: `periodic=true`, `schedule="0 2 * * *"`
 - PUT config for `editions`: `periodic=true`, `schedule="0 2 * * *"`
 - PUT config for `genre_hierarchy`: `periodic=true`, `schedule="0 6 * * *"`
@@ -125,7 +134,7 @@ Verify the sync endpoint generates one Kestra flow per unique schedule.
 ### 5. `test_sync_removes_stale_flows`
 
 **Setup**:
-- PUT config for `title_master`: `source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`, `periodic=true`, `schedule="0 3 * * *"`
+- PUT config for `title_master`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 3 * * *"`
 - Call `POST /internal/activities/sync-periodic-ingestion-flows` — flow created
 
 **Action**:
@@ -139,9 +148,9 @@ Verify the sync endpoint generates one Kestra flow per unique schedule.
 ### 6. `test_sync_updates_on_schedule_change`
 
 **Setup**:
-- PUT config for `title_master`: `source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`, `periodic=true`, `schedule="0 2 * * *"`
-- PUT config for `editions`: `source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`, `periodic=true`, `schedule="0 2 * * *"`
-- PUT config for `genre_hierarchy`: `source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`, `periodic=true`, `schedule="0 2 * * *"`
+- PUT config for `title_master`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 2 * * *"`
+- PUT config for `editions`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 2 * * *"`
+- PUT config for `genre_hierarchy`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 2 * * *"`
 - Call `POST /internal/activities/sync-periodic-ingestion-flows` — one flow with 3 datasets
 
 **Action**:
@@ -160,7 +169,7 @@ Verify the sync endpoint generates one Kestra flow per unique schedule.
 
 Verify that concurrent runs for the same dataset URN are rejected.
 
-**Setup**: PUT ingestion config for `title_master` (`source_type="postgres"`, `location=EXAMPLE_PG_LOCATION`)
+**Setup**: PUT ingestion config for `title_master` (`source_type="POSTGRESQL"`)
 
 **Action**:
 - Start a run (`POST .../method/run` with `dry_run=false`) — this may take time
@@ -169,6 +178,38 @@ Verify that concurrent runs for the same dataset URN are rejected.
 **Assertions**: Second request returns `409` with error code `INGESTION_RUNNING`
 
 **Cleanup**: Wait for first run to complete, DELETE config + events
+
+### 8. `test_run_kafka_ingestion`
+
+Verify end-to-end KAFKA ingestion: schema inference from messages and DataHub emission.
+
+**Setup**: PUT ingestion config for `imazon.orders.events` (`source_type="KAFKA"`, `auth=null`, `periodic=false`)
+
+**Action**: `POST .../method/run` with `{"dry_run": false}`
+
+**Assertions**:
+- 200, `status == "success"`, `entities_ingested >= 1`
+- GET config confirms KAFKA shape: `locator.bootstrap_servers`, `identifier.topic`, `auth == null`
+- DataHub `SchemaMetadataClass` exists with inferred fields (from polled messages)
+- DataHub `DatasetPropertiesClass.name == "imazon.orders.events"`
+
+**Cleanup**: DELETE config + events
+
+### 9. `test_mixed_source_types_in_periodic_sync`
+
+Verify periodic sync groups configs by schedule regardless of source_type.
+
+**Setup**:
+- PUT POSTGRESQL config for `title_master`: `periodic=true`, `schedule="0 4 * * *"`
+- PUT KAFKA config (transient URN): `periodic=true`, `schedule="0 4 * * *"`
+
+**Action**: `POST /internal/activities/sync-periodic-ingestion-flows`
+
+**Assertions**:
+- One flow created for `schedule="0 4 * * *"`
+- `list-periodic-datasets` returns both the PG and Kafka URNs
+
+**Cleanup**: Delete flow + configs
 
 ## Message Flow Summary
 
@@ -183,8 +224,10 @@ Client
 DataSpoke API (data router)
   concurrency guard (per dataset URN)
   IngestionService.run(dataset_urn)
-    ├─ extract_metadata()
-    ├─ emit_metadata_to_datahub()   [skip if dry_run]
+    ├─ connect to source (asyncpg / confluent_kafka)
+    ├─ discover schema (information_schema / message polling)
+    ├─ emit MCPs to DataHub (StatusClass, DatasetPropertiesClass, SchemaMetadataClass)
+    │    [skip if dry_run]
     └─ record_ingestion_event()
     │
     ▼

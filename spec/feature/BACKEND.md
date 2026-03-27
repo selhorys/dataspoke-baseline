@@ -521,7 +521,9 @@ class DatasetService:
 | `id` | UUID | yes | auto | Primary key |
 | `dataset_urn` | text | yes | — | Unique; one config per dataset |
 | `source_type` | text | yes | — | Ingestion source identifier (see available sources below) |
-| `location` | JSONB | yes | — | Connection details for the source (e.g., `{"host", "port", "database", "username", "secret_ref"}`) |
+| `locator` | JSONB | yes | — | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
+| `identifier` | JSONB | yes | — | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
+| `auth` | JSONB | no | `null` | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth |
 | `enrichment_sources` | JSONB | no | `null` | External enrichment source configs (TBD — see below) |
 | `custom_extractors` | JSONB | no | `null` | Custom extractor plugin configs (TBD — see below) |
 | `periodic` | boolean | yes | `false` | Enable cron-triggered execution via Kestra |
@@ -538,12 +540,12 @@ DataHub standard ingestion sources (via `acryl-datahub` SDK):
 
 | `source_type` | Platform | Description |
 |---------------|----------|-------------|
-| `postgres` | PostgreSQL | Tables, views, schemas |
-| `mysql` | MySQL | Tables, views, schemas |
-| `oracle` | Oracle | Tables, views, stored procedures |
-| `bigquery` | BigQuery | Datasets, tables, views |
-| `snowflake` | Snowflake | Databases, schemas, tables |
-| `kafka` | Kafka | Topics, schemas |
+| `POSTGRESQL` | PostgreSQL | Tables, views, schemas |
+| `MYSQL` | MySQL | Tables, views, schemas |
+| `ORACLE` | Oracle | Tables, views, stored procedures |
+| `BIGQUERY` | BigQuery | Datasets, tables, views |
+| `SNOWFLAKE` | Snowflake | Databases, schemas, tables |
+| `KAFKA` | Kafka | Topics, schemas |
 
 Custom ingestion sources: TBD — no custom sources available yet. Will follow the same `source_type` registration pattern.
 
@@ -572,11 +574,14 @@ class IngestionService:
 **Run pipeline** (`IngestionService.run()`):
 
 1. Load config from PostgreSQL
-2. Run DataHub ingestion for `source_type` (via `acryl-datahub` SDK)
-3. Run enrichment sources, if configured (TBD)
-4. Run custom extractors, if configured (TBD)
-5. Validate and emit aspects to DataHub (skip if `dry_run`)
-6. Record run event (success/partial/error) in PostgreSQL
+2. Connect to source using `locator`/`auth` (e.g., `asyncpg` for POSTGRESQL, `confluent_kafka.Consumer` for KAFKA)
+3. Discover schema metadata using `identifier` (e.g., query `information_schema.columns`, poll messages)
+4. Emit aspects to DataHub via `DataHubClient.emit_aspect()` — `StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass` (skip if `dry_run`)
+5. Run enrichment sources, if configured (TBD)
+6. Run custom extractors, if configured (TBD)
+7. Record run event (success/partial/error) in PostgreSQL
+
+Currently implemented extractors: **POSTGRESQL**, **KAFKA**. Other source types (MYSQL, ORACLE, BIGQUERY, SNOWFLAKE) return a "not yet implemented" warning.
 
 Both Kestra periodic triggers and the manual API (`POST .../attr/ingestion/method/run`) call `IngestionService.run()`.
 

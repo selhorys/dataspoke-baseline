@@ -24,6 +24,11 @@ from tests.integration.conftest import (
     seed_events,
 )
 
+# Shared payload fragments for POSTGRESQL source type
+_PG_LOCATOR = {"host": "localhost", "port": 9201}
+_PG_IDENTIFIER = {"database": "example_db"}
+_PG_AUTH = {"username": "postgres", "secret_ref": "dev/example-postgres-password"}
+
 
 def _urn(suffix: str) -> str:
     return make_test_urn("ingestion", suffix)
@@ -57,14 +62,10 @@ async def test_ingestion_config_crud_via_http(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "postgres",
-                "location": {
-                    "host": "localhost",
-                    "port": 9201,
-                    "database": "example_db",
-                    "username": "postgres",
-                    "secret_ref": "dev/example-postgres-password",
-                },
+                "source_type": "POSTGRESQL",
+                "locator": _PG_LOCATOR,
+                "identifier": _PG_IDENTIFIER,
+                "auth": _PG_AUTH,
                 "periodic": False,
                 "schedule": "0 0 * * *",
             },
@@ -72,7 +73,7 @@ async def test_ingestion_config_crud_via_http(
         assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
-        assert body["source_type"] == "postgres"
+        assert body["source_type"] == "POSTGRESQL"
         assert body["periodic"] is False
         assert body["schedule"] == "0 0 * * *"
         config_id = body["id"]
@@ -142,14 +143,10 @@ async def test_list_ingestion_configs(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "source_type": "postgres",
-                    "location": {
-                        "host": "localhost",
-                        "port": 9201,
-                        "database": "example_db",
-                        "username": "postgres",
-                        "secret_ref": "dev/example-postgres-password",
-                    },
+                    "source_type": "POSTGRESQL",
+                    "locator": _PG_LOCATOR,
+                    "identifier": _PG_IDENTIFIER,
+                    "auth": _PG_AUTH,
                     "periodic": False,
                 },
             )
@@ -193,14 +190,10 @@ async def test_run_ingestion_dry_run(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "postgres",
-                "location": {
-                    "host": "localhost",
-                    "port": 9201,
-                    "database": "example_db",
-                    "username": "postgres",
-                    "secret_ref": "dev/example-postgres-password",
-                },
+                "source_type": "POSTGRESQL",
+                "locator": _PG_LOCATOR,
+                "identifier": _PG_IDENTIFIER,
+                "auth": _PG_AUTH,
                 "periodic": False,
             },
         )

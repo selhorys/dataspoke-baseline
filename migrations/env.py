@@ -3,6 +3,8 @@
 import asyncio
 import os
 from logging.config import fileConfig
+from pathlib import Path
+from urllib.parse import quote_plus
 
 from alembic import context
 from sqlalchemy import pool
@@ -17,10 +19,43 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Allow env-var override of the DB URL
-_url = os.environ.get("DATASPOKE_ALEMBIC_URL")
+
+def _load_dotenv() -> None:
+    """Load dev_env/.env into os.environ without overwriting existing vars."""
+    start = Path(__file__).resolve().parent.parent
+    env_path = start / "dev_env" / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _resolve_url() -> str | None:
+    """Build DB URL from DATASPOKE_ALEMBIC_URL or DATASPOKE_POSTGRES_* env vars."""
+    explicit = os.environ.get("DATASPOKE_ALEMBIC_URL")
+    if explicit:
+        return explicit
+    host = os.environ.get("DATASPOKE_POSTGRES_HOST")
+    if not host:
+        return None
+    port = os.environ.get("DATASPOKE_POSTGRES_PORT", "5432")
+    user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
+    password = quote_plus(os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "dataspoke"))
+    db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
+
+
+_load_dotenv()
+_url = _resolve_url()
 if _url:
-    config.set_main_option("sqlalchemy.url", _url)
+    # Escape '%' for configparser interpolation (% → %%)
+    config.set_main_option("sqlalchemy.url", _url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

@@ -16,13 +16,17 @@ from tests.unit.backend.conftest import (
 )
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
-_LOCATION = {"host": "db.example.com", "port": 5432, "database": "mydb", "username": "user", "secret_ref": "pw"}
+_LOCATOR = {"host": "db.example.com", "port": 5432}
+_IDENTIFIER = {"database": "mydb", "schema_name": "public", "table": "users"}
+_AUTH = {"username": "user", "secret_ref": "pw"}
 
 
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
-    source_type: str = "postgres",
-    location: dict | None = None,
+    source_type: str = "POSTGRESQL",
+    locator: dict | None = None,
+    identifier: dict | None = None,
+    auth: dict | None = None,
     periodic: bool = False,
     schedule: str | None = "0 0 * * *",
     enrichment_sources: dict | None = None,
@@ -33,7 +37,9 @@ def _make_config_row(
     row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
     row.source_type = source_type
-    row.location = location or _LOCATION
+    row.locator = locator or _LOCATOR
+    row.identifier = identifier or _IDENTIFIER
+    row.auth = auth if auth is not None else _AUTH
     row.periodic = periodic
     row.schedule = schedule
     row.enrichment_sources = enrichment_sources
@@ -59,8 +65,10 @@ async def test_get_config_found(service, db):
     config = await service.get_config(_DATASET_URN)
     assert config is not None
     assert config.dataset_urn == _DATASET_URN
-    assert config.source_type == "postgres"
-    assert config.location == _LOCATION
+    assert config.source_type == "POSTGRESQL"
+    assert config.locator == _LOCATOR
+    assert config.identifier == _IDENTIFIER
+    assert config.auth == _AUTH
 
 
 async def test_get_config_not_found(service, db):
@@ -79,8 +87,10 @@ async def test_upsert_config_creates_new(service, db):
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        source_type="postgres",
-        location=_LOCATION,
+        source_type="POSTGRESQL",
+        locator=_LOCATOR,
+        identifier=_IDENTIFIER,
+        auth=_AUTH,
         periodic=False,
         schedule=None,
     )
@@ -93,18 +103,24 @@ async def test_upsert_config_updates_existing(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    new_location = {"host": "newdb.example.com", "port": 5432, "database": "newdb", "username": "admin", "secret_ref": "newpw"}
+    new_locator = {"host": "newdb.example.com", "port": 5432}
+    new_identifier = {"database": "newdb", "schema_name": "public", "table": "orders"}
+    new_auth = {"username": "admin", "secret_ref": "newpw"}
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        source_type="mysql",
-        location=new_location,
+        source_type="MYSQL",
+        locator=new_locator,
+        identifier=new_identifier,
+        auth=new_auth,
         periodic=True,
         schedule="0 6 * * *",
     )
     db.add.assert_called_once()
     db.commit.assert_awaited_once()
-    assert existing_row.source_type == "mysql"
-    assert existing_row.location == new_location
+    assert existing_row.source_type == "MYSQL"
+    assert existing_row.locator == new_locator
+    assert existing_row.identifier == new_identifier
+    assert existing_row.auth == new_auth
     assert existing_row.periodic is True
     assert existing_row.schedule == "0 6 * * *"
 
@@ -117,8 +133,10 @@ async def test_upsert_config_with_optional_fields(service, db):
     custom = {"plugin_a": {"class": "mymodule.MyExtractor"}}
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        source_type="postgres",
-        location=_LOCATION,
+        source_type="POSTGRESQL",
+        locator=_LOCATOR,
+        identifier=_IDENTIFIER,
+        auth=_AUTH,
         periodic=False,
         schedule=None,
         enrichment_sources=enrichment,
@@ -145,8 +163,8 @@ async def test_patch_config_applies_source_type(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"source_type": "mysql"})
-    assert existing_row.source_type == "mysql"
+    await service.patch_config(_DATASET_URN, {"source_type": "MYSQL"})
+    assert existing_row.source_type == "MYSQL"
 
 
 async def test_patch_config_applies_periodic_and_schedule(service, db):

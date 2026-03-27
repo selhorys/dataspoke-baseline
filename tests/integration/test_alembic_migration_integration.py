@@ -93,7 +93,9 @@ async def test_indexes_created(async_engine: AsyncEngine) -> None:
 async def test_column_types(async_engine: AsyncEngine) -> None:
     checks = [
         ("ingestion_configs", "id", "uuid"),
-        ("ingestion_configs", "location", "jsonb"),
+        ("ingestion_configs", "locator", "jsonb"),
+        ("ingestion_configs", "identifier", "jsonb"),
+        ("ingestion_configs", "auth", "jsonb"),
         ("ingestion_configs", "created_at", "timestamp with time zone"),
         ("ingestion_configs", "dataset_urn", "text"),
         ("validation_results", "quality_score", "real"),
@@ -124,16 +126,17 @@ async def test_unique_constraint_enforced(async_session: AsyncSession) -> None:
     row_id2 = uuid.uuid4()
     insert = sa.text(
         f"INSERT INTO {SCHEMA}.ingestion_configs "
-        "(id, dataset_urn, source_type, location, periodic, status) "
-        "VALUES (:id, :urn, :source_type, :location, :periodic, :status)"
+        "(id, dataset_urn, source_type, locator, identifier, periodic, status) "
+        "VALUES (:id, :urn, :source_type, :locator, :identifier, :periodic, :status)"
     )
     await async_session.execute(
         insert,
         {
             "id": str(row_id1),
             "urn": IMAZON_URN,
-            "source_type": "postgres",
-            "location": "{}",
+            "source_type": "POSTGRESQL",
+            "locator": "{}",
+            "identifier": "{}",
             "periodic": False,
             "status": "active",
         },
@@ -146,8 +149,9 @@ async def test_unique_constraint_enforced(async_session: AsyncSession) -> None:
             {
                 "id": str(row_id2),
                 "urn": IMAZON_URN,
-                "source_type": "postgres",
-                "location": "{}",
+                "source_type": "POSTGRESQL",
+                "locator": "{}",
+                "identifier": "{}",
                 "periodic": False,
                 "status": "active",
             },
