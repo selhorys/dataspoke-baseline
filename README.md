@@ -289,15 +289,16 @@ See [`spec/TESTING.md`](spec/TESTING.md) for conventions, toolchain, mocking rul
 
 ### Implementation Workflow
 
-Use the planner → generator → evaluator workflow to implement features:
+Use the plan → approve → generate → evaluate workflow to implement features:
 
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
-2. `architect` (opus) -- produce implementation plan with acceptance criteria
-3. `backend` → `reviewer` → [fix pass if needed]
-4. `workflow` → `reviewer` → [fix pass if needed]
-5. `test` -- write and run tests
-6. `frontend` → `reviewer` → [fix pass if needed]
-7. `k8s-helm` -- containerize and deploy
+2. Plan (built-in Plan mode) — produce implementation plan with acceptance criteria
+3. Human reviews and approves the plan
+4. `backend` → `reviewer` → [fix pass if needed]
+5. `workflow` → `reviewer` → [fix pass if needed]
+6. `test` — write and run tests
+7. `frontend` → `reviewer` → [fix pass if needed]
+8. `k8s-helm` — containerize and deploy
 
 See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full scaffold reference (skills, subagents, permissions, PRauto).
 
@@ -308,7 +309,7 @@ Fork this repository and adapt:
 1. Revise `spec/MANIFESTO_*.md` -- redefine user groups, features, and product identity
 2. Run `/plan-doc` -- update architecture and author feature specs
 3. Run `/dev-env install` -- bring up the local environment
-4. Use the planner → generator → evaluator workflow: `architect` → `backend` → `reviewer` → `test` → `frontend` → `reviewer` → `k8s-helm`
+4. Use the plan → approve → generate → evaluate workflow: Plan mode → approve → `backend` → `reviewer` → `test` → `frontend` → `reviewer` → `k8s-helm`
 
 ### Key Specs
 

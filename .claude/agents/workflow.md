@@ -43,7 +43,7 @@ src/workflows/
 ## Invocation modes
 
 ### Initial implementation
-The prompt includes a feature spec and optionally an architect's implementation plan.
+The prompt includes a feature spec and optionally the approved implementation plan.
 When a plan is provided, follow its flow IDs, input schemas, activity sequences, and acceptance criteria. When no plan is provided, follow the spec directly.
 
 ### Fix pass (reviewer feedback)

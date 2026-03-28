@@ -41,7 +41,6 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
 │   └── spec-to-bulk-issue/    # Bulk-create implementation issues from specs
 ├── agents/                     # Subagent system prompts
-│   ├── architect.md            # Implementation planner (opus) — codebase analysis + blueprints
 │   ├── reviewer.md             # Independent evaluator (opus) — spec compliance + quality scoring
 │   ├── backend.md              # FastAPI/Python implementer (sonnet)
 │   ├── workflow.md             # Kestra flow YAML + workflow helper module implementer (sonnet)
@@ -89,22 +88,23 @@ Each skill's SKILL.md is the authoritative reference for its behavior, invocatio
 
 ## Subagents
 
-Subagents are specialized Claude instances with focused system prompts. They live in `.claude/agents/` and are organized into three roles following the **planner → generator → evaluator** pattern (see §Design Principles).
+Subagents are specialized Claude instances with focused system prompts. They live in `.claude/agents/` and are organized into two roles following the **generator → evaluator** pattern (see §Design Principles). Planning is handled by Claude's built-in Plan mode before generators are invoked.
 
-### Planner and Evaluator (opus model)
+**Why subagents**: The primary reason to delegate implementation to subagents is **context confinement**. Each generator operates in a fresh, focused context — it sees only the approved plan, the relevant spec, and the files in its scope. This prevents the main conversation from accumulating implementation noise (hundreds of lines of generated code, test output, linter errors) that degrades the quality of subsequent decisions. The main agent stays clean for orchestration: passing plans, routing reviewer findings, and deciding what to run next. For non-trivial implementation, delegate to the appropriate generator agent rather than writing code directly in the main conversation.
+
+### Evaluator (opus model)
 
 | Subagent | Role | Scope | Tools |
 |----------|------|-------|-------|
-| `architect` | Planner | Analyzes codebase + feature specs to produce implementation blueprints with file lists, component boundaries, data flows, and acceptance criteria. Invoked before generators for non-trivial features | Read, Glob, Grep, Bash |
-| `reviewer` | Evaluator | Independently reviews generator output against spec + architect's plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after each generator | Read, Glob, Grep, Bash |
+| `reviewer` | Evaluator | Independently reviews generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after each generator | Read, Glob, Grep, Bash |
 
-Both use read-only tools — they analyze and report but do not write code.
+The reviewer uses read-only tools — it analyzes and reports but does not write code.
 
 ### Generators (sonnet model)
 
 | Subagent | Scope | Tools |
 |----------|-------|-------|
-| `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs and architect's plan. Self-verifies with `pytest`. Supports fix pass mode for reviewer findings | Read, Write, Edit, Glob, Grep, Bash |
+| `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs and the approved plan. Self-verifies with `pytest`. Supports fix pass mode for reviewer findings | Read, Write, Edit, Glob, Grep, Bash |
 | `workflow` | Kestra flow YAML in `src/workflows/flows/` and workflow parameter modules. Orchestrates `src/backend/` services via HTTP Request tasks. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
 | `test` | Tests across all layers in `tests/`. Follows `spec/TESTING.md`. Supports reviewer-directed testing mode to verify specific findings | Read, Write, Edit, Glob, Grep, Bash |
 | `frontend` | Next.js/TypeScript code in `src/frontend/`. Reads `FRONTEND_*.md` specs. Self-verifies with `npm test` and `tsc`. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
@@ -112,21 +112,35 @@ Both use read-only tools — they analyze and report but do not write code.
 
 ### Implementation workflow
 
-The standard workflow uses the planner → generator → evaluator loop:
+The standard workflow uses the **plan → approve → generate → evaluate** pattern:
 
 ```
-1. Read spec
-2. architect → implementation plan with acceptance criteria
-3. backend → reviewer → [fix pass if REVISE, max 1 iteration]
-4. workflow → reviewer → [fix pass if REVISE, max 1 iteration]
-5. test (writes + runs tests; can verify reviewer findings)
-6. frontend → reviewer → [fix pass if REVISE, max 1 iteration]
-7. k8s-helm (when ready, no review loop)
+1. Plan    — Read the relevant spec, then use Claude's built-in Plan mode
+             to produce an implementation plan. See §Plan quality checklist below.
+2. Approve — Human reviews the plan and approves (or iterates interactively).
+3. Generate + Evaluate:
+   a. backend  → reviewer → [fix pass if REVISE, max 1 iteration]
+   b. workflow → reviewer → [fix pass if REVISE, max 1 iteration]
+   c. test (writes + runs tests; can verify reviewer findings)
+   d. frontend → reviewer → [fix pass if REVISE, max 1 iteration]
+   e. k8s-helm (when ready, no review loop)
 ```
 
-The main agent orchestrates by passing context between agents: architect's plan feeds into generators, generator completion reports feed into the reviewer, reviewer findings feed back to generators for fix passes. If issues persist after one fix pass, they are escalated to the user.
+Steps 3a and 3b are sequential by default (backend establishes API contracts that workflow consumes). When workflow changes are independent of backend (e.g., modifying an existing flow's retry policy), they may run concurrently. Steps 3c and 3d may also be concurrent when frontend does not depend on pending backend changes.
+
+The main agent orchestrates by passing context between agents: the approved plan feeds into generators, generator completion reports feed into the reviewer, reviewer findings feed back to generators for fix passes. If issues persist after one fix pass, they are escalated to the user.
 
 See `CLAUDE.md` §Implementation Workflow for the authoritative reference.
+
+### Plan quality checklist
+
+A good implementation plan produced during the Plan phase should cover:
+
+1. **Scope and goals** — What the feature does (1-3 sentences), which user groups it serves (DE, DA, DG, common), what success looks like.
+2. **Files to create or modify** — For each file: exact path (following existing conventions), purpose (one line), key contents (classes, functions, endpoints — names only, not implementations).
+3. **Component boundaries** — Which agent owns which files (backend, workflow, frontend). Data flow between components (API contracts, Kestra flow inputs/outputs). Scope boundaries — what each agent should defer to others.
+4. **Acceptance criteria** — Concrete, testable conditions per component: endpoints that must exist, response shapes, error cases, flows that must be deployable, pages that must render, which test categories are needed.
+5. **Implementation sequence** — Recommended order of agent invocations with dependencies and concurrency opportunities noted.
 
 ---
 
@@ -210,7 +224,7 @@ The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke
 1. **Revise the manifesto** — redefine user groups and feature scope
 2. **Run `/plan-doc`** — update architectural specs, then common and spoke feature specs
 3. **Run `/dev-env install`** — bring up the DataHub environment
-4. **Use subagents** in the planner → generator → evaluator workflow: `architect` → `backend` → `reviewer` → `test` → `frontend` → `reviewer` → `k8s-helm`
+4. **Implement features** using the plan → approve → generate → evaluate workflow: Plan mode → approve → `backend` → `reviewer` → `test` → `frontend` → `reviewer` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
@@ -230,10 +244,10 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
 6. **Self-verifying subagents** — `backend`, `workflow`, `frontend`, and `test` agents have Bash access to run tests and type-checks, catching errors before reporting completion. Self-verification is necessary but not sufficient — it is complemented by independent review (see principle 8).
 
-7. **Separation of concerns** — Each subagent has a focused scope. Backend routes and services are separate from Kestra workflow definitions. Testing is a first-class agent activity, not an afterthought appended to implementation agents.
+7. **Context confinement** — Each subagent operates in a fresh, focused context containing only the approved plan, relevant spec, and files in its scope. This keeps the main conversation clean for orchestration and prevents implementation noise from degrading decision quality. Delegate implementation to generator agents rather than writing code in the main conversation.
 
-8. **Generator-evaluator separation** — Generators (backend, workflow, frontend) write code and self-test. An independent `reviewer` agent evaluates the output against the spec and architect's plan. Self-evaluation is insufficient for quality assurance — models tend to praise their own work. External critique from a separate context is a stronger signal. (Source: [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
+8. **Generator-evaluator separation** — Generators (backend, workflow, frontend) write code and self-test. An independent `reviewer` agent evaluates the output against the spec and approved plan. Self-evaluation is insufficient for quality assurance — models tend to praise their own work. External critique from a separate context is a stronger signal. (Source: [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
 
-9. **Model-appropriate roles** — Use stronger models (opus) for roles requiring judgment and reasoning (`architect`, `reviewer`). Use faster models (sonnet) for volume code generation. Evaluators need the strongest available model to resist self-praise patterns and produce genuinely critical assessments.
+9. **Model-appropriate roles** — Use the strongest model (opus) for the `reviewer` role, which requires judgment, reasoning, and resistance to self-praise patterns. Use faster models (sonnet) for volume code generation. Planning uses Claude's built-in Plan mode (which runs on the session's current model) rather than a dedicated subagent.
 
 10. **Bounded iteration** — Review loops are capped at 1 fix iteration per generator to control cost and latency. Unresolved issues after one fix pass are escalated to the user rather than looping indefinitely.
