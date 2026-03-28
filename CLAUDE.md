@@ -96,6 +96,13 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 - Never hardcode surrogate IDs — look up by stable natural key (ISBN, URN, email)
 - Never assert on wall-clock timestamps — assert on relative ordering or freshness windows
 
+**Test execution groups**: Run tests in three separate groups, in order — do not mix:
+1. `uv run pytest tests/unit/`
+2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
+3. Start `./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &`, wait for health, run `uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
+
+Mixing groups causes Kestra overload. The `require_server` fixture verifies server health and Kestra flow registration before api-wired tests run.
+
 **Output rules**:
 - Never truncate integration test output (no `| tail`, `| head`, or piping through filters) — always show the complete pytest output
 

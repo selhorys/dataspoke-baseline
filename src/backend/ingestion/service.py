@@ -76,11 +76,13 @@ class IngestionService:
         db: AsyncSession,
         kestra_client: KestraClient | None = None,
         callback_base_url: str = "",
+        ingestion_concurrent: int = 5,
     ) -> None:
         self._datahub = datahub
         self._db = db
         self._kestra = kestra_client
         self._callback_base_url = callback_base_url
+        self._ingestion_concurrent = ingestion_concurrent
 
     # ── Kestra helpers ───────────────────────────────────────────────────
 
@@ -98,6 +100,7 @@ class IngestionService:
         flow_id = schedule_to_flow_id(row.schedule)
         flow_yaml = generate_periodic_flow_yaml(
             row.schedule, self._callback_base_url,
+            concurrent=self._ingestion_concurrent,
         )
         await self._kestra.create_or_update_flow(flow_yaml)
         return self._kestra.namespace, flow_id

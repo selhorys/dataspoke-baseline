@@ -152,7 +152,67 @@ uv run -m src.cli --help
 
 The `DATASPOKE_*` variables in `.env` point to `localhost` — the port-forwards connect them to the in-cluster infrastructure transparently. Kestra runs in the cluster and is accessed via port-forward at http://localhost:9205.
 
-### 7. Access example data sources
+### 7. Run API-wired integration tests (test mode)
+
+API-wired tests exercise the full API + backend stack via REST calls. They require a running DataSpoke server with **test-mode stubs** enabled.
+
+**What test mode does:** Sets `DATASPOKE_TEST_MODE=true`, which makes Kestra activity endpoints use stub implementations for LLM, Qdrant, cache, and notification — no real external API calls. DataHub and PostgreSQL remain real (connected to dev-env infrastructure).
+
+| Stubbed Service | Stub Behavior |
+|-----------------|---------------|
+| LLM | `complete_json()` returns minimal dict matching Pydantic schema; `embed()` returns zero vector |
+| Qdrant | `search()` returns `[]`; `upsert()`/`delete()` are no-ops |
+| Redis (cache) | All ops are no-ops |
+| Notification | `send_sla_alert()` is a no-op |
+
+**Prerequisites:** All port-forwards must be active and healthy:
+
+```bash
+./datahub-port-forward.sh
+./dataspoke-port-forward.sh
+./dummy-data-port-forward.sh
+./lock-port-forward.sh
+./health-check.sh              # verify all services respond — do not skip
+```
+
+**Run tests:**
+
+```bash
+# Start test-mode server (auto-kills any previous instance on the same port)
+./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
+
+# Wait for ready
+until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
+
+# Run api-wired tests
+uv run pytest tests/integration/api_wired/
+
+# Stop when done
+./dev_env/dataspoke-test-mode.sh --stop
+```
+
+**Flags:**
+
+| Flag | Effect |
+|------|--------|
+| `--skip-migrate` | Skip Alembic migration (use when schema hasn't changed) |
+| `--no-reload` | Disable uvicorn auto-reload (recommended for CI/agent sessions) |
+| `--port <N>` | Custom API port (default: `DATASPOKE_API_PORT` from `.env`, or 8000) |
+| `--health-check` | Run `health-check.sh` before starting |
+| `--health-check-only` | Health check only, don't start server |
+| `--stop` | Stop a running test-mode instance and exit |
+
+**Key environment variables** (set automatically by the script from `.env`):
+
+| Variable | Purpose |
+|----------|---------|
+| `DATASPOKE_TEST_MODE` | Master flag — when `true`, `make_*()` factories return stubs |
+| `DATASPOKE_KESTRA_CALLBACK_BASE_URL` | URL Kestra uses to call back to the host (set to `http://host.docker.internal:<port>`) |
+| `DATASPOKE_API_PORT` | Port the test server listens on |
+
+> **Important:** Do not mix api-wired and non-api-wired integration tests in a single pytest run — this causes Kestra overload. See [spec/TESTING.md §Test Execution Groups](../spec/TESTING.md#test-execution-groups) for the three-group sequence.
+
+### 8. Access example data sources (dummy data)
 
 Forward example PostgreSQL and Kafka:
 
@@ -166,7 +226,7 @@ Forward example PostgreSQL and Kafka:
 | PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` (database: `example_db`) |
 | Kafka | localhost:9104 | — |
 
-### 8. Populate dummy data and register in DataHub
+### 9. Populate dummy data and register in DataHub
 
 Populate `example-postgres` and `example-kafka` with realistic Imazon use-case data and register datasets in DataHub:
 

@@ -6,6 +6,7 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient dataspoke.events rows for event pagination and activate/deactivate tests.
 
 Prerequisites:
+- Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Kestra port-forwarded to localhost:9205
@@ -14,9 +15,7 @@ Prerequisites:
 
 import json
 
-import httpx
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,16 +27,6 @@ from tests.integration.conftest import (
 
 _DG_PREFIX = "/api/v1/spoke/dg/metric"
 _TEST_METRIC_PREFIX = "imazon.test.metrics"
-
-
-@pytest_asyncio.fixture
-async def http_client(activity_server):
-    """HTTP client pointing at the real activity server."""
-    async with httpx.AsyncClient(
-        base_url=f"http://localhost:{activity_server.port}",
-        timeout=120.0,
-    ) as client:
-        yield client
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -119,7 +108,7 @@ async def test_metric_config_crud_via_http(
 
 @pytest.mark.asyncio
 async def test_metric_run_and_result_persistence(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
 ):
     """PUT config -> POST run -> GET results -> verify persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_persist"
@@ -186,7 +175,7 @@ async def test_metric_run_and_result_persistence(
 
 @pytest.mark.asyncio
 async def test_metric_run_dry_run(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
 ):
     """POST run (dry_run=true) -> verify no result persisted."""
     metric_id = f"{_TEST_METRIC_PREFIX}.run_dry"

@@ -1,0 +1,148 @@
+"""Stub service implementations for test mode.
+
+When ``DATASPOKE_TEST_MODE=true``, the ``make_*`` factories in
+``_common.py`` return these stubs instead of real clients.  This lets a
+host-mode DataSpoke server handle Kestra activity callbacks without
+requiring real LLM / Qdrant / cache / notification backends.
+
+DataHub and PostgreSQL are **never** stubbed — they always use real
+dev-env connections, even in test mode.
+
+Adding a new stub
+-----------------
+When a new external service is introduced:
+
+1. Create a ``Stub<Service>`` class in this module that implements the
+   same async interface as the real client (only the methods called by
+   activity endpoints need to be stubbed).
+2. Add a ``make_<service>()`` factory in ``_common.py`` with the
+   ``if settings.test_mode:`` guard that imports and returns the stub.
+3. Update the stub table in ``spec/TESTING.md §Test-mode stubs`` and in
+   ``dev_env/README.md §7. Run API-wired integration tests``.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, get_args, get_origin
+
+from pydantic import BaseModel
+
+from src.shared.config import EMBEDDING_DIMENSION
+
+logger = logging.getLogger(__name__)
+
+
+# ── LLM stub ────────────────────────────────────────────────────────────────
+
+
+class StubLLMClient:
+    """Drop-in replacement for ``LLMClient`` that returns canned responses."""
+
+    async def embed(self, text: str) -> list[float]:
+        return [0.0] * EMBEDDING_DIMENSION
+
+    async def complete(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+        return "stub"
+
+    async def complete_json(
+        self,
+        prompt: str,
+        system: str = "",
+        schema: type[BaseModel] | None = None,
+    ) -> dict:
+        if schema is None:
+            return {}
+        return _minimal_dict_for_schema(schema)
+
+
+def _minimal_dict_for_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """Build a minimal dict that satisfies *schema*'s type annotations.
+
+    Iterates over Pydantic model fields and generates a type-appropriate
+    default for each (e.g., ``""`` for str, ``0`` for int, ``[]`` for list).
+    For ``Optional[T]`` / ``Union[T, None]`` fields, produces the non-None
+    default.  Nested Pydantic models are not recursed into — they get
+    ``None``.
+    """
+    result: dict[str, Any] = {}
+    for name, field in schema.model_fields.items():
+        result[name] = _default_for_annotation(field.annotation)
+    return result
+
+
+def _default_for_annotation(annotation: Any) -> Any:  # noqa: PLR0911
+    """Return a minimal default value for a Python type annotation.
+
+    Handles ``str``, ``int``, ``float``, ``bool``, ``list``, ``dict``,
+    and ``Optional``/``Union`` (picks the first non-None branch).
+    Returns ``None`` for unrecognized types.
+    """
+    origin = get_origin(annotation)
+    if origin is dict:
+        return {}
+    if origin is list:
+        return []
+    if annotation is str:
+        return "stub"
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    if annotation is bool:
+        return False
+    # Union / Optional — try first non-None arg
+    args = get_args(annotation)
+    if args:
+        for arg in args:
+            if arg is not type(None):
+                return _default_for_annotation(arg)
+    return None
+
+
+# ── Qdrant stub ─────────────────────────────────────────────────────────────
+
+
+class StubQdrantManager:
+    """Drop-in replacement for ``QdrantManager`` — searches return nothing."""
+
+    async def search(self, **kwargs: Any) -> list:
+        return []
+
+    async def upsert(self, **kwargs: Any) -> None:
+        pass
+
+    async def delete(self, **kwargs: Any) -> None:
+        pass
+
+
+# ── Redis/cache stub ────────────────────────────────────────────────────────
+
+
+class StubRedisClient:
+    """Drop-in replacement for ``RedisClient`` — every op is a no-op."""
+
+    async def get(self, key: str) -> Any:
+        return None
+
+    async def set(self, key: str, value: Any, **kwargs: Any) -> None:
+        pass
+
+    async def publish(self, channel: str, message: Any) -> None:
+        pass
+
+    async def delete(self, key: str) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+
+# ── Notification stub ───────────────────────────────────────────────────────
+
+
+class StubNotificationService:
+    """Drop-in replacement for ``NotificationService`` — alerts are no-ops."""
+
+    async def send_sla_alert(self, **kwargs: Any) -> None:
+        pass

@@ -1,9 +1,9 @@
 """Shared fixtures and helpers for spot integration tests.
 
-Provides the ``http_client`` fixture (activity_server-backed) used by
-ingestion, validation, generation, and metrics modules.  Also exposes
-ingestion-specific connection constants and cleanup helpers reused by
-both ``test_ingestion_service`` and ``test_ingestion_workflow``.
+Provides the ``http_client`` fixture pointing at the host-mode DataSpoke
+server used by ingestion, validation, generation, and metrics modules.
+Also exposes ingestion-specific connection constants and cleanup helpers
+reused by both ``test_ingestion_service`` and ``test_ingestion_workflow``.
 """
 
 import os
@@ -19,10 +19,11 @@ from tests.integration.conftest import make_test_urn
 
 
 @pytest_asyncio.fixture
-async def http_client(activity_server):
-    """HTTP client pointing at the real activity server."""
+async def http_client():
+    """HTTP client pointing at the host-mode DataSpoke server."""
+    port = os.environ.get("DATASPOKE_API_PORT", "8000")
     async with httpx.AsyncClient(
-        base_url=f"http://localhost:{activity_server.port}",
+        base_url=f"http://localhost:{port}",
         timeout=120.0,
     ) as client:
         yield client

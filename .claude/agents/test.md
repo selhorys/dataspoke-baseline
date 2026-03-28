@@ -30,7 +30,7 @@ tests/
 │   ├── api_wired/
 │   │   ├── spot/              # Individual endpoint CRUD + error cases
 │   │   └── story/             # Multi-step USE_CASE scenario tests
-│   └── util/                  # Dummy-data reset helpers + ActivityServer + fixtures
+│   └── util/                  # Dummy-data reset helpers + Kestra test utilities + fixtures
 └── conftest.py                # Shared pytest configuration
 ```
 
@@ -50,8 +50,8 @@ tests/
 ### Kestra workflow test notes (read before writing any workflow/activity test)
 - **Architecture**: Kestra orchestrates workflows via HTTP Request tasks that call internal activity endpoints (`/internal/activities/*`). Tests for activities are effectively FastAPI endpoint tests.
 - **DB session sharing**: Activity endpoints share a DB session within each request. Design tests so activities execute sequentially.
-- **Factory patching target**: Patches target `src.api.routers.internal.activities` — the module where `make_llm`, `make_qdrant`, `make_cache`, `make_notification` are imported. Always verify the patch target matches the import path.
-- **ActivityServer**: For full Kestra flow tests, the `activity_server` fixture (session-scoped) runs a real uvicorn server with mocked LLM/Qdrant/cache/notification while using real DataHub and DB. See `tests/integration/util/kestra.py`.
+- **Test-mode stubs**: When the host-mode server runs with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stub implementations (`StubLLMClient`, `StubQdrantManager`, `StubRedisClient`, `StubNotificationService` from `src/workflows/_stubs.py`) instead of real clients. DataHub and DB always use real connections.
+- **Flow registration**: The host-mode server registers Kestra flows once during startup (lifespan). The `kestra_client` fixture does NOT re-register flows — it only performs a health check and cleans up test executions on teardown.
 
 ### API-wired test readability (critical)
 - **Inline API calls**: Write `http_client.put(…, json={…})` with the full request dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`, `create_dataset()`).
@@ -70,18 +70,28 @@ tests/
 
 ## Running tests
 
+Tests must be run in three separate groups, in order. Do not mix them.
+
 ```bash
-# Unit tests
-uv run pytest tests/unit/                                    # All unit tests
+# Group 1: Unit tests (no infrastructure needed)
+uv run pytest tests/unit/
 uv run pytest tests/unit/backend/test_validation_service.py  # Specific file
 
-# Integration tests (requires active port-forwards)
-uv run pytest tests/integration/api_wired/spot/              # Spot tests
-uv run pytest tests/integration/api_wired/story/             # Story tests
+# Group 2: Non-api-wired integration tests (no running server needed)
+uv run pytest tests/integration/ --ignore=tests/integration/api_wired/
+
+# Group 3: API-wired integration tests (requires dataspoke-test-mode server)
+# Start server (auto-kills previous instance), wait for ready, run tests, teardown
+./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
+until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
+uv run pytest tests/integration/api_wired/
+./dev_env/dataspoke-test-mode.sh --stop
 
 # E2E tests (requires full stack running)
 npx playwright test
 ```
+
+**Why separate groups?** The test-mode server registers Kestra flows at startup and some api-wired tests trigger Kestra executions. Non-api-wired Kestra tests use a self-contained noop flow and must run without the server. Mixing groups causes Kestra overload on memory-constrained dev instances.
 
 ## Invocation modes
 

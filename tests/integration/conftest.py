@@ -341,28 +341,6 @@ def module_dummy_data(request) -> None:
         _reset_pg_kafka()
 
 
-# ── Activity server fixture ──────────────────────────────────────────────────
-
-
-@pytest_asyncio.fixture(scope="session")
-async def activity_server():
-    """Start a real HTTP server for Kestra activity callbacks.
-
-    Session-scoped: one server for the entire test run to avoid port
-    conflicts and DB connection pool issues across modules.
-
-    Patches make_* factories in the activities module with mocks for
-    LLM, Qdrant, cache, and notification.  DataHub and DB use real
-    dev-env connections.
-
-    Tests can reconfigure mocks via ``activity_server.mock_llm`` etc.
-    """
-    from tests.integration.util.kestra import ActivityServer
-
-    async with ActivityServer() as server:
-        yield server
-
-
 # ── Kestra fixture ───────────────────────────────────────────────────────────
 
 
@@ -370,16 +348,12 @@ async def activity_server():
 async def kestra_client():
     """Create a KestraClient pointing at the dev-env Kestra instance; skip if unreachable.
 
-    On setup: registers all flows and kills stale running executions.
-    On teardown: cleans up test executions and deletes deployed flows.
+    Flow registration is handled by the host-mode DataSpoke server's
+    lifespan, so this fixture only performs a health check on setup.
+    Execution cleanup is each test module's responsibility (scoped to
+    the specific flow it uses).
     """
     from src.workflows.kestra.client import KestraClient
-    from tests.integration.util.kestra import (
-        cleanup_flows,
-        cleanup_test_executions,
-        ensure_flows_registered,
-        kill_running_executions,
-    )
 
     client = KestraClient(
         base_url=_kestra_url,
@@ -388,22 +362,36 @@ async def kestra_client():
         password=_kestra_password,
     )
     try:
-        # Quick health check
         resp = await client._client.get("/api/v1/flows/search")
         resp.raise_for_status()
     except Exception:
         pytest.skip(f"Kestra not reachable at {_kestra_url}")
 
-    # Ensure flows are deployed and no stale executions linger
-    await ensure_flows_registered(client)
-    await kill_running_executions(client)
-
     yield client
 
-    # Clean up test executions only — leave flow definitions in place
-    # to avoid expensive delete/re-register churn between modules.
-    await cleanup_test_executions(client)
     await client.close()
+
+
+# ── Activity server fixture ─────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(scope="module")
+async def activity_server():
+    """Start an ActivityServer for Kestra callback integration tests.
+
+    Uses a free port to avoid conflicts with the host-mode test server
+    that may be running on DATASPOKE_API_PORT for api-wired tests.
+    """
+    import socket
+
+    from tests.integration.util.kestra import ActivityServer
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        free_port = s.getsockname()[1]
+
+    async with ActivityServer(port=free_port) as server:
+        yield server
 
 
 # ── Qdrant fixture ───────────────────────────────────────────────────────────

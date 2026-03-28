@@ -4,18 +4,17 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient generation_configs rows via PUT API (Imazon-prefixed test URNs).
 - Transient generation_results rows from POST generate runs.
 - Transient dataspoke.events rows for event pagination tests.
-- LLM and Qdrant calls are mocked via activity_server mocks.
+- LLM and Qdrant calls use stubs via DATASPOKE_TEST_MODE on the host-mode server.
 
 Prerequisites:
+- Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Kestra port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import httpx
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,27 +27,9 @@ from tests.integration.conftest import (
     soft_delete_test_dataset,
 )
 
-_GEN_LLM_RETURN = {
-    "field_descriptions": {"id": "Primary key identifier"},
-    "table_summary": "Integration test dataset",
-    "suggested_tags": ["test"],
-}
-
 
 def _urn(suffix: str) -> str:
     return make_test_urn("generation", suffix)
-
-
-@pytest_asyncio.fixture
-async def http_client(activity_server):
-    """HTTP client pointing at the real activity server."""
-    # Configure mock LLM for generation responses
-    activity_server.mock_llm.complete_json.return_value = _GEN_LLM_RETURN
-    async with httpx.AsyncClient(
-        base_url=f"http://localhost:{activity_server.port}",
-        timeout=120.0,
-    ) as client:
-        yield client
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -178,7 +159,7 @@ async def test_list_generation_configs(
 
 @pytest.mark.asyncio
 async def test_generate_produces_result(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
     datahub_client,
 ):
     """PUT config -> POST generate -> GET results -> verify result."""
@@ -255,7 +236,7 @@ async def test_generate_produces_result(
 
 @pytest.mark.asyncio
 async def test_apply_after_approval(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
     datahub_client,
 ):
     """PUT config -> POST generate -> approve -> POST apply -> verify."""

@@ -95,6 +95,7 @@ async def get_ingestion_service(
         db=db,
         kestra_client=kestra,
         callback_base_url=settings.kestra_callback_base_url,
+        ingestion_concurrent=settings.kestra_ingestion_concurrent,
     )
 
 

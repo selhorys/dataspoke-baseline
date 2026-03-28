@@ -6,15 +6,14 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient dataspoke.events rows for event pagination and run tests.
 
 Prerequisites:
+- Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Kestra port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import httpx
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,16 +29,6 @@ from tests.integration.conftest import (
 
 def _urn(suffix: str) -> str:
     return make_test_urn("validation", suffix)
-
-
-@pytest_asyncio.fixture
-async def http_client(activity_server):
-    """HTTP client pointing at the real activity server."""
-    async with httpx.AsyncClient(
-        base_url=f"http://localhost:{activity_server.port}",
-        timeout=120.0,
-    ) as client:
-        yield client
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -169,7 +158,7 @@ async def test_list_validation_configs(
 
 @pytest.mark.asyncio
 async def test_run_validation_dry_run(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
     datahub_client,
 ):
     """PUT config -> POST run (dry_run=true) -> verify result."""
@@ -225,7 +214,7 @@ async def test_run_validation_dry_run(
 
 @pytest.mark.asyncio
 async def test_run_validation_persists_result(
-    http_client, async_session: AsyncSession, activity_server,
+    http_client, async_session: AsyncSession,
     datahub_client,
 ):
     """PUT config -> POST run (dry_run=false) -> GET results -> verify."""

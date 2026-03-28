@@ -123,7 +123,9 @@ class TestIngestionSchemas:
             schedule=None,
             enrichment_sources=None,
             custom_extractors=None,
-            status="active",
+            kestra_flow_namespace=None,
+            kestra_flow_id=None,
+            status="OK",
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )

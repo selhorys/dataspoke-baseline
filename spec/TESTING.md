@@ -53,7 +53,7 @@ tests/
 │   │   ├── postgres.py      # PostgreSQL reset functions (asyncpg, port 9102)
 │   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, KAFKA_PORT_FORWARDED_BROKERS)
 │   │   ├── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
-│   │   └── kestra.py        # Kestra test helpers (flow lifecycle, ActivityServer)
+│   │   └── kestra.py        # Kestra test helpers (flow lifecycle, execution cleanup)
 │   ├── api_wired/           # API-wired integration tests (REST-only)
 │   │   ├── spot/            # Individual or small-sequence endpoint tests
 │   │   ├── story/           # Multi-step USE_CASE scenario tests (10–100 API calls)
@@ -307,7 +307,31 @@ bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
 ./health-check.sh
 ```
 
-Integration tests do **not** require a running API server — they use in-process ASGI transport (`httpx.ASGITransport`). Kestra workflow tests call internal activity endpoints directly or use the Kestra REST API via `KestraClient`.
+**API-wired integration tests** require a running host-mode DataSpoke server with test-mode stubs enabled:
+
+```bash
+# Option A: Background process (preferred in coding agent sessions like Claude Code)
+./dev_env/dataspoke-test-mode.sh --skip-migrate &
+
+# Option B: Separate terminal (manual development)
+# Terminal 1:
+./dev_env/dataspoke-test-mode.sh
+# Terminal 2: run tests
+```
+
+Common flags:
+
+```bash
+./dev_env/dataspoke-test-mode.sh --health-check    # run health check first
+./dev_env/dataspoke-test-mode.sh --skip-migrate    # skip alembic migration
+./dev_env/dataspoke-test-mode.sh --port 9000       # custom port
+```
+
+When `DATASPOKE_TEST_MODE=true`, the server's Kestra activity endpoints (`/internal/activities/*`) use stub implementations for LLM, Qdrant, cache, and notification — avoiding real external API calls while keeping DataHub and PostgreSQL connections real. The server registers Kestra flows once during startup (lifespan), so test fixtures do not need to re-register them.
+
+The `require_server` fixture verifies both server health **and** Kestra flow registration. If the server started but Kestra was unreachable during lifespan (e.g., stale port-forward), flows may be missing — the fixture detects this and fails with a clear message before any test runs.
+
+Non-api-wired integration tests (`tests/integration/test_*_integration.py`) do not require the running server — they use in-process calls or `override_app()` ASGI transport.
 
 ### Kestra Integration Test Pitfalls
 
@@ -342,9 +366,23 @@ The `kestra.py` module provides helpers for managing Kestra state during tests:
 - `cleanup_flows(client)` — delete all DataSpoke flows from the test namespace
 - `ensure_flows_registered(client)` — register all flow YAML via the registry
 - `wait_for_execution_terminal(client, execution_id)` — poll until terminal state without raising on failure
-- `ActivityServer` — runs a real uvicorn HTTP server (default port 8765) for Kestra activity callbacks during full-flow tests. Patches `make_*` factories in `src.api.routers.internal.activities` so LLM, Qdrant, cache, and notification use test mocks while DataHub and DB use real dev-env connections. Exposes `mock_llm`, `mock_qdrant`, `mock_cache`, `mock_notification` for per-test reconfiguration.
 
-The `kestra_client` fixture (module-scoped) registers all flows and kills stale executions on setup, then cleans up test executions and deletes flows on teardown. The `activity_server` fixture (session-scoped) wraps `ActivityServer` for the entire test run.
+The `kestra_client` fixture (module-scoped) performs a Kestra health check on setup and cleans up test executions on teardown. Flow registration is handled by the host-mode DataSpoke server's lifespan — the fixture does not re-register flows.
+
+#### Test-mode stubs (`DATASPOKE_TEST_MODE`)
+
+When the host-mode server starts with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stub implementations instead of real clients:
+
+| Factory | Stub | Behavior |
+|---------|------|----------|
+| `make_llm()` | `StubLLMClient` | `complete_json()` returns a minimal dict matching the given Pydantic schema; `embed()` returns a zero vector |
+| `make_qdrant()` | `StubQdrantManager` | `search()` returns `[]` |
+| `make_cache()` | `StubRedisClient` | All ops are no-ops |
+| `make_notification()` | `StubNotificationService` | `send_sla_alert()` is a no-op |
+
+`make_datahub()` and `make_db_session()` always return real clients (they connect to dev-env infrastructure).
+
+Stubs are defined in `src/workflows/_stubs.py`.
 
 ### Directory Structure & Classification
 
@@ -361,7 +399,7 @@ Non-api-wired naming: `test_<feature>_service_integration.py` for service-level 
 
 **Root `conftest.py` (`tests/integration/conftest.py`) — shared fixtures and helpers:**
 
-- **Infrastructure fixtures** (session/function scope): `integration_db_url`, `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`, `activity_server`
+- **Infrastructure fixtures** (session/function scope): `integration_db_url`, `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`
 - **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
 - **Mock fixtures**: `mock_cache` (AsyncMock Redis with get/set/publish/delete)
 - **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant, kestra)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
@@ -402,27 +440,60 @@ API-wired tests use a dedicated `tests/integration/api_wired/conftest.py` that *
 
 The api-wired conftest provides:
 
+- **`require_server`** — session-scoped autouse fixture that fails fast if the host-mode DataSpoke server is not running (probes `/health`) **or** if any Kestra flows from `src/workflows/flows/*.yaml` are not registered (queries Kestra's flow search API). This catches cases where the server started but flow registration silently failed during lifespan.
 - **`auth_headers`** — function-scoped fixture returning the standard JWT auth headers dict, so tests can pass `headers=auth_headers` to every request.
 
-Each test module creates its own `http_client` fixture using the root conftest's `override_app()` context manager with the specific DI overrides needed for that module's tests. This pattern gives each module explicit control over which real infrastructure clients are injected.
+The `spot/conftest.py` provides a shared `http_client` fixture pointing at the host-mode server (`http://localhost:{DATASPOKE_API_PORT}`). Modules that need DI overrides (e.g., `test_dataset_service`, `test_ontology_service`) define their own `http_client` using the root conftest's `override_app()` context manager.
 
 Tests in `spot/` and `story/` inherit from both conftest layers.
 
 ### Running
 
-```bash
-# All integration tests (including api-wired)
-uv run pytest tests/integration/
+API-wired tests require the host-mode server to be running:
 
-# Only api-wired tests
+```bash
+# Start server as background process (coding agent sessions)
+./dev_env/dataspoke-test-mode.sh --skip-migrate &
+
+# Run tests
+uv run pytest tests/integration/api_wired/          # All api-wired tests
+uv run pytest tests/integration/api_wired/spot/      # Only spot tests
+uv run pytest tests/integration/api_wired/story/     # Only story tests
+```
+
+Non-api-wired integration tests do not require the running server:
+
+```bash
+uv run pytest tests/integration/ --ignore=tests/integration/api_wired/
+```
+
+### Test Execution Groups
+
+Tests must be run in **three separate groups**, in sequence. Mixing them in a single `pytest` invocation causes Kestra overload and fixture conflicts.
+
+| Group | Command | Requires server? |
+|-------|---------|-----------------|
+| 1. Unit tests | `uv run pytest tests/unit/` | No |
+| 2. Non-api-wired integration | `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/` | No |
+| 3. Api-wired integration | `uv run pytest tests/integration/api_wired/` | Yes — `dataspoke-test-mode` |
+
+For group 3, start the test-mode server **before** testing and stop it **after**:
+
+```bash
+# Start (auto-kills any previous instance on the same port)
+./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
+
+# Wait for ready
+until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
+
+# Run tests
 uv run pytest tests/integration/api_wired/
 
-# Only spot tests
-uv run pytest tests/integration/api_wired/spot/
-
-# Only story tests
-uv run pytest tests/integration/api_wired/story/
+# Teardown
+./dev_env/dataspoke-test-mode.sh --stop
 ```
+
+**Why separate groups?** The test-mode server registers Kestra flows at startup and some api-wired tests trigger Kestra workflow executions (ingestion). Running api-wired and non-api-wired tests together causes competing Kestra load. Non-api-wired Kestra tests (`test_kestra_workflows_integration.py`) use a self-contained noop flow and must run without the test-mode server to avoid interference.
 
 ### Readability Principle
 

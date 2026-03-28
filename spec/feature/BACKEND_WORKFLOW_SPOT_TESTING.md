@@ -6,6 +6,7 @@ API-wired spot integration tests for the ingestion workflow. Tests exercise the 
 
 ## Prerequisites
 
+- Host-mode DataSpoke server running with test stubs: `./dev_env/dataspoke-test-mode.sh`
 - DataSpoke PostgreSQL port-forwarded to `localhost:9201`
 - Example PostgreSQL (dummy data) port-forwarded to `localhost:9102`
 - Example Kafka port-forwarded to `localhost:9104`
@@ -26,7 +27,7 @@ Separate from `test_ingestion_service.py` (which tests config CRUD). This file f
 
 | Fixture | Scope | Purpose |
 |---------|-------|---------|
-| `activity_server` | session | Real HTTP server; provides `mock_llm` for patching |
+| `require_server` | session (autouse) | Fails fast if host-mode DataSpoke server is not running |
 | `async_session` | function | PostgreSQL session for assertions and cleanup |
 | `auth_headers` | function | JWT headers (`de`, `da`, `dg` groups) |
 | `datahub_client` | function | `DataHubClient` for verifying aspects landed in DataHub |
@@ -35,7 +36,7 @@ Separate from `test_ingestion_service.py` (which tests config CRUD). This file f
 
 | Fixture | Purpose |
 |---------|---------|
-| `http_client` | `httpx.AsyncClient` pointing at `activity_server.port` |
+| `http_client` | `httpx.AsyncClient` pointing at host-mode server (`localhost:{DATASPOKE_API_PORT}`) |
 | `kestra_client` | `KestraClient` instance for verifying flow registration |
 
 ```python

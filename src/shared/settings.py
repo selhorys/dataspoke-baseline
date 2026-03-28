@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     kestra_namespace: str = "dataspoke"
     kestra_user: str = ""
     kestra_password: str = ""
+    # Base URL that Kestra (in K8s) uses to call back to activity endpoints on
+    # the host.  ``dataspoke-test-mode.sh`` sets this to
+    # ``http://host.docker.internal:<port>`` automatically.  If empty, defaults
+    # to ``http://localhost:<api_port>`` (see ``_derive_callback_url`` below).
     kestra_callback_base_url: str = ""
     kestra_ingestion_concurrent: int = 5
 
@@ -68,6 +72,15 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     llm_api_key: str = ""
     llm_model: str = "gpt-4o"
+
+    # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
+    # in ``src/workflows/_common.py`` return stub implementations instead of
+    # real clients for LLM, Qdrant, Redis (cache), and Notification.  DataHub
+    # and PostgreSQL always use real connections regardless of this flag.
+    # Enable via ``./dev_env/dataspoke-test-mode.sh`` or by exporting
+    # ``DATASPOKE_TEST_MODE=true`` before starting the server.
+    # See ``src/workflows/_stubs.py`` for stub behavior details.
+    test_mode: bool = False
 
     @model_validator(mode="after")
     def _derive_callback_url(self) -> "Settings":
