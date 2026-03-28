@@ -70,7 +70,7 @@ src/
 │   ├── ingestion/        # Deep Technical Spec Ingestion (UC1)
 │   │   ├── __init__.py
 │   │   ├── service.py    # IngestionService — config CRUD, run orchestration
-│   │   └── extractors.py # Source-specific extractors (Confluence, GitHub, etc.)
+│   │   └── extractors.py # Source-specific extractors (PostgreSQL, Kafka; others TBD)
 │   ├── validation/       # Online Data Validator (UC2, UC3)
 │   │   ├── __init__.py
 │   │   ├── service.py    # ValidationService — config CRUD, run orchestration
@@ -131,7 +131,8 @@ src/
 └── workflows/            # Kestra flow YAML definitions, parameter dataclasses, and kestra/ client subpackage
     ├── __init__.py
     ├── _common.py        # Shared service factories (make_datahub, make_cache, etc.) and workflow ID helpers
-    ├── ingestion.py      # FLOW_ID constant and IngestionParams dataclass
+    ├── _stubs.py         # Test-mode stub implementations (LLM, Qdrant, Redis, Notification)
+    ├── ingestion.py      # FLOW_ID constant, periodic flow generation, sync logic
     ├── validation.py     # FLOW_ID constant and ValidationParams dataclass
     ├── generation.py     # FLOW_ID constant and GenerationParams dataclass
     ├── embedding_sync.py # FLOW_ID constant and EmbeddingSyncParams dataclass
@@ -139,7 +140,7 @@ src/
     ├── sla_monitor.py    # FLOW_ID constant and SLAMonitorParams dataclass
     ├── ontology.py       # FLOW_ID constant and OntologyRebuildParams dataclass
     ├── flows/            # Kestra YAML flow definitions
-    │   ├── ingestion.yaml
+    │   ├── ingestion_config_sync.yaml
     │   ├── validation.yaml
     │   ├── sla_monitor.yaml
     │   ├── generation.yaml
@@ -528,7 +529,9 @@ class DatasetService:
 | `custom_extractors` | JSONB | no | `null` | Custom extractor plugin configs (TBD — see below) |
 | `periodic` | boolean | yes | `false` | Enable cron-triggered execution via Kestra |
 | `schedule` | text | no | `null` | Cron expression (required when `periodic=true`, e.g., `0 2 * * *`) |
-| `status` | text | yes | `"draft"` | Config lifecycle status |
+| `kestra_flow_namespace` | text | no | `null` | Kestra namespace of the registered periodic flow |
+| `kestra_flow_id` | text | no | `null` | Kestra flow ID of the registered periodic flow |
+| `status` | text | yes | `"OK"` | Kestra registration outcome: `OK` or `ERROR` |
 | `created_at` | timestamptz | yes | `now()` | — |
 | `updated_at` | timestamptz | yes | `now()` | — |
 
@@ -536,18 +539,16 @@ When `periodic` is `true`, `schedule` must contain a valid cron expression. The 
 
 **Available `source_type` values**:
 
-DataHub standard ingestion sources (via `acryl-datahub` SDK):
+| `source_type` | Platform | Status |
+|---------------|----------|--------|
+| `POSTGRESQL` | PostgreSQL | Implemented — real extraction via `asyncpg` |
+| `KAFKA` | Kafka | Implemented — schema inference from polled messages |
+| `MYSQL` | MySQL | TODO — defined in `SourceType` enum, returns "not yet implemented" |
+| `ORACLE` | Oracle | TODO |
+| `BIGQUERY` | BigQuery | TODO |
+| `SNOWFLAKE` | Snowflake | TODO |
 
-| `source_type` | Platform | Description |
-|---------------|----------|-------------|
-| `POSTGRESQL` | PostgreSQL | Tables, views, schemas |
-| `MYSQL` | MySQL | Tables, views, schemas |
-| `ORACLE` | Oracle | Tables, views, stored procedures |
-| `BIGQUERY` | BigQuery | Datasets, tables, views |
-| `SNOWFLAKE` | Snowflake | Databases, schemas, tables |
-| `KAFKA` | Kafka | Topics, schemas |
-
-Custom ingestion sources: TBD — no custom sources available yet. Will follow the same `source_type` registration pattern.
+Custom ingestion sources: TBD — no custom sources available yet.
 
 **`enrichment_sources`** (TBD):
 
@@ -561,12 +562,20 @@ Per UC1 spec, custom extractors are user-provided Python plugin functions for pr
 
 ```python
 class IngestionService:
-    async def get_config(self, dataset_urn: str) -> IngestionConfig | None: ...
-    async def upsert_config(self, dataset_urn: str, config: IngestionConfigInput) -> IngestionConfig: ...
-    async def patch_config(self, dataset_urn: str, patch: dict) -> IngestionConfig: ...
+    def __init__(self, datahub: DataHubClient, db: AsyncSession,
+                 kestra_client: KestraClient | None = None,
+                 callback_base_url: str = "", ingestion_concurrent: int = 5) -> None: ...
+
+    async def get_config(self, dataset_urn: str) -> IngestionConfigRecord | None: ...
+    async def upsert_config(self, dataset_urn: str, source_type: str, locator: dict,
+                            identifier: dict, auth: dict | None, periodic: bool,
+                            schedule: str | None, ...) -> tuple[IngestionConfigRecord, bool]: ...
+    async def patch_config(self, dataset_urn: str, patch: dict) -> IngestionConfigRecord: ...
     async def delete_config(self, dataset_urn: str) -> None: ...
-    async def list_configs(self, offset: int, limit: int, filters: dict) -> tuple[list[IngestionConfig], int]: ...
-    async def list_periodic_configs(self) -> list[IngestionConfig]: ...
+    async def list_configs(self, offset: int, limit: int, status_filter: str | None = None,
+                           order_by: Any = None) -> tuple[list[IngestionConfigRecord], int]: ...
+    async def list_periodic_configs(self) -> list[IngestionConfigRecord]: ...
+    async def list_periodic_datasets(self, schedule: str) -> list[str]: ...
     async def run(self, dataset_urn: str, dry_run: bool = False) -> IngestionRunResult: ...
     async def get_events(self, dataset_urn: str, offset: int, limit: int) -> tuple[list[EventRecord], int]: ...
 ```
@@ -959,7 +968,7 @@ Kestra (in-cluster)                DataSpoke API (host or in-cluster)
 The `kestra/` subpackage wraps Kestra's REST API via `httpx`:
 
 - **`client.py`** — `KestraClient` with methods for flow CRUD
-  (`create_or_update_flow`, `get_flow`, `delete_flow`), execution lifecycle
+  (`create_or_update_flow`, `get_flow`, `delete_flow`, `list_flows`), execution lifecycle
   (`trigger_execution`, `wait_for_execution`, `trigger_and_wait`), label-based
   dedup (`check_no_duplicate`, `find_running_executions`), and cleanup
   (`kill_execution`, `delete_execution`, `find_executions`).
@@ -970,9 +979,12 @@ The `kestra/` subpackage wraps Kestra's REST API via `httpx`:
   completes with FAILED status), `KestraTimeoutError` (raised when polling
   exceeds timeout), `parse_execution_error()` (extracts human-readable error
   from failed execution response).
-- **`registry.py`** — `register_all_flows()` registers static YAML flows from
-  `src/workflows/flows/` and dynamically generated flows (e.g., periodic
-  ingestion flows grouped by cron schedule) via `create_or_update_flow`.
+- **`registry.py`** — `register_all_flows()` registers startup flows from
+  `src/workflows/flows/` via `create_or_update_flow`. Currently only
+  `ingestion_config_sync.yaml` is registered at startup; other flows
+  (validation, generation, etc.) are defined but not yet registered
+  (TODO: register once Kestra can handle the load). Periodic ingestion
+  flows are dynamically generated and synced separately.
 
 ### Flow Catalogue
 

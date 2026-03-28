@@ -45,7 +45,9 @@ Stores per-dataset ingestion configuration.
 | `schedule` | `TEXT` NULL | Cron expression (required when `periodic=true`) |
 | `enrichment_sources` | `JSONB` NULL | External enrichment source configs (TBD) |
 | `custom_extractors` | `JSONB` NULL | Custom extractor plugin configs (TBD) |
-| `status` | `TEXT` | `active`, `paused`, `draft` |
+| `kestra_flow_namespace` | `TEXT` NULL | Kestra namespace of the registered periodic flow |
+| `kestra_flow_id` | `TEXT` NULL | Kestra flow ID of the registered periodic flow |
+| `status` | `TEXT` | `OK` (Kestra registration succeeded), `ERROR` (registration failed) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
 

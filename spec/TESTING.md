@@ -327,9 +327,9 @@ Common flags:
 ./dev_env/dataspoke-test-mode.sh --port 9000       # custom port
 ```
 
-When `DATASPOKE_TEST_MODE=true`, the server's Kestra activity endpoints (`/internal/activities/*`) use stub implementations for LLM, Qdrant, cache, and notification — avoiding real external API calls while keeping DataHub and PostgreSQL connections real. The server registers Kestra flows once during startup (lifespan), so test fixtures do not need to re-register them.
+When `DATASPOKE_TEST_MODE=true`, the server's Kestra activity endpoints (`/internal/activities/*`) use stub implementations for LLM, Qdrant, cache, and notification — avoiding real external API calls while keeping DataHub and PostgreSQL connections real. The server registers `ingestion-config-sync` in Kestra once during startup (lifespan), so test fixtures do not need to re-register it.
 
-The `require_server` fixture verifies both server health **and** Kestra flow registration. If the server started but Kestra was unreachable during lifespan (e.g., stale port-forward), flows may be missing — the fixture detects this and fails with a clear message before any test runs.
+The `require_server` fixture verifies three things: (1) `DATASPOKE_TEST_MODE` is set, (2) server health via `/health`, and (3) the `ingestion-config-sync` Kestra flow is registered. If the server started but Kestra was unreachable during lifespan (e.g., stale port-forward), the flow may be missing — the fixture detects this and fails with a clear message before any test runs.
 
 Non-api-wired integration tests (`tests/integration/test_*_integration.py`) do not require the running server — they use in-process calls or `override_app()` ASGI transport.
 
@@ -365,9 +365,10 @@ The `kestra.py` module provides helpers for managing Kestra state during tests:
 - `cleanup_test_executions(client, flow_id)` — find and delete test executions by label prefix
 - `cleanup_flows(client)` — delete all DataSpoke flows from the test namespace
 - `ensure_flows_registered(client)` — register all flow YAML via the registry
+- `verify_flows_registered(client)` — check which flows are registered and return their IDs
 - `wait_for_execution_terminal(client, execution_id)` — poll until terminal state without raising on failure
 
-The `kestra_client` fixture (module-scoped) performs a Kestra health check on setup and cleans up test executions on teardown. Flow registration is handled by the host-mode DataSpoke server's lifespan — the fixture does not re-register flows.
+The `kestra_client` fixture (module-scoped) performs a Kestra health check on setup and closes the client on teardown. Flow registration is handled by the host-mode DataSpoke server's lifespan — the fixture does not re-register flows. Execution cleanup is each test module's responsibility.
 
 #### Test-mode stubs (`DATASPOKE_TEST_MODE`)
 
@@ -402,6 +403,7 @@ Non-api-wired naming: `test_<feature>_service_integration.py` for service-level 
 - **Infrastructure fixtures** (session/function scope): `integration_db_url`, `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`
 - **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
 - **Mock fixtures**: `mock_cache` (AsyncMock Redis with get/set/publish/delete)
+- **Server fixtures**: `activity_server` (module-scoped `ActivityServer` — starts a real uvicorn instance with mocked LLM/Qdrant/cache/notification factories for Kestra callback integration tests)
 - **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant, kestra)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
 - **DataHub helpers**: `emit_test_dataset(client, *, urn, name, description, fields, with_ownership, with_tags, wait_seconds)`, `soft_delete_test_dataset(client, urn)`
 - **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id, event_type, count)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
@@ -440,7 +442,7 @@ API-wired tests use a dedicated `tests/integration/api_wired/conftest.py` that *
 
 The api-wired conftest provides:
 
-- **`require_server`** — session-scoped autouse fixture that fails fast if the host-mode DataSpoke server is not running (probes `/health`) **or** if any Kestra flows from `src/workflows/flows/*.yaml` are not registered (queries Kestra's flow search API). This catches cases where the server started but flow registration silently failed during lifespan.
+- **`require_server`** — session-scoped autouse fixture that fails fast if (1) `DATASPOKE_TEST_MODE` is not set, (2) the host-mode DataSpoke server is not running (probes `/health`), or (3) the `ingestion-config-sync` Kestra flow is not registered (the sole startup flow). This catches cases where the server started but flow registration silently failed during lifespan.
 - **`auth_headers`** — function-scoped fixture returning the standard JWT auth headers dict, so tests can pass `headers=auth_headers` to every request.
 
 The `spot/conftest.py` provides a shared `http_client` fixture pointing at the host-mode server (`http://localhost:{DATASPOKE_API_PORT}`). Modules that need DI overrides (e.g., `test_dataset_service`, `test_ontology_service`) define their own `http_client` using the root conftest's `override_app()` context manager.
