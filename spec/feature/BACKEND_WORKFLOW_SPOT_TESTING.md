@@ -27,7 +27,7 @@ Separate from `test_ingestion_service.py` (which tests config CRUD). This file f
 
 | Fixture | Scope | Purpose |
 |---------|-------|---------|
-| `require_server` | session (autouse) | Fails fast if host-mode DataSpoke server is not running |
+| `require_server` | session (autouse) | Fails fast if `DATASPOKE_TEST_MODE` not set, server not running, or `ingestion-config-sync` flow not registered |
 | `async_session` | function | PostgreSQL session for assertions and cleanup |
 | `auth_headers` | function | JWT headers (`de`, `da`, `dg` groups) |
 | `datahub_client` | function | `DataHubClient` for verifying aspects landed in DataHub |

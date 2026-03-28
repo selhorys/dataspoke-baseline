@@ -51,7 +51,7 @@ tests/
 - **Architecture**: Kestra orchestrates workflows via HTTP Request tasks that call internal activity endpoints (`/internal/activities/*`). Tests for activities are effectively FastAPI endpoint tests.
 - **DB session sharing**: Activity endpoints share a DB session within each request. Design tests so activities execute sequentially.
 - **Test-mode stubs**: When the host-mode server runs with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stub implementations (`StubLLMClient`, `StubQdrantManager`, `StubRedisClient`, `StubNotificationService` from `src/workflows/_stubs.py`) instead of real clients. DataHub and DB always use real connections.
-- **Flow registration**: The host-mode server registers Kestra flows once during startup (lifespan). The `kestra_client` fixture does NOT re-register flows — it only performs a health check and cleans up test executions on teardown.
+- **Flow registration**: The host-mode server registers `ingestion-config-sync` in Kestra once during startup (lifespan). The `kestra_client` fixture does NOT re-register flows — it only performs a health check and closes the client on teardown. Execution cleanup is each test module's responsibility.
 
 ### API-wired test readability (critical)
 - **Inline API calls**: Write `http_client.put(…, json={…})` with the full request dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`, `create_dataset()`).

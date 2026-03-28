@@ -145,7 +145,7 @@ await client.check_no_duplicate(
 
 **Deploy a flow from YAML:**
 ```python
-flow_yaml = open("src/workflows/flows/ingestion.yaml").read()
+flow_yaml = open("src/workflows/flows/ingestion_config_sync.yaml").read()
 result = await client.create_or_update_flow(flow_yaml)
 ```
 

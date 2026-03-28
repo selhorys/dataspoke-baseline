@@ -101,7 +101,7 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
 3. Start `./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &`, wait for health, run `uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
 
-Mixing groups causes Kestra overload. The `require_server` fixture verifies server health and Kestra flow registration before api-wired tests run.
+Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set, server health, and `ingestion-config-sync` flow registration before api-wired tests run.
 
 **Output rules**:
 - Never truncate integration test output (no `| tail`, `| head`, or piping through filters) — always show the complete pytest output

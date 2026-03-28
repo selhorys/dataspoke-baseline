@@ -36,7 +36,7 @@ src/workflows/
 - **Concurrency**: two mechanisms — Redis SET NX for ingestion (per-dataset guard), Kestra label-based `KestraClient.check_no_duplicate()` for validation/generation/metrics flows. API returns 409 Conflict if a duplicate is running
 - **Output passing**: each task receives the output of the previous one via Kestra's output variables (e.g. `{{ outputs.extract_metadata.body }}`)
 - **KestraClient**: use `src/workflows/kestra/client.py` to trigger flows and poll execution status from the API layer
-- **Flow deployment**: `registry.py` deploys static flow YAML to Kestra on startup via `create_or_update_flow()`. Dynamic periodic ingestion flows (`ingestion-periodic-*`) are synced separately via the `ingestion-config-sync` cron flow or at app startup
+- **Flow deployment**: `registry.py` deploys `ingestion_config_sync.yaml` to Kestra on startup via `create_or_update_flow()` (other flow YAMLs are defined but not yet registered at startup — TODO). Dynamic periodic ingestion flows (`ingestion-periodic-*`) are synced separately via the `ingestion-config-sync` cron flow or at app startup
 - **Progress reporting**: long-running flows publish progress to Redis pub/sub for WebSocket feeds (see `spec/feature/BACKEND.md` §WebSocket Feed)
 - **Idempotency**: activity endpoints must be safe to retry — use idempotency keys where needed
 
