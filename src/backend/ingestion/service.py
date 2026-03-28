@@ -13,6 +13,8 @@ from src.backend.ingestion.extractors import run_datahub_ingestion
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, IngestionConfig
 from src.shared.exceptions import EntityNotFoundError
+from src.workflows.ingestion import generate_periodic_flow_yaml, schedule_to_flow_id
+from src.workflows.kestra.client import KestraClient
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,8 @@ class IngestionConfigRecord(BaseModel):
     schedule: str | None = None
     enrichment_sources: dict[str, Any] | None = None
     custom_extractors: dict[str, Any] | None = None
+    kestra_flow_namespace: str | None = None
+    kestra_flow_id: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -55,6 +59,8 @@ def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:
         schedule=row.schedule,
         enrichment_sources=row.enrichment_sources,
         custom_extractors=row.custom_extractors,
+        kestra_flow_namespace=row.kestra_flow_namespace,
+        kestra_flow_id=row.kestra_flow_id,
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -68,9 +74,55 @@ class IngestionService:
         self,
         datahub: DataHubClient,
         db: AsyncSession,
+        kestra_client: KestraClient | None = None,
+        callback_base_url: str = "",
     ) -> None:
         self._datahub = datahub
         self._db = db
+        self._kestra = kestra_client
+        self._callback_base_url = callback_base_url
+
+    # ── Kestra helpers ───────────────────────────────────────────────────
+
+    async def _ensure_kestra_flow(
+        self, row: IngestionConfig,
+    ) -> tuple[str | None, str | None]:
+        """Register or update the Kestra periodic flow for this config.
+
+        Returns (namespace, flow_id) on success, or (None, None) if not
+        periodic or kestra_client is unavailable.
+        """
+        if not row.periodic or not row.schedule or self._kestra is None:
+            return None, None
+
+        flow_id = schedule_to_flow_id(row.schedule)
+        flow_yaml = generate_periodic_flow_yaml(
+            row.schedule, self._callback_base_url,
+        )
+        await self._kestra.create_or_update_flow(flow_yaml)
+        return self._kestra.namespace, flow_id
+
+    async def _cleanup_kestra_flow(self, row: IngestionConfig) -> None:
+        """Delete the Kestra flow if no other configs share the same schedule."""
+        if not row.kestra_flow_id or self._kestra is None:
+            return
+
+        remaining = (
+            await self._db.execute(
+                select(func.count()).select_from(
+                    select(IngestionConfig)
+                    .where(
+                        IngestionConfig.periodic.is_(True),
+                        IngestionConfig.schedule == row.schedule,
+                        IngestionConfig.id != row.id,
+                    )
+                    .subquery()
+                )
+            )
+        ).scalar() or 0
+
+        if remaining == 0:
+            await self._kestra.delete_flow(row.kestra_flow_id)
 
     # ── Config CRUD ──────────────────────────────────────────────────────
 
@@ -129,6 +181,38 @@ class IngestionService:
 
         await self._db.commit()
         await self._db.refresh(existing)
+
+        # Kestra registration + status
+        try:
+            ns, fid = await self._ensure_kestra_flow(existing)
+            existing.kestra_flow_namespace = ns
+            existing.kestra_flow_id = fid
+            existing.status = "OK"
+        except Exception:
+            logger.error("Kestra registration failed for %s", dataset_urn, exc_info=True)
+            existing.kestra_flow_namespace = None
+            existing.kestra_flow_id = None
+            existing.status = "ERROR"
+
+        self._db.add(existing)
+        await self._db.commit()
+        await self._db.refresh(existing)
+
+        # Record config CRUD event
+        event_type = "ingestion.config_created" if created else "ingestion.config_updated"
+        await self._record_event(
+            dataset_urn,
+            event_type,
+            existing.status.lower(),
+            {
+                "operation": "PUT",
+                "config_id": str(existing.id),
+                "periodic": existing.periodic,
+                "schedule": existing.schedule,
+                "kestra_flow_id": existing.kestra_flow_id,
+            },
+        )
+
         return _record_from_row(existing), created
 
     async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> IngestionConfigRecord:
@@ -155,13 +239,42 @@ class IngestionService:
             row.enrichment_sources = patch["enrichment_sources"]
         if "custom_extractors" in patch:
             row.custom_extractors = patch["custom_extractors"]
-        if "status" in patch and patch["status"] is not None:
-            row.status = patch["status"]
         row.updated_at = datetime.now(tz=UTC)
 
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
+
+        # Re-evaluate Kestra registration if periodic-related fields changed
+        if any(k in patch for k in ("periodic", "schedule")):
+            try:
+                ns, fid = await self._ensure_kestra_flow(row)
+                row.kestra_flow_namespace = ns
+                row.kestra_flow_id = fid
+                row.status = "OK"
+            except Exception:
+                logger.error("Kestra registration failed for %s", dataset_urn, exc_info=True)
+                row.status = "ERROR"
+
+            self._db.add(row)
+            await self._db.commit()
+            await self._db.refresh(row)
+
+        # Record config CRUD event
+        await self._record_event(
+            dataset_urn,
+            "ingestion.config_updated",
+            row.status.lower(),
+            {
+                "operation": "PATCH",
+                "config_id": str(row.id),
+                "fields_changed": list(patch.keys()),
+                "periodic": row.periodic,
+                "schedule": row.schedule,
+                "kestra_flow_id": row.kestra_flow_id,
+            },
+        )
+
         return _record_from_row(row)
 
     async def delete_config(self, dataset_urn: str) -> None:
@@ -172,8 +285,32 @@ class IngestionService:
         if row is None:
             raise EntityNotFoundError("ingestion_config", dataset_urn)
 
+        # Capture fields before deletion for the event
+        config_id = str(row.id)
+        schedule = row.schedule
+        kestra_flow_id = row.kestra_flow_id
+
+        # Clean up Kestra flow if this was the last config for its schedule
+        try:
+            await self._cleanup_kestra_flow(row)
+        except Exception:
+            logger.error("Kestra cleanup failed for %s", dataset_urn, exc_info=True)
+
         await self._db.delete(row)
         await self._db.commit()
+
+        # Record deletion event
+        await self._record_event(
+            dataset_urn,
+            "ingestion.config_deleted",
+            "success",
+            {
+                "operation": "DELETE",
+                "config_id": config_id,
+                "schedule": schedule,
+                "kestra_flow_id": kestra_flow_id,
+            },
+        )
 
     async def list_configs(
         self,

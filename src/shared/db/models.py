@@ -51,7 +51,9 @@ class IngestionConfig(Base):
     schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
     enrichment_sources: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     custom_extractors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
+    kestra_flow_namespace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kestra_flow_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="OK")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

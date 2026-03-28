@@ -43,7 +43,6 @@ class PatchIngestionConfigRequest(BaseModel):
     schedule: str | None = None
     enrichment_sources: dict[str, Any] | None = None
     custom_extractors: dict[str, Any] | None = None
-    status: str | None = None
 
     @model_validator(mode="after")
     def validate_fields(self) -> "PatchIngestionConfigRequest":
@@ -83,6 +82,8 @@ class IngestionConfigResponse(SingleResponse):
     schedule: str | None
     enrichment_sources: dict[str, Any] | None
     custom_extractors: dict[str, Any] | None
+    kestra_flow_namespace: str | None
+    kestra_flow_id: str | None
     status: str
     created_at: datetime
     updated_at: datetime

@@ -37,6 +37,8 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
         schedule=c.schedule,
         enrichment_sources=c.enrichment_sources,
         custom_extractors=c.custom_extractors,
+        kestra_flow_namespace=c.kestra_flow_namespace,
+        kestra_flow_id=c.kestra_flow_id,
         status=c.status,
         created_at=c.created_at,
         updated_at=c.updated_at,

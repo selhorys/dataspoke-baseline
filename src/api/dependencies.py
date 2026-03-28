@@ -88,8 +88,14 @@ async def get_dataset_service(
 async def get_ingestion_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
+    kestra: KestraClient = Depends(get_kestra_client),
 ) -> IngestionService:
-    return IngestionService(datahub=datahub, db=db)
+    return IngestionService(
+        datahub=datahub,
+        db=db,
+        kestra_client=kestra,
+        callback_base_url=settings.kestra_callback_base_url,
+    )
 
 
 async def get_validation_service(
