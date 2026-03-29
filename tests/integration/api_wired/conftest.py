@@ -58,7 +58,7 @@ def require_server():
             "Start with: ./dev_env/dataspoke-test-mode.sh"
         )
 
-    # Verify ingestion flow is registered (the only flow registered at startup)
+    # Verify required flows are registered
     kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
     kestra_ns = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
     kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
@@ -79,9 +79,14 @@ def require_server():
             f"Cannot query Kestra at {kestra_url}: {exc}"
         )
 
-    if "ingestion-config-sync" not in registered:
+    required_flows = {
+        "ingestion-config-sync", "validation", "generation", "metrics",
+        "embedding-sync", "ontology-rebuild", "sla-monitor",
+    }
+    missing = required_flows - registered
+    if missing:
         pytest.fail(
-            "Kestra flow 'ingestion-config-sync' not registered. "
+            f"Kestra flows not registered: {', '.join(sorted(missing))}. "
             "Restart with: ./dev_env/dataspoke-test-mode.sh"
         )
 

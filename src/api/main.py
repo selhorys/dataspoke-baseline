@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
 
     kestra = get_kestra_client()
     try:
-        count = await asyncio.wait_for(register_all_flows(kestra), timeout=15)
+        count = await asyncio.wait_for(register_all_flows(kestra), timeout=60)
         logger.info("Registered %d Kestra flows", count)
     except asyncio.TimeoutError:
         logger.warning("Kestra flow registration timed out — Kestra may be unavailable")
