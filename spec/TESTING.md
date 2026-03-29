@@ -1,7 +1,7 @@
 # DataSpoke: Testing Conventions
 
 > This document defines testing conventions, toolchains, and workflows for DataSpoke.
-> Priority 3 in the spec hierarchy — alongside [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> Priority 3 in the spec hierarchy -- alongside [`ARCHITECTURE.md`](ARCHITECTURE.md).
 > For the technology decisions that motivate the toolchain choices here, see [`ARCHITECTURE.md §Technology Stack`](ARCHITECTURE.md#technology-stack).
 > For the dev environment and lock service used in integration/E2E tests, see [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md).
 > For the Imazon use-case scenarios that define test data context, see [`spec/USE_CASE_en.md`](USE_CASE_en.md).
@@ -28,9 +28,9 @@
 |-------|----------|-----------|-------------|
 | Backend (API + services) | Python 3.13 | pytest + httpx | mypy, ruff |
 | Frontend | TypeScript | Jest + React Testing Library | TypeScript compiler, ESLint |
-| E2E | TypeScript | Playwright | — |
+| E2E | TypeScript | Playwright | -- |
 
-> **Do not use the `datahub` CLI** — it requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead (e.g., `tests/integration/util/datahub.py`).
+> **Do not use the `datahub` CLI** -- it requires Python <= 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead (e.g., `tests/integration/util/datahub.py`).
 
 ---
 
@@ -48,18 +48,15 @@ tests/
 │   └── frontend/       # Jest tests (or co-located in src/frontend/)
 ├── integration/             # Dev-env-backed integration tests
 │   ├── util/                # Dummy-data reset/ingest utilities
-│   │   ├── fixtures/sql/    # SQL seed files (10 files: 00_schemas … 09_ebooknow)
-│   │   ├── fixtures/kafka/  # Kafka JSONL seed messages (orders, shipping, reviews)
-│   │   ├── postgres.py      # PostgreSQL reset functions (asyncpg, port 9102)
-│   │   ├── kafka.py         # Kafka topic reset functions (confluent-kafka, KAFKA_PORT_FORWARDED_BROKERS)
-│   │   ├── datahub.py       # DataHub ingestion functions (acryl-datahub SDK, port 9004)
-│   │   └── kestra.py        # Kestra test helpers (flow lifecycle, execution cleanup)
+│   │   ├── fixtures/sql/    # SQL seed files
+│   │   ├── fixtures/kafka/  # Kafka JSONL seed messages
+│   │   ├── postgres.py, kafka.py, datahub.py, kestra.py
 │   ├── api_wired/           # API-wired integration tests (REST-only)
-│   │   ├── spot/            # Individual or small-sequence endpoint tests
-│   │   ├── story/           # Multi-step USE_CASE scenario tests (10–100 API calls)
-│   │   └── conftest.py      # API-wired-specific fixtures (extends root conftest)
+│   │   ├── spot/            # Individual endpoint tests (1-5 API calls)
+│   │   ├── story/           # Multi-step USE_CASE scenarios (10-100 API calls)
+│   │   └── conftest.py      # Extends root conftest
 │   ├── conftest.py          # Root conftest: infra fixtures, lock, dummy-data lifecycle
-│   └── test_*_integration.py  # Non-API-wired tests (infra clients, Kafka, Kestra, etc.)
+│   └── test_*_integration.py  # Non-API-wired tests (infra clients, Kafka, Kestra)
 └── e2e/                # Playwright end-to-end tests
 ```
 
@@ -67,18 +64,9 @@ tests/
 
 ## Python Environment Setup
 
-All Python test commands use `uv run` to execute within the project's `.venv` virtual environment. Before running any tests or static gates, ensure dependencies are installed:
+All Python test commands use `uv run`. Before running tests, ensure `uv sync` has been run. Re-run it whenever `pyproject.toml` or `uv.lock` changes.
 
-```bash
-uv sync             # Install production + dev dependencies into .venv/
-```
-
-Run `uv sync` again whenever `pyproject.toml` or `uv.lock` changes (e.g., after pulling new commits or adding a dependency). The `uv run` prefix ensures commands execute inside `.venv` without manual activation.
-
-When a backend feature adds or changes dependencies:
-1. Edit `pyproject.toml` (add/remove/update the dependency).
-2. Run `uv sync` — this updates `uv.lock` and installs into `.venv/`.
-3. Commit both `pyproject.toml` and `uv.lock` together.
+When adding dependencies: edit `pyproject.toml` -> `uv sync` -> commit both `pyproject.toml` and `uv.lock`.
 
 ---
 
@@ -86,160 +74,60 @@ When a backend feature adds or changes dependencies:
 
 ### Scope
 
-Unit tests verify business logic in isolation. They **must never** require a running dev environment — no real database, DataHub instance, Redis, Qdrant, Kestra, or Kafka connections.
+Unit tests verify business logic in isolation. They **must never** require a running dev environment.
 
 ### Python (Backend / API)
 
-**Toolchain**: pytest, httpx (for FastAPI `TestClient` or async client)
-
 **Naming**: `test_<module>.py` (e.g., `tests/unit/backend/test_quality_score.py`)
 
-**Running**:
-
-```bash
-uv run pytest tests/unit/
-```
+**Running**: `uv run pytest tests/unit/`
 
 **Mocking rules**:
+- Patch external clients at the module boundary where they are imported (not where defined)
+- Mock DataHub SDK calls -- never reach a real GMS
+- Mock all LLM calls -- inject deterministic fixture responses
+- Use in-memory or SQLite-backed fixtures for PostgreSQL-dependent logic when possible
 
-- Patch all external clients at the module boundary where they are imported (not where they are defined).
-- Mock DataHub SDK calls (`DataHubGraph`, `rest_emitter`) — never reach a real GMS.
-- Mock all LLM calls — inject deterministic fixture responses.
-- Use in-memory or SQLite-backed test fixtures for PostgreSQL-dependent logic when possible; use `unittest.mock` or `pytest-mock` otherwise.
-
-Example pattern: patch external clients at the module boundary (not where defined), inject deterministic fixtures, assert on business outcomes. E.g., mock `get_dataset_profile` to return a profile with 30% null proportion, then assert `compute_quality_score` returns below 80.
-
-**Static gates** (must pass before committing):
-
-```bash
-uv run mypy src/
-uv run ruff check src/ tests/
-```
+**Static gates** (must pass before committing): `uv run mypy src/` and `uv run ruff check src/ tests/`
 
 ### TypeScript (Frontend)
 
-**Toolchain**: Jest + React Testing Library (co-located with components or under `tests/unit/frontend/`)
+**Running** (from `src/frontend/`): `npm test`
 
-**Naming**: `<component>.test.ts` or `<component>.test.tsx`
+**Mocking rules**: Mock API client calls with Jest mocks. Use `@testing-library/react` for rendering; assert on accessible roles, not DOM internals.
 
-**Running** (from `src/frontend/`):
-
-```bash
-npm test
-```
-
-**Mocking rules**:
-
-- Mock API client calls (`lib/api.ts`) with Jest mocks — no real HTTP requests.
-- Use `@testing-library/react` for component rendering; assert on accessible roles, not DOM internals.
-
-**Static gates**:
-
-```bash
-npx tsc --noEmit       # from src/frontend/
-npx eslint src/        # from src/frontend/
-```
+**Static gates**: `npx tsc --noEmit` and `npx eslint src/` (from `src/frontend/`)
 
 ---
 
 ## Integration Testing
 
-Integration tests run against the dev environment. They exercise real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Kestra, Redis, and the dummy-data sources.
+Integration tests run against the dev environment, exercising real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Kestra, Redis, and dummy-data sources.
 
 ### Testing Modes
 
-Integration tests support two execution modes:
-
 | Mode | App Services | When to Use |
 |------|-------------|-------------|
-| **Host (default)** | Run on host (`uv run uvicorn`, `npm run dev`); Kestra runs in cluster | Normal development — fast test-and-fix loop |
-| **In-cluster (on-demand)** | Deployed via Helm chart into K8s cluster | Testing Kubernetes-specific behavior only — when user explicitly requests it |
+| **Host (default)** | Run on host; Kestra in cluster | Normal development -- fast test-and-fix loop |
+| **In-cluster (on-demand)** | All components in K8s via Helm | Kubernetes-specific behavior only (health probes, ingress, resource limits) |
 
-**Host mode** is the standard workflow described below. Application services run on the developer's machine and connect to port-forwarded infrastructure. Kestra runs in the cluster and is accessed via port-forward. Reinstalling the Helm chart is not required between test iterations — only the host-running process needs to be restarted. This keeps the test-and-fix loop fast.
-
-**In-cluster mode** deploys all components (including frontend and API) into the Kubernetes cluster using the umbrella Helm chart with application subcharts enabled. This mode is significantly slower to iterate — every code change requires a container rebuild and helm upgrade. Use it only when the user explicitly requests it, for example to verify health probe behavior, ingress routing, resource limits, or network policy under real Kubernetes scheduling. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing) for the deployment command.
+Host mode does not require Helm chart reinstall between iterations. In-cluster mode requires container rebuild + `helm upgrade` per change. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing).
 
 ### Workflow
 
-Follow these seven steps in order every time you run integration tests.
+Follow these seven steps in order. `conftest.py` automates Steps 2/7 (lock) at session scope and Steps 3/6 (dummy-data reset) at module scope. It also loads `dev_env/.env` and runs `alembic upgrade head`. The manual commands below are for reference.
 
-> **Automation note:** When running via `uv run pytest tests/integration/`, `conftest.py` automates Steps 2 and 7 (lock acquire/release) at session scope, and Steps 3 and 6 (dummy-data reset) at module scope via the `module_dummy_data` fixture — resetting only schemas/topics declared by each test module. `conftest.py` also loads `dev_env/.env` automatically and runs `alembic upgrade head` to ensure the dataspoke schema is current. The manual commands below are for reference or when running outside pytest.
-
-#### Step 1 — Write test scenarios and code
-
-- Map scenarios to [Imazon](USE_CASE_en.md) domain entities (see [Test Data Design](#test-data-design)).
-- **Placement**: if the test exercises only REST API endpoints (no direct Python service imports), place it under `tests/integration/api_wired/` (see [API-Wired Integration Testing](#api-wired-integration-testing)). Otherwise, place it under `tests/integration/`.
-- Naming (non-api-wired): `test_<feature>_service_integration.py` for service-level tests, `test_<feature>_integration.py` for infrastructure and cross-cutting tests
-- Document any test-specific data additions in the test file's module-level docstring.
-
-#### Step 2 — Acquire the dev-env lock
-
-Multiple testers share a single dev environment. Acquire the advisory lock before any operation that mutates state (data resets, schema migrations, ingestion runs):
-
-```bash
-# Start lock port-forward if not already running
-./dev_env/lock-port-forward.sh
-
-# Acquire lock
-curl -s -X POST http://localhost:9221/lock/acquire \
-  -H "Content-Type: application/json" \
-  -d '{"owner": "your-name", "message": "integration test: <suite name>"}'
-```
-
-**Response codes**:
-
-| Code | Meaning |
-|------|---------|
-| `200` | Lock acquired — proceed |
-| `409` | Lock held by another tester — wait and retry, or coordinate offline |
-| `400` | Missing `owner` field |
-
-Do not proceed past this step if you receive `409`. The lock is advisory; bypassing it risks corrupting shared state for other testers.
-
-When an outer process (e.g. prauto) has already acquired the lock, set `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` before running pytest so that `conftest.py` skips the lock acquire/release cycle.
-
-#### Step 3 — Reset dummy data
-
-Always reset before running integration tests, even if you believe the data is clean. The previous tester may have crashed mid-test and left the state dirty.
-
-`conftest.py` resets dummy data via Python utilities in `tests/integration/util/` — connecting directly to port-forwarded PostgreSQL (9102), Kafka (via `DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`), and DataHub GMS (9004).
-
-The reset is idempotent: it drops all custom schemas `CASCADE`, recreates them, deletes and recreates all Kafka topics, and re-seeds ~600 rows and ~45 Kafka messages. The ingest then registers the 17 example-postgres tables and 3 example-kafka topics as DataHub dataset entities with `DatasetProperties` and `SchemaMetadata` aspects.
-
-For manual reset outside pytest:
-
-```bash
-uv run python -m tests.integration.util --reset-all   # Full reset: PG + Kafka + DataHub
-uv run python -m tests.integration.util --pg           # PostgreSQL only
-uv run python -m tests.integration.util --kafka        # Kafka only
-uv run python -m tests.integration.util --datahub      # DataHub only
-```
-
-See [`spec/feature/DEV_ENV.md §Dummy Data`](feature/DEV_ENV.md#dummy-data) for data details.
-
-#### Step 4 — Extend dummy data if needed
-
-If your test requires rows not provided by the baseline reset, insert them after the reset:
-
-```bash
-# Example: add a test-specific title
-psql -h localhost -p 9102 -U postgres -d example_db \
-  -c "INSERT INTO catalog.title_master (isbn, title, ...) VALUES (...);"
-```
-
-Document these additions in the test file's module docstring so the next developer understands what non-baseline state they depend on.
-
-#### Step 5 — Run and iterate
-
-```bash
-uv run pytest tests/integration/
-```
-
-Fix code and re-run from Step 3 as needed. Do not re-run without resetting — tests that depend on a clean baseline will produce false results against dirty state.
+1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place REST-only tests under `api_wired/`, others under `integration/`.
+2. **Acquire dev-env lock** -- `POST http://localhost:9221/lock/acquire` with `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
+3. **Reset dummy data** -- always reset before running, even if data appears clean. `conftest.py` resets via `tests/integration/util/`. Manual: `uv run python -m tests.integration.util --reset-all`.
+4. **Extend dummy data** if needed -- insert after reset, document in test file's module docstring.
+5. **Run and iterate** -- `uv run pytest tests/integration/`. Re-run from Step 3 as needed.
+6. **Reset on exit** -- module-scoped teardowns restore baseline. Manual fallback: `--reset-all`.
+7. **Release lock** -- `POST http://localhost:9221/lock/release` with `{"owner": "..."}`. Force-release: `DELETE http://localhost:9221/lock`.
 
 #### Per-Module Dummy-Data Reset
 
-Test modules can declare which schemas/topics/datasets they depend on via module-level constants. An autouse module-scoped fixture resets only the declared components before and after the module's tests:
+Test modules declare dependencies via module-level constants:
 
 ```python
 DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog", "orders"])
@@ -247,316 +135,119 @@ DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 ```
 
-`DUMMY_DATA_DATAHUB_SCHEMAS` triggers DataHub dataset ingestion for the specified schemas and automatically includes those schemas in the PostgreSQL reset (DataHub discovery requires the PG tables to exist).
-
-Modules that declare no constants are no-ops. Module-scoped teardowns reset only the declared schemas/topics, so no session-level full reset is needed.
-
-#### Step 6 — Reset dummy data before exit
-
-Module-scoped teardowns in `conftest.py` restore the baseline for each module's declared schemas/topics. For a full manual reset (e.g. after a crash): `uv run python -m tests.integration.util --reset-all`.
-
-#### Step 7 — Release the lock
-
-```bash
-# Normal release (owner must match)
-curl -s -X POST http://localhost:9221/lock/release \
-  -H "Content-Type: application/json" \
-  -d '{"owner": "your-name"}'
-
-# Force-release (if your session crashed and you cannot normal-release)
-curl -s -X DELETE http://localhost:9221/lock
-```
-
-> See [`dev_env/README.md §5`](../dev_env/README.md#5-lock-the-dev-environment-multi-tester-coordination) for the full lock API reference.
+`DUMMY_DATA_DATAHUB_SCHEMAS` triggers DataHub ingestion for those schemas (auto-includes them in PG reset). Modules with no constants are no-ops.
 
 ### Prerequisites
 
-Before running integration tests, ensure the dev environment is up and port-forwards are active:
-
-```bash
-cd dev_env
-./datahub-port-forward.sh
-./dataspoke-port-forward.sh
-./dummy-data-port-forward.sh
-./lock-port-forward.sh
-```
-
-Then run the health check to verify all services are actually responding (a port-forward process can be alive while the backing pod is unhealthy):
+Before running integration tests, ensure port-forwards are active and health check passes:
 
 ```bash
 ./dev_env/health-check.sh
 ```
 
-The script probes each service at the application layer — PostgreSQL via `pg_isready`, Redis via `PING`, Qdrant via `/healthz`, Kestra via the flows API, DataHub GMS via `/health`, Kafka via metadata request, and the lock service via `/health`. Use `--quick` for TCP-only checks. Do not proceed if any check fails.
-
-If a service is unhealthy, reinstall its subsystem (stop the relevant port-forward first with `--stop`, then uninstall + install, then restart the port-forward):
+The script probes each service at the application layer (PostgreSQL, Redis, Qdrant, Kestra, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
 
 | Failing service | Subsystem directory |
 |---|---|
-| dataspoke-postgresql, dataspoke-redis, dataspoke-qdrant, dataspoke-kestra | `dev_env/dataspoke-infra/` |
+| dataspoke-postgresql, redis, qdrant, kestra | `dev_env/dataspoke-infra/` |
 | datahub-gms, datahub-kafka | `dev_env/datahub/` |
 | example-postgres, example-kafka | `dev_env/dataspoke-example/` |
 | lock-service | `dev_env/dataspoke-lock/` |
 
-```bash
-# Example: reinstall dataspoke infra after Kestra failure
-cd dev_env
-./dataspoke-port-forward.sh --stop
-bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
-./dataspoke-port-forward.sh
-./health-check.sh
-```
-
-**API-wired integration tests** require a running host-mode DataSpoke server with test-mode stubs enabled:
-
-```bash
-# Option A: Background process (preferred in coding agent sessions like Claude Code)
-./dev_env/dataspoke-test-mode.sh --skip-migrate &
-
-# Option B: Separate terminal (manual development)
-# Terminal 1:
-./dev_env/dataspoke-test-mode.sh
-# Terminal 2: run tests
-```
-
-Common flags:
-
-```bash
-./dev_env/dataspoke-test-mode.sh --health-check    # run health check first
-./dev_env/dataspoke-test-mode.sh --skip-migrate    # skip alembic migration
-./dev_env/dataspoke-test-mode.sh --port 9000       # custom port
-```
-
-When `DATASPOKE_TEST_MODE=true`, the server's Kestra activity endpoints (`/internal/activities/*`) use stub implementations for LLM, Qdrant, cache, and notification — avoiding real external API calls while keeping DataHub and PostgreSQL connections real. The server registers `ingestion-config-sync` in Kestra once during startup (lifespan), so test fixtures do not need to re-register it.
-
-The `require_server` fixture verifies three things: (1) `DATASPOKE_TEST_MODE` is set, (2) server health via `/health`, and (3) the `ingestion-config-sync` Kestra flow is registered. If the server started but Kestra was unreachable during lifespan (e.g., stale port-forward), the flow may be missing — the fixture detects this and fails with a clear message before any test runs.
-
-Non-api-wired integration tests (`tests/integration/test_*_integration.py`) do not require the running server — they use in-process calls or `override_app()` ASGI transport.
-
 ### Kestra Integration Test Pitfalls
 
-Tests that exercise Kestra workflows (via `KestraClient` or by calling internal activity endpoints directly) should follow these guidelines:
+- **Connection**: Kestra is accessed via port-forward on port 9205 (`DATASPOKE_KESTRA_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests in worktrees must source it explicitly.
+- **Direct activity testing**: Preferred approach -- call `/internal/activities/*` via `httpx.AsyncClient` (ASGI transport) without Kestra orchestration.
+- **Full flow testing**: Requires running Kestra + deployed flow YAML. Use `KestraClient` to trigger and poll. Keep timeouts short (30s max).
+- **Stale executions**: Cancel via Kestra REST API or UI (`http://localhost:9205`) before starting new ones.
+- **Kestra utilities** (`tests/integration/util/kestra.py`): kill/cleanup stale executions, register/verify flows, poll until terminal state.
 
-#### Kestra connection
+### Test-Mode Stubs (`DATASPOKE_TEST_MODE`)
 
-The dev-env Kestra instance is accessed via port-forward on port 9205 (set via `DATASPOKE_KESTRA_URL` in `dev_env/.env`). The `conftest.py` `kestra_client` fixture reads this from the environment. If `dev_env/.env` is not loaded (e.g., running from a worktree without it), the client cannot connect.
-
-**Fix**: Ensure `dev_env/.env` is loaded before test collection. `conftest.py` handles this automatically, but tests run in isolation (e.g., via a subagent in a worktree) must source it explicitly.
-
-#### Testing activity endpoints directly
-
-Kestra calls internal activity endpoints at `/internal/activities/*` via HTTP Request tasks. Integration tests can call these endpoints directly via `httpx.AsyncClient` (ASGI transport) without needing Kestra to orchestrate. This is the preferred approach for testing activity logic in isolation.
-
-#### Testing full Kestra flows
-
-To test the full flow orchestration (Kestra triggering activity endpoints), the Kestra instance must be running and the flow YAML must be deployed. Use `KestraClient` to trigger flows and poll for completion. Keep timeouts short (30s max) to avoid hanging tests.
-
-#### Stale flow executions
-
-If a previous test run left a flow execution in `RUNNING` state, subsequent triggers may conflict depending on concurrency settings. Check for and cancel stale executions before starting new ones.
-
-**Recovery**: Cancel stale executions via the Kestra REST API or the Kestra UI at `http://localhost:9205`.
-
-#### Kestra test utilities (`tests/integration/util/kestra.py`)
-
-The `kestra.py` module provides helpers for managing Kestra state during tests:
-
-- `kill_running_executions(client, flow_id)` — kill stale executions and wait for termination
-- `cleanup_test_executions(client, flow_id)` — find and delete test executions by label prefix
-- `cleanup_flows(client)` — delete all DataSpoke flows from the test namespace
-- `ensure_flows_registered(client)` — register all flow YAML via the registry
-- `verify_flows_registered(client)` — check which flows are registered and return their IDs
-- `wait_for_execution_terminal(client, execution_id)` — poll until terminal state without raising on failure
-
-The `kestra_client` fixture (module-scoped) performs a Kestra health check on setup and closes the client on teardown. Flow registration is handled by the host-mode DataSpoke server's lifespan — the fixture does not re-register flows. Execution cleanup is each test module's responsibility.
-
-#### Test-mode stubs (`DATASPOKE_TEST_MODE`)
-
-When the host-mode server starts with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stub implementations instead of real clients:
+When the host-mode server starts with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stubs:
 
 | Factory | Stub | Behavior |
 |---------|------|----------|
-| `make_llm()` | `StubLLMClient` | `complete_json()` returns a minimal dict matching the given Pydantic schema; `embed()` returns a zero vector |
+| `make_llm()` | `StubLLMClient` | Returns minimal dict matching Pydantic schema; `embed()` returns zero vector |
 | `make_qdrant()` | `StubQdrantManager` | `search()` returns `[]` |
 | `make_cache()` | `StubRedisClient` | All ops are no-ops |
 | `make_notification()` | `StubNotificationService` | `send_sla_alert()` is a no-op |
 
-`make_datahub()` and `make_db_session()` always return real clients (they connect to dev-env infrastructure).
-
-Stubs are defined in `src/workflows/_stubs.py`.
-
-### Directory Structure & Classification
-
-Integration tests are split into two groups based on testing approach:
-
-| Group | Location | What It Tests | Approach |
-|-------|----------|---------------|----------|
-| **Non-API-wired** | `tests/integration/test_*.py` | Infrastructure clients, Kafka consumers, Kestra flows, DB migrations | Direct Python function/SDK calls |
-| **API-wired** | `tests/integration/api_wired/` | API + backend as a combined unit | REST API calls only (see [API-Wired Integration Testing](#api-wired-integration-testing)) |
-
-A test belongs in `api_wired/` when its assertions use **only** REST API calls via `httpx.AsyncClient`. If the test also imports and calls backend service methods or infrastructure SDKs directly (beyond data seeding/cleanup), it belongs in the non-api-wired root.
-
-Non-api-wired naming: `test_<feature>_service_integration.py` for service-level tests, `test_<feature>_integration.py` for infrastructure and cross-cutting tests.
-
-**Root `conftest.py` (`tests/integration/conftest.py`) — shared fixtures and helpers:**
-
-- **Infrastructure fixtures** (session/function scope): `integration_db_url`, `async_engine`, `async_session`, `datahub_client`, `redis_client`, `qdrant_manager`, `kestra_client`, `kafka_brokers`, `datahub_kafka_brokers`
-- **Lifecycle fixtures** (autouse): `alembic_at_head`, `acquire_lock`, `dummy_data_reset`, `module_dummy_data`
-- **Mock fixtures**: `mock_cache` (AsyncMock Redis with get/set/publish/delete)
-- **Server fixtures**: `activity_server` (module-scoped `ActivityServer` — starts a real uvicorn instance with mocked LLM/Qdrant/cache/notification factories for Kestra callback integration tests)
-- **DI helper**: `override_app(*, datahub, db, redis, llm, qdrant, kestra)` — async context manager that sets FastAPI dependency overrides and yields an `httpx.AsyncClient` via ASGI transport
-- **DataHub helpers**: `emit_test_dataset(client, *, urn, name, description, fields, with_ownership, with_tags, wait_seconds)`, `soft_delete_test_dataset(client, urn)`
-- **Data helpers**: `make_test_urn(service, suffix)`, `seed_events(session, *, entity_type, entity_id, event_type, count)`, `cleanup_events(session, event_ids)`, `_auth_headers()`
-
-**Kafka broker fixtures**: `conftest.py` provides two distinct Kafka broker fixtures — `kafka_brokers` (example-kafka via `DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS`, for general integration tests) and `datahub_kafka_brokers` (DataHub Kafka on port 9005, only for tests verifying DataHub↔DataSpoke connectivity).
+`make_datahub()` and `make_db_session()` always return real clients. Stubs are defined in `src/workflows/_stubs.py`.
 
 ---
 
 ## API-Wired Integration Testing
 
-API-wired tests are a subset of integration tests that exercise the **API server and backend services as a combined unit** using only REST API calls. No direct Python service imports are used in the test logic — the test interacts with the system exclusively through HTTP endpoints via `httpx.AsyncClient` (ASGI transport).
-
-### Scope
-
-API-wired tests verify that the full request path works end-to-end within the backend: HTTP routing → dependency injection → service logic → infrastructure → response serialization. They complement non-api-wired integration tests (which test infrastructure clients, Kafka consumers, Kestra flows, etc. via direct Python calls) and E2E tests (which add a real browser).
+API-wired tests exercise the **API server and backend services as a combined unit** using only REST API calls via `httpx.AsyncClient`. No direct Python service imports in test logic.
 
 ### Subtypes
 
 | Subtype | Directory | Scale | Purpose |
 |---------|-----------|-------|---------|
-| **Spot** | `tests/integration/api_wired/spot/` | 1–5 API calls per test | Individual endpoint CRUD, error cases, edge cases |
-| **Story** | `tests/integration/api_wired/story/` | 10–100 API calls per test | End-to-end scenario covering a [`USE_CASE`](USE_CASE_en.md) through a realistic sequence of API interactions |
-
-**Spot** tests target a single feature's API surface — e.g., create a metric config, retrieve it, update it, delete it. Each test function is self-contained and focused.
-
-**Story** tests replay a full use-case scenario as a user would experience it through the API. A story test for UC1 (Dataset Discovery) might: search for datasets → view dataset detail → trigger ingestion → poll for completion → verify generated metadata. Story tests reference a specific UC from `spec/USE_CASE_en.md` in their module docstring.
+| **Spot** | `api_wired/spot/` | 1-5 API calls | Individual endpoint CRUD, error cases |
+| **Story** | `api_wired/story/` | 10-100 API calls | End-to-end UC scenario through realistic API sequence |
 
 ### Naming
 
-- Spot: `test_<feature>.py` (e.g., `test_dataset_service.py`) — the `spot/` directory provides the context, no suffix needed.
-- Story: `test_<uc_id>_<short_name>.py` (e.g., `test_uc1_dataset_discovery.py`) — likewise, the `story/` directory provides the context.
-
-### conftest.py Structure
-
-API-wired tests use a dedicated `tests/integration/api_wired/conftest.py` that **extends** the root `tests/integration/conftest.py`. pytest's conftest inheritance means all root fixtures (infrastructure, lifecycle, mock, data helpers) are automatically available in `api_wired/` without re-importing.
-
-The api-wired conftest provides:
-
-- **`require_server`** — session-scoped autouse fixture that fails fast if (1) `DATASPOKE_TEST_MODE` is not set, (2) the host-mode DataSpoke server is not running (probes `/health`), or (3) the `ingestion-config-sync` Kestra flow is not registered (the sole startup flow). This catches cases where the server started but flow registration silently failed during lifespan.
-- **`auth_headers`** — function-scoped fixture returning the standard JWT auth headers dict, so tests can pass `headers=auth_headers` to every request.
-
-The `spot/conftest.py` provides a shared `http_client` fixture pointing at the host-mode server (`http://localhost:{DATASPOKE_API_PORT}`). Modules that need DI overrides (e.g., `test_dataset_service`, `test_ontology_service`) define their own `http_client` using the root conftest's `override_app()` context manager.
-
-Tests in `spot/` and `story/` inherit from both conftest layers.
+- Spot: `test_<feature>.py` (e.g., `test_dataset_service.py`)
+- Story: `test_<uc_id>_<short_name>.py` (e.g., `test_uc1_dataset_discovery.py`)
 
 ### Running
 
-API-wired tests require the host-mode server to be running:
+API-wired tests require the host-mode server:
 
 ```bash
-# Start server as background process (coding agent sessions)
-./dev_env/dataspoke-test-mode.sh --skip-migrate &
-
-# Run tests (env var required — conftest checks it in the pytest process)
-DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/          # All api-wired tests
-DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/spot/      # Only spot tests
-DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/story/     # Only story tests
-```
-
-Non-api-wired integration tests do not require the running server:
-
-```bash
-uv run pytest tests/integration/ --ignore=tests/integration/api_wired/
-```
-
-### Test Execution Groups
-
-Tests must be run in **three separate groups**, in sequence. Mixing them in a single `pytest` invocation causes Kestra overload and fixture conflicts.
-
-| Group | Command | Requires server? |
-|-------|---------|-----------------|
-| 1. Unit tests | `uv run pytest tests/unit/` | No |
-| 2. Non-api-wired integration | `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/` | No |
-| 3. Api-wired integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/` | Yes — `dataspoke-test-mode` |
-
-For group 3, start the test-mode server **before** testing and stop it **after**:
-
-```bash
-# Start (auto-kills any previous instance on the same port)
+# Start server
 ./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
-
-# Wait for ready
 until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
 
-# Run tests (DATASPOKE_TEST_MODE must be set in the pytest process — the
-# server script only exports it for the server subprocess, not the caller)
+# Run (DATASPOKE_TEST_MODE must be set in the pytest process)
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
 # Teardown
 ./dev_env/dataspoke-test-mode.sh --stop
 ```
 
-**Why separate groups?** The test-mode server registers Kestra flows at startup and some api-wired tests trigger Kestra workflow executions (ingestion). Running api-wired and non-api-wired tests together causes competing Kestra load. Non-api-wired Kestra tests (`test_kestra_workflows_integration.py`) use a self-contained noop flow and must run without the test-mode server to avoid interference.
+The `require_server` fixture verifies: (1) `DATASPOKE_TEST_MODE` is set, (2) server health via `/health`, (3) `ingestion-config-sync` Kestra flow is registered.
+
+Non-api-wired tests do not require the running server.
+
+### Test Execution Groups
+
+Tests must run in **three separate groups**, in sequence:
+
+| Group | Command | Requires server? |
+|-------|---------|-----------------|
+| 1. Unit | `uv run pytest tests/unit/` | No |
+| 2. Non-api-wired integration | `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/` | No |
+| 3. Api-wired integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/` | Yes |
+
+**Why separate groups?** The test-mode server registers Kestra flows at startup. Running api-wired and non-api-wired tests together causes competing Kestra load.
 
 ### Readability Principle
 
-API-wired tests (spot and story) prioritize **readability over DRY** for HTTP request calls. Each test must show the full request payload inline so a reader can understand the test without jumping to helper definitions.
-
-- **Inline API calls**: Write `http_client.put(…, json={…})` with the full dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`).
-- **Shared cleanup helpers**: Database cleanup functions (`delete_*_db`), connection constants, and `conftest.py` fixtures **may** be extracted — these are boilerplate that does not carry test intent.
-- **Rationale**: The request payload _is_ the test's intent. Hiding it behind a helper obscures what the test actually verifies and forces readers to cross-reference definitions.
-
-### Workflow
-
-API-wired tests follow the same seven-step workflow as other integration tests (see [Integration Testing §Workflow](#workflow)). The same lock protocol, dummy-data reset, and module-level `DUMMY_DATA_*` constants apply.
+API-wired tests prioritize **readability over DRY** for HTTP requests. Each test shows the full request payload inline -- do not abstract API calls into helper functions. Shared cleanup helpers and conftest fixtures may be extracted.
 
 ---
 
 ## End-to-End (E2E) Testing
 
-E2E tests verify the full stack through a real browser: frontend → API → backend → infrastructure.
+E2E tests verify the full stack through a real browser (Playwright, TypeScript, `tests/e2e/`).
 
-### Toolchain
+**Prerequisites**: All services running -- Frontend (`localhost:3000`), API (`localhost:8000`), all port-forwards active.
 
-Playwright (TypeScript). Test files live in `tests/e2e/`.
+**Lock protocol**: Same seven-step workflow as integration tests (acquire lock -> reset data -> run -> reset -> release lock).
 
-### Prerequisites
-
-All services must be running:
-
-- Frontend: `http://localhost:3000` (Next.js dev server)
-- API: `http://localhost:8000` (FastAPI)
-- All port-forwards active (DataHub, DataSpoke infra, dummy-data, lock)
-
-### Lock Protocol
-
-E2E tests mutate dev-env state in the same way integration tests do. Apply the same seven-step workflow (Steps 2–7 from [Integration Testing](#integration-testing)):
-
-1. Acquire lock before test run.
-2. Reset dummy data.
-3. Run `npx playwright test`.
-4. Reset dummy data after run.
-5. Release lock.
-
-### Running
-
-```bash
-# From tests/e2e/
-npx playwright test
-
-# With UI (headed mode for debugging)
-npx playwright test --headed
-```
+**Running** (from `tests/e2e/`): `npx playwright test` (or `--headed` for debugging).
 
 ---
 
 ## Test Data Design
 
-Integration and E2E test scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies — consistency makes test failures easier to interpret.
+All integration and E2E scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies.
 
 ### Imazon Dummy-Data Reference
-
-The baseline dummy data covers these tables and use cases. Reference these when choosing what to assert against:
 
 | Schema.Table | Rows | Primary UC | Key Characteristic |
 |---|---|---|---|
@@ -578,42 +269,24 @@ The baseline dummy data covers these tables and use cases. Reference these when 
 | `content.ebook_assets` | 20 | UC4 | EPUB/PDF/MOBI assets |
 | `storefront.listing_items` | 15 | UC4 | Marketplace listings |
 
-Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), `imazon.reviews.new` (10 msgs). Seed messages are stored as JSONL files in `tests/integration/util/fixtures/kafka/`.
+Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), `imazon.reviews.new` (10 msgs).
 
-DataHub datasets: All 17 tables above are also registered as DataHub dataset entities (platform `postgres`, env `DEV`) via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total). The module discovers schemas/tables/columns from `example-postgres` via `asyncpg`, obtains a DataHub session token (via frontend login if `DATASPOKE_DATAHUB_TOKEN` is empty), and emits `Status`, `DatasetProperties`, and `SchemaMetadata` aspects via `DatahubRestEmitter`. Reset uses soft-delete semantics (separate from PostgreSQL CASCADE drop).
+DataHub datasets: All 17 tables registered as DataHub entities (platform `postgres`, env `DEV`) via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMetadata` aspects (137 columns total).
 
 ### Data Design Choices
 
-- **UC2 anomaly**: `user_ratings_legacy` has 30% NULL `rating_score` — tests data quality detection.
-- **UC3 SLA**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15, `row_count=12` vs typical ~145) — tests freshness/volume anomaly detection.
-- **UC4 overlap**: ~70% of `digital_catalog` titles match `title_master` by ISBN — tests cross-source lineage matching.
-- **UC5 PII**: Fake but structurally realistic EU PII across DE/FR/ES/IT/NL — tests PII classification and GDPR propagation.
-- **UC7 join path**: Full referential integrity `order_items → editions → title_master → genre_hierarchy` — tests multi-hop lineage.
-- **ISBNs**: 978-prefix, obviously fake (e.g., `9780000000001`).
+- **UC2**: `user_ratings_legacy` has 30% NULL `rating_score` -- tests data quality detection
+- **UC3**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15) -- tests freshness/volume anomaly detection
+- **UC4**: ~70% of `digital_catalog` titles match `title_master` by ISBN -- tests cross-source lineage matching
+- **UC5**: Fake but structurally realistic EU PII across DE/FR/ES/IT/NL -- tests PII classification
+- **UC7**: Full referential integrity `order_items -> editions -> title_master -> genre_hierarchy` -- tests multi-hop lineage
+- **ISBNs**: 978-prefix, obviously fake (e.g., `9780000000001`)
 
 ### Assertion Principles
 
-- **Never hardcode row counts from memory.** Query actual counts from the DB within the test:
-  ```python
-  count = db.execute("SELECT count(*) FROM reviews.user_ratings_legacy WHERE rating_score IS NULL").scalar()
-  assert count > 10   # degraded table always has significant nulls
-  ```
-- **Never hardcode surrogate IDs.** Look them up by a stable natural key (ISBN, URN, email).
-- **Never assert on wall-clock timestamps.** Assert on relative ordering or freshness windows.
-
-### Extending the Baseline
-
-When a test needs rows not present in the baseline reset, insert them after the reset and document them at the top of the test file:
-
-```python
-"""
-Integration tests for the validation service against the reviews domain.
-
-Test-specific data extensions (inserted after baseline reset):
-  - 5 extra rows in reviews.user_ratings_legacy with rating_score = 0
-    to test boundary detection at zero-score threshold.
-"""
-```
+- **Never hardcode row counts** -- query actual counts within the test
+- **Never hardcode surrogate IDs** -- look up by stable natural key (ISBN, URN, email)
+- **Never assert on wall-clock timestamps** -- assert on relative ordering or freshness windows
 
 ---
 
@@ -621,20 +294,8 @@ Test-specific data extensions (inserted after baseline reset):
 
 | Test Type | Runs in CI | Requires Dev Env |
 |-----------|-----------|-----------------|
-| Unit tests | Yes — on every push | No — mocked dependencies only |
-| Integration tests | No (out-of-scope unless a CI-specific dev-env is provisioned) | Yes |
-| E2E tests | No (out-of-scope unless a CI-specific dev-env is provisioned) | Yes (full stack) |
+| Unit tests | Yes -- on every push | No |
+| Integration tests | No (unless CI-specific dev-env provisioned) | Yes |
+| E2E tests | No (unless CI-specific dev-env provisioned) | Yes (full stack) |
 
-**CI pipeline** (GitHub Actions) runs unit tests and static gates on every push and pull request:
-
-```yaml
-# Minimal CI gate (conceptual — actual workflow in .github/workflows/)
-- run: uv sync
-- run: uv run pytest tests/unit/ --tb=short
-- run: uv run mypy src/
-- run: uv run ruff check src/ tests/
-- run: npx tsc --noEmit          # from src/frontend/
-- run: npx eslint src/           # from src/frontend/
-```
-
-Integration and E2E tests are run manually by developers on their dev environment following the seven-step workflow above, or via a dedicated CI environment (not currently provisioned) when one becomes available.
+CI pipeline (GitHub Actions) runs unit tests and static gates on every push/PR.

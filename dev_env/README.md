@@ -2,342 +2,150 @@
 
 A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
 
-By default, the cluster hosts only **infrastructure dependencies**. DataSpoke application services (frontend, API, workers) run on your host machine, connecting to port-forwarded infrastructure (host mode). For on-demand in-cluster testing, see [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
+By default, the cluster hosts only **infrastructure dependencies**. DataSpoke application services run on your host machine, connecting to port-forwarded infrastructure (host mode). For in-cluster testing, see [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
 
 ## Prerequisites
 
 - `kubectl` installed and configured
 - `helm` v3 installed
-- A Kubernetes cluster (e.g. Docker Desktop, minikube, kind, or a remote cluster) with **8+ CPUs / 16 GB RAM**
+- A Kubernetes cluster with **8+ CPUs / 16 GB RAM**
 
 ## Quick Start
 
-### 0. If you use Claude Code
+> Using Claude Code? Just run `/dev-env install`.
 
-Just run skill: `/dev-env install`
-
-### 1. Configure your cluster
-
-Copy the example and edit to match your cluster:
+### 1. Configure
 
 ```bash
 cp .env.example .env
+# Edit .env — set DATASPOKE_DEV_KUBE_CLUSTER to your context (e.g., minikube, docker-desktop)
 ```
 
-Then edit `.env`:
+### 2. Install
 
 ```bash
-# Set your Kubernetes context
-DATASPOKE_DEV_KUBE_CLUSTER=minikube
+./install.sh    # ~5-10 min first run
 ```
 
-To list available contexts:
+### 3. Port-forward and verify
 
 ```bash
-kubectl config get-contexts
+./datahub-port-forward.sh       # DataHub UI (9002) + GMS (9004) + Kafka (9005)
+./dataspoke-port-forward.sh     # PostgreSQL (9201), Redis (9202), Qdrant (9203-4), Kestra (9205)
+./dummy-data-port-forward.sh    # Example PostgreSQL (9102), Kafka (9104)
+./lock-port-forward.sh          # Advisory lock (9221)
+./health-check.sh               # Verify all services respond
 ```
 
-### 2. Install everything
+All port-forward scripts support `--stop` to terminate.
 
-From the `dev_env/` directory:
+| Service | Address | Credentials |
+|---------|---------|-------------|
+| DataHub UI | http://localhost:9002 | `datahub` / `datahub` |
+| DataHub GMS | http://localhost:9004 | -- |
+| DataSpoke PostgreSQL | localhost:9201 | per `.env` |
+| Redis | localhost:9202 | per `.env` |
+| Qdrant | localhost:9203 (HTTP), :9204 (gRPC) | -- |
+| Kestra | http://localhost:9205 | -- |
+| Example PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` |
+| Example Kafka | localhost:9104 | -- |
+| Lock API | http://localhost:9221 | -- |
+
+### 4. Run DataSpoke (host mode)
 
 ```bash
-chmod +x install.sh uninstall.sh \
-  datahub/install.sh datahub/uninstall.sh \
-  dataspoke-infra/install.sh dataspoke-infra/uninstall.sh \
-  dataspoke-example/install.sh dataspoke-example/uninstall.sh \
-  dataspoke-lock/install.sh dataspoke-lock/uninstall.sh \
-  datahub-port-forward.sh dataspoke-port-forward.sh \
-  dummy-data-port-forward.sh lock-port-forward.sh
-
-./install.sh
+uv sync              # Install Python dependencies (from repo root)
+uv run -m src.cli    # Start API + auto-migrate
+uv run -m src.cli --help   # All options
 ```
 
-This takes approximately 5-10 minutes on the first run while container images are pulled.
+### 5. Lock service (multi-tester coordination)
 
-### 3. Access DataHub (UI + GMS API)
-
-```bash
-./datahub-port-forward.sh          # start both forwards in background
-./datahub-port-forward.sh --stop   # stop both and clean up PIDs
-```
-
-| Endpoint | Forwarded URL | Purpose |
-|----------|---------------|---------|
-| DataHub UI | http://localhost:9002 | Web UI, GraphiQL |
-| DataHub GMS | http://localhost:9004 | REST API, Swagger UI, SDK target |
-
-Credentials: `datahub` / `datahub`
-
-### 4. Access DataSpoke infrastructure
+Use the advisory lock before destructive operations (data resets, migrations, ingestion tests):
 
 ```bash
-./dataspoke-port-forward.sh        # start all infra forwards in background
-./dataspoke-port-forward.sh --stop # stop all and clean up PIDs
-```
-
-| Service | Forwarded Address | Purpose |
-|---------|-------------------|---------|
-| PostgreSQL | localhost:9201 | DataSpoke operational DB |
-| Redis | localhost:9202 | Cache, rate limiting |
-| Qdrant HTTP | localhost:9203 | Vector DB REST API |
-| Qdrant gRPC | localhost:9204 | Vector DB gRPC API |
-| Kestra (API + UI) | localhost:9205 | Workflow orchestration and inspection |
-| Lock API | localhost:9221 | Dev-env mutex (see §5) |
-
-### 5. Lock the dev environment (multi-tester coordination)
-
-When multiple testers share a single machine, use the lock service to coordinate exclusive access before running destructive operations (data resets, schema migrations, ingestion tests, etc.).
-
-```bash
-./lock-port-forward.sh          # start lock API forward in background
-./lock-port-forward.sh --stop   # stop it
-```
-
-| Endpoint | Forwarded URL | Purpose |
-|----------|---------------|---------|
-| Lock API | http://localhost:9221 | Dev-env mutex REST API |
-
-**API reference:**
-
-```bash
-# Check current lock status
-curl http://localhost:9221/lock
-
-# Acquire the lock (required fields: owner)
 curl -s -X POST http://localhost:9221/lock/acquire \
   -H "Content-Type: application/json" \
   -d '{"owner": "alice", "message": "running ingestion test"}'
-
-# Release the lock (owner must match)
-curl -s -X POST http://localhost:9221/lock/release \
-  -H "Content-Type: application/json" \
-  -d '{"owner": "alice"}'
-
-# Force-release (admin use — no owner check)
-curl -s -X DELETE http://localhost:9221/lock
 ```
 
-**Response codes:**
-- `200` — success (acquired, released, or already unlocked)
-- `400` — missing `owner` field
-- `403` — release attempted by non-owner
-- `409` — lock already held by another tester
+| Endpoint | Method | Response |
+|----------|--------|----------|
+| `/lock` | GET | Current lock status |
+| `/lock/acquire` | POST | `200` acquired, `409` held by another, `400` missing owner |
+| `/lock/release` | POST | `200` released, `403` wrong owner |
+| `/lock` | DELETE | Force-release (admin) |
 
-**Notes:**
-- Lock state is in-memory; it resets to unlocked if the pod restarts.
-- The lock is advisory — it does not block access to infra services directly.
-  Testers are expected to check the lock before starting sensitive operations.
-- If the previous holder's session crashed, use force-release (`DELETE /lock`).
+Lock state is in-memory (resets on pod restart). The lock is advisory -- it does not block infra access directly.
 
-### 6. Run DataSpoke application services (host mode)
+### 6. API-wired integration tests (test mode)
 
-Start application services on the host using the CLI (from repo root):
+Test mode (`DATASPOKE_TEST_MODE=true`) stubs LLM, Qdrant, cache, and notification while keeping DataHub and PostgreSQL real. See [spec/TESTING.md](../spec/TESTING.md) for the three-group test execution sequence.
 
 ```bash
-# Install Python dependencies first
-uv sync
-
-# Start all components (API + auto-migrate):
-uv run -m src.cli
-
-# Backend only (skip frontend when it's added):
-uv run -m src.cli --backend-only
-
-# See all options (--port, --skip-migrate, --no-reload, --env-file):
-uv run -m src.cli --help
-```
-
-> Using Claude Code? Run `/dev-env run-dataspoke-test-mode` (supports the same options).
-
-The `DATASPOKE_*` variables in `.env` point to `localhost` — the port-forwards connect them to the in-cluster infrastructure transparently. Kestra runs in the cluster and is accessed via port-forward at http://localhost:9205.
-
-### 7. Run API-wired integration tests (test mode)
-
-API-wired tests exercise the full API + backend stack via REST calls. They require a running DataSpoke server with **test-mode stubs** enabled.
-
-**What test mode does:** Sets `DATASPOKE_TEST_MODE=true`, which makes Kestra activity endpoints use stub implementations for LLM, Qdrant, cache, and notification — no real external API calls. DataHub and PostgreSQL remain real (connected to dev-env infrastructure).
-
-| Stubbed Service | Stub Behavior |
-|-----------------|---------------|
-| LLM | `complete_json()` returns minimal dict matching Pydantic schema; `embed()` returns zero vector |
-| Qdrant | `search()` returns `[]`; `upsert()`/`delete()` are no-ops |
-| Redis (cache) | All ops are no-ops |
-| Notification | `send_sla_alert()` is a no-op |
-
-**Prerequisites:** All port-forwards must be active and healthy:
-
-```bash
-./datahub-port-forward.sh
-./dataspoke-port-forward.sh
-./dummy-data-port-forward.sh
-./lock-port-forward.sh
-./health-check.sh              # verify all services respond — do not skip
-```
-
-**Run tests:**
-
-```bash
-# Start test-mode server (auto-kills any previous instance on the same port)
-./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
-
-# Wait for ready
+./dataspoke-test-mode.sh --skip-migrate --no-reload &
 until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
-
-# Run api-wired tests
-uv run pytest tests/integration/api_wired/
-
-# Stop when done
-./dev_env/dataspoke-test-mode.sh --stop
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
+./dataspoke-test-mode.sh --stop
 ```
 
-**Flags:**
+Flags: `--skip-migrate`, `--no-reload`, `--port <N>`, `--health-check`, `--stop`.
 
-| Flag | Effect |
-|------|--------|
-| `--skip-migrate` | Skip Alembic migration (use when schema hasn't changed) |
-| `--no-reload` | Disable uvicorn auto-reload (recommended for CI/agent sessions) |
-| `--port <N>` | Custom API port (default: `DATASPOKE_API_PORT` from `.env`, or 8000) |
-| `--health-check` | Run `health-check.sh` before starting |
-| `--health-check-only` | Health check only, don't start server |
-| `--stop` | Stop a running test-mode instance and exit |
-
-**Key environment variables** (set automatically by the script from `.env`):
-
-| Variable | Purpose |
-|----------|---------|
-| `DATASPOKE_TEST_MODE` | Master flag — when `true`, `make_*()` factories return stubs |
-| `DATASPOKE_KESTRA_CALLBACK_BASE_URL` | URL Kestra uses to call back to the host (set to `http://host.docker.internal:<port>`) |
-| `DATASPOKE_API_PORT` | Port the test server listens on |
-
-> **Important:** Do not mix api-wired and non-api-wired integration tests in a single pytest run — this causes Kestra overload. See [spec/TESTING.md §Test Execution Groups](../spec/TESTING.md#test-execution-groups) for the three-group sequence.
-
-### 8. Access example data sources (dummy data)
-
-Forward example PostgreSQL and Kafka:
+### 7. Populate dummy data
 
 ```bash
-./dummy-data-port-forward.sh        # start both forwards in background
-./dummy-data-port-forward.sh --stop # stop and clean up PIDs
+uv run python -m tests.integration.util --reset-all   # Idempotent: PG + Kafka + DataHub
 ```
 
-| Service | Forwarded Address | Credentials |
-|---------|-------------------|-------------|
-| PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` (database: `example_db`) |
-| Kafka | localhost:9104 | — |
-
-### 9. Populate dummy data and register in DataHub
-
-Populate `example-postgres` and `example-kafka` with realistic Imazon use-case data and register datasets in DataHub:
-
-```bash
-# From repo root (requires port-forwards for 9102, 9104, 9004):
-uv run python -m tests.integration.util --reset-all
-```
-
-This is **idempotent** — every run drops all custom schemas CASCADE and recreates them, deletes+recreates Kafka topics, and re-registers all DataHub datasets. Safe to re-run at any time.
-
-**What gets created:**
-
-- **PostgreSQL**: 11 schemas, 17 tables, ~600 rows covering UC1-UC7 scenarios (catalog, orders, customers, reviews, publishers, shipping, inventory, marketing, eBookNow products/content/storefront)
-- **Kafka**: 3 topics (`imazon.orders.events`, `imazon.shipping.updates`, `imazon.reviews.new`) with ~45 JSON messages
-- **DataHub**: 20 dataset entities (17 PG tables + 3 Kafka topics) with `DatasetProperties` + `SchemaMetadata` aspects
-
-**Verify:**
-
-```bash
-# Connect via port-forward (start dummy-data-port-forward.sh first)
-psql -h localhost -p 9102 -U postgres -d example_db
-
-\dt catalog.*                                              -- list catalog tables
-SELECT count(*) FROM catalog.title_master;                 -- expect 30
-SELECT count(*) FROM reviews.user_ratings_legacy
-  WHERE rating_score IS NULL;                              -- expect 15 (~30% null rate)
-```
-
-See `spec/feature/DEV_ENV.md §Dummy Data` for full schema details and data design choices.
-
-## Verify Installation
-
-```bash
-source .env
-kubectl get pods -n $DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE
-kubectl get pods -n $DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE
-kubectl get pods -n $DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE
-helm list -n $DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE
-helm list -n $DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE
-```
+Seeds 11 schemas, 17 tables (~600 rows), 3 Kafka topics (~45 messages), and 20 DataHub dataset entities with Imazon use-case data. See `spec/feature/DEV_ENV.md §Dummy Data` for details.
 
 ## Uninstall
 
 ```bash
-./uninstall.sh
+./uninstall.sh    # Prompts before destructive operations
 ```
 
-You will be prompted before any destructive operation.
+## Reference
 
-Claude Code skill: `/dev-env uninstall`
+### Namespace architecture
 
-## Namespace Architecture
-
-| Namespace | Purpose | Managed By |
+| Namespace | Purpose | Managed by |
 |-----------|---------|------------|
-| `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
-| `dataspoke-01` | DataSpoke infrastructure (PostgreSQL, Redis, Qdrant, Kestra) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
-| `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
+| `datahub-01` | DataHub + backing services | `datahub/install.sh` |
+| `dataspoke-01` | DataSpoke infrastructure + lock service | `dataspoke-infra/install.sh`, `dataspoke-lock/install.sh` |
+| `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka | `dataspoke-example/install.sh` |
 
-## Directory Structure
-
-```
-dev_env/
-├── .env                          # All settings (gitignored, copy from .env.example)
-├── install.sh / uninstall.sh     # Top-level orchestrators
-├── lib/helpers.sh                # Shared shell functions: info(), warn(), error()
-├── datahub-port-forward.sh       # Port-forward DataHub UI + GMS + Kafka
-├── dataspoke-port-forward.sh     # Port-forward DataSpoke infra services
-├── lock-port-forward.sh          # Port-forward lock service (localhost:9221)
-├── datahub/                      # DataHub Helm install (prerequisites + datahub charts)
-├── dataspoke-infra/              # DataSpoke infra via umbrella chart (values-dev.yaml)
-├── dataspoke-lock/               # Lock service (plain K8s manifests, dataspoke-01 ns)
-├── dataspoke-example/            # Example data sources (plain K8s manifests)
-└── dummy-data-port-forward.sh    # Port-forward example PostgreSQL + Kafka
-```
-
-## Environment Variables
+### Environment variables
 
 Two-tier naming convention in `.env`:
 
 | Prefix | Scope | Example |
 |--------|-------|---------|
-| `DATASPOKE_DEV_*` | Dev scripts only | `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE` |
-| `DATASPOKE_*` (no `DEV`) | App runtime | `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_REDIS_HOST` |
+| `DATASPOKE_DEV_*` | Dev scripts only | `DATASPOKE_DEV_KUBE_CLUSTER` |
+| `DATASPOKE_*` (no `DEV`) | App runtime | `DATASPOKE_POSTGRES_HOST` |
 
-App runtime variables point to `localhost` in dev (via port-forward) and to in-cluster services in production (via Helm values).
+### Resource budget
 
-## Resource Budget
-
-This environment targets ~11.3 GiB memory limits on an 8+ CPU / 16 GB RAM cluster (~72% utilization). See `spec/feature/DEV_ENV.md` for field-tested rationale per component.
+~11.3 GiB memory limits on 8+ CPU / 16 GB cluster (~72% utilization). See `spec/feature/DEV_ENV.md` for per-component rationale.
 
 | Component | Namespace | Memory Limit |
 |-----------|-----------|-------------|
 | Elasticsearch | datahub-01 | 2560 Mi |
-| Kafka (bitnami) | datahub-01 | 768 Mi |
-| ZooKeeper (bitnami) | datahub-01 | 256 Mi |
-| MySQL (prerequisites) | datahub-01 | 768 Mi |
+| Kafka + ZK | datahub-01 | 1024 Mi |
+| MySQL | datahub-01 | 768 Mi |
 | datahub-gms | datahub-01 | 1536 Mi |
 | datahub-frontend | datahub-01 | 768 Mi |
-| datahub-mae-consumer | datahub-01 | 512 Mi |
-| datahub-mce-consumer | datahub-01 | 512 Mi |
+| datahub-mae/mce | datahub-01 | 1024 Mi |
 | datahub-actions | datahub-01 | 256 Mi |
 | kestra | dataspoke-01 | 512 Mi |
 | qdrant | dataspoke-01 | 1024 Mi |
-| postgresql (dataspoke) | dataspoke-01 | 512 Mi |
+| postgresql | dataspoke-01 | 512 Mi |
 | redis | dataspoke-01 | 256 Mi |
 | dev-lock | dataspoke-01 | 64 Mi |
-| example-postgres | dataspoke-dummy-data-01 | 256 Mi |
-| example-kafka | dataspoke-dummy-data-01 | 1024 Mi |
+| example-postgres | dummy-data-01 | 256 Mi |
+| example-kafka | dummy-data-01 | 1024 Mi |
 | **Total** | | **~11.3 Gi** |
 
 ## Troubleshooting
 
-See [spec/feature/DEV_ENV.md §Troubleshooting](../spec/feature/DEV_ENV.md#troubleshooting) for detailed solutions to common issues including Elasticsearch OOM, MySQL OOM, pending pods, and port-forward failures.
+See [spec/feature/DEV_ENV.md §Troubleshooting](../spec/feature/DEV_ENV.md#troubleshooting).

@@ -1,27 +1,24 @@
 # PRauto: Autonomous PR Worker
 
 > **Document Status**: Specification v0.5 (2026-03-07)
-> This document specifies "prauto" — an autonomous PR worker that monitors GitHub issues, writes code via Claude Code CLI, and submits pull requests. Prauto extends the AI scaffold (`spec/AI_SCAFFOLD.md`) with unattended, cron-driven development automation.
+> This document specifies "prauto" -- an autonomous PR worker that monitors GitHub issues, writes code via Claude Code CLI, and submits pull requests. Prauto extends the AI scaffold (`spec/AI_SCAFFOLD.md`) with unattended, cron-driven development automation.
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Directory Structure](#directory-structure)
-3. [Worker Identity and Configuration](#worker-identity-and-configuration)
-4. [Heartbeat Cycle](#heartbeat-cycle)
-5. [Token Quota Checking](#token-quota-checking)
-6. [Job State Machine](#job-state-machine)
-7. [Issue Discovery Protocol](#issue-discovery-protocol) (includes [Issue Restart Protocol](#issue-restart-protocol))
-8. [Claude Code Invocation](#claude-code-invocation)
-9. [PR Lifecycle](#pr-lifecycle)
-10. [Prompt Templates](#prompt-templates)
-11. [Write Idempotency](#write-idempotency)
-12. [Monitoring](#monitoring)
-13. [Security Model](#security-model)
-14. [Integration with AI Scaffold](#integration-with-ai-scaffold)
-15. [Future: GitHub Actions Migration](#future-github-actions-migration)
+2. [Worker Identity and Configuration](#worker-identity-and-configuration)
+3. [Heartbeat Cycle](#heartbeat-cycle)
+4. [Token Quota Checking](#token-quota-checking)
+5. [Job State Machine](#job-state-machine)
+6. [Issue Discovery Protocol](#issue-discovery-protocol)
+7. [Claude Code Invocation](#claude-code-invocation)
+8. [PR Lifecycle](#pr-lifecycle)
+9. [Write Idempotency](#write-idempotency)
+10. [Security Model](#security-model)
+11. [Integration with AI Scaffold](#integration-with-ai-scaffold)
+12. [Future: GitHub Actions Migration](#future-github-actions-migration)
 
 ---
 
@@ -32,91 +29,20 @@
 Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipeline. Each heartbeat:
 
 1. Checks whether Claude Code API tokens are available
-2. Claims new work if under `PRAUTO_OPEN_ISSUE_LIMIT` — finds the oldest eligible `prauto:ready` issue
-3. Processes **all** claimed issues (oldest first, including any newly claimed), each via a self-contained state machine:
-   - WIP issues: derives the correct phase (analysis, plan-approval, implementation, pr) and handles it
-   - Review issues: squash-finalizes approved PRs, or addresses reviewer feedback
-   - Waiting/terminal issues: skipped
+2. Claims new work if under `PRAUTO_OPEN_ISSUE_LIMIT`
+3. Processes **all** claimed issues (oldest first), each via a self-contained state machine
 
-### Relationship to `claude-code-action`
+Directory structure and files live in `.prauto/`. See `AI_SCAFFOLD.md §Prauto` for a summary; see the directory itself for current structure.
 
-Anthropic's [`claude-code-action`](https://github.com/anthropics/claude-code-action) runs exclusively on GitHub Actions runners. Prauto uses the **Claude Code CLI** (`claude -p`) directly, which supports non-interactive print mode, structured output, tool restrictions, budget caps, and turn limits. The prompt templates and tool restrictions are portable to `claude-code-action` via its `claude_args` input (see [Future: GitHub Actions Migration](#future-github-actions-migration)).
+### Key design decisions
+
+- **GitHub as single source of truth**: Every heartbeat derives its next action from **remote GitHub state** (labels, assignees, comments, review status). Local state files exist for debugging only.
+- **No `--resume`**: Every Claude session starts fresh. The implementation prompt instructs Claude to check the branch for existing work and continue from there.
+- **Ready-label timestamp as lifecycle anchor**: When `prauto:ready` is set (or re-set), the timestamp of that label event marks the start of the current lifecycle. All comment-scanning functions ignore comments before it, enabling clean restarts without manual cleanup.
 
 ### Execution environment
 
-Prauto runs on a local developer machine. Requires: `claude` CLI (authenticated), `gh` CLI (authenticated), `git`, `jq`, and `cron`. Docker/K8s/cloud deployments are out of scope for v1.
-
-### GitHub as single source of truth
-
-Every heartbeat derives its next action from **remote GitHub state** — labels, assignees, issue/PR comments, and review status. Local state files (session outputs, history records) exist for **debugging only** and are never read to determine routing.
-
-**Key implications**:
-- No `--resume` flag — every Claude session starts fresh. The implementation prompt instructs Claude to check the branch for existing work and continue from there.
-- Retry tracking uses **heartbeat marker comments** on the GitHub issue, not a local counter.
-- Phase is always derived fresh from GitHub — no local/remote cross-check.
-- `prauto:plan-review` label provides fast signal for plan-approval state (visible on issue boards, filterable).
-
-### Ready-label timestamp as lifecycle anchor
-
-When an issue has the `prauto:ready` label set (or re-set for restarts), the timestamp of that label event marks the **start of the current lifecycle**. All comment-scanning functions — phase derivation, plan approval checks, retry counting, quota-pause detection, and idempotency guards — **ignore comments posted before the last `prauto:ready` label event**.
-
-This is implemented via `get_ready_label_timestamp()`, which queries the GitHub timeline API (`/issues/{N}/timeline`) for the most recent `labeled` event with `label.name == "prauto:ready"`. The resulting `READY_LABEL_TIMESTAMP` is fetched once per issue at the start of each heartbeat iteration and used as a floor filter in all downstream functions.
-
-**Why this matters**: When an issue is restarted (re-labeled `prauto:ready`), stale comments from the previous lifecycle — old plans, heartbeat markers, quota-pause notices — are automatically invisible to the new lifecycle without requiring manual cleanup.
-
----
-
-## Directory Structure
-
-```
-.prauto/
-├── config.env                  # [COMMITTED] Shared settings: GitHub labels, tool lists
-├── config.local.env            # [GITIGNORED] Instance-specific: identity, Claude limits, secrets
-├── config.local.env.example    # [COMMITTED] Template for config.local.env
-├── heartbeat.sh                # [COMMITTED] Main cron entry point
-├── lib/
-│   ├── helpers.sh              # Shared bash helpers (info, warn, error)
-│   ├── quota.sh                # Token quota check
-│   ├── issues.sh               # GitHub issue scanning, claiming, WIP detection
-│   ├── claude.sh               # Claude Code CLI invocation wrapper
-│   ├── git-ops.sh              # Branch creation, worktree, push operations
-│   ├── pr.sh                   # PR creation, feedback handling, squash-finalize
-│   ├── phases.sh               # Phase-specific handlers (analysis → pr)
-│   └── state.sh                # Session init, lock, complete
-├── prompts/
-│   ├── system-append.md        # System prompt addendum for prauto identity
-│   ├── issue-analysis.md       # Prompt: analyze issue, produce plan
-│   ├── implementation.md       # Prompt: implement the plan
-│   ├── code-review.md          # Prompt: independent code review (generator-evaluator pattern)
-│   ├── review-fix.md           # Prompt: address code review findings
-│   ├── integration-fix.md      # Prompt: fix integration test failures
-│   ├── pr-review.md            # Prompt: address PR reviewer feedback
-│   ├── feedback-response.md    # Prompt: respond to plan feedback
-│   └── squash-commit.md        # Prompt: generate squash commit message
-├── state/                      # [GITIGNORED] Runtime state
-│   ├── heartbeat.lock          # PID-based lock file
-│   ├── heartbeat.log           # Cron output log
-│   ├── .system-append-rendered.md
-│   └── sessions/               # Per-issue session directories
-│       └── issue-{N}/          # One dir per issue number
-│           └── {yyyyMMDD}-{HHmmss}-{uuid8}/  # One dir per session (e.g. 20260303-135959-05bb59b7)
-│               ├── claude-output-{pid}.json  # Raw Claude CLI output
-│               ├── plan.md                   # Full plan written by Claude via Write tool
-│               ├── analysis.txt              # Analysis phase output (copy of plan.md)
-│               ├── implementation.json       # Implementation phase output
-│               ├── code-review.md            # Code review output (written by Claude via Write tool)
-│               ├── code-review.txt           # Code review output (copy)
-│               ├── review-fix.json           # Review fix phase output
-│               ├── integration-fix.json      # Integration fix phase output
-│               ├── review.json               # PR review phase output
-│               ├── complete.json             # Job completion record
-│               ├── abandon.json              # Job abandonment record
-│               └── squash-msg.txt            # Squash commit message (temp)
-├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
-└── README.md
-```
-
-Gitignored paths: `config.local.env`, `state/`, `worktrees/`.
+Runs on a local developer machine. Requires: `claude` CLI (authenticated), `gh` CLI (authenticated), `git`, `jq`, and `cron`. Docker/K8s/cloud deployments are out of scope for v1.
 
 ---
 
@@ -124,16 +50,12 @@ Gitignored paths: `config.local.env`, `state/`, `worktrees/`.
 
 ### Two configuration tiers
 
-| File | Committed | Purpose | Key variables |
-|------|-----------|---------|---------------|
-| `config.env` | Yes | Repo-level conventions shared across instances | `PRAUTO_GITHUB_REPO`, label names (`prauto:ready/wip/review/failed/done/plan-review`), `PRAUTO_BASE_BRANCH`, `PRAUTO_BRANCH_PREFIX`, `PRAUTO_MAX_RETRIES_PER_JOB`, `PRAUTO_CLAUDE_MODEL`, org-member filter flag, reviewer login |
-| `config.local.env` | No | Instance identity, Claude limits, secrets | `PRAUTO_WORKER_ID`, git author name/email, `PRAUTO_CLAUDE_MODEL`, `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS`, `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION`, `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX`, `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS`, `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION`, `PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX`, `PRAUTO_INTEGRATION_FIX_MAX_RETRIES`, `PRAUTO_OPEN_ISSUE_LIMIT`, `PRAUTO_HEARTBEAT_INTERVAL_MINUTES`, `PRAUTO_QUOTA_TIMEOUT` (default 45s), reviewer override, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| File | Committed | Purpose |
+|------|-----------|---------|
+| `config.env` | Yes | Repo-level conventions: labels, branch prefix, max retries, model, org-member filter, reviewer |
+| `config.local.env` | No | Instance identity (`PRAUTO_WORKER_ID`), Claude turn/budget limits, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
 
-A single developer machine may run multiple prauto instances (e.g., `prauto01` in one clone, `prauto02` in another) sharing the same GitHub credential but with distinct identities.
-
-If `ANTHROPIC_API_KEY` or `GH_TOKEN` is empty, the respective CLI falls back to system authentication (keyring or prior login). `GH_TOKEN`, when provided, needs Issues (R/W), Pull requests (R/W), and Contents (W) permissions.
-
-All commits use `git commit --author="${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AUTHOR_EMAIL}>"`.
+A single machine may run multiple prauto instances (distinct worker IDs) sharing the same GitHub credential. If `ANTHROPIC_API_KEY` or `GH_TOKEN` is empty, CLIs fall back to system authentication.
 
 ---
 
@@ -141,64 +63,34 @@ All commits use `git commit --author="${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AU
 
 ```
 crontab trigger
-    │
-    ├── 1. Acquire lock ──────────── (prevent concurrent runs)
-    │       └── if locked → exit
-    │
-    ├── 2. Load config ───────────── (config.env + config.local.env)
-    │
-    ├── 3. Secure secrets ─────────── (back up config.local.env; original stays, protected by denylist)
-    │
-    ├── 4. Check token quota ─────── (lib/quota.sh)
-    │       └── if exhausted → post quota-paused on WIP issues → exit
-    │
-    ├── 5. Claim new issue ─────── (lib/issues.sh: find_all_claimed_issues, find_eligible_issue, claim_issue)
-    │       ├── count open issues held by worker (excludes ready-only issues) via find_all_claimed_issues
-    │       ├── if count >= PRAUTO_OPEN_ISSUE_LIMIT → skip pickup
-    │       └── otherwise → find oldest prauto:ready issue → claim (add prauto:wip, comment)
-    │
-    ├── 6. Process all claimed issues ── (lib/issues.sh: find_all_claimed_issues)
-    │       ├── query GitHub for open issues assigned to worker (any prauto: label except ready-only)
-    │       ├── includes newly claimed issue from step 5
-    │       ├── for each issue (oldest first), self-contained state machine:
-    │       │   ├── prauto:done / prauto:failed → skip (terminal)
-    │       │   ├── prauto:wip:
-    │       │   │   ├── derive phase from GitHub
-    │       │   │   ├── plan-approval + no response → pending, skip
-    │       │   │   ├── plan-approval + actionable → handle, clean up worktree → next
-    │       │   │   ├── max retries reached → abandon, skip
-    │       │   │   ├── post heartbeat comment, create worktree → phase handler → clean up worktree → next
-    │       │   ├── prauto:review:
-    │       │   │   ├── check PR (lib/pr.sh: check_review_pr)
-    │       │   │   ├── approved + clean → squash-finalize → clean up worktree → next
-    │       │   │   ├── unaddressed feedback → address comments → clean up worktree → next
-    │       │   │   └── otherwise → pending, skip
-    │       │   └── other label → skip
-    │       └── after all issues processed/skipped → done
-    │
-    └── 7. Restore secrets + release lock  (EXIT trap: cleanup())
+    |
+    +-- 1. Acquire lock (PID-based; exit if locked)
+    +-- 2. Load config (config.env + config.local.env)
+    +-- 3. Secure secrets (backup config.local.env; protected by denylist)
+    +-- 4. Check token quota (exit if exhausted; post quota-paused on WIP issues)
+    +-- 5. Claim new issue (if under PRAUTO_OPEN_ISSUE_LIMIT)
+    +-- 6. Process all claimed issues (oldest first, self-contained state machine per issue)
+    |       +-- prauto:done / prauto:failed -> skip
+    |       +-- prauto:wip -> derive phase, handle or skip
+    |       +-- prauto:review -> squash-finalize or address feedback
+    +-- 7. Restore secrets + release lock (EXIT trap)
 ```
 
-**Claim-first, then process-all**: Step 5 calls `find_all_claimed_issues()` to count open issues assigned to this worker with `prauto:` labels — excluding issues that carry only `prauto:ready` (restarted issues awaiting re-claim). If under `PRAUTO_OPEN_ISSUE_LIMIT`, it finds and claims a new issue. Step 6 re-fetches claimed issues (if a new one was claimed) and loops over **all** of them (oldest first). Each iteration is a self-contained state machine for one issue: WIP issues route through phase derivation (analysis, plan-approval, implementation, pr); review issues check for squash-finalize or feedback. Each issue needing active work is processed; issues in terminal (`done`/`failed`) or waiting states are skipped. The heartbeat exits after all claimed issues are processed or skipped.
+**Claim-first, then process-all**: Step 5 counts open issues assigned to this worker (excluding ready-only restarted issues). If under limit, claims the oldest `prauto:ready` issue. Step 6 loops over all claimed issues.
 
-**Worktree isolation**: Every Claude session runs inside a dedicated git worktree at `.prauto/worktrees/I-{N}` (new issue) or `.prauto/worktrees/{branch-sanitized}` (PR review, slashes replaced with dashes). The main repo directory is never the working directory during Claude invocations. Each iteration cleans up its worktree before moving to the next issue; the EXIT trap serves as a safety net for unexpected exits.
+**Worktree isolation**: Every Claude session runs in a dedicated git worktree. The main repo directory is never the working directory during Claude invocations.
 
-**Secrets handling**: `config.local.env` is copied to a temporary backup under `state/.secrets-$$/` before Claude runs. The original stays in place, protected by the `--disallowedTools` denylist entry. Secrets are sourced into shell env vars. The EXIT trap removes the temp backup.
-
-**Bash conventions**: All scripts follow `dev_env/` patterns — `set -euo pipefail`, `SCRIPT_DIR` idiom, shared helpers from `lib/helpers.sh`, idempotent operations. Log output includes UTC timestamps: `[2026-03-07 01:20:56 UTC - INFO] ...`.
-
-**Cron**: Recommended schedule is every 30 minutes during working hours. See `.prauto/README.md` for setup.
+**Cron**: Recommended every 30 minutes during working hours.
 
 ---
 
 ## Token Quota Checking
 
-There is no dedicated Anthropic API endpoint to query remaining token balance. Prauto uses a two-step probe: (1) `claude auth status` for auth validation, (2) a minimal 1-turn dry-run with negligible token cost. If either fails with a rate-limit or quota error, the heartbeat exits.
+Two-step probe: (1) `claude auth status`, (2) minimal 1-turn dry-run. If either fails with quota error, heartbeat exits.
 
-**Behavior on exhaustion**:
 - No WIP issue: exit cleanly, retry next heartbeat
-- WIP issue exists: post a "Paused" comment (with `<!-- prauto:quota-paused -->` marker), exit. Retry counter is **not** incremented — quota exhaustion is not a job failure.
-- On next heartbeat (quota restored): post a "Resumed" comment before continuing. The pause/resume cycle uses the **latest** prauto comment for idempotent detection.
+- WIP issue exists: post "Paused" comment (with marker), exit. Retry counter not incremented.
+- On next heartbeat (quota restored): post "Resumed" comment before continuing.
 
 ---
 
@@ -207,59 +99,48 @@ There is no dedicated Anthropic API endpoint to query remaining token balance. P
 ### Phases
 
 ```
-New issue (minor change):
-  (no job) ──→ analysis ──→ implementation ──→ integration-fix ──→ pr ──→ (complete)
+New issue (minor):
+  analysis -> implementation -> integration-fix -> pr -> (complete)
 
-New issue (non-minor change):
-  (no job) ──→ analysis ──→ plan-approval ──→ implementation ──→ integration-fix ──→ pr ──→ (complete)
-                                  │  ↑
-                                  │  ├── counter-proposal → re-analysis ─┘
-                                  │  ├── plan missing → re-analysis ─────┘
-                                  └── no response → wait (next heartbeat)
-
-PR review:
-  (no job) ──→ pr-review ──→ integration-fix ──→ pr ──→ (complete)
+New issue (non-minor):
+  analysis -> plan-approval -> implementation -> integration-fix -> pr -> (complete)
+                    |  ^
+                    |  +-- counter-proposal -> re-analysis
+                    +-- no response -> wait (next heartbeat)
 ```
 
-Phase is always derived fresh from GitHub — never read from local state.
+Phase is always derived fresh from GitHub -- never read from local state.
 
-| Phase | Description | On next heartbeat |
-|-------|-------------|-------------------|
-| `analysis` | Claude reads issue + codebase, produces a plan | Restart analysis from scratch |
-| `plan-approval` | Wait for human approval of the posted plan | Check again (retries not counted). If plan comment missing, fall back to re-analysis. |
-| `implementation` | Claude writes code, runs unit tests, commits | Start fresh session — Claude checks branch for existing work |
-| `integration-fix` | Run integration tests; on failure, Claude fixes and retries (up to N attempts) | Best-effort loop; skipped if dev-env unreachable |
-| `pr-review` | Claude addresses reviewer feedback on existing PR, commits | Start fresh session with full reviewer comments |
-| `pr` | Push branch, create/update PR, comment | Retry PR creation |
+| Phase | Description |
+|-------|-------------|
+| `analysis` | Claude reads issue + codebase, produces a plan |
+| `plan-approval` | Wait for human approval (retries not counted) |
+| `implementation` | Claude writes code, runs unit tests, commits |
+| `integration-fix` | Run integration tests; on failure, Claude fixes (up to N attempts) |
+| `pr-review` | Claude addresses reviewer feedback on existing PR |
+| `pr` | Push branch, create/update PR |
 
 ### Phase derivation from GitHub
 
-On every heartbeat, `derive_phase_from_github()` inspects GitHub state in priority order. Comment checks (steps 3–5) only consider comments posted after the last `prauto:ready` label event:
+On every heartbeat (comment checks scoped to current lifecycle):
 
-1. PR exists for this branch → `pr`
-2. `prauto:plan-review` label present on issue → `plan-approval`
-3. Plan comment exists (in current lifecycle) + "go ahead" reply → `implementation`
-4. Plan comment exists (in current lifecycle) + no approval → `plan-approval`
-5. No plan comment (in current lifecycle) → `analysis`
+1. PR exists for this branch -> `pr`
+2. `prauto:plan-review` label present -> `plan-approval`
+3. Plan comment exists + "go ahead" reply -> `implementation`
+4. Plan comment exists + no approval -> `plan-approval`
+5. No plan comment -> `analysis`
 
 ### Retry tracking
 
-Each heartbeat posts a marker comment on the GitHub issue: `prauto({worker_id}): Heartbeat — {phase} (attempt N/max)`. Additionally, when entering the implementation phase (from any route — analysis fall-through, plan approval, or direct implementation), a `prauto({worker_id}): Heartbeat — implementation starting` comment is posted. The function `count_heartbeat_comments()` counts these markers **within the current lifecycle only** — it only counts heartbeat comments posted after the last `prauto:ready` label event (see [Ready-label timestamp as lifecycle anchor](#ready-label-timestamp-as-lifecycle-anchor)) and after the most recent `Claimed` comment by this worker. This ensures restarted issues (see [Issue Restart Protocol](#issue-restart-protocol)) begin with a fresh retry counter.
+Each heartbeat posts a marker comment on the issue. `count_heartbeat_comments()` counts markers within the current lifecycle only (after ready-label timestamp + most recent `Claimed` comment). At `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned. The `plan-approval` phase is exempt.
 
-When the count reaches `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned.
-
-**Exception**: The `plan-approval` phase does **not** post heartbeat comments or count retries — waiting for human approval is not a failure.
-
-### Job completion
+### Job completion and abandonment
 
 | Scenario | Actions |
 |----------|---------|
-| New issue → PR creation | Push branch, create PR (with `prauto:review` label), move job to history, update issue labels: remove `prauto:wip` (+ `prauto:plan-review`), add `prauto:review` |
-| PR comment response | Address feedback with commits, push, post "feedback addressed" marker, move job to history |
-
-### Job abandonment
-
-After max retries: move job to history, update issue labels (remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`), post abandonment comment.
+| New issue -> PR | Push, create PR (with `prauto:review` label), remove `prauto:wip`, add `prauto:review` |
+| PR feedback | Address with commits, push, post marker |
+| Max retries | Remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment |
 
 ---
 
@@ -269,60 +150,24 @@ After max retries: move job to history, update issue labels (remove `prauto:wip`
 
 ```
 [human adds prauto:ready]
-    │
-    ├── prauto claims → removes prauto:ready, adds prauto:wip, sets assignee
-    │       │
-    │       ├── if non-minor: adds prauto:plan-review (plan posted, awaiting approval)
-    │       │       │
-    │       │       └── on approval: removes prauto:plan-review (implementation starts)
-    │       │
-    │       ├── success → removes prauto:wip (+ prauto:plan-review if present), adds prauto:review (on issue + PR)
-    │       │       │
-    │       │       └── approved + squash-finalized → removes prauto:review, adds prauto:done (on issue + PR)
-    │       │
-    │       └── failure → removes prauto:wip (+ prauto:plan-review if present), adds prauto:failed
-    │
-    └── (no prauto pickup yet → stays prauto:ready)
+    +-- prauto claims -> removes prauto:ready, adds prauto:wip, sets assignee
+    |       +-- if non-minor: adds prauto:plan-review
+    |       |       +-- on approval: removes prauto:plan-review
+    |       +-- success -> removes prauto:wip, adds prauto:review (issue + PR)
+    |       |       +-- approved + squash-finalized -> prauto:done (issue + PR)
+    |       +-- failure -> removes prauto:wip, adds prauto:failed
+    +-- (no pickup yet -> stays prauto:ready)
 ```
-
-### GitHub labels
-
-| Label | Color | Description |
-|-------|-------|-------------|
-| `prauto:ready` | Green `#85E89D` | Ready for prauto to pick up |
-| `prauto:wip` | Yellow `#FBCA04` | Prauto is working on this issue |
-| `prauto:plan-review` | Purple `#D4A5FF` | Plan posted, awaiting human approval |
-| `prauto:review` | Blue `#1D76DB` | PR is in review |
-| `prauto:failed` | Red `#D93F0B` | Abandoned after max retries |
-| `prauto:done` | Dark green `#006400` | PR approved, ready to merge |
-
-### Issue restart protocol
-
-When a previously processed issue needs to be retried from scratch (e.g., after a failed attempt produced unusable results), a human resets the issue to its initial state:
-
-1. Remove all `prauto:` labels except `prauto:ready`
-2. Unassign the prauto worker
-3. Delete the working branch, PR, and optionally stale plan/heartbeat comments
-
-The prauto worker treats this as a fresh issue. The **ready-label timestamp** (see [Ready-label timestamp as lifecycle anchor](#ready-label-timestamp-as-lifecycle-anchor)) ensures all comment-scanning functions automatically ignore stale comments from the previous attempt:
-
-- **Ready-label anchor**: `get_ready_label_timestamp()` fetches the timestamp of the last `prauto:ready` label event from the GitHub timeline API. All comment-scanning functions use this as a floor — comments before this timestamp are invisible to the new lifecycle.
-- **Claim race check**: Uses a timestamp-based window — only considers `Claimed` comments posted after the current claim attempt began (ignores stale comments from previous runs).
-- **Claimed comment**: Always posts a fresh `Claimed` comment (no idempotency guard), providing a secondary timestamp anchor within the lifecycle.
-- **Retry counter**: `count_heartbeat_comments()` only counts heartbeat comments posted after both the ready-label timestamp and the most recent `Claimed` comment, so the counter resets automatically on re-claim.
-- **Phase derivation**: Derives phase from current GitHub state, scoped to comments after the ready-label timestamp. Stale plan comments from previous lifecycles are automatically ignored — no manual cleanup needed.
 
 ### Search and claiming
 
-Issues are discovered via `gh issue list` filtered by `prauto:ready` label, excluding already-WIP/review issues, sorted oldest-first. When `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` is enabled, issues from non-members are silently skipped (requires org-owned repo).
+Issues discovered via `gh issue list` filtered by `prauto:ready`, sorted oldest-first. Org-member filter optional (`PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY`).
 
-**Optimistic claim protocol**: (1) Check if `prauto:wip` already present — if so, back off. (2) Record pre-claim timestamp, add `prauto:wip` label. (3) Re-fetch after brief delay; only consider `Claimed` comments posted after the pre-claim timestamp (ignores stale comments from previous attempts). (4) If another worker claimed during the window, back off. (5) Remove `prauto:ready`, set assignee, post a fresh claim comment (always, even on re-claim). The timestamp-based race check supports issue restarts where old comments remain.
+**Optimistic claim protocol**: Check for `prauto:wip` -> record timestamp, add label -> re-fetch, check for competing claims within window -> remove `prauto:ready`, set assignee, post claim comment.
 
-When finding claimed issues, `find_all_claimed_issues()` returns all open issues assigned to this worker's `PRAUTO_GITHUB_ACTOR` that carry `prauto:` labels — excluding issues that carry only `prauto:ready` (these are restarted issues awaiting re-claim and should not count toward the open limit). Sorted oldest-first.
+### Issue restart protocol
 
-### Issue body conventions
-
-For best results, issues should include a clear description, references to relevant spec files, acceptance criteria, and file paths if scope is known.
+To restart an issue: remove all `prauto:` labels except `prauto:ready`, unassign worker, delete working branch/PR. The ready-label timestamp ensures all comment-scanning functions automatically ignore stale comments from previous attempts.
 
 ---
 
@@ -330,32 +175,22 @@ For best results, issues should include a clear description, references to relev
 
 ### Multi-phase execution model
 
-| Phase | Purpose | Tools | Max turns (configurable) |
-|-------|---------|-------|--------------------------|
-| Analysis | Read codebase, understand issue, produce plan | Read + Write (plan file) | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
-| Implementation | Write code, run unit tests, commit | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
-| Integration fix | Fix integration test failures (loop) | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` |
-| PR review | Address reviewer feedback (same tools as implementation) | Read + Write + limited Bash | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
-| Squash commit | Generate final commit message | None (text generation only) | 1 |
-| Feedback response | Respond to plan counter-proposal | None (text generation only) | 1 |
+| Phase | Tools | Max turns |
+|-------|-------|-----------|
+| Analysis | Read + Write (plan file only) + limited git | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
+| Implementation | Read + Write + Edit + limited Bash (git, pytest, ruff, mypy) | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
+| Integration fix | Same as implementation | `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` |
+| Code review | Read-only + pytest | `PRAUTO_CLAUDE_MAX_TURNS_CODE_REVIEW` |
+| PR review | Same as implementation | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
+| Squash commit / Feedback response | No tools (text only) | 1 |
 
-`--max-turns` is the primary guard against runaway sessions. Values are set in `config.local.env` (example defaults: 100 analysis, 400 implementation). `--max-budget-usd` can be added via `PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS` / `PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION` for API billing but has no effect on subscription plans.
+**Denylist (all phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`, `gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`.
 
-Every invocation starts a fresh session — no `--resume`. The rendered system prompt (`state/.system-append-rendered.md`) is passed via `--append-system-prompt-file`.
+**Branch-based continuity**: On restart, the prompt instructs Claude to check for existing commits on the branch and continue from there.
 
-### Tool restrictions by phase
+### Code review phase (generator-evaluator pattern)
 
-**Analysis (read + plan write)**: `Read`, `Write`, `Glob`, `Grep`, and `Bash` limited to `git log/diff/status/branch`. The `Write` tool is used solely to save the completed plan to a session-directory file (`plan.md`), which is the captured artifact posted to the GitHub issue.
-
-**Implementation / PR review (read+write)**: Above plus `Write`, `Edit`, and `Bash` for `git add/commit`, `uv sync`, `uv run pytest`, `uv run python3`, `uv run ruff`, `uv run mypy`, `npm run`, `npx prettier/tsc`.
-
-**Denylist (both phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`, `gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`. The denylist is defense-in-depth — the whitelist already restricts Claude, but the denylist provides a second layer that remains effective if the whitelist is accidentally broadened.
-
-**Rationale**: Claude commits locally; only the bash orchestrator pushes. No `gh` access prevents Claude from directly modifying issues/PRs. No network access prevents data exfiltration. `--dangerously-skip-permissions` is required for non-interactive mode but is constrained by the whitelist/denylist combination.
-
-### Branch-based continuity
-
-When an implementation is interrupted and restarted on the next heartbeat, the prompt instructs Claude to check for existing commits on the branch (`git log --oneline origin/{base_branch}..HEAD`) and continue from where it left off. This is simpler and more reliable than session resumption — git commits are durable state that survives across sessions and machines.
+After implementation but before integration tests, a fresh Claude context independently reviews the generated code (read-only tools). Evaluates against 5 criteria: spec compliance, architecture adherence, code quality, completeness, consistency. Outputs `VERDICT: APPROVE` or `VERDICT: REVISE`. If REVISE, a separate fix session runs (max 1 iteration). Controlled by `PRAUTO_CODE_REVIEW_ENABLED` (default `true`).
 
 ---
 
@@ -363,124 +198,51 @@ When an implementation is interrupted and restarted on the next heartbeat, the p
 
 ### Branch naming
 
-Branches follow the pattern `prauto/I-{issue_number}` (e.g., `prauto/I-42`). Created as isolated git worktrees via `lib/git-ops.sh`.
+`prauto/I-{issue_number}` (e.g., `prauto/I-42`). Created as isolated git worktrees.
 
 ### Push and PR creation
 
-After implementation, `pr.sh` pushes the branch, checks for an existing PR via `gh pr list`, and creates one if none exists (with `prauto:review` label, assignee, optional reviewer). If a PR already exists, new commits are pushed and a comment is added.
+After implementation, push branch, check for existing PR, create one if none exists (with `prauto:review` label, assignee, optional reviewer).
 
 ### PR review handling
 
-In the step 6 processing loop, issues with the `prauto:review` label are checked via `check_review_pr()`. A PR is actionable if it has unaddressed non-prauto comments and at least one `CHANGES_REQUESTED`/`COMMENTED` review or external comment. The feedback-addressed marker breaks the re-pickup loop: once posted, subsequent heartbeats skip the PR. New reviewer comments after the marker make the PR actionable again.
+Issues with `prauto:review` label are checked for unaddressed non-prauto comments. The feedback-addressed marker breaks the re-pickup loop; new reviewer comments after the marker make the PR actionable again.
 
 ### Test execution
 
-Testing happens in two stages: an **integration fix loop** before the PR is created, and a **final test report** after push.
+**Stage 1 -- Integration fix loop (pre-push)**: After implementation and code review, acquires dev-env lock, runs `pytest tests/integration/` up to `PRAUTO_INTEGRATION_FIX_MAX_RETRIES` times. On failure, Claude diagnoses and fixes. Skips if dev-env unreachable.
 
-#### Code review phase (generator-evaluator pattern)
+**Stage 2 -- Final test report (post-push)**: Runs unit + integration tests and posts results as collapsible PR comments.
 
-After implementation but before integration tests, a **fresh Claude context** independently reviews the generated code against the spec and plan. This implements the generator-evaluator separation pattern from [Anthropic's harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps) — self-evaluation fails because models praise their own work; an independent context produces genuinely critical assessments.
+### Squash-finalize
 
-- `run_code_review()` invokes Claude with **read-only tools** (`REVIEW_ALLOWED_TOOLS`: Read, Glob, Grep, git commands, pytest) — the reviewer can inspect and test but cannot modify code.
-- The reviewer evaluates against 5 weighted criteria: spec compliance (high), architecture adherence (high), code quality (medium), completeness (medium), inter-component consistency (medium).
-- The prompt instructs Claude to Write findings to a `{review_file}` path and output a final `VERDICT: APPROVE` or `VERDICT: REVISE` line.
-- Verdict is parsed via grep. If parsing fails, defaults to APPROVE (fail-open — don't block the pipeline on a parsing error).
-- If REVISE: `run_review_fix()` invokes a separate Claude session with `IMPLEMENTATION_ALLOWED_TOOLS` to address the findings. Max 1 fix iteration.
-- Controlled by `PRAUTO_CODE_REVIEW_ENABLED` (default `true`). Set to `false` to skip.
-- Turn limits: `PRAUTO_CLAUDE_MAX_TURNS_CODE_REVIEW` (default 30), `PRAUTO_CLAUDE_MAX_TURNS_REVIEW_FIX` (falls back to `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION`).
+**Trigger**: PR has `prauto:review` label, assigned to worker, mergeable, clean, latest review APPROVED.
 
-#### Stage 1: Integration fix loop (pre-push)
+**Steps**: Rebase on base -> generate squash commit message (1-turn Claude, no tools) -> `git reset --soft` + commit -> force-push with lease -> update PR title -> labels to `prauto:done` on issue + PR. Does **not** merge or close -- left to the human.
 
-After implementation and code review (see below), but before pushing, `run_integration_test_fix()` runs a fix loop for integration tests. The `implement_and_finalize()` helper calls `run_implementation()` → `run_code_review()` → [`run_review_fix()` if REVISE] → `run_integration_test_fix()` → `finalize_issue_pr()`. The PR review feedback path in `heartbeat.sh` also calls `run_integration_test_fix()` between `run_pr_review()` and push.
-
-- Skips gracefully if `tests/integration/` does not exist or the dev-env lock endpoint is unreachable.
-- Acquires the dev-env advisory lock, then loops up to `PRAUTO_INTEGRATION_FIX_MAX_RETRIES` times (default 2):
-  1. Run `uv run pytest tests/integration/ --tb=short` (`conftest.py` handles dummy-data resets internally via Python utilities).
-  2. If tests pass → break.
-  3. If tests fail and retries remain → invoke Claude (`integration-fix.md` prompt) with the test output to diagnose and fix. Claude commits fixes locally.
-- After the loop: release lock.
-- Each Claude fix session uses `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` (default 50) and `PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX`.
-
-#### Stage 2: Final test report (post-push)
-
-After push and PR creation, `run_and_post_test_results()` runs both test suites and posts results as collapsible PR comments.
-
-- **Unit tests**: If `tests/unit/` exists, runs `uv run pytest tests/unit/ --tb=short`. Always runs unconditionally.
-- **Integration tests**: If `tests/integration/` exists, follows the dev-env lock protocol (best-effort):
-  1. Check if the dev-env lock endpoint (`http://localhost:9221/lock/status`) is reachable — skip gracefully if not.
-  2. Acquire the advisory lock with owner `prauto-{worker_id}`.
-  3. Run `uv run pytest tests/integration/ --tb=short` with `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` (`conftest.py` handles before/after dummy-data resets via Python utilities).
-  4. Release the advisory lock.
-- Results are posted on the PR as `prauto({worker_id}): {Type} Test Results — {Passed|Failed}` inside a `<details>` block.
-
-### Squash-finalize action
-
-Runs inside the step 6 loop when a `prauto:review` issue's PR meets the trigger conditions. Squash-ready takes priority over feedback-needed within `check_review_pr()`.
-
-**Trigger conditions** (all must be true): branch matches `prauto/` prefix, PR has `prauto:review` label, assigned to this worker, `mergeable == "MERGEABLE"`, `mergeStateStatus == "CLEAN"`, latest org-member review is `APPROVED`.
-
-**Steps**: Rebase on base branch (abort on conflict), generate squash commit message via Claude (1-turn, no tools, using issue description + diff as context), rebuild as a single commit via `git reset --soft` + `git commit`, force-push with lease, update PR title to match the squashed commit's subject line, update labels to `prauto:done` on both PR and issue. Does **NOT** merge the PR or close the issue — that is left to the human.
-
-**Label updates via REST API**: The squash-finalize step uses `gh api` REST calls (not `gh issue edit` / `gh pr edit`) for label operations, because the latter require `read:org` scope which the bot's classic PAT may lack.
-
-**Commit message format**: Conventional commit (`<type>: <subject>`) with max 5-line body, issue/PR reference, and `Co-Authored-By` trailers for all org-member PR approvers.
-
----
-
-## Prompt Templates
-
-Nine prompt templates live in `.prauto/prompts/`. Variables (issue number, title, body, branch, analysis output, plan, plan_file, review_file, reviewer comments) are substituted at runtime by `lib/claude.sh`. Context varies by phase: analysis receives the issue body and a `plan_file` path where Claude must Write the completed plan; implementation and PR review receive only the approved plan (not the issue body), since the plan already distills the requirements into actionable steps.
-
-| Template | Phase | Purpose | Context | Key instructions |
-|----------|-------|---------|---------|------------------|
-| `system-append.md` | All | Worker identity addendum | — | Declares autonomous mode, forbids pushing, requires conventional commits, mandates spec reading |
-| `issue-analysis.md` | Analysis | Read issue + codebase, produce plan | Issue body, plan_file path | Produce plan (files/order/patterns/tests/risks), Write full plan to `{plan_file}`. No code changes. |
-| `implementation.md` | Implementation | Write code per plan | Plan only | Check branch for existing work first, follow specs and patterns, write tests, run formatters, commit but don't push |
-| `code-review.md` | Code review | Independent review of implementation | Plan + diff stat, review_file path | Evaluate against 5 criteria (spec compliance, architecture, quality, completeness, consistency), Write findings to `{review_file}`, output `VERDICT: APPROVE` or `VERDICT: REVISE` |
-| `review-fix.md` | Review fix | Address code review findings | Plan + review findings | Fix each valid finding, dispute false positives in commit message, commit but don't push |
-| `integration-fix.md` | Integration fix | Fix integration test failures | Test output | Read failing tests, diagnose root cause, fix source code, re-run tests, commit |
-| `pr-review.md` | PR review | Address reviewer feedback | Plan + reviewer comments | Make requested changes, answer questions, produce reviewer-facing response summary |
-| `feedback-response.md` | Plan feedback | Respond to plan counter-proposal | — | Address each feedback point, acknowledge suggestions, keep under 500 words (1-turn, no tools) |
-| `squash-commit.md` | Squash-finalize | Generate conventional commit message | — | From issue description + diff, produce `<type>: <subject>` with max 5-line body (1-turn, no tools) |
+**Commit format**: Conventional commit with max 5-line body, issue/PR reference, `Co-Authored-By` trailers.
 
 ---
 
 ## Write Idempotency
 
-Autonomous workers must be resilient to crashes and restarts. Every write action uses idempotency guards.
-
 ### Comment idempotency
 
-Before posting certain comments, the worker checks for an existing comment matching (1) the worker's GitHub user and (2) the prefix `prauto({worker_id}):` followed by an action keyword.
-
-| Context | Keyword | Idempotency guard |
-|---------|---------|-------------------|
-| Issue claim | `Claimed` | **No** — always posts a fresh comment to anchor retry counting for restarts |
-| Abandonment | `Abandoning` | Yes — `comment_exists` |
-| Plan | `Plan` (or `Plan (rev N)`) | Yes — `comment_exists` |
-| Quota pause | `Paused` | Yes — `has_quota_paused_comment` |
-| Heartbeat | `Heartbeat` | **No** — each heartbeat intentionally posts a new marker for retry counting |
-| Implementation start | `Heartbeat — implementation starting` | **No** — each implementation entry posts a new marker |
-| Code review REVISE | `Heartbeat — code review: REVISE, running fix pass` | **No** — each fix pass posts a new marker |
-| Integration fix attempt | `Heartbeat — integration test fix loop: attempt N/max` | **No** — each attempt posts a new marker |
-| Review response | `Review response` | **No** — multiple responses are valid across review rounds |
-| Feedback response | `Feedback response` | **No** — multiple responses are valid across plan revisions |
-| Feedback marker | `Reviewer feedback addressed` | **No** — gated externally by `check_review_pr()` |
-| Quota resume | `Resumed` | **No** — gated externally by `has_quota_paused_comment()` |
-
-The `plan-approval` phase is exempt from heartbeat comments (waiting for human approval is not a failure).
+| Context | Keyword | Idempotent? |
+|---------|---------|-------------|
+| Claim | `Claimed` | No -- always fresh (anchors retry counting) |
+| Abandonment | `Abandoning` | Yes |
+| Plan | `Plan` / `Plan (rev N)` | Yes |
+| Quota pause | `Paused` | Yes |
+| Heartbeat | `Heartbeat` | No -- each is a new retry marker |
+| Implementation start | `Heartbeat -- implementation starting` | No |
+| Code review REVISE | `Heartbeat -- code review: REVISE` | No |
+| Integration fix | `Heartbeat -- integration test fix loop` | No |
+| Review/Feedback response | `Review response` / `Feedback response` | No -- multiple valid |
 
 ### Optimistic claim locking
 
-The claim protocol uses check-then-add with a timestamp-based verification window: (1) check for existing `prauto:wip` label, (2) record pre-claim timestamp, add label, (3) re-fetch after brief delay, only consider `Claimed` comments created after the pre-claim timestamp, (4) check for competing claims within the window. The timestamp scoping allows issues with stale `Claimed` comments from previous attempts to be re-claimed cleanly. Not fully atomic, but catches most races. For single-worker deployments this is a no-op safeguard.
-
----
-
-## Monitoring
-
-### Session directories
-
-Each heartbeat run creates a per-issue session directory at `state/sessions/issue-{N}/{yyyyMMDD}-{HHmmss}-{uuid8}/` (e.g., `issue-42/20260303-135959-05bb59b7/`). All artifacts for that run are stored there: raw Claude output (`claude-output-{pid}.json`), plan file (`plan.md`), phase outputs (`analysis.txt`, `implementation.json`, `code-review.md`, `code-review.txt`, `review-fix.json`, `integration-fix.json`, `review.json`), job outcome records (`complete.json` or `abandon.json`), and temporary files (`squash-msg.txt`). Session directories are organized by issue number, with each heartbeat attempt getting a timestamped subdirectory containing the first 8 characters of a UUID for uniqueness. These files are for **debugging only** — not used for routing or resumption. The heartbeat log is written to `state/heartbeat.log`.
+Check-then-add with timestamp-based verification window. Not fully atomic but catches most races; a no-op safeguard for single-worker deployments.
 
 ---
 
@@ -488,22 +250,17 @@ Each heartbeat run creates a per-issue session directory at `state/sessions/issu
 
 | Layer | Restriction | Mechanism |
 |-------|-------------|-----------|
-| Claude CLI tools | Phase-specific whitelists | `--allowedTools` / `--disallowedTools` (analysis: read-only; implementation/review-fix: read+write; code-review: read-only+pytest) |
+| Claude CLI tools | Phase-specific whitelists | `--allowedTools` / `--disallowedTools` |
 | Network access | No web fetch, curl, wget | Disallowed tools |
 | Cluster access | No kubectl, helm | Disallowed tools |
 | Destructive ops | No rm -rf, sudo | Disallowed tools |
 | Git push | Only orchestrator pushes | Disallowed for Claude; `git-ops.sh` handles it |
 | Issue author | Org-member filter (opt-in) | `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` |
-| Turn limit | Per-job turn cap (primary) | `--max-turns` |
-| Budget | Per-job dollar cap (API billing only) | `--max-budget-usd` (optional) |
-| Concurrency | Max open issues per worker | `PRAUTO_OPEN_ISSUE_LIMIT` (default 1) + PID-based lock file |
-| GitHub access | Fine-grained PAT | Scoped to issues, PRs, contents only |
-| Secrets (git) | Gitignored local env | `config.local.env` never committed |
-| Secrets (runtime) | Protected by denylist + temp backup removed on exit | `--disallowedTools` blocks `Read(.prauto/config.local.env)` |
+| Turn/budget limits | Per-job caps | `--max-turns`, `--max-budget-usd` |
+| Concurrency | Max open issues + PID lock | `PRAUTO_OPEN_ISSUE_LIMIT` (default 1) |
+| Secrets | Gitignored + denylist + temp backup | `config.local.env` blocked by `--disallowedTools` |
 
-**Why Claude cannot push**: Separating "write code" from "push to remote" is a deliberate safety boundary. Prevents pushing to unexpected branches/remotes even under prompt injection.
-
-**Secrets isolation**: `config.local.env` stays on disk but is blocked by denylist. Secrets are sourced into shell env vars before Claude runs. `ANTHROPIC_API_KEY` and `GH_TOKEN` are exported only if non-empty; otherwise CLIs use system auth. The `.prauto/state/` directory is also on the denylist.
+**Why Claude cannot push**: Separating "write code" from "push to remote" prevents pushing to unexpected branches/remotes even under prompt injection.
 
 ---
 
@@ -511,30 +268,25 @@ Each heartbeat run creates a per-issue session directory at `state/sessions/issu
 
 | Scaffold element | Integration |
 |---|---|
-| `CLAUDE.md` | Claude reads this automatically, giving prauto full project context |
-| `.claude/settings.json` | Tool permissions apply equally to prauto sessions |
-| `.claude/agents/` | Prauto prompts can instruct Claude to delegate to subagents (`reviewer`, `backend`, `workflow`, `test`, `frontend`, `k8s-helm`) |
-| `.claude/skills/` | Skills are available if Claude detects matching context |
-| `spec/` hierarchy | Analysis phase reads specs per CLAUDE.md instructions |
+| `CLAUDE.md` | Gives prauto full project context automatically |
+| `.claude/settings.json` | Tool permissions apply equally |
+| `.claude/agents/` | Prauto prompts can delegate to subagents |
+| `.claude/skills/` | Available if Claude detects matching context |
+| `spec/` hierarchy | Analysis phase reads specs per CLAUDE.md |
 
-Prauto does not modify `.claude/settings.json`, `.claude/settings.local.json`, or `.claude/agents/`. It is self-contained in `.prauto/` — the only change to existing files is three lines in `.gitignore`. The scaffold serves interactive sessions; prauto serves unattended automation. Both use the same Claude Code engine and `CLAUDE.md` context.
+Prauto is self-contained in `.prauto/` -- does not modify `.claude/` files. The scaffold serves interactive sessions; prauto serves unattended automation.
 
 ---
 
 ## Future: GitHub Actions Migration
 
-When the project adds `.github/workflows/`, prauto's design maps directly to `claude-code-action`:
+Prauto's design maps directly to `claude-code-action`:
 
 | Prauto (local) | `claude-code-action` (GH Actions) |
 |---|---|
-| `heartbeat.sh` (cron) | `schedule:` trigger in workflow YAML |
-| `lib/issues.sh` (gh CLI) | `issues: [labeled]` event trigger |
-| `prompts/system-append.md` | `claude_args: --append-system-prompt-file` |
-| `prompts/implementation.md` | `prompt:` input |
-| `--allowedTools` / `--disallowedTools` | `claude_args: --allowedTools ...` |
-| `--max-turns`, `--max-budget-usd` | `claude_args: --max-turns ... --max-budget-usd ...` |
+| `heartbeat.sh` (cron) | `schedule:` trigger |
+| `lib/issues.sh` | `issues: [labeled]` event trigger |
+| `prompts/*.md` | `prompt:` / `claude_args:` inputs |
+| `--allowedTools` / `--disallowedTools` | `claude_args:` |
 | `config.env` | Workflow environment variables |
 | `config.local.env` | GitHub Actions secrets |
-| `lib/git-ops.sh` (gh pr create) | Built-in branch creation + PR prefill links |
-
-Prompt templates and tool restrictions can be reused without modification. The main difference is that `claude-code-action` provides PR prefill links rather than creating PRs directly, so the GH Actions version would use a separate workflow step for `gh pr create`.

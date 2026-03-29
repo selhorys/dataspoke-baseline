@@ -163,43 +163,7 @@ The full allow/deny lists are in `.claude/settings.json`. The settings file is t
 
 ## Prauto
 
-Prauto is the autonomous PR worker — a cron-driven system that picks up GitHub issues labeled `prauto:ready`, produces implementation PRs via Claude Code CLI, and manages the full issue-to-PR lifecycle. It lives in `.prauto/`.
-
-```
-.prauto/
-├── config.env                  # [COMMITTED] Shared settings (repo, labels, branch prefix)
-├── config.local.env            # [GITIGNORED] Instance-specific settings (tokens, worker ID)
-├── config.local.env.example    # Template for config.local.env
-├── heartbeat.sh                # [COMMITTED] Main cron entry point
-├── lib/                        # Shell libraries
-│   ├── helpers.sh              #   Logging, config loading
-│   ├── state.sh                #   Job state, locking
-│   ├── quota.sh                #   Token quota management
-│   ├── issues.sh               #   Issue discovery, claiming
-│   ├── claude.sh               #   Claude CLI invocation
-│   ├── git-ops.sh              #   Branch creation, worktree, push
-│   ├── pr.sh                   #   PR creation, feedback, squash-finalize
-│   └── phases.sh               #   Phase-specific handlers
-├── prompts/                    # Prompt templates for Claude CLI invocations
-│   ├── system-append.md        #   System prompt supplement
-│   ├── issue-analysis.md       #   Issue analysis and plan generation
-│   ├── implementation.md       #   Code implementation
-│   ├── code-review.md          #   Independent code review (generator-evaluator pattern)
-│   ├── review-fix.md           #   Address code review findings
-│   ├── integration-fix.md      #   Fix integration test failures
-│   ├── pr-review.md            #   Address PR reviewer feedback
-│   ├── feedback-response.md    #   Respond to plan counter-proposal
-│   └── squash-commit.md        #   Squash-finalize commit message
-├── state/                      # [GITIGNORED] Runtime state
-│   ├── heartbeat.lock          #   PID-based lock file
-│   ├── heartbeat.log           #   Cron output log
-│   ├── .system-append-rendered.md
-│   └── sessions/               #   Per-issue session outputs (analysis, implementation, review)
-├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
-└── README.md
-```
-
-See `spec/AI_PRAUTO.md` for the full specification (lifecycle labels, heartbeat decision tree, plan-approval protocol, code review phase, squash-finalize workflow).
+Prauto is the autonomous PR worker -- a cron-driven system that picks up GitHub issues labeled `prauto:ready`, produces implementation PRs via Claude Code CLI, and manages the full issue-to-PR lifecycle. It lives in `.prauto/` (config, shell libraries, prompt templates, runtime state). See `spec/AI_PRAUTO.md` for the full specification (lifecycle labels, heartbeat cycle, phase state machine, code review, squash-finalize).
 
 ---
 

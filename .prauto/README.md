@@ -80,40 +80,6 @@ GH_TOKEN="ghp_xxxxxxxxxxxx"
 
 All GitHub API operations (issue labels, comments, PR creation) will then run as the bot account. Git commit identity remains whatever is set in `PRAUTO_GIT_AUTHOR_NAME` / `PRAUTO_GIT_AUTHOR_EMAIL`.
 
-## Directory Structure
-
-```
-.prauto/
-├── config.env                  # [COMMITTED] Shared settings
-├── config.local.env            # [GITIGNORED] Instance-specific settings
-├── config.local.env.example    # [COMMITTED] Template for config.local.env
-├── heartbeat.sh                # Main cron entry point
-├── lib/
-│   ├── helpers.sh              # Shared bash helpers
-│   ├── quota.sh                # Token quota check
-│   ├── issues.sh               # Issue scanning and claiming
-│   ├── claude.sh               # Claude Code CLI wrapper
-│   ├── git-ops.sh              # Branch creation, worktree, push
-│   ├── pr.sh                   # PR creation, feedback, squash-finalize
-│   ├── phases.sh               # Phase-specific handlers
-│   └── state.sh                # Job state management
-├── prompts/
-│   ├── system-append.md        # Worker identity prompt
-│   ├── issue-analysis.md       # Phase 1: analysis prompt
-│   ├── implementation.md       # Phase 2: implementation prompt
-│   ├── integration-fix.md      # Integration test failure fix prompt
-│   ├── pr-review.md            # PR reviewer feedback prompt
-│   ├── feedback-response.md    # Plan counter-proposal response prompt
-│   └── squash-commit.md        # Squash commit message generation
-├── state/                      # [GITIGNORED] Runtime state
-│   ├── heartbeat.lock          # PID-based lock file
-│   ├── heartbeat.log           # Cron output log
-│   ├── .system-append-rendered.md  # Rendered system prompt (regenerated each run)
-│   └── sessions/               # Per-issue session dirs ({yyyyMMDD}-{HHmmss}-{uuid8})
-├── worktrees/                  # [GITIGNORED] Git worktrees for active jobs
-└── README.md
-```
-
 ## Manual Run
 
 ```bash
