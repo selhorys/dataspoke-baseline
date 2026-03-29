@@ -16,9 +16,10 @@
 4. [Unit Testing](#unit-testing)
 5. [Integration Testing](#integration-testing)
 6. [API-Wired Integration Testing](#api-wired-integration-testing)
-7. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
-8. [Test Data Design](#test-data-design)
-9. [CI Behavior](#ci-behavior)
+7. [Manual REST API Testing](#manual-rest-api-testing)
+8. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
+9. [Test Data Design](#test-data-design)
+10. [CI Behavior](#ci-behavior)
 
 ---
 
@@ -210,6 +211,63 @@ Tests must run in **three separate groups**:
 ### Readability Principle
 
 API-wired tests prioritize **readability over DRY** for HTTP requests. Each test shows the full request payload inline -- do not abstract API calls into helper functions. Shared cleanup helpers and conftest fixtures may be extracted.
+
+---
+
+## Manual REST API Testing
+
+Interactive endpoint testing with `curl` against the test-mode server. Useful for exploratory testing and verifying features before writing automated tests.
+
+### Setup
+
+```bash
+./dev_env/health-check.sh                                        # Pre-flight
+uv run python -m tests.integration.util --reset-all              # Seed Imazon dummy data
+./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &    # Start server
+until curl -sf http://localhost:8000/health > /dev/null; do sleep 2; done
+```
+
+### Authentication
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
+```
+
+Admin has groups `["admin", "de", "da", "dg"]` (all tiers). Tokens expire in 15 minutes.
+
+### Making Requests
+
+```bash
+curl -s http://localhost:8000/api/v1/spoke/common/data/$URN \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+URN format: `urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.<schema>.<table>,DEV)`
+
+Route tiers: `/api/v1/spoke/common/…` (any group), `/api/v1/spoke/[de|da|dg]/…` (matching group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).
+
+### Verifying Side Effects
+
+| Side effect | How to check |
+|---|---|
+| Event logged | `GET /api/v1/spoke/common/data/{urn}/event` |
+| Kestra flow | `curl -u "dataspoke@dataspoke.local:DataSpoke1" http://localhost:9205/api/v1/flows/dataspoke/{flow_id}` |
+| DB row | `psql -h localhost -p 9201 -U dataspoke -d dataspoke` |
+| DataHub aspect | `curl http://localhost:9004/aspects?urn={urn}&aspect={aspect}` |
+
+### References
+
+- Valid URNs and request payloads: existing spot tests in `tests/integration/api_wired/spot/`
+- Full route catalogue: `spec/feature/API.md`
+- Imazon test data: [Test Data Design](#test-data-design) below
+
+### Teardown
+
+```bash
+./dev_env/dataspoke-test-mode.sh --stop
+```
 
 ---
 
