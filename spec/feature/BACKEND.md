@@ -270,7 +270,7 @@ Assembles graph topology from ontology + lineage data, medallion layer classific
 
 ### Architecture
 
-Kestra v1.3.3 serves as the workflow orchestration engine. Workflows are defined as YAML flow definitions in `src/workflows/flows/`. Each flow uses Kestra's `io.kestra.plugin.core.http.Request` tasks to call internal activity endpoints on the DataSpoke API at `/internal/activities/*`. Kestra handles scheduling, retry, and execution.
+Kestra v1.3.3 serves as the workflow orchestration engine. Workflows are defined as YAML flow definitions in `src/workflows/flows/`. Each flow uses Kestra's `io.kestra.plugin.core.http.Request` tasks to call internal activity endpoints on the DataSpoke API at `/internal/activities/{domain}/*`. Kestra handles scheduling, retry, and execution.
 
 ### Kestra Client Subpackage (`src/workflows/kestra/`)
 
@@ -326,7 +326,7 @@ Ingestion supports two trigger modes per dataset:
 
 **Periodic flow generation**: DataSpoke dynamically generates one Kestra flow per unique cron schedule. Sync runs on backend startup and via the `ingestion-config-sync` workflow (cron `*/10 * * * *`). Sync logic: query distinct schedules -> generate/update flows -> delete orphaned flows.
 
-Each generated flow fetches the dataset list dynamically at execution time (`POST /internal/activities/list-periodic-datasets`), then runs ingestion for each dataset in parallel (concurrency limit: 5).
+Each generated flow fetches the dataset list dynamically at execution time (`POST /internal/activities/ingestion/list-periodic`), then runs ingestion for each dataset in parallel (concurrency limit: 5).
 
 ---
 

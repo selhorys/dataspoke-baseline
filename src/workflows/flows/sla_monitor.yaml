@@ -27,7 +27,7 @@ tasks:
     then:
       - id: check_sla
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/internal/activities/check-sla"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/sla/check"
         method: POST
         contentType: application/json
         body: |
@@ -42,7 +42,7 @@ tasks:
 
       - id: send_sla_alerts
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/internal/activities/send-sla-alerts"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/sla/send-alerts"
         method: POST
         contentType: application/json
         body: |

@@ -20,7 +20,7 @@ triggers:
 tasks:
   - id: sync
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/sync-periodic-ingestion-flows"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/ingestion/sync-periodic-flows"
     method: POST
     contentType: application/json
     options:

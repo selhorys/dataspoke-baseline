@@ -140,7 +140,7 @@ The script probes each service at the application layer (PostgreSQL, Redis, Qdra
 ### Kestra Integration Test Pitfalls
 
 - **Connection**: Kestra is accessed via port-forward on port 9205 (`DATASPOKE_KESTRA_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests in worktrees must source it explicitly.
-- **Direct activity testing**: Preferred approach -- call `/internal/activities/*` via `httpx.AsyncClient` (ASGI transport) without Kestra orchestration.
+- **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via `httpx.AsyncClient` (ASGI transport) without Kestra orchestration.
 - **Full flow testing**: Requires running Kestra + deployed flow YAML. Use `KestraClient` to trigger and poll. Keep timeouts short (30s max).
 - **Stale executions**: Cancel via Kestra REST API or UI (`http://localhost:9205`) before starting new ones.
 - **Kestra utilities** (`tests/integration/util/kestra.py`): kill/cleanup stale executions, register/verify flows, poll until terminal state.

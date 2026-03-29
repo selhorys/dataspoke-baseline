@@ -27,7 +27,15 @@ from src.workflows._common import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/internal/activities", tags=["internal/activities"])
+router = APIRouter(prefix="/internal/activities", tags=[
+    "internal/activities/ingestion",
+    "internal/activities/validation",
+    "internal/activities/generation",
+    "internal/activities/search",
+    "internal/activities/metrics",
+    "internal/activities/sla",
+    "internal/activities/ontology",
+])
 
 
 def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:
@@ -39,14 +47,14 @@ def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:
     )
 
 
-# ── Ingestion periodic activities ────────────────────────────────────────────
+# ── /ingestion ───────────────────────────────────────────────────────────────
 
 
 class ListPeriodicDatasetsRequest(BaseModel):
     schedule: str
 
 
-@router.post("/list-periodic-datasets")
+@router.post("/ingestion/list-periodic")
 async def list_periodic_datasets(body: ListPeriodicDatasetsRequest) -> list[str]:
     from src.backend.ingestion.service import IngestionService
 
@@ -64,7 +72,7 @@ class RunIngestionRequest(BaseModel):
     dry_run: bool = False
 
 
-@router.post("/run-ingestion")
+@router.post("/ingestion/run")
 async def run_ingestion(body: RunIngestionRequest) -> dict:
     from src.backend.ingestion.service import IngestionService, run_ingestion_with_lock
 
@@ -81,7 +89,7 @@ async def run_ingestion(body: RunIngestionRequest) -> dict:
         return _error_response(exc)
 
 
-@router.post("/sync-periodic-ingestion-flows")
+@router.post("/ingestion/sync-periodic-flows")
 async def sync_periodic_ingestion_flows() -> dict:
     from src.shared.settings import settings
     from src.workflows.ingestion import sync_periodic_ingestion_flows as _sync
@@ -108,7 +116,7 @@ async def sync_periodic_ingestion_flows() -> dict:
         await kestra.close()
 
 
-# ── Validation activity ──────────────────────────────────────────────────────
+# ── /validation ──────────────────────────────────────────────────────────────
 
 
 class RunValidationRequest(BaseModel):
@@ -117,7 +125,7 @@ class RunValidationRequest(BaseModel):
     dry_run: bool = False
 
 
-@router.post("/run-validation")
+@router.post("/validation/run")
 async def run_validation(body: RunValidationRequest) -> dict:
     from src.backend.validation.service import ValidationService
 
@@ -134,14 +142,14 @@ async def run_validation(body: RunValidationRequest) -> dict:
         return _error_response(exc)
 
 
-# ── Generation activity ──────────────────────────────────────────────────────
+# ── /generation ──────────────────────────────────────────────────────────────
 
 
 class RunGenerationRequest(BaseModel):
     dataset_urn: str
 
 
-@router.post("/run-generation")
+@router.post("/generation/run")
 async def run_generation(body: RunGenerationRequest) -> dict:
     from src.backend.generation.service import GenerationService
 
@@ -157,7 +165,7 @@ async def run_generation(body: RunGenerationRequest) -> dict:
         return _error_response(exc)
 
 
-# ── Embedding sync activities ────────────────────────────────────────────────
+# ── /search ──────────────────────────────────────────────────────────────────
 
 
 class EnumerateDatasetsRequest(BaseModel):
@@ -165,7 +173,7 @@ class EnumerateDatasetsRequest(BaseModel):
     dataset_urn: str = ""
 
 
-@router.post("/enumerate-datasets")
+@router.post("/search/enumerate")
 async def enumerate_datasets(body: EnumerateDatasetsRequest) -> list[str]:
     datahub = make_datahub()
     if body.mode == "single" and body.dataset_urn:
@@ -177,7 +185,7 @@ class ReindexBatchRequest(BaseModel):
     dataset_urns: list[str]
 
 
-@router.post("/reindex-batch")
+@router.post("/search/reindex-batch")
 async def reindex_batch(body: ReindexBatchRequest) -> dict:
     from src.backend.search.service import SearchService
 
@@ -199,7 +207,7 @@ async def reindex_batch(body: ReindexBatchRequest) -> dict:
     return {"indexed": indexed, "errors": errors}
 
 
-# ── Metrics activities ───────────────────────────────────────────────────────
+# ── /metrics ─────────────────────────────────────────────────────────────────
 
 
 class RunMetricRequest(BaseModel):
@@ -207,7 +215,7 @@ class RunMetricRequest(BaseModel):
     dry_run: bool = False
 
 
-@router.post("/run-metric")
+@router.post("/metrics/run")
 async def run_metric(body: RunMetricRequest) -> dict:
     from src.backend.metrics.service import MetricsService
 
@@ -223,7 +231,7 @@ async def run_metric(body: RunMetricRequest) -> dict:
         return _error_response(exc)
 
 
-@router.post("/aggregate-health")
+@router.post("/metrics/aggregate-health")
 async def aggregate_health() -> dict:
     from src.backend.metrics.aggregator import aggregate_health_scores
 
@@ -248,14 +256,14 @@ class PublishMetricUpdateRequest(BaseModel):
     detail: dict | None = None
 
 
-@router.post("/publish-metric-update")
+@router.post("/metrics/publish-update")
 async def publish_metric_update(body: PublishMetricUpdateRequest) -> dict:
     cache = make_cache()
     await cache.publish("ws:metric:updates", json.dumps(body.model_dump()))
     return {"published": True}
 
 
-# ── SLA monitor activities ───────────────────────────────────────────────────
+# ── /sla ─────────────────────────────────────────────────────────────────────
 
 
 class CheckSLARequest(BaseModel):
@@ -263,7 +271,7 @@ class CheckSLARequest(BaseModel):
     sla_target: dict
 
 
-@router.post("/check-sla")
+@router.post("/sla/check")
 async def check_sla(body: CheckSLARequest) -> dict:
     from src.backend.validation.service import ValidationService
     from src.backend.validation.sla import check_sla as _check_sla
@@ -387,7 +395,7 @@ def _build_recommended_actions(violations: list[str], is_breaching: bool) -> lis
     return actions
 
 
-@router.post("/send-sla-alerts")
+@router.post("/sla/send-alerts")
 async def send_sla_alerts(body: SendSLAAlertsRequest) -> dict:
     from datetime import UTC, datetime
 
@@ -414,14 +422,14 @@ async def send_sla_alerts(body: SendSLAAlertsRequest) -> dict:
     return {"sent": len(body.alerts)}
 
 
-# ── Ontology activities ──────────────────────────────────────────────────────
+# ── /ontology ────────────────────────────────────────────────────────────────
 
 
 class ClassifyDatasetsRequest(BaseModel):
     force: bool = False
 
 
-@router.post("/classify-datasets")
+@router.post("/ontology/classify")
 async def classify_datasets(body: ClassifyDatasetsRequest) -> list[dict]:
     from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
 
@@ -471,7 +479,7 @@ class BuildHierarchyRequest(BaseModel):
     classifications: list[dict]
 
 
-@router.post("/build-hierarchy")
+@router.post("/ontology/build-hierarchy")
 async def build_hierarchy(body: BuildHierarchyRequest) -> list[dict]:
     from sqlalchemy import select
 
@@ -519,7 +527,7 @@ class InferRelationshipsRequest(BaseModel):
     hierarchy: list[dict]
 
 
-@router.post("/infer-relationships")
+@router.post("/ontology/infer-relationships")
 async def infer_relationships(body: InferRelationshipsRequest) -> list[dict]:
     relationships = []
 
@@ -545,7 +553,7 @@ class DetectDriftRequest(BaseModel):
     current_hierarchy: list[dict]
 
 
-@router.post("/detect-drift")
+@router.post("/ontology/detect-drift")
 async def detect_drift(body: DetectDriftRequest) -> list[dict]:
     from src.backend.ontology.service import OntologyService
 

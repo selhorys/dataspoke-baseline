@@ -19,7 +19,7 @@ API-wired spot integration tests for the ingestion workflow. Tests exercise the 
 
 `tests/integration/api_wired/spot/test_ingestion_workflow.py`
 
-Separate from `test_ingestion_service.py` (which tests config CRUD). This file focuses on workflow orchestration: the run endpoint (real extraction + DataHub emission), the `ingestion-config-sync` flow's activity endpoint (`sync-periodic-ingestion-flows`), periodic flow generation, and the sync lifecycle.
+Separate from `test_ingestion_service.py` (which tests config CRUD). This file focuses on workflow orchestration: the run endpoint (real extraction + DataHub emission), the `ingestion-config-sync` flow's activity endpoint (`ingestion/sync-periodic-flows`), periodic flow generation, and the sync lifecycle.
 
 ## Fixtures
 
@@ -99,7 +99,7 @@ Verify that `POST .../method/run` executes the full pipeline: connects to exampl
 
 ### 3. `test_list_periodic_datasets`
 
-Verify `POST /internal/activities/list-periodic-datasets` returns correct URNs.
+Verify `POST /internal/activities/ingestion/list-periodic` returns correct URNs.
 
 **Setup** (transient URNs — config-only, no DataHub metadata needed; all `source_type="POSTGRESQL"`):
 - PUT config A: `periodic=true`, `schedule="0 2 * * *"`
@@ -107,7 +107,7 @@ Verify `POST /internal/activities/list-periodic-datasets` returns correct URNs.
 - PUT config C: `periodic=true`, `schedule="0 6 * * *"`
 - PUT config D: `periodic=false`
 
-**Action**: `POST /internal/activities/list-periodic-datasets` with `{"schedule": "0 2 * * *"}`
+**Action**: `POST /internal/activities/ingestion/list-periodic` with `{"schedule": "0 2 * * *"}`
 
 **Assertions**:
 - Returns list containing URN A and URN B
@@ -124,7 +124,7 @@ Verify the sync endpoint generates one Kestra flow per unique schedule.
 - PUT config for `editions`: `periodic=true`, `schedule="0 2 * * *"`
 - PUT config for `genre_hierarchy`: `periodic=true`, `schedule="0 6 * * *"`
 
-**Action**: Call `POST /internal/activities/sync-periodic-ingestion-flows`
+**Action**: Call `POST /internal/activities/ingestion/sync-periodic-flows`
 
 **Assertions**:
 - Two flows in Kestra: `ingestion-periodic-{hash("0 2 * * *")}` and `ingestion-periodic-{hash("0 6 * * *")}`
@@ -136,11 +136,11 @@ Verify the sync endpoint generates one Kestra flow per unique schedule.
 
 **Setup**:
 - PUT config for `title_master`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 3 * * *"`
-- Call `POST /internal/activities/sync-periodic-ingestion-flows` — flow created
+- Call `POST /internal/activities/ingestion/sync-periodic-flows` — flow created
 
 **Action**:
 - DELETE the config
-- Call `POST /internal/activities/sync-periodic-ingestion-flows`
+- Call `POST /internal/activities/ingestion/sync-periodic-flows`
 
 **Assertions**: The flow for `0 3 * * *` no longer exists in Kestra
 
@@ -152,17 +152,17 @@ Verify the sync endpoint generates one Kestra flow per unique schedule.
 - PUT config for `title_master`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 2 * * *"`
 - PUT config for `editions`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 2 * * *"`
 - PUT config for `genre_hierarchy`: `source_type="POSTGRESQL"`, `periodic=true`, `schedule="0 2 * * *"`
-- Call `POST /internal/activities/sync-periodic-ingestion-flows` — one flow with 3 datasets
+- Call `POST /internal/activities/ingestion/sync-periodic-flows` — one flow with 3 datasets
 
 **Action**:
 - PATCH `genre_hierarchy` config: `{"schedule": "0 6 * * *"}`
-- Call `POST /internal/activities/sync-periodic-ingestion-flows`
+- Call `POST /internal/activities/ingestion/sync-periodic-flows`
 
 **Assertions**:
 - Flow for `0 2 * * *` still exists (`title_master` + `editions` remain)
 - New flow for `0 6 * * *` exists
-- `list-periodic-datasets` for `0 2 * * *` returns 2 URNs (not `genre_hierarchy`)
-- `list-periodic-datasets` for `0 6 * * *` returns only `genre_hierarchy`
+- `ingestion/list-periodic` for `0 2 * * *` returns 2 URNs (not `genre_hierarchy`)
+- `ingestion/list-periodic` for `0 6 * * *` returns only `genre_hierarchy`
 
 **Cleanup**: Delete generated flows + test configs
 
@@ -204,11 +204,11 @@ Verify periodic sync groups configs by schedule regardless of source_type.
 - PUT POSTGRESQL config for `title_master`: `periodic=true`, `schedule="0 4 * * *"`
 - PUT KAFKA config (transient URN): `periodic=true`, `schedule="0 4 * * *"`
 
-**Action**: `POST /internal/activities/sync-periodic-ingestion-flows`
+**Action**: `POST /internal/activities/ingestion/sync-periodic-flows`
 
 **Assertions**:
 - One flow created for `schedule="0 4 * * *"`
-- `list-periodic-datasets` returns both the PG and Kafka URNs
+- `ingestion/list-periodic` returns both the PG and Kafka URNs
 
 **Cleanup**: Delete flow + configs
 
@@ -241,7 +241,7 @@ Client ◄── {"run_id": "...", "status": "success", "detail": {...}}
 Kestra (ingestion-config-sync cron fires)
   │
   ▼
-Task: POST /internal/activities/sync-periodic-ingestion-flows
+Task: POST /internal/activities/ingestion/sync-periodic-flows
       ◄── {"created": [...], "deleted": [...], "unchanged": [...]}
 ```
 
@@ -253,7 +253,7 @@ Generates/updates/deletes `ingestion-periodic-*` flows in Kestra based on curren
 Kestra (ingestion-periodic-{hash} cron fires for schedule group)
   │
   ▼
-Task 1: POST /internal/activities/list-periodic-datasets
+Task 1: POST /internal/activities/ingestion/list-periodic
          Body: {"schedule": "0 2 * * *"}
          ◄── ["urn:...:title_master", "urn:...:editions", "urn:...:genre_hierarchy"]
   │

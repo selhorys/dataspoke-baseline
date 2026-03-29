@@ -179,7 +179,7 @@ inputs:
 tasks:
   - id: <step_name>
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/<activity>"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/<domain>/<action>"
     method: POST
     contentType: application/json
     body: |

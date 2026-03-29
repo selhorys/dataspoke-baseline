@@ -16,7 +16,7 @@ inputs:
 tasks:
   - id: classify_datasets
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/classify-datasets"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/ontology/classify"
     method: POST
     contentType: application/json
     body: |
@@ -31,7 +31,7 @@ tasks:
 
   - id: build_hierarchy
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/build-hierarchy"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/ontology/build-hierarchy"
     method: POST
     contentType: application/json
     body: |
@@ -46,7 +46,7 @@ tasks:
 
   - id: infer_relationships
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/infer-relationships"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/ontology/infer-relationships"
     method: POST
     contentType: application/json
     body: |
@@ -61,7 +61,7 @@ tasks:
 
   - id: detect_drift
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/detect-drift"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/ontology/detect-drift"
     method: POST
     contentType: application/json
     body: |

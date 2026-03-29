@@ -21,7 +21,7 @@ inputs:
 tasks:
   - id: run_validation
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/run-validation"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/validation/run"
     method: POST
     contentType: application/json
     body: |

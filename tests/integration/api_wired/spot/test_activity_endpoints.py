@@ -30,14 +30,14 @@ def _urn(suffix: str) -> str:
     return make_test_urn("activity", suffix)
 
 
-# ── Validation activity ──────────────────────────────────────────────────────
+# ── /validation ──────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_run_validation_activity_dry_run(
     http_client, async_session: AsyncSession, datahub_client,
 ):
-    """POST /internal/activities/run-validation (dry_run=true) → 200."""
+    """POST /internal/activities/validation/run (dry_run=true) → 200."""
     dataset_urn = _urn("val_dry")
     headers = _auth_headers()
 
@@ -60,7 +60,7 @@ async def test_run_validation_activity_dry_run(
 
         # Call activity endpoint directly (bypasses Kestra)
         resp = await http_client.post(
-            "/internal/activities/run-validation",
+            "/internal/activities/validation/run",
             json={
                 "dataset_urn": dataset_urn,
                 "dry_run": True,
@@ -79,14 +79,14 @@ async def test_run_validation_activity_dry_run(
         await async_session.commit()
 
 
-# ── Generation activity ──────────────────────────────────────────────────────
+# ── /generation ──────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_run_generation_activity(
     http_client, async_session: AsyncSession, datahub_client,
 ):
-    """POST /internal/activities/run-generation → 200."""
+    """POST /internal/activities/generation/run → 200."""
     dataset_urn = _urn("gen")
     headers = _auth_headers()
 
@@ -109,7 +109,7 @@ async def test_run_generation_activity(
 
         # Call activity endpoint directly
         resp = await http_client.post(
-            "/internal/activities/run-generation",
+            "/internal/activities/generation/run",
             json={"dataset_urn": dataset_urn},
         )
         assert resp.status_code == 200
@@ -129,14 +129,14 @@ async def test_run_generation_activity(
         await async_session.commit()
 
 
-# ── Metrics activity ─────────────────────────────────────────────────────────
+# ── /metrics ─────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_run_metric_activity_dry_run(
     http_client, async_session: AsyncSession,
 ):
-    """POST /internal/activities/run-metric (dry_run=true) → 200."""
+    """POST /internal/activities/metrics/run (dry_run=true) → 200."""
     metric_id = "imazon.test.activity.metric_dry"
     headers = _auth_headers()
 
@@ -156,7 +156,7 @@ async def test_run_metric_activity_dry_run(
 
         # Call activity endpoint directly
         resp = await http_client.post(
-            "/internal/activities/run-metric",
+            "/internal/activities/metrics/run",
             json={"metric_id": metric_id, "dry_run": True},
         )
         assert resp.status_code == 200
@@ -171,15 +171,15 @@ async def test_run_metric_activity_dry_run(
         await async_session.commit()
 
 
-# ── Embedding-sync activities ────────────────────────────────────────────────
+# ── /search ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_enumerate_datasets_single_mode(http_client):
-    """enumerate-datasets (single mode) returns only the requested URN."""
+    """search/enumerate (single mode) returns only the requested URN."""
     dataset_urn = _urn("enumerate_single")
     resp = await http_client.post(
-        "/internal/activities/enumerate-datasets",
+        "/internal/activities/search/enumerate",
         json={"mode": "single", "dataset_urn": dataset_urn},
     )
     assert resp.status_code == 200
@@ -199,7 +199,7 @@ async def test_reindex_batch(
 
     try:
         resp = await http_client.post(
-            "/internal/activities/reindex-batch",
+            "/internal/activities/search/reindex-batch",
             json={"dataset_urns": [dataset_urn]},
         )
         assert resp.status_code == 200
@@ -216,7 +216,7 @@ async def test_reindex_batch(
 async def test_embedding_sync_chain(
     http_client, datahub_client,
 ):
-    """enumerate-datasets → reindex-batch chain (mimics embedding-sync flow)."""
+    """search/enumerate → search/reindex-batch chain (mimics embedding-sync flow)."""
     dataset_urn = _urn("embed_chain")
 
     await emit_test_dataset(
@@ -226,7 +226,7 @@ async def test_embedding_sync_chain(
     try:
         # Step 1: enumerate
         resp = await http_client.post(
-            "/internal/activities/enumerate-datasets",
+            "/internal/activities/search/enumerate",
             json={"mode": "single", "dataset_urn": dataset_urn},
         )
         assert resp.status_code == 200
@@ -235,7 +235,7 @@ async def test_embedding_sync_chain(
 
         # Step 2: reindex using output from step 1
         resp = await http_client.post(
-            "/internal/activities/reindex-batch",
+            "/internal/activities/search/reindex-batch",
             json={"dataset_urns": urns},
         )
         assert resp.status_code == 200
@@ -245,14 +245,14 @@ async def test_embedding_sync_chain(
         await soft_delete_test_dataset(datahub_client, dataset_urn)
 
 
-# ── Ontology activities ──────────────────────────────────────────────────────
+# ── /ontology ────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_classify_datasets(http_client):
-    """classify-datasets endpoint should return a list (may be empty with stubs)."""
+    """ontology/classify endpoint should return a list (may be empty with stubs)."""
     resp = await http_client.post(
-        "/internal/activities/classify-datasets",
+        "/internal/activities/ontology/classify",
         json={"force": False},
     )
     assert resp.status_code == 200
@@ -268,7 +268,7 @@ async def test_build_hierarchy(
 
     try:
         resp = await http_client.post(
-            "/internal/activities/build-hierarchy",
+            "/internal/activities/ontology/build-hierarchy",
             json={
                 "classifications": [
                     {
@@ -304,7 +304,7 @@ async def test_build_hierarchy(
 async def test_infer_relationships(http_client):
     """infer-relationships should find shared datasets between categories."""
     resp = await http_client.post(
-        "/internal/activities/infer-relationships",
+        "/internal/activities/ontology/infer-relationships",
         json={
             "hierarchy": [
                 {"name": "cat_a", "dataset_urns": ["urn:1", "urn:2", "urn:3"]},
@@ -326,7 +326,7 @@ async def test_infer_relationships(http_client):
 async def test_detect_drift(http_client):
     """detect-drift should identify new categories not in DB."""
     resp = await http_client.post(
-        "/internal/activities/detect-drift",
+        "/internal/activities/ontology/detect-drift",
         json={
             "current_hierarchy": [
                 {"name": "novel_category_xyz_test"},
@@ -362,7 +362,7 @@ async def test_ontology_rebuild_chain(
 
         # Step 2: build-hierarchy
         resp = await http_client.post(
-            "/internal/activities/build-hierarchy",
+            "/internal/activities/ontology/build-hierarchy",
             json={"classifications": classifications},
         )
         assert resp.status_code == 200
@@ -371,7 +371,7 @@ async def test_ontology_rebuild_chain(
 
         # Step 3: infer-relationships
         resp = await http_client.post(
-            "/internal/activities/infer-relationships",
+            "/internal/activities/ontology/infer-relationships",
             json={"hierarchy": hierarchy},
         )
         assert resp.status_code == 200
@@ -381,7 +381,7 @@ async def test_ontology_rebuild_chain(
 
         # Step 4: detect-drift
         resp = await http_client.post(
-            "/internal/activities/detect-drift",
+            "/internal/activities/ontology/detect-drift",
             json={"current_hierarchy": hierarchy},
         )
         assert resp.status_code == 200
@@ -395,14 +395,14 @@ async def test_ontology_rebuild_chain(
         await async_session.commit()
 
 
-# ── Metrics publish activity ─────────────────────────────────────────────────
+# ── /metrics (publish) ───────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_publish_metric_update(http_client):
-    """publish-metric-update should succeed (stub cache is no-op)."""
+    """metrics/publish-update should succeed (stub cache is no-op)."""
     resp = await http_client.post(
-        "/internal/activities/publish-metric-update",
+        "/internal/activities/metrics/publish-update",
         json={"run_id": "test-run-id", "status": "success", "detail": {}},
     )
     assert resp.status_code == 200

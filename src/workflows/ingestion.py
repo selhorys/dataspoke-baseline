@@ -42,7 +42,7 @@ triggers:
 tasks:
   - id: list_datasets
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ inputs.callback_base_url }}/internal/activities/list-periodic-datasets"
+    uri: "{{ inputs.callback_base_url }}/internal/activities/ingestion/list-periodic"
     method: POST
     contentType: application/json
     body: |
@@ -62,7 +62,7 @@ tasks:
     tasks:
       - id: run_ingestion
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/internal/activities/run-ingestion"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/ingestion/run"
         method: POST
         contentType: application/json
         body: |

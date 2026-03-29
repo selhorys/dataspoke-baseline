@@ -3,8 +3,8 @@
 Separate from test_ingestion_service.py (which tests config CRUD).
 This file focuses on:
 - POST .../method/run endpoint (direct pipeline execution)
-- POST /internal/activities/list-periodic-datasets
-- POST /internal/activities/sync-periodic-ingestion-flows
+- POST /internal/activities/ingestion/list-periodic
+- POST /internal/activities/ingestion/sync-periodic-flows
 - Concurrency guard (Redis SET NX)
 
 Test-specific data extensions (created and cleaned up within each test):
@@ -205,11 +205,11 @@ async def test_run_ingestion_dry_run(
 async def test_list_periodic_datasets(
     http_client, async_session: AsyncSession
 ):
-    """POST list-periodic-datasets returns only URNs matching the requested schedule.
+    """POST ingestion/list-periodic returns only URNs matching the requested schedule.
 
     Setup: PUT 4 configs (A/B: periodic, schedule="0 2 * * *";
            C: periodic, schedule="0 6 * * *"; D: periodic=false).
-    Action: POST /internal/activities/list-periodic-datasets {"schedule": "0 2 * * *"}.
+    Action: POST /internal/activities/ingestion/list-periodic {"schedule": "0 2 * * *"}.
     Assertions: Result contains A and B; does not contain C or D.
     Cleanup: DELETE all test configs.
     """
@@ -284,10 +284,10 @@ async def test_list_periodic_datasets(
         assert resp.status_code in (200, 201), f"PUT config D failed: {resp.text}"
 
         resp = await http_client.post(
-            "/internal/activities/list-periodic-datasets",
+            "/internal/activities/ingestion/list-periodic",
             json={"schedule": "0 2 * * *"},
         )
-        assert resp.status_code == 200, f"list-periodic-datasets failed: {resp.text}"
+        assert resp.status_code == 200, f"ingestion/list-periodic failed: {resp.text}"
         result = resp.json()
 
         assert urn_a in result, f"Expected {urn_a} in result: {result}"
@@ -309,7 +309,7 @@ async def test_sync_creates_flows_per_schedule(
 
     Setup: 3 real catalog datasets — title_master + editions share "0 2 * * *",
            genre_hierarchy gets "0 6 * * *".
-    Action: POST /internal/activities/sync-periodic-ingestion-flows.
+    Action: POST /internal/activities/ingestion/sync-periodic-flows.
     Assertions: Two flows registered in Kestra (one per schedule),
                 both retrievable via kestra_client.get_flow().
     Cleanup: Delete generated flows + test configs.
@@ -353,7 +353,7 @@ async def test_sync_creates_flows_per_schedule(
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         resp = await http_client.post(
-            "/internal/activities/sync-periodic-ingestion-flows",
+            "/internal/activities/ingestion/sync-periodic-flows",
         )
         assert resp.status_code == 200, f"sync failed: {resp.text}"
         body = resp.json()
@@ -422,7 +422,7 @@ async def test_sync_removes_stale_flows(
 
         # First sync — creates the flow
         resp = await http_client.post(
-            "/internal/activities/sync-periodic-ingestion-flows",
+            "/internal/activities/ingestion/sync-periodic-flows",
         )
         assert resp.status_code == 200
         flow_before = await kestra_client.get_flow(flow_id_03)
@@ -434,7 +434,7 @@ async def test_sync_removes_stale_flows(
 
         # Second sync — should delete the stale flow
         resp = await http_client.post(
-            "/internal/activities/sync-periodic-ingestion-flows",
+            "/internal/activities/ingestion/sync-periodic-flows",
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -461,8 +461,8 @@ async def test_sync_updates_on_schedule_change(
     Assertions:
     - Flow for "0 2 * * *" still exists (title_master + editions remain).
     - New flow for "0 6 * * *" exists.
-    - list-periodic-datasets for "0 2 * * *" returns 2 URNs (not genre_hierarchy).
-    - list-periodic-datasets for "0 6 * * *" returns only genre_hierarchy.
+    - ingestion/list-periodic for "0 2 * * *" returns 2 URNs (not genre_hierarchy).
+    - ingestion/list-periodic for "0 6 * * *" returns only genre_hierarchy.
     Cleanup: Delete generated flows + test configs.
     """
     flow_id_02 = schedule_to_flow_id("0 2 * * *")
@@ -488,7 +488,7 @@ async def test_sync_updates_on_schedule_change(
 
         # First sync — one flow for "0 2 * * *"
         resp = await http_client.post(
-            "/internal/activities/sync-periodic-ingestion-flows",
+            "/internal/activities/ingestion/sync-periodic-flows",
         )
         assert resp.status_code == 200
 
@@ -502,7 +502,7 @@ async def test_sync_updates_on_schedule_change(
 
         # Second sync — should add flow for "0 6 * * *", keep "0 2 * * *"
         resp = await http_client.post(
-            "/internal/activities/sync-periodic-ingestion-flows",
+            "/internal/activities/ingestion/sync-periodic-flows",
         )
         assert resp.status_code == 200
 
@@ -512,9 +512,9 @@ async def test_sync_updates_on_schedule_change(
         flow_06 = await kestra_client.get_flow(flow_id_06)
         assert flow_06 is not None, f"Flow {flow_id_06} not found after schedule change"
 
-        # list-periodic-datasets for "0 2 * * *" returns title_master and editions only
+        # ingestion/list-periodic for "0 2 * * *" returns title_master and editions only
         resp = await http_client.post(
-            "/internal/activities/list-periodic-datasets",
+            "/internal/activities/ingestion/list-periodic",
             json={"schedule": "0 2 * * *"},
         )
         assert resp.status_code == 200
@@ -523,9 +523,9 @@ async def test_sync_updates_on_schedule_change(
         assert _EDITIONS_URN in urns_02
         assert _GENRE_URN not in urns_02
 
-        # list-periodic-datasets for "0 6 * * *" returns only genre_hierarchy
+        # ingestion/list-periodic for "0 6 * * *" returns only genre_hierarchy
         resp = await http_client.post(
-            "/internal/activities/list-periodic-datasets",
+            "/internal/activities/ingestion/list-periodic",
             json={"schedule": "0 6 * * *"},
         )
         assert resp.status_code == 200
@@ -691,10 +691,10 @@ async def test_mixed_source_types_in_periodic_sync(
 
     Setup: PUT POSTGRESQL config (title_master) and KAFKA config (transient URN),
            both periodic with the same schedule.
-    Action: POST sync-periodic-ingestion-flows.
+    Action: POST ingestion/sync-periodic-flows.
     Assertions:
     - One flow created for the shared schedule.
-    - list-periodic-datasets returns both URNs.
+    - ingestion/list-periodic returns both URNs.
     Cleanup: Delete flow + configs.
     """
     schedule = "0 4 * * *"
@@ -736,7 +736,7 @@ async def test_mixed_source_types_in_periodic_sync(
         assert resp.status_code in (200, 201), f"PUT Kafka config failed: {resp.text}"
 
         resp = await http_client.post(
-            "/internal/activities/sync-periodic-ingestion-flows",
+            "/internal/activities/ingestion/sync-periodic-flows",
         )
         assert resp.status_code == 200, f"sync failed: {resp.text}"
         body = resp.json()
@@ -746,7 +746,7 @@ async def test_mixed_source_types_in_periodic_sync(
 
         # Both URNs should appear for the shared schedule
         resp = await http_client.post(
-            "/internal/activities/list-periodic-datasets",
+            "/internal/activities/ingestion/list-periodic",
             json={"schedule": schedule},
         )
         assert resp.status_code == 200

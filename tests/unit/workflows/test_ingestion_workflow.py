@@ -96,7 +96,7 @@ def test_generated_yaml_has_list_datasets_task(sample_yaml):
     list_task = next(t for t in tasks if t["id"] == "list_datasets")
     assert list_task["type"] == "io.kestra.plugin.core.http.Request"
     assert list_task["method"] == "POST"
-    assert "/internal/activities/list-periodic-datasets" in list_task["uri"]
+    assert "/internal/activities/ingestion/list-periodic" in list_task["uri"]
 
 
 def test_generated_yaml_list_datasets_body_contains_schedule(sample_yaml):
