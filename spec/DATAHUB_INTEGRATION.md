@@ -354,31 +354,7 @@ DataSpoke consumes Kafka events from DataHub to react to metadata changes in rea
 
 ### Consumer Pattern
 
-```python
-from confluent_kafka import Consumer
-
-consumer = Consumer({
-    "bootstrap.servers": DATASPOKE_DATAHUB_KAFKA_BROKERS,
-    "group.id": "dataspoke-consumers",
-    "auto.offset.reset": "latest",
-})
-
-consumer.subscribe(["MetadataChangeLog_Versioned_v1"])
-
-while True:
-    msg = consumer.poll(timeout=1.0)
-    if msg is None:
-        continue
-    event = deserialize_mcl(msg.value())
-
-    # Route by aspect name
-    if event.aspectName == "datasetProperties":
-        sync_vector_index(event)       # NL Search: update Qdrant
-    elif event.aspectName == "datasetProfile":
-        trigger_quality_check(event)   # Validator: anomaly detection
-    elif event.aspectName == "ownership":
-        update_health_score(event)     # Metrics Dashboard: re-score
-```
+A single `confluent_kafka.Consumer` (group `dataspoke-consumers`, `auto.offset.reset=latest`) subscribes to both topics. Messages are deserialized via `deserialize_mcl()` and routed by `event.aspectName` to feature-specific handlers. Implementation: `src/shared/datahub/events.py` (EventRouter) and `src/shared/datahub/consumer.py`.
 
 ### Event-Driven Feature Triggers
 
@@ -434,18 +410,7 @@ All DataHub connection parameters are configured via environment variables (in d
 | `DATASPOKE_DATAHUB_TOKEN` | Personal access token (empty in dev — DataHub doesn't require auth in the dev env) | `""` |
 | `DATASPOKE_DATAHUB_KAFKA_BROKERS` | Kafka brokers for MCE/MAE events | `localhost:9005` |
 
-Resilience settings (retry, circuit breaker, bulk batching) are application-level constants defined in `src/shared/config/`:
-
-| Setting | Default |
-|---------|---------|
-| `retry_max_attempts` | 3 |
-| `retry_backoff_base_ms` | 500 |
-| `circuit_breaker_threshold` | 5 |
-| `circuit_breaker_reset_ms` | 60000 |
-| `bulk_batch_size` | 100 |
-| `bulk_batch_delay_ms` | 100 |
-
-See [`spec/feature/DEV_ENV.md` §Application Runtime Variables](feature/DEV_ENV.md#application-runtime-variables-dataspoke) for the full variable listing, and [`spec/feature/HELM_CHART.md` §Configuration Flow](feature/HELM_CHART.md#configuration-flow) for production deployment.
+Resilience settings (retry, circuit breaker, bulk batching) are application-level constants defined in `src/shared/config/`. See [`BACKEND.md §Configuration`](feature/BACKEND.md#configuration) for the full settings table, and [`HELM_CHART.md §Configuration Flow`](feature/HELM_CHART.md#configuration-flow) for production deployment.
 
 ## Open Questions
 

@@ -126,25 +126,7 @@ Two-tier naming convention in `.env`:
 
 ### Resource budget
 
-~11.3 GiB memory limits on 8+ CPU / 16 GB cluster (~72% utilization). See `spec/feature/DEV_ENV.md` for per-component rationale.
-
-| Component | Namespace | Memory Limit |
-|-----------|-----------|-------------|
-| Elasticsearch | datahub-01 | 2560 Mi |
-| Kafka + ZK | datahub-01 | 1024 Mi |
-| MySQL | datahub-01 | 768 Mi |
-| datahub-gms | datahub-01 | 1536 Mi |
-| datahub-frontend | datahub-01 | 768 Mi |
-| datahub-mae/mce | datahub-01 | 1024 Mi |
-| datahub-actions | datahub-01 | 256 Mi |
-| kestra | dataspoke-01 | 512 Mi |
-| qdrant | dataspoke-01 | 1024 Mi |
-| postgresql | dataspoke-01 | 512 Mi |
-| redis | dataspoke-01 | 256 Mi |
-| dev-lock | dataspoke-01 | 64 Mi |
-| example-postgres | dummy-data-01 | 256 Mi |
-| example-kafka | dummy-data-01 | 1024 Mi |
-| **Total** | | **~11.3 Gi** |
+~12.3 GiB total memory limits on 8+ CPU / 16 GB cluster (~77% utilization). See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
 
 ## Troubleshooting
 

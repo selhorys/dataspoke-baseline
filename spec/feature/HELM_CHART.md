@@ -48,23 +48,7 @@ Production Deployment                    Dev Deployment (dev_env)
 
 ## Chart Structure
 
-```
-helm-charts/dataspoke/
-├── Chart.yaml                  # Umbrella chart (apiVersion: v2, type: application)
-├── Chart.lock                  # Locked dependency versions
-├── values.yaml                 # Production defaults (all components enabled)
-├── values-dev.yaml             # Dev overlay: infra only, reduced resources
-├── templates/
-│   ├── _helpers.tpl            # Common template helpers (labels, names, selectors)
-│   ├── configmap.yaml          # DATASPOKE_* app config from .Values.config
-│   ├── secrets.yaml            # Sensitive DATASPOKE_* vars from .Values.secrets
-│   └── networkpolicy.yaml      # Cross-namespace egress to DataHub
-├── subcharts/
-│   ├── frontend/               # Next.js — Deployment + Service + Ingress
-│   ├── api/                    # FastAPI — Deployment + Service + Ingress
-│   └── event-consumer/         # Kafka consumer — Deployment only (no service)
-└── charts/                     # Fetched subchart archives (helm dep update)
-```
+`helm-charts/dataspoke/` is a standard Helm umbrella chart with `Chart.yaml` (apiVersion v2), `values.yaml` (production), `values-dev.yaml` (dev overlay), `templates/` (configmap, secrets, networkpolicy, helpers), three application `subcharts/` (frontend, api, event-consumer), and `charts/` (fetched dependency archives).
 
 ### Dependencies
 

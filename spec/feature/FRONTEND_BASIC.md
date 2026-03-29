@@ -25,26 +25,7 @@
 
 The DataSpoke UI is a **portal-style** Next.js application. Users enter through a landing page that routes them to their user-group workspace (DE, DA, DG). Common features — authentication, settings, help, notifications — are shared across all workspaces.
 
-```
-src/frontend/
-├── app/
-│   ├── (auth)/          # Login, token refresh
-│   ├── (portal)/        # Landing, group selection
-│   ├── de/              # Data Engineering workspace
-│   ├── da/              # Data Analysis workspace
-│   ├── dg/              # Data Governance workspace
-│   └── settings/        # User preferences
-├── components/
-│   ├── layout/          # Shell, sidebar, header, footer
-│   ├── common/          # DataTable, SearchBar, StatusBadge, etc.
-│   └── charts/          # Chart wrappers (Recharts/Highcharts)
-├── lib/
-│   ├── api/             # API client (fetch wrapper, auth interceptor)
-│   ├── hooks/           # Shared React hooks
-│   ├── store/           # Global state (Zustand)
-│   └── ws/              # WebSocket connection manager
-└── styles/              # Tailwind config, theme tokens
-```
+Source layout in `src/frontend/`: `app/` (Next.js pages — auth, portal, de, da, dg, settings), `components/` (layout shell, common widgets, chart wrappers), `lib/` (API client, hooks, Zustand store, WebSocket manager), `styles/` (Tailwind config, theme tokens).
 
 ---
 

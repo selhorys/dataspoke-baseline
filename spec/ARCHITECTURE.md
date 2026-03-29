@@ -123,14 +123,6 @@ Portal-style interface with user-group-specific entry points (DE, DA, DG). Provi
 
 For layout, shared components, routing, and auth, see [`spec/feature/FRONTEND_BASIC.md`](feature/FRONTEND_BASIC.md). Per-workspace specs: [`FRONTEND_DE.md`](feature/FRONTEND_DE.md), [`FRONTEND_DA.md`](feature/FRONTEND_DA.md), [`FRONTEND_DG.md`](feature/FRONTEND_DG.md).
 
-```
-src/frontend/
-├── app/            # Next.js pages per user group (de, da, dg)
-├── components/     # Reusable UI (charts, graphs, tables, search)
-├── lib/            # API client, state management, hooks
-└── styles/         # Global styles and themes
-```
-
 ### 2. DataSpoke API
 
 **Technology**: FastAPI (Python 3.13)
@@ -148,14 +140,6 @@ Three-tier URI structure:
 Supports RESTful CRUD and WebSocket channels for real-time streaming (alerts, validation progress).
 
 For the complete route catalogue, JWT authentication model, middleware stack, error catalogue, and WebSocket channel specs, see [`spec/feature/API.md`](feature/API.md).
-
-```
-src/api/
-├── routers/        # Routers per API tier (common, dg, hub, auth) + system health
-├── schemas/        # Pydantic request/response models
-├── middleware/      # Auth, logging, rate limiting, API convention enforcement
-└── main.py         # FastAPI application entry
-```
 
 ### 3. DataSpoke Backend / Pipeline
 
@@ -175,11 +159,7 @@ Core computational layer. For the full backend specification — layered archite
 | Metrics (DG) | Health score aggregation, department mapping, trend analysis |
 | Visualization (DG) | Graph layout, medallion classification, blind spot detection |
 
-```
-src/backend/        # Feature service implementations
-src/workflows/      # Kestra flow definitions (YAML) + workflow helper modules
-src/shared/         # DataHub client wrappers, shared models, LLM integration
-```
+Source layout: `src/backend/` (feature services), `src/workflows/` (Kestra flow YAML + helpers), `src/shared/` (DataHub client, shared models, LLM integration).
 
 ### 4. DataHub (External)
 
@@ -491,28 +471,9 @@ Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, na
 
 Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values differ. In dev, they point to `localhost` (port-forwarded from k8s). In production, they are injected via Helm values → Kubernetes ConfigMap/Secret.
 
-**Application runtime variable groups**:
+Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Qdrant, Kestra, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, port-forward ports. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
 
-| Group | Variables | Purpose |
-|-------|-----------|---------|
-| DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_DATAHUB_KAFKA_BROKERS` | GMS endpoint for SDK read/write, personal access token (empty in dev), Kafka brokers for MCE/MAE events |
-| PostgreSQL | `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_POSTGRES_PORT`, `DATASPOKE_POSTGRES_USER`, `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_POSTGRES_DB` | Operational DB for ingestion configs, quality results, health scores, ontology graph |
-| Redis | `DATASPOKE_REDIS_HOST`, `DATASPOKE_REDIS_PORT`, `DATASPOKE_REDIS_PASSWORD` | Cache for validation results, API responses, rate limiting |
-| Qdrant | `DATASPOKE_QDRANT_HOST`, `DATASPOKE_QDRANT_HTTP_PORT`, `DATASPOKE_QDRANT_GRPC_PORT`, `DATASPOKE_QDRANT_API_KEY` | Vector DB for semantic search, embedding storage |
-| Kestra | `DATASPOKE_KESTRA_HOST`, `DATASPOKE_KESTRA_PORT` | Workflow orchestration (API + UI on single port) |
-| LLM API | `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_API_KEY`, `DATASPOKE_LLM_MODEL` | LLM integration (e.g. Gemini, OpenAI, Anthropic) for ontology, doc generation, semantic analysis |
-
-**Dev-only variable groups** (examples):
-
-| Group | Variables | Purpose |
-|-------|-----------|---------|
-| Cluster & namespaces | `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE` | Cluster context and namespace targeting |
-| Chart versions | `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION` | Helm chart version pins |
-| Port-forward | `DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_*` (UI, GMS, Kafka), `DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_*` | Port mappings |
-
-For production, secrets (`DATASPOKE_LLM_API_KEY`, `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, etc.) are stored as Kubernetes Secrets and referenced by deployments. Configuration flows through the umbrella Helm chart: Helm values → ConfigMap/Secret → container environment. See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
-
-For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
+For production, secrets are stored as Kubernetes Secrets and injected via Helm values → ConfigMap/Secret → container environment. See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
 
 ### Development Environment
 
@@ -542,27 +503,17 @@ The bundled dev environment is **NOT** for production. For production Kubernetes
 
 ## Repository Structure
 
-```
-dataspoke-baseline/
-├── dev_env/            # Kubernetes dev environment
-├── helm-charts/        # Kubernetes deployment manifests
-├── docker-images/      # Dockerfiles for each service (multi-stage builds)
-├── spec/               # Architecture and feature specifications
-│   ├── feature/        # Cross-cutting feature specs (API, BACKEND, BACKEND_SCHEMA, FRONTEND_*, DEV_ENV, HELM_CHART)
-│   └── feature/spoke/  # User-group-specific feature specs (DE/DA/DG)
-├── src/
-│   ├── frontend/       # Next.js (pages per user group: de, da, dg)
-│   ├── api/            # FastAPI (routers per user group, schemas, middleware)
-│   ├── backend/        # Feature service implementations
-│   ├── workflows/      # Kestra flow YAML definitions, parameter dataclasses, and kestra/ client subpackage
-│   └── shared/         # DataHub client, shared models, LLM integration
-├── tests/              # Unit, integration, E2E test suites
-├── ref/                # External source for AI reference (git-ignored)
-├── migrations/         # Alembic database migrations
-├── pyproject.toml      # Python project metadata and dependencies (uv)
-├── uv.lock             # Locked dependency versions (committed)
-└── .venv/              # Python virtual environment (git-ignored, created by uv sync)
-```
+The repository is organized by deployment concern and application layer. Key top-level directories:
+
+| Directory | Purpose |
+|-----------|---------|
+| `src/` | Application source: `api/` (FastAPI), `backend/` (services), `shared/` (clients), `workflows/` (Kestra flows), `frontend/` (Next.js) |
+| `spec/` | Architecture and feature specifications (`feature/` for cross-cutting, `feature/spoke/` for user-group-specific) |
+| `tests/` | Unit, integration, and E2E test suites |
+| `dev_env/` | Kubernetes dev environment scripts |
+| `helm-charts/` | Umbrella Helm chart for deployment |
+| `docker-images/` | Dockerfiles per service |
+| `migrations/` | Alembic database migrations |
 
 ---
 

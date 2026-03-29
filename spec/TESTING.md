@@ -38,27 +38,9 @@
 
 Tests live under `tests/` at the repo root, mirroring `src/`:
 
-```
-tests/
-├── unit/
-│   ├── api/            # FastAPI route tests (no running server)
-│   ├── backend/        # Service logic tests
-│   ├── shared/         # DataHub client wrapper, shared model tests
-│   ├── workflows/      # Kestra flow and activity endpoint tests
-│   └── frontend/       # Jest tests (or co-located in src/frontend/)
-├── integration/             # Dev-env-backed integration tests
-│   ├── util/                # Dummy-data reset/ingest utilities
-│   │   ├── fixtures/sql/    # SQL seed files
-│   │   ├── fixtures/kafka/  # Kafka JSONL seed messages
-│   │   ├── postgres.py, kafka.py, datahub.py, kestra.py
-│   ├── api_wired/           # API-wired integration tests (REST-only)
-│   │   ├── spot/            # Individual endpoint tests (1-5 API calls)
-│   │   ├── story/           # Multi-step USE_CASE scenarios (10-100 API calls)
-│   │   └── conftest.py      # Extends root conftest
-│   ├── conftest.py          # Root conftest: infra fixtures, lock, dummy-data lifecycle
-│   └── test_*_integration.py  # Non-API-wired tests (infra clients, Kafka, Kestra)
-└── e2e/                # Playwright end-to-end tests
-```
+- `tests/unit/` — `api/`, `backend/`, `shared/`, `workflows/`, `frontend/` (mirrors `src/` modules)
+- `tests/integration/` — Dev-env-backed tests: `util/` (dummy-data reset/ingest utilities with `fixtures/sql/` and `fixtures/kafka/`), `api_wired/` (REST-only tests split into `spot/` for single-endpoint and `story/` for multi-step UC scenarios), `conftest.py` (root fixtures: infra, lock, dummy-data lifecycle), `test_*_integration.py` (non-API-wired tests)
+- `tests/e2e/` — Playwright end-to-end tests
 
 ---
 
@@ -215,7 +197,7 @@ Non-api-wired tests do not require the running server.
 
 ### Test Execution Groups
 
-Tests must run in **three separate groups**, in sequence:
+Tests must run in **three separate groups**:
 
 | Group | Command | Requires server? |
 |-------|---------|-----------------|

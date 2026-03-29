@@ -151,18 +151,7 @@ Thin read-through service. Reads dataset identity/attributes from DataHub, aggre
 
 CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD).
 
-**Ingestion config model** (`ingestion_configs` table):
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `dataset_urn` | text | Unique; one config per dataset |
-| `source_type` | text | `POSTGRESQL`, `KAFKA` (implemented); `MYSQL`, `ORACLE`, `BIGQUERY`, `SNOWFLAKE` (TODO) |
-| `locator` | JSONB | Infrastructure location (e.g., host/port for RDBMS) |
-| `identifier` | JSONB | Dataset identifier within the infra (e.g., database/schema/table) |
-| `auth` | JSONB | Access credentials; null for ambient auth |
-| `periodic` | boolean | Enable cron-triggered execution via Kestra |
-| `schedule` | text | Cron expression (required when `periodic=true`) |
-| `status` | text | Kestra registration outcome: `OK` or `ERROR` |
+Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `source_type` (`POSTGRESQL`, `KAFKA` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `periodic`/`schedule` (cron trigger), `status` (Kestra registration outcome).
 
 **Run pipeline** (`IngestionService.run()`):
 

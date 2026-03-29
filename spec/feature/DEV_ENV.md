@@ -92,22 +92,9 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 
 > Namespace names are **defaults** from `.env.example`. All scripts read them from environment variables and never hardcode them.
 
-### Directory Structure
+### Directory Layout
 
-```
-dev_env/
-├── .env.example / .env              # Configuration (see §Configuration)
-├── install.sh / uninstall.sh        # Top-level orchestrators
-├── lib/helpers.sh                   # Shared shell functions: info(), warn(), error()
-├── datahub-port-forward.sh          # Port-forward DataHub UI + GMS + Kafka
-├── dataspoke-port-forward.sh        # Port-forward DataSpoke infra services
-├── dummy-data-port-forward.sh       # Port-forward example PostgreSQL + Kafka
-├── lock-port-forward.sh             # Port-forward lock service
-├── datahub/                         # DataHub Helm install (prerequisites + datahub charts)
-├── dataspoke-infra/                 # DataSpoke infra via umbrella chart (values-dev.yaml)
-├── dataspoke-lock/                  # Lock service (plain K8s manifests)
-└── dataspoke-example/               # Example data sources (plain K8s manifests)
-```
+`dev_env/` contains: top-level orchestrators (`install.sh`, `uninstall.sh`), per-service port-forward scripts, shared helpers (`lib/helpers.sh`), and four sub-installers: `datahub/` (Helm), `dataspoke-infra/` (umbrella chart), `dataspoke-lock/` (plain K8s manifests), `dataspoke-example/` (plain K8s manifests). Configuration in `.env` (copied from `.env.example`).
 
 ---
 

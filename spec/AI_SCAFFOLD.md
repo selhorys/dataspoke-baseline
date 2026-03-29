@@ -26,30 +26,7 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 
 ## Scaffold Structure
 
-```
-.claude/
-├── skills/                     # Prompt extensions and multi-step workflows
-│   ├── k8s-work/               # Kubernetes cluster management (health, monitoring, operations)
-│   ├── plan-doc/               # Spec document routing and authoring
-│   ├── datahub-api/            # DataHub data model Q&A and code writing
-│   ├── kestra-api/             # Kestra REST API reference and code writing
-│   ├── prauto-check-status/    # Prauto issue/PR status dashboard
-│   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
-│   ├── dev-env/                # Dev environment management (configure, install, port-forward, health-check, run-dataspoke-test-mode, uninstall)
-│   ├── ref-setup/              # Download AI reference materials
-│   ├── spec-sync-from-impl/     # Spec ↔ implementation synchronization
-│   ├── spec-harmonize/        # Forward spec propagation (spec → sibling/parent specs)
-│   └── spec-to-bulk-issue/    # Bulk-create implementation issues from specs
-├── agents/                     # Subagent system prompts
-│   ├── reviewer.md             # Independent evaluator (opus) — spec compliance + quality scoring
-│   ├── backend.md              # FastAPI/Python implementer (sonnet)
-│   ├── workflow.md             # Kestra flow YAML + workflow helper module implementer (sonnet)
-│   ├── test.md                 # Test writer and runner (sonnet)
-│   ├── frontend.md             # Next.js/TypeScript implementer (sonnet)
-│   └── k8s-helm.md             # Helm/Kubernetes/Docker author (sonnet)
-├── settings.json               # Tool permissions
-└── settings.local.json         # Local overrides (machine-specific approvals)
-```
+`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (subagent system prompts — one `.md` per agent), `settings.json` (tool permissions), and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full catalogue.
 
 The scaffold works alongside these structural elements:
 

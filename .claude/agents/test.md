@@ -70,7 +70,7 @@ tests/
 
 ## Running tests
 
-Tests must be run in three separate groups, in order. Do not mix them.
+Tests must be run in three separate groups. Do not mix them.
 
 ```bash
 # Group 1: Unit tests (no infrastructure needed)
