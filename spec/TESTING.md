@@ -457,10 +457,10 @@ API-wired tests require the host-mode server to be running:
 # Start server as background process (coding agent sessions)
 ./dev_env/dataspoke-test-mode.sh --skip-migrate &
 
-# Run tests
-uv run pytest tests/integration/api_wired/          # All api-wired tests
-uv run pytest tests/integration/api_wired/spot/      # Only spot tests
-uv run pytest tests/integration/api_wired/story/     # Only story tests
+# Run tests (env var required — conftest checks it in the pytest process)
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/          # All api-wired tests
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/spot/      # Only spot tests
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/story/     # Only story tests
 ```
 
 Non-api-wired integration tests do not require the running server:
@@ -477,7 +477,7 @@ Tests must be run in **three separate groups**, in sequence. Mixing them in a si
 |-------|---------|-----------------|
 | 1. Unit tests | `uv run pytest tests/unit/` | No |
 | 2. Non-api-wired integration | `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/` | No |
-| 3. Api-wired integration | `uv run pytest tests/integration/api_wired/` | Yes — `dataspoke-test-mode` |
+| 3. Api-wired integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/` | Yes — `dataspoke-test-mode` |
 
 For group 3, start the test-mode server **before** testing and stop it **after**:
 
@@ -488,8 +488,9 @@ For group 3, start the test-mode server **before** testing and stop it **after**
 # Wait for ready
 until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
 
-# Run tests
-uv run pytest tests/integration/api_wired/
+# Run tests (DATASPOKE_TEST_MODE must be set in the pytest process — the
+# server script only exports it for the server subprocess, not the caller)
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
 # Teardown
 ./dev_env/dataspoke-test-mode.sh --stop

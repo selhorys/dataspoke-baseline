@@ -18,7 +18,10 @@
 #   ./dev_env/dataspoke-test-mode.sh --stop               # Stop running instance and exit
 #
 # After the server is running, in a second terminal:
-#   uv run pytest tests/integration/api_wired/ -v
+#   DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/ -v
+#
+# Note: DATASPOKE_TEST_MODE must be set in the pytest process as well —
+# this script only exports it for the server subprocess.
 #
 # Exit: Ctrl+C (graceful shutdown)
 # ---------------------------------------------------------------------------

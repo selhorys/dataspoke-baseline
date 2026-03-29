@@ -84,7 +84,9 @@ uv run pytest tests/integration/ --ignore=tests/integration/api_wired/
 # Start server (auto-kills previous instance), wait for ready, run tests, teardown
 ./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
 until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
-uv run pytest tests/integration/api_wired/
+# DATASPOKE_TEST_MODE must be set in the pytest process (conftest checks it)
+# — the server script only exports it for its own subprocess
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 ./dev_env/dataspoke-test-mode.sh --stop
 
 # E2E tests (requires full stack running)

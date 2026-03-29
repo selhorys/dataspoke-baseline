@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DataSpoke is a sidecar extension to DataHub that provides user-group-specific features for Data Engineers (DE), Data Analysts (DA), and Data Governance personnel (DG). This repo contains architecture specs, dev environment setup, and an AI coding scaffold. Application source code (`src/`) will be generated using the scaffold's subagents. Read `spec/ARCHITECTURE.md` for full system design; read `spec/AI_SCAFFOLD.md` for scaffold details.
 
+## Shell Commands
+
+Run every command from the directory it expects (usually project root). Do not `cd` away mid-session — use relative paths instead.
+
 ## Dev Environment
 
 ```bash
@@ -101,9 +105,9 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 **Test execution groups**: Run tests in three separate groups, in order — do not mix:
 1. `uv run pytest tests/unit/`
 2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
-3. Start `./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &`, wait for health, run `uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
+3. Start `./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &`, wait for health, run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
 
-Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set, server health, and `ingestion-config-sync` flow registration before api-wired tests run.
+Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process** (not just the server), server health, and `ingestion-config-sync` flow registration before api-wired tests run. The env var must be passed to the `uv run pytest` command because `dataspoke-test-mode.sh` only exports it for the server subprocess.
 
 **Output rules**:
 - Never truncate integration test output (no `| tail`, `| head`, or piping through filters) — always show the complete pytest output
