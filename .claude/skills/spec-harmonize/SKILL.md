@@ -1,5 +1,5 @@
 ---
-name: sync-specs
+name: spec-harmonize
 description: >-
   Propagate spec changes to sibling/parent specs and harness docs.
   Use when a spec is created, modified, or deleted and dependent documents need updating —
@@ -16,7 +16,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ## Overview
 
-Spec change propagation: when one spec changes, update all documents that reference or list it. `sync-specs` syncs **within the spec layer**.
+Spec change propagation: when one spec changes, update all documents that reference or list it. `spec-harmonize` syncs **within the spec layer**.
 
 ---
 
@@ -37,12 +37,12 @@ Ask the user:
 ```
 Which spec file changed, and how?
 
-  Usage: /sync-specs <spec-file-path> [new|modified|deleted]
+  Usage: /spec-harmonize <spec-file-path> [new|modified|deleted]
 
   Examples:
-    /sync-specs spec/feature/SEARCH.md new
-    /sync-specs spec/ARCHITECTURE.md modified
-    /sync-specs spec/feature/spoke/DE_VALIDATOR.md deleted
+    /spec-harmonize spec/feature/SEARCH.md new
+    /spec-harmonize spec/ARCHITECTURE.md modified
+    /spec-harmonize spec/feature/spoke/DE_VALIDATOR.md deleted
 ```
 
 Wait for the user's reply before proceeding.
@@ -124,7 +124,7 @@ Compare the changed spec content against each target document. Identify:
 Present findings:
 
 ```
-## Sync-Specs Report — <changed-file>
+## Spec-Harmonize Report — <changed-file>
 
 ### Change Summary
 - File: <path>

@@ -37,8 +37,8 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 │   ├── prauto-run-heartbeat/   # Heartbeat test-run with monitoring and self-healing
 │   ├── dev-env/                # Dev environment management (configure, install, port-forward, health-check, run-dataspoke-test-mode, uninstall)
 │   ├── ref-setup/              # Download AI reference materials
-│   ├── sync-spec-from-impl/     # Spec ↔ implementation synchronization
-│   ├── sync-specs/            # Forward spec propagation (spec → sibling/parent specs)
+│   ├── spec-sync-from-impl/     # Spec ↔ implementation synchronization
+│   ├── spec-harmonize/        # Forward spec propagation (spec → sibling/parent specs)
 │   └── spec-to-bulk-issue/    # Bulk-create implementation issues from specs
 ├── agents/                     # Subagent system prompts
 │   ├── reviewer.md             # Independent evaluator (opus) — spec compliance + quality scoring
@@ -78,8 +78,9 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
 | `dev-env` | Dev environment management: configure, install (full or partial), uninstall (full or partial), start/stop port-forwarding, health-check, and run-dataspoke-test-mode (host-mode app via `uv run -m src.cli`). Accepts action + optional component/options as arguments |
 | `ref-setup` | Download AI reference materials (external source code for AI assistant reference) with interactive selection; monitor in background until complete |
-| `sync-spec-from-impl` | Reverse-sync specs from implementation (impl → spec). Detects structural drift, naming mismatches, undocumented features, and stale references. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref, backend, frontend) or full sync |
-| `sync-specs` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
+| `spec-sync-from-impl` | Reverse-sync specs from implementation (impl → spec). Detects structural drift, naming mismatches, undocumented features, and stale references. Supports scoped sync (prauto, ai-scaffold, dev-env, helm-charts, api, ref, backend, frontend) or full sync |
+| `spec-harmonize` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
+| `spec-reduce` | Audit and trim bloated specs, scaffold docs, and READMEs. Removes implementation details, eliminates cross-tier duplication, enforces abstraction-level discipline |
 | `spec-to-bulk-issue` | Analyze specs to find unimplemented components, write ordered issue tickets in `issues/`, revise existing issues, and optionally register them to GitHub with `prauto:ready` label |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
