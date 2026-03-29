@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
 from src.shared.db.models import ConceptCategory, DatasetConceptMap, Event
 from src.shared.db.models import ConceptRelationship as ConceptRelationshipORM
+from src.shared.events import CONCEPT_APPROVE, CONCEPT_PREFIX, CONCEPT_REJECT
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.shared.models.ontology import Concept as ConceptRecord
 from src.shared.models.ontology import ConceptRelationship as ConceptRelationshipRecord
@@ -137,6 +138,7 @@ class OntologyService:
         base = select(Event).where(
             Event.entity_type == "concept",
             Event.entity_id == concept_id,
+            Event.event_type.startswith(CONCEPT_PREFIX),
         )
 
         count_q = select(func.count()).select_from(base.subquery())
@@ -186,7 +188,7 @@ class OntologyService:
         await self._db.refresh(row)
 
         await self._record_event(
-            concept_id, "concept.approved", "success", {"new_version": row.version}
+            concept_id, CONCEPT_APPROVE, "success", {"new_version": row.version}
         )
 
         return _concept_from_row(row)
@@ -212,7 +214,7 @@ class OntologyService:
         await self._db.commit()
         await self._db.refresh(row)
 
-        await self._record_event(concept_id, "concept.rejected", "success", {})
+        await self._record_event(concept_id, CONCEPT_REJECT, "success", {})
 
         return _concept_from_row(row)
 

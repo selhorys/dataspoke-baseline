@@ -14,6 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, MetricDefinition, MetricIssue, MetricResult
+from src.shared.events import (
+    METRIC_ACTIVATE,
+    METRIC_ALARM_TRIGGER,
+    METRIC_CONFIG_CREATE,
+    METRIC_CONFIG_DELETE,
+    METRIC_CONFIG_UPDATE,
+    METRIC_DEACTIVATE,
+    METRIC_FINDINGS_DETECT,
+    METRIC_PREFIX,
+    METRIC_RUN_COMPLETE,
+)
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.shared.notifications.models import ActionItem
 from src.shared.notifications.service import NotificationService
@@ -274,6 +285,15 @@ class MetricsService:
 
         await self._db.commit()
         await self._db.refresh(existing)
+
+        event_type = METRIC_CONFIG_CREATE if created else METRIC_CONFIG_UPDATE
+        await self._record_event(
+            metric_id,
+            event_type,
+            "success",
+            {"operation": "PUT", "metric_id": metric_id},
+        )
+
         return _definition_from_row(existing), created
 
     async def patch_metric_config(
@@ -304,6 +324,14 @@ class MetricsService:
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
+
+        await self._record_event(
+            metric_id,
+            METRIC_CONFIG_UPDATE,
+            "success",
+            {"operation": "PATCH", "metric_id": metric_id, "fields_changed": list(patch.keys())},
+        )
+
         return _definition_from_row(row)
 
     async def delete_metric_config(self, metric_id: str) -> None:
@@ -316,6 +344,13 @@ class MetricsService:
 
         await self._db.delete(row)
         await self._db.commit()
+
+        await self._record_event(
+            metric_id,
+            METRIC_CONFIG_DELETE,
+            "success",
+            {"operation": "DELETE", "metric_id": metric_id},
+        )
 
     # ── Results ──────────────────────────────────────────────────────────
 
@@ -400,7 +435,7 @@ class MetricsService:
         await self._db.commit()
 
         # 5. Record events
-        await self._record_event(metric_id, "metric.run.completed", "success", detail)
+        await self._record_event(metric_id, METRIC_RUN_COMPLETE, "success", detail)
 
         if alarm_triggered:
             alarm_detail = {
@@ -408,7 +443,7 @@ class MetricsService:
                 "value": value,
                 "threshold": definition.alarm_threshold,
             }
-            await self._record_event(metric_id, "metric.alarm.triggered", "warning", alarm_detail)
+            await self._record_event(metric_id, METRIC_ALARM_TRIGGER, "warning", alarm_detail)
 
             if self._notification and definition.alarm_enabled:
                 threshold_val = (definition.alarm_threshold or {}).get("value", value)
@@ -430,7 +465,7 @@ class MetricsService:
                 "finding_count": len(new_findings),
                 "affected_urns": new_findings[:20],
             }
-            await self._record_event(metric_id, "metric.findings.detected", "info", findings_detail)
+            await self._record_event(metric_id, METRIC_FINDINGS_DETECT, "info", findings_detail)
 
         # 7. Sync metric issues (auto-create / auto-resolve)
         await self._sync_metric_issues(metric_id, breakdown, delta)
@@ -455,7 +490,7 @@ class MetricsService:
         await self._db.commit()
         await self._db.refresh(row)
 
-        await self._record_event(metric_id, "metric.activated", "success", {"metric_id": metric_id})
+        await self._record_event(metric_id, METRIC_ACTIVATE, "success", {"metric_id": metric_id})
         return _definition_from_row(row)
 
     async def deactivate(self, metric_id: str) -> MetricDefinitionRecord:
@@ -475,7 +510,7 @@ class MetricsService:
         await self._db.refresh(row)
 
         await self._record_event(
-            metric_id, "metric.deactivated", "success", {"metric_id": metric_id}
+            metric_id, METRIC_DEACTIVATE, "success", {"metric_id": metric_id}
         )
         return _definition_from_row(row)
 
@@ -493,6 +528,7 @@ class MetricsService:
         base = select(Event).where(
             Event.entity_type == "metric",
             Event.entity_id == metric_id,
+            Event.event_type.startswith(METRIC_PREFIX),
         )
 
         if from_dt is not None:

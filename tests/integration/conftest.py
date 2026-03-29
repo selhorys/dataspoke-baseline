@@ -519,7 +519,7 @@ async def seed_events(
                 "id": eid,
                 "entity_type": entity_type,
                 "entity_id": entity_id,
-                "event_type": event_type or f"{entity_type}.completed",
+                "event_type": event_type or f"{entity_type.upper()}.COMPLETE",
                 "status": "success",
                 "detail": json.dumps({"run_id": str(uuid.uuid4()), "index": i}),
                 "occurred_at": datetime.now(tz=UTC),

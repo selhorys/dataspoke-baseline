@@ -14,6 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.validation.scoring import compute_quality_score
 from src.shared.cache.client import RedisClient
+from src.shared.events import (
+    VALIDATION_COMPLETE,
+    VALIDATION_CONFIG_CREATE,
+    VALIDATION_CONFIG_DELETE,
+    VALIDATION_CONFIG_UPDATE,
+    VALIDATION_PREFIX,
+)
 from src.shared.config import (
     EMBEDDING_COLLECTION,
     SEARCH_SCORE_THRESHOLD,
@@ -157,6 +164,15 @@ class ValidationService:
 
         await self._db.commit()
         await self._db.refresh(existing)
+
+        event_type = VALIDATION_CONFIG_CREATE if created else VALIDATION_CONFIG_UPDATE
+        await self._record_event(
+            dataset_urn,
+            event_type,
+            "success",
+            {"operation": "PUT", "config_id": str(existing.id)},
+        )
+
         return _config_from_row(existing), created
 
     async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> ValidationConfigRecord:
@@ -180,6 +196,14 @@ class ValidationService:
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
+
+        await self._record_event(
+            dataset_urn,
+            VALIDATION_CONFIG_UPDATE,
+            "success",
+            {"operation": "PATCH", "config_id": str(row.id), "fields_changed": list(patch.keys())},
+        )
+
         return _config_from_row(row)
 
     async def delete_config(self, dataset_urn: str) -> None:
@@ -190,8 +214,16 @@ class ValidationService:
         if row is None:
             raise EntityNotFoundError("validation_config", dataset_urn)
 
+        config_id = str(row.id)
         await self._db.delete(row)
         await self._db.commit()
+
+        await self._record_event(
+            dataset_urn,
+            VALIDATION_CONFIG_DELETE,
+            "success",
+            {"operation": "DELETE", "config_id": config_id},
+        )
 
     async def list_configs(
         self,
@@ -422,8 +454,7 @@ class ValidationService:
         await self._db.commit()
 
         # 10. Record event
-        event_type = "validation.completed"
-        await self._record_event(dataset_urn, event_type, "success", detail)
+        await self._record_event(dataset_urn, VALIDATION_COMPLETE, "success", detail)
 
         return ValidationRunResult(run_id=run_id, status="success", detail=detail)
 
@@ -441,7 +472,7 @@ class ValidationService:
         base = select(Event).where(
             Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
-            Event.event_type.startswith("validation."),
+            Event.event_type.startswith(VALIDATION_PREFIX),
         )
 
         if from_dt is not None:

@@ -15,6 +15,14 @@ from src.backend.generation.analyzer import SourceCodeAnalyzer
 from src.shared.config import EMBEDDING_COLLECTION, SEARCH_SCORE_THRESHOLD
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, GenerationConfig, GenerationResult
+from src.shared.events import (
+    GENERATION_APPLY,
+    GENERATION_COMPLETE,
+    GENERATION_CONFIG_CREATE,
+    GENERATION_CONFIG_DELETE,
+    GENERATION_CONFIG_UPDATE,
+    GENERATION_PREFIX,
+)
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import QdrantManager
@@ -150,6 +158,15 @@ class GenerationService:
 
         await self._db.commit()
         await self._db.refresh(existing)
+
+        event_type = GENERATION_CONFIG_CREATE if created else GENERATION_CONFIG_UPDATE
+        await self._record_event(
+            dataset_urn,
+            event_type,
+            "success",
+            {"operation": "PUT", "config_id": str(existing.id)},
+        )
+
         return _config_from_row(existing), created
 
     async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> GenerationConfigRecord:
@@ -173,6 +190,14 @@ class GenerationService:
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
+
+        await self._record_event(
+            dataset_urn,
+            GENERATION_CONFIG_UPDATE,
+            "success",
+            {"operation": "PATCH", "config_id": str(row.id), "fields_changed": list(patch.keys())},
+        )
+
         return _config_from_row(row)
 
     async def delete_config(self, dataset_urn: str) -> None:
@@ -183,8 +208,16 @@ class GenerationService:
         if row is None:
             raise EntityNotFoundError("generation_config", dataset_urn)
 
+        config_id = str(row.id)
         await self._db.delete(row)
         await self._db.commit()
+
+        await self._record_event(
+            dataset_urn,
+            GENERATION_CONFIG_DELETE,
+            "success",
+            {"operation": "DELETE", "config_id": config_id},
+        )
 
     async def list_configs(
         self,
@@ -381,7 +414,7 @@ class GenerationService:
             "proposals_keys": list(proposals.keys()),
             "code_refs_used": config.code_refs is not None,
         }
-        await self._record_event(dataset_urn, "generation.completed", "success", detail)
+        await self._record_event(dataset_urn, GENERATION_COMPLETE, "success", detail)
 
         return GenerationRunResult(run_id=run_id, status="success", detail=detail)
 
@@ -453,7 +486,7 @@ class GenerationService:
             "tags_applied": len(suggested_tags),
             "summary_applied": bool(table_summary),
         }
-        await self._record_event(dataset_urn, "generation.applied", "success", detail)
+        await self._record_event(dataset_urn, GENERATION_APPLY, "success", detail)
 
         return GenerationRunResult(run_id=str(row.run_id), status="applied", detail=detail)
 
@@ -471,7 +504,7 @@ class GenerationService:
         base = select(Event).where(
             Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
-            Event.event_type.startswith("generation."),
+            Event.event_type.startswith(GENERATION_PREFIX),
         )
 
         if from_dt is not None:

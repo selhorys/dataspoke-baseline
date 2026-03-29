@@ -13,6 +13,14 @@ from src.backend.ingestion.extractors import run_datahub_ingestion
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, IngestionConfig
 from src.shared.cache.client import RedisClient
+from src.shared.events import (
+    INGESTION_COMPLETE,
+    INGESTION_CONFIG_CREATE,
+    INGESTION_CONFIG_DELETE,
+    INGESTION_CONFIG_UPDATE,
+    INGESTION_FAIL,
+    INGESTION_PREFIX,
+)
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -138,11 +146,11 @@ class IngestionService:
         await self._db.refresh(existing)
 
         # Record config CRUD event
-        event_type = "ingestion.config_created" if created else "ingestion.config_updated"
+        event_type = INGESTION_CONFIG_CREATE if created else INGESTION_CONFIG_UPDATE
         await self._record_event(
             dataset_urn,
             event_type,
-            existing.status.lower(),
+            "success",
             {
                 "operation": "PUT",
                 "config_id": str(existing.id),
@@ -187,8 +195,8 @@ class IngestionService:
         # Record config CRUD event
         await self._record_event(
             dataset_urn,
-            "ingestion.config_updated",
-            row.status.lower(),
+            INGESTION_CONFIG_UPDATE,
+            "success",
             {
                 "operation": "PATCH",
                 "config_id": str(row.id),
@@ -220,7 +228,7 @@ class IngestionService:
         # Record deletion event
         await self._record_event(
             dataset_urn,
-            "ingestion.config_deleted",
+            INGESTION_CONFIG_DELETE,
             "success",
             {
                 "operation": "DELETE",
@@ -320,7 +328,7 @@ class IngestionService:
         if warnings:
             detail["warnings"] = warnings
 
-        event_type = "ingestion.completed" if status != "error" else "ingestion.failed"
+        event_type = INGESTION_COMPLETE if status != "error" else INGESTION_FAIL
         await self._record_event(dataset_urn, event_type, status, detail)
 
         return IngestionRunResult(run_id=run_id, status=status, detail=detail)
@@ -339,7 +347,7 @@ class IngestionService:
         base = select(Event).where(
             Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
-            Event.event_type.startswith("ingestion."),
+            Event.event_type.startswith(INGESTION_PREFIX),
         )
 
         if from_dt is not None:

@@ -109,7 +109,7 @@ async def test_get_concept_events(service, db):
     rows = [
         make_event_row(
             entity_type="ontology",
-            event_type="concept.approved",
+            event_type="CONCEPT.APPROVE",
             entity_id=concept_id,
             minutes_ago=i,
         )

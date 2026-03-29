@@ -51,7 +51,7 @@ def make_event_row(
     *,
     entity_type: str = "dataset",
     entity_id: str = "urn:li:dataset:test",
-    event_type: str = "ingestion.completed",
+    event_type: str = "INGESTION.COMPLETE",
     status: str = "success",
     minutes_ago: int = 5,
 ) -> MagicMock:

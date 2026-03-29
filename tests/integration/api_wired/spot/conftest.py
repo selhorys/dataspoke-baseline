@@ -97,7 +97,7 @@ async def delete_ingestion_events_db(
             "DELETE FROM dataspoke.events"
             " WHERE entity_id = :urn"
             " AND entity_type = 'dataset'"
-            " AND event_type LIKE 'ingestion.%'"
+            " AND event_type LIKE 'INGESTION.%'"
         ),
         {"urn": dataset_urn},
     )

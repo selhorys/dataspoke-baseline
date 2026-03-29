@@ -104,7 +104,7 @@ async def test_concept_approve_reject_lifecycle(http_client, async_session: Asyn
         events_body = resp.json()
         assert events_body["total_count"] >= 1
         event_types = [e["event_type"] for e in events_body["events"]]
-        assert "concept.approved" in event_types
+        assert "CONCEPT.APPROVE" in event_types
     finally:
         await async_session.execute(
             text("DELETE FROM dataspoke.events WHERE entity_id = :id AND entity_type = 'concept'"),

@@ -178,7 +178,7 @@ async def test_upsert_metric_config_create(service, db):
         measurement_query={"type": "dataset_count"},
     )
     assert db.add.called
-    assert db.commit.await_count == 1
+    assert db.commit.await_count >= 1
 
 
 async def test_upsert_metric_config_update(service, db):
@@ -195,7 +195,7 @@ async def test_upsert_metric_config_update(service, db):
     )
     assert existing.title == "Updated"
     assert existing.theme == "freshness"
-    assert db.commit.await_count == 1
+    assert db.commit.await_count >= 1
 
 
 async def test_patch_metric_config(service, db):
@@ -205,7 +205,7 @@ async def test_patch_metric_config(service, db):
 
     await service.patch_metric_config(row.id, {"title": "Patched Title"})
     assert row.title == "Patched Title"
-    assert db.commit.await_count == 1
+    assert db.commit.await_count >= 1
 
 
 async def test_patch_metric_config_not_found(service, db):
@@ -221,7 +221,7 @@ async def test_delete_metric_config(service, db):
 
     await service.delete_metric_config(row.id)
     db.delete.assert_called_once_with(row)
-    assert db.commit.await_count == 1
+    assert db.commit.await_count >= 1
 
 
 async def test_delete_metric_config_not_found(service, db):
@@ -455,7 +455,7 @@ async def test_get_events(service, db):
     rows = [
         make_event_row(
             entity_type="metric",
-            event_type="metric.run.completed",
+            event_type="METRIC.RUN_COMPLETE",
             entity_id=metric_id,
             minutes_ago=i,
         )

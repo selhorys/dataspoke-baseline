@@ -228,7 +228,7 @@ async def test_ingestion_events_pagination(
         async_session,
         entity_type="dataset",
         entity_id=dataset_urn,
-        event_type="ingestion.completed",
+        event_type="INGESTION.COMPLETE",
     )
 
     try:

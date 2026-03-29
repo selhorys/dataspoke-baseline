@@ -274,7 +274,7 @@ async def test_run_validation_persists_result(
                 "DELETE FROM dataspoke.events"
                 " WHERE entity_id = :urn"
                 " AND entity_type = 'dataset'"
-                " AND event_type LIKE 'validation.%'"
+                " AND event_type LIKE 'VALIDATION.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -300,7 +300,7 @@ async def test_validation_events_pagination(
         async_session,
         entity_type="dataset",
         entity_id=dataset_urn,
-        event_type="validation.completed",
+        event_type="VALIDATION.COMPLETE",
     )
 
     try:

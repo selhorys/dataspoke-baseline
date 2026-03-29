@@ -288,7 +288,7 @@ async def test_events_pagination(
         async_session,
         entity_type="metric",
         entity_id=metric_id,
-        event_type="metric.run.completed",
+        event_type="METRIC.RUN_COMPLETE",
     )
 
     try:

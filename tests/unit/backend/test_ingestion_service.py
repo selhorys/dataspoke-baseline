@@ -337,7 +337,7 @@ async def test_get_events_paginated(service, db):
     rows = [
         make_event_row(
             entity_type="dataset",
-            event_type="ingestion.completed",
+            event_type="INGESTION.COMPLETE",
             entity_id=_DATASET_URN,
             minutes_ago=i,
         )
@@ -348,7 +348,7 @@ async def test_get_events_paginated(service, db):
     events, total = await service.get_events(_DATASET_URN, offset=0, limit=3)
     assert total == 5
     assert len(events) == 3
-    assert events[0]["event_type"] == "ingestion.completed"
+    assert events[0]["event_type"] == "INGESTION.COMPLETE"
 
 
 async def test_get_events_empty(service, db):

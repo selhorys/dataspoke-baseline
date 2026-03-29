@@ -20,12 +20,13 @@
 2. [Layered Architecture](#layered-architecture)
 3. [Shared Services (`src/shared/`)](#shared-services-srcshared)
 4. [Feature Services (`src/backend/`)](#feature-services-srcbackend)
-5. [Kestra Workflows (`src/workflows/`)](#kestra-workflows-srcworkflows)
-6. [Kafka Consumers](#kafka-consumers)
-7. [WebSocket Feed Mechanism](#websocket-feed-mechanism)
-8. [Dependency Injection](#dependency-injection)
-9. [Error Handling](#error-handling)
-10. [Configuration](#configuration)
+5. [Event Emission](#event-emission)
+6. [Kestra Workflows (`src/workflows/`)](#kestra-workflows-srcworkflows)
+7. [Kafka Consumers](#kafka-consumers)
+8. [WebSocket Feed Mechanism](#websocket-feed-mechanism)
+9. [Dependency Injection](#dependency-injection)
+10. [Error Handling](#error-handling)
+11. [Configuration](#configuration)
 
 Data contracts (PostgreSQL schema, Qdrant collections) are specified in
 [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
@@ -161,7 +162,7 @@ Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEM
 4. Emit aspects to DataHub (`StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`; skip if `dry_run`)
 5. Run enrichment sources, if configured (TBD)
 6. Run custom extractors, if configured (TBD)
-7. Record run event in PostgreSQL
+7. Record event (`INGESTION.COMPLETE` or `INGESTION.FAIL`; see [Event Catalogue](#event-catalogue))
 
 ### Validation Service (`src/backend/validation/`)
 
@@ -263,6 +264,91 @@ Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-deman
 **Covers**: UC8 (Multi-Perspective Data Overview)
 
 Assembles graph topology from ontology + lineage data, medallion layer classification (bronze = 0 upstreams, silver = 1-2, gold = 3+, based on `upstreamLineage` aspect), graph layout computation, blind spot detection (datasets not covered by any concept).
+
+---
+
+## Event Emission
+
+Every successful mutating API call records an event to the unified `events`
+table (see [BACKEND_SCHEMA §events](BACKEND_SCHEMA.md#events)). GET requests
+do not emit events. If a request is rejected before reaching the service layer
+(e.g., 409 concurrency guard, 404 not found), no event is recorded.
+
+### Naming Convention
+
+Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
+
+- **Domain** identifies the feature: `INGESTION`, `VALIDATION`, `GENERATION`,
+  `METRIC`, `CONCEPT`.
+- **Action** describes what happened. Two categories:
+  - *Config lifecycle*: `CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE` —
+    emitted by PUT, PATCH, DELETE on a configuration resource.
+  - *Action*: domain-specific operations beyond CRUD (pipeline runs, approvals,
+    state transitions).
+
+### Event Catalogue
+
+#### Ingestion (`entity_type=dataset`)
+
+| Event Type | Trigger |
+|---|---|
+| `INGESTION.CONFIG_CREATE` | PUT config (new) |
+| `INGESTION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
+| `INGESTION.CONFIG_DELETE` | DELETE config |
+| `INGESTION.COMPLETE` | POST run succeeds |
+| `INGESTION.FAIL` | POST run encounters errors |
+
+#### Validation (`entity_type=dataset`)
+
+| Event Type | Trigger |
+|---|---|
+| `VALIDATION.CONFIG_CREATE` | PUT config (new) |
+| `VALIDATION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
+| `VALIDATION.CONFIG_DELETE` | DELETE config |
+| `VALIDATION.COMPLETE` | POST run succeeds |
+
+#### Generation (`entity_type=dataset`)
+
+| Event Type | Trigger |
+|---|---|
+| `GENERATION.CONFIG_CREATE` | PUT config (new) |
+| `GENERATION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
+| `GENERATION.CONFIG_DELETE` | DELETE config |
+| `GENERATION.COMPLETE` | POST generate succeeds |
+| `GENERATION.APPLY` | POST apply succeeds |
+
+#### Metrics (`entity_type=metric`)
+
+| Event Type | Trigger |
+|---|---|
+| `METRIC.CONFIG_CREATE` | PUT definition (new) |
+| `METRIC.CONFIG_UPDATE` | PUT definition (existing) or PATCH |
+| `METRIC.CONFIG_DELETE` | DELETE definition |
+| `METRIC.RUN_COMPLETE` | POST run measurement succeeds |
+| `METRIC.ALARM_TRIGGER` | Alarm threshold breached during run |
+| `METRIC.FINDINGS_DETECT` | Findings detected during run |
+| `METRIC.ACTIVATE` | POST activate |
+| `METRIC.DEACTIVATE` | POST deactivate |
+
+#### Ontology (`entity_type=concept`)
+
+| Event Type | Trigger |
+|---|---|
+| `CONCEPT.APPROVE` | POST approve |
+| `CONCEPT.REJECT` | POST reject |
+
+### Querying Events
+
+- **Entity-level endpoint** (`GET .../data/{urn}/event`): returns all events
+  for the entity regardless of domain — filters only by `entity_type` +
+  `entity_id`.
+- **Domain-level endpoint** (`GET .../attr/ingestion/event`): additionally
+  filters by `event_type` prefix (e.g., `INGESTION.%`) to return only
+  domain-specific events.
+
+See [BACKEND_SCHEMA §events](BACKEND_SCHEMA.md#events) for the filtering
+convention and [API §Meta-Classifier Conventions](API.md#meta-classifier-conventions)
+for the response contract.
 
 ---
 

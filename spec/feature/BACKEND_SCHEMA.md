@@ -229,7 +229,7 @@ structure so clients can process them generically (see
 | `id` | `UUID` PK | Event identifier |
 | `entity_type` | `TEXT` | `dataset`, `metric`, `concept` — classifies the entity, not the feature domain |
 | `entity_id` | `TEXT` | URN or metric/concept ID |
-| `event_type` | `TEXT` | Dot-prefixed by domain: `ingestion.completed`, `validation.completed`, `generation.completed`, `generation.applied`, `metric.run.completed`, `metric.alarm.triggered`, `concept.approved`, `concept.rejected`, etc. |
+| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.ALARM_TRIGGER`, `CONCEPT.APPROVE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |

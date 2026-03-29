@@ -127,7 +127,7 @@ async def test_get_dataset_events_with_seeded_event(
             "id": str(event_id),
             "entity_type": "dataset",
             "entity_id": test_dataset_urn,
-            "event_type": "ingestion.completed",
+            "event_type": "INGESTION.COMPLETE",
             "status": "success",
             "detail": json.dumps({"source": "integration-test"}),
             "occurred_at": now,

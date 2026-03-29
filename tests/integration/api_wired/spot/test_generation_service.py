@@ -220,7 +220,7 @@ async def test_generate_produces_result(
                 "DELETE FROM dataspoke.events"
                 " WHERE entity_id = :urn"
                 " AND entity_type = 'dataset'"
-                " AND event_type LIKE 'generation.%'"
+                " AND event_type LIKE 'GENERATION.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -318,7 +318,7 @@ async def test_apply_after_approval(
                 "DELETE FROM dataspoke.events"
                 " WHERE entity_id = :urn"
                 " AND entity_type = 'dataset'"
-                " AND event_type LIKE 'generation.%'"
+                " AND event_type LIKE 'GENERATION.%'"
             ),
             {"urn": dataset_urn},
         )
@@ -359,7 +359,7 @@ async def test_generation_events(
         async_session,
         entity_type="dataset",
         entity_id=dataset_urn,
-        event_type="generation.completed",
+        event_type="GENERATION.COMPLETE",
     )
 
     try:
