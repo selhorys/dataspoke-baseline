@@ -133,13 +133,17 @@ async def test_run_ingestion_via_public_api(
         assert body["status"] == "success", f"Ingestion failed: {body.get('detail')}"
         assert body["detail"]["entities_ingested"] >= 1
 
-        # Check events were recorded
+        # Check side-effect events
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/event",
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["total_count"] >= 1
+        events_body = resp.json()
+        assert events_body["total_count"] >= 2
+        event_types = [e["event_type"] for e in events_body["events"]]
+        assert "INGESTION.CONFIG_CREATE" in event_types
+        assert "INGESTION.COMPLETE" in event_types
 
         # Verify metadata landed in DataHub
         schema = await datahub_client.get_aspect(dataset_urn, SchemaMetadataClass)
@@ -194,6 +198,18 @@ async def test_run_ingestion_dry_run(
         body = resp.json()
         assert body["status"] == "success", f"Ingestion failed: {body.get('detail')}"
         assert body["detail"]["dry_run"] is True
+
+        # Check side-effect events
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/event",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        events_body = resp.json()
+        assert events_body["total_count"] >= 2
+        event_types = [e["event_type"] for e in events_body["events"]]
+        assert "INGESTION.CONFIG_CREATE" in event_types
+        assert "INGESTION.COMPLETE" in event_types
 
     finally:
         await delete_ingestion_events_db(async_session, dataset_urn)
@@ -295,8 +311,21 @@ async def test_list_periodic_datasets(
         assert urn_c not in result, f"Did not expect {urn_c} in result: {result}"
         assert urn_d not in result, f"Did not expect {urn_d} in result: {result}"
 
+        # Check side-effect events — each config PUT should emit CONFIG_CREATE
+        for urn in (urn_a, urn_b, urn_c, urn_d):
+            resp = await http_client.get(
+                f"/api/v1/spoke/common/data/{urn}/attr/ingestion/event",
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            event_types = [e["event_type"] for e in resp.json()["events"]]
+            assert "INGESTION.CONFIG_CREATE" in event_types, (
+                f"Expected CONFIG_CREATE event for {urn}, got {event_types}"
+            )
+
     finally:
         for urn in (urn_a, urn_b, urn_c, urn_d):
+            await delete_ingestion_events_db(async_session, urn)
             await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 
@@ -381,6 +410,21 @@ async def test_sync_creates_flows_per_schedule(
             f"Flow {flow_id_06} execution failed: {exec_06}"
         )
 
+        # Check side-effect events — config creation + ingestion runs
+        for urn in (_CATALOG_URN, _EDITIONS_URN, _GENRE_URN):
+            resp = await http_client.get(
+                f"/api/v1/spoke/common/data/{urn}/attr/ingestion/event",
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            event_types = [e["event_type"] for e in resp.json()["events"]]
+            assert "INGESTION.CONFIG_CREATE" in event_types, (
+                f"Expected CONFIG_CREATE event for {urn}, got {event_types}"
+            )
+            assert "INGESTION.COMPLETE" in event_types, (
+                f"Expected COMPLETE event for {urn} after flow run, got {event_types}"
+            )
+
     finally:
         await delete_kestra_flow(kestra_client, flow_id_02)
         await delete_kestra_flow(kestra_client, flow_id_06)
@@ -444,8 +488,18 @@ async def test_sync_removes_stale_flows(
         flow_after = await kestra_client.get_flow(flow_id_03)
         assert flow_after is None, f"Flow {flow_id_03} still exists after second sync"
 
+        # Check side-effect events — config creation event should exist
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{_CATALOG_URN}/attr/ingestion/event",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        event_types = [e["event_type"] for e in resp.json()["events"]]
+        assert "INGESTION.CONFIG_CREATE" in event_types
+
     finally:
         await delete_kestra_flow(kestra_client, flow_id_03)
+        await delete_ingestion_events_db(async_session, _CATALOG_URN)
         await delete_ingestion_config_db(async_session, _CATALOG_URN)
         await async_session.commit()
 
@@ -534,10 +588,32 @@ async def test_sync_updates_on_schedule_change(
         assert _CATALOG_URN not in urns_06
         assert _EDITIONS_URN not in urns_06
 
+        # Check side-effect events — all URNs have CONFIG_CREATE, genre has CONFIG_UPDATE from PATCH
+        for urn in (_CATALOG_URN, _EDITIONS_URN):
+            resp = await http_client.get(
+                f"/api/v1/spoke/common/data/{urn}/attr/ingestion/event",
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            event_types = [e["event_type"] for e in resp.json()["events"]]
+            assert "INGESTION.CONFIG_CREATE" in event_types, (
+                f"Expected CONFIG_CREATE event for {urn}, got {event_types}"
+            )
+
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/ingestion/event",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        genre_event_types = [e["event_type"] for e in resp.json()["events"]]
+        assert "INGESTION.CONFIG_CREATE" in genre_event_types
+        assert "INGESTION.CONFIG_UPDATE" in genre_event_types
+
     finally:
         await delete_kestra_flow(kestra_client, flow_id_02)
         await delete_kestra_flow(kestra_client, flow_id_06)
         for urn in (_CATALOG_URN, _EDITIONS_URN, _GENRE_URN):
+            await delete_ingestion_events_db(async_session, urn)
             await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 
@@ -593,6 +669,16 @@ async def test_concurrency_guard_prevents_duplicate(
         conflict_resp = resp1 if getattr(resp1, "status_code", None) == 409 else resp2
         body = conflict_resp.json()
         assert body.get("error_code") == "INGESTION_RUNNING", f"Unexpected error body: {body}"
+
+        # Check side-effect events — config creation + one successful ingestion run
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/event",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        event_types = [e["event_type"] for e in resp.json()["events"]]
+        assert "INGESTION.CONFIG_CREATE" in event_types
+        assert "INGESTION.COMPLETE" in event_types
 
     finally:
         # The Redis lock key may still be set if the test run left it locked; clean up.
@@ -677,6 +763,18 @@ async def test_run_kafka_ingestion(
         assert props is not None, "DatasetPropertiesClass not found in DataHub after Kafka ingestion"
         assert props.name == "imazon.orders.events"
 
+        # Check side-effect events
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/event",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        events_body = resp.json()
+        assert events_body["total_count"] >= 2
+        event_types = [e["event_type"] for e in events_body["events"]]
+        assert "INGESTION.CONFIG_CREATE" in event_types
+        assert "INGESTION.COMPLETE" in event_types
+
     finally:
         await delete_ingestion_events_db(async_session, dataset_urn)
         await delete_ingestion_config_db(async_session, dataset_urn)
@@ -754,8 +852,21 @@ async def test_mixed_source_types_in_periodic_sync(
         assert pg_urn in result, f"Expected PG URN in result: {result}"
         assert kafka_urn in result, f"Expected Kafka URN in result: {result}"
 
+        # Check side-effect events — CONFIG_CREATE for both source types
+        for urn in (pg_urn, kafka_urn):
+            resp = await http_client.get(
+                f"/api/v1/spoke/common/data/{urn}/attr/ingestion/event",
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            event_types = [e["event_type"] for e in resp.json()["events"]]
+            assert "INGESTION.CONFIG_CREATE" in event_types, (
+                f"Expected CONFIG_CREATE event for {urn}, got {event_types}"
+            )
+
     finally:
         await delete_kestra_flow(kestra_client, flow_id)
-        await delete_ingestion_config_db(async_session, pg_urn)
-        await delete_ingestion_config_db(async_session, kafka_urn)
+        for urn in (pg_urn, kafka_urn):
+            await delete_ingestion_events_db(async_session, urn)
+            await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
