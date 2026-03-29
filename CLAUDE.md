@@ -57,21 +57,29 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 
 ## Implementation Workflow
 
-The scaffold uses a **plan → approve → generate → evaluate** architecture. Planning uses Claude's built-in Plan mode interactively; generators write code and self-test; an independent reviewer evaluates the output against the spec and plan. This separation prevents the self-praise failure mode where agents approve their own mediocre work.
+The scaffold uses a **plan → approve → generate → evaluate** architecture. This separation prevents the self-praise failure mode where agents approve their own mediocre work.
 
-For end-to-end feature implementation:
+**You MUST enter Plan mode before writing any implementation code** unless the change meets **all** of these skip-plan criteria:
+- Touches ≤ 2 files and adds/modifies ≤ ~30 lines of logic
+- Does not introduce a new API endpoint, DB table/column, Kestra flow, or Qdrant collection
+- Does not require coordination across layers (backend + frontend, backend + workflow, etc.)
+- The user explicitly says "just do it" / "quick fix" / "no need to plan"
+
+When in doubt, plan. Never self-classify a task as "trivial" to skip planning.
+
+End-to-end steps:
 
 1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
-2. Plan (built-in Plan mode) — produce implementation plan with files, contracts, and acceptance criteria. See `spec/AI_SCAFFOLD.md` §Plan quality checklist for what a good plan covers
-3. Human reviews and approves the plan (or iterates)
-4. `backend` agent → `reviewer` agent → [fix pass if REVISE verdict, max 1 iteration]
-5. `workflow` agent → `reviewer` agent → [fix pass if REVISE verdict, max 1 iteration]
+2. **Plan (built-in Plan mode)** — produce implementation plan with files, contracts, and acceptance criteria. The plan MUST specify which generator agents (`backend`, `workflow`, `frontend`, `test`, `k8s-helm`) to launch and in what order. See `spec/AI_SCAFFOLD.md` §Plan quality checklist.
+3. **Human approves the plan** — do NOT proceed to code generation without explicit approval
+4. `backend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
+5. `workflow` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
    (steps 4 and 5 may run concurrently when workflow does not depend on new backend API contracts)
 6. `test` agent — write and run tests (can also verify specific reviewer findings)
-7. `frontend` agent → `reviewer` agent → [fix pass if REVISE verdict, max 1 iteration]
+7. `frontend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
 8. `k8s-helm` agent — containerize and deploy (when ready, no review loop)
 
-For non-trivial implementation, delegate to the appropriate generator agent rather than writing code directly in the main conversation. Each generator runs in a confined context — it sees only the approved plan, the relevant spec, and the files in its scope. This keeps the main conversation clean for orchestration. The reviewer receives the plan + generator's completion report + changed files. If the reviewer's verdict is REVISE, the generator is re-invoked with the findings for a fix pass. If issues persist after one fix pass, they are escalated to the user.
+Delegate implementation to the appropriate generator agent rather than writing code directly in the main conversation. Each generator runs in a confined context — it sees only the approved plan, the relevant spec, and the files in its scope. The reviewer receives the plan + generator's completion report + changed files. If the reviewer's verdict is REVISE, the generator is re-invoked with the findings for a fix pass. If issues persist after one fix pass, they are escalated to the user.
 
 For spec authoring, use `/plan-doc` directly.
 For testing conventions (unit/integration/api-wired integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
