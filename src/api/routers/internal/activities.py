@@ -59,6 +59,28 @@ async def list_periodic_datasets(body: ListPeriodicDatasetsRequest) -> list[str]
         return _error_response(exc)
 
 
+class RunIngestionRequest(BaseModel):
+    dataset_urn: str
+    dry_run: bool = False
+
+
+@router.post("/run-ingestion")
+async def run_ingestion(body: RunIngestionRequest) -> dict:
+    from src.backend.ingestion.service import IngestionService, run_ingestion_with_lock
+
+    datahub = make_datahub()
+    cache = make_cache()
+    try:
+        async with make_db_session() as db:
+            service = IngestionService(datahub=datahub, db=db)
+            result = await run_ingestion_with_lock(
+                service, cache, body.dataset_urn, dry_run=body.dry_run,
+            )
+            return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+    except DataSpokeError as exc:
+        return _error_response(exc)
+
+
 @router.post("/sync-periodic-ingestion-flows")
 async def sync_periodic_ingestion_flows() -> dict:
     from src.shared.settings import settings

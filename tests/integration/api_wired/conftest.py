@@ -19,9 +19,11 @@ The ``require_server`` fixture verifies three things at session start:
 """
 
 import os
+from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from tests.integration.conftest import _auth_headers
 
@@ -82,6 +84,39 @@ def require_server():
             "Kestra flow 'ingestion-config-sync' not registered. "
             "Restart with: ./dev_env/dataspoke-test-mode.sh"
         )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def suspend_ingestion_config_sync(require_server):
+    """Disable the ingestion-config-sync cron trigger for the test session.
+
+    Prevents the periodic sync from racing with tests that create/delete
+    ingestion configs and Kestra flows.  Re-enables the trigger on teardown.
+    """
+    flow_path = Path("src/workflows/flows/ingestion_config_sync.yaml")
+    flow = yaml.safe_load(flow_path.read_text())
+
+    kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
+    kestra_ns = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
+    kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
+    kestra_pass = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
+    auth = (kestra_user, kestra_pass) if kestra_user else None
+
+    def _put_flow(disabled: bool) -> None:
+        for trigger in flow.get("triggers", []):
+            if trigger.get("id") == "cron":
+                trigger["disabled"] = disabled
+        httpx.put(
+            f"{kestra_url}/api/v1/flows/{kestra_ns}/ingestion-config-sync",
+            content=yaml.dump(flow),
+            headers={"Content-Type": "application/x-yaml"},
+            auth=auth,
+            timeout=10.0,
+        ).raise_for_status()
+
+    _put_flow(disabled=True)
+    yield
+    _put_flow(disabled=False)
 
 
 @pytest.fixture

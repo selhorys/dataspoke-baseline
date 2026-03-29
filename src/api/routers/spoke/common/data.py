@@ -218,15 +218,10 @@ async def post_data_ingestion_run(
     service: IngestionService = Depends(get_ingestion_service),
     cache: RedisClient = Depends(get_redis),
 ) -> RunResultResponse:
-    lock_key = f"ingestion:running:{dataset_urn}"
-    acquired = await cache.set_nx(lock_key, "1", ttl_seconds=3600)
-    if not acquired:
-        raise ConflictError("INGESTION_RUNNING", f"Ingestion is already running for {dataset_urn}")
-    try:
-        result = await service.run(dataset_urn, dry_run=body.dry_run)
-        return RunResultResponse(run_id=result.run_id, status=result.status, detail=result.detail)
-    finally:
-        await cache.delete(lock_key)
+    from src.backend.ingestion.service import run_ingestion_with_lock
+
+    result = await run_ingestion_with_lock(service, cache, dataset_urn, dry_run=body.dry_run)
+    return RunResultResponse(run_id=result.run_id, status=result.status, detail=result.detail)
 
 
 @router.get("/{dataset_urn}/attr/ingestion/event", response_model=EventListResponse)

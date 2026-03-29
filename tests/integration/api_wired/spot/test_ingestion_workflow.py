@@ -366,10 +366,26 @@ async def test_sync_creates_flows_per_schedule(
         flow_06 = await kestra_client.get_flow(flow_id_06)
         assert flow_06 is not None, f"Flow {flow_id_06} not found in Kestra"
 
+        # Sanity: trigger both flows and verify full round-trip
+        exec_02 = await kestra_client.trigger_and_wait(
+            flow_id_02, timeout_seconds=120,
+        )
+        assert exec_02.status.value == "SUCCESS", (
+            f"Flow {flow_id_02} execution failed: {exec_02}"
+        )
+
+        exec_06 = await kestra_client.trigger_and_wait(
+            flow_id_06, timeout_seconds=120,
+        )
+        assert exec_06.status.value == "SUCCESS", (
+            f"Flow {flow_id_06} execution failed: {exec_06}"
+        )
+
     finally:
         await delete_kestra_flow(kestra_client, flow_id_02)
         await delete_kestra_flow(kestra_client, flow_id_06)
         for urn in (_CATALOG_URN, _EDITIONS_URN, _GENRE_URN):
+            await delete_ingestion_events_db(async_session, urn)
             await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
 

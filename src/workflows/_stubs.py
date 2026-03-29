@@ -128,6 +128,9 @@ class StubRedisClient:
     async def set(self, key: str, value: Any, **kwargs: Any) -> None:
         pass
 
+    async def set_nx(self, key: str, value: str, ttl_seconds: int = 300) -> bool:
+        return True
+
     async def publish(self, channel: str, message: Any) -> None:
         pass
 

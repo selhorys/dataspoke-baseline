@@ -62,11 +62,11 @@ tasks:
     tasks:
       - id: run_ingestion
         type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/api/v1/spoke/common/data/{{ taskrun.value }}/attr/ingestion/method/run"
+        uri: "{{ inputs.callback_base_url }}/internal/activities/run-ingestion"
         method: POST
         contentType: application/json
         body: |
-          {"dry_run": false}
+          {"dataset_urn": "{{ taskrun.value }}", "dry_run": false}
         options:
           connectTimeout: PT5S
           readTimeout: PT30S
