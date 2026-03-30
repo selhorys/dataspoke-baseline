@@ -1,0 +1,32 @@
+id: validation-config-sync
+namespace: dataspoke
+description: "Periodic sync of validation config — generates/updates/deletes validation-periodic-* flows"
+
+concurrency:
+  limit: 1
+  behavior: CANCEL
+
+inputs:
+  - id: callback_base_url
+    type: STRING
+    defaults: "http://host.docker.internal:8000"
+
+triggers:
+  - id: cron
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "*/10 * * * *"
+    disabled: true
+
+tasks:
+  - id: sync
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.callback_base_url }}/internal/activities/validation/sync-periodic-flows"
+    method: POST
+    contentType: application/json
+    options:
+      connectTimeout: PT5S
+      readTimeout: PT30S
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S

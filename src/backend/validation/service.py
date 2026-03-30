@@ -356,7 +356,7 @@ class ValidationService:
 
             # Evaluate rule
             evaluation: RuleEvaluation = await evaluate_rule(
-                self._datahub, dataset_urn, rule, resolved_partition
+                self._datahub, dataset_urn, rule, resolved_partition, db=self._db
             )
 
             # DataHub assertion registration and reporting (best-effort)

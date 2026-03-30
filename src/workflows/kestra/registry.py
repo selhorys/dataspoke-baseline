@@ -38,6 +38,7 @@ FLOWS_DIR = Path(__file__).resolve().parents[1] / "flows"
 _STARTUP_FLOWS = frozenset({
     "ingestion_config_sync.yaml",
     "validation.yaml",
+    "validation_config_sync.yaml",
     "generation.yaml",
     "metrics.yaml",
     "embedding_sync.yaml",

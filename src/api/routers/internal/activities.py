@@ -119,6 +119,59 @@ async def sync_periodic_ingestion_flows() -> dict:
 # ── /validation ──────────────────────────────────────────────────────────────
 
 
+class ListPeriodicValidationDatasetsRequest(BaseModel):
+    schedule: str
+
+
+@router.post("/validation/list-periodic")
+async def list_periodic_validation_datasets(
+    body: ListPeriodicValidationDatasetsRequest,
+) -> list[str]:
+    """List dataset URNs with active validation configs for the given cron schedule."""
+    from sqlalchemy import select
+
+    from src.shared.db.models import ValidationConfig
+
+    try:
+        async with make_db_session() as db:
+            result = await db.execute(
+                select(ValidationConfig.dataset_urn).where(
+                    ValidationConfig.status == "active",
+                    ValidationConfig.schedule["cron"].as_string() == body.schedule,
+                )
+            )
+            return [row[0] for row in result.all()]
+    except DataSpokeError as exc:
+        return _error_response(exc)
+
+
+@router.post("/validation/sync-periodic-flows")
+async def sync_periodic_validation_flows() -> dict:
+    """Sync Kestra periodic validation flows based on active config schedules."""
+    from src.shared.settings import settings
+    from src.workflows.kestra.client import KestraClient
+    from src.workflows.validation_sync import sync_periodic_validation_flows as _sync
+
+    kestra = KestraClient(
+        base_url=settings.kestra_url,
+        namespace=settings.kestra_namespace,
+        username=settings.kestra_user,
+        password=settings.kestra_password,
+    )
+    try:
+        async with make_db_session() as db:
+            result = await _sync(
+                kestra_client=kestra,
+                db=db,
+                callback_base_url=settings.kestra_callback_base_url,
+            )
+            return result
+    except DataSpokeError as exc:
+        return _error_response(exc)
+    finally:
+        await kestra.close()
+
+
 class RunValidationRequest(BaseModel):
     dataset_urn: str
     partition: dict | None = None

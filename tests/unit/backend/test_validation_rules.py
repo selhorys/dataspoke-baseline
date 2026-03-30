@@ -1,7 +1,7 @@
 """Unit tests for validation rule evaluators (mocked DataHub)."""
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -890,3 +890,304 @@ async def test_evaluate_custom_returns_error_not_implemented(datahub):
     assert len(result.issues) == 1
     assert result.issues[0]["type"] == "not_implemented"
     assert "not yet implemented" in result.issues[0]["msg"]
+
+
+# ── _evaluate_sql with db ──────────────────────────────────────────────────────
+
+
+async def test_evaluate_sql_with_db_success(datahub):
+    """SQL evaluator with db + statement: mocked execute_sql returns scalar, condition passes."""
+    db = AsyncMock()
+
+    with (
+        patch(
+            "src.backend.validation.timeseries.resolve_source_config",
+            new=AsyncMock(
+                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+            ),
+        ),
+        patch(
+            "src.backend.validation.timeseries.execute_sql",
+            new=AsyncMock(return_value=[{"result": 42}]),
+        ),
+    ):
+        rule = {
+            "rule_id": "sql_live",
+            "type": "sql",
+            "statement": "SELECT COUNT(*) AS result FROM orders.order_items",
+            "condition": {"type": "greater_than", "value": 10},
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.rule_id == "sql_live"
+    assert result.assertion_result == "SUCCESS"
+    assert result.values["result"] == 42
+
+
+async def test_evaluate_sql_with_db_condition_fails(datahub):
+    """SQL evaluator with db: scalar result fails condition → FAILURE."""
+    db = AsyncMock()
+
+    with (
+        patch(
+            "src.backend.validation.timeseries.resolve_source_config",
+            new=AsyncMock(
+                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+            ),
+        ),
+        patch(
+            "src.backend.validation.timeseries.execute_sql",
+            new=AsyncMock(return_value=[{"result": 5}]),
+        ),
+    ):
+        rule = {
+            "rule_id": "sql_fail",
+            "type": "sql",
+            "statement": "SELECT COUNT(*) AS result FROM orders.order_items",
+            "condition": {"type": "greater_than", "value": 100},
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.assertion_result == "FAILURE"
+    assert result.values["result"] == 5
+    assert any(i.get("type") == "sql_condition_violation" for i in result.issues)
+
+
+async def test_evaluate_sql_with_db_no_rows_returns_error(datahub):
+    """SQL evaluator with db: empty result set → ERROR with no_data issue."""
+    db = AsyncMock()
+
+    with (
+        patch(
+            "src.backend.validation.timeseries.resolve_source_config",
+            new=AsyncMock(
+                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+            ),
+        ),
+        patch(
+            "src.backend.validation.timeseries.execute_sql",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        rule = {
+            "rule_id": "sql_no_rows",
+            "type": "sql",
+            "statement": "SELECT COUNT(*) FROM nonexistent",
+            "condition": {"type": "greater_than", "value": 0},
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.assertion_result == "ERROR"
+    assert any(i.get("type") == "no_data" for i in result.issues)
+
+
+async def test_evaluate_sql_without_db_still_returns_not_implemented(datahub):
+    """SQL evaluator with statement but no db → ERROR not_implemented (stub path)."""
+    rule = {
+        "rule_id": "sql_no_db",
+        "type": "sql",
+        "statement": "SELECT 1",
+    }
+    result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
+
+    assert result.assertion_result == "ERROR"
+    assert result.issues[0]["type"] == "not_implemented"
+
+
+# ── _evaluate_custom with sql_timeseries subtype ───────────────────────────────
+
+
+async def test_evaluate_custom_sql_timeseries_success_no_ml(datahub):
+    """Custom sql_timeseries: execute_timeseries_sql succeeds, no ml_validation → SUCCESS."""
+    db = AsyncMock()
+
+    with patch(
+        "src.backend.validation.timeseries.execute_timeseries_sql",
+        new=AsyncMock(
+            return_value={
+                "partitions": {"load_date": "2025-03-11"},
+                "values": {"row_count": 1200},
+            }
+        ),
+    ):
+        rule = {
+            "rule_id": "ts_r1",
+            "type": "custom",
+            "subtype": "sql_timeseries",
+            "sql": "SELECT load_date, COUNT(*) AS row_count FROM orders GROUP BY 1",
+            "order": ["load_date"],
+            "partition": ["load_date"],
+            "values": ["row_count"],
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.rule_id == "ts_r1"
+    assert result.assertion_result == "SUCCESS"
+    assert result.values == {"row_count": 1200}
+    assert result.partition == {"load_date": "2025-03-11"}
+    assert result.validation is None
+
+
+async def test_evaluate_custom_sql_timeseries_with_ml_all_pass(datahub):
+    """Custom sql_timeseries + ml_validation: all targets pass → SUCCESS."""
+    db = AsyncMock()
+
+    with (
+        patch(
+            "src.backend.validation.timeseries.execute_timeseries_sql",
+            new=AsyncMock(
+                return_value={
+                    "partitions": {"load_date": "2025-03-11"},
+                    "values": {"row_count": 1200},
+                }
+            ),
+        ),
+        patch(
+            "src.backend.validation.ml_validation.validate_values",
+            new=AsyncMock(return_value={"row_count": True}),
+        ),
+    ):
+        rule = {
+            "rule_id": "ts_ml_r1",
+            "type": "custom",
+            "subtype": "sql_timeseries",
+            "sql": "SELECT load_date, COUNT(*) AS row_count FROM orders GROUP BY 1",
+            "order": ["load_date"],
+            "partition": ["load_date"],
+            "values": ["row_count"],
+            "ml_validation": {"targets": ["row_count"], "model": "range"},
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.assertion_result == "SUCCESS"
+    assert result.validation == {"row_count": True}
+    assert result.issues == []
+
+
+async def test_evaluate_custom_sql_timeseries_with_ml_some_fail(datahub):
+    """Custom sql_timeseries + ml_validation: one target fails → FAILURE."""
+    db = AsyncMock()
+
+    with (
+        patch(
+            "src.backend.validation.timeseries.execute_timeseries_sql",
+            new=AsyncMock(
+                return_value={
+                    "partitions": {"load_date": "2025-03-11"},
+                    "values": {"row_count": 9999},
+                }
+            ),
+        ),
+        patch(
+            "src.backend.validation.ml_validation.validate_values",
+            new=AsyncMock(return_value={"row_count": False}),
+        ),
+    ):
+        rule = {
+            "rule_id": "ts_ml_fail",
+            "type": "custom",
+            "subtype": "sql_timeseries",
+            "sql": "SELECT load_date, COUNT(*) AS row_count FROM orders GROUP BY 1",
+            "order": ["load_date"],
+            "partition": ["load_date"],
+            "values": ["row_count"],
+            "ml_validation": {"targets": ["row_count"], "model": "range"},
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.assertion_result == "FAILURE"
+    assert result.validation == {"row_count": False}
+    assert any(i.get("type") == "ml_validation_failure" for i in result.issues)
+    ml_issue = next(i for i in result.issues if i.get("type") == "ml_validation_failure")
+    assert "row_count" in ml_issue["failed_targets"]
+
+
+async def test_evaluate_custom_unknown_subtype_returns_not_implemented(datahub):
+    """Custom rule with unknown subtype → ERROR not_implemented."""
+    db = AsyncMock()
+
+    rule = {
+        "rule_id": "custom_unknown",
+        "type": "custom",
+        "subtype": "proprietary_engine",
+    }
+    result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.assertion_result == "ERROR"
+    assert result.issues[0]["type"] == "not_implemented"
+    assert "not yet implemented" in result.issues[0]["msg"]
+
+
+async def test_evaluate_custom_sql_timeseries_without_db_returns_not_implemented(datahub):
+    """Custom sql_timeseries without db → ERROR not_implemented (no db guard)."""
+    rule = {
+        "rule_id": "ts_no_db",
+        "type": "custom",
+        "subtype": "sql_timeseries",
+        "sql": "SELECT 1",
+    }
+    result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
+
+    assert result.assertion_result == "ERROR"
+    assert result.issues[0]["type"] == "not_implemented"
+
+
+async def test_evaluate_custom_sql_timeseries_execute_raises_returns_error(datahub):
+    """execute_timeseries_sql raising an exception → ERROR with source_error issue."""
+    db = AsyncMock()
+
+    with patch(
+        "src.backend.validation.timeseries.execute_timeseries_sql",
+        new=AsyncMock(side_effect=RuntimeError("source connection refused")),
+    ):
+        rule = {
+            "rule_id": "ts_exec_fail",
+            "type": "custom",
+            "subtype": "sql_timeseries",
+            "sql": "SELECT load_date, row_count FROM summary",
+            "order": ["load_date"],
+            "partition": ["load_date"],
+            "values": ["row_count"],
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    assert result.assertion_result == "ERROR"
+    assert any(i.get("type") == "source_error" for i in result.issues)
+    assert "source connection refused" in result.issues[0]["msg"]
+
+
+async def test_evaluate_custom_sql_timeseries_ml_exception_swallowed_returns_success(datahub):
+    """ml_validation raising an exception is silently swallowed → assertion still SUCCESS."""
+    db = AsyncMock()
+
+    with (
+        patch(
+            "src.backend.validation.timeseries.execute_timeseries_sql",
+            new=AsyncMock(
+                return_value={
+                    "partitions": {"load_date": "2025-03-11"},
+                    "values": {"row_count": 1000},
+                }
+            ),
+        ),
+        patch(
+            "src.backend.validation.ml_validation.validate_values",
+            new=AsyncMock(side_effect=RuntimeError("ML service unavailable")),
+        ),
+    ):
+        rule = {
+            "rule_id": "ts_ml_exc",
+            "type": "custom",
+            "subtype": "sql_timeseries",
+            "sql": "SELECT load_date, COUNT(*) AS row_count FROM orders GROUP BY 1",
+            "order": ["load_date"],
+            "partition": ["load_date"],
+            "values": ["row_count"],
+            "ml_validation": {"targets": ["row_count"], "model": "range"},
+        }
+        result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
+
+    # ML exception is swallowed; validation is None and result is SUCCESS
+    assert result.assertion_result == "SUCCESS"
+    assert result.validation is None
+    assert result.issues == []
