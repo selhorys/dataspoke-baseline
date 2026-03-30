@@ -10,11 +10,12 @@ def test_flow_id():
 def test_params_defaults():
     params = ValidationParams(dataset_urn="urn:li:dataset:test")
     assert params.dataset_urn == "urn:li:dataset:test"
-    assert params.config_id is None
-    assert params.dry_run is False
+    assert params.partition == {}
 
 
-def test_params_with_config():
-    params = ValidationParams(dataset_urn="urn:li:dataset:test", config_id="cfg-1", dry_run=True)
-    assert params.config_id == "cfg-1"
-    assert params.dry_run is True
+def test_params_with_partition():
+    params = ValidationParams(
+        dataset_urn="urn:li:dataset:test",
+        partition={"load_date": "2025-03-10"},
+    )
+    assert params.partition == {"load_date": "2025-03-10"}

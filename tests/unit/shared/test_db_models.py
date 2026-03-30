@@ -125,8 +125,10 @@ def test_jsonb_columns() -> None:
         (IngestionConfig, "identifier"),
         (IngestionConfig, "auth"),
         (ValidationConfig, "rules"),
-        (ValidationConfig, "sla_target"),
-        (ValidationResult, "dimensions"),
+        (ValidationConfig, "schedule"),
+        (ValidationResult, "partition"),
+        (ValidationResult, "values"),
+        (ValidationResult, "issues"),
         (GenerationConfig, "target_fields"),
         (GenerationResult, "proposals"),
         (MetricDefinition, "measurement_query"),
@@ -196,6 +198,7 @@ def test_metric_issue_fk() -> None:
 def test_indexes_exist() -> None:
     expected_indexes = {
         "ix_validation_results_urn_measured",
+        "ix_validation_results_run_id",
         "ix_generation_results_urn_generated",
         "ix_metric_results_metric_measured",
         "ix_events_entity_occurred",

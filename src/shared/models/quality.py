@@ -17,12 +17,3 @@ class QualityIssue(BaseModel):
     severity: str  # "critical", "warning", "info"
     detail: str
     field_path: str | None = None
-
-
-class AnomalyResult(BaseModel):
-    metric_name: str
-    is_anomaly: bool
-    expected_value: float
-    actual_value: float
-    confidence: float
-    detected_at: datetime

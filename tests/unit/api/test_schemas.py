@@ -148,19 +148,27 @@ class TestValidationSchemas:
     def test_create_request(self) -> None:
         req = CreateValidationConfigRequest(
             dataset_urn="urn:li:dataset:test",
-            rules={"null_check": True},
+            rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
             owner="admin",
         )
         assert req.schedule is None
+
+    def test_create_request_with_schedule(self) -> None:
+        req = CreateValidationConfigRequest(
+            dataset_urn="urn:li:dataset:test",
+            rules=[],
+            schedule={"cron": "0 0 * * *"},
+            owner="admin",
+        )
+        assert req.schedule == {"cron": "0 0 * * *"}
 
     def test_config_response_round_trip(self) -> None:
         now = datetime.now(tz=UTC)
         resp = ValidationConfigResponse(
             id="1",
             dataset_urn="urn:li:dataset:test",
-            rules={},
+            rules=[{"rule_id": "r1", "type": "volume"}],
             schedule=None,
-            sla_target=None,
             status="active",
             owner="admin",
             created_at=now,
@@ -169,6 +177,7 @@ class TestValidationSchemas:
         data = resp.model_dump()
         parsed = ValidationConfigResponse.model_validate(data)
         assert parsed.id == "1"
+        assert parsed.rules[0]["rule_id"] == "r1"
 
     def test_list_response(self) -> None:
         resp = ValidationConfigListResponse()

@@ -74,9 +74,8 @@ class ValidationConfig(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    rules: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sla_target: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    rules: Mapped[list] = mapped_column(JSONB, nullable=False)
+    schedule: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     owner: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -94,18 +93,18 @@ class ValidationResult(Base):
     __tablename__ = "validation_results"
     __table_args__ = (
         Index("ix_validation_results_urn_measured", "dataset_urn", desc("measured_at")),
+        Index("ix_validation_results_run_id", "run_id"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    quality_score: Mapped[float] = mapped_column(Float, nullable=False)
-    dimensions: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    dimension_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    issues: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    anomalies: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    recommendations: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    alternatives: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    rule_id: Mapped[str] = mapped_column(Text, nullable=False)
+    partition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    values: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    validation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    assertion_result: Mapped[str] = mapped_column(Text, nullable=False)
+    issues: Mapped[list] = mapped_column(JSONB, nullable=False)
     run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     measured_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

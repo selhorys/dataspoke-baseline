@@ -1,4 +1,8 @@
-"""Quality score engine — computes a 0-100 composite score from DataHub aspects."""
+"""Quality score engine — computes a 0-100 composite score from DataHub aspects.
+
+This module belongs to the dataset domain. Imported by the metrics and overview
+services for health-score aggregation.
+"""
 
 import json
 import re
@@ -6,13 +10,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
-from src.shared.config import QUALITY_SCORE_CACHE_TTL
 from src.shared.datahub.client import DataHubClient
 from src.shared.models.quality import QualityScore
 
 _SCHEMA_STABILITY_WINDOW_DAYS = 30
 _MAJOR_CHANGE_PENALTY = 10
 _MINOR_CHANGE_PENALTY = 1
+_QUALITY_SCORE_CACHE_TTL: int = 300  # seconds
 
 # Dimension weights (must sum to 1.0)
 WEIGHTS: dict[str, float] = {
@@ -73,7 +77,7 @@ async def compute_quality_score(
                 "dimension_details": score.dimension_details,
             }
         )
-        await cache.set(cache_key, payload, ttl_seconds=QUALITY_SCORE_CACHE_TTL)
+        await cache.set(cache_key, payload, ttl_seconds=_QUALITY_SCORE_CACHE_TTL)
 
     return score
 

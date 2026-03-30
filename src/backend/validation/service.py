@@ -1,4 +1,4 @@
-"""Validation service — config CRUD, run pipeline, results, and event recording."""
+"""Validation service — config CRUD, assertion-layer run pipeline, results, and events."""
 
 import json
 import logging
@@ -6,14 +6,22 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.validation.scoring import compute_quality_score
+from src.backend.validation.assertions import (
+    build_assertion_urn,
+    build_assertion_info,
+    build_run_event,
+    register_assertion,
+    report_result,
+)
+from src.backend.validation.rules import RuleEvaluation, evaluate_rule
 from src.shared.cache.client import RedisClient
+from src.shared.config import VALIDATION_RESULT_CACHE_TTL
+from src.shared.datahub.client import DataHubClient
+from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.events import (
     VALIDATION_COMPLETE,
     VALIDATION_CONFIG_CREATE,
@@ -21,17 +29,12 @@ from src.shared.events import (
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
 )
-from src.shared.config import (
-    EMBEDDING_COLLECTION,
-    SEARCH_SCORE_THRESHOLD,
-    VALIDATION_RESULT_CACHE_TTL,
-)
-from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.exceptions import EntityNotFoundError
-from src.shared.llm.client import LLMClient
-from src.shared.models.quality import QualityScore
-from src.shared.vector.client import QdrantManager
+
+logger = logging.getLogger(__name__)
+
+
+# ── Value objects ─────────────────────────────────────────────────────────────
 
 
 class ValidationConfigRecord(BaseModel):
@@ -39,46 +42,51 @@ class ValidationConfigRecord(BaseModel):
 
     id: str
     dataset_urn: str
-    rules: dict[str, Any]
-    schedule: str | None = None
-    sla_target: dict[str, Any] | None = None
+    rules: list[dict[str, Any]]
+    schedule: dict[str, Any] | None = None
     status: str
     owner: str
     created_at: datetime
     updated_at: datetime
 
 
-class ValidationRunResult(BaseModel):
-    """Value object for the outcome of a validation run."""
-
-    run_id: str
-    status: str
-    detail: dict[str, Any]
-
-
 class ValidationResultRecord(BaseModel):
-    """Value object mirroring the ORM ValidationResult."""
+    """Value object mirroring the ORM ValidationResult (per-rule result)."""
 
     id: str
     dataset_urn: str
-    quality_score: float
-    dimensions: dict[str, float]
-    dimension_details: dict[str, Any] | None = None
+    rule_id: str
+    partition: dict[str, Any]
+    values: dict[str, Any]
+    validation: dict[str, bool] | None = None
+    assertion_result: str
     issues: list[dict[str, Any]] = []
-    anomalies: list[dict[str, Any]] = []
-    recommendations: list[str] = []
-    alternatives: list[str] = []
     run_id: str
     measured_at: datetime
 
 
+class ValidationRunSummary(BaseModel):
+    """Summary of a full validation run across all rules."""
+
+    run_id: str
+    status: str  # "success" | "failure" | "error"
+    total: int
+    passed: int
+    failed: int
+    errored: int
+    results: list[ValidationResultRecord] = []
+
+
+# ── ORM row converters ────────────────────────────────────────────────────────
+
+
 def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
+    rules = row.rules if isinstance(row.rules, list) else []
     return ValidationConfigRecord(
         id=str(row.id),
         dataset_urn=row.dataset_urn,
-        rules=row.rules,
+        rules=rules,
         schedule=row.schedule,
-        sla_target=row.sla_target,
         status=row.status,
         owner=row.owner,
         created_at=row.created_at,
@@ -90,36 +98,34 @@ def _result_from_row(row: ValidationResult) -> ValidationResultRecord:
     return ValidationResultRecord(
         id=str(row.id),
         dataset_urn=row.dataset_urn,
-        quality_score=row.quality_score,
-        dimensions=row.dimensions,
-        dimension_details=row.dimension_details,
-        issues=row.issues,
-        anomalies=row.anomalies,
-        recommendations=row.recommendations,
-        alternatives=row.alternatives,
+        rule_id=row.rule_id,
+        partition=row.partition,
+        values=row.values,
+        validation=row.validation,
+        assertion_result=row.assertion_result,
+        issues=row.issues if isinstance(row.issues, list) else [],
         run_id=str(row.run_id),
         measured_at=row.measured_at,
     )
 
 
+# ── Service ───────────────────────────────────────────────────────────────────
+
+
 class ValidationService:
-    """Config CRUD, run pipeline, results query, and event recording for validation."""
+    """Config CRUD, assertion-layer run pipeline, results query, and event recording."""
 
     def __init__(
         self,
         datahub: DataHubClient,
         db: AsyncSession,
         cache: RedisClient,
-        llm: LLMClient,
-        qdrant: QdrantManager,
     ) -> None:
         self._datahub = datahub
         self._db = db
         self._cache = cache
-        self._llm = llm
-        self._qdrant = qdrant
 
-    # ── Config CRUD ──────────────────────────────────────────────────────
+    # ── Config CRUD ──────────────────────────────────────────────────────────
 
     async def get_config(self, dataset_urn: str) -> ValidationConfigRecord | None:
         result = await self._db.execute(
@@ -133,9 +139,8 @@ class ValidationService:
     async def upsert_config(
         self,
         dataset_urn: str,
-        rules: dict[str, Any],
-        schedule: str | None,
-        sla_target: dict[str, Any] | None,
+        rules: list[dict[str, Any]],
+        schedule: dict[str, Any] | None,
         owner: str,
     ) -> tuple[ValidationConfigRecord, bool]:
         result = await self._db.execute(
@@ -146,7 +151,6 @@ class ValidationService:
         if existing:
             existing.rules = rules
             existing.schedule = schedule
-            existing.sla_target = sla_target
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
@@ -156,7 +160,6 @@ class ValidationService:
                 dataset_urn=dataset_urn,
                 rules=rules,
                 schedule=schedule,
-                sla_target=sla_target,
                 owner=owner,
             )
             self._db.add(existing)
@@ -170,7 +173,11 @@ class ValidationService:
             dataset_urn,
             event_type,
             "success",
-            {"operation": "PUT", "config_id": str(existing.id)},
+            {
+                "operation": "PUT",
+                "config_id": str(existing.id),
+                "rule_count": len(rules),
+            },
         )
 
         return _config_from_row(existing), created
@@ -185,10 +192,8 @@ class ValidationService:
 
         if "rules" in patch and patch["rules"] is not None:
             row.rules = patch["rules"]
-        if "schedule" in patch and patch["schedule"] is not None:
+        if "schedule" in patch:
             row.schedule = patch["schedule"]
-        if "sla_target" in patch and patch["sla_target"] is not None:
-            row.sla_target = patch["sla_target"]
         if "status" in patch and patch["status"] is not None:
             row.status = patch["status"]
         row.updated_at = datetime.now(tz=UTC)
@@ -201,7 +206,11 @@ class ValidationService:
             dataset_urn,
             VALIDATION_CONFIG_UPDATE,
             "success",
-            {"operation": "PATCH", "config_id": str(row.id), "fields_changed": list(patch.keys())},
+            {
+                "operation": "PATCH",
+                "config_id": str(row.id),
+                "fields_changed": list(patch.keys()),
+            },
         )
 
         return _config_from_row(row)
@@ -240,19 +249,24 @@ class ValidationService:
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = ValidationConfig.created_at.desc()
-        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
         return [_config_from_row(r) for r in rows], total_count
 
-    # ── Results ──────────────────────────────────────────────────────────
+    # ── Results ──────────────────────────────────────────────────────────────
 
     async def get_results(
         self,
         dataset_urn: str,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        partition_filter: dict[str, Any] | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -263,202 +277,228 @@ class ValidationService:
             base = base.where(ValidationResult.measured_at >= from_dt)
         if to_dt is not None:
             base = base.where(ValidationResult.measured_at <= to_dt)
+        if partition_filter is not None:
+            base = base.where(ValidationResult.partition.contains(partition_filter))
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = ValidationResult.measured_at.desc()
-        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
         return [_result_from_row(r) for r in rows], total_count
 
-    # ── Run pipeline ─────────────────────────────────────────────────────
+    # ── Run pipeline ──────────────────────────────────────────────────────────
 
     async def run(
         self,
         dataset_urn: str,
-        config_id: str | None = None,
-        dry_run: bool = False,
-    ) -> ValidationRunResult:
+        partition: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> ValidationRunSummary:
+        """Execute all rules for a dataset against the specified partition.
+
+        Pipeline per rule:
+        1. Publish progress to Redis pub/sub
+        2. Evaluate rule via evaluate_rule()
+        3. Build assertion URN, info, and run event
+        4. Register assertion in DataHub (best-effort)
+        5. Report result to DataHub (best-effort)
+        6. Persist ValidationResult row to PostgreSQL
+        7. Publish rule_result to Redis pub/sub
+        8. Publish summary to Redis pub/sub
+        9. Cache summary in Redis
+        10. Record VALIDATION.COMPLETE event
+        """
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("validation_config", dataset_urn)
 
-        run_id = str(uuid.uuid4())
+        if run_id is None:
+            run_id = str(uuid.uuid4())
 
-        # 1. Compute quality score
-        score: QualityScore = await compute_quality_score(
-            self._datahub, dataset_urn, cache=self._cache
-        )
+        resolved_partition: dict[str, Any] = partition if partition else {}
+        rules: list[dict[str, Any]] = config.rules
 
-        # 2. Build issues from low-scoring dimensions
-        issues: list[dict[str, Any]] = []
-        for dim_name, dim_score in score.dimensions.items():
-            if dim_score < 50:
-                issues.append(
-                    {
-                        "dimension": dim_name,
-                        "score": dim_score,
-                        "severity": "critical" if dim_score < 25 else "warning",
-                        "message": f"{dim_name} score is low ({dim_score})",
-                    }
+        result_records: list[ValidationResultRecord] = []
+        passed = 0
+        failed = 0
+        errored = 0
+
+        for rule in rules:
+            rule_id = rule.get("rule_id", str(uuid.uuid4()))
+
+            # Publish progress
+            try:
+                await self._cache.publish(
+                    f"ws:validation:{dataset_urn}",
+                    json.dumps(
+                        {
+                            "type": "progress",
+                            "run_id": run_id,
+                            "rule_id": rule_id,
+                            "status": "running",
+                        }
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "validation_pubsub_progress_failed",
+                    exc_info=True,
+                    extra={"dataset_urn": dataset_urn, "rule_id": rule_id},
                 )
 
-        # 3. Anomaly detection
-        from datahub.metadata.schema_classes import DatasetProfileClass, OperationClass
+            # Evaluate rule
+            evaluation: RuleEvaluation = await evaluate_rule(
+                self._datahub, dataset_urn, rule, resolved_partition
+            )
 
-        from src.backend.validation.anomaly import detect_anomalies
-
-        profiles = await self._datahub.get_timeseries(dataset_urn, DatasetProfileClass, limit=30)
-        operations = await self._datahub.get_timeseries(dataset_urn, OperationClass, limit=30)
-
-        anomaly_method = config.rules.get("anomaly_method", "prophet")
-        anomaly_results = await detect_anomalies(profiles, operations, method=anomaly_method)
-        anomalies: list[dict[str, Any]] = [
-            {
-                "metric_name": a.metric_name,
-                "is_anomaly": a.is_anomaly,
-                "expected_value": a.expected_value,
-                "actual_value": a.actual_value,
-                "confidence": a.confidence,
-                "detected_at": a.detected_at.isoformat(),
-            }
-            for a in anomaly_results
-        ]
-
-        # 3b. SLA check (if SLA target configured)
-        sla_check = None
-        if config.sla_target:
-            from src.backend.validation.sla import check_sla
-
-            sla_check = await check_sla(
-                datahub=self._datahub,
+            # DataHub assertion registration and reporting (best-effort)
+            assertion_urn = build_assertion_urn(dataset_urn, rule_id)
+            assertion_info = build_assertion_info(dataset_urn, rule)
+            run_event = build_run_event(
+                assertion_urn=assertion_urn,
                 dataset_urn=dataset_urn,
-                sla_target=config.sla_target,
-                history=profiles,
-                quality_score=score.overall_score,
+                run_id=run_id,
+                result=evaluation.assertion_result,
+                values=evaluation.values,
+                partition=resolved_partition,
             )
+            await register_assertion(self._datahub, assertion_urn, assertion_info)
+            await report_result(self._datahub, assertion_urn, run_event)
 
-        # 4. Recommendations from issues
-        recommendations: list[str] = []
-        for issue in issues:
-            dim = issue["dimension"]
-            if dim == "completeness":
-                recommendations.append("Add descriptions to undocumented schema fields")
-            elif dim == "freshness":
-                recommendations.append("Verify data pipeline is running on schedule")
-            elif dim == "schema_stability":
-                recommendations.append("Review recent schema changes for unintended modifications")
-            elif dim == "data_quality":
-                recommendations.append("Investigate high null ratios or missing rows")
-            elif dim == "ownership_tags":
-                recommendations.append("Assign an owner and add classification tags")
-
-        # 5. Upstream lineage for root cause (if issues found)
-        upstream: list[str] = []
-        downstream: list[str] = []
-        if issues:
-            try:
-                upstream = await self._datahub.get_upstream_lineage(dataset_urn)
-            except Exception:
-                logger.warning("upstream_lineage_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
-            try:
-                downstream = await self._datahub.get_downstream_lineage(dataset_urn)
-            except Exception:
-                logger.warning("downstream_lineage_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
-
-        # 6. Qdrant similarity search for alternative healthy datasets
-        alternatives: list[str] = []
-        try:
-            from src.backend.search.embedding import generate_embedding
-
-            embedding, _ = await generate_embedding(self._llm, self._datahub, dataset_urn)
-            scored_points = await self._qdrant.search(
-                collection=EMBEDDING_COLLECTION,
-                vector=embedding,
-                limit=6,
-                score_threshold=SEARCH_SCORE_THRESHOLD,
+            # Persist result to PostgreSQL
+            result_row = ValidationResult(
+                dataset_urn=dataset_urn,
+                rule_id=rule_id,
+                partition=resolved_partition,
+                values=evaluation.values,
+                validation=evaluation.validation,
+                assertion_result=evaluation.assertion_result,
+                issues=evaluation.issues,
+                run_id=uuid.UUID(run_id),
+                measured_at=datetime.now(tz=UTC),
             )
-            for pt in scored_points:
-                payload = pt.payload or {}
-                candidate_urn = payload.get("dataset_urn", "")
-                candidate_quality = payload.get("quality_score") or 0.0
-                if candidate_urn != dataset_urn and candidate_quality >= 50:
-                    alternatives.append(candidate_urn)
-        except Exception:
-            logger.warning("alternative_search_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
+            self._db.add(result_row)
+            await self._db.commit()
+            await self._db.refresh(result_row)
 
-        # Add SLA violations to recommendations
-        if sla_check is not None and sla_check.violations:
-            for v in sla_check.violations:
-                recommendations.append(v)
+            record = _result_from_row(result_row)
+            result_records.append(record)
 
-        detail: dict[str, Any] = {
-            "run_id": run_id,
-            "quality_score": score.overall_score,
-            "dimensions": score.dimensions,
-            "dimension_details": score.dimension_details,
-            "issues_count": len(issues),
-            "anomalies_count": len(anomalies),
-            "upstream_count": len(upstream),
-            "downstream_count": len(downstream),
-            "dry_run": dry_run,
-        }
+            # Count outcomes
+            if evaluation.assertion_result == "SUCCESS":
+                passed += 1
+            elif evaluation.assertion_result == "FAILURE":
+                failed += 1
+            else:
+                errored += 1
 
-        if sla_check is not None:
-            detail["sla"] = {
-                "is_breaching": sla_check.is_breaching,
-                "is_pre_breach": sla_check.is_pre_breach,
-                "current_freshness_hours": sla_check.current_freshness_hours,
-                "violations": sla_check.violations,
-            }
+            # Publish rule result
+            try:
+                await self._cache.publish(
+                    f"ws:validation:{dataset_urn}",
+                    json.dumps(
+                        {
+                            "type": "rule_result",
+                            "run_id": run_id,
+                            "rule_id": rule_id,
+                            "assertion_result": evaluation.assertion_result,
+                            "issues": evaluation.issues,
+                        }
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "validation_pubsub_rule_result_failed",
+                    exc_info=True,
+                    extra={"dataset_urn": dataset_urn, "rule_id": rule_id},
+                )
 
-        if dry_run:
-            return ValidationRunResult(run_id=run_id, status="success", detail=detail)
+        total = len(rules)
+        overall_status = (
+            "success" if failed == 0 and errored == 0 else ("error" if errored > 0 else "failure")
+        )
 
-        # 7. Publish progress to Redis pub/sub
+        summary = ValidationRunSummary(
+            run_id=run_id,
+            status=overall_status,
+            total=total,
+            passed=passed,
+            failed=failed,
+            errored=errored,
+            results=result_records,
+        )
+
+        # Publish summary
         try:
             await self._cache.publish(
                 f"ws:validation:{dataset_urn}",
-                json.dumps({"run_id": run_id, "status": "completed", "score": score.overall_score}),
+                json.dumps(
+                    {
+                        "type": "summary",
+                        "run_id": run_id,
+                        "status": overall_status,
+                        "total": total,
+                        "passed": passed,
+                        "failed": failed,
+                        "errored": errored,
+                    }
+                ),
             )
         except Exception:
-            logger.warning("validation_pubsub_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
+            logger.warning(
+                "validation_pubsub_summary_failed",
+                exc_info=True,
+                extra={"dataset_urn": dataset_urn},
+            )
 
-        # 8. Cache result
+        # Cache summary
         try:
             await self._cache.set(
                 f"validation:{dataset_urn}:result",
-                json.dumps(detail),
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "status": overall_status,
+                        "total": total,
+                        "passed": passed,
+                        "failed": failed,
+                        "errored": errored,
+                    }
+                ),
                 ttl_seconds=VALIDATION_RESULT_CACHE_TTL,
             )
         except Exception:
-            logger.warning("validation_cache_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
+            logger.warning(
+                "validation_cache_failed",
+                exc_info=True,
+                extra={"dataset_urn": dataset_urn},
+            )
 
-        # 9. Persist result in PostgreSQL
-        result_row = ValidationResult(
-            dataset_urn=dataset_urn,
-            quality_score=score.overall_score,
-            dimensions=score.dimensions,
-            dimension_details=score.dimension_details,
-            issues=issues,
-            anomalies=anomalies,
-            recommendations=recommendations,
-            alternatives=alternatives,
-            run_id=uuid.UUID(run_id),
-            measured_at=datetime.now(tz=UTC),
+        # Record event
+        await self._record_event(
+            dataset_urn,
+            VALIDATION_COMPLETE,
+            overall_status,
+            {
+                "run_id": run_id,
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "errored": errored,
+            },
         )
-        self._db.add(result_row)
-        await self._db.commit()
 
-        # 10. Record event
-        await self._record_event(dataset_urn, VALIDATION_COMPLETE, "success", detail)
+        return summary
 
-        return ValidationRunResult(run_id=run_id, status="success", detail=detail)
-
-    # ── Events ───────────────────────────────────────────────────────────
+    # ── Events ────────────────────────────────────────────────────────────────
 
     async def get_events(
         self,
@@ -484,7 +524,11 @@ class ValidationService:
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = Event.occurred_at.desc()
-        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.backend.validation.scoring import WEIGHTS, compute_quality_score
+from src.backend.dataset.scoring import WEIGHTS, compute_quality_score
 from tests.unit.backend.conftest import make_mock_operation
 
 

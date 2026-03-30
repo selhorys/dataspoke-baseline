@@ -15,7 +15,6 @@ BULK_BATCH_SIZE: int = 100
 BULK_BATCH_DELAY_MS: int = 100
 
 # Redis cache TTLs (seconds)
-QUALITY_SCORE_CACHE_TTL: int = 300
 VALIDATION_RESULT_CACHE_TTL: int = 60
 SEARCH_RESULT_CACHE_TTL: int = 120
 
@@ -28,10 +27,6 @@ EMBEDDING_MODEL_GOOGLE: str = "models/text-embedding-004"
 
 # Ontology
 ONTOLOGY_CONFIDENCE_THRESHOLD: float = 0.7
-
-# SLA monitoring
-SLA_MONITOR_INTERVAL_MINUTES: int = 30
-SLA_ALERT_BEFORE_MINUTES: int = 120
 
 # Kafka consumer tuning
 CONSUMER_POLL_TIMEOUT_S: float = 1.0

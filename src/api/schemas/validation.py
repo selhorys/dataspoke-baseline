@@ -10,29 +10,26 @@ from src.api.schemas.common import PaginatedResponse, SingleResponse
 
 class CreateValidationConfigRequest(BaseModel):
     dataset_urn: str
-    rules: dict[str, Any]
-    schedule: str | None = None
-    sla_target: dict[str, Any] | None = None
+    rules: list[dict[str, Any]]
+    schedule: dict[str, Any] | None = None
     owner: str
 
 
 class PatchValidationConfigRequest(BaseModel):
-    rules: dict[str, Any] | None = None
-    schedule: str | None = None
-    sla_target: dict[str, Any] | None = None
+    rules: list[dict[str, Any]] | None = None
+    schedule: dict[str, Any] | None = None
     status: str | None = None
 
 
 class RunValidationRequest(BaseModel):
-    dry_run: bool = False
+    partition: dict[str, Any] | None = None
 
 
 class ValidationConfigResponse(SingleResponse):
     id: str
     dataset_urn: str
-    rules: dict[str, Any]
-    schedule: str | None
-    sla_target: dict[str, Any] | None
+    rules: list[dict[str, Any]]
+    schedule: dict[str, Any] | None
     status: str
     owner: str
     created_at: datetime
@@ -46,13 +43,12 @@ class ValidationConfigListResponse(PaginatedResponse):
 class ValidationResultResponse(SingleResponse):
     id: str
     dataset_urn: str
-    quality_score: float
-    dimensions: dict[str, float]
-    dimension_details: dict[str, dict[str, Any]] | None = None
+    rule_id: str
+    partition: dict[str, Any]
+    values: dict[str, Any]
+    validation: dict[str, bool] | None = None
+    assertion_result: str
     issues: list[dict[str, Any]] = []
-    anomalies: list[dict[str, Any]] = []
-    recommendations: list[str] = []
-    alternatives: list[str] = []
     run_id: str
     measured_at: datetime
 
@@ -64,4 +60,7 @@ class ValidationResultListResponse(PaginatedResponse):
 class RunResultResponse(SingleResponse):
     run_id: str
     status: str
-    detail: dict[str, Any] = {}
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
+    errored: int = 0

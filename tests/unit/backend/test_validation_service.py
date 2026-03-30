@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,18 +20,18 @@ _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,P
 
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
-    rules: dict | None = None,
-    schedule: str | None = "0 0 * * *",
-    sla_target: dict | None = None,
+    rules: list | None = None,
+    schedule: dict | None = None,
     status: str = "draft",
     owner: str = "alice@example.com",
 ):
     row = MagicMock()
     row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
-    row.rules = rules or {"freshness": {"max_age_hours": 24}}
+    row.rules = rules if rules is not None else [
+        {"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}
+    ]
     row.schedule = schedule
-    row.sla_target = sla_target
     row.status = status
     row.owner = owner
     row.created_at = datetime.now(tz=UTC)
@@ -41,27 +41,27 @@ def _make_config_row(
 
 def _make_result_row(
     dataset_urn: str = _DATASET_URN,
-    quality_score: float = 75.0,
+    rule_id: str = "r1",
+    assertion_result: str = "SUCCESS",
     minutes_ago: int = 5,
 ):
     row = MagicMock()
     row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
-    row.quality_score = quality_score
-    row.dimensions = {"completeness": 80.0, "freshness": 70.0}
-    row.dimension_details = None
-    row.issues = [{"dimension": "freshness", "score": 70.0}]
-    row.anomalies = []
-    row.recommendations = ["Check freshness"]
-    row.alternatives = []
+    row.rule_id = rule_id
+    row.partition = {}
+    row.values = {"hours_since_last_update": 2.0}
+    row.validation = None
+    row.assertion_result = assertion_result
+    row.issues = []
     row.run_id = uuid.uuid4()
     row.measured_at = datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)
     return row
 
 
 @pytest.fixture
-def service(datahub, db, cache, llm, qdrant):
-    return ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
+def service(datahub, db, cache):
+    return ValidationService(datahub=datahub, db=db, cache=cache)
 
 
 # ── get_config ───────────────────────────────────────────────────────────────
@@ -93,9 +93,8 @@ async def test_upsert_config_creates_new(service, db):
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        rules={"freshness": {"max_age_hours": 24}},
+        rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
         schedule=None,
-        sla_target=None,
         owner="alice@example.com",
     )
     assert db.add.called
@@ -107,16 +106,16 @@ async def test_upsert_config_updates_existing(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
+    new_rules = [{"rule_id": "r2", "type": "volume", "condition": {"type": "greater_than", "value": 0}}]
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        rules={"completeness": {"min_ratio": 0.9}},
-        schedule="0 6 * * *",
-        sla_target={"freshness_hours": 12},
+        rules=new_rules,
+        schedule={"cron": "0 6 * * *"},
         owner="bob@example.com",
     )
     assert db.add.called
     assert db.commit.await_count >= 1
-    assert existing_row.rules == {"completeness": {"min_ratio": 0.9}}
+    assert existing_row.rules == new_rules
     assert existing_row.owner == "bob@example.com"
 
 
@@ -128,8 +127,8 @@ async def test_patch_config_applies_partial(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
-    assert existing_row.schedule == "0 12 * * *"
+    await service.patch_config(_DATASET_URN, {"schedule": {"cron": "0 12 * * *"}})
+    assert existing_row.schedule == {"cron": "0 12 * * *"}
     assert db.commit.await_count >= 1
 
 
@@ -137,7 +136,7 @@ async def test_patch_config_not_found(service, db):
     mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.patch_config("nonexistent", {"schedule": "0 12 * * *"})
+        await service.patch_config("nonexistent", {"schedule": {"cron": "0 12 * * *"}})
     assert exc_info.value.error_code == "VALIDATION_CONFIG_NOT_FOUND"
 
 
@@ -221,36 +220,47 @@ async def test_run_success(service, db, datahub, cache):
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
-    cache.get = AsyncMock(return_value=None)
-    cache.set = AsyncMock()
     cache.publish = AsyncMock()
-
-    datahub.get_aspect = AsyncMock(return_value=None)
-    datahub.get_timeseries = AsyncMock(return_value=[])
-    datahub.get_upstream_lineage = AsyncMock(return_value=[])
-    datahub.get_downstream_lineage = AsyncMock(return_value=[])
-
-    result = await service.run(_DATASET_URN)
-    assert result.status == "success"
-    assert result.run_id
-    assert result.detail["dry_run"] is False
-
-
-async def test_run_dry_run(service, db, datahub, cache):
-    config_row = _make_config_row()
-    mock_scalar_query(db, config_row)
-    mock_db_refresh(db)
-
-    cache.get = AsyncMock(return_value=None)
     cache.set = AsyncMock()
 
-    datahub.get_aspect = AsyncMock(return_value=None)
-    datahub.get_timeseries = AsyncMock(return_value=[])
+    # Patch evaluate_rule and DataHub assertion methods
+    from src.backend.validation.rules import RuleEvaluation
 
-    result = await service.run(_DATASET_URN, dry_run=True)
-    assert result.detail["dry_run"] is True
-    # dry_run should not persist result or publish
-    cache.publish.assert_not_awaited()
+    mock_eval = RuleEvaluation(
+        rule_id="r1",
+        assertion_result="SUCCESS",
+        values={"hours_since_last_update": 2.0},
+        validation=None,
+        issues=[],
+        partition={},
+    )
+
+    with (
+        patch("src.backend.validation.service.evaluate_rule", return_value=mock_eval),
+        patch("src.backend.validation.service.register_assertion", return_value=None),
+        patch("src.backend.validation.service.report_result", return_value=None),
+    ):
+        # db.execute needs to return result_row after add+commit+refresh
+        result_row = _make_result_row()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = config_row
+        db.execute = AsyncMock(return_value=mock_result)
+        db.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", uuid.uuid4()) or None)
+        db.commit = AsyncMock()
+        db.add = MagicMock()
+
+        # For get_config call
+        mock_result2 = MagicMock()
+        mock_result2.scalar_one_or_none.return_value = config_row
+        db.execute = AsyncMock(return_value=mock_result2)
+
+        summary = await service.run(_DATASET_URN)
+        assert summary.run_id
+        assert summary.total == 1
+        assert summary.passed == 1
+        assert summary.failed == 0
+        assert summary.errored == 0
+        assert summary.status == "success"
 
 
 async def test_run_config_not_found(service, db):
@@ -259,6 +269,62 @@ async def test_run_config_not_found(service, db):
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.run("nonexistent")
     assert exc_info.value.error_code == "VALIDATION_CONFIG_NOT_FOUND"
+
+
+async def test_run_with_partition(service, db, datahub, cache):
+    config_row = _make_config_row()
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    cache.publish = AsyncMock()
+    cache.set = AsyncMock()
+
+    from src.backend.validation.rules import RuleEvaluation
+
+    mock_eval = RuleEvaluation(
+        rule_id="r1",
+        assertion_result="FAILURE",
+        values={"hours_since_last_update": 50.0},
+        validation=None,
+        issues=[{"msg": "Stale", "type": "freshness_violation"}],
+        partition={"load_date": "2025-03-10"},
+    )
+
+    with (
+        patch("src.backend.validation.service.evaluate_rule", return_value=mock_eval),
+        patch("src.backend.validation.service.register_assertion", return_value=None),
+        patch("src.backend.validation.service.report_result", return_value=None),
+    ):
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = config_row
+        db.execute = AsyncMock(return_value=mock_result)
+        db.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", uuid.uuid4()) or None)
+        db.commit = AsyncMock()
+        db.add = MagicMock()
+
+        summary = await service.run(_DATASET_URN, partition={"load_date": "2025-03-10"})
+        assert summary.failed == 1
+        assert summary.passed == 0
+        assert summary.status == "failure"
+
+
+async def test_run_empty_rules(service, db, datahub, cache):
+    config_row = _make_config_row(rules=[])
+    mock_scalar_query(db, config_row)
+
+    cache.publish = AsyncMock()
+    cache.set = AsyncMock()
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=mock_result)
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+
+    summary = await service.run(_DATASET_URN)
+    assert summary.total == 0
+    assert summary.passed == 0
+    assert summary.status == "success"
 
 
 # ── get_events ───────────────────────────────────────────────────────────────

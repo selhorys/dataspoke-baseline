@@ -25,6 +25,7 @@ from src.workflows._common import (
     make_qdrant,
 )
 
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal/activities", tags=[
@@ -33,7 +34,6 @@ router = APIRouter(prefix="/internal/activities", tags=[
     "internal/activities/generation",
     "internal/activities/search",
     "internal/activities/metrics",
-    "internal/activities/sla",
     "internal/activities/ontology",
 ])
 
@@ -121,8 +121,7 @@ async def sync_periodic_ingestion_flows() -> dict:
 
 class RunValidationRequest(BaseModel):
     dataset_urn: str
-    config_id: str | None = None
-    dry_run: bool = False
+    partition: dict | None = None
 
 
 @router.post("/validation/run")
@@ -131,13 +130,18 @@ async def run_validation(body: RunValidationRequest) -> dict:
 
     datahub = make_datahub()
     cache = make_cache()
-    llm = make_llm()
-    qdrant = make_qdrant()
     try:
         async with make_db_session() as db:
-            service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
-            result = await service.run(body.dataset_urn, config_id=body.config_id, dry_run=body.dry_run)
-            return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+            service = ValidationService(datahub=datahub, db=db, cache=cache)
+            summary = await service.run(body.dataset_urn, partition=body.partition)
+            return {
+                "run_id": summary.run_id,
+                "status": summary.status,
+                "total": summary.total,
+                "passed": summary.passed,
+                "failed": summary.failed,
+                "errored": summary.errored,
+            }
     except DataSpokeError as exc:
         return _error_response(exc)
 
@@ -261,165 +265,6 @@ async def publish_metric_update(body: PublishMetricUpdateRequest) -> dict:
     cache = make_cache()
     await cache.publish("ws:metric:updates", json.dumps(body.model_dump()))
     return {"published": True}
-
-
-# ── /sla ─────────────────────────────────────────────────────────────────────
-
-
-class CheckSLARequest(BaseModel):
-    dataset_urn: str
-    sla_target: dict
-
-
-@router.post("/sla/check")
-async def check_sla(body: CheckSLARequest) -> dict:
-    from src.backend.validation.service import ValidationService
-    from src.backend.validation.sla import check_sla as _check_sla
-
-    datahub = make_datahub()
-    cache = make_cache()
-    llm = make_llm()
-    qdrant = make_qdrant()
-
-    quality_score = 0.0
-    async with make_db_session() as db:
-        service = ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
-        try:
-            results, _ = await service.get_results(body.dataset_urn, limit=1)
-            if results:
-                quality_score = results[0].quality_score
-        except Exception:
-            logger.warning("sla_quality_score_lookup_failed", exc_info=True)
-
-    from datahub.metadata.schema_classes import DatasetProfileClass
-
-    history = await datahub.get_timeseries(body.dataset_urn, DatasetProfileClass, limit=30)
-
-    result = await _check_sla(
-        datahub=datahub,
-        dataset_urn=body.dataset_urn,
-        sla_target=body.sla_target,
-        history=history,
-        quality_score=quality_score,
-    )
-
-    alerts = []
-    if result.is_breaching or result.is_pre_breach:
-        alerts.append(
-            {
-                "dataset_urn": body.dataset_urn,
-                "is_breaching": result.is_breaching,
-                "is_pre_breach": result.is_pre_breach,
-                "violations": result.violations,
-                "predicted_breach_at": (
-                    result.predicted_breach_at.isoformat() if result.predicted_breach_at else None
-                ),
-            }
-        )
-
-    return {
-        "dataset_urn": body.dataset_urn,
-        "is_breaching": result.is_breaching,
-        "is_pre_breach": result.is_pre_breach,
-        "freshness_hours": result.current_freshness_hours,
-        "quality_score": result.current_quality_score,
-        "violations": result.violations,
-        "alerts": alerts,
-    }
-
-
-class SendSLAAlertsRequest(BaseModel):
-    alerts: list[dict]
-    recipients: list[str]
-
-
-def _build_recommended_actions(violations: list[str], is_breaching: bool) -> list[str]:
-    """Return context-aware recommended actions derived from violation strings.
-
-    Rules (applied in order, multiple may match):
-    - "Freshness breach"  → upstream schedule + source availability checks
-    - "Quality breach"    → schema change + completeness gap investigation
-    - "Pre-breach"        → proactive trending + threshold-adjustment reminder
-    - "Row count" / "baseline" → historical comparison + filtering-change check
-    Fallback "Investigate upstream pipelines" is always appended when no rule
-    matched so that recipients always have at least one action item.
-    If ``is_breaching`` is True, an escalation action is added at the end.
-    """
-    actions: list[str] = []
-    matched = False
-
-    combined = " ".join(violations).lower()
-
-    if "freshness breach" in combined:
-        actions.extend(
-            [
-                "Check upstream pipeline schedules",
-                "Verify source system availability",
-            ]
-        )
-        matched = True
-
-    if "quality breach" in combined:
-        actions.extend(
-            [
-                "Review recent schema changes",
-                "Investigate data completeness gaps",
-            ]
-        )
-        matched = True
-
-    if "pre-breach" in combined:
-        actions.extend(
-            [
-                "Proactively investigate trending metrics",
-                "Consider adjusting SLA thresholds if pattern is recurring",
-            ]
-        )
-        matched = True
-
-    if "row count" in combined or "baseline" in combined:
-        actions.extend(
-            [
-                "Compare with historical patterns",
-                "Check for upstream data filtering changes",
-            ]
-        )
-        matched = True
-
-    if not matched:
-        actions.append("Investigate upstream pipelines")
-
-    if is_breaching:
-        actions.append("Escalate to data platform team")
-
-    return actions
-
-
-@router.post("/sla/send-alerts")
-async def send_sla_alerts(body: SendSLAAlertsRequest) -> dict:
-    from datetime import UTC, datetime
-
-    from src.shared.notifications.models import SLAAlert
-
-    notification = make_notification()
-
-    for alert_data in body.alerts:
-        predicted_str = alert_data.get("predicted_breach_at")
-        predicted_dt = (
-            datetime.fromisoformat(predicted_str) if predicted_str else datetime.now(tz=UTC)
-        )
-        violations: list[str] = alert_data.get("violations", [])
-        is_breaching: bool = bool(alert_data.get("is_breaching", False))
-        alert = SLAAlert(
-            dataset_urn=alert_data["dataset_urn"],
-            sla_name="freshness",
-            predicted_breach_at=predicted_dt,
-            root_cause="; ".join(violations),
-            recommended_actions=_build_recommended_actions(violations, is_breaching),
-        )
-        await notification.send_sla_alert(body.recipients, alert)
-
-    return {"sent": len(body.alerts)}
 
 
 # ── /ontology ────────────────────────────────────────────────────────────────

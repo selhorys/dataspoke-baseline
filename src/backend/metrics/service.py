@@ -948,7 +948,7 @@ class MetricsService:
         }
 
     async def _measure_low_quality(self, datasets: list[str]) -> tuple[float, dict[str, Any]]:
-        from src.backend.validation.scoring import compute_quality_score
+        from src.backend.dataset.scoring import compute_quality_score
 
         affected: list[dict[str, Any]] = []
         for urn in datasets:

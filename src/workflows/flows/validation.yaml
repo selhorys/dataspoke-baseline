@@ -11,12 +11,9 @@ inputs:
     type: STRING
   - id: dataset_urn
     type: STRING
-  - id: config_id
+  - id: partition
     type: STRING
-    defaults: ""
-  - id: dry_run
-    type: STRING
-    defaults: "false"
+    defaults: "{}"
 
 tasks:
   - id: run_validation
@@ -25,7 +22,7 @@ tasks:
     method: POST
     contentType: application/json
     body: |
-      {"dataset_urn": "{{ inputs.dataset_urn }}", "config_id": "{{ inputs.config_id }}", "dry_run": {{ inputs.dry_run }}}
+      {"dataset_urn": "{{ inputs.dataset_urn }}", "partition": {{ inputs.partition }}}
     options:
       connectTimeout: PT5S
       readTimeout: PT30S

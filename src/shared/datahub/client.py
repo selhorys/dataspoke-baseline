@@ -186,6 +186,17 @@ class DataHubClient:
         mcp = MetadataChangeProposalWrapper(entityUrn=urn, aspect=aspect)
         await self._with_retry(self._emitter.emit_mcp, mcp)
 
+    async def emit_assertion(self, assertion_urn: str, aspect: Any) -> None:
+        """Emit an aspect to an assertion entity."""
+        mcp = MetadataChangeProposalWrapper(entityUrn=assertion_urn, aspect=aspect)
+        await self._with_retry(self._emitter.emit_mcp, mcp)
+
+    async def get_assertion_info(self, assertion_urn: str) -> Any | None:
+        """Check if an assertion definition exists in DataHub."""
+        from datahub.metadata.schema_classes import AssertionInfoClass
+
+        return await self.get_aspect(assertion_urn, AssertionInfoClass)
+
     async def check_connectivity(self) -> bool:
         try:
             await asyncio.to_thread(self._graph.test_connection)

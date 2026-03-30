@@ -96,12 +96,10 @@ async def get_validation_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
-    llm: LLMClient = Depends(get_llm),
-    qdrant: QdrantManager = Depends(get_qdrant),
 ) -> "ValidationService":
     from src.backend.validation.service import ValidationService
 
-    return ValidationService(datahub=datahub, db=db, cache=cache, llm=llm, qdrant=qdrant)
+    return ValidationService(datahub=datahub, db=db, cache=cache)
 
 
 async def get_generation_service(

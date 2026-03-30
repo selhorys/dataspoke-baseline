@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.validation.scoring import compute_quality_score
+from src.backend.dataset.scoring import compute_quality_score
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import DepartmentMapping

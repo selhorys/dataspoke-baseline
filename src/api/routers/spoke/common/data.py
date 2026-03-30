@@ -266,7 +266,6 @@ def _validation_config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         dataset_urn=c.dataset_urn,
         rules=c.rules,
         schedule=c.schedule,
-        sla_target=c.sla_target,
         status=c.status,
         owner=c.owner,
         created_at=c.created_at,
@@ -296,7 +295,6 @@ async def put_data_validation_conf(
         dataset_urn=dataset_urn,
         rules=body.rules,
         schedule=body.schedule,
-        sla_target=body.sla_target,
         owner=body.owner,
     )
     if created:
@@ -331,11 +329,24 @@ async def get_data_validation_result(
     sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
+    partition: str | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
     order_by = parse_sort(sort, {"measured_at": ValidationResult.measured_at}, None)
+    partition_filter: dict | None = None
+    if partition:
+        try:
+            partition_filter = json.loads(partition)
+        except Exception:
+            partition_filter = None
     results, total_count = await service.get_results(
-        dataset_urn, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
+        dataset_urn,
+        from_dt=from_time,
+        to_dt=to_time,
+        partition_filter=partition_filter,
+        offset=offset,
+        limit=limit,
+        order_by=order_by,
     )
     return ValidationResultListResponse(
         offset=offset,
@@ -345,12 +356,12 @@ async def get_data_validation_result(
             ValidationResultResponse(
                 id=r.id,
                 dataset_urn=r.dataset_urn,
-                quality_score=r.quality_score,
-                dimensions=r.dimensions,
+                rule_id=r.rule_id,
+                partition=r.partition,
+                values=r.values,
+                validation=r.validation,
+                assertion_result=r.assertion_result,
                 issues=r.issues,
-                anomalies=r.anomalies,
-                recommendations=r.recommendations,
-                alternatives=r.alternatives,
                 run_id=r.run_id,
                 measured_at=r.measured_at,
             )
@@ -359,10 +370,8 @@ async def get_data_validation_result(
     )
 
 
-@router.post(
-    "/{dataset_urn}/attr/validation/method/run", response_model=ValidationRunResultResponse
-)
-async def post_data_validation_run(
+@router.post("/{dataset_urn}/attr/validation/result", response_model=ValidationRunResultResponse)
+async def post_data_validation_result(
     dataset_urn: str,
     body: RunValidationRequest,
     kestra: KestraClient = Depends(get_kestra_client),
@@ -376,8 +385,7 @@ async def post_data_validation_run(
         inputs={
             "callback_base_url": settings.kestra_callback_base_url,
             "dataset_urn": dataset_urn,
-            "config_id": "",
-            "dry_run": str(body.dry_run).lower(),
+            "partition": json.dumps(body.partition or {}),
         },
         labels={"workflow_id": label_value},
     )
@@ -385,7 +393,9 @@ async def post_data_validation_run(
     return ValidationRunResultResponse(
         run_id=outputs.get("run_id", execution.id),
         status=outputs.get("status", execution.status.value),
-        detail=outputs.get("detail", {}),
+        total=outputs.get("total", 0),
+        passed=outputs.get("passed", 0),
+        failed=outputs.get("failed", 0),
     )
 
 
@@ -611,7 +621,7 @@ async def stream_data_validation(dataset_urn: str, websocket: WebSocket) -> None
     Protocol:
     1. Client sends ``{"type": "auth", "token": "<jwt>"}``
     2. Server replies ``{"type": "auth_ok"}`` then forwards Redis messages
-    3. Connection closes after a ``type=result`` message or client disconnect
+    3. Connection closes after a ``type=summary`` message or client disconnect
     """
 
     await websocket.accept()
@@ -625,7 +635,7 @@ async def stream_data_validation(dataset_urn: str, websocket: WebSocket) -> None
         async for message in cache.subscribe(channel):
             await websocket.send_text(message)
             payload = json.loads(message)
-            if payload.get("type") == "result":
+            if payload.get("type") == "summary":
                 break
     except WebSocketDisconnect:
         pass

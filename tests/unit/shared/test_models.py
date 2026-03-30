@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
 from src.shared.models.ontology import Concept, ConceptRelationship
-from src.shared.models.quality import AnomalyResult, QualityIssue, QualityScore
+from src.shared.models.quality import QualityIssue, QualityScore
 
 NOW = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
 
@@ -54,33 +54,6 @@ def test_quality_issue_with_field_path() -> None:
         field_path="column_a",
     )
     assert issue.field_path == "column_a"
-
-
-# ── AnomalyResult ─────────────────────────────────────────────────────────────
-
-
-def test_anomaly_result_validation() -> None:
-    result = AnomalyResult(
-        metric_name="row_count",
-        is_anomaly=True,
-        expected_value=1000.0,
-        actual_value=50.0,
-        confidence=0.95,
-        detected_at=NOW,
-    )
-    assert result.is_anomaly is True
-
-
-def test_anomaly_result_rejects_non_bool_is_anomaly() -> None:
-    with pytest.raises(ValidationError):
-        AnomalyResult(
-            metric_name="row_count",
-            is_anomaly={"not": "a bool"},  # type: ignore[arg-type]
-            expected_value=1000.0,
-            actual_value=50.0,
-            confidence=0.95,
-            detected_at=NOW,
-        )
 
 
 # ── DatasetSummary ────────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@ Orchestration is handled by the Kestra flow definition in flows/validation.yaml.
 Business logic is in the internal activity endpoints.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 FLOW_ID = "validation"
 
@@ -12,5 +13,4 @@ FLOW_ID = "validation"
 @dataclass
 class ValidationParams:
     dataset_urn: str
-    config_id: str | None = None
-    dry_run: bool = False
+    partition: dict[str, Any] = field(default_factory=dict)

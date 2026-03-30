@@ -46,13 +46,14 @@ def _mock_redis(messages: list[dict]):
 class TestStreamValidationAuth:
     def test_auth_ok(self) -> None:
         messages = [
-            {"type": "progress", "step": "fetch_aspects", "pct": 20, "msg": "Fetching"},
+            {"type": "progress", "rule_id": "r1", "status": "running"},
             {
-                "type": "result",
-                "status": "completed",
-                "quality_score": 78,
-                "issues": [],
-                "recommendations": [],
+                "type": "summary",
+                "status": "success",
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
             },
         ]
         with patch(
@@ -69,7 +70,7 @@ class TestStreamValidationAuth:
                 assert msg1["type"] == "progress"
 
                 msg2 = json.loads(ws.receive_text())
-                assert msg2["type"] == "result"
+                assert msg2["type"] == "summary"
 
     def test_auth_invalid_token(self) -> None:
         client = TestClient(app)
@@ -109,15 +110,16 @@ class TestStreamValidationAuth:
 
 
 class TestStreamValidationMessages:
-    def test_closes_on_result(self) -> None:
+    def test_closes_on_summary(self) -> None:
         messages = [
-            {"type": "progress", "step": "check_freshness", "pct": 50, "msg": "Checking"},
+            {"type": "progress", "rule_id": "r1", "status": "running"},
             {
-                "type": "result",
-                "status": "completed",
-                "quality_score": 92,
-                "issues": [],
-                "recommendations": [],
+                "type": "summary",
+                "status": "success",
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "errored": 0,
             },
         ]
         with patch(
@@ -129,11 +131,11 @@ class TestStreamValidationMessages:
                 ws.receive_json()  # auth_ok
 
                 ws.receive_text()  # progress
-                ws.receive_text()  # result
-                # Connection should close after result
+                ws.receive_text()  # summary
+                # Connection should close after summary
 
     def test_subscribes_to_correct_channel(self) -> None:
-        messages = [{"type": "result", "status": "completed"}]
+        messages = [{"type": "summary", "status": "success"}]
         mock_redis = _mock_redis(messages)
 
         # Track which channel is subscribed to
