@@ -120,7 +120,7 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 | Qdrant | `vector/client.py` | Collection management, typed search/upsert | Wraps `qdrant-client` |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
-| Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Metrics (UC6) and Validation (UC3). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
+| Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Metrics (UC6) and Validation (UC2, UC3). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
 | Domain Models | `models/` | Shared Pydantic models (`QualityScore`, `EventRecord`, etc.) -- internal domain objects, not API schemas | API schemas live in `src/api/schemas/` |
 | Exceptions | `exceptions.py` | `DataSpokeError` hierarchy with error codes for HTTP mapping | See [Error Handling](#error-handling) |
 | Settings | `settings.py` | Pydantic `Settings` class reading `DATASPOKE_*` env vars | -- |
@@ -129,8 +129,7 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 
 | Pattern | TTL | Purpose |
 |---------|-----|---------|
-| `validation:{dataset_urn}:result` | 60s | Validation result cache for AI agent loops |
-| `quality:{dataset_urn}:score` | 300s | Quality score cache |
+| `validation:{dataset_urn}:result` | 60s | Latest validation run result cache |
 | `search:{query_hash}` | 120s | Search result cache |
 | `rate_limit:{user_id}` | 60s | Rate limiting counter |
 
@@ -166,39 +165,28 @@ Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEM
 
 ### Validation Service (`src/backend/validation/`)
 
-**Covers**: UC2 (Online Data Validator), UC3 (Predictive SLA)
+**Covers**: UC2 (Data Validation), UC3 (Predictive SLA via timeseries validation)
 
-CRUD for validation configurations (PostgreSQL: `validation_configs`). Quality score computation, time-series anomaly detection, upstream lineage traversal for root cause analysis, downstream impact analysis, SLA prediction and pre-breach alerting.
+A convenience and customization layer on top of DataHub's native assertion framework. Does **not** implement its own quality scoring engine. CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule execution, assertion registration in DataHub, and result reporting.
 
-**Quality Score Computation** (`scoring.py`):
+**Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema, SQL, custom. Each rule can specify partition and order variables (like SQL window functions) for determining the target partition.
 
-| Dimension | Weight | Source Aspect | Scoring Logic |
-|-----------|--------|---------------|---------------|
-| Completeness | 25% | `datasetProperties`, `schemaMetadata` | % of fields with non-empty descriptions |
-| Freshness | 25% | `operation` (timeseries) | Days since last successful operation vs SLA |
-| Schema stability | 15% | `schemaMetadata` (history) | Schema change frequency over 30 days |
-| Data quality | 20% | `datasetProfile` (timeseries) | Null ratio, row count trend stability |
-| Ownership & tags | 15% | `ownership`, `globalTags` | Has owner + min 1 classifying tag |
+**Configuration model** (`config.py`): Per-dataset config stored in `validation_configs` with:
+- `schedule` (JSONB): singleton per dataset — `{"cron": "...", "manual": true/false}`. Both modes can be active simultaneously.
+- `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec, extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
 
-The quality score engine is used by three consumers: Validation service (per-entity), Metrics service (department-level aggregation), Overview service (graph node coloring).
+**SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value variables, and optional ML-based validation settings (model type, lookback window, validation range).
 
-**Anomaly Detection** (`anomaly.py`): Prophet for seasonal pattern detection; Isolation Forest for multivariate outlier detection.
+**Validation Run Pipeline** (Kestra `validation` flow):
 
-**Validation Run Pipeline** (Kestra flow):
-
-1. Fetch entity context (DataHub aspects + cached quality score)
-2. Compute quality score
-3. Run anomaly detection on timeseries profiles
-4. Traverse upstream lineage for root-cause analysis (if issues found)
-5. Traverse downstream lineage to assess impact
-6. Search Qdrant for similar healthy datasets as alternatives
-7. Assemble validation result with issues, recommendations, alternatives
-8. Publish progress to Redis pub/sub channel (`ws:validation:{dataset_urn}`)
-9. Cache result in Redis (60s TTL), persist in PostgreSQL, record event
-
-**Predictive SLA Monitoring** (`sla.py`): Datasets with `sla_target` in their `validation_configs` are monitored by the `SLAMonitorWorkflow`. Checks current state against SLA thresholds, detects deviation from learned day-of-week baselines (4-week rolling window), predicts time-to-breach using Prophet trend extrapolation, traverses lineage for root cause and impact if pre-breach.
-
-**SLA Target** schema (stored in `validation_configs.sla_target` JSONB): `freshness_hours`, `min_quality_score`, `deadline_utc`, `alert_before_minutes` (default 120), `auto_adjust_thresholds` (default true).
+1. Resolve target partition (manual request → specified partition; cron → latest partition via partition/order variables)
+2. For each rule in the dataset's config, compute metrics for the target partition
+3. For `custom/sql_timeseries` rules: execute SQL against source, extract partition values
+4. For rules with `ml_validation`: validate selected values against historical records (range model, day-of-week baseline, etc.)
+5. Register assertion definitions in DataHub (`assertionInfo` aspect) if not already present
+6. Report each rule's result to DataHub (`assertionRunEvent` aspect: SUCCESS/FAILURE/ERROR)
+7. Persist results in PostgreSQL (`validation_results`), publish progress to Redis pub/sub channel (`ws:validation:{dataset_urn}`)
+8. Record event (`VALIDATION.COMPLETE`)
 
 ### Generation Service (`src/backend/generation/`)
 
@@ -368,8 +356,7 @@ Wraps Kestra's REST API via `httpx`: flow CRUD, execution lifecycle (trigger, po
 |------|------|---------|----------|
 | `ingestion-config-sync` | `ingestion_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
 | `ingestion-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual | Per-config |
-| `validation` | `validation.yaml` | API + Kafka event | On-demand + event-driven |
-| `sla-monitor` | `sla_monitor.yaml` | Kestra schedule trigger | Scheduled (e.g., every 30 min) |
+| `validation` | `validation.yaml` | API (cron from config schedule + manual) | Per-dataset schedule + on-demand |
 | `generation` | `generation.yaml` | API | On-demand |
 | `embedding-sync` | `embedding_sync.yaml` | Kafka event + API | Event-driven + on-demand |
 | `metrics` | `metrics.yaml` | API + Kestra schedule | On-demand + scheduled |
@@ -428,8 +415,7 @@ DataSpoke runs a single consumer group (`dataspoke-consumers`) that routes event
 | `MetadataChangeLog_Versioned_v1` | `schemaMetadata` | `sync_vector_index`, `detect_new_clusters` | Search (UC5), Generation (UC4) |
 | `MetadataChangeLog_Versioned_v1` | `ownership` | `update_health_score` | Metrics (UC6) |
 | `MetadataChangeLog_Versioned_v1` | `globalTags` | `sync_vector_index`, `update_health_score` | Search (UC5), Metrics (UC6) |
-| `MetadataChangeLog_Timeseries_v1` | `datasetProfile` | `trigger_quality_check` | Validation (UC2, UC3) |
-| `MetadataChangeLog_Timeseries_v1` | `operation` | `check_freshness_sla` | Validation (UC3) |
+| `MetadataChangeLog_Timeseries_v1` | `datasetProfile` | `update_health_score` | Metrics (UC6) |
 
 ### Consumer Process
 
@@ -485,14 +471,13 @@ Non-critical operations execute best-effort -- if they fail, the primary operati
 | Operation | Service | Fallback |
 |-----------|---------|----------|
 | LLM description enrichment | IngestionService | Ingested without enriched description |
-| Upstream/downstream lineage lookup | ValidationService, SLA | Recommendations lack dependency context |
-| Qdrant similarity search | ValidationService, GenerationService | No alternative suggestions |
+| Source SQL execution | ValidationService | Rule skipped, marked as ERROR in `assertionRunEvent` |
+| ML validation model fit | ValidationService | Value recorded without validation verdict |
 | Redis pub/sub + cache write | ValidationService | WebSocket unnotified; next read hits DB |
+| Qdrant similarity search | GenerationService | No alternative suggestions |
 | LLM sample query generation | SearchService | SQL context without example query |
 | DataHub ownership lookup | MetricsService | Issues created without assignee |
-| Prophet breach prediction | SLA monitor | Falls back to linear extrapolation |
 | LLM dataset classification | OntologyRebuild | Dataset excluded from classification |
-| Quality score computation | Health aggregator, MetricsService | Dataset excluded from aggregation |
 
 ---
 
@@ -513,13 +498,10 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `CIRCUIT_BREAKER_RESET_MS` | 60000 | Time before probe attempt |
 | `BULK_BATCH_SIZE` | 100 | DataHub bulk scan batch size |
 | `BULK_BATCH_DELAY_MS` | 100 | Delay between bulk batches |
-| `QUALITY_SCORE_CACHE_TTL` | 300 | Quality score Redis cache TTL (seconds) |
 | `VALIDATION_RESULT_CACHE_TTL` | 60 | Validation result Redis cache TTL (seconds) |
 | `SEARCH_RESULT_CACHE_TTL` | 120 | Search result Redis cache TTL (seconds) |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Below this -> pending human review |
-| `SLA_MONITOR_INTERVAL_MINUTES` | 30 | Default SLA monitoring interval |
-| `SLA_ALERT_BEFORE_MINUTES` | 120 | Default pre-breach alert lead time |
 
 ---
 

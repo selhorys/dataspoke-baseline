@@ -24,11 +24,9 @@ from src.shared.datahub.events import (
     EventRouter,
     MetadataChangeLogEvent,
     build_router,
-    check_freshness_sla,
     deserialize_mcl,
     detect_new_clusters,
     sync_vector_index,
-    trigger_quality_check,
     update_health_score,
 )
 
@@ -410,114 +408,6 @@ class TestEventHandlerDispatch:
         mock_agg.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_trigger_quality_check_starts_validation_workflow(self) -> None:
-        """trigger_quality_check triggers validation flow when config exists."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
-
-        # Mock DB to return a ValidationConfig
-        mock_config = MagicMock()
-        mock_config.dataset_urn = _TEST_URN
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_config
-
-        mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session,
-        ):
-            event = _make_mcl_event(aspect_name="datasetProfile")
-            await trigger_quality_check(event)
-
-        mock_kestra.trigger_execution.assert_awaited_once()
-        call_args = mock_kestra.trigger_execution.call_args
-        assert call_args.args[0] == "validation"
-        assert call_args.kwargs["labels"]["workflow_id"].startswith("validation-")
-
-    @pytest.mark.asyncio
-    async def test_trigger_quality_check_noop_without_config(self) -> None:
-        """trigger_quality_check is a no-op when no ValidationConfig exists."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-
-        mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session,
-        ):
-            event = _make_mcl_event(aspect_name="datasetProfile")
-            await trigger_quality_check(event)
-
-        mock_kestra.trigger_execution.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_check_freshness_sla_starts_sla_workflow(self) -> None:
-        """check_freshness_sla triggers sla-monitor flow when sla_target exists."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
-
-        mock_config = MagicMock()
-        mock_config.sla_target = {"freshness_hours": 24}
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_config
-
-        mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session,
-        ):
-            event = _make_mcl_event(aspect_name="operation")
-            await check_freshness_sla(event)
-
-        mock_kestra.trigger_execution.assert_awaited_once()
-        call_args = mock_kestra.trigger_execution.call_args
-        assert call_args.args[0] == "sla-monitor"
-        assert call_args.kwargs["labels"]["workflow_id"].startswith("sla-monitor-")
-
-    @pytest.mark.asyncio
-    async def test_check_freshness_sla_noop_without_sla_target(self) -> None:
-        """check_freshness_sla is a no-op when no sla_target configured."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
-
-        mock_config = MagicMock()
-        mock_config.sla_target = None
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_config
-
-        mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session,
-        ):
-            event = _make_mcl_event(aspect_name="operation")
-            await check_freshness_sla(event)
-
-        mock_kestra.trigger_execution.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_multi_handler_schema_metadata_dispatch(self) -> None:
         """schemaMetadata dispatches to both sync_vector_index and detect_new_clusters."""
         mock_kestra = AsyncMock()
@@ -542,8 +432,6 @@ class TestEventHandlerDispatch:
         for aspect, handler in [
             ("datasetProperties", sync_vector_index),
             ("schemaMetadata", detect_new_clusters),
-            ("datasetProfile", trigger_quality_check),
-            ("operation", check_freshness_sla),
         ]:
             event = _make_mcl_event(
                 aspect_name=aspect,

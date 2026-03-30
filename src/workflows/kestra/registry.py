@@ -42,7 +42,6 @@ _STARTUP_FLOWS = frozenset({
     "metrics.yaml",
     "embedding_sync.yaml",
     "ontology_rebuild.yaml",
-    "sla_monitor.yaml",
 })
 
 _REGISTER_COOLDOWN = 2.0  # seconds between registrations

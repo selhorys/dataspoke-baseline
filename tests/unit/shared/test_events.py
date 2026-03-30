@@ -9,11 +9,9 @@ from src.shared.datahub.events import (
     EventRouter,
     MetadataChangeLogEvent,
     build_router,
-    check_freshness_sla,
     deserialize_mcl,
     detect_new_clusters,
     sync_vector_index,
-    trigger_quality_check,
     update_health_score,
 )
 from src.shared.exceptions import DataHubUnavailableError, EventProcessingError
@@ -170,14 +168,6 @@ class TestHandlerEntityTypeFiltering:
         event = _make_event(entity_type="dataJob", aspect_name="ownership")
         await update_health_score(event)
 
-    async def test_trigger_quality_check_skips_non_dataset(self) -> None:
-        event = _make_event(entity_type="chart", aspect_name="datasetProfile")
-        await trigger_quality_check(event)
-
-    async def test_check_freshness_sla_skips_non_dataset(self) -> None:
-        event = _make_event(entity_type="dataFlow", aspect_name="operation")
-        await check_freshness_sla(event)
-
     async def test_handler_runs_for_dataset(self) -> None:
         event = _make_event(entity_type="dataset", aspect_name="datasetProperties")
         # Should not raise
@@ -196,7 +186,6 @@ class TestBuildRouter:
             "globalTags",
             "ownership",
             "datasetProfile",
-            "operation",
         }
         assert set(router.registered_aspects.keys()) == expected_aspects
 
@@ -216,8 +205,5 @@ class TestBuildRouter:
         # ownership → update_health_score
         assert handlers["ownership"] == [update_health_score]
 
-        # datasetProfile → trigger_quality_check
-        assert handlers["datasetProfile"] == [trigger_quality_check]
-
-        # operation → check_freshness_sla
-        assert handlers["operation"] == [check_freshness_sla]
+        # datasetProfile → update_health_score
+        assert handlers["datasetProfile"] == [update_health_score]

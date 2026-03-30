@@ -35,7 +35,7 @@ All workflow IDs follow the pattern ``{type}-{identifier}``:
 
 - ``type`` is a lowercase kebab-case workflow name matching the module
   (``ingestion``, ``validation``, ``generation``, ``metrics``,
-  ``embedding-sync``, ``sla-monitor``, ``ontology-rebuild``).
+  ``embedding-sync``, ``ontology-rebuild``).
 - Test IDs always start with ``test-`` so they can be identified and
   cleaned up in the Kestra UI.  Use short, readable labels — never
   embed full URNs.

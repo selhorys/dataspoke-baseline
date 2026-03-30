@@ -25,8 +25,8 @@ Imazon is a 15-year-old online bookstore. Its data landscape reflects years of o
 | Use Case | User Group | Feature |
 |----------|-----------|---------|
 | [Use Case 1: Deep Ingestion — Legacy Book Catalog Enrichment](#use-case-1-deep-ingestion--legacy-book-catalog-enrichment) | DE | Deep Technical Spec Ingestion |
-| [Use Case 2: Online Validator — Recommendation Pipeline Verification](#use-case-2-online-validator--recommendation-pipeline-verification) | DE / DA | Online Data Validator |
-| [Use Case 3: Predictive SLA — Fulfillment Pipeline Early Warning](#use-case-3-predictive-sla--fulfillment-pipeline-early-warning) | DE | Online Data Validator |
+| [Use Case 2: Data Validation — Assertion-Based Data Quality Monitoring](#use-case-2-data-validation--assertion-based-data-quality-monitoring) | DE / DA | DataHub Assertion Management |
+| [Use Case 3: Predictive SLA — Timeseries Validation for Early Warning](#use-case-3-predictive-sla--timeseries-validation-for-early-warning) | DE | DataHub Assertion Management |
 | [Use Case 4: Doc Generation — Post-Acquisition Ontology Reconciliation](#use-case-4-doc-generation--post-acquisition-ontology-reconciliation) | DE | Automated Documentation Generation |
 | [Use Case 5: NL Search — GDPR Compliance Audit](#use-case-5-nl-search--gdpr-compliance-audit) | DA | Natural Language Search |
 | [Use Case 6: Metrics Dashboard — Enterprise Metadata Health](#use-case-6-metrics-dashboard--enterprise-metadata-health) | DG | Enterprise Metrics Time-Series Monitoring |
@@ -242,172 +242,290 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 
 ---
 
-### Use Case 2: Online Validator — Recommendation Pipeline Verification
+### Use Case 2: Data Validation — Assertion-Based Data Quality Monitoring
 
-**Feature**: Online Data Validator (shared with DA group)
+**Feature**: DataHub Assertion Management (shared with DA group)
+
+#### Design Philosophy
+
+DataSpoke does **not** build its own data quality scoring engine. It provides a **convenience and customization layer on top of DataHub's native assertion framework**:
+
+- Register all 6 types of DataHub assertion rules per dataset: freshness, volume, field, schema, SQL, custom
+- Unified configuration and result retrieval through DataSpoke API
+- JSON format compatible with DataHub's Open Assertions Spec, with DataSpoke extensions
+- Partition-aware execution with cron and manual scheduling
+- DataSpoke-original validation logic via the `custom` type (e.g., SQL-based timeseries rule)
+- All assertion results stored in DataHub as `assertionRunEvent` timeseries aspects
+
+#### Validation Configuration Model
+
+**Configuration API**: `PUT /api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf`
+
+A dataset's validation config is a JSON object with two parts:
+
+1. **Schedule** — singleton per dataset. Only `cron` and `manual` are supported, and both can be active simultaneously. While cron runs checks on a schedule, users can also trigger a manual validation run at any time.
+
+2. **Rules** — JSON list where each item is a dictionary compatible with DataHub's Open Assertions Spec, with the following DataSpoke extensions:
+   - `rule_id` — auto-generated unique identifier for each rule
+   - `partition` and `order` variables (like SQL window functions) — determine the default (latest) target partition when cron-triggered. All 6 rule types support these.
+
+**Example — `reviews.user_ratings` validation config:**
+
+```json
+{
+  "schedule": {
+    "cron": "0 */6 * * *",
+    "manual": true
+  },
+  "rules": [
+    {
+      "rule_id": "r-fresh-001",
+      "type": "freshness",
+      "lookback_interval": "6 hours",
+      "last_modified_field": "updated_at",
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-vol-001",
+      "type": "volume",
+      "metric": "row_count",
+      "condition": {"type": "between", "min": 10000, "max": 5000000},
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-field-001",
+      "type": "field",
+      "field": "rating_score",
+      "metric": "null_count",
+      "condition": {"type": "less_than_or_equal_to", "value": 100},
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-schema-001",
+      "type": "schema",
+      "fields": [
+        {"field": "user_id", "type": "VARCHAR"},
+        {"field": "isbn", "type": "VARCHAR"},
+        {"field": "rating_score", "type": "NUMBER"}
+      ],
+      "compatibility": "superset"
+    },
+    {
+      "rule_id": "r-sql-001",
+      "type": "sql",
+      "statement": "SELECT COUNT(*) FROM reviews.user_ratings WHERE rating_score < 1 OR rating_score > 5",
+      "condition": {"type": "equal_to", "value": 0},
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-custom-ts-001",
+      "type": "custom",
+      "subtype": "sql_timeseries",
+      "description": "Daily volume and null-rate trend for anomaly detection",
+      "sql": "SELECT load_date, COUNT(*) AS row_count, SUM(CASE WHEN rating_score IS NULL THEN 1 ELSE 0 END)::float / COUNT(*) AS null_rate FROM reviews.user_ratings GROUP BY load_date",
+      "partition": ["load_date"],
+      "order": ["load_date"],
+      "values": ["row_count", "null_rate"],
+      "ml_validation": {
+        "targets": ["null_rate"],
+        "model": "range",
+        "lookback_partitions": 30
+      }
+    }
+  ]
+}
+```
+
+#### Custom Type: SQL-Based Timeseries Rule
+
+The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation:
+
+- **Applicability**: SQL-runnable datasets (e.g., PostgreSQL, Trino, Snowflake)
+- **Data manipulation SQL**: defines the view over which validation operates
+- **Partition, order, value variables**: like SQL window functions — define the granularity and metrics to track
+- **ML-based validation** (optional): for selected value columns, configure model type, validation range, lookback window, etc.
+
+#### Execution Flow
+
+When a cron or manual invocation is triggered for a dataset's validation rules:
+
+- **Manual invocation** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result`): if a partition is given in the request body, that partition is targeted; otherwise the latest partition is targeted.
+- **Cron invocation**: always targets the latest partition (determined by partition/order variables).
+
+For the target partition, metrics defined by each rule are calculated and validated. For example, the SQL-based timeseries rule `r-custom-ts-001` above when cron-triggered:
+
+**Step 1** — Latest partition's values are calculated:
+```json
+{"partitions": {"load_date": "2025-03-10"}, "values": {"row_count": 48230, "null_rate": 0.003}}
+```
+
+**Step 2** — Based on historical records, selected values from the current partition are validated (per `ml_validation` config):
+```json
+{"partitions": {"load_date": "2025-03-10"}, "values": {"row_count": 48230, "null_rate": 0.003}, "validation": {"null_rate": true}}
+```
+
+**Step 3** — Current partition's result is stored to DataHub as `assertionRunEvent`, including the validation result (pass/fail per target, actual values, partition context).
+
+**Result History API**: `GET /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result` — retrieves validation result history for the dataset from DataHub's `assertionRunEvent` timeseries.
 
 #### Scenario: AI Agent Builds a Book Recommendation Pipeline
 
 **Background:**
-A data scientist asks an AI Agent: "Build a daily book recommendation pipeline using `reviews.user_ratings` and `orders.purchase_history`." The Validator ensures the agent selects healthy data sources and produces compliant output.
+A data scientist asks an AI Agent: "Build a daily book recommendation pipeline using `reviews.user_ratings` and `orders.purchase_history`." Before building, the agent checks existing validation results to select healthy data sources.
 
-#### Without DataSpoke
+##### Without DataSpoke
 
-The AI Agent searches DataHub for "reviews" and "orders" tables, picks candidates by naming convention, generates code without understanding data quality, and deploys a pipeline that may use a degraded table (`reviews.user_ratings_legacy` has a 30% null rate on `rating_score` since a migration bug last week).
+The AI Agent searches DataHub for "reviews" and "orders" tables, picks candidates by naming convention, generates code without checking data quality, and deploys a pipeline using `reviews.user_ratings_legacy` — which has a 30% null rate on `rating_score` since a migration bug last week. DataHub has no registered assertions for this table, so no quality signal exists.
 
-#### With DataSpoke
+##### With DataSpoke
 
-**Step 1: Semantic Discovery**
+**Step 1: Check existing validation results**
+
+The DE team has already configured validation rules for key tables. The AI Agent queries recent results:
 
 ```
-AI Agent Query: "Find review and purchase tables suitable for ML training"
+GET /api/v1/spoke/common/data/urn:li:dataset:...reviews.user_ratings/attr/validation/result
 
-DataSpoke Response (via /api/v1/spoke/common/search + /spoke/common/data/{dataset_urn}/attr/validation/result):
-- reviews.user_ratings (✓ Quality Score: 96)
-  Last refreshed: 1 hour ago | Completeness: 99.7% | 28 downstream consumers
+Response — last 5 cron runs all passed:
+  r-field-001 (null_count on rating_score): ✓ 0 nulls per partition
+  r-custom-ts-001 (null_rate timeseries): ✓ null_rate=0.003 within range
+  r-vol-001 (row_count): ✓ 48,230 rows (within 10K–5M)
 
-- reviews.user_ratings_legacy (⚠ Quality Issues)
-  Anomaly: 30% null rate on rating_score since 2024-02-03
-  Recommendation: Avoid — use reviews.user_ratings instead
+GET /api/v1/spoke/common/data/urn:li:dataset:...reviews.user_ratings_legacy/attr/validation/result
 
-- orders.purchase_history (✓ Recommended)
-  SLA: 99.9% on-time | Documentation: 100% | Certified for ML use
+Response — last run FAILED:
+  r-custom-ts-001 (null_rate timeseries): ✗ null_rate=0.30 — anomaly detected
+    Historical baseline: 0.003 ±0.002 (30-day range model)
+    Current: 0.30 — 150x above baseline
 ```
 
-**Step 2: Context Verification**
+The agent picks `reviews.user_ratings` (all assertions passing) and avoids the legacy table.
 
-```python
-# POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
-dataspoke.validator.verify_context("reviews.user_ratings_legacy")
+**Step 2: Register validation rules for the new pipeline output**
 
-# Response:
+```
+PUT /api/v1/spoke/common/data/urn:li:dataset:...book_recommendation_features/attr/validation/conf
+
 {
-  "status": "degraded",
-  "quality_issues": [{
-    "type": "null_rate_anomaly",
-    "severity": "high",
-    "message": "rating_score null rate jumped from 0.3% to 30%",
-    "recommendation": "Use reviews.user_ratings instead"
-  }],
-  "alternative_entities": ["reviews.user_ratings"]
+  "schedule": {"cron": "30 9 * * *", "manual": true},
+  "rules": [
+    {"type": "freshness", "lookback_interval": "24 hours", "last_modified_field": "created_at",
+     "partition": {"field": "run_date", "order": "desc"}},
+    {"type": "volume", "metric": "row_count",
+     "condition": {"type": "greater_than", "value": 0},
+     "partition": {"field": "run_date", "order": "desc"}},
+    {"type": "field", "field": "user_id", "metric": "null_count",
+     "condition": {"type": "equal_to", "value": 0},
+     "partition": {"field": "run_date", "order": "desc"}}
+  ]
 }
 ```
 
-**Step 3: Pipeline Validation**
+**Step 3: DA validates fitness-for-use**
 
-```yaml
-Pipeline: book_recommendations_daily_v1
-Author: AI Agent (claude-sonnet-4.5)
+A marketing analyst checks `orders.purchase_history` before connecting to Tableau:
 
-Validation Results:
-✓ Documentation: Description present, owner assigned to data-science-team
-✓ Naming Convention: book_recommendation_features (compliant)
-✓ Quality Checks: NULL handling implemented, schema backward-compatible
-✓ Lineage Impact: 2 upstream tables (both healthy), no circular deps
-⚠ Recommendations: Add freshness check, implement monitoring alert
 ```
+GET /api/v1/spoke/common/data/urn:li:dataset:...orders.purchase_history/attr/validation/result
 
-**Step 4**: AI Agent deploys with verified sources, compliant structure, and quality checks.
-
-**Step 5: Analyst Validation (DA Perspective)**
-
-A marketing analyst wants to connect `orders.purchase_history` to a Tableau dashboard for quarterly buyer-segment reporting. Before connecting, she validates the table through the DA endpoint:
-
-```python
-# POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
-dataspoke.validator.check({
-  "dataset": "orders.purchase_history",
-  "use_case": "reporting_dashboard",
-  "checks": ["freshness", "certification", "schema_stability"]
-})
-
-# Response:
-{
-  "status": "approved",
-  "certification": "Certified for reporting use",
-  "freshness": "Updated 45 min ago (SLA: hourly) ✓",
-  "schema_stability": "No breaking changes in 90 days ✓",
-  "recommendation": "Safe to connect — certified, stable, and fresh"
-}
+Response — recent results:
+  r-fresh-001 (freshness): ✓ Updated 45 min ago (lookback: 1 hour)
+  r-schema-001 (schema): ✓ All required fields present
+  r-vol-001 (row_count): ✓ 1.2M rows (within expected range)
+→ All assertions passing — safe to connect.
 ```
-
-The DA validation flow focuses on **fitness-for-use**: Is this table certified for reporting? Is the schema stable enough for a dashboard that won't break on Monday morning? Is the data fresh enough for the intended audience? This contrasts with the DE flow (Steps 1–4), which focuses on **pipeline construction**: Is the source healthy enough to build on? Are there quality anomalies? Is the output schema compliant? Both flows share the same underlying Quality Score Engine but apply different check profiles tailored to each group's concerns.
 
 #### DataHub Integration Points
 
-The Validator is primarily a **read** consumer. It queries multiple DataHub aspects to assemble health assessments:
+DataSpoke is a **read/write** layer on DataHub's assertion framework:
 
-| Validator Step | DataHub Aspect | REST API Path | What It Returns |
-|---------------|----------------------|---------------|----------------|
-| Semantic Discovery | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | Description, tags — match semantic intent |
-| Quality Score | `datasetProfile` (timeseries) | `POST /aspects?action=getTimeseriesAspectValues` | Row counts, null rates over time |
-| Freshness | `operation` (timeseries) | `POST /aspects?action=getTimeseriesAspectValues` | `lastUpdatedTimestamp` |
-| Downstream count | `upstreamLineage` | GraphQL: `searchAcrossLineage` | Count of downstream consumers |
-| Deprecation | `deprecation` | `GET /aspects/{urn}?aspect=deprecation` | `deprecated` flag, replacement URN |
-| Assertion history | `assertionRunEvent` (timeseries) | `POST /aspects?action=getTimeseriesAspectValues` | Pass/fail history |
-| Schema validation | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | Column names, types for naming checks |
+| Operation | DataHub Aspect | REST API Path | Direction |
+|-----------|---------------|---------------|-----------|
+| Register assertion rules | `assertionInfo` | `POST /openapi/v3/entity/assertion` | **Write** |
+| Report assertion results | `assertionRunEvent` | `POST /openapi/v3/entity/assertion` | **Write** |
+| Retrieve result history | `assertionRunEvent` (timeseries) | `POST /aspects?action=getTimeseriesAspectValues` | Read |
+| Schema for schema assertions | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | Read |
 
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetProfileClass,
-    OperationClass,
-    UpstreamLineageClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-dataset_urn = make_dataset_urn(platform="oracle", name="reviews.user_ratings_legacy", env="PROD")
-
-# Profile history — null rates over time for anomaly detection
-# REST: POST /aspects?action=getTimeseriesAspectValues
-profiles = graph.get_timeseries_values(
-    dataset_urn, DatasetProfileClass, filter={}, limit=30,
-)
-
-# Last operation — freshness check
-# REST: POST /aspects?action=getTimeseriesAspectValues
-operations = graph.get_timeseries_values(
-    dataset_urn, OperationClass, filter={}, limit=1,
-)
-
-# Upstream lineage — are dependencies healthy?
-# REST: GET /aspects/{urn}?aspect=upstreamLineage
-upstream = graph.get_aspect(dataset_urn, UpstreamLineageClass)
-```
-
-> **Key point**: DataHub is a passive data store. It provides raw signals; DataSpoke computes quality scores, anomaly detection, and recommendations.
+> **Key point**: DataHub stores assertion definitions and run results. Open-source DataHub does not execute assertions — DataSpoke is the execution engine that evaluates rules, runs SQL against source systems, performs ML-based validation, and reports results back to DataHub.
 
 #### DataSpoke Custom Implementation
 
 | Component | Responsibility | Why DataHub Can't Do This |
 |-----------|---------------|--------------------------|
-| **Quality Score Engine** | Aggregate profiles, assertions, docs, freshness → single 0–100 score | DataHub has no cross-aspect scoring |
-| **Null Rate Anomaly Detection** | Time-series analysis on `datasetProfile` null rates | DataHub stores profiles, no statistical analysis |
-| **Alternative Recommendation** | Query Qdrant for semantically similar healthy datasets | DataHub has keyword search only |
-| **Pipeline Validation Engine** | Validate naming, schema compatibility, lineage impact | DataHub stores metadata but doesn't validate against it |
-| **Validation Result Cache** | Redis cache for AI agents in tight coding loops | DataHub has no caching for computed results |
+| **Assertion Config API** | Unified CRUD for all 6 rule types per dataset, with partition support | DataHub has no per-dataset config management layer |
+| **Partition-Aware Executor** | Determine target partition, run rule against it, store result | Open-source DataHub doesn't execute assertions |
+| **SQL-Based Timeseries Engine** | Execute data manipulation SQL, compute partition values, track history | DataHub stores profiles but can't query source systems |
+| **ML-Based Anomaly Validation** | Range/model-based validation against historical partition values | DataHub has no statistical analysis |
+| **Cron/Manual Scheduler** | Kestra-orchestrated cron + on-demand manual triggering | DataHub has no scheduler (open-source) |
 
 #### Outcome
 
 | Metric | Without DataSpoke | With DataSpoke |
 |--------|------------------|----------------|
-| Pipeline failure rate | ~30% (bad data) | <5% (pre-verified) |
-| Human review time | Hours per pipeline | Minutes (automated) |
-| Data quality incidents | Frequent | Near zero |
+| Assertion setup effort | Manual per-assertion API calls to DataHub | Unified config per dataset |
+| Execution | None (open-source DataHub) | Automated via cron + manual |
+| Partition awareness | None | Built-in — latest partition targeted automatically |
+| Custom timeseries checks | Not possible | SQL-based rules with ML validation |
 
 ---
 
-### Use Case 3: Predictive SLA — Fulfillment Pipeline Early Warning
+### Use Case 3: Predictive SLA — Timeseries Validation for Early Warning
 
-**Feature**: Online Data Validator (time-series monitoring)
+**Feature**: DataHub Assertion Management (timeseries monitoring)
+
+This use case demonstrates how the SQL-based timeseries rule (the `custom` type from UC2) can be applied for SLA monitoring and pre-breach alerting.
 
 #### Scenario: Shipping Partner API Rate-Limiting Threatens Order Fulfillment Dashboard
 
 **Background:**
 Imazon's `orders.daily_fulfillment_summary` table powers the logistics dashboard used by Operations, Finance, and Customer Support. It normally processes 1.5M rows daily by 9 AM, aggregating data from `orders.raw_events`, `shipping.carrier_status`, and an external shipping partner API.
 
-#### Without DataSpoke
+##### Validation Configuration
+
+The DE team has registered the following validation config:
+
+```json
+{
+  "schedule": {
+    "cron": "0 7,8 * * *",
+    "manual": true
+  },
+  "rules": [
+    {
+      "rule_id": "r-fresh-ffs-001",
+      "type": "freshness",
+      "lookback_interval": "24 hours",
+      "last_modified_field": "summary_date",
+      "partition": {"field": "summary_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-vol-ffs-001",
+      "type": "volume",
+      "metric": "row_count",
+      "condition": {"type": "greater_than_or_equal_to", "value": 1000000},
+      "partition": {"field": "summary_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-custom-ffs-001",
+      "type": "custom",
+      "subtype": "sql_timeseries",
+      "description": "Hourly volume accumulation trend for SLA prediction",
+      "sql": "SELECT summary_date, hour_bucket, SUM(order_count) AS cumulative_orders, COUNT(DISTINCT carrier_id) AS active_carriers FROM orders.daily_fulfillment_summary GROUP BY summary_date, hour_bucket",
+      "partition": ["summary_date"],
+      "order": ["hour_bucket"],
+      "values": ["cumulative_orders", "active_carriers"],
+      "ml_validation": {
+        "targets": ["cumulative_orders"],
+        "model": "range",
+        "lookback_partitions": 28,
+        "validation_range": "day_of_week"
+      }
+    }
+  ]
+}
+```
+
+##### Without DataSpoke
 
 ```
 9:00 AM — Alert: orders.daily_fulfillment_summary is empty
@@ -416,102 +534,74 @@ Response: Manual investigation begins. Root cause found at 10:30 AM (shipping AP
 Total downtime: 2.5 hours.
 ```
 
-#### With DataSpoke
+##### With DataSpoke
 
-**7:00 AM — Early Warning (2 hours before SLA):**
-
-```
-DataSpoke Predictive Alert:
-⚠ Anomaly: orders.daily_fulfillment_summary
-
-Current volume at 7 AM: 320K rows
-Expected (weekday 7 AM): 900K ±5%
-Deviation: -64% (outside 3σ threshold)
-
-Upstream Analysis:
-  orders.raw_events: ✓ Normal (1.4M rows at 6:30 AM)
-  shipping.carrier_status: ⚠ Delayed 40 min (unusual)
-    └─ Dependency: shipping_partner_api.tracking
-       └─ Issue: API rate limit exceeded (429 responses)
-
-Root Cause (Likely): Shipping partner API throttling
-Prediction: Will miss 9 AM SLA by ~1.5 hours
-
-Recommended Actions:
-  1. Check shipping_partner_api rate limits
-  2. Contact logistics-eng about API quota
-  3. Consider fallback: cached carrier data from last successful pull
-
-Impact:
-  - Logistics Dashboard (12 viewers — Operations team)
-  - Finance Daily Shipment Report (auto-scheduled 9:30 AM)
-  - Customer Support SLA Tracker (8 viewers)
-```
-
-**7:15 AM** — Operations engineer confirms API throttling, requests quota increase. Pipeline recovers by 8:00 AM. SLA met with 1-hour buffer.
-
-**Week 2 — Pattern Learning:**
+**7:00 AM — Cron-triggered validation runs:**
 
 ```
-DataSpoke Insight: orders.daily_fulfillment_summary
-Pattern: Monday 7 AM volume consistently -12% vs other weekdays (4-week trend)
-Hypothesis: Weekend order backlog creates Monday morning batch delay
-Auto-adjusted threshold: Monday 7 AM: 790K ±5% (from 900K)
+Cron fires for orders.daily_fulfillment_summary (schedule: "0 7,8 * * *")
+Target: latest partition (summary_date=2025-03-10, hour_bucket=07)
+
+Rule r-fresh-ffs-001 (freshness): ✓ last update 20 min ago
+Rule r-vol-ffs-001 (volume): ✗ 320K rows — expected ≥1,000,000
+Rule r-custom-ffs-001 (timeseries):
+  Step 1 — values calculated:
+    {"partitions": {"summary_date": "2025-03-10", "hour_bucket": "07"},
+     "values": {"cumulative_orders": 320000, "active_carriers": 3}}
+  Step 2 — ML validation against 28-day weekday baseline:
+    cumulative_orders: 320K vs expected 900K ±5% (weekday 7AM) → ✗ FAIL
+    {"validation": {"cumulative_orders": false}}
+  Step 3 — stored to DataHub as assertionRunEvent (FAILURE)
 ```
 
-#### DataHub Integration Points
+**Alert generated from failed assertion result:**
 
-The Predictive SLA engine is a **read** consumer. It queries timeseries profiles and lineage to detect anomalies before SLA breaches:
+```
+⚠ Validation FAILED: orders.daily_fulfillment_summary
 
-| Monitoring Step | DataHub Aspect | REST API Path | What It Returns |
-|----------------|---------------|---------------|----------------|
-| Volume tracking | `datasetProfile` (timeseries) | `POST /aspects?action=getTimeseriesAspectValues` | `rowCount` over time — basis for 3σ deviation |
-| Freshness check | `operation` (timeseries) | `POST /aspects?action=getTimeseriesAspectValues` | `lastUpdatedTimestamp` — expected vs actual |
-| Upstream dependency | `upstreamLineage` | `GET /aspects/{urn}?aspect=upstreamLineage` | Upstream dataset URNs for root cause traversal |
-| Downstream impact | — | GraphQL: `searchAcrossLineage` | Dashboards/consumers affected by SLA miss |
-
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetProfileClass,
-    UpstreamLineageClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-dataset_urn = make_dataset_urn(platform="oracle", name="orders.daily_fulfillment_summary", env="PROD")
-
-# Profile history — rowCount over time for 3σ anomaly detection
-# REST: POST /aspects?action=getTimeseriesAspectValues
-profiles = graph.get_timeseries_values(
-    dataset_urn, DatasetProfileClass, filter={}, limit=30,
-)
-
-# Upstream lineage — traverse dependencies for root cause analysis
-# REST: GET /aspects/{urn}?aspect=upstreamLineage
-upstream = graph.get_aspect(dataset_urn, UpstreamLineageClass)
+r-vol-ffs-001: row_count 320,000 < 1,000,000 (min threshold)
+r-custom-ffs-001: cumulative_orders 320K — 64% below weekday 7AM baseline (900K ±5%)
+  28-day model: Mon=790K, Tue–Fri=900K at hour 07
+  Current: 320K — anomaly detected
 ```
 
-> **Key point**: DataHub stores raw profile history and lineage graphs. DataSpoke adds statistical modeling, SLA definitions, and predictive alerting on top.
+**7:15 AM** — Operations engineer reviews the result, investigates upstream systems, finds shipping API throttling. Requests quota increase. Pipeline recovers by 8:00 AM.
+
+**8:00 AM — Second cron run:**
+
+```
+Rule r-custom-ffs-001 (timeseries):
+  {"partitions": {"summary_date": "2025-03-10", "hour_bucket": "08"},
+   "values": {"cumulative_orders": 1120000, "active_carriers": 8}}
+  ML validation: cumulative_orders 1.12M within expected range → ✓ PASS
+```
+
+SLA met with 1-hour buffer. Full result history available via:
+
+```
+GET /api/v1/spoke/common/data/urn:li:dataset:...orders.daily_fulfillment_summary/attr/validation/result
+
+→ Returns assertionRunEvent timeseries: partition-by-partition pass/fail history
+  with actual values, baseline comparison, and validation verdicts.
+```
 
 #### DataSpoke Custom Implementation
 
 | Component | Responsibility | Why DataHub Can't Do This |
 |-----------|---------------|--------------------------|
-| **Prophet/Isolation Forest Engine** | Time-series anomaly detection on `rowCount` history | DataHub stores profiles, no statistical modeling |
-| **SLA Configuration** | Define per-dataset SLA targets (e.g., 9 AM deadline) | DataHub has no SLA concept |
-| **Upstream Root Cause Analyzer** | Traverse lineage, check each upstream's health, identify bottleneck | DataHub provides lineage graph but no health assessment |
-| **Predictive Alert System** | Generate pre-breach warnings with confidence scores | DataHub has no alerting/prediction engine |
-| **Threshold Auto-Adjustment** | Learn day-of-week patterns, auto-update baselines | DataHub stores raw data, no pattern learning |
+| **SQL-Based Timeseries Engine** | Execute accumulation SQL, compute hourly partition values | Open-source DataHub doesn't query source systems |
+| **Day-of-Week Baseline Model** | Learn weekday patterns from 28-day history, adjust thresholds per day | DataHub stores raw data, no pattern learning |
+| **Assertion-Based Alerting** | Generate alerts when `assertionRunEvent` records FAILURE | Open-source DataHub has no alerting engine |
+| **Cron Scheduler** | Kestra flow triggers validation at 7 AM and 8 AM daily | DataHub has no scheduler (open-source) |
 
 #### Outcome
 
-| Metric | Traditional Monitoring | DataSpoke Predictive |
-|--------|----------------------|----------------------|
-| Detection Time | 9:00 AM (breach) | 7:00 AM (pre-breach) |
-| Response Window | 0 min (already late) | 120 min (proactive) |
-| Business Impact | 2.5hr dashboard downtime | Zero downtime |
-| Root Cause ID | 90 min investigation | 2 min (auto-analyzed) |
+| Metric | Traditional Monitoring | DataSpoke Timeseries Validation |
+|--------|----------------------|--------------------------------|
+| Detection time | 9:00 AM (SLA breach) | 7:00 AM (pre-breach) |
+| Response window | 0 min (already late) | 120 min (proactive) |
+| Business impact | 2.5hr dashboard downtime | Zero downtime |
+| Setup effort | Custom monitoring code | Declarative config via API |
 
 ---
 

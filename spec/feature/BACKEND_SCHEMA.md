@@ -53,15 +53,14 @@ Stores per-dataset ingestion configuration.
 
 #### `validation_configs`
 
-Stores per-dataset validation configuration.
+Stores per-dataset validation configuration (assertion rules + schedule).
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `rules` | `JSONB` | Validation rules (thresholds, anomaly method, dimensions) |
-| `schedule` | `TEXT` NULL | Cron expression for scheduled runs |
-| `sla_target` | `JSONB` NULL | SLA targets (freshness hours, min quality score) |
+| `schedule` | `JSONB` NULL | `{"cron": "...", "manual": true/false}` — singleton per dataset, both modes can be active simultaneously |
+| `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
 | `status` | `TEXT` | `active`, `paused`, `draft` |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -69,19 +68,18 @@ Stores per-dataset validation configuration.
 
 #### `validation_results`
 
-Timeseries of validation run results.
+Per-rule, per-partition results from validation runs. Also reported to DataHub as `assertionRunEvent`.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Result identifier |
 | `dataset_urn` | `TEXT` | Target dataset |
-| `quality_score` | `REAL` | Composite score 0–100 |
-| `dimensions` | `JSONB` | Per-dimension scores |
-| `dimension_details` | `JSONB` NULL | Per-dimension detailed breakdown |
-| `issues` | `JSONB` | Array of `QualityIssue` objects |
-| `anomalies` | `JSONB` | Array of `AnomalyResult` objects |
-| `recommendations` | `JSONB` | Array of recommendation strings |
-| `alternatives` | `JSONB` | Similar healthy dataset URNs from Qdrant |
+| `rule_id` | `TEXT` | Rule identifier from config |
+| `partition` | `JSONB` | Target partition (e.g., `{"load_date": "2025-03-10"}`) |
+| `values` | `JSONB` | Computed values for the partition (e.g., `{"row_count": 48230, "null_rate": 0.003}`) |
+| `validation` | `JSONB` NULL | ML validation verdicts per target (e.g., `{"null_rate": true}`) |
+| `assertion_result` | `TEXT` | `SUCCESS`, `FAILURE`, or `ERROR` |
+| `issues` | `JSONB` | Array of rule-specific issue objects |
 | `run_id` | `UUID` | Kestra flow execution ID |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
@@ -293,7 +291,6 @@ Primary collection for natural language search and similarity matching.
 | `dataset_urn` | payload string | Dataset URN |
 | `platform` | payload string | Data platform (oracle, postgres, etc.) |
 | `has_pii` | payload bool | PII classification flag |
-| `quality_score` | payload float | Latest quality score |
 | `tags` | payload string[] | DataHub tag URNs |
 | `updated_at` | payload string | Last sync timestamp |
 

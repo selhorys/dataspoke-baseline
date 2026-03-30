@@ -83,7 +83,7 @@ DataHub is the **mandatory backend** for metadata persistence. DataSpoke tries n
 | Role | Responsibility |
 |------|---------------|
 | **DataHub** | Persist metadata aspects, emit change events, serve GraphQL queries |
-| **DataSpoke** | Compute quality scores, anomaly detection, semantic search, ontology proposals, enrichment |
+| **DataSpoke** | Assertion-based validation, semantic search, ontology proposals, enrichment, metrics |
 
 Integration channels (read, write, event) and their SDK patterns are defined in [`DATAHUB_INTEGRATION.md`](DATAHUB_INTEGRATION.md).
 
@@ -152,7 +152,7 @@ Core computational layer. For the full backend specification — layered archite
 | Domain | Capabilities |
 |--------|-------------|
 | Ingestion (DE) | Periodic (cron) and on-demand metadata ingestion via DataHub standard sources, enrichment sources and custom extractors (TBD) |
-| Validation (DE/DA) | Quality scoring, time-series anomaly detection (Prophet, Isolation Forest), SLA prediction |
+| Validation (DE/DA) | DataHub assertion management, partition-aware rule execution, SQL-based timeseries validation |
 | Documentation (DE) | LLM-powered semantic clustering, source code analysis, ontology proposals |
 | Search (DA) | Embedding generation, vector similarity (Qdrant), NL query parsing |
 | Text-to-SQL (DA) | Column profiling, join path recommendation, context window optimization |
@@ -179,7 +179,7 @@ For SDK entry points, aspect catalog, error handling, and configuration, see [`D
 |-----------|-----------|---------|
 | Vector DB | Qdrant | Semantic search, embedding storage, metadata similarity |
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
-| Orchestration | Kestra | Workflow execution via YAML flow definitions and HTTP Request tasks (ingestion, anomaly detection, embedding sync, metrics collection) |
+| Orchestration | Kestra | Workflow execution via YAML flow definitions and HTTP Request tasks (ingestion, validation, embedding sync, metrics collection) |
 | Operational DB | PostgreSQL | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences |
 | Cache | Redis | Validation result caching for AI agent loops, API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
@@ -205,29 +205,30 @@ Data Sources                        DataSpoke Backend               DataHub
                                    └─ Ontology Re-index
 ```
 
-### 2. Online Validation
+### 2. Data Validation
 
-Covers UC2 (Pipeline Verification), UC3 (Predictive SLA). Shared across DE and DA groups.
+Covers UC2 (Assertion-Based Monitoring), UC3 (Timeseries Validation / Predictive SLA). Shared across DE and DA groups.
 
 ```
-AI Agent / User
+Cron (Kestra) / Manual (API)
       │
       ▼
-API: /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
+API: POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result
       │
       ▼
-Validator Service
-  1. Retrieve entity context (DataHub aspects + Qdrant vectors)
-  2. Compute quality score (profile history, assertions, freshness)
-  3. Detect anomalies (Prophet/Isolation Forest on timeseries)
-  4. Traverse upstream lineage for root cause analysis
-  5. Recommend alternatives from Qdrant similarity search
+Validation Service
+  1. Resolve target partition (manual → specified; cron → latest)
+  2. For each rule: compute metrics for target partition
+  3. For custom/sql_timeseries: execute SQL against source system
+  4. For rules with ml_validation: validate against historical records
+  5. Register assertions in DataHub (assertionInfo)
+  6. Report results to DataHub (assertionRunEvent)
       │
       ▼
-Validation Result (status, issues, recommendations, alternatives)
+Per-Rule Results (partition, values, validation verdicts, SUCCESS/FAILURE/ERROR)
 ```
 
-For **predictive SLA** (UC3), Kestra workflows run scheduled monitoring that uses the same scoring engine but adds threshold learning and pre-breach alerting.
+For **predictive SLA** (UC3), a SQL-based timeseries rule with ML validation detects anomalies before SLA breach via cron-scheduled checks.
 
 ### 3. Semantic Search & Text-to-SQL
 
@@ -302,7 +303,7 @@ DE features are served through `/spoke/common/` routes (dataset-centric operatio
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
 | Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service | Kestra (periodic + config sync), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Online Data Validator | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Quality Score Engine, Anomaly Detection, SLA Predictor | PostgreSQL, Redis, Prophet/IF |
+| Data Validation | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine | PostgreSQL, Redis, DataHub SDK |
 | Automated Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Ontology Builder (shared), Source Code Analyzer, Consistency Engine | LLM API, Qdrant, PostgreSQL |
 
 ### Data Analysis (DA)
@@ -313,7 +314,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 |---------|----|-----------|--------------------|----------------|
 | Natural Language Search | UC5 | `/spoke/common/search/` | NL Query Parser, Vector Search, PII Classifier | Qdrant, LLM API |
 | Text-to-SQL Optimized Metadata | UC7 | `/spoke/common/search?sql_context=true` | Column Profiler, Join Path Recommender, Context Optimizer | Qdrant, DataHub GraphQL |
-| Online Data Validator | UC2 | `/spoke/common/validation/` | (shared with DE) | (shared with DE) |
+| Data Validation | UC2 | `/spoke/common/validation/` | (shared with DE) | (shared with DE) |
 
 ### Data Governance (DG)
 
@@ -327,7 +328,6 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
 | Ontology/Taxonomy Builder | UC4, UC8 | `/spoke/common/ontology/` | LLM Classification, Hierarchy Builder, Relationship Inference | LLM API, PostgreSQL, Qdrant |
-| Quality Score Engine | UC2, UC3, UC6 | — (internal shared service; no dedicated API route) | Score Aggregator, Anomaly Detector | PostgreSQL, Redis |
 | Redefined DataHub Functions *(TBD)* | — | `/spoke/common/data` (creation, modification) | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data | DataHub SDK (read + write) |
 
 ### Cross-Cutting Infrastructure
@@ -335,7 +335,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 | Concern | Infrastructure | Consumers |
 |---------|---------------|-----------|
 | Kafka Event Consumers | Kafka (shared with DataHub) | Vector DB sync (DA), validator triggers (DE), metrics update (DG), ontology re-index |
-| Kestra Flows | Kestra | Periodic ingestion + config sync (DE), anomaly detection (DE), embedding maintenance (DA), metrics collection (DG) |
+| Kestra Flows | Kestra | Periodic ingestion + config sync (DE), validation (DE), embedding maintenance (DA), metrics collection (DG) |
 | PostgreSQL Operational Tables | PostgreSQL | Ingestion configs/runs, quality rules/results, health scores, ontology graph, user preferences |
 | Redis Caching | Redis | Validation result cache (AI agent loops), API response cache, rate limiting |
 
@@ -363,17 +363,6 @@ Shared by UC4 (Doc Generation) and UC8 (Multi-Perspective Overview).
 - `concept_relationships` — concept_a, concept_b, relationship_type
 
 **Properties**: Incremental updates on new ingestion; versioned taxonomy; human-in-the-loop for low-confidence (< 0.7) classifications.
-
-### Quality Score Engine
-
-Shared by UC2 (Pipeline Verification), UC3 (Predictive SLA), UC6 (Metrics Dashboard).
-
-**Purpose**: Aggregate multiple DataHub aspects (profiles, assertions, ownership, documentation, freshness) into a single 0–100 quality score per dataset.
-
-**Consumers**:
-- Validator (DE/DA) — per-entity health assessment
-- Metrics Dashboard (DG) — department-level aggregation
-- Multi-Perspective Overview (DG) — graph node coloring
 
 ### DataHub Client Wrapper
 
@@ -537,6 +526,6 @@ The repository is organized by deployment concern and application layer. Key top
 | DataHub as external dependency | Enterprises have existing installations; sidecar pattern enables independent lifecycle |
 | Three-tier URI segmentation | `/spoke/common/` for shared features, `/spoke/[de|da|dg]/` for user-group features, `/hub/` for DataHub pass-through — clear ownership with a home for cross-cutting capabilities |
 | Shared Ontology Builder | UC4 and UC8 both need dataset-to-concept mapping; avoids duplication, ensures consistency |
-| Shared Quality Score Engine | UC2, UC3, UC6 all need composite health scores; single algorithm, multiple consumers |
+| Validation as DataHub assertion layer | UC2/UC3 use DataHub's native assertion framework; DataSpoke adds partition-aware execution and SQL-based timeseries rules rather than a bespoke scoring engine |
 | LLM as external service | Model-agnostic; swap providers without code changes; no GPU infrastructure required |
 | Redis for validation caching | AI agents in tight coding loops need sub-second validation responses |

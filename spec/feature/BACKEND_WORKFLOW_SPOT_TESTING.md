@@ -2,7 +2,7 @@
 
 API-wired spot integration tests for the ingestion workflow. Tests exercise the full request path (HTTP → service → real source extraction → DataHub emission) using real dev-env peripherals, with LLM responses mocked.
 
-> Other workflows (validation, generation, metrics, embedding-sync, sla-monitor, ontology-rebuild) will be added later.
+> Other workflows (validation, generation, metrics, embedding-sync, ontology-rebuild) will be added later.
 
 ## Prerequisites
 

@@ -81,7 +81,7 @@ def require_server():
 
     required_flows = {
         "ingestion-config-sync", "validation", "generation", "metrics",
-        "embedding-sync", "ontology-rebuild", "sla-monitor",
+        "embedding-sync", "ontology-rebuild",
     }
     missing = required_flows - registered
     if missing:

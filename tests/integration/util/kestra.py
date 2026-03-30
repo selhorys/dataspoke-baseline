@@ -28,7 +28,6 @@ ALL_FLOW_IDS = frozenset([
     "embedding-sync",
     "metrics",
     "ontology-rebuild",
-    "sla-monitor",
 ])
 
 

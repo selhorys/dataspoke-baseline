@@ -207,104 +207,6 @@ async def update_health_score(event: MetadataChangeLogEvent) -> None:
         await aggregate_health_scores(datahub=datahub, db=db, cache=cache)
 
 
-async def trigger_quality_check(event: MetadataChangeLogEvent) -> None:
-    """Run validation pipeline on new dataset profile data via validation flow.
-
-    Only triggers if the dataset has an existing ValidationConfig.
-    """
-    if event.entity_type != "dataset":
-        return
-    logger.info(
-        "trigger_quality_check",
-        entity_urn=event.entity_urn,
-        aspect_name=event.aspect_name,
-    )
-    if _kestra_client is None:
-        logger.warning("kestra_unavailable_skipping", handler="trigger_quality_check", entity_urn=event.entity_urn)
-        return
-    from sqlalchemy import select
-
-    from src.shared.db.models import ValidationConfig
-    from src.shared.db.session import SessionLocal
-
-    async with SessionLocal() as db:
-        result = await db.execute(
-            select(ValidationConfig).where(ValidationConfig.dataset_urn == event.entity_urn)
-        )
-        config = result.scalar_one_or_none()
-
-    if config is None:
-        logger.info("no_validation_config", entity_urn=event.entity_urn)
-        return
-
-    try:
-        await _kestra_client.trigger_execution(
-            "validation",
-            inputs={
-                "callback_base_url": settings.kestra_callback_base_url,
-                "dataset_urn": event.entity_urn,
-                "config_id": "",
-                "dry_run": "false",
-            },
-            labels={"workflow_id": f"validation-{_urn_to_workflow_id(event.entity_urn)}"},
-        )
-    except Exception:
-        logger.exception(
-            "workflow_start_failed",
-            handler="trigger_quality_check",
-            entity_urn=event.entity_urn,
-        )
-
-
-async def check_freshness_sla(event: MetadataChangeLogEvent) -> None:
-    """Check freshness SLA when a new operation event arrives via sla-monitor flow.
-
-    Only triggers if the dataset has a ValidationConfig with an sla_target.
-    """
-    if event.entity_type != "dataset":
-        return
-    logger.info(
-        "check_freshness_sla",
-        entity_urn=event.entity_urn,
-        aspect_name=event.aspect_name,
-    )
-    if _kestra_client is None:
-        logger.warning("kestra_unavailable_skipping", handler="check_freshness_sla", entity_urn=event.entity_urn)
-        return
-    from sqlalchemy import select
-
-    from src.shared.db.models import ValidationConfig
-    from src.shared.db.session import SessionLocal
-
-    async with SessionLocal() as db:
-        result = await db.execute(
-            select(ValidationConfig).where(ValidationConfig.dataset_urn == event.entity_urn)
-        )
-        config = result.scalar_one_or_none()
-
-    if config is None or config.sla_target is None:
-        logger.info("no_sla_target", entity_urn=event.entity_urn)
-        return
-
-    try:
-        await _kestra_client.trigger_execution(
-            "sla-monitor",
-            inputs={
-                "callback_base_url": settings.kestra_callback_base_url,
-                "dataset_urn": event.entity_urn,
-                "sla_target": json.dumps(config.sla_target),
-                "alert_recipients": "[]",
-            },
-            labels={"workflow_id": f"sla-monitor-{_urn_to_workflow_id(event.entity_urn)}"},
-        )
-    except Exception:
-        logger.exception(
-            "workflow_start_failed",
-            handler="check_freshness_sla",
-            entity_urn=event.entity_urn,
-        )
-
-
 # ── Router Factory ───────────────────────────────────────────────────────────
 
 
@@ -329,8 +231,5 @@ def build_router(*, kestra_client: Any = None) -> EventRouter:
     # Metrics (UC6)
     router.register("ownership", update_health_score)
     router.register("globalTags", update_health_score)
-    # Validation (UC2, UC3)
-    router.register("datasetProfile", trigger_quality_check)
-    # Validation SLA (UC3)
-    router.register("operation", check_freshness_sla)
+    router.register("datasetProfile", update_health_score)
     return router

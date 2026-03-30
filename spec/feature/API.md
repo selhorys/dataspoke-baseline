@@ -206,9 +206,9 @@ while DA or other teams may register simpler configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation Config | UC2, UC3, UC6 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get validation results (timeseries; `?from=…&to=…` for time range) | Online Data Validator | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger validation run via Kestra (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | Online Data Validator | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | DataHub Assertion Management | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Trigger manual validation run (optional `partition` in body; defaults to latest partition) | DataHub Assertion Management | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Automated Doc Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Automated Doc Generation | UC4 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Partially update generation configuration | Automated Doc Generation | UC4 |
@@ -218,7 +218,7 @@ while DA or other teams may register simpler configurations.
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/gen/method/apply` | Apply approved generation results to DataHub | Automated Doc Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/event` | Generation event reports (success/failure notices) | Automated Doc Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types) | Data Resource | — |
-| **WS** | `/spoke/common/data/{dataset_urn}/stream/validation` | Real-time validation progress stream | Online Data Validator | UC2 |
+| **WS** | `/spoke/common/data/{dataset_urn}/stream/validation` | Real-time validation progress stream | DataHub Assertion Management | UC2, UC3 |
 
 #### Redefined DataHub Functions *(TBD)*
 
@@ -260,9 +260,9 @@ management.
 | `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, status, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get validation results for this dataset (timeseries; `?from=…&to=…` for time range) | Online Data Validator | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger validation run via Kestra (`dry_run` in body for no-write mode) | Online Data Validator | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/event` | Validation event reports (success/failure notices) | Online Data Validator | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range) | DataHub Assertion Management | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/validation/{dataset_urn}/attr/result` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/validation/{dataset_urn}/event` | Validation event reports (success/failure notices) | DataHub Assertion Management | UC2, UC3, UC6 |
 
 #### Generation (`/spoke/common/gen`)
 
@@ -584,17 +584,17 @@ closes the connection.
 
 ### Validation Progress Stream (`/spoke/common/data/{dataset_urn}/stream/validation`)
 
-Messages sent during a validation run:
+Messages sent during a validation run (rule-by-rule progress):
 
 ```json
-{"type": "progress", "step": "fetch_aspects", "pct": 20, "msg": "Fetching DataHub aspects"}
-{"type": "progress", "step": "compute_score", "pct": 60, "msg": "Computing quality score"}
-{"type": "progress", "step": "anomaly_detect", "pct": 80, "msg": "Running anomaly detection"}
-{"type": "result",
- "status": "completed",
- "quality_score": 78,
- "issues": [{"type": "freshness", "severity": "warning", "detail": "Last updated 3 days ago"}],
- "recommendations": ["Review freshness SLA", "Add ownership tag"]}
+{"type": "progress", "rule_id": "r-fresh-001", "pct": 25, "msg": "Evaluating freshness rule"}
+{"type": "rule_result", "rule_id": "r-fresh-001", "assertion_result": "SUCCESS",
+ "partition": {"load_date": "2025-03-10"}, "values": {"last_update_age_hours": 2.1}}
+{"type": "progress", "rule_id": "r-custom-ts-001", "pct": 75, "msg": "Running SQL timeseries validation"}
+{"type": "rule_result", "rule_id": "r-custom-ts-001", "assertion_result": "FAILURE",
+ "partition": {"load_date": "2025-03-10"}, "values": {"row_count": 320000, "null_rate": 0.003},
+ "validation": {"row_count": false}}
+{"type": "summary", "status": "completed", "total": 4, "passed": 3, "failed": 1}
 ```
 
 ### Metric Update Stream (`/spoke/dg/metric/stream`)

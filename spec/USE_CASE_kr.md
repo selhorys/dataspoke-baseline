@@ -25,8 +25,8 @@ Imazon은 설립 15년차 온라인 서점이다. 데이터 환경은 오랜 유
 | 유스케이스 | 사용자 그룹 | 기능 |
 |-----------|-----------|------|
 | [유스케이스 1: Deep Ingestion — 레거시 도서 카탈로그 보강](#유스케이스-1-deep-ingestion--레거시-도서-카탈로그-보강) | DE | 심층 기술 사양 인제스천 |
-| [유스케이스 2: Online Validator — 추천 파이프라인 검증](#유스케이스-2-online-validator--추천-파이프라인-검증) | DE / DA | 온라인 데이터 검증기 |
-| [유스케이스 3: Predictive SLA — 배송 파이프라인 조기 경보](#유스케이스-3-predictive-sla--배송-파이프라인-조기-경보) | DE | 온라인 데이터 검증기 |
+| [유스케이스 2: Data Validation — Assertion 기반 데이터 품질 모니터링](#유스케이스-2-data-validation--assertion-기반-데이터-품질-모니터링) | DE / DA | DataHub Assertion 관리 |
+| [유스케이스 3: Predictive SLA — 시계열 검증 기반 조기 경보](#유스케이스-3-predictive-sla--시계열-검증-기반-조기-경보) | DE | DataHub Assertion 관리 |
 | [유스케이스 4: Doc Generation — 인수 후 온톨로지 통합](#유스케이스-4-doc-suggestions--인수-후-온톨로지-통합) | DE | 자동 문서화 생성 |
 | [유스케이스 5: NL Search — GDPR 컴플라이언스 감사](#유스케이스-5-nl-search--gdpr-컴플라이언스-감사) | DA | 자연어 검색 |
 | [유스케이스 6: Metrics Dashboard — 전사 메타데이터 건강도](#유스케이스-6-metrics-dashboard--전사-메타데이터-건강도) | DG | 전사 메트릭 시계열 모니터링 |
@@ -242,172 +242,290 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 
 ---
 
-### 유스케이스 2: Online Validator — 추천 파이프라인 검증
+### 유스케이스 2: Data Validation — Assertion 기반 데이터 품질 모니터링
 
-**기능**: 온라인 데이터 검증기 (DA 그룹과 공유)
+**기능**: DataHub Assertion 관리 (DA 그룹과 공유)
+
+#### 설계 철학
+
+DataSpoke는 자체 데이터 품질 점수 엔진을 구축하지 **않는다**. DataHub의 네이티브 assertion 프레임워크 위에 **편의성/커스터마이징 레이어**를 제공한다:
+
+- 데이터셋별로 DataHub assertion 규칙 6가지 유형 모두 등록 가능: freshness, volume, field, schema, SQL, custom
+- DataSpoke API를 통한 통합 설정 및 결과 조회
+- DataHub Open Assertions Spec과 호환되는 JSON 형식 + DataSpoke 확장
+- 파티션 인식 실행 (cron + manual 스케줄링)
+- `custom` 유형을 통한 DataSpoke 고유 검증 로직 (예: SQL 기반 시계열 규칙)
+- 모든 assertion 결과는 DataHub에 `assertionRunEvent` 시계열 aspect로 저장
+
+#### 검증 설정 모델
+
+**설정 API**: `PUT /api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf`
+
+데이터셋의 검증 설정은 두 부분으로 구성된 JSON 객체이다:
+
+1. **Schedule** — 데이터셋당 하나. `cron`과 `manual`만 지원하며, 두 모드를 동시에 활성화할 수 있다. cron이 스케줄대로 검사를 실행하는 동안에도 사용자가 수동으로 검증을 트리거할 수 있다.
+
+2. **Rules** — JSON 리스트. 각 항목은 DataHub Open Assertions Spec과 호환되는 딕셔너리이며, 다음 DataSpoke 확장을 포함한다:
+   - `rule_id` — 각 규칙의 자동 생성 고유 식별자
+   - `partition`과 `order` 변수 (SQL 윈도우 함수와 유사) — cron 트리거 시 기본(최신) 대상 파티션을 결정한다. 6가지 규칙 유형 모두 지원한다.
+
+**예시 — `reviews.user_ratings` 검증 설정:**
+
+```json
+{
+  "schedule": {
+    "cron": "0 */6 * * *",
+    "manual": true
+  },
+  "rules": [
+    {
+      "rule_id": "r-fresh-001",
+      "type": "freshness",
+      "lookback_interval": "6 hours",
+      "last_modified_field": "updated_at",
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-vol-001",
+      "type": "volume",
+      "metric": "row_count",
+      "condition": {"type": "between", "min": 10000, "max": 5000000},
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-field-001",
+      "type": "field",
+      "field": "rating_score",
+      "metric": "null_count",
+      "condition": {"type": "less_than_or_equal_to", "value": 100},
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-schema-001",
+      "type": "schema",
+      "fields": [
+        {"field": "user_id", "type": "VARCHAR"},
+        {"field": "isbn", "type": "VARCHAR"},
+        {"field": "rating_score", "type": "NUMBER"}
+      ],
+      "compatibility": "superset"
+    },
+    {
+      "rule_id": "r-sql-001",
+      "type": "sql",
+      "statement": "SELECT COUNT(*) FROM reviews.user_ratings WHERE rating_score < 1 OR rating_score > 5",
+      "condition": {"type": "equal_to", "value": 0},
+      "partition": {"field": "load_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-custom-ts-001",
+      "type": "custom",
+      "subtype": "sql_timeseries",
+      "description": "일별 볼륨 및 null 비율 추이 이상 탐지",
+      "sql": "SELECT load_date, COUNT(*) AS row_count, SUM(CASE WHEN rating_score IS NULL THEN 1 ELSE 0 END)::float / COUNT(*) AS null_rate FROM reviews.user_ratings GROUP BY load_date",
+      "partition": ["load_date"],
+      "order": ["load_date"],
+      "values": ["row_count", "null_rate"],
+      "ml_validation": {
+        "targets": ["null_rate"],
+        "model": "range",
+        "lookback_partitions": 30
+      }
+    }
+  ]
+}
+```
+
+#### 커스텀 유형: SQL 기반 시계열 규칙
+
+`custom` 유형에서 `subtype: "sql_timeseries"`를 사용하면 DataSpoke 고유 검증이 가능하다:
+
+- **적용 대상**: SQL 실행 가능한 데이터셋 (예: PostgreSQL, Trino, Snowflake)
+- **데이터 조작 SQL**: 검증이 수행되는 뷰를 정의한다
+- **파티션, 순서, 값 변수**: SQL 윈도우 함수와 유사 — 추적할 세분도와 메트릭을 정의한다
+- **ML 기반 검증** (선택): 선택된 값 컬럼에 대해 모델 유형, 검증 범위, lookback 윈도우 등을 설정한다
+
+#### 실행 흐름
+
+데이터셋의 검증 규칙에 대해 cron 또는 수동 호출이 트리거되면:
+
+- **수동 호출** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result`): 요청 본문에 파티션이 지정되면 해당 파티션을 대상으로 하고, 그렇지 않으면 최신 파티션을 대상으로 한다.
+- **Cron 호출**: 항상 최신 파티션을 대상으로 한다 (파티션/순서 변수로 결정).
+
+대상 파티션에 대해 각 규칙이 정의한 메트릭이 계산되고 검증된다. 예를 들어, cron 트리거 시 위의 SQL 기반 시계열 규칙 `r-custom-ts-001`:
+
+**1단계** — 최신 파티션의 값이 계산된다:
+```json
+{"partitions": {"load_date": "2025-03-10"}, "values": {"row_count": 48230, "null_rate": 0.003}}
+```
+
+**2단계** — 이력 데이터를 기반으로 현재 파티션의 선택된 값이 검증된다 (`ml_validation` 설정에 따라):
+```json
+{"partitions": {"load_date": "2025-03-10"}, "values": {"row_count": 48230, "null_rate": 0.003}, "validation": {"null_rate": true}}
+```
+
+**3단계** — 현재 파티션의 결과가 DataHub에 `assertionRunEvent`로 저장된다 (대상별 합격/실패, 실제 값, 파티션 컨텍스트 포함).
+
+**결과 이력 API**: `GET /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result` — DataHub의 `assertionRunEvent` 시계열에서 데이터셋의 검증 결과 이력을 조회한다.
 
 #### 시나리오: AI 에이전트가 도서 추천 파이프라인을 구축
 
 **배경:**
-데이터 사이언티스트가 AI 에이전트에게 요청한다: "`reviews.user_ratings`와 `orders.purchase_history`를 사용해서 일일 도서 추천 파이프라인을 만들어줘." Validator는 에이전트가 건강한 데이터 소스를 선택하고 규정을 준수하는 결과물을 생성하도록 보장한다.
+데이터 사이언티스트가 AI 에이전트에게 요청한다: "`reviews.user_ratings`와 `orders.purchase_history`를 사용해서 일일 도서 추천 파이프라인을 만들어줘." 구축 전에 에이전트는 기존 검증 결과를 확인하여 건강한 데이터 소스를 선택한다.
 
-#### DataSpoke 없이
+##### DataSpoke 없이
 
-AI 에이전트가 DataHub에서 "reviews"와 "orders" 테이블을 검색하고, 네이밍 규칙으로 후보를 선택하고, 데이터 품질을 이해하지 못한 채 코드를 생성한다. 지난주 마이그레이션 버그로 `rating_score`에 30% null 비율이 발생한 열화된 테이블(`reviews.user_ratings_legacy`)을 사용하는 파이프라인이 배포될 수 있다.
+AI 에이전트가 DataHub에서 "reviews"와 "orders" 테이블을 검색하고, 네이밍 규칙으로 후보를 선택하고, 데이터 품질을 확인하지 않은 채 코드를 생성한다. 지난주 마이그레이션 버그로 `rating_score`에 30% null 비율이 발생한 `reviews.user_ratings_legacy`를 사용하는 파이프라인이 배포된다. 이 테이블에는 DataHub에 등록된 assertion이 없어 품질 신호가 존재하지 않는다.
 
-#### DataSpoke와 함께
+##### DataSpoke와 함께
 
-**1단계: 시맨틱 탐색**
+**1단계: 기존 검증 결과 확인**
+
+DE 팀이 이미 주요 테이블에 검증 규칙을 설정해 둔 상태이다. AI 에이전트가 최근 결과를 조회한다:
 
 ```
-AI 에이전트 쿼리: "ML 학습에 적합한 리뷰와 구매 테이블 찾기"
+GET /api/v1/spoke/common/data/urn:li:dataset:...reviews.user_ratings/attr/validation/result
 
-DataSpoke 응답 (via /api/v1/spoke/de/validator):
-- reviews.user_ratings (✓ 품질 점수: 96)
-  최근 갱신: 1시간 전 | 완전성: 99.7% | 28개 다운스트림 소비자
+응답 — 최근 5회 cron 실행 모두 통과:
+  r-field-001 (rating_score null_count): ✓ 파티션당 0건
+  r-custom-ts-001 (null_rate 시계열): ✓ null_rate=0.003 범위 내
+  r-vol-001 (row_count): ✓ 48,230행 (10K–5M 범위 내)
 
-- reviews.user_ratings_legacy (⚠ 품질 문제)
-  이상: 2024-02-03부터 rating_score에 30% null 비율
-  권장: 사용 금지 — reviews.user_ratings 사용 권장
+GET /api/v1/spoke/common/data/urn:li:dataset:...reviews.user_ratings_legacy/attr/validation/result
 
-- orders.purchase_history (✓ 권장)
-  SLA: 99.9% 정시 | 문서화: 100% | ML 사용 인증 완료
+응답 — 마지막 실행 실패:
+  r-custom-ts-001 (null_rate 시계열): ✗ null_rate=0.30 — 이상 탐지됨
+    이력 기준선: 0.003 ±0.002 (30일 range 모델)
+    현재: 0.30 — 기준선 대비 150배
 ```
 
-**2단계: 컨텍스트 검증**
+에이전트가 `reviews.user_ratings` (모든 assertion 통과)를 선택하고 레거시 테이블을 회피한다.
 
-```python
-# POST /api/v1/spoke/de/validator/context
-dataspoke.validator.verify_context("reviews.user_ratings_legacy")
+**2단계: 새 파이프라인 출력에 검증 규칙 등록**
 
-# 응답:
+```
+PUT /api/v1/spoke/common/data/urn:li:dataset:...book_recommendation_features/attr/validation/conf
+
 {
-  "status": "degraded",
-  "quality_issues": [{
-    "type": "null_rate_anomaly",
-    "severity": "high",
-    "message": "rating_score null 비율이 0.3%에서 30%로 급증",
-    "recommendation": "reviews.user_ratings 사용 권장"
-  }],
-  "alternative_entities": ["reviews.user_ratings"]
+  "schedule": {"cron": "30 9 * * *", "manual": true},
+  "rules": [
+    {"type": "freshness", "lookback_interval": "24 hours", "last_modified_field": "created_at",
+     "partition": {"field": "run_date", "order": "desc"}},
+    {"type": "volume", "metric": "row_count",
+     "condition": {"type": "greater_than", "value": 0},
+     "partition": {"field": "run_date", "order": "desc"}},
+    {"type": "field", "field": "user_id", "metric": "null_count",
+     "condition": {"type": "equal_to", "value": 0},
+     "partition": {"field": "run_date", "order": "desc"}}
+  ]
 }
 ```
 
-**3단계: 파이프라인 검증**
+**3단계: DA가 사용 적합성을 검증**
 
-```yaml
-Pipeline: book_recommendations_daily_v1
-Author: AI Agent (claude-sonnet-4.5)
+마케팅 분석가가 Tableau에 연결하기 전에 `orders.purchase_history`를 확인한다:
 
-검증 결과:
-✓ 문서화: 설명 존재, data-science-team에 소유자 할당됨
-✓ 네이밍 규칙: book_recommendation_features (준수)
-✓ 품질 검사: NULL 처리 구현됨, 스키마 하위 호환
-✓ 리니지 영향: 2개 업스트림 테이블 (모두 정상), 순환 의존성 없음
-⚠ 권장사항: 데이터 신선도 검사 추가, 모니터링 알림 구현
 ```
+GET /api/v1/spoke/common/data/urn:li:dataset:...orders.purchase_history/attr/validation/result
 
-**4단계**: AI 에이전트가 검증된 소스, 규정 준수 구조, 품질 검사를 갖추고 배포한다.
-
-**5단계: 분석가 검증 (DA 관점)**
-
-마케팅 분석가가 분기별 구매자 세그먼트 리포팅을 위해 `orders.purchase_history`를 Tableau 대시보드에 연결하려 한다. 연결 전에 DA 엔드포인트를 통해 테이블을 검증한다:
-
-```python
-# POST /api/v1/spoke/da/validator/check
-dataspoke.validator.check({
-  "dataset": "orders.purchase_history",
-  "use_case": "reporting_dashboard",
-  "checks": ["freshness", "certification", "schema_stability"]
-})
-
-# 응답:
-{
-  "status": "approved",
-  "certification": "Certified for reporting use",
-  "freshness": "Updated 45 min ago (SLA: hourly) ✓",
-  "schema_stability": "No breaking changes in 90 days ✓",
-  "recommendation": "Safe to connect — certified, stable, and fresh"
-}
+응답 — 최근 결과:
+  r-fresh-001 (freshness): ✓ 45분 전 갱신 (lookback: 1시간)
+  r-schema-001 (schema): ✓ 필수 필드 모두 존재
+  r-vol-001 (row_count): ✓ 1.2M행 (예상 범위 내)
+→ 모든 assertion 통과 — 연결 안전.
 ```
-
-DA 검증 흐름은 **사용 적합성**에 초점을 맞춥니다: 이 테이블이 리포팅 용도로 인증되었는가? 월요일 아침에 깨지지 않을 만큼 스키마가 안정적인가? 대상 사용자에게 충분히 신선한 데이터인가? 이는 **파이프라인 구축**에 초점을 맞추는 DE 흐름(1–4단계)과 대조된다: 소스가 구축할 만큼 건강한가? 품질 이상이 있는가? 출력 스키마가 규정을 준수하는가? 두 흐름 모두 동일한 품질 점수 엔진을 공유하지만, 각 그룹의 관심사에 맞춘 다른 검사 프로필을 적용한다.
 
 #### DataHub 연동 포인트
 
-Validator는 주로 **읽기** 소비자이다. 여러 DataHub aspect를 조회하여 건강도 평가를 구성한다:
+DataSpoke는 DataHub assertion 프레임워크 위의 **읽기/쓰기** 레이어이다:
 
-| 검증 단계 | DataHub Aspect | REST API Path | 반환 내용 |
-|----------|---------------|---------------|----------|
-| 시맨틱 탐색 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 설명, 태그 — 의미적 의도 매칭 |
-| 품질 점수 | `datasetProfile` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | 행 수, null 비율 시계열 |
-| 신선도 | `operation` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | `lastUpdatedTimestamp` |
-| 다운스트림 수 | `upstreamLineage` | GraphQL: `searchAcrossLineage` | 다운스트림 소비자 수 |
-| 폐기 여부 | `deprecation` | `GET /aspects/{urn}?aspect=deprecation` | `deprecated` 플래그, 대체 URN |
-| 검증 이력 | `assertionRunEvent` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | 합격/실패 이력 |
-| 스키마 검증 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼명, 타입 (네이밍 검사용) |
+| 작업 | DataHub Aspect | REST API Path | 방향 |
+|-----|---------------|---------------|------|
+| Assertion 규칙 등록 | `assertionInfo` | `POST /openapi/v3/entity/assertion` | **쓰기** |
+| Assertion 결과 보고 | `assertionRunEvent` | `POST /openapi/v3/entity/assertion` | **쓰기** |
+| 결과 이력 조회 | `assertionRunEvent` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | 읽기 |
+| 스키마 assertion용 스키마 조회 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 읽기 |
 
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetProfileClass,
-    OperationClass,
-    UpstreamLineageClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-dataset_urn = make_dataset_urn(platform="oracle", name="reviews.user_ratings_legacy", env="PROD")
-
-# 프로필 이력 — 이상 탐지를 위한 null 비율 시계열
-# REST: POST /aspects?action=getTimeseriesAspectValues
-profiles = graph.get_timeseries_values(
-    dataset_urn, DatasetProfileClass, filter={}, limit=30,
-)
-
-# 최근 작업 — 신선도 확인
-# REST: POST /aspects?action=getTimeseriesAspectValues
-operations = graph.get_timeseries_values(
-    dataset_urn, OperationClass, filter={}, limit=1,
-)
-
-# 업스트림 리니지 — 의존성 건강 여부
-# REST: GET /aspects/{urn}?aspect=upstreamLineage
-upstream = graph.get_aspect(dataset_urn, UpstreamLineageClass)
-```
-
-> **핵심 포인트**: DataHub는 수동적 데이터 저장소이다. 원시 신호를 제공하며, DataSpoke가 품질 점수, 이상 탐지, 권장사항을 계산한다.
+> **핵심 포인트**: DataHub는 assertion 정의와 실행 결과를 저장한다. 오픈소스 DataHub는 assertion을 실행하지 않는다 — DataSpoke가 규칙을 평가하고, 소스 시스템에 SQL을 실행하고, ML 기반 검증을 수행하고, 결과를 DataHub에 보고하는 실행 엔진이다.
 
 #### DataSpoke 커스텀 구현
 
 | 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
 |---------|------|------------------------|
-| **품질 점수 엔진** | 프로필, assertion, 문서, 신선도 → 0–100 단일 점수 집계 | DataHub는 aspect 간 교차 점수 체계 없음 |
-| **Null 비율 이상 탐지** | `datasetProfile` null 비율에 대한 시계열 분석 | DataHub는 프로필을 저장하지만 통계 분석 없음 |
-| **대안 추천** | Qdrant에서 의미적으로 유사한 건강한 데이터셋 조회 | DataHub는 키워드 검색만 제공 |
-| **파이프라인 검증 엔진** | 네이밍, 스키마 호환성, 리니지 영향 검증 | DataHub는 메타데이터를 저장하지만 그것에 대해 검증하지 않음 |
-| **검증 결과 캐시** | 빠른 코딩 루프의 AI 에이전트를 위한 Redis 캐시 | DataHub에는 계산 결과에 대한 캐싱 없음 |
+| **Assertion 설정 API** | 데이터셋별 6가지 규칙 유형 통합 CRUD, 파티션 지원 | DataHub에는 데이터셋별 설정 관리 레이어 없음 |
+| **파티션 인식 실행기** | 대상 파티션 결정, 규칙 실행, 결과 저장 | 오픈소스 DataHub는 assertion을 실행하지 않음 |
+| **SQL 기반 시계열 엔진** | 데이터 조작 SQL 실행, 파티션 값 계산, 이력 추적 | DataHub는 프로필을 저장하지만 소스 시스템에 쿼리할 수 없음 |
+| **ML 기반 이상 검증** | 이력 파티션 값 대비 range/모델 기반 검증 | DataHub에는 통계 분석 없음 |
+| **Cron/Manual 스케줄러** | Kestra 기반 cron + 온디맨드 수동 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
 
 #### 결과
 
 | 지표 | DataSpoke 없이 | DataSpoke와 함께 |
 |-----|---------------|----------------|
-| 파이프라인 실패율 | ~30% (불량 데이터) | <5% (사전 검증) |
-| 사람 리뷰 시간 | 파이프라인당 수 시간 | 수 분 (자동화) |
-| 데이터 품질 사고 | 빈번 | 거의 제로 |
+| Assertion 설정 노력 | DataHub에 assertion별 수동 API 호출 | 데이터셋별 통합 설정 |
+| 실행 | 없음 (오픈소스 DataHub) | cron + manual로 자동화 |
+| 파티션 인식 | 없음 | 내장 — 최신 파티션 자동 선택 |
+| 커스텀 시계열 검사 | 불가 | SQL 기반 규칙 + ML 검증 |
 
 ---
 
-### 유스케이스 3: Predictive SLA — 배송 파이프라인 조기 경보
+### 유스케이스 3: Predictive SLA — 시계열 검증 기반 조기 경보
 
-**기능**: 온라인 데이터 검증기 (시계열 모니터링)
+**기능**: DataHub Assertion 관리 (시계열 모니터링)
+
+이 유스케이스는 UC2의 SQL 기반 시계열 규칙(`custom` 유형)을 SLA 모니터링과 위반 전 알림에 적용하는 방법을 보여준다.
 
 #### 시나리오: 배송 파트너 API 속도 제한이 주문 이행 대시보드를 위협
 
 **배경:**
 Imazon의 `orders.daily_fulfillment_summary` 테이블은 운영, 재무, 고객 지원 부서가 사용하는 물류 대시보드를 구동한다. 이 테이블은 `orders.raw_events`, `shipping.carrier_status`, 그리고 외부 배송 파트너 API의 데이터를 집계하여 매일 오전 9시까지 150만 행을 처리한다.
 
-#### DataSpoke 없이
+##### 검증 설정
+
+DE 팀이 다음 검증 설정을 등록한 상태이다:
+
+```json
+{
+  "schedule": {
+    "cron": "0 7,8 * * *",
+    "manual": true
+  },
+  "rules": [
+    {
+      "rule_id": "r-fresh-ffs-001",
+      "type": "freshness",
+      "lookback_interval": "24 hours",
+      "last_modified_field": "summary_date",
+      "partition": {"field": "summary_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-vol-ffs-001",
+      "type": "volume",
+      "metric": "row_count",
+      "condition": {"type": "greater_than_or_equal_to", "value": 1000000},
+      "partition": {"field": "summary_date", "order": "desc"}
+    },
+    {
+      "rule_id": "r-custom-ffs-001",
+      "type": "custom",
+      "subtype": "sql_timeseries",
+      "description": "SLA 예측을 위한 시간별 볼륨 누적 추이",
+      "sql": "SELECT summary_date, hour_bucket, SUM(order_count) AS cumulative_orders, COUNT(DISTINCT carrier_id) AS active_carriers FROM orders.daily_fulfillment_summary GROUP BY summary_date, hour_bucket",
+      "partition": ["summary_date"],
+      "order": ["hour_bucket"],
+      "values": ["cumulative_orders", "active_carriers"],
+      "ml_validation": {
+        "targets": ["cumulative_orders"],
+        "model": "range",
+        "lookback_partitions": 28,
+        "validation_range": "day_of_week"
+      }
+    }
+  ]
+}
+```
+
+##### DataSpoke 없이
 
 ```
 오전 9:00 — 알림: orders.daily_fulfillment_summary가 비어 있음
@@ -416,102 +534,74 @@ Imazon의 `orders.daily_fulfillment_summary` 테이블은 운영, 재무, 고객
 총 다운타임: 2.5시간.
 ```
 
-#### DataSpoke와 함께
+##### DataSpoke와 함께
 
-**오전 7:00 — 조기 경보 (SLA 2시간 전):**
-
-```
-DataSpoke 예측 알림:
-⚠ 이상: orders.daily_fulfillment_summary
-
-오전 7시 현재 볼륨: 320K 행
-예상 (평일 오전 7시): 900K ±5%
-편차: -64% (3σ 임계값 초과)
-
-업스트림 분석:
-  orders.raw_events: ✓ 정상 (오전 6:30 기준 1.4M 행)
-  shipping.carrier_status: ⚠ 40분 지연 (비정상)
-    └─ 의존성: shipping_partner_api.tracking
-       └─ 문제: API 속도 제한 초과 (429 응답)
-
-근본 원인 (추정): 배송 파트너 API 쓰로틀링
-예측: 오전 9시 SLA를 ~1.5시간 초과할 가능성
-
-권장 조치:
-  1. shipping_partner_api 속도 제한 확인
-  2. logistics-eng에 API 할당량 문의
-  3. 대안 고려: 마지막 성공 풀의 캐시된 배송사 데이터 사용
-
-영향:
-  - 물류 대시보드 (12명 — 운영팀)
-  - 재무 일일 배송 리포트 (오전 9:30 자동 예약)
-  - 고객 지원 SLA 트래커 (8명)
-```
-
-**오전 7:15** — 운영 엔지니어가 API 쓰로틀링을 확인하고 할당량 증가를 요청한다. 파이프라인은 오전 8시에 복구된다. SLA를 1시간 여유로 충족한다.
-
-**2주차 — 패턴 학습:**
+**오전 7:00 — Cron 트리거 검증 실행:**
 
 ```
-DataSpoke 인사이트: orders.daily_fulfillment_summary
-패턴: 월요일 오전 7시 볼륨이 다른 평일 대비 지속적으로 -12% (4주 추세)
-가설: 주말 주문 백로그가 월요일 아침 배치 지연 발생
-자동 조정 임계값: 월요일 오전 7시: 790K ±5% (기존 900K에서 변경)
+Cron 실행: orders.daily_fulfillment_summary (schedule: "0 7,8 * * *")
+대상: 최신 파티션 (summary_date=2025-03-10, hour_bucket=07)
+
+규칙 r-fresh-ffs-001 (freshness): ✓ 20분 전 갱신
+규칙 r-vol-ffs-001 (volume): ✗ 320K행 — 예상 ≥1,000,000
+규칙 r-custom-ffs-001 (시계열):
+  1단계 — 값 계산:
+    {"partitions": {"summary_date": "2025-03-10", "hour_bucket": "07"},
+     "values": {"cumulative_orders": 320000, "active_carriers": 3}}
+  2단계 — 28일 평일 기준선 대비 ML 검증:
+    cumulative_orders: 320K vs 예상 900K ±5% (평일 오전 7시) → ✗ 실패
+    {"validation": {"cumulative_orders": false}}
+  3단계 — DataHub에 assertionRunEvent로 저장 (FAILURE)
 ```
 
-#### DataHub 연동 포인트
+**실패한 assertion 결과로부터 알림 생성:**
 
-Predictive SLA 엔진은 **읽기** 소비자이다. 시계열 프로필과 리니지를 조회하여 SLA 위반 전에 이상을 감지한다:
+```
+⚠ 검증 실패: orders.daily_fulfillment_summary
 
-| 모니터링 단계 | DataHub Aspect | REST API Path | 반환 내용 |
-|-------------|---------------|---------------|----------|
-| 볼륨 추적 | `datasetProfile` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | 시간별 `rowCount` — 3σ 편차의 기초 |
-| 신선도 확인 | `operation` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | `lastUpdatedTimestamp` — 예상 vs 실제 |
-| 업스트림 의존성 | `upstreamLineage` | `GET /aspects/{urn}?aspect=upstreamLineage` | 근본 원인 추적을 위한 업스트림 데이터셋 URN |
-| 다운스트림 영향 | — | GraphQL: `searchAcrossLineage` | SLA 위반 시 영향받는 대시보드/소비자 |
-
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetProfileClass,
-    UpstreamLineageClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-dataset_urn = make_dataset_urn(platform="oracle", name="orders.daily_fulfillment_summary", env="PROD")
-
-# 프로필 이력 — 3σ 이상 탐지를 위한 시간별 rowCount
-# REST: POST /aspects?action=getTimeseriesAspectValues
-profiles = graph.get_timeseries_values(
-    dataset_urn, DatasetProfileClass, filter={}, limit=30,
-)
-
-# 업스트림 리니지 — 근본 원인 분석을 위한 의존성 추적
-# REST: GET /aspects/{urn}?aspect=upstreamLineage
-upstream = graph.get_aspect(dataset_urn, UpstreamLineageClass)
+r-vol-ffs-001: row_count 320,000 < 1,000,000 (최소 임계값)
+r-custom-ffs-001: cumulative_orders 320K — 평일 오전 7시 기준선(900K ±5%) 대비 64% 미달
+  28일 모델: 월=790K, 화–금=900K (시간 07 기준)
+  현재: 320K — 이상 탐지됨
 ```
 
-> **핵심 포인트**: DataHub는 원시 프로필 이력과 리니지 그래프를 저장한다. DataSpoke가 그 위에 통계 모델링, SLA 정의, 예측 알림을 추가한다.
+**오전 7:15** — 운영 엔지니어가 결과를 검토하고 업스트림 시스템을 조사하여 배송 API 쓰로틀링을 발견한다. 할당량 증가를 요청한다. 파이프라인은 오전 8시에 복구된다.
+
+**오전 8:00 — 두 번째 cron 실행:**
+
+```
+규칙 r-custom-ffs-001 (시계열):
+  {"partitions": {"summary_date": "2025-03-10", "hour_bucket": "08"},
+   "values": {"cumulative_orders": 1120000, "active_carriers": 8}}
+  ML 검증: cumulative_orders 1.12M이 예상 범위 내 → ✓ 통과
+```
+
+SLA를 1시간 여유로 충족한다. 전체 결과 이력은 다음으로 조회할 수 있다:
+
+```
+GET /api/v1/spoke/common/data/urn:li:dataset:...orders.daily_fulfillment_summary/attr/validation/result
+
+→ assertionRunEvent 시계열 반환: 파티션별 합격/실패 이력
+  실제 값, 기준선 비교, 검증 판정 포함.
+```
 
 #### DataSpoke 커스텀 구현
 
 | 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
 |---------|------|------------------------|
-| **Prophet/Isolation Forest 엔진** | `rowCount` 이력에 대한 시계열 이상 탐지 | DataHub는 프로필을 저장하지만 통계 모델링 없음 |
-| **SLA 설정** | 데이터셋별 SLA 목표 정의 (예: 오전 9시 마감) | DataHub에는 SLA 개념 없음 |
-| **업스트림 근본 원인 분석기** | 리니지 추적, 각 업스트림 건강도 확인, 병목 지점 식별 | DataHub는 리니지 그래프를 제공하지만 건강도 평가 없음 |
-| **예측 알림 시스템** | 신뢰도 점수가 포함된 위반 전 경고 생성 | DataHub에는 알림/예측 엔진 없음 |
-| **임계값 자동 조정** | 요일별 패턴 학습, 기준선 자동 업데이트 | DataHub는 원시 데이터를 저장하지만 패턴 학습 없음 |
+| **SQL 기반 시계열 엔진** | 누적 SQL 실행, 시간별 파티션 값 계산 | 오픈소스 DataHub는 소스 시스템에 쿼리하지 않음 |
+| **요일별 기준선 모델** | 28일 이력에서 평일 패턴 학습, 요일별 임계값 조정 | DataHub는 원시 데이터를 저장하지만 패턴 학습 없음 |
+| **Assertion 기반 알림** | `assertionRunEvent`에 FAILURE가 기록되면 알림 생성 | 오픈소스 DataHub에는 알림 엔진 없음 |
+| **Cron 스케줄러** | Kestra 플로우가 매일 오전 7시, 8시에 검증 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
 
 #### 결과
 
-| 지표 | 기존 모니터링 | DataSpoke 예측 |
-|-----|-------------|---------------|
-| 탐지 시점 | 오전 9:00 (위반 후) | 오전 7:00 (위반 전) |
+| 지표 | 기존 모니터링 | DataSpoke 시계열 검증 |
+|-----|-------------|---------------------|
+| 탐지 시점 | 오전 9:00 (SLA 위반 후) | 오전 7:00 (위반 전) |
 | 대응 시간 | 0분 (이미 늦음) | 120분 (선제적) |
 | 비즈니스 영향 | 2.5시간 대시보드 다운 | 다운타임 제로 |
-| 근본 원인 파악 | 90분 조사 | 2분 (자동 분석) |
+| 설정 노력 | 커스텀 모니터링 코드 | API를 통한 선언적 설정 |
 
 ---
 
