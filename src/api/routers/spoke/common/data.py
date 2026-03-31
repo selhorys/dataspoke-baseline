@@ -266,7 +266,7 @@ def _validation_config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         dataset_urn=c.dataset_urn,
         rules=c.rules,
         schedule=c.schedule,
-        status=c.status,
+        periodic=c.periodic,
         owner=c.owner,
         created_at=c.created_at,
         updated_at=c.updated_at,
@@ -295,6 +295,7 @@ async def put_data_validation_conf(
         dataset_urn=dataset_urn,
         rules=body.rules,
         schedule=body.schedule,
+        periodic=body.periodic,
         owner=body.owner,
     )
     if created:

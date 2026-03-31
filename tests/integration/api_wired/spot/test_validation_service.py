@@ -58,7 +58,7 @@ async def test_validation_config_crud_via_http(
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
-        assert body["status"] == "draft"
+        assert body["periodic"] is False
         assert body["schedule"] == {"cron": "0 0 * * *"}
         config_id = body["id"]
 

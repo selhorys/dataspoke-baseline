@@ -76,7 +76,7 @@ class ValidationConfig(Base):
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
     rules: Mapped[list] = mapped_column(JSONB, nullable=False)
     schedule: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
+    periodic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     owner: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

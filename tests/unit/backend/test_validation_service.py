@@ -22,7 +22,7 @@ def _make_config_row(
     dataset_urn: str = _DATASET_URN,
     rules: list | None = None,
     schedule: dict | None = None,
-    status: str = "draft",
+    periodic: bool = False,
     owner: str = "alice@example.com",
 ):
     row = MagicMock()
@@ -32,7 +32,7 @@ def _make_config_row(
         {"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}
     ]
     row.schedule = schedule
-    row.status = status
+    row.periodic = periodic
     row.owner = owner
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
@@ -95,6 +95,7 @@ async def test_upsert_config_creates_new(service, db):
         dataset_urn=_DATASET_URN,
         rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
         schedule=None,
+        periodic=False,
         owner="alice@example.com",
     )
     assert db.add.called
@@ -111,6 +112,7 @@ async def test_upsert_config_updates_existing(service, db):
         dataset_urn=_DATASET_URN,
         rules=new_rules,
         schedule={"cron": "0 6 * * *"},
+        periodic=True,
         owner="bob@example.com",
     )
     assert db.add.called

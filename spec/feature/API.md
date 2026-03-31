@@ -258,7 +258,7 @@ management.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/validation` | List all validation configs across datasets (paginated, filterable) | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, status, owner) | Validation Config | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, periodic, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |

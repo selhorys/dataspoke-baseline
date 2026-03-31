@@ -34,7 +34,7 @@ def _config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         dataset_urn=c.dataset_urn,
         rules=c.rules,
         schedule=c.schedule,
-        status=c.status,
+        periodic=c.periodic,
         owner=c.owner,
         created_at=c.created_at,
         updated_at=c.updated_at,
@@ -46,12 +46,12 @@ async def get_validation_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
-    status_filter: str | None = Query(default=None, alias="status"),
+    periodic_filter: bool | None = Query(default=None, alias="periodic"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigListResponse:
     order_by = parse_sort(sort, {"created_at": ValidationConfig.created_at}, None)
     configs, total_count = await service.list_configs(
-        offset=offset, limit=limit, status_filter=status_filter, order_by=order_by
+        offset=offset, limit=limit, periodic_filter=periodic_filter, order_by=order_by
     )
     return ValidationConfigListResponse(
         offset=offset,

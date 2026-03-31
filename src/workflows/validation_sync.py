@@ -113,7 +113,7 @@ async def sync_periodic_validation_flows(
     """Sync periodic validation flows in Kestra based on current configs.
 
     Steps:
-    1. Query distinct cron values from validation_configs where status='active'
+    1. Query distinct cron values from validation_configs where periodic=true
        and schedule->>'cron' IS NOT NULL.
     2. Generate one flow per unique cron and register it via
        KestraClient.create_or_update_flow().
@@ -129,7 +129,7 @@ async def sync_periodic_validation_flows(
     # 1. Collect distinct active cron schedules using PostgreSQL JSONB accessor
     result = await db.execute(
         select(func.distinct(ValidationConfig.schedule["cron"].as_string())).where(
-            ValidationConfig.status == "active",
+            ValidationConfig.periodic == True,  # noqa: E712
             ValidationConfig.schedule["cron"].as_string().isnot(None),
         )
     )

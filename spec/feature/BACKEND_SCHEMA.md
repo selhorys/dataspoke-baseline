@@ -61,7 +61,7 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `schedule` | `JSONB` NULL | `{"cron": "...", "manual": true/false}` — singleton per dataset, both modes can be active simultaneously |
 | `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
-| `status` | `TEXT` | `active`, `paused`, `draft` |
+| `periodic` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |

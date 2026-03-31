@@ -136,7 +136,7 @@ async def list_periodic_validation_datasets(
         async with make_db_session() as db:
             result = await db.execute(
                 select(ValidationConfig.dataset_urn).where(
-                    ValidationConfig.status == "active",
+                    ValidationConfig.periodic == True,  # noqa: E712
                     ValidationConfig.schedule["cron"].as_string() == body.schedule,
                 )
             )

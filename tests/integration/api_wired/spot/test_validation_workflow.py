@@ -84,7 +84,6 @@ async def test_run_validation_via_public_api(
     """POST run on a configured dataset executes the pipeline and records events.
 
     Setup: PUT validation config for title_master (uses real catalog data in DataHub).
-           PATCH status to "active".
     Action: POST .../attr/validation/method/run.
     Assertions: 200, run_id present, status in ("success", "failure", "error"),
                 GET results has total_count >= 1,
@@ -95,7 +94,7 @@ async def test_run_validation_via_public_api(
     headers = _auth_headers()
 
     try:
-        # PUT config
+        # PUT config — configs are immediately runnable after PUT
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
             headers=headers,
@@ -107,15 +106,6 @@ async def test_run_validation_via_public_api(
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
-
-        # PATCH to activate
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status failed: {resp.text}"
-        assert resp.json()["status"] == "active"
 
         # Run validation
         resp = await http_client.post(
@@ -166,9 +156,9 @@ async def test_list_periodic_datasets(
     """POST validation/list-periodic returns only URNs matching the requested schedule.
 
     Setup: PUT 4 configs:
-           A/B: active + cron "0 2 * * *"
-           C: active + cron "0 6 * * *"
-           D: draft (no status patch, never activated)
+           A/B: periodic=true + cron "0 2 * * *"
+           C: periodic=true + cron "0 6 * * *"
+           D: periodic=false (non-periodic, should be excluded)
     Action: POST /internal/activities/validation/list-periodic {"schedule": "0 2 * * *"}.
     Assertions: Result contains A and B; does not contain C or D.
                 Each URN has a CONFIG_CREATE event.
@@ -181,7 +171,7 @@ async def test_list_periodic_datasets(
     headers = _auth_headers()
 
     try:
-        # A: active, schedule cron "0 2 * * *"
+        # A: periodic, schedule cron "0 2 * * *"
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{urn_a}/attr/validation/conf",
             headers=headers,
@@ -189,18 +179,13 @@ async def test_list_periodic_datasets(
                 "dataset_urn": urn_a,
                 "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 2 * * *"},
+                "periodic": True,
                 "owner": "test@imazon.com",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config A failed: {resp.text}"
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{urn_a}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status A failed: {resp.text}"
 
-        # B: active, schedule cron "0 2 * * *"
+        # B: periodic, schedule cron "0 2 * * *"
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{urn_b}/attr/validation/conf",
             headers=headers,
@@ -208,18 +193,13 @@ async def test_list_periodic_datasets(
                 "dataset_urn": urn_b,
                 "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 2 * * *"},
+                "periodic": True,
                 "owner": "test@imazon.com",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config B failed: {resp.text}"
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{urn_b}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status B failed: {resp.text}"
 
-        # C: active, schedule cron "0 6 * * *" (different schedule)
+        # C: periodic, schedule cron "0 6 * * *" (different schedule)
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{urn_c}/attr/validation/conf",
             headers=headers,
@@ -227,25 +207,19 @@ async def test_list_periodic_datasets(
                 "dataset_urn": urn_c,
                 "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 6 * * *"},
+                "periodic": True,
                 "owner": "test@imazon.com",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config C failed: {resp.text}"
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{urn_c}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status C failed: {resp.text}"
 
-        # D: draft (no status patch — remains "draft")
+        # D: non-periodic (periodic defaults to false — excluded from periodic list)
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{urn_d}/attr/validation/conf",
             headers=headers,
             json={
                 "dataset_urn": urn_d,
                 "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 2 * * *"},
                 "owner": "test@imazon.com",
             },
         )
@@ -302,7 +276,7 @@ async def test_sync_creates_flows_per_schedule(
     headers = _auth_headers()
 
     try:
-        # title_master + editions: active, cron "0 2 * * *"
+        # title_master + editions: periodic, cron "0 2 * * *"
         for urn in (_CATALOG_URN, _EDITIONS_URN):
             resp = await http_client.put(
                 f"/api/v1/spoke/common/data/{urn}/attr/validation/conf",
@@ -311,18 +285,13 @@ async def test_sync_creates_flows_per_schedule(
                     "dataset_urn": urn,
                     "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                     "schedule": {"cron": "0 2 * * *"},
+                    "periodic": True,
                     "owner": "test@imazon.com",
                 },
             )
             assert resp.status_code in (200, 201), f"PUT config failed for {urn}: {resp.text}"
-            resp = await http_client.patch(
-                f"/api/v1/spoke/common/data/{urn}/attr/validation/conf",
-                headers=headers,
-                json={"status": "active"},
-            )
-            assert resp.status_code == 200, f"PATCH status failed for {urn}: {resp.text}"
 
-        # genre_hierarchy: active, cron "0 6 * * *"
+        # genre_hierarchy: periodic, cron "0 6 * * *"
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/validation/conf",
             headers=headers,
@@ -330,16 +299,11 @@ async def test_sync_creates_flows_per_schedule(
                 "dataset_urn": _GENRE_URN,
                 "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 6 * * *"},
+                "periodic": True,
                 "owner": "test@imazon.com",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed for genre: {resp.text}"
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status failed for genre: {resp.text}"
 
         resp = await http_client.post(
             "/internal/activities/validation/sync-periodic-flows",
@@ -414,16 +378,11 @@ async def test_sync_removes_stale_flows(
                 "dataset_urn": _CATALOG_URN,
                 "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 3 * * *"},
+                "periodic": True,
                 "owner": "test@imazon.com",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{_CATALOG_URN}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status failed: {resp.text}"
 
         # First sync — creates the flow
         resp = await http_client.post(
@@ -494,16 +453,11 @@ async def test_sync_updates_on_schedule_change(
                     "dataset_urn": urn,
                     "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                     "schedule": {"cron": "0 2 * * *"},
+                    "periodic": True,
                     "owner": "test@imazon.com",
                 },
             )
             assert resp.status_code in (200, 201), f"PUT config failed for {urn}: {resp.text}"
-            resp = await http_client.patch(
-                f"/api/v1/spoke/common/data/{urn}/attr/validation/conf",
-                headers=headers,
-                json={"status": "active"},
-            )
-            assert resp.status_code == 200, f"PATCH status failed for {urn}: {resp.text}"
 
         # First sync — one flow for "0 2 * * *"
         resp = await http_client.post(
@@ -511,11 +465,11 @@ async def test_sync_updates_on_schedule_change(
         )
         assert resp.status_code == 200
 
-        # PATCH genre_hierarchy to a different schedule
+        # PATCH schedule — must include periodic=True in payload to satisfy validator
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/validation/conf",
             headers=headers,
-            json={"schedule": {"cron": "0 6 * * *"}},
+            json={"schedule": {"cron": "0 6 * * *"}, "periodic": True},
         )
         assert resp.status_code == 200, f"PATCH schedule failed: {resp.text}"
 
@@ -611,12 +565,6 @@ async def test_concurrency_guard_prevents_duplicate(
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
-        resp = await http_client.patch(
-            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
-            headers=headers,
-            json={"status": "active"},
-        )
-        assert resp.status_code == 200, f"PATCH status failed: {resp.text}"
 
         # Fire both requests concurrently; the second should race into a locked state
         async def _run():

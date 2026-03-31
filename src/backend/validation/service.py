@@ -44,7 +44,7 @@ class ValidationConfigRecord(BaseModel):
     dataset_urn: str
     rules: list[dict[str, Any]]
     schedule: dict[str, Any] | None = None
-    status: str
+    periodic: bool = False
     owner: str
     created_at: datetime
     updated_at: datetime
@@ -87,7 +87,7 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
         dataset_urn=row.dataset_urn,
         rules=rules,
         schedule=row.schedule,
-        status=row.status,
+        periodic=row.periodic,
         owner=row.owner,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -141,6 +141,7 @@ class ValidationService:
         dataset_urn: str,
         rules: list[dict[str, Any]],
         schedule: dict[str, Any] | None,
+        periodic: bool,
         owner: str,
     ) -> tuple[ValidationConfigRecord, bool]:
         result = await self._db.execute(
@@ -151,6 +152,7 @@ class ValidationService:
         if existing:
             existing.rules = rules
             existing.schedule = schedule
+            existing.periodic = periodic
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
@@ -160,6 +162,7 @@ class ValidationService:
                 dataset_urn=dataset_urn,
                 rules=rules,
                 schedule=schedule,
+                periodic=periodic,
                 owner=owner,
             )
             self._db.add(existing)
@@ -177,6 +180,7 @@ class ValidationService:
                 "operation": "PUT",
                 "config_id": str(existing.id),
                 "rule_count": len(rules),
+                "periodic": existing.periodic,
             },
         )
 
@@ -194,8 +198,8 @@ class ValidationService:
             row.rules = patch["rules"]
         if "schedule" in patch:
             row.schedule = patch["schedule"]
-        if "status" in patch and patch["status"] is not None:
-            row.status = patch["status"]
+        if "periodic" in patch and patch["periodic"] is not None:
+            row.periodic = patch["periodic"]
         row.updated_at = datetime.now(tz=UTC)
 
         self._db.add(row)
@@ -238,12 +242,12 @@ class ValidationService:
         self,
         offset: int = 0,
         limit: int = 20,
-        status_filter: str | None = None,
+        periodic_filter: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[ValidationConfigRecord], int]:
         base = select(ValidationConfig)
-        if status_filter is not None:
-            base = base.where(ValidationConfig.status == status_filter)
+        if periodic_filter is not None:
+            base = base.where(ValidationConfig.periodic == periodic_filter)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0

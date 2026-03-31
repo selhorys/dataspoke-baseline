@@ -169,7 +169,7 @@ class TestValidationSchemas:
             dataset_urn="urn:li:dataset:test",
             rules=[{"rule_id": "r1", "type": "volume"}],
             schedule=None,
-            status="active",
+            periodic=False,
             owner="admin",
             created_at=now,
             updated_at=now,

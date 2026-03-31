@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 
@@ -12,13 +12,31 @@ class CreateValidationConfigRequest(BaseModel):
     dataset_urn: str
     rules: list[dict[str, Any]]
     schedule: dict[str, Any] | None = None
+    periodic: bool = False
     owner: str
+
+    @model_validator(mode="after")
+    def validate_periodic_schedule(self) -> "CreateValidationConfigRequest":
+        if self.periodic and (self.schedule is None or self.schedule.get("cron") is None):
+            raise ValueError("schedule with cron key is required when periodic is true")
+        return self
 
 
 class PatchValidationConfigRequest(BaseModel):
     rules: list[dict[str, Any]] | None = None
     schedule: dict[str, Any] | None = None
-    status: str | None = None
+    periodic: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_periodic_schedule(self) -> "PatchValidationConfigRequest":
+        if self.periodic is True and (
+            self.schedule is None
+            or (isinstance(self.schedule, dict) and self.schedule.get("cron") is None)
+        ):
+            raise ValueError(
+                "schedule with cron key must be provided in the same patch when setting periodic to true"
+            )
+        return self
 
 
 class RunValidationRequest(BaseModel):
@@ -30,7 +48,7 @@ class ValidationConfigResponse(SingleResponse):
     dataset_urn: str
     rules: list[dict[str, Any]]
     schedule: dict[str, Any] | None
-    status: str
+    periodic: bool
     owner: str
     created_at: datetime
     updated_at: datetime
