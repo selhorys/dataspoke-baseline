@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Flow IDs defined in src/workflows/flows/*.yaml
 ALL_FLOW_IDS = frozenset([
     "ingestion-config-sync",
-    "validation",
+    "validation-config-sync",
     "generation",
     "embedding-sync",
     "metrics",

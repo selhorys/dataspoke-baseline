@@ -1,10 +1,6 @@
-"""Unit tests for validation workflow params and flow ID."""
+"""Unit tests for validation workflow params."""
 
-from src.workflows.validation import FLOW_ID, ValidationParams
-
-
-def test_flow_id():
-    assert FLOW_ID == "validation"
+from src.workflows.validation import ValidationParams
 
 
 def test_params_defaults():

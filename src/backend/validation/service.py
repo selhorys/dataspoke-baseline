@@ -29,7 +29,7 @@ from src.shared.events import (
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
 )
-from src.shared.exceptions import EntityNotFoundError
+from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -563,3 +563,29 @@ class ValidationService:
         )
         self._db.add(event)
         await self._db.commit()
+
+
+# ── Standalone helpers ────────────────────────────────────────────────────────
+
+
+async def run_validation_with_lock(
+    service: ValidationService,
+    cache: RedisClient,
+    dataset_urn: str,
+    partition: dict | None = None,
+) -> ValidationRunSummary:
+    """Run validation with a Redis concurrency guard.
+
+    Shared by the public API routes (validation.py and data.py).
+    Raises ConflictError if validation is already running for the dataset.
+    """
+    lock_key = f"validation:running:{dataset_urn}"
+    acquired = await cache.set_nx(lock_key, "1", ttl_seconds=3600)
+    if not acquired:
+        raise ConflictError(
+            "VALIDATION_RUNNING", f"Validation is already running for {dataset_urn}"
+        )
+    try:
+        return await service.run(dataset_urn, partition=partition)
+    finally:
+        await cache.delete(lock_key)

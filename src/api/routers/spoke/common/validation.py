@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_kestra_client, get_validation_service
+from src.api.dependencies import get_redis, get_validation_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.validation import (
@@ -17,11 +17,9 @@ from src.api.schemas.validation import (
     ValidationResultResponse,
 )
 from src.backend.validation.service import ValidationService
+from src.shared.cache.client import RedisClient
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.exceptions import EntityNotFoundError
-from src.shared.settings import settings
-from src.workflows._common import urn_to_workflow_id
-from src.workflows.kestra.client import KestraClient
 
 router = APIRouter(
     prefix="/validation",
@@ -151,31 +149,21 @@ async def post_validation_result(
     dataset_urn: str,
     body: RunValidationRequest,
     service: ValidationService = Depends(get_validation_service),
-    kestra: KestraClient = Depends(get_kestra_client),
+    cache: RedisClient = Depends(get_redis),
 ) -> RunResultResponse:
+    from src.backend.validation.service import run_validation_with_lock
+
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
-    label_value = f"validation-{urn_to_workflow_id(dataset_urn)}"
-    await kestra.check_no_duplicate(
-        "validation", "workflow_id", label_value, "VALIDATION_RUNNING"
-    )
-    execution = await kestra.trigger_and_wait(
-        "validation",
-        inputs={
-            "callback_base_url": settings.kestra_callback_base_url,
-            "dataset_urn": dataset_urn,
-            "partition": json.dumps(body.partition or {}),
-        },
-        labels={"workflow_id": label_value},
-    )
-    outputs = execution.outputs or {}
+    result = await run_validation_with_lock(service, cache, dataset_urn, partition=body.partition)
     return RunResultResponse(
-        run_id=outputs.get("run_id", execution.id),
-        status=outputs.get("status", execution.status.value),
-        total=outputs.get("total", 0),
-        passed=outputs.get("passed", 0),
-        failed=outputs.get("failed", 0),
+        run_id=result.run_id,
+        status=result.status,
+        total=result.total,
+        passed=result.passed,
+        failed=result.failed,
+        errored=result.errored,
     )
 
 

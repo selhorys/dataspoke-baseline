@@ -35,8 +35,8 @@ def require_server():
     1. Server liveness via ``GET /health``.
     2. ``DATASPOKE_TEST_MODE`` is set — without it, activity endpoints use
        real external clients and tests will fail non-deterministically.
-    3. Required Kestra flows are registered (currently only
-       ``ingestion-config-sync``).
+    3. Required Kestra flows are registered (e.g., ``ingestion-config-sync``,
+       ``validation-config-sync``).
     """
     # -- Check test mode env var --
     test_mode = os.environ.get("DATASPOKE_TEST_MODE", "").lower()
@@ -80,8 +80,8 @@ def require_server():
         )
 
     required_flows = {
-        "ingestion-config-sync", "validation", "generation", "metrics",
-        "embedding-sync", "ontology-rebuild",
+        "ingestion-config-sync", "validation-config-sync",
+        "generation", "metrics", "embedding-sync", "ontology-rebuild",
     }
     missing = required_flows - registered
     if missing:

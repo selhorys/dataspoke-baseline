@@ -177,7 +177,7 @@ A convenience and customization layer on top of DataHub's native assertion frame
 
 **SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value variables, and optional ML-based validation settings (model type, lookback window, validation range).
 
-**Validation Run Pipeline** (Kestra `validation` flow):
+**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated via `validation-periodic-*` flows):
 
 1. Resolve target partition (manual request → specified partition; cron → latest partition via partition/order variables)
 2. For each rule in the dataset's config, compute metrics for the target partition
@@ -356,7 +356,8 @@ Wraps Kestra's REST API via `httpx`: flow CRUD, execution lifecycle (trigger, po
 |------|------|---------|----------|
 | `ingestion-config-sync` | `ingestion_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
 | `ingestion-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual | Per-config |
-| `validation` | `validation.yaml` | API (cron from config schedule + manual) | Per-dataset schedule + on-demand |
+| `validation-config-sync` | `validation_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
+| `validation-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual | Per-config schedule |
 | `generation` | `generation.yaml` | API | On-demand |
 | `embedding-sync` | `embedding_sync.yaml` | Kafka event + API | Event-driven + on-demand |
 | `metrics` | `metrics.yaml` | API + Kestra schedule | On-demand + scheduled |

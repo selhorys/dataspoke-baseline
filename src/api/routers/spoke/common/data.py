@@ -374,28 +374,22 @@ async def get_data_validation_result(
 async def post_data_validation_result(
     dataset_urn: str,
     body: RunValidationRequest,
-    kestra: KestraClient = Depends(get_kestra_client),
+    service: ValidationService = Depends(get_validation_service),
+    cache: RedisClient = Depends(get_redis),
 ) -> ValidationRunResultResponse:
-    label_value = f"validation-{urn_to_workflow_id(dataset_urn)}"
-    await kestra.check_no_duplicate(
-        "validation", "workflow_id", label_value, "VALIDATION_RUNNING"
-    )
-    execution = await kestra.trigger_and_wait(
-        "validation",
-        inputs={
-            "callback_base_url": settings.kestra_callback_base_url,
-            "dataset_urn": dataset_urn,
-            "partition": json.dumps(body.partition or {}),
-        },
-        labels={"workflow_id": label_value},
-    )
-    outputs = execution.outputs or {}
+    from src.backend.validation.service import run_validation_with_lock
+
+    config = await service.get_config(dataset_urn)
+    if config is None:
+        raise EntityNotFoundError("validation_config", dataset_urn)
+    result = await run_validation_with_lock(service, cache, dataset_urn, partition=body.partition)
     return ValidationRunResultResponse(
-        run_id=outputs.get("run_id", execution.id),
-        status=outputs.get("status", execution.status.value),
-        total=outputs.get("total", 0),
-        passed=outputs.get("passed", 0),
-        failed=outputs.get("failed", 0),
+        run_id=result.run_id,
+        status=result.status,
+        total=result.total,
+        passed=result.passed,
+        failed=result.failed,
+        errored=result.errored,
     )
 
 
