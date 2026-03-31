@@ -109,3 +109,50 @@ async def delete_kestra_flow(kestra_client, flow_id: str) -> None:
         await kestra_client.delete_flow(flow_id)
     except Exception:
         pass
+
+
+# ── Validation helpers ──────────────────────────────────────────────────────
+
+
+def make_validation_urn(suffix: str) -> str:
+    """Build a test dataset URN for validation tests."""
+    return make_test_urn("validation", suffix)
+
+
+async def delete_validation_config_db(
+    session: AsyncSession, dataset_urn: str
+) -> None:
+    """Directly remove a validation config row from PostgreSQL (for finally blocks)."""
+    await session.execute(
+        text(
+            "DELETE FROM dataspoke.validation_configs WHERE dataset_urn = :urn"
+        ),
+        {"urn": dataset_urn},
+    )
+
+
+async def delete_validation_events_db(
+    session: AsyncSession, dataset_urn: str
+) -> None:
+    """Remove validation events for a dataset URN (for finally blocks)."""
+    await session.execute(
+        text(
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = :urn"
+            " AND entity_type = 'dataset'"
+            " AND event_type LIKE 'VALIDATION.%'"
+        ),
+        {"urn": dataset_urn},
+    )
+
+
+async def delete_validation_results_db(
+    session: AsyncSession, dataset_urn: str
+) -> None:
+    """Remove validation results for a dataset URN (for finally blocks)."""
+    await session.execute(
+        text(
+            "DELETE FROM dataspoke.validation_results WHERE dataset_urn = :urn"
+        ),
+        {"urn": dataset_urn},
+    )

@@ -213,7 +213,7 @@ Covers UC2 (Assertion-Based Monitoring), UC3 (Timeseries Validation / Predictive
 Cron (Kestra) / Manual (API)
       │
       ▼
-API: POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result
+API: POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
       │
       ▼
 Validation Service

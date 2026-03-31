@@ -349,7 +349,7 @@ The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original va
 
 When a cron or manual invocation is triggered for a dataset's validation rules:
 
-- **Manual invocation** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result`): if a partition is given in the request body, that partition is targeted; otherwise the latest partition is targeted.
+- **Manual invocation** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run`): if a partition is given in the request body, that partition is targeted; otherwise the latest partition is targeted.
 - **Cron invocation**: always targets the latest partition (determined by partition/order variables).
 
 For the target partition, metrics defined by each rule are calculated and validated. For example, the SQL-based timeseries rule `r-custom-ts-001` above when cron-triggered:

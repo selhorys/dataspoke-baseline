@@ -207,7 +207,7 @@ while DA or other teams may register simpler configurations.
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation Config | UC2, UC3, UC6 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Trigger manual validation run (optional `partition` in body; defaults to latest partition) | DataHub Assertion Management | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger manual validation run (optional `partition` in body; defaults to latest partition) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Automated Doc Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Automated Doc Generation | UC4 |
@@ -261,7 +261,7 @@ management.
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, status, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/validation/{dataset_urn}/attr/result` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |
+| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/event` | Validation event reports (success/failure notices) | DataHub Assertion Management | UC2, UC3, UC6 |
 
 #### Generation (`/spoke/common/gen`)

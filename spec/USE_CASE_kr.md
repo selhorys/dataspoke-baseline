@@ -349,7 +349,7 @@ DataSpoke는 자체 데이터 품질 점수 엔진을 구축하지 **않는다**
 
 데이터셋의 검증 규칙에 대해 cron 또는 수동 호출이 트리거되면:
 
-- **수동 호출** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result`): 요청 본문에 파티션이 지정되면 해당 파티션을 대상으로 하고, 그렇지 않으면 최신 파티션을 대상으로 한다.
+- **수동 호출** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run`): 요청 본문에 파티션이 지정되면 해당 파티션을 대상으로 하고, 그렇지 않으면 최신 파티션을 대상으로 한다.
 - **Cron 호출**: 항상 최신 파티션을 대상으로 한다 (파티션/순서 변수로 결정).
 
 대상 파티션에 대해 각 규칙이 정의한 메트릭이 계산되고 검증된다. 예를 들어, cron 트리거 시 위의 SQL 기반 시계열 규칙 `r-custom-ts-001`:

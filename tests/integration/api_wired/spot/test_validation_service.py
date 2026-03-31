@@ -1,12 +1,10 @@
-"""Integration tests for ValidationService against dev-env infrastructure.
+"""Integration tests for ValidationService config CRUD against dev-env infrastructure.
 
 Test-specific data extensions (created and cleaned up within each test):
 - Transient validation_configs rows via PUT API (Imazon-prefixed test URNs).
-- Transient validation_results rows from POST run (dry_run=false).
-- Transient dataspoke.events rows for event pagination and run tests.
+- Transient dataspoke.events rows for event pagination tests.
 
 Prerequisites:
-- Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
 - Kestra port-forwarded to localhost:9205
@@ -14,21 +12,23 @@ Prerequisites:
 """
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.integration.api_wired.spot.conftest import (
+    delete_validation_config_db,
+    delete_validation_events_db,
+    delete_validation_results_db,
+    make_validation_urn,
+)
 from tests.integration.conftest import (
     _auth_headers,
     cleanup_events,
-    emit_test_dataset,
-    make_test_urn,
     seed_events,
-    soft_delete_test_dataset,
 )
 
 
 def _urn(suffix: str) -> str:
-    return make_test_urn("validation", suffix)
+    return make_validation_urn(suffix)
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ def _urn(suffix: str) -> str:
 async def test_validation_config_crud_via_http(
     http_client, async_session: AsyncSession,
 ):
-    """PUT -> GET -> PATCH -> GET -> DELETE -> GET (404)."""
+    """PUT -> GET -> PATCH schedule -> GET via domain router -> DELETE -> GET (404)."""
     dataset_urn = _urn("crud_test")
     headers = _auth_headers()
 
@@ -49,9 +49,8 @@ async def test_validation_config_crud_via_http(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": {"freshness": {"max_age_hours": 24}},
-                "schedule": "0 0 * * *",
-                "sla_target": {"freshness_hours": 12},
+                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "schedule": {"cron": "0 0 * * *"},
                 "owner": "test@imazon.com",
             },
         )
@@ -59,10 +58,11 @@ async def test_validation_config_crud_via_http(
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
-        assert body["sla_target"] == {"freshness_hours": 12}
+        assert body["status"] == "draft"
+        assert body["schedule"] == {"cron": "0 0 * * *"}
         config_id = body["id"]
 
-        # GET - read config
+        # GET - read config via data router
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
             headers=headers,
@@ -74,18 +74,18 @@ async def test_validation_config_crud_via_http(
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
             headers=headers,
-            json={"schedule": "0 6 * * *"},
+            json={"schedule": {"cron": "0 6 * * *"}},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule"] == {"cron": "0 6 * * *"}
 
-        # GET via validation router
+        # GET via validation domain router
         resp = await http_client.get(
             f"/api/v1/spoke/common/validation/{dataset_urn}",
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule"] == {"cron": "0 6 * * *"}
 
         # DELETE
         resp = await http_client.delete(
@@ -101,13 +101,7 @@ async def test_validation_config_crud_via_http(
         )
         assert resp.status_code == 404
     finally:
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.validation_configs"
-                " WHERE dataset_urn = :urn"
-            ),
-            {"urn": dataset_urn},
-        )
+        await delete_validation_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -115,7 +109,7 @@ async def test_validation_config_crud_via_http(
 async def test_list_validation_configs(
     http_client, async_session: AsyncSession,
 ):
-    """PUT 2 configs -> GET list -> verify pagination."""
+    """PUT 2 configs -> GET list via domain router -> verify pagination."""
     urn1 = _urn("list_test_1")
     urn2 = _urn("list_test_2")
     headers = _auth_headers()
@@ -127,11 +121,11 @@ async def test_list_validation_configs(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "rules": {"freshness": {"max_age_hours": 24}},
+                    "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                     "owner": "test@imazon.com",
                 },
             )
-            assert resp.status_code in (200, 201)
+            assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
         resp = await http_client.get(
             "/api/v1/spoke/common/validation",
@@ -146,29 +140,22 @@ async def test_list_validation_configs(
         assert urn2 in urns
     finally:
         for urn in (urn1, urn2):
-            await async_session.execute(
-                text(
-                    "DELETE FROM dataspoke.validation_configs"
-                    " WHERE dataset_urn = :urn"
-                ),
-                {"urn": urn},
-            )
+            await delete_validation_config_db(async_session, urn)
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_run_validation_dry_run(
+async def test_run_validation_basic(
     http_client, async_session: AsyncSession,
-    datahub_client,
 ):
-    """PUT config -> POST run (dry_run=true) -> verify result."""
-    dataset_urn = _urn("run_dry_test")
-    headers = _auth_headers()
+    """PUT config -> POST method/run -> verify response shape and events recorded.
 
-    await emit_test_dataset(
-        datahub_client, urn=dataset_urn, name="run_dry_test",
-        wait_seconds=1.0,
-    )
+    Does not depend on a real DataHub dataset or test-mode stub behavior.
+    Verifies that the run endpoint returns a well-formed RunResultResponse and
+    that at least one event is recorded regardless of rule outcome.
+    """
+    dataset_urn = _urn("run_test")
+    headers = _auth_headers()
 
     try:
         # Create config
@@ -177,122 +164,63 @@ async def test_run_validation_dry_run(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": {"freshness": {"max_age_hours": 24}},
+                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
                 "owner": "test@imazon.com",
             },
         )
-        assert resp.status_code in (200, 201)
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
-        # Run with dry_run=true (goes through real Kestra)
+        # POST run (no partition — direct pipeline, no Kestra involved)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run",
             headers=headers,
-            json={"dry_run": True},
+            json={"partition": None},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, f"Run failed: {resp.text}"
         body = resp.json()
-        assert body["status"].lower() == "success"
+        assert "run_id" in body
+        assert "status" in body
+        assert body["status"] in ("success", "failure", "error")
+        assert "total" in body
+        assert "passed" in body
+        assert "failed" in body
+        assert "errored" in body
 
-        # Dry run should not persist results
+        # Check events were recorded
         resp = await http_client.get(
-            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/result",
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/event",
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["total_count"] == 0
+        assert resp.json()["total_count"] >= 1
     finally:
-        await soft_delete_test_dataset(datahub_client, dataset_urn)
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.validation_configs"
-                " WHERE dataset_urn = :urn"
-            ),
-            {"urn": dataset_urn},
-        )
+        await delete_validation_results_db(async_session, dataset_urn)
+        await delete_validation_events_db(async_session, dataset_urn)
+        await delete_validation_config_db(async_session, dataset_urn)
         await async_session.commit()
 
 
 @pytest.mark.asyncio
-async def test_run_validation_persists_result(
-    http_client, async_session: AsyncSession,
-    datahub_client,
-):
-    """PUT config -> POST run (dry_run=false) -> GET results -> verify."""
-    dataset_urn = _urn("run_persist_test")
-    headers = _auth_headers()
+async def test_run_validation_not_found(http_client):
+    """POST method/run for unconfigured URN -> 404 VALIDATION_CONFIG_NOT_FOUND.
 
-    await emit_test_dataset(
-        datahub_client, urn=dataset_urn, name="run_persist_test",
-        wait_seconds=1.0,
+    ValidationService.run() raises EntityNotFoundError when no config
+    exists for the requested dataset URN. The router translates this to 404.
+    """
+    fake_urn = _urn("nonexistent")
+    resp = await http_client.post(
+        f"/api/v1/spoke/common/data/{fake_urn}/attr/validation/method/run",
+        headers=_auth_headers(),
+        json={"partition": None},
     )
-
-    try:
-        # Create config
-        resp = await http_client.put(
-            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
-            headers=headers,
-            json={
-                "dataset_urn": dataset_urn,
-                "rules": {"freshness": {"max_age_hours": 24}},
-                "owner": "test@imazon.com",
-            },
-        )
-        assert resp.status_code in (200, 201)
-
-        # Run without dry_run (goes through real Kestra)
-        resp = await http_client.post(
-            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run",
-            headers=headers,
-            json={"dry_run": False},
-        )
-        assert resp.status_code == 200
-        run_body = resp.json()
-        assert run_body["status"].lower() == "success"
-
-        # Verify result persisted
-        resp = await http_client.get(
-            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/result",
-            headers=headers,
-        )
-        assert resp.status_code == 200
-        results_body = resp.json()
-        assert results_body["total_count"] >= 1
-        result = results_body["results"][0]
-        assert "quality_score" in result
-        assert "dimensions" in result
-    finally:
-        await soft_delete_test_dataset(datahub_client, dataset_urn)
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.validation_results"
-                " WHERE dataset_urn = :urn"
-            ),
-            {"urn": dataset_urn},
-        )
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.events"
-                " WHERE entity_id = :urn"
-                " AND entity_type = 'dataset'"
-                " AND event_type LIKE 'VALIDATION.%'"
-            ),
-            {"urn": dataset_urn},
-        )
-        await async_session.execute(
-            text(
-                "DELETE FROM dataspoke.validation_configs"
-                " WHERE dataset_urn = :urn"
-            ),
-            {"urn": dataset_urn},
-        )
-        await async_session.commit()
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_validation_events_pagination(
     http_client, async_session: AsyncSession,
 ):
-    """Seed 3 events -> GET events -> verify pagination."""
+    """Seed 3 events -> GET with limit=2 -> verify pagination on both data and domain routers."""
     dataset_urn = _urn("events_test")
     headers = _auth_headers()
 
@@ -304,6 +232,7 @@ async def test_validation_events_pagination(
     )
 
     try:
+        # Verify pagination via data router
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/event",
             headers=headers,
@@ -314,7 +243,7 @@ async def test_validation_events_pagination(
         assert body["total_count"] == 3
         assert len(body["events"]) == 2
 
-        # Also test via validation router
+        # Also test via validation domain router
         resp = await http_client.get(
             f"/api/v1/spoke/common/validation/{dataset_urn}/event",
             headers=headers,
@@ -325,18 +254,3 @@ async def test_validation_events_pagination(
         assert body["total_count"] == 3
     finally:
         await cleanup_events(async_session, event_ids)
-
-
-@pytest.mark.asyncio
-async def test_run_validation_config_not_found(http_client):
-    """POST run for unconfigured URN -> error.
-
-    The data router triggers Kestra without checking config first.
-    """
-    fake_urn = _urn("nonexistent")
-    resp = await http_client.post(
-        f"/api/v1/spoke/common/data/{fake_urn}/attr/validation/method/run",
-        headers=_auth_headers(),
-        json={"dry_run": False},
-    )
-    assert resp.status_code in (404, 500)

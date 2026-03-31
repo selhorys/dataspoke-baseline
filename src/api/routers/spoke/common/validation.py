@@ -144,8 +144,8 @@ async def get_validation_result(
     )
 
 
-@router.post("/{dataset_urn}/attr/result", response_model=RunResultResponse)
-async def post_validation_result(
+@router.post("/{dataset_urn}/method/run", response_model=RunResultResponse)
+async def post_validation_run(
     dataset_urn: str,
     body: RunValidationRequest,
     service: ValidationService = Depends(get_validation_service),
