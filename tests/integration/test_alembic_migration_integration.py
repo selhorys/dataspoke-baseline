@@ -98,7 +98,7 @@ async def test_column_types(async_engine: AsyncEngine) -> None:
         ("ingestion_configs", "auth", "jsonb"),
         ("ingestion_configs", "created_at", "timestamp with time zone"),
         ("ingestion_configs", "dataset_urn", "text"),
-        ("validation_results", "quality_score", "real"),
+        ("validation_results", "assertion_result", "text"),
         ("metric_definitions", "id", "text"),
         ("overview_config", "id", "integer"),
         ("metric_issues", "estimated_fix_minutes", "integer"),
