@@ -29,6 +29,7 @@ from src.shared.events import (
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
 )
+from src.shared.db.registry import ensure_dataset_registered
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,8 @@ class ValidationService:
         periodic: bool,
         owner: str,
     ) -> tuple[ValidationConfigRecord, bool]:
+        await ensure_dataset_registered(self._db, self._datahub, dataset_urn, require_in_datahub=True)
+
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )

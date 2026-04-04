@@ -15,10 +15,12 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.integration.api_wired.spot.conftest import (
+    delete_dataset_registry_db,
     delete_validation_config_db,
     delete_validation_events_db,
     delete_validation_results_db,
     make_validation_urn,
+    seed_dataset_registry,
 )
 from tests.integration.conftest import (
     _auth_headers,
@@ -43,6 +45,8 @@ async def test_validation_config_crud_via_http(
     headers = _auth_headers()
 
     try:
+        await seed_dataset_registry(async_session, dataset_urn)
+
         # PUT - create config
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
@@ -102,6 +106,7 @@ async def test_validation_config_crud_via_http(
         assert resp.status_code == 404
     finally:
         await delete_validation_config_db(async_session, dataset_urn)
+        await delete_dataset_registry_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -115,6 +120,9 @@ async def test_list_validation_configs(
     headers = _auth_headers()
 
     try:
+        for urn in (urn1, urn2):
+            await seed_dataset_registry(async_session, urn)
+
         for urn in (urn1, urn2):
             resp = await http_client.put(
                 f"/api/v1/spoke/common/data/{urn}/attr/validation/conf",
@@ -141,6 +149,7 @@ async def test_list_validation_configs(
     finally:
         for urn in (urn1, urn2):
             await delete_validation_config_db(async_session, urn)
+            await delete_dataset_registry_db(async_session, urn)
         await async_session.commit()
 
 
@@ -158,6 +167,8 @@ async def test_run_validation_basic(
     headers = _auth_headers()
 
     try:
+        await seed_dataset_registry(async_session, dataset_urn)
+
         # Create config
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
@@ -180,7 +191,8 @@ async def test_run_validation_basic(
         body = resp.json()
         assert "run_id" in body
         assert "status" in body
-        assert body["status"] in ("success", "failure", "error")
+        # Synthetic URN has no DataHub data — freshness rule returns FAILURE
+        assert body["status"] == "failure"
         assert "total" in body
         assert "passed" in body
         assert "failed" in body
@@ -192,11 +204,16 @@ async def test_run_validation_basic(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["total_count"] >= 1
+        events_body = resp.json()
+        assert events_body["total_count"] >= 2
+        event_types = [e["event_type"] for e in events_body["events"]]
+        assert "VALIDATION.CONFIG_CREATE" in event_types
+        assert "VALIDATION.COMPLETE" in event_types
     finally:
         await delete_validation_results_db(async_session, dataset_urn)
         await delete_validation_events_db(async_session, dataset_urn)
         await delete_validation_config_db(async_session, dataset_urn)
+        await delete_dataset_registry_db(async_session, dataset_urn)
         await async_session.commit()
 
 

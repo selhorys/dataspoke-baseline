@@ -34,6 +34,14 @@ class ConflictError(DataSpokeError):
         super().__init__(message)
 
 
+class PreconditionError(DataSpokeError):
+    """Raised when a precondition for an operation is not met."""
+
+    def __init__(self, error_code: str, message: str = "") -> None:
+        self.error_code = error_code
+        super().__init__(message)
+
+
 class DataHubUnavailableError(DataSpokeError):
     """Raised when DataHub GMS is unreachable or returns an error."""
 

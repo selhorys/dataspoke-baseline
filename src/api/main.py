@@ -43,6 +43,7 @@ from src.shared.exceptions import (
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
+    PreconditionError,
     StorageUnavailableError,
 )
 
@@ -94,6 +95,10 @@ async def _handle_conflict(request: Request, exc: ConflictError) -> JSONResponse
     return _error_json(request, 409, exc.error_code, str(exc))
 
 
+async def _handle_precondition(request: Request, exc: PreconditionError) -> JSONResponse:
+    return _error_json(request, 422, exc.error_code, str(exc))
+
+
 async def _handle_validation(request: Request, exc: PydanticValidationError) -> JSONResponse:
     return _error_json(request, 422, "INVALID_PARAMETER", str(exc))
 
@@ -127,6 +132,7 @@ def create_app() -> FastAPI:
     # ── Exception handlers (specific → generic) ───────────────────────────────
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
+    app.add_exception_handler(PreconditionError, _handle_precondition)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]

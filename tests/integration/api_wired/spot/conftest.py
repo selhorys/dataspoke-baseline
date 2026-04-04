@@ -156,3 +156,31 @@ async def delete_validation_results_db(
         ),
         {"urn": dataset_urn},
     )
+
+
+# ── Dataset registry helpers ──────────────────────────────────────────────
+
+
+async def seed_dataset_registry(
+    session: AsyncSession, dataset_urn: str, datahub_registered: bool = True,
+) -> None:
+    """Pre-seed a dataset_registry row (for synthetic URN tests)."""
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.dataset_registry (dataset_urn, datahub_registered)"
+            " VALUES (:urn, :reg)"
+            " ON CONFLICT (dataset_urn) DO UPDATE SET datahub_registered = EXCLUDED.datahub_registered"
+        ),
+        {"urn": dataset_urn, "reg": datahub_registered},
+    )
+    await session.commit()
+
+
+async def delete_dataset_registry_db(
+    session: AsyncSession, dataset_urn: str,
+) -> None:
+    """Remove a dataset_registry row (for finally blocks)."""
+    await session.execute(
+        text("DELETE FROM dataspoke.dataset_registry WHERE dataset_urn = :urn"),
+        {"urn": dataset_urn},
+    )

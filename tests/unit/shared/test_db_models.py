@@ -9,6 +9,7 @@ from src.shared.db.models import (
     ConceptCategory,
     ConceptRelationship,
     DatasetConceptMap,
+    DatasetRegistry,
     DepartmentMapping,
     Event,
     GenerationConfig,
@@ -24,6 +25,7 @@ from src.shared.db.models import (
 
 ALL_MODELS = [
     IngestionConfig,
+    DatasetRegistry,
     ValidationConfig,
     ValidationResult,
     GenerationConfig,
@@ -41,6 +43,7 @@ ALL_MODELS = [
 
 EXPECTED_TABLES = {
     "ingestion_configs",
+    "dataset_registry",
     "validation_configs",
     "validation_results",
     "generation_configs",
@@ -57,8 +60,8 @@ EXPECTED_TABLES = {
 }
 
 
-def test_all_14_models_exist() -> None:
-    assert len(ALL_MODELS) == 14
+def test_all_15_models_exist() -> None:
+    assert len(ALL_MODELS) == 15
 
 
 def test_table_names_match() -> None:
@@ -217,6 +220,6 @@ def test_indexes_exist() -> None:
     )
 
 
-def test_base_metadata_has_14_tables() -> None:
+def test_base_metadata_has_15_tables() -> None:
     tables_in_schema = [t for t in Base.metadata.sorted_tables if t.schema == "dataspoke"]
-    assert len(tables_in_schema) == 14
+    assert len(tables_in_schema) == 15

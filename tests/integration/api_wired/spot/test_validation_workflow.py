@@ -30,11 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.workflows.kestra.client import KestraClient
 from src.workflows.validation_sync import schedule_to_flow_id
 from tests.integration.api_wired.spot.conftest import (
+    delete_dataset_registry_db,
     delete_kestra_flow,
     delete_validation_config_db,
     delete_validation_events_db,
     delete_validation_results_db,
     make_validation_urn,
+    seed_dataset_registry,
 )
 from tests.integration.conftest import _auth_headers
 
@@ -116,7 +118,8 @@ async def test_run_validation_via_public_api(
         assert resp.status_code == 200, f"Run failed: {resp.text}"
         body = resp.json()
         assert "run_id" in body
-        assert body["status"] in ("success", "failure", "error")
+        # Dataset was freshly ingested by the dummy data fixture — freshness passes
+        assert body["status"] == "success"
 
         # Verify results were persisted
         resp = await http_client.get(
@@ -146,6 +149,7 @@ async def test_run_validation_via_public_api(
         await delete_validation_results_db(async_session, dataset_urn)
         await delete_validation_events_db(async_session, dataset_urn)
         await delete_validation_config_db(async_session, dataset_urn)
+        await delete_dataset_registry_db(async_session, dataset_urn)
         await async_session.commit()
 
 
@@ -171,6 +175,9 @@ async def test_list_periodic_datasets(
     headers = _auth_headers()
 
     try:
+        for urn in (urn_a, urn_b, urn_c, urn_d):
+            await seed_dataset_registry(async_session, urn)
+
         # A: periodic, schedule cron "0 2 * * *"
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{urn_a}/attr/validation/conf",
@@ -253,6 +260,7 @@ async def test_list_periodic_datasets(
         for urn in (urn_a, urn_b, urn_c, urn_d):
             await delete_validation_events_db(async_session, urn)
             await delete_validation_config_db(async_session, urn)
+            await delete_dataset_registry_db(async_session, urn)
         await async_session.commit()
 
 
@@ -352,6 +360,7 @@ async def test_sync_creates_flows_per_schedule(
             await delete_validation_results_db(async_session, urn)
             await delete_validation_events_db(async_session, urn)
             await delete_validation_config_db(async_session, urn)
+            await delete_dataset_registry_db(async_session, urn)
         await async_session.commit()
 
 
@@ -421,6 +430,7 @@ async def test_sync_removes_stale_flows(
         await delete_kestra_flow(kestra_client, flow_id_03)
         await delete_validation_events_db(async_session, _CATALOG_URN)
         await delete_validation_config_db(async_session, _CATALOG_URN)
+        await delete_dataset_registry_db(async_session, _CATALOG_URN)
         await async_session.commit()
 
 
@@ -536,6 +546,7 @@ async def test_sync_updates_on_schedule_change(
             await delete_validation_results_db(async_session, urn)
             await delete_validation_events_db(async_session, urn)
             await delete_validation_config_db(async_session, urn)
+            await delete_dataset_registry_db(async_session, urn)
         await async_session.commit()
 
 
@@ -608,5 +619,45 @@ async def test_concurrency_guard_prevents_duplicate(
             pass
         await delete_validation_results_db(async_session, dataset_urn)
         await delete_validation_events_db(async_session, dataset_urn)
+        await delete_validation_config_db(async_session, dataset_urn)
+        await delete_dataset_registry_db(async_session, dataset_urn)
+        await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_validation_config_rejected_for_unregistered_dataset(
+    http_client, async_session: AsyncSession,
+):
+    """PUT validation config for a dataset not in DataHub is rejected with 422.
+
+    Unlike ingestion (which allows config for datasets not yet in DataHub
+    because ingestion creates them), validation requires the dataset to
+    already exist in DataHub.
+
+    Setup: Use a synthetic URN that does not exist in DataHub.
+    Action: PUT validation config.
+    Assertions: 422 with error_code DATASET_NOT_IN_DATAHUB.
+    Cleanup: Delete any registry row created during the check.
+    """
+    dataset_urn = _urn("unregistered_datahub")
+    headers = _auth_headers()
+
+    try:
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
+            headers=headers,
+            json={
+                "dataset_urn": dataset_urn,
+                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "owner": "test@imazon.com",
+            },
+        )
+        assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body.get("error_code") == "DATASET_NOT_IN_DATAHUB", (
+            f"Unexpected error body: {body}"
+        )
+    finally:
+        await delete_dataset_registry_db(async_session, dataset_urn)
         await delete_validation_config_db(async_session, dataset_urn)
         await async_session.commit()

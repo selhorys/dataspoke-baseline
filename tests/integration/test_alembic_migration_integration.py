@@ -22,6 +22,7 @@ SCHEMA = "dataspoke"
 
 EXPECTED_TABLES = {
     "ingestion_configs",
+    "dataset_registry",
     "validation_configs",
     "validation_results",
     "generation_configs",
@@ -64,7 +65,7 @@ async def test_dataspoke_schema_exists(async_engine: AsyncEngine) -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_14_tables_created(async_engine: AsyncEngine) -> None:
+async def test_all_15_tables_created(async_engine: AsyncEngine) -> None:
     async with async_engine.connect() as conn:
         result = await conn.execute(
             sa.text(
