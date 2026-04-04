@@ -1,5 +1,7 @@
 # DataSpoke
 
+> **Note:** This project is currently under active development and has not been officially released. APIs, features, and documentation are subject to change without notice.
+
 AI-powered sidecar extension for [DataHub](https://datahubproject.io/) — organized by user group for Data Engineers (DE), Data Analysts (DA), and Data Governance personnel (DG).
 
 DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (the Hub); DataSpoke extends it with quality scoring, semantic search, ontology construction, and metrics dashboards (the Spokes).
