@@ -102,7 +102,7 @@ async def test_run_validation_via_public_api(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 2 * * *"},
                 "owner": "test@imazon.com",
             },
@@ -130,7 +130,7 @@ async def test_run_validation_via_public_api(
         results_body = resp.json()
         assert results_body["total_count"] >= 1
         result = results_body["results"][0]
-        assert result["rule_id"] == "freshness"
+        assert result["rule_id"] == "freshness_01"
         assert "assertion_result" in result
         assert "run_id" in result
 
@@ -184,7 +184,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_a,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 2 * * *"},
                 "periodic": True,
                 "owner": "test@imazon.com",
@@ -198,7 +198,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_b,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 2 * * *"},
                 "periodic": True,
                 "owner": "test@imazon.com",
@@ -212,7 +212,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_c,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 6 * * *"},
                 "periodic": True,
                 "owner": "test@imazon.com",
@@ -226,7 +226,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_d,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "owner": "test@imazon.com",
             },
         )
@@ -291,7 +291,7 @@ async def test_sync_creates_flows_per_schedule(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                    "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                     "schedule": {"cron": "0 2 * * *"},
                     "periodic": True,
                     "owner": "test@imazon.com",
@@ -305,7 +305,7 @@ async def test_sync_creates_flows_per_schedule(
             headers=headers,
             json={
                 "dataset_urn": _GENRE_URN,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 6 * * *"},
                 "periodic": True,
                 "owner": "test@imazon.com",
@@ -385,7 +385,7 @@ async def test_sync_removes_stale_flows(
             headers=headers,
             json={
                 "dataset_urn": _CATALOG_URN,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 3 * * *"},
                 "periodic": True,
                 "owner": "test@imazon.com",
@@ -461,7 +461,7 @@ async def test_sync_updates_on_schedule_change(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                    "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                     "schedule": {"cron": "0 2 * * *"},
                     "periodic": True,
                     "owner": "test@imazon.com",
@@ -571,7 +571,7 @@ async def test_concurrency_guard_prevents_duplicate(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "owner": "test@imazon.com",
             },
         )
@@ -648,7 +648,7 @@ async def test_validation_config_rejected_for_unregistered_dataset(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "owner": "test@imazon.com",
             },
         )

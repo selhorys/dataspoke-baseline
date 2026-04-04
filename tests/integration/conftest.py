@@ -558,6 +558,8 @@ async def emit_test_dataset(
     """
     from datahub.metadata.schema_classes import (
         DatasetPropertiesClass,
+        OperationClass,
+        OperationTypeClass,
         OtherSchemaClass,
         SchemaFieldClass,
         SchemaMetadataClass,
@@ -597,6 +599,18 @@ async def emit_test_dataset(
             hash="",
             platformSchema=OtherSchemaClass(rawSchema=""),
             fields=schema_fields,
+        ),
+    )
+
+    import time
+
+    now_ms = int(time.time() * 1000)
+    await client.emit_aspect(
+        urn,
+        OperationClass(
+            timestampMillis=now_ms,
+            lastUpdatedTimestamp=now_ms,
+            operationType=OperationTypeClass.INSERT,
         ),
     )
 

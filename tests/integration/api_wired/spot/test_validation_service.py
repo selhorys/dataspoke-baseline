@@ -53,7 +53,7 @@ async def test_validation_config_crud_via_http(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "schedule": {"cron": "0 0 * * *"},
                 "owner": "test@imazon.com",
             },
@@ -129,7 +129,7 @@ async def test_list_validation_configs(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                    "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                     "owner": "test@imazon.com",
                 },
             )
@@ -175,7 +175,7 @@ async def test_run_validation_basic(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": [{"rule_id": "freshness", "type": "freshness", "max_age_hours": 24}],
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "owner": "test@imazon.com",
             },
         )

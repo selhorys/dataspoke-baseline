@@ -33,6 +33,15 @@ global:
   graph_service_impl: elasticsearch
 
 datahub-gms:
+  extraEnvs:
+    # Disable the system-update wait that gates the MAE consumer startup.
+    # In dev, the system-update job always completes before GMS boots, so
+    # the gate is unnecessary. Without this, the embedded MAE consumer
+    # (which indexes timeseries aspects like OperationClass into ES) is
+    # stopped during the upgrade check and never restarted — a DataHub bug
+    # in the DataHubUpgradeKafkaListener → KafkaInitializationManager flow.
+    - name: BOOTSTRAP_SYSTEM_UPDATE_WAIT_FOR_SYSTEM_UPDATE
+      value: "false"
   resources:
     requests:
       cpu: "500m"

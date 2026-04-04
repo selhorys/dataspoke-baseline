@@ -26,6 +26,7 @@ import base64
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import asyncpg
@@ -35,6 +36,8 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
     DatasetPropertiesClass,
+    OperationClass,
+    OperationTypeClass,
     OtherSchemaClass,
     SchemaFieldClass,
     SchemaMetadataClass,
@@ -361,6 +364,19 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
                     hash="",
                     platformSchema=OtherSchemaClass(rawSchema=""),
                     fields=_build_schema_fields(columns),
+                ),
+            )
+        )
+
+        # 4. Operation record (enables freshness validation checks)
+        now_ms = int(time.time() * 1000)
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=OperationClass(
+                    timestampMillis=now_ms,
+                    lastUpdatedTimestamp=now_ms,
+                    operationType=OperationTypeClass.INSERT,
                 ),
             )
         )

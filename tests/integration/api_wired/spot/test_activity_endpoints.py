@@ -42,7 +42,7 @@ async def test_run_validation_activity_dry_run(
     headers = _auth_headers()
 
     await emit_test_dataset(
-        datahub_client, urn=dataset_urn, name="val_dry", wait_seconds=1.0,
+        datahub_client, urn=dataset_urn, name="val_dry", wait_seconds=5.0,
     )
 
     try:
@@ -52,7 +52,7 @@ async def test_run_validation_activity_dry_run(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "rules": {"freshness": {"max_age_hours": 24}},
+                "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
                 "owner": "test@imazon.com",
             },
         )
