@@ -149,7 +149,7 @@ Thin read-through service. Reads dataset identity/attributes from DataHub, aggre
 
 **Covers**: UC1 (Deep Technical Spec Ingestion)
 
-CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD).
+CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
 
 Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `source_type` (`POSTGRESQL`, `KAFKA` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_cron` (cron trigger), `status` (Kestra registration outcome).
 
@@ -158,20 +158,21 @@ Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEM
 1. Load config from PostgreSQL
 2. Connect to source using `locator`/`auth`
 3. Discover schema metadata using `identifier`
-4. Emit aspects to DataHub (`StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`; skip if `dry_run`)
+4. Emit aspects to DataHub (`StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`; skip if `dry_run`). A non-dry-run that ingests zero entities is treated as failure.
 5. Run enrichment sources, if configured (TBD)
 6. Run custom extractors, if configured (TBD)
-7. Record event (`INGESTION.COMPLETE` or `INGESTION.FAIL`; see [Event Catalogue](#event-catalogue))
+7. On success (non-dry-run): mark `dataset_registry.datahub_registered = true`
+8. Record event (`INGESTION.COMPLETE` or `INGESTION.FAIL`; see [Event Catalogue](#event-catalogue))
 
 ### Validation Service (`src/backend/validation/`)
 
 **Covers**: UC2 (Data Validation), UC3 (Predictive SLA via timeseries validation)
 
-A convenience and customization layer on top of DataHub's native assertion framework. Does **not** implement its own quality scoring engine. CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule execution, assertion registration in DataHub, and result reporting.
+A convenience and customization layer on top of DataHub's native assertion framework. Does **not** implement its own quality scoring engine. CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule execution, assertion registration in DataHub, and result reporting. Config upsert registers the dataset URN in `dataset_registry` (requires the dataset to already exist in DataHub).
 
 **Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema, SQL, custom. Each rule can specify partition and order variables (like SQL window functions) for determining the target partition.
 
-**Configuration model** (`config.py`): Per-dataset config stored in `validation_configs` with:
+**Configuration model**: Per-dataset config stored in `validation_configs` with:
 - `schedule_cron` (TEXT): Cron expression for periodic execution (required when `is_active=true`).
 - `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec, extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
 
@@ -378,12 +379,12 @@ Wraps Kestra's REST API via `httpx`: flow CRUD, execution lifecycle (trigger, po
 | Flow | Redis Key | TTL |
 |------|-----------|-----|
 | `ingestion` | `ingestion:running:{dataset_urn}` | 1 hour |
+| `validation` | `validation:running:{dataset_urn}` | 1 hour |
 
 **Kestra label-based dedup** (for Kestra-orchestrated flows):
 
 | Flow | Label Value |
 |------|-------------|
-| `validation` | `validation-{md5(urn)[:12]}` |
 | `generation` | `generation-{md5(urn)[:12]}` |
 | `metrics` | `metrics-{metric_id}` |
 

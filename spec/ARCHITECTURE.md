@@ -303,7 +303,7 @@ DE features are served through `/spoke/common/` routes (dataset-centric operatio
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
 | Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service | Kestra (periodic + config sync), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Data Validation | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine | PostgreSQL, Redis, DataHub SDK |
+| Data Validation | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine | Kestra (periodic + config sync), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Automated Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Ontology Builder (shared), Source Code Analyzer, Consistency Engine | LLM API, Qdrant, PostgreSQL |
 
 ### Data Analysis (DA)

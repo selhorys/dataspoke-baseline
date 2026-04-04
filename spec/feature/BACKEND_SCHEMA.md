@@ -51,6 +51,19 @@ Stores per-dataset ingestion configuration.
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
 
+#### `dataset_registry`
+
+Tracks dataset URNs referenced by DataSpoke configs and whether they exist in DataHub.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `dataset_urn` | `TEXT` PK | Dataset URN |
+| `datahub_registered` | `BOOLEAN` | `true` after successful (non-dry-run) ingestion to DataHub |
+| `created_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+Created by `ensure_dataset_registered()` during config upsert. Ingestion sets `datahub_registered=true` on success.
+
 #### `validation_configs`
 
 Stores per-dataset validation configuration (assertion rules + schedule).
