@@ -312,6 +312,11 @@ class IngestionService:
         errors = ingestion_result.errors
         warnings = ingestion_result.warnings
 
+        # A real (non-dry-run) ingestion that produced zero entities is a failure,
+        # even when the extractor reported only warnings (e.g. table/topic not found).
+        if not dry_run and ingestion_result.entities_ingested == 0 and not errors:
+            errors = list(warnings) or ["No entities ingested from source"]
+
         if errors:
             status = "error"
         else:

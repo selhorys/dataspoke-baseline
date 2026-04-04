@@ -870,3 +870,92 @@ async def test_mixed_source_types_in_periodic_sync(
             await delete_ingestion_events_db(async_session, urn)
             await delete_ingestion_config_db(async_session, urn)
         await async_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_type, locator, identifier, auth",
+    [
+        pytest.param(
+            "POSTGRESQL",
+            EXAMPLE_PG_LOCATOR,
+            {
+                "database": EXAMPLE_PG_IDENTIFIER["database"],
+                "schema_name": "catalog",
+                "table": "nonexistent_table_xyz",
+            },
+            EXAMPLE_PG_AUTH,
+            id="postgresql-nonexistent-table",
+        ),
+        pytest.param(
+            "KAFKA",
+            EXAMPLE_KAFKA_LOCATOR,
+            {
+                "topic": "nonexistent.topic.xyz",
+                "cluster": EXAMPLE_KAFKA_IDENTIFIER.get("cluster", "example_kafka"),
+            },
+            None,
+            id="kafka-nonexistent-topic",
+        ),
+    ],
+)
+async def test_run_ingestion_nonexistent_source(
+    http_client, async_session: AsyncSession,
+    source_type, locator, identifier, auth,
+):
+    """Non-dry-run ingestion against a non-existent source target fails.
+
+    Setup: PUT config pointing to a valid connection but non-existent target
+           (PG table / Kafka topic).
+    Action: POST .../method/run with dry_run=false.
+    Assertions: 200, status == "error", entities_ingested == 0,
+                errors non-empty, INGESTION.FAIL event recorded.
+    Cleanup: DELETE config + events.
+    """
+    dataset_urn = _urn(f"nonexistent_{source_type.lower()}")
+    headers = _auth_headers()
+
+    try:
+        payload = {
+            "dataset_urn": dataset_urn,
+            "source_type": source_type,
+            "locator": locator,
+            "identifier": identifier,
+            "periodic": False,
+        }
+        if auth is not None:
+            payload["auth"] = auth
+
+        resp = await http_client.put(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
+            headers=headers,
+            json=payload,
+        )
+        assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
+
+        resp = await http_client.post(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
+            headers=headers,
+            json={"dry_run": False},
+        )
+        assert resp.status_code == 200, f"Run request failed: {resp.text}"
+        body = resp.json()
+        assert body["status"] == "error", f"Expected error status, got: {body}"
+        assert body["detail"]["entities_ingested"] == 0
+        assert body["detail"].get("errors"), "Expected errors in detail"
+
+        # Verify INGESTION.FAIL event recorded
+        resp = await http_client.get(
+            f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/event",
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        events = resp.json()["events"]
+        event_types = [e["event_type"] for e in events]
+        assert "INGESTION.FAIL" in event_types, (
+            f"Expected INGESTION.FAIL event, got: {event_types}"
+        )
+    finally:
+        await delete_ingestion_events_db(async_session, dataset_urn)
+        await delete_ingestion_config_db(async_session, dataset_urn)
+        await async_session.commit()
