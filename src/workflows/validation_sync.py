@@ -44,7 +44,7 @@ tasks:
     method: POST
     contentType: application/json
     body: |
-      {"schedule": "$schedule"}
+      {"schedule_cron": "$schedule"}
     options:
       connectTimeout: PT5S
       readTimeout: PT30S
@@ -113,8 +113,8 @@ async def sync_periodic_validation_flows(
     """Sync periodic validation flows in Kestra based on current configs.
 
     Steps:
-    1. Query distinct cron values from validation_configs where periodic=true
-       and schedule->>'cron' IS NOT NULL.
+    1. Query distinct cron values from validation_configs where is_active=true
+       and schedule_cron IS NOT NULL.
     2. Generate one flow per unique cron and register it via
        KestraClient.create_or_update_flow().
     3. Delete any validation-periodic-* flows whose cron is no longer
@@ -126,11 +126,11 @@ async def sync_periodic_validation_flows(
 
     from src.shared.db.models import ValidationConfig
 
-    # 1. Collect distinct active cron schedules using PostgreSQL JSONB accessor
+    # 1. Collect distinct active cron schedules
     result = await db.execute(
-        select(func.distinct(ValidationConfig.schedule["cron"].as_string())).where(
-            ValidationConfig.periodic == True,  # noqa: E712
-            ValidationConfig.schedule["cron"].as_string().isnot(None),
+        select(func.distinct(ValidationConfig.schedule_cron)).where(
+            ValidationConfig.is_active == True,  # noqa: E712
+            ValidationConfig.schedule_cron.isnot(None),
         )
     )
     active_crons: set[str] = {row[0] for row in result.all() if row[0]}

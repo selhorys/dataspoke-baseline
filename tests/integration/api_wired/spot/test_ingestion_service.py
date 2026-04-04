@@ -55,16 +55,16 @@ async def test_ingestion_config_crud_via_http(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": False,
-                "schedule": "0 0 * * *",
+                "is_active": False,
+                "schedule_cron": "0 0 * * *",
             },
         )
         assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["source_type"] == "POSTGRESQL"
-        assert body["periodic"] is False
-        assert body["schedule"] == "0 0 * * *"
+        assert body["is_active"] is False
+        assert body["schedule_cron"] == "0 0 * * *"
         config_id = body["id"]
 
         # GET - read config
@@ -79,10 +79,10 @@ async def test_ingestion_config_crud_via_http(
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
             headers=headers,
-            json={"schedule": "0 6 * * *"},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # GET via ingestion router
         resp = await http_client.get(
@@ -90,7 +90,7 @@ async def test_ingestion_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # DELETE
         resp = await http_client.delete(
@@ -130,7 +130,7 @@ async def test_list_ingestion_configs(
                     "locator": EXAMPLE_PG_LOCATOR,
                     "identifier": EXAMPLE_PG_IDENTIFIER,
                     "auth": EXAMPLE_PG_AUTH,
-                    "periodic": False,
+                    "is_active": False,
                 },
             )
             assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -171,7 +171,7 @@ async def test_run_ingestion_dry_run(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": False,
+                "is_active": False,
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"

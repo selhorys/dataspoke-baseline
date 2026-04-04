@@ -54,7 +54,7 @@ async def test_validation_config_crud_via_http(
             json={
                 "dataset_urn": dataset_urn,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 0 * * *"},
+                "schedule_cron": "0 0 * * *",
                 "owner": "test@imazon.com",
             },
         )
@@ -62,8 +62,8 @@ async def test_validation_config_crud_via_http(
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
-        assert body["periodic"] is False
-        assert body["schedule"] == {"cron": "0 0 * * *"}
+        assert body["is_active"] is False
+        assert body["schedule_cron"] == "0 0 * * *"
         config_id = body["id"]
 
         # GET - read config via data router
@@ -78,10 +78,10 @@ async def test_validation_config_crud_via_http(
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
             headers=headers,
-            json={"schedule": {"cron": "0 6 * * *"}},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == {"cron": "0 6 * * *"}
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # GET via validation domain router
         resp = await http_client.get(
@@ -89,7 +89,7 @@ async def test_validation_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == {"cron": "0 6 * * *"}
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # DELETE
         resp = await http_client.delete(

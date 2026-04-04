@@ -36,8 +36,8 @@ class IngestionConfigRecord(BaseModel):
     locator: dict[str, Any]
     identifier: dict[str, Any]
     auth: dict[str, Any] | None = None
-    periodic: bool
-    schedule: str | None = None
+    is_active: bool
+    schedule_cron: str | None = None
     enrichment_sources: dict[str, Any] | None = None
     custom_extractors: dict[str, Any] | None = None
     kestra_flow_namespace: str | None = None
@@ -63,8 +63,8 @@ def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:
         locator=row.locator,
         identifier=row.identifier,
         auth=row.auth,
-        periodic=row.periodic,
-        schedule=row.schedule,
+        is_active=row.is_active,
+        schedule_cron=row.schedule_cron,
         enrichment_sources=row.enrichment_sources,
         custom_extractors=row.custom_extractors,
         kestra_flow_namespace=row.kestra_flow_namespace,
@@ -104,8 +104,8 @@ class IngestionService:
         locator: dict[str, Any],
         identifier: dict[str, Any],
         auth: dict[str, Any] | None,
-        periodic: bool,
-        schedule: str | None,
+        is_active: bool,
+        schedule_cron: str | None,
         enrichment_sources: dict[str, Any] | None = None,
         custom_extractors: dict[str, Any] | None = None,
     ) -> tuple[IngestionConfigRecord, bool]:
@@ -121,8 +121,8 @@ class IngestionService:
             existing.locator = locator
             existing.identifier = identifier
             existing.auth = auth
-            existing.periodic = periodic
-            existing.schedule = schedule
+            existing.is_active = is_active
+            existing.schedule_cron = schedule_cron
             existing.enrichment_sources = enrichment_sources
             existing.custom_extractors = custom_extractors
             existing.updated_at = datetime.now(tz=UTC)
@@ -135,8 +135,8 @@ class IngestionService:
                 locator=locator,
                 identifier=identifier,
                 auth=auth,
-                periodic=periodic,
-                schedule=schedule,
+                is_active=is_active,
+                schedule_cron=schedule_cron,
                 enrichment_sources=enrichment_sources,
                 custom_extractors=custom_extractors,
             )
@@ -157,8 +157,8 @@ class IngestionService:
             {
                 "operation": "PUT",
                 "config_id": str(existing.id),
-                "periodic": existing.periodic,
-                "schedule": existing.schedule,
+                "is_active": existing.is_active,
+                "schedule_cron": existing.schedule_cron,
                 "kestra_flow_id": existing.kestra_flow_id,
             },
         )
@@ -181,10 +181,10 @@ class IngestionService:
             row.identifier = patch["identifier"]
         if "auth" in patch:
             row.auth = patch["auth"]
-        if "periodic" in patch and patch["periodic"] is not None:
-            row.periodic = patch["periodic"]
-        if "schedule" in patch:
-            row.schedule = patch["schedule"]
+        if "is_active" in patch and patch["is_active"] is not None:
+            row.is_active = patch["is_active"]
+        if "schedule_cron" in patch:
+            row.schedule_cron = patch["schedule_cron"]
         if "enrichment_sources" in patch:
             row.enrichment_sources = patch["enrichment_sources"]
         if "custom_extractors" in patch:
@@ -204,8 +204,8 @@ class IngestionService:
                 "operation": "PATCH",
                 "config_id": str(row.id),
                 "fields_changed": list(patch.keys()),
-                "periodic": row.periodic,
-                "schedule": row.schedule,
+                "is_active": row.is_active,
+                "schedule_cron": row.schedule_cron,
                 "kestra_flow_id": row.kestra_flow_id,
             },
         )
@@ -222,7 +222,7 @@ class IngestionService:
 
         # Capture fields before deletion for the event
         config_id = str(row.id)
-        schedule = row.schedule
+        schedule_cron = row.schedule_cron
         kestra_flow_id = row.kestra_flow_id
 
         await self._db.delete(row)
@@ -236,7 +236,7 @@ class IngestionService:
             {
                 "operation": "DELETE",
                 "config_id": config_id,
-                "schedule": schedule,
+                "schedule_cron": schedule_cron,
                 "kestra_flow_id": kestra_flow_id,
             },
         )
@@ -267,19 +267,19 @@ class IngestionService:
         return [_record_from_row(r) for r in rows], total_count
 
     async def list_periodic_configs(self) -> list[IngestionConfigRecord]:
-        """Return all configs where periodic=true."""
+        """Return all configs where is_active=true."""
         result = await self._db.execute(
-            select(IngestionConfig).where(IngestionConfig.periodic.is_(True))
+            select(IngestionConfig).where(IngestionConfig.is_active.is_(True))
         )
         rows = result.scalars().all()
         return [_record_from_row(r) for r in rows]
 
-    async def list_periodic_datasets(self, schedule: str) -> list[str]:
-        """Return dataset URNs where periodic=true and schedule matches the given cron expression."""
+    async def list_periodic_datasets(self, schedule_cron: str) -> list[str]:
+        """Return dataset URNs where is_active=true and schedule_cron matches the given cron expression."""
         result = await self._db.execute(
             select(IngestionConfig.dataset_urn).where(
-                IngestionConfig.periodic.is_(True),
-                IngestionConfig.schedule == schedule,
+                IngestionConfig.is_active.is_(True),
+                IngestionConfig.schedule_cron == schedule_cron,
             )
         )
         return list(result.scalars().all())

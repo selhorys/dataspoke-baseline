@@ -21,8 +21,8 @@ _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,P
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
     rules: list | None = None,
-    schedule: dict | None = None,
-    periodic: bool = False,
+    schedule_cron: str | None = None,
+    is_active: bool = False,
     owner: str = "alice@example.com",
 ):
     row = MagicMock()
@@ -31,8 +31,8 @@ def _make_config_row(
     row.rules = rules if rules is not None else [
         {"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}
     ]
-    row.schedule = schedule
-    row.periodic = periodic
+    row.schedule_cron = schedule_cron
+    row.is_active = is_active
     row.owner = owner
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
@@ -94,8 +94,8 @@ async def test_upsert_config_creates_new(service, db):
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
         rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
-        schedule=None,
-        periodic=False,
+        schedule_cron=None,
+        is_active=False,
         owner="alice@example.com",
     )
     assert db.add.called
@@ -111,8 +111,8 @@ async def test_upsert_config_updates_existing(service, db):
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
         rules=new_rules,
-        schedule={"cron": "0 6 * * *"},
-        periodic=True,
+        schedule_cron="0 6 * * *",
+        is_active=True,
         owner="bob@example.com",
     )
     assert db.add.called
@@ -129,8 +129,8 @@ async def test_patch_config_applies_partial(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"schedule": {"cron": "0 12 * * *"}})
-    assert existing_row.schedule == {"cron": "0 12 * * *"}
+    await service.patch_config(_DATASET_URN, {"schedule_cron": "0 12 * * *"})
+    assert existing_row.schedule_cron == "0 12 * * *"
     assert db.commit.await_count >= 1
 
 
@@ -138,7 +138,7 @@ async def test_patch_config_not_found(service, db):
     mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.patch_config("nonexistent", {"schedule": {"cron": "0 12 * * *"}})
+        await service.patch_config("nonexistent", {"schedule_cron": "0 12 * * *"})
     assert exc_info.value.error_code == "VALIDATION_CONFIG_NOT_FOUND"
 
 

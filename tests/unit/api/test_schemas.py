@@ -82,7 +82,7 @@ class TestIngestionSchemas:
         data = req.model_dump()
         parsed = CreateIngestionConfigRequest.model_validate(data)
         assert parsed.dataset_urn == req.dataset_urn
-        assert parsed.periodic is False
+        assert parsed.is_active is False
 
     def test_create_request_kafka_no_auth(self) -> None:
         req = CreateIngestionConfigRequest(
@@ -119,8 +119,8 @@ class TestIngestionSchemas:
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
             auth={"username": "user", "secret_ref": "pw"},
-            periodic=False,
-            schedule=None,
+            is_active=False,
+            schedule_cron=None,
             enrichment_sources=None,
             custom_extractors=None,
             kestra_flow_namespace=None,
@@ -151,16 +151,16 @@ class TestValidationSchemas:
             rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
             owner="admin",
         )
-        assert req.schedule is None
+        assert req.schedule_cron is None
 
     def test_create_request_with_schedule(self) -> None:
         req = CreateValidationConfigRequest(
             dataset_urn="urn:li:dataset:test",
             rules=[],
-            schedule={"cron": "0 0 * * *"},
+            schedule_cron="0 0 * * *",
             owner="admin",
         )
-        assert req.schedule == {"cron": "0 0 * * *"}
+        assert req.schedule_cron == "0 0 * * *"
 
     def test_config_response_round_trip(self) -> None:
         now = datetime.now(tz=UTC)
@@ -168,8 +168,8 @@ class TestValidationSchemas:
             id="1",
             dataset_urn="urn:li:dataset:test",
             rules=[{"rule_id": "r1", "type": "volume"}],
-            schedule=None,
-            periodic=False,
+            schedule_cron=None,
+            is_active=False,
             owner="admin",
             created_at=now,
             updated_at=now,

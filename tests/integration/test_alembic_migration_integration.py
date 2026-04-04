@@ -127,8 +127,8 @@ async def test_unique_constraint_enforced(async_session: AsyncSession) -> None:
     row_id2 = uuid.uuid4()
     insert = sa.text(
         f"INSERT INTO {SCHEMA}.ingestion_configs "
-        "(id, dataset_urn, source_type, locator, identifier, periodic, status) "
-        "VALUES (:id, :urn, :source_type, :locator, :identifier, :periodic, :status)"
+        "(id, dataset_urn, source_type, locator, identifier, is_active, status) "
+        "VALUES (:id, :urn, :source_type, :locator, :identifier, :is_active, :status)"
     )
     await async_session.execute(
         insert,
@@ -138,7 +138,7 @@ async def test_unique_constraint_enforced(async_session: AsyncSession) -> None:
             "source_type": "POSTGRESQL",
             "locator": "{}",
             "identifier": "{}",
-            "periodic": False,
+            "is_active": False,
             "status": "active",
         },
     )
@@ -153,7 +153,7 @@ async def test_unique_constraint_enforced(async_session: AsyncSession) -> None:
                 "source_type": "POSTGRESQL",
                 "locator": "{}",
                 "identifier": "{}",
-                "periodic": False,
+                "is_active": False,
                 "status": "active",
             },
         )

@@ -27,8 +27,8 @@ def _make_config_row(
     locator: dict | None = None,
     identifier: dict | None = None,
     auth: dict | None = None,
-    periodic: bool = False,
-    schedule: str | None = "0 0 * * *",
+    is_active: bool = False,
+    schedule_cron: str | None = "0 0 * * *",
     enrichment_sources: dict | None = None,
     custom_extractors: dict | None = None,
     kestra_flow_namespace: str | None = None,
@@ -42,8 +42,8 @@ def _make_config_row(
     row.locator = locator or _LOCATOR
     row.identifier = identifier or _IDENTIFIER
     row.auth = auth if auth is not None else _AUTH
-    row.periodic = periodic
-    row.schedule = schedule
+    row.is_active = is_active
+    row.schedule_cron = schedule_cron
     row.enrichment_sources = enrichment_sources
     row.custom_extractors = custom_extractors
     row.kestra_flow_namespace = kestra_flow_namespace
@@ -95,8 +95,8 @@ async def test_upsert_config_creates_new(service, db):
         locator=_LOCATOR,
         identifier=_IDENTIFIER,
         auth=_AUTH,
-        periodic=False,
-        schedule=None,
+        is_active=False,
+        schedule_cron=None,
     )
     assert db.add.called
     assert db.commit.await_count >= 1
@@ -116,8 +116,8 @@ async def test_upsert_config_updates_existing(service, db):
         locator=new_locator,
         identifier=new_identifier,
         auth=new_auth,
-        periodic=True,
-        schedule="0 6 * * *",
+        is_active=True,
+        schedule_cron="0 6 * * *",
     )
     assert db.add.called
     assert db.commit.await_count >= 1
@@ -125,8 +125,8 @@ async def test_upsert_config_updates_existing(service, db):
     assert existing_row.locator == new_locator
     assert existing_row.identifier == new_identifier
     assert existing_row.auth == new_auth
-    assert existing_row.periodic is True
-    assert existing_row.schedule == "0 6 * * *"
+    assert existing_row.is_active is True
+    assert existing_row.schedule_cron == "0 6 * * *"
 
 
 async def test_upsert_config_with_optional_fields(service, db):
@@ -141,8 +141,8 @@ async def test_upsert_config_with_optional_fields(service, db):
         locator=_LOCATOR,
         identifier=_IDENTIFIER,
         auth=_AUTH,
-        periodic=False,
-        schedule=None,
+        is_active=False,
+        schedule_cron=None,
         enrichment_sources=enrichment,
         custom_extractors=custom,
     )
@@ -157,8 +157,8 @@ async def test_patch_config_applies_schedule(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
-    assert existing_row.schedule == "0 12 * * *"
+    await service.patch_config(_DATASET_URN, {"schedule_cron": "0 12 * * *"})
+    assert existing_row.schedule_cron == "0 12 * * *"
     assert db.commit.await_count >= 1
 
 
@@ -172,13 +172,13 @@ async def test_patch_config_applies_source_type(service, db):
 
 
 async def test_patch_config_applies_periodic_and_schedule(service, db):
-    existing_row = _make_config_row(periodic=False)
+    existing_row = _make_config_row(is_active=False)
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"periodic": True, "schedule": "0 2 * * *"})
-    assert existing_row.periodic is True
-    assert existing_row.schedule == "0 2 * * *"
+    await service.patch_config(_DATASET_URN, {"is_active": True, "schedule_cron": "0 2 * * *"})
+    assert existing_row.is_active is True
+    assert existing_row.schedule_cron == "0 2 * * *"
 
 
 
@@ -186,7 +186,7 @@ async def test_patch_config_not_found(service, db):
     mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.patch_config("nonexistent", {"schedule": "0 12 * * *"})
+        await service.patch_config("nonexistent", {"schedule_cron": "0 12 * * *"})
     assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
 
 

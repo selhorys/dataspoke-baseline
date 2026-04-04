@@ -103,7 +103,7 @@ async def test_run_validation_via_public_api(
             json={
                 "dataset_urn": dataset_urn,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 2 * * *"},
+                "schedule_cron": "0 2 * * *",
                 "owner": "test@imazon.com",
             },
         )
@@ -185,8 +185,8 @@ async def test_list_periodic_datasets(
             json={
                 "dataset_urn": urn_a,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 2 * * *"},
-                "periodic": True,
+                "schedule_cron": "0 2 * * *",
+                "is_active": True,
                 "owner": "test@imazon.com",
             },
         )
@@ -199,8 +199,8 @@ async def test_list_periodic_datasets(
             json={
                 "dataset_urn": urn_b,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 2 * * *"},
-                "periodic": True,
+                "schedule_cron": "0 2 * * *",
+                "is_active": True,
                 "owner": "test@imazon.com",
             },
         )
@@ -213,8 +213,8 @@ async def test_list_periodic_datasets(
             json={
                 "dataset_urn": urn_c,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 6 * * *"},
-                "periodic": True,
+                "schedule_cron": "0 6 * * *",
+                "is_active": True,
                 "owner": "test@imazon.com",
             },
         )
@@ -234,7 +234,7 @@ async def test_list_periodic_datasets(
 
         resp = await http_client.post(
             "/internal/activities/validation/list-periodic",
-            json={"schedule": "0 2 * * *"},
+            json={"schedule_cron": "0 2 * * *"},
         )
         assert resp.status_code == 200, f"validation/list-periodic failed: {resp.text}"
         result = resp.json()
@@ -292,8 +292,8 @@ async def test_sync_creates_flows_per_schedule(
                 json={
                     "dataset_urn": urn,
                     "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                    "schedule": {"cron": "0 2 * * *"},
-                    "periodic": True,
+                    "schedule_cron": "0 2 * * *",
+                    "is_active": True,
                     "owner": "test@imazon.com",
                 },
             )
@@ -306,8 +306,8 @@ async def test_sync_creates_flows_per_schedule(
             json={
                 "dataset_urn": _GENRE_URN,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 6 * * *"},
-                "periodic": True,
+                "schedule_cron": "0 6 * * *",
+                "is_active": True,
                 "owner": "test@imazon.com",
             },
         )
@@ -386,8 +386,8 @@ async def test_sync_removes_stale_flows(
             json={
                 "dataset_urn": _CATALOG_URN,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule": {"cron": "0 3 * * *"},
-                "periodic": True,
+                "schedule_cron": "0 3 * * *",
+                "is_active": True,
                 "owner": "test@imazon.com",
             },
         )
@@ -462,8 +462,8 @@ async def test_sync_updates_on_schedule_change(
                 json={
                     "dataset_urn": urn,
                     "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                    "schedule": {"cron": "0 2 * * *"},
-                    "periodic": True,
+                    "schedule_cron": "0 2 * * *",
+                    "is_active": True,
                     "owner": "test@imazon.com",
                 },
             )
@@ -479,7 +479,7 @@ async def test_sync_updates_on_schedule_change(
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/validation/conf",
             headers=headers,
-            json={"schedule": {"cron": "0 6 * * *"}, "periodic": True},
+            json={"schedule_cron": "0 6 * * *", "is_active": True},
         )
         assert resp.status_code == 200, f"PATCH schedule failed: {resp.text}"
 
@@ -498,7 +498,7 @@ async def test_sync_updates_on_schedule_change(
         # list-periodic "0 2 * * *" returns title_master and editions only
         resp = await http_client.post(
             "/internal/activities/validation/list-periodic",
-            json={"schedule": "0 2 * * *"},
+            json={"schedule_cron": "0 2 * * *"},
         )
         assert resp.status_code == 200
         urns_02 = resp.json()
@@ -509,7 +509,7 @@ async def test_sync_updates_on_schedule_change(
         # list-periodic "0 6 * * *" returns only genre_hierarchy
         resp = await http_client.post(
             "/internal/activities/validation/list-periodic",
-            json={"schedule": "0 6 * * *"},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200
         urns_06 = resp.json()

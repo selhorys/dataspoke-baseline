@@ -44,8 +44,8 @@ class ValidationConfigRecord(BaseModel):
     id: str
     dataset_urn: str
     rules: list[dict[str, Any]]
-    schedule: dict[str, Any] | None = None
-    periodic: bool = False
+    schedule_cron: str | None = None
+    is_active: bool = False
     owner: str
     created_at: datetime
     updated_at: datetime
@@ -87,8 +87,8 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
         id=str(row.id),
         dataset_urn=row.dataset_urn,
         rules=rules,
-        schedule=row.schedule,
-        periodic=row.periodic,
+        schedule_cron=row.schedule_cron,
+        is_active=row.is_active,
         owner=row.owner,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -141,8 +141,8 @@ class ValidationService:
         self,
         dataset_urn: str,
         rules: list[dict[str, Any]],
-        schedule: dict[str, Any] | None,
-        periodic: bool,
+        schedule_cron: str | None,
+        is_active: bool,
         owner: str,
     ) -> tuple[ValidationConfigRecord, bool]:
         await ensure_dataset_registered(self._db, self._datahub, dataset_urn, require_in_datahub=True)
@@ -154,8 +154,8 @@ class ValidationService:
 
         if existing:
             existing.rules = rules
-            existing.schedule = schedule
-            existing.periodic = periodic
+            existing.schedule_cron = schedule_cron
+            existing.is_active = is_active
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
@@ -164,8 +164,8 @@ class ValidationService:
             existing = ValidationConfig(
                 dataset_urn=dataset_urn,
                 rules=rules,
-                schedule=schedule,
-                periodic=periodic,
+                schedule_cron=schedule_cron,
+                is_active=is_active,
                 owner=owner,
             )
             self._db.add(existing)
@@ -183,7 +183,7 @@ class ValidationService:
                 "operation": "PUT",
                 "config_id": str(existing.id),
                 "rule_count": len(rules),
-                "periodic": existing.periodic,
+                "is_active": existing.is_active,
             },
         )
 
@@ -199,10 +199,10 @@ class ValidationService:
 
         if "rules" in patch and patch["rules"] is not None:
             row.rules = patch["rules"]
-        if "schedule" in patch:
-            row.schedule = patch["schedule"]
-        if "periodic" in patch and patch["periodic"] is not None:
-            row.periodic = patch["periodic"]
+        if "schedule_cron" in patch:
+            row.schedule_cron = patch["schedule_cron"]
+        if "is_active" in patch and patch["is_active"] is not None:
+            row.is_active = patch["is_active"]
         row.updated_at = datetime.now(tz=UTC)
 
         self._db.add(row)
@@ -245,12 +245,12 @@ class ValidationService:
         self,
         offset: int = 0,
         limit: int = 20,
-        periodic_filter: bool | None = None,
+        is_active_filter: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[ValidationConfigRecord], int]:
         base = select(ValidationConfig)
-        if periodic_filter is not None:
-            base = base.where(ValidationConfig.periodic == periodic_filter)
+        if is_active_filter is not None:
+            base = base.where(ValidationConfig.is_active == is_active_filter)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0

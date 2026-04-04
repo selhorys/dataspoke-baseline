@@ -33,8 +33,8 @@ def _config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         id=c.id if isinstance(c.id, str) else str(c.id),
         dataset_urn=c.dataset_urn,
         rules=c.rules,
-        schedule=c.schedule,
-        periodic=c.periodic,
+        schedule_cron=c.schedule_cron,
+        is_active=c.is_active,
         owner=c.owner,
         created_at=c.created_at,
         updated_at=c.updated_at,
@@ -46,12 +46,12 @@ async def get_validation_configs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
-    periodic_filter: bool | None = Query(default=None, alias="periodic"),
+    is_active_filter: bool | None = Query(default=None, alias="is_active"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigListResponse:
     order_by = parse_sort(sort, {"created_at": ValidationConfig.created_at}, None)
     configs, total_count = await service.list_configs(
-        offset=offset, limit=limit, periodic_filter=periodic_filter, order_by=order_by
+        offset=offset, limit=limit, is_active_filter=is_active_filter, order_by=order_by
     )
     return ValidationConfigListResponse(
         offset=offset,

@@ -19,15 +19,15 @@ class CreateIngestionConfigRequest(BaseModel):
     locator: dict[str, Any]
     identifier: dict[str, Any]
     auth: dict[str, Any] | None = None
-    periodic: bool = False
-    schedule: str | None = None
+    is_active: bool = False
+    schedule_cron: str | None = None
     enrichment_sources: dict[str, Any] | None = None
     custom_extractors: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_fields(self) -> "CreateIngestionConfigRequest":
-        if self.periodic and not self.schedule:
-            raise ValueError("schedule is required when periodic is true")
+        if self.is_active and not self.schedule_cron:
+            raise ValueError("schedule_cron is required when is_active is true")
         validate_source_fields(
             self.source_type, self.locator, self.identifier, self.auth
         )
@@ -39,17 +39,17 @@ class PatchIngestionConfigRequest(BaseModel):
     locator: dict[str, Any] | None = None
     identifier: dict[str, Any] | None = None
     auth: dict[str, Any] | None = None
-    periodic: bool | None = None
-    schedule: str | None = None
+    is_active: bool | None = None
+    schedule_cron: str | None = None
     enrichment_sources: dict[str, Any] | None = None
     custom_extractors: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_fields(self) -> "PatchIngestionConfigRequest":
-        # Only validate when periodic is explicitly set to true in this patch.
-        if self.periodic is True and self.schedule is None:
+        # Only validate when is_active is explicitly set to true in this patch.
+        if self.is_active is True and self.schedule_cron is None:
             raise ValueError(
-                "schedule must be provided in the same patch when setting periodic to true"
+                "schedule_cron must be provided in the same patch when setting is_active to true"
             )
         # Per-source_type sub-field validation only when source_type is present.
         if self.source_type is not None:
@@ -78,8 +78,8 @@ class IngestionConfigResponse(SingleResponse):
     locator: dict[str, Any]
     identifier: dict[str, Any]
     auth: dict[str, Any] | None
-    periodic: bool
-    schedule: str | None
+    is_active: bool
+    schedule_cron: str | None
     enrichment_sources: dict[str, Any] | None
     custom_extractors: dict[str, Any] | None
     kestra_flow_namespace: str | None

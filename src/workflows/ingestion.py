@@ -46,7 +46,7 @@ tasks:
     method: POST
     contentType: application/json
     body: |
-      {"schedule": "$schedule"}
+      {"schedule_cron": "$schedule"}
     options:
       connectTimeout: PT5S
       readTimeout: PT30S
@@ -115,7 +115,7 @@ async def sync_periodic_ingestion_flows(
     """Sync periodic ingestion flows in Kestra based on current configs.
 
     Steps:
-    1. Query distinct schedules from ingestion_configs where periodic=true.
+    1. Query distinct schedules from ingestion_configs where is_active=true.
     2. Generate one flow per unique schedule and register it via
        KestraClient.create_or_update_flow().
     3. Delete any ingestion-periodic-* flows whose schedule is no longer
@@ -129,9 +129,9 @@ async def sync_periodic_ingestion_flows(
 
     # 1. Collect active schedules
     result = await db.execute(
-        select(distinct(IngestionConfig.schedule)).where(
-            IngestionConfig.periodic == True,  # noqa: E712
-            IngestionConfig.schedule.isnot(None),
+        select(distinct(IngestionConfig.schedule_cron)).where(
+            IngestionConfig.is_active == True,  # noqa: E712
+            IngestionConfig.schedule_cron.isnot(None),
         )
     )
     active_schedules: set[str] = {row[0] for row in result.all()}

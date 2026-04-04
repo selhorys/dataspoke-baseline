@@ -51,7 +51,7 @@ def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:
 
 
 class ListPeriodicDatasetsRequest(BaseModel):
-    schedule: str
+    schedule_cron: str
 
 
 @router.post("/ingestion/list-periodic")
@@ -62,7 +62,7 @@ async def list_periodic_datasets(body: ListPeriodicDatasetsRequest) -> list[str]
     try:
         async with make_db_session() as db:
             service = IngestionService(datahub=datahub, db=db)
-            return await service.list_periodic_datasets(body.schedule)
+            return await service.list_periodic_datasets(body.schedule_cron)
     except DataSpokeError as exc:
         return _error_response(exc)
 
@@ -120,7 +120,7 @@ async def sync_periodic_ingestion_flows() -> dict:
 
 
 class ListPeriodicValidationDatasetsRequest(BaseModel):
-    schedule: str
+    schedule_cron: str
 
 
 @router.post("/validation/list-periodic")
@@ -136,8 +136,8 @@ async def list_periodic_validation_datasets(
         async with make_db_session() as db:
             result = await db.execute(
                 select(ValidationConfig.dataset_urn).where(
-                    ValidationConfig.periodic == True,  # noqa: E712
-                    ValidationConfig.schedule["cron"].as_string() == body.schedule,
+                    ValidationConfig.is_active == True,  # noqa: E712
+                    ValidationConfig.schedule_cron == body.schedule_cron,
                 )
             )
             return [row[0] for row in result.all()]

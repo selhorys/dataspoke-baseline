@@ -151,7 +151,7 @@ Thin read-through service. Reads dataset identity/attributes from DataHub, aggre
 
 CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD).
 
-Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `source_type` (`POSTGRESQL`, `KAFKA` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `periodic`/`schedule` (cron trigger), `status` (Kestra registration outcome).
+Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `source_type` (`POSTGRESQL`, `KAFKA` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_cron` (cron trigger), `status` (Kestra registration outcome).
 
 **Run pipeline** (`IngestionService.run()`):
 
@@ -172,7 +172,7 @@ A convenience and customization layer on top of DataHub's native assertion frame
 **Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema, SQL, custom. Each rule can specify partition and order variables (like SQL window functions) for determining the target partition.
 
 **Configuration model** (`config.py`): Per-dataset config stored in `validation_configs` with:
-- `schedule` (JSONB): singleton per dataset — `{"cron": "...", "manual": true/false}`. Both modes can be active simultaneously.
+- `schedule_cron` (TEXT): Cron expression for periodic execution (required when `is_active=true`).
 - `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec, extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
 
 **SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value variables, and optional ML-based validation settings (model type, lookback window, validation range).

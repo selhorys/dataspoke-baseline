@@ -146,8 +146,8 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
         locator=c.locator,
         identifier=c.identifier,
         auth=c.auth,
-        periodic=c.periodic,
-        schedule=c.schedule,
+        is_active=c.is_active,
+        schedule_cron=c.schedule_cron,
         enrichment_sources=c.enrichment_sources,
         custom_extractors=c.custom_extractors,
         kestra_flow_namespace=c.kestra_flow_namespace,
@@ -182,8 +182,8 @@ async def put_data_ingestion_conf(
         locator=body.locator,
         identifier=body.identifier,
         auth=body.auth,
-        periodic=body.periodic,
-        schedule=body.schedule,
+        is_active=body.is_active,
+        schedule_cron=body.schedule_cron,
         enrichment_sources=body.enrichment_sources,
         custom_extractors=body.custom_extractors,
     )
@@ -265,8 +265,8 @@ def _validation_config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         id=c.id if isinstance(c.id, str) else str(c.id),
         dataset_urn=c.dataset_urn,
         rules=c.rules,
-        schedule=c.schedule,
-        periodic=c.periodic,
+        schedule_cron=c.schedule_cron,
+        is_active=c.is_active,
         owner=c.owner,
         created_at=c.created_at,
         updated_at=c.updated_at,
@@ -294,8 +294,8 @@ async def put_data_validation_conf(
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         rules=body.rules,
-        schedule=body.schedule,
-        periodic=body.periodic,
+        schedule_cron=body.schedule_cron,
+        is_active=body.is_active,
         owner=body.owner,
     )
     if created:

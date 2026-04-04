@@ -242,7 +242,7 @@ management.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (source_type, locator, identifier, auth, periodic, schedule, status) | Ingestion Config | UC1 |
+| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (source_type, locator, identifier, auth, is_active, schedule_cron, status) | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
 | `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
@@ -258,7 +258,7 @@ management.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/validation` | List all validation configs across datasets (paginated, filterable) | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, schedule, periodic, owner) | Validation Config | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, is_active, schedule_cron, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |

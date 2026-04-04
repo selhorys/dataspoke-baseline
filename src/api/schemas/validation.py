@@ -11,30 +11,27 @@ from src.api.schemas.common import PaginatedResponse, SingleResponse
 class CreateValidationConfigRequest(BaseModel):
     dataset_urn: str
     rules: list[dict[str, Any]]
-    schedule: dict[str, Any] | None = None
-    periodic: bool = False
+    schedule_cron: str | None = None
+    is_active: bool = False
     owner: str
 
     @model_validator(mode="after")
-    def validate_periodic_schedule(self) -> "CreateValidationConfigRequest":
-        if self.periodic and (self.schedule is None or self.schedule.get("cron") is None):
-            raise ValueError("schedule with cron key is required when periodic is true")
+    def validate_is_active_schedule_cron(self) -> "CreateValidationConfigRequest":
+        if self.is_active and not self.schedule_cron:
+            raise ValueError("schedule_cron is required when is_active is true")
         return self
 
 
 class PatchValidationConfigRequest(BaseModel):
     rules: list[dict[str, Any]] | None = None
-    schedule: dict[str, Any] | None = None
-    periodic: bool | None = None
+    schedule_cron: str | None = None
+    is_active: bool | None = None
 
     @model_validator(mode="after")
-    def validate_periodic_schedule(self) -> "PatchValidationConfigRequest":
-        if self.periodic is True and (
-            self.schedule is None
-            or (isinstance(self.schedule, dict) and self.schedule.get("cron") is None)
-        ):
+    def validate_is_active_schedule_cron(self) -> "PatchValidationConfigRequest":
+        if self.is_active is True and self.schedule_cron is None:
             raise ValueError(
-                "schedule with cron key must be provided in the same patch when setting periodic to true"
+                "schedule_cron must be provided in the same patch when setting is_active to true"
             )
         return self
 
@@ -47,8 +44,8 @@ class ValidationConfigResponse(SingleResponse):
     id: str
     dataset_urn: str
     rules: list[dict[str, Any]]
-    schedule: dict[str, Any] | None
-    periodic: bool
+    schedule_cron: str | None
+    is_active: bool
     owner: str
     created_at: datetime
     updated_at: datetime

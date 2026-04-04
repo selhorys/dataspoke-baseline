@@ -41,8 +41,8 @@ Stores per-dataset ingestion configuration.
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
 | `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth |
-| `periodic` | `BOOLEAN` | Enable cron-triggered execution via Kestra |
-| `schedule` | `TEXT` NULL | Cron expression (required when `periodic=true`) |
+| `is_active` | `BOOLEAN` | Enable cron-triggered execution via Kestra |
+| `schedule_cron` | `TEXT` NULL | Cron expression (required when `is_active=true`) |
 | `enrichment_sources` | `JSONB` NULL | External enrichment source configs (TBD) |
 | `custom_extractors` | `JSONB` NULL | Custom extractor plugin configs (TBD) |
 | `kestra_flow_namespace` | `TEXT` NULL | Kestra namespace of the registered periodic flow |
@@ -59,9 +59,9 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `schedule` | `JSONB` NULL | `{"cron": "...", "manual": true/false}` — singleton per dataset, both modes can be active simultaneously |
+| `schedule_cron` | `TEXT` NULL | Cron expression (required when `is_active=true`) |
 | `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
-| `periodic` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
+| `is_active` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |

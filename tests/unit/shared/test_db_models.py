@@ -128,7 +128,6 @@ def test_jsonb_columns() -> None:
         (IngestionConfig, "identifier"),
         (IngestionConfig, "auth"),
         (ValidationConfig, "rules"),
-        (ValidationConfig, "schedule"),
         (ValidationResult, "partition"),
         (ValidationResult, "values"),
         (ValidationResult, "issues"),

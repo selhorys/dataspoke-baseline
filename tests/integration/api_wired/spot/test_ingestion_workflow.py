@@ -117,7 +117,7 @@ async def test_run_ingestion_via_public_api(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": False,
+                "is_active": False,
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -184,7 +184,7 @@ async def test_run_ingestion_dry_run(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": False,
+                "is_active": False,
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -246,8 +246,8 @@ async def test_list_periodic_datasets(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": True,
-                "schedule": "0 2 * * *",
+                "is_active": True,
+                "schedule_cron": "0 2 * * *",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config A failed: {resp.text}"
@@ -262,8 +262,8 @@ async def test_list_periodic_datasets(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": True,
-                "schedule": "0 2 * * *",
+                "is_active": True,
+                "schedule_cron": "0 2 * * *",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config B failed: {resp.text}"
@@ -278,8 +278,8 @@ async def test_list_periodic_datasets(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": True,
-                "schedule": "0 6 * * *",
+                "is_active": True,
+                "schedule_cron": "0 6 * * *",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config C failed: {resp.text}"
@@ -294,14 +294,14 @@ async def test_list_periodic_datasets(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": False,
+                "is_active": False,
             },
         )
         assert resp.status_code in (200, 201), f"PUT config D failed: {resp.text}"
 
         resp = await http_client.post(
             "/internal/activities/ingestion/list-periodic",
-            json={"schedule": "0 2 * * *"},
+            json={"schedule_cron": "0 2 * * *"},
         )
         assert resp.status_code == 200, f"ingestion/list-periodic failed: {resp.text}"
         result = resp.json()
@@ -359,8 +359,8 @@ async def test_sync_creates_flows_per_schedule(
                     "locator": EXAMPLE_PG_LOCATOR,
                     "identifier": EXAMPLE_PG_IDENTIFIER,
                     "auth": EXAMPLE_PG_AUTH,
-                    "periodic": True,
-                    "schedule": "0 2 * * *",
+                    "is_active": True,
+                    "schedule_cron": "0 2 * * *",
                 },
             )
             assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -375,8 +375,8 @@ async def test_sync_creates_flows_per_schedule(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": True,
-                "schedule": "0 6 * * *",
+                "is_active": True,
+                "schedule_cron": "0 6 * * *",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -458,8 +458,8 @@ async def test_sync_removes_stale_flows(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": True,
-                "schedule": "0 3 * * *",
+                "is_active": True,
+                "schedule_cron": "0 3 * * *",
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -534,8 +534,8 @@ async def test_sync_updates_on_schedule_change(
                     "locator": EXAMPLE_PG_LOCATOR,
                     "identifier": EXAMPLE_PG_IDENTIFIER,
                     "auth": EXAMPLE_PG_AUTH,
-                    "periodic": True,
-                    "schedule": "0 2 * * *",
+                    "is_active": True,
+                    "schedule_cron": "0 2 * * *",
                 },
             )
             assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -550,7 +550,7 @@ async def test_sync_updates_on_schedule_change(
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{_GENRE_URN}/attr/ingestion/conf",
             headers=headers,
-            json={"schedule": "0 6 * * *"},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200, f"PATCH failed: {resp.text}"
 
@@ -569,7 +569,7 @@ async def test_sync_updates_on_schedule_change(
         # ingestion/list-periodic for "0 2 * * *" returns title_master and editions only
         resp = await http_client.post(
             "/internal/activities/ingestion/list-periodic",
-            json={"schedule": "0 2 * * *"},
+            json={"schedule_cron": "0 2 * * *"},
         )
         assert resp.status_code == 200
         urns_02 = resp.json()
@@ -580,7 +580,7 @@ async def test_sync_updates_on_schedule_change(
         # ingestion/list-periodic for "0 6 * * *" returns only genre_hierarchy
         resp = await http_client.post(
             "/internal/activities/ingestion/list-periodic",
-            json={"schedule": "0 6 * * *"},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200
         urns_06 = resp.json()
@@ -642,7 +642,7 @@ async def test_concurrency_guard_prevents_duplicate(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": False,
+                "is_active": False,
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -725,7 +725,7 @@ async def test_run_kafka_ingestion(
                 "source_type": "KAFKA",
                 "locator": EXAMPLE_KAFKA_LOCATOR,
                 "identifier": EXAMPLE_KAFKA_IDENTIFIER,
-                "periodic": False,
+                "is_active": False,
             },
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
@@ -812,8 +812,8 @@ async def test_mixed_source_types_in_periodic_sync(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "periodic": True,
-                "schedule": schedule,
+                "is_active": True,
+                "schedule_cron": schedule,
             },
         )
         assert resp.status_code in (200, 201), f"PUT PG config failed: {resp.text}"
@@ -827,8 +827,8 @@ async def test_mixed_source_types_in_periodic_sync(
                 "source_type": "KAFKA",
                 "locator": EXAMPLE_KAFKA_LOCATOR,
                 "identifier": EXAMPLE_KAFKA_IDENTIFIER,
-                "periodic": True,
-                "schedule": schedule,
+                "is_active": True,
+                "schedule_cron": schedule,
             },
         )
         assert resp.status_code in (200, 201), f"PUT Kafka config failed: {resp.text}"
@@ -845,7 +845,7 @@ async def test_mixed_source_types_in_periodic_sync(
         # Both URNs should appear for the shared schedule
         resp = await http_client.post(
             "/internal/activities/ingestion/list-periodic",
-            json={"schedule": schedule},
+            json={"schedule_cron": schedule},
         )
         assert resp.status_code == 200
         result = resp.json()
@@ -921,7 +921,7 @@ async def test_run_ingestion_nonexistent_source(
             "source_type": source_type,
             "locator": locator,
             "identifier": identifier,
-            "periodic": False,
+            "is_active": False,
         }
         if auth is not None:
             payload["auth"] = auth
