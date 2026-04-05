@@ -144,7 +144,7 @@ class GenerationConfig(Base):
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
     target_fields: Mapped[dict] = mapped_column(JSONB, nullable=False)
     code_refs: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schedule_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     owner: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -270,11 +270,11 @@ class MetricDefinition(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     theme: Mapped[str] = mapped_column(Text, nullable=False)
     measurement_query: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schedule_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
     alarm_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     alarm_threshold: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     alarm_recipients: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

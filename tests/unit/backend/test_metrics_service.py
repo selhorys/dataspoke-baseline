@@ -22,7 +22,7 @@ def _make_definition_row(
     description: str = "Measures documentation quality",
     theme: str = "quality",
     measurement_query: dict | None = None,
-    schedule: str | None = None,
+    schedule_cron: str | None = None,
     alarm_enabled: bool = False,
     alarm_threshold: dict | None = None,
     active: bool = True,
@@ -33,10 +33,11 @@ def _make_definition_row(
     row.description = description
     row.theme = theme
     row.measurement_query = measurement_query or {"type": "dataset_count"}
-    row.schedule = schedule
+    row.schedule_cron = schedule_cron
     row.alarm_enabled = alarm_enabled
     row.alarm_threshold = alarm_threshold
-    row.active = active
+    row.is_active = active
+    row.alarm_recipients = None
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row
@@ -98,13 +99,13 @@ async def test_list_metrics_with_theme_filter(service, db):
     assert metrics[0].theme == "quality"
 
 
-async def test_list_metrics_with_active_filter(service, db):
+async def test_list_metrics_with_is_active_filter(service, db):
     rows = [_make_definition_row(active=True)]
     mock_paginated_query(db, rows, total_count=1)
 
-    metrics, total = await service.list_metrics(active_filter=True)
+    metrics, total = await service.list_metrics(is_active_filter=True)
     assert total == 1
-    assert metrics[0].active is True
+    assert metrics[0].is_active is True
 
 
 # ── get_metric ────────────────────────────────────────────────────────────────
@@ -383,7 +384,7 @@ async def test_activate_inactive_metric(service, db):
     mock_db_refresh(db)
 
     metric = await service.activate(row.id)
-    assert metric.active is True
+    assert metric.is_active is True
     # commit: activate + event
     assert db.commit.await_count == 2
 
@@ -403,7 +404,7 @@ async def test_deactivate_active_metric(service, db):
     mock_db_refresh(db)
 
     metric = await service.deactivate(row.id)
-    assert metric.active is False
+    assert metric.is_active is False
     assert db.commit.await_count == 2
 
 

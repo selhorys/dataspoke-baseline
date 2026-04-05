@@ -50,7 +50,7 @@ async def test_metric_config_crud_via_http(
                 "description": "Integration test metric",
                 "theme": "quality",
                 "measurement_query": {"type": "dataset_count"},
-                "schedule": "0 * * * *",
+                "schedule_cron": "0 * * * *",
             },
         )
         assert resp.status_code in (200, 201)
@@ -72,16 +72,16 @@ async def test_metric_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 * * * *"
+        assert resp.json()["schedule_cron"] == "0 * * * *"
 
         # PATCH - update
         resp = await http_client.patch(
             f"{_DG_PREFIX}/{metric_id}/attr/conf",
             headers=headers,
-            json={"schedule": "0 6 * * *"},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # DELETE
         resp = await http_client.delete(
@@ -238,11 +238,11 @@ async def test_activate_deactivate(
                 "description": "Activate/deactivate test",
                 "theme": "governance",
                 "measurement_query": {"type": "dataset_count"},
-                "active": True,
+                "is_active": True,
             },
         )
         assert resp.status_code in (200, 201)
-        assert resp.json()["active"] is True
+        assert resp.json()["is_active"] is True
 
         # Deactivate
         resp = await http_client.post(
@@ -250,7 +250,7 @@ async def test_activate_deactivate(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["active"] is False
+        assert resp.json()["is_active"] is False
 
         # Activate
         resp = await http_client.post(
@@ -258,7 +258,7 @@ async def test_activate_deactivate(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["active"] is True
+        assert resp.json()["is_active"] is True
     finally:
         await async_session.execute(
             text(
@@ -297,7 +297,7 @@ async def test_events_pagination(
             text(
                 "INSERT INTO dataspoke.metric_definitions"
                 " (id, title, description, theme, measurement_query,"
-                " active, alarm_enabled)"
+                " is_active, alarm_enabled)"
                 " VALUES (:id, :title, :desc, :theme, :mq, true, false)"
             ),
             {
@@ -348,7 +348,7 @@ async def test_metric_attr_endpoint(
                 "theme": "freshness",
                 "measurement_query": {"type": "dataset_count"},
                 "alarm_enabled": True,
-                "schedule": "*/5 * * * *",
+                "schedule_cron": "*/5 * * * *",
             },
         )
         assert resp.status_code in (200, 201)

@@ -106,8 +106,8 @@ Stores per-dataset doc generation configuration.
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `target_fields` | `JSONB` | Fields to generate (description, tags, deprecation) |
 | `code_refs` | `JSONB` NULL | GitHub repo/file references for code analysis |
-| `schedule` | `TEXT` NULL | Cron expression |
-| `status` | `TEXT` | `active`, `paused`, `draft` |
+| `schedule_cron` | `TEXT` NULL | Cron expression for periodic runs |
+| `status` | `TEXT` | `draft` |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -176,13 +176,13 @@ Governance metric definitions.
 | `id` | `TEXT` PK | Metric identifier (slug, e.g. `poorly-documented-datasets`) |
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
-| `theme` | `TEXT` | Category: `quality`, `completeness`, `freshness`, `governance` |
+| `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
 | `measurement_query` | `JSONB` | Configuration for how to compute this metric |
-| `schedule` | `TEXT` NULL | Cron expression for scheduled measurement |
+| `schedule_cron` | `TEXT` NULL | Cron expression for scheduled measurement |
 | `alarm_enabled` | `BOOLEAN` | Enable threshold-based alerting |
 | `alarm_threshold` | `JSONB` NULL | Threshold configuration |
 | `alarm_recipients` | `JSONB` NULL | Email addresses to notify on alarm trigger |
-| `active` | `BOOLEAN` | Whether scheduled measurement is active |
+| `is_active` | `BOOLEAN` | Whether scheduled measurement is active |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 

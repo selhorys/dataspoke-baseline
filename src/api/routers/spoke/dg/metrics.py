@@ -42,11 +42,11 @@ def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
         description=m.description,
         theme=m.theme,
         measurement_query=m.measurement_query,
-        schedule=m.schedule,
+        schedule_cron=m.schedule_cron,
         alarm_enabled=m.alarm_enabled,
         alarm_threshold=m.alarm_threshold,
         alarm_recipients=m.alarm_recipients,
-        active=m.active,
+        is_active=m.is_active,
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
@@ -58,12 +58,13 @@ async def get_metrics(
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
     theme: str | None = Query(default=None),
-    active: bool | None = Query(default=None),
+    is_active_filter: bool | None = Query(default=None, alias="is_active"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionListResponse:
+    """List metric definitions with optional theme and active filters."""
     order_by = parse_sort(sort, {"created_at": MetricDefinition.created_at}, None)
     metrics, total_count = await service.list_metrics(
-        offset=offset, limit=limit, theme_filter=theme, active_filter=active, order_by=order_by
+        offset=offset, limit=limit, theme_filter=theme, is_active_filter=is_active_filter, order_by=order_by
     )
     return MetricDefinitionListResponse(
         offset=offset,
@@ -78,6 +79,7 @@ async def get_metric(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
+    """Retrieve a single metric definition by ID."""
     metric = await service.get_metric(metric_id)
     return _definition_response(metric)
 
@@ -87,6 +89,7 @@ async def get_metric_attr(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricAttrResponse:
+    """Retrieve the aggregated attribute sub-resource for a metric."""
     attr = await service.get_metric_attr(metric_id)
     return MetricAttrResponse(**attr)
 
@@ -96,6 +99,7 @@ async def get_metric_conf(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
+    """Retrieve the configuration for a metric definition."""
     metric = await service.get_metric_config(metric_id)
     return _definition_response(metric)
 
@@ -107,17 +111,18 @@ async def put_metric_conf(
     response: Response,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
+    """Create or replace a metric definition configuration (upsert)."""
     metric, created = await service.upsert_metric_config(
         metric_id=metric_id,
         title=body.title,
         description=body.description,
         theme=body.theme,
         measurement_query=body.measurement_query,
-        schedule=body.schedule,
+        schedule_cron=body.schedule_cron,
         alarm_enabled=body.alarm_enabled,
         alarm_threshold=body.alarm_threshold,
         alarm_recipients=body.alarm_recipients,
-        active=body.active,
+        is_active=body.is_active,
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
@@ -130,6 +135,7 @@ async def patch_metric_conf(
     body: PatchMetricConfigRequest,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
+    """Partially update a metric definition's configuration."""
     patch = body.model_dump(exclude_unset=True)
     metric = await service.patch_metric_config(metric_id, patch)
     return _definition_response(metric)
@@ -140,6 +146,7 @@ async def delete_metric_conf(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> None:
+    """Delete a metric definition and its configuration."""
     await service.delete_metric_config(metric_id)
 
 
@@ -153,6 +160,7 @@ async def get_metric_result(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricResultListResponse:
+    """List metric measurement results with optional time range and pagination."""
     order_by = parse_sort(sort, {"measured_at": MetricResult.measured_at}, None)
     results, total_count = await service.get_results(
         metric_id, from_dt=from_time, to_dt=to_time, offset=offset, limit=limit, order_by=order_by
@@ -182,6 +190,7 @@ async def post_metric_run(
     body: RunMetricRequest,
     kestra: KestraClient = Depends(get_kestra_client),
 ) -> MetricRunResultResponse:
+    """Trigger a metric measurement run via Kestra."""
     label_value = f"metrics-{metric_id}"
     await kestra.check_no_duplicate(
         "metrics", "workflow_id", label_value, "METRIC_RUNNING"
@@ -208,6 +217,7 @@ async def post_metric_activate(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
+    """Activate a metric definition to enable scheduled measurement runs."""
     metric = await service.activate(metric_id)
     return _definition_response(metric)
 
@@ -217,6 +227,7 @@ async def post_metric_deactivate(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
+    """Deactivate a metric definition to pause scheduled measurement runs."""
     metric = await service.deactivate(metric_id)
     return _definition_response(metric)
 
@@ -231,6 +242,7 @@ async def get_metric_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> EventListResponse:
+    """List events for a metric with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         metric_id, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
@@ -288,6 +300,7 @@ async def get_metric_issues(
     assignee: str | None = Query(default=None),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricIssueListResponse:
+    """List issues for a metric with optional status, priority, type, and assignee filters."""
     order_by = parse_sort(sort, {"created_at": MetricIssue.created_at}, None)
     metric_issues, total_count = await service.list_metric_issues(
         metric_id=metric_id,
@@ -313,6 +326,7 @@ async def get_metric_issue(
     metric_issue_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricIssueResponse:
+    """Retrieve a single metric issue by ID."""
     issue = await service.get_metric_issue(metric_issue_id)
     return _metric_issue_response(issue)
 
@@ -324,6 +338,7 @@ async def patch_metric_issue(
     body: PatchMetricIssueRequest,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricIssueResponse:
+    """Partially update a metric issue's fields (assignee, priority, status, etc.)."""
     patch = body.model_dump(exclude_unset=True)
     issue = await service.update_metric_issue(metric_issue_id, patch)
     return _metric_issue_response(issue)
@@ -339,6 +354,7 @@ async def post_metric_issue_dismiss(
     body: DismissMetricIssueRequest | None = None,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricIssueResponse:
+    """Dismiss a metric issue with an optional reason."""
     reason = body.reason if body else None
     issue = await service.dismiss_metric_issue(metric_issue_id, reason=reason)
     return _metric_issue_response(issue)
@@ -355,6 +371,7 @@ async def get_metric_issue_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> EventListResponse:
+    """List events for a metric issue with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_metric_issue_events(
         metric_issue_id, offset=offset, limit=limit,

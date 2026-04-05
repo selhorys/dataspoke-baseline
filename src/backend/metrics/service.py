@@ -40,11 +40,11 @@ class MetricDefinitionRecord(BaseModel):
     description: str
     theme: str
     measurement_query: dict[str, Any]
-    schedule: str | None = None
+    schedule_cron: str | None = None
     alarm_enabled: bool
     alarm_threshold: dict[str, Any] | None = None
     alarm_recipients: list[str] | None = None
-    active: bool
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 
@@ -124,11 +124,11 @@ def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
         description=row.description,
         theme=row.theme,
         measurement_query=row.measurement_query,
-        schedule=row.schedule,
+        schedule_cron=row.schedule_cron,
         alarm_enabled=row.alarm_enabled,
         alarm_threshold=row.alarm_threshold,
         alarm_recipients=row.alarm_recipients,
-        active=row.active,
+        is_active=row.is_active,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -176,14 +176,14 @@ class MetricsService:
         offset: int = 0,
         limit: int = 20,
         theme_filter: str | None = None,
-        active_filter: bool | None = None,
+        is_active_filter: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[MetricDefinitionRecord], int]:
         base = select(MetricDefinition)
         if theme_filter is not None:
             base = base.where(MetricDefinition.theme == theme_filter)
-        if active_filter is not None:
-            base = base.where(MetricDefinition.active == active_filter)
+        if is_active_filter is not None:
+            base = base.where(MetricDefinition.is_active == is_active_filter)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -226,9 +226,9 @@ class MetricsService:
             "id": row.id,
             "title": row.title,
             "theme": row.theme,
-            "active": row.active,
+            "is_active": row.is_active,
             "alarm_enabled": row.alarm_enabled,
-            "schedule": row.schedule,
+            "schedule_cron": row.schedule_cron,
             "latest_value": latest_row.value if latest_row else None,
             "latest_measured_at": latest_row.measured_at if latest_row else None,
         }
@@ -243,11 +243,11 @@ class MetricsService:
         description: str,
         theme: str,
         measurement_query: dict[str, Any],
-        schedule: str | None = None,
+        schedule_cron: str | None = None,
         alarm_enabled: bool = False,
         alarm_threshold: dict[str, Any] | None = None,
         alarm_recipients: list[str] | None = None,
-        active: bool = True,
+        is_active: bool = True,
     ) -> tuple[MetricDefinitionRecord, bool]:
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
@@ -259,11 +259,11 @@ class MetricsService:
             existing.description = description
             existing.theme = theme
             existing.measurement_query = measurement_query
-            existing.schedule = schedule
+            existing.schedule_cron = schedule_cron
             existing.alarm_enabled = alarm_enabled
             existing.alarm_threshold = alarm_threshold
             existing.alarm_recipients = alarm_recipients
-            existing.active = active
+            existing.is_active = is_active
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
             created = False
@@ -274,11 +274,11 @@ class MetricsService:
                 description=description,
                 theme=theme,
                 measurement_query=measurement_query,
-                schedule=schedule,
+                schedule_cron=schedule_cron,
                 alarm_enabled=alarm_enabled,
                 alarm_threshold=alarm_threshold,
                 alarm_recipients=alarm_recipients,
-                active=active,
+                is_active=is_active,
             )
             self._db.add(existing)
             created = True
@@ -311,11 +311,11 @@ class MetricsService:
             "description",
             "theme",
             "measurement_query",
-            "schedule",
+            "schedule_cron",
             "alarm_enabled",
             "alarm_threshold",
             "alarm_recipients",
-            "active",
+            "is_active",
         ):
             if field in patch and patch[field] is not None:
                 setattr(row, field, patch[field])
@@ -481,10 +481,10 @@ class MetricsService:
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("metric_definition", metric_id)
-        if row.active:
+        if row.is_active:
             raise ConflictError("ALREADY_ACTIVE", f"Metric '{metric_id}' is already active")
 
-        row.active = True
+        row.is_active = True
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
         await self._db.commit()
@@ -500,10 +500,10 @@ class MetricsService:
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("metric_definition", metric_id)
-        if not row.active:
+        if not row.is_active:
             raise ConflictError("ALREADY_INACTIVE", f"Metric '{metric_id}' is already inactive")
 
-        row.active = False
+        row.is_active = False
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
         await self._db.commit()

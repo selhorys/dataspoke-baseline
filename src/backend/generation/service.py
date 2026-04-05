@@ -43,7 +43,7 @@ class GenerationConfigRecord(BaseModel):
     dataset_urn: str
     target_fields: dict[str, Any]
     code_refs: dict[str, Any] | None = None
-    schedule: str | None = None
+    schedule_cron: str | None = None
     status: str
     owner: str
     created_at: datetime
@@ -77,7 +77,7 @@ def _config_from_row(row: GenerationConfig) -> GenerationConfigRecord:
         dataset_urn=row.dataset_urn,
         target_fields=row.target_fields,
         code_refs=row.code_refs,
-        schedule=row.schedule,
+        schedule_cron=row.schedule_cron,
         status=row.status,
         owner=row.owner,
         created_at=row.created_at,
@@ -129,7 +129,7 @@ class GenerationService:
         dataset_urn: str,
         target_fields: dict[str, Any],
         code_refs: dict[str, Any] | None,
-        schedule: str | None,
+        schedule_cron: str | None,
         owner: str,
     ) -> tuple[GenerationConfigRecord, bool]:
         result = await self._db.execute(
@@ -140,7 +140,7 @@ class GenerationService:
         if existing:
             existing.target_fields = target_fields
             existing.code_refs = code_refs
-            existing.schedule = schedule
+            existing.schedule_cron = schedule_cron
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
@@ -150,7 +150,7 @@ class GenerationService:
                 dataset_urn=dataset_urn,
                 target_fields=target_fields,
                 code_refs=code_refs,
-                schedule=schedule,
+                schedule_cron=schedule_cron,
                 owner=owner,
             )
             self._db.add(existing)
@@ -181,8 +181,8 @@ class GenerationService:
             row.target_fields = patch["target_fields"]
         if "code_refs" in patch and patch["code_refs"] is not None:
             row.code_refs = patch["code_refs"]
-        if "schedule" in patch and patch["schedule"] is not None:
-            row.schedule = patch["schedule"]
+        if "schedule_cron" in patch and patch["schedule_cron"] is not None:
+            row.schedule_cron = patch["schedule_cron"]
         if "status" in patch and patch["status"] is not None:
             row.status = patch["status"]
         row.updated_at = datetime.now(tz=UTC)

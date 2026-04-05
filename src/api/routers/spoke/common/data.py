@@ -67,6 +67,7 @@ async def get_data(
     dataset_urn: str,
     service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetResponse:
+    """Retrieve a dataset summary by URN."""
     summary = await service.get_summary(dataset_urn)
     return DatasetResponse(
         urn=summary.urn,
@@ -83,6 +84,7 @@ async def get_data_attr(
     dataset_urn: str,
     service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetAttributesResponse:
+    """Retrieve extended attributes (columns, quality score, owners) for a dataset."""
     attrs = await service.get_attributes(dataset_urn)
     quality = None
     if attrs.quality_score is not None:
@@ -112,6 +114,7 @@ async def get_data_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: DatasetService = Depends(get_dataset_service),
 ) -> EventListResponse:
+    """List events for a dataset with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset, limit, from_time, to_time, order_by=order_by
@@ -163,6 +166,7 @@ async def get_data_ingestion_conf(
     dataset_urn: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
+    """Retrieve the ingestion config embedded within the dataset resource."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
@@ -176,6 +180,7 @@ async def put_data_ingestion_conf(
     response: Response,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
+    """Create or replace the ingestion config for the dataset (upsert)."""
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         source_type=body.source_type,
@@ -198,6 +203,7 @@ async def patch_data_ingestion_conf(
     body: PatchIngestionConfigRequest,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
+    """Partially update the ingestion config for the dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return _config_response(config)
@@ -208,6 +214,7 @@ async def delete_data_ingestion_conf(
     dataset_urn: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> None:
+    """Delete the ingestion config for the dataset."""
     await service.delete_config(dataset_urn)
 
 
@@ -218,6 +225,7 @@ async def post_data_ingestion_run(
     service: IngestionService = Depends(get_ingestion_service),
     cache: RedisClient = Depends(get_redis),
 ) -> RunResultResponse:
+    """Trigger an ingestion run for the dataset via the data sub-resource."""
     from src.backend.ingestion.service import run_ingestion_with_lock
 
     result = await run_ingestion_with_lock(service, cache, dataset_urn, dry_run=body.dry_run)
@@ -234,6 +242,7 @@ async def get_data_ingestion_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> EventListResponse:
+    """List ingestion events for the dataset with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset, limit, from_time, to_time, order_by=order_by
@@ -278,6 +287,7 @@ async def get_data_validation_conf(
     dataset_urn: str,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
+    """Retrieve the validation config embedded within the dataset resource."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
@@ -291,6 +301,7 @@ async def put_data_validation_conf(
     response: Response,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
+    """Create or replace the validation config for the dataset (upsert)."""
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         rules=body.rules,
@@ -309,6 +320,7 @@ async def patch_data_validation_conf(
     body: PatchValidationConfigRequest,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
+    """Partially update the validation config for the dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return _validation_config_response(config)
@@ -319,6 +331,7 @@ async def delete_data_validation_conf(
     dataset_urn: str,
     service: ValidationService = Depends(get_validation_service),
 ) -> None:
+    """Delete the validation config for the dataset."""
     await service.delete_config(dataset_urn)
 
 
@@ -333,6 +346,7 @@ async def get_data_validation_result(
     partition: str | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
+    """List validation results for the dataset with time range, partition, and pagination."""
     order_by = parse_sort(sort, {"measured_at": ValidationResult.measured_at}, None)
     partition_filter: dict | None = None
     if partition:
@@ -381,6 +395,7 @@ async def post_data_validation_run(
     service: ValidationService = Depends(get_validation_service),
     cache: RedisClient = Depends(get_redis),
 ) -> ValidationRunResultResponse:
+    """Trigger a validation run for the dataset via the data sub-resource."""
     from src.backend.validation.service import run_validation_with_lock
 
     config = await service.get_config(dataset_urn)
@@ -407,6 +422,7 @@ async def get_data_validation_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> EventListResponse:
+    """List validation events for the dataset with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
@@ -439,7 +455,7 @@ def _generation_config_response(c) -> GenerationConfigResponse:  # noqa: ANN001
         dataset_urn=c.dataset_urn,
         target_fields=c.target_fields,
         code_refs=c.code_refs,
-        schedule=c.schedule,
+        schedule_cron=c.schedule_cron,
         status=c.status,
         owner=c.owner,
         created_at=c.created_at,
@@ -452,6 +468,7 @@ async def get_data_gen_conf(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
+    """Retrieve the generation config embedded within the dataset resource."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
@@ -465,11 +482,12 @@ async def put_data_gen_conf(
     response: Response,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
+    """Create or replace the generation config for the dataset (upsert)."""
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         target_fields=body.target_fields,
         code_refs=body.code_refs,
-        schedule=body.schedule,
+        schedule_cron=body.schedule_cron,
         owner=body.owner,
     )
     if created:
@@ -483,6 +501,7 @@ async def patch_data_gen_conf(
     body: PatchGenerationConfigRequest,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
+    """Partially update the generation config for the dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return _generation_config_response(config)
@@ -493,6 +512,7 @@ async def delete_data_gen_conf(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> None:
+    """Delete the generation config for the dataset."""
     await service.delete_config(dataset_urn)
 
 
@@ -507,6 +527,7 @@ async def get_data_gen_result(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationResultListResponse:
+    """List generation results for the dataset; pass latest=true for the most recent only."""
     effective_limit = 1 if latest else limit
     effective_offset = 0 if latest else offset
     order_by = parse_sort(sort, {"generated_at": GenerationResult.generated_at}, None)
@@ -538,6 +559,7 @@ async def post_data_gen_generate(
     dataset_urn: str,
     kestra: KestraClient = Depends(get_kestra_client),
 ) -> GenerationRunResultResponse:
+    """Trigger AI metadata generation for the dataset via the data sub-resource."""
     label_value = f"generation-{urn_to_workflow_id(dataset_urn)}"
     await kestra.check_no_duplicate(
         "generation", "workflow_id", label_value, "GENERATION_RUNNING"
@@ -564,6 +586,7 @@ async def post_data_gen_apply(
     body: ApplyGenerationRequest,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationRunResultResponse:
+    """Apply a previously generated metadata proposal to the dataset via the data sub-resource."""
     result = await service.apply(dataset_urn, body.result_id)
     return GenerationRunResultResponse(
         run_id=result.run_id,
@@ -582,6 +605,7 @@ async def get_data_gen_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> EventListResponse:
+    """List generation events for the dataset with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by

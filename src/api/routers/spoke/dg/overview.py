@@ -23,6 +23,7 @@ router = APIRouter(
 async def get_overview(
     service: OverviewService = Depends(get_overview_service),
 ) -> OverviewSnapshotResponse:
+    """Retrieve the governance overview snapshot including lineage graph and medallion summary."""
     snapshot = await service.get_overview()
     return OverviewSnapshotResponse(
         nodes=[
@@ -52,6 +53,7 @@ async def get_overview(
 async def get_overview_attr(
     service: OverviewService = Depends(get_overview_service),
 ) -> OverviewResponse:
+    """Retrieve the persisted display configuration (layout, color scheme, filters) for the overview."""
     config = await service.get_config()
     return OverviewResponse(
         layout=config.layout,
@@ -65,6 +67,7 @@ async def patch_overview_attr(
     body: PatchOverviewRequest,
     service: OverviewService = Depends(get_overview_service),
 ) -> OverviewResponse:
+    """Partially update the overview display configuration."""
     config = await service.patch_config(
         layout=body.layout,
         color_by=body.color_by,

@@ -116,6 +116,53 @@ async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JS
 
 
 def create_app() -> FastAPI:
+    openapi_tags = [
+        {
+            "name": "common/ingestion",
+            "description": "Ingestion config CRUD and run operations. Requires common auth (de/da/dg/admin groups).",
+        },
+        {
+            "name": "common/validation",
+            "description": "Validation config CRUD, run, and result queries. Requires common auth.",
+        },
+        {
+            "name": "common/gen",
+            "description": "AI metadata generation config CRUD, generate, and apply. Requires common auth.",
+        },
+        {
+            "name": "common/data",
+            "description": "Dataset overview with embedded ingestion, validation, and generation sub-resources. Requires common auth.",
+        },
+        {
+            "name": "common/ontology",
+            "description": "Concept taxonomy CRUD and approval workflow. Requires common auth.",
+        },
+        {
+            "name": "common/search",
+            "description": "Vector-powered dataset search and reindex. Requires common auth.",
+        },
+        {
+            "name": "dg/metric",
+            "description": "Metric definitions, results, issues, and alarms. Requires DG auth (dg/admin groups).",
+        },
+        {
+            "name": "dg/overview",
+            "description": "Data governance overview dashboard and lineage graph. Requires DG auth.",
+        },
+        {
+            "name": "hub",
+            "description": "Pass-through proxy to DataHub GMS GraphQL. Requires common auth.",
+        },
+        {
+            "name": "auth",
+            "description": "JWT token management. No authentication required.",
+        },
+        {
+            "name": "system",
+            "description": "Health and readiness checks. No authentication required.",
+        },
+    ]
+
     app = FastAPI(
         title="DataSpoke API",
         version="0.1.0",
@@ -123,6 +170,7 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
+        openapi_tags=openapi_tags,
     )
 
     # ── State (needed by slowapi) ──────────────────────────────────────────────

@@ -200,8 +200,8 @@ class TestGenerationSchemas:
             dataset_urn="urn:li:dataset:test",
             target_fields={"description": True},
             code_refs=None,
-            schedule=None,
-            status="active",
+            schedule_cron=None,
+            status="draft",
             owner="admin",
             created_at=now,
             updated_at=now,
@@ -284,9 +284,33 @@ class TestMetricsSchemas:
             description="Counts total rows",
             theme="quality",
             measurement_query={"type": "dataset_count"},
+            is_active=False,
         )
         assert req.alarm_enabled is False
-        assert req.active is True
+        assert req.is_active is False
+
+    def test_upsert_request_active_with_schedule(self) -> None:
+        req = UpsertMetricConfigRequest(
+            title="Row Count",
+            description="Counts total rows",
+            theme="quality",
+            measurement_query={"type": "dataset_count"},
+            is_active=True,
+            schedule_cron="0 0 * * *",
+        )
+        assert req.is_active is True
+        assert req.schedule_cron == "0 0 * * *"
+
+    def test_upsert_request_active_without_schedule_ok(self) -> None:
+        req = UpsertMetricConfigRequest(
+            title="Row Count",
+            description="Counts total rows",
+            theme="quality",
+            measurement_query={"type": "dataset_count"},
+            is_active=True,
+        )
+        assert req.is_active is True
+        assert req.schedule_cron is None
 
     def test_definition_response(self) -> None:
         now = datetime.now(tz=UTC)
@@ -296,10 +320,10 @@ class TestMetricsSchemas:
             description="Counts total rows",
             theme="quality",
             measurement_query={"type": "dataset_count"},
-            schedule=None,
+            schedule_cron=None,
             alarm_enabled=False,
             alarm_threshold=None,
-            active=True,
+            is_active=True,
             created_at=now,
             updated_at=now,
         )

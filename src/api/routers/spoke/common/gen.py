@@ -35,7 +35,7 @@ def _config_response(c) -> GenerationConfigResponse:  # noqa: ANN001
         dataset_urn=c.dataset_urn,
         target_fields=c.target_fields,
         code_refs=c.code_refs,
-        schedule=c.schedule,
+        schedule_cron=c.schedule_cron,
         status=c.status,
         owner=c.owner,
         created_at=c.created_at,
@@ -51,6 +51,7 @@ async def get_gen_configs(
     status_filter: str | None = Query(default=None, alias="status"),
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigListResponse:
+    """List generation configs with optional status filter and pagination."""
     order_by = parse_sort(sort, {"created_at": GenerationConfig.created_at}, None)
     configs, total_count = await service.list_configs(
         offset=offset, limit=limit, status_filter=status_filter, order_by=order_by
@@ -68,6 +69,7 @@ async def get_gen_config(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
+    """Retrieve a single generation config by dataset URN."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
@@ -79,6 +81,7 @@ async def get_gen_config_attr(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
+    """Retrieve the attribute sub-resource of a generation config."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
@@ -91,6 +94,7 @@ async def patch_gen_config_attr(
     body: PatchGenerationConfigRequest,
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationConfigResponse:
+    """Partially update a generation config's attributes."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return _config_response(config)
@@ -107,6 +111,7 @@ async def get_gen_result(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> GenerationResultListResponse:
+    """List generation results; pass latest=true to retrieve only the most recent."""
     effective_limit = 1 if latest else limit
     effective_offset = 0 if latest else offset
     order_by = parse_sort(sort, {"generated_at": GenerationResult.generated_at}, None)
@@ -139,6 +144,7 @@ async def post_gen_generate(
     service: GenerationService = Depends(get_generation_service),
     kestra: KestraClient = Depends(get_kestra_client),
 ) -> RunResultResponse:
+    """Trigger AI metadata generation for the specified dataset."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
@@ -168,6 +174,7 @@ async def post_gen_apply(
     body: ApplyGenerationRequest,
     service: GenerationService = Depends(get_generation_service),
 ) -> RunResultResponse:
+    """Apply a previously generated metadata proposal to the dataset."""
     result = await service.apply(dataset_urn, body.result_id)
     return RunResultResponse(
         run_id=result.run_id,
@@ -186,6 +193,7 @@ async def get_gen_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: GenerationService = Depends(get_generation_service),
 ) -> EventListResponse:
+    """List events for a generation config with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by

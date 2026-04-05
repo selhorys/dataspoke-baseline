@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,12 +11,12 @@ router = APIRouter(tags=["system"])
 
 
 class HealthResponse(BaseModel):
-    status: str
+    status: str = Field(description="Liveness status, always 'ok' when reachable")
 
 
 class ReadyResponse(BaseModel):
-    status: str
-    checks: dict[str, bool] = {}
+    status: str = Field(description="Overall readiness: 'ok' or 'degraded'")
+    checks: dict[str, bool] = Field(default={}, description="Per-dependency reachability: datahub, postgres, redis")
 
 
 @router.get("/health", response_model=HealthResponse)

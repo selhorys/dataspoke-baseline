@@ -52,7 +52,7 @@ async def test_generation_config_crud_via_http(
                 "dataset_urn": dataset_urn,
                 "target_fields": {"description": True, "tags": True},
                 "code_refs": None,
-                "schedule": "0 0 * * *",
+                "schedule_cron": "0 0 * * *",
                 "owner": "test@imazon.com",
             },
         )
@@ -71,14 +71,14 @@ async def test_generation_config_crud_via_http(
         assert resp.status_code == 200
         assert resp.json()["id"] == config_id
 
-        # PATCH - update schedule
+        # PATCH - update schedule_cron
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/gen/conf",
             headers=headers,
-            json={"schedule": "0 6 * * *"},
+            json={"schedule_cron": "0 6 * * *"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # GET via gen router
         resp = await http_client.get(
@@ -86,7 +86,7 @@ async def test_generation_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule"] == "0 6 * * *"
+        assert resp.json()["schedule_cron"] == "0 6 * * *"
 
         # DELETE
         resp = await http_client.delete(

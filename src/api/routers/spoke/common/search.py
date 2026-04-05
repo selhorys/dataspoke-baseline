@@ -21,6 +21,7 @@ async def get_search(
     limit: int = Query(20, ge=1, le=100),
     service: SearchService = Depends(get_search_service),
 ) -> SearchResponse:
+    """Search datasets by semantic query using vector similarity."""
     result = await service.search(q=q, sql_context=sql_context, offset=offset, limit=limit)
 
     datasets = [
@@ -51,6 +52,7 @@ async def post_search_reindex(
     dataset_urn: str = Query(..., min_length=1),
     service: SearchService = Depends(get_search_service),
 ) -> ReindexResponse:
+    """Reindex a single dataset's vector embedding in Qdrant."""
     try:
         result = await service.reindex(dataset_urn=dataset_urn)
     except EntityNotFoundError:

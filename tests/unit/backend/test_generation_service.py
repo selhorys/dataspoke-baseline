@@ -22,7 +22,7 @@ def _make_config_row(
     dataset_urn: str = _DATASET_URN,
     target_fields: dict | None = None,
     code_refs: dict | None = None,
-    schedule: str | None = "0 0 * * *",
+    schedule_cron: str | None = "0 0 * * *",
     status: str = "draft",
     owner: str = "alice@example.com",
 ):
@@ -31,7 +31,7 @@ def _make_config_row(
     row.dataset_urn = dataset_urn
     row.target_fields = target_fields or {"description": True, "tags": True}
     row.code_refs = code_refs
-    row.schedule = schedule
+    row.schedule_cron = schedule_cron
     row.status = status
     row.owner = owner
     row.created_at = datetime.now(tz=UTC)
@@ -98,7 +98,7 @@ async def test_upsert_config_creates_new(service, db):
         dataset_urn=_DATASET_URN,
         target_fields={"description": True},
         code_refs=None,
-        schedule=None,
+        schedule_cron=None,
         owner="alice@example.com",
     )
     assert db.add.called
@@ -114,7 +114,7 @@ async def test_upsert_config_updates_existing(service, db):
         dataset_urn=_DATASET_URN,
         target_fields={"tags": True},
         code_refs={"owner": "org", "repo": "app"},
-        schedule="0 6 * * *",
+        schedule_cron="0 6 * * *",
         owner="bob@example.com",
     )
     assert db.add.called
@@ -131,8 +131,8 @@ async def test_patch_config_applies_partial(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"schedule": "0 12 * * *"})
-    assert existing_row.schedule == "0 12 * * *"
+    await service.patch_config(_DATASET_URN, {"schedule_cron": "0 12 * * *"})
+    assert existing_row.schedule_cron == "0 12 * * *"
     assert db.commit.await_count >= 1
 
 
@@ -140,7 +140,7 @@ async def test_patch_config_not_found(service, db):
     mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.patch_config("nonexistent", {"schedule": "0 12 * * *"})
+        await service.patch_config("nonexistent", {"schedule_cron": "0 12 * * *"})
     assert exc_info.value.error_code == "GENERATION_CONFIG_NOT_FOUND"
 
 

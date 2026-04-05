@@ -53,6 +53,7 @@ async def get_ingestion_configs(
     status_filter: str | None = Query(default=None, alias="status"),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigListResponse:
+    """List ingestion configs with optional status filter and pagination."""
     order_by = parse_sort(sort, {"created_at": IngestionConfig.created_at}, None)
     configs, total = await service.list_configs(offset, limit, status_filter, order_by=order_by)
     return IngestionConfigListResponse(
@@ -68,6 +69,7 @@ async def get_ingestion_config(
     dataset_urn: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
+    """Retrieve a single ingestion config by dataset URN."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
@@ -79,6 +81,7 @@ async def get_ingestion_config_attr(
     dataset_urn: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
+    """Retrieve the attribute sub-resource of an ingestion config."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
@@ -91,6 +94,7 @@ async def patch_ingestion_config_attr(
     body: PatchIngestionConfigRequest,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
+    """Partially update an ingestion config's attributes."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return _config_response(config)
@@ -103,6 +107,7 @@ async def post_ingestion_run(
     service: IngestionService = Depends(get_ingestion_service),
     cache: RedisClient = Depends(get_redis),
 ) -> RunResultResponse:
+    """Trigger an ingestion run for the specified dataset."""
     from src.backend.ingestion.service import run_ingestion_with_lock
 
     result = await run_ingestion_with_lock(service, cache, dataset_urn, dry_run=body.dry_run)
@@ -119,6 +124,7 @@ async def get_ingestion_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> EventListResponse:
+    """List events for an ingestion config with time range and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset, limit, from_time, to_time, order_by=order_by

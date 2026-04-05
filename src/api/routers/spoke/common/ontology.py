@@ -40,6 +40,7 @@ async def get_ontology_concepts(
     sort: str | None = Query(default=None),
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptListResponse:
+    """List concept taxonomy entries with optional sort and pagination."""
     order_by = parse_sort(
         sort,
         {"name": ConceptCategory.name, "created_at": ConceptCategory.created_at},
@@ -59,6 +60,7 @@ async def get_ontology_concept(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptResponse:
+    """Retrieve a single concept by ID."""
     concept = await service.get_concept(concept_id)
     return _concept_response(concept)
 
@@ -68,6 +70,7 @@ async def get_ontology_concept_attr(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptAttrResponse:
+    """Retrieve extended attributes (dataset count, relationships, children) for a concept."""
     attr = await service.get_concept_attr(concept_id)
     return ConceptAttrResponse(
         concept_id=concept_id,
@@ -96,6 +99,7 @@ async def get_ontology_concept_events(
     sort: str | None = Query(default=None),
     service: OntologyService = Depends(get_ontology_service),
 ) -> EventListResponse:
+    """List events for a concept with optional sort and pagination."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_concept_events(
         concept_id, offset=offset, limit=limit, order_by=order_by
@@ -124,6 +128,7 @@ async def post_ontology_concept_approve(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptResponse:
+    """Approve a pending concept, transitioning it to active status."""
     concept = await service.approve(concept_id)
     return _concept_response(concept)
 
@@ -133,5 +138,6 @@ async def post_ontology_concept_reject(
     concept_id: str,
     service: OntologyService = Depends(get_ontology_service),
 ) -> ConceptResponse:
+    """Reject a pending concept, transitioning it to rejected status."""
     concept = await service.reject(concept_id)
     return _concept_response(concept)

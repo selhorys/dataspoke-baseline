@@ -1,15 +1,15 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TokenRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(description="User email address")
+    password: str = Field(description="User password")
 
 
 class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
+    access_token: str = Field(description="JWT access token")
+    token_type: str = Field(default="bearer", description="Token type, always 'bearer'")
+    expires_in: int = Field(description="Token lifetime in seconds")
 
 
 class RefreshRequest(BaseModel):
