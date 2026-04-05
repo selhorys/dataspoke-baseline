@@ -299,18 +299,25 @@ text-to-SQL and join-paths paths.
 #### Metric (`/spoke/dg/metric`)
 
 Governance metrics are named, configurable measurements tracked over time — for example,
-the count of poorly documented datasets, the count of erroneous datasets per medallion
-layer, or data downtime duration. Each metric carries a definition (`attr/conf`) that
-controls how it is computed, scheduled, and alerted, and a timeseries of measurement
-results (`attr/result`). Metrics represent enterprise-wide or department-wide signals
-rather than per-dataset observations.
+the count of poorly documented datasets or the count of stale datasets. Each metric
+carries a definition (`attr/conf`) that controls how it is computed and scheduled, and a
+timeseries of measurement results (`attr/result`). Metrics represent enterprise-wide or
+department-wide signals rather than per-dataset observations.
+
+> **Pure aggregation principle**: A metric does not observe the data estate directly. It
+> aggregates results that already exist in DataHub metadata or DataSpoke validation results.
+
+**`measurement_query.dataset_filter`**: Optional filter object in the metric definition.
+Fields: `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary
+term URNs). When specified, only datasets matching ANY of the listed tags or glossary terms
+are included in the measurement. Filters are OR-ed across all dimensions.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Enterprise Metrics Dashboard | UC6 |
 | `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, active status) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, active status, alarm enabled) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement period, alarm setup, active status) | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, active status) | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_cron, active status) | Enterprise Metrics Dashboard | UC6 |
 | `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Enterprise Metrics Dashboard | UC6 |
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Enterprise Metrics Dashboard | UC6 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Enterprise Metrics Dashboard | UC6 |
@@ -318,26 +325,8 @@ rather than per-dataset observations.
 | `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run | Enterprise Metrics Dashboard | UC6 |
 | `POST` | `/spoke/dg/metric/{metric_id}/method/activate` | Activate metric (enable scheduled measurement) | Enterprise Metrics Dashboard | UC6 |
 | `POST` | `/spoke/dg/metric/{metric_id}/method/deactivate` | Deactivate metric | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events and alarm notices | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, activation/deactivation) | Enterprise Metrics Dashboard | UC6 |
 | **WS** | `/spoke/dg/metric/stream` | Real-time metric update stream | Enterprise Metrics Dashboard | UC6 |
-
-##### Metric Issue (`/spoke/dg/metric/{metric_id}/attr/issue`)
-
-Auto-detected metadata issues with lifecycle tracking. Metric issues are created
-automatically when a measurement run detects gaps (e.g., datasets missing owners,
-descriptions, or tags) and auto-resolved when subsequent runs find the gap fixed.
-Unlike events (immutable log entries), metric issues are **stateful action items**
-with a four-state lifecycle (`open → in_progress → resolved | dismissed`), an
-assignee, and a due date. The `dismissed` transition is a manual business decision
-via the API; `resolved` is set automatically by the measurement pipeline.
-
-| Method | Path | Purpose | Feature | UC |
-|--------|------|---------|---------|-----|
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/issue` | List metric issues (paginated; filterable by `status`, `priority`, `issue_type`, `assignee`) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}` | Get metric issue detail (type, priority, status, assignee, projected score impact) | Enterprise Metrics Dashboard | UC6 |
-| `PATCH` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}` | Update metric issue fields (`status`, `assignee`, `due_date`) | Enterprise Metrics Dashboard | UC6 |
-| `POST` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}/method/dismiss` | Dismiss metric issue — acknowledged, will not fix | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/issue/{metric_issue_id}/event` | Metric issue lifecycle events (status transitions, assignment changes) | Enterprise Metrics Dashboard | UC6 |
 
 #### Overview (`/spoke/dg/overview`)
 
@@ -545,7 +534,6 @@ All errors follow the standard envelope:
 | `CONCEPT_NOT_FOUND` | 404 | Ontology concept ID not found |
 | `CONFIG_NOT_FOUND` | 404 | Ingestion config or validation config not found |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
-| `METRIC_ISSUE_NOT_FOUND` | 404 | Metric issue ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
 | `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
 | `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |
@@ -599,12 +587,10 @@ Messages sent during a validation run (rule-by-rule progress):
 
 ### Metric Update Stream (`/spoke/dg/metric/stream`)
 
-Pushed when the Kestra metrics collection flow emits an update:
+Pushed when the Kestra metrics flow completes a measurement run:
 
 ```json
-{"type": "metric_update",
- "metric_id": "poorly-documented-datasets",
- "measured_at": "2026-02-27T10:00:00.000Z",
- "value": 42,
- "alarm": false}
+{"run_id": "abc-123", "status": "success", "detail": {"metric_id": "poorly-documented-datasets", "value": 3}}
 ```
+
+Fields: `run_id` (Kestra execution ID or null), `status` (execution outcome), `detail` (run metadata including metric_id and measured value).

@@ -271,9 +271,6 @@ class MetricDefinition(Base):
     theme: Mapped[str] = mapped_column(Text, nullable=False)
     measurement_query: Mapped[dict] = mapped_column(JSONB, nullable=False)
     schedule_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
-    alarm_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    alarm_threshold: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    alarm_recipients: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -299,44 +296,8 @@ class MetricResult(Base):
     )
     value: Mapped[float] = mapped_column(Float, nullable=False)
     breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    alarm_triggered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     measured_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
-    )
-
-
-# ── metric_issues ────────────────────────────────────────────────────────────
-
-
-class MetricIssue(Base):
-    __tablename__ = "metric_issues"
-    __table_args__ = (
-        Index("ix_metric_issues_status_priority", "status", "priority"),
-        Index("ix_metric_issues_urn_status", "dataset_urn", "status"),
-        Index("ix_metric_issues_metric_created", "metric_id", desc("created_at")),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    metric_id: Mapped[str] = mapped_column(
-        Text, ForeignKey(f"{SCHEMA}.metric_definitions.id"), nullable=False
-    )
-    dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    issue_type: Mapped[str] = mapped_column(Text, nullable=False)
-    priority: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="open")
-    assignee: Mapped[str | None] = mapped_column(Text, nullable=True)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    estimated_fix_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
-    projected_score_impact: Mapped[float] = mapped_column(Float, nullable=False)
-    due_date: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMPTZ, nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 

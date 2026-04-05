@@ -21,7 +21,6 @@ from src.workflows._common import (
     make_datahub,
     make_db_session,
     make_llm,
-    make_notification,
     make_qdrant,
 )
 
@@ -278,10 +277,9 @@ async def run_metric(body: RunMetricRequest) -> dict:
 
     datahub = make_datahub()
     cache = make_cache()
-    notification = make_notification()
     try:
         async with make_db_session() as db:
-            service = MetricsService(datahub=datahub, db=db, cache=cache, notification=notification)
+            service = MetricsService(datahub=datahub, db=db, cache=cache)
             result = await service.run(body.metric_id, dry_run=body.dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
     except DataSpokeError as exc:
@@ -305,6 +303,56 @@ async def aggregate_health() -> dict:
             }
             for dept, h in health_map.items()
         }
+
+
+class ListPeriodicMetricsRequest(BaseModel):
+    schedule_cron: str
+
+
+@router.post("/metrics/list-periodic")
+async def list_periodic_metrics(body: ListPeriodicMetricsRequest) -> list[str]:
+    """Return metric IDs with active configs matching the given cron schedule."""
+    from sqlalchemy import select
+
+    from src.shared.db.models import MetricDefinition
+
+    try:
+        async with make_db_session() as db:
+            result = await db.execute(
+                select(MetricDefinition.id).where(
+                    MetricDefinition.is_active == True,  # noqa: E712
+                    MetricDefinition.schedule_cron == body.schedule_cron,
+                )
+            )
+            return [row[0] for row in result.all()]
+    except DataSpokeError as exc:
+        return _error_response(exc)
+
+
+@router.post("/metrics/sync-periodic-flows")
+async def sync_periodic_metrics_flows() -> dict:
+    """Sync Kestra periodic metrics flows based on active config schedules."""
+    from src.shared.settings import settings
+    from src.workflows.kestra.client import KestraClient
+    from src.workflows.metrics import sync_periodic_metrics_flows as _sync
+
+    kestra = KestraClient(
+        base_url=settings.kestra_url,
+        namespace=settings.kestra_namespace,
+        username=settings.kestra_user,
+        password=settings.kestra_password,
+    )
+    try:
+        async with make_db_session() as db:
+            return await _sync(
+                kestra_client=kestra,
+                db=db,
+                callback_base_url=settings.kestra_callback_base_url,
+            )
+    except DataSpokeError as exc:
+        return _error_response(exc)
+    finally:
+        await kestra.close()
 
 
 class PublishMetricUpdateRequest(BaseModel):

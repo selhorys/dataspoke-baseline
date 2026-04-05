@@ -49,7 +49,7 @@ async def test_metric_config_crud_via_http(
                 "title": "CRUD Test Metric",
                 "description": "Integration test metric",
                 "theme": "quality",
-                "measurement_query": {"type": "dataset_count"},
+                "measurement_query": {"type": "poorly_documented"},
                 "schedule_cron": "0 * * * *",
             },
         )
@@ -123,7 +123,7 @@ async def test_metric_run_and_result_persistence(
                 "title": "Run Persist Test",
                 "description": "Test run persistence",
                 "theme": "quality",
-                "measurement_query": {"type": "dataset_count"},
+                "measurement_query": {"type": "poorly_documented"},
             },
         )
         assert resp.status_code in (200, 201)
@@ -189,7 +189,7 @@ async def test_metric_run_dry_run(
                 "title": "Dry Run Test",
                 "description": "Test dry run",
                 "theme": "quality",
-                "measurement_query": {"type": "dataset_count"},
+                "measurement_query": {"type": "poorly_documented"},
             },
         )
         assert resp.status_code in (200, 201)
@@ -237,7 +237,7 @@ async def test_activate_deactivate(
                 "title": "Activate Test",
                 "description": "Activate/deactivate test",
                 "theme": "governance",
-                "measurement_query": {"type": "dataset_count"},
+                "measurement_query": {"type": "poorly_documented"},
                 "is_active": True,
             },
         )
@@ -297,15 +297,15 @@ async def test_events_pagination(
             text(
                 "INSERT INTO dataspoke.metric_definitions"
                 " (id, title, description, theme, measurement_query,"
-                " is_active, alarm_enabled)"
-                " VALUES (:id, :title, :desc, :theme, :mq, true, false)"
+                " is_active)"
+                " VALUES (:id, :title, :desc, :theme, :mq, true)"
             ),
             {
                 "id": metric_id,
                 "title": "Events Test",
                 "desc": "test",
                 "theme": "quality",
-                "mq": json.dumps({"type": "dataset_count"}),
+                "mq": json.dumps({"type": "poorly_documented"}),
             },
         )
         await async_session.commit()
@@ -346,8 +346,7 @@ async def test_metric_attr_endpoint(
                 "title": "Attr Test",
                 "description": "Attr endpoint test",
                 "theme": "freshness",
-                "measurement_query": {"type": "dataset_count"},
-                "alarm_enabled": True,
+                "measurement_query": {"type": "poorly_documented"},
                 "schedule_cron": "*/5 * * * *",
             },
         )
@@ -362,7 +361,6 @@ async def test_metric_attr_endpoint(
         assert body["id"] == metric_id
         assert body["title"] == "Attr Test"
         assert body["theme"] == "freshness"
-        assert body["alarm_enabled"] is True
         assert body["latest_value"] is None
     finally:
         await async_session.execute(

@@ -12,13 +12,6 @@ class GenerationConfigStatus(StrEnum):
     DRAFT = "draft"
 
 
-class MetricIssueStatus(StrEnum):
-    OPEN = "open"
-    IN_PROGRESS = "in_progress"
-    RESOLVED = "resolved"
-    DISMISSED = "dismissed"
-
-
 class ConceptStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
@@ -40,24 +33,6 @@ class MetricTheme(StrEnum):
     QUALITY = "quality"
     GOVERNANCE = "governance"
     FRESHNESS = "freshness"
-
-
-class MetricIssueType(StrEnum):
-    NO_DESCRIPTION = "no_description"
-    STALE = "stale"
-    LOW_QUALITY = "low_quality"
-    MISSING_OWNER = "missing_owner"
-    NO_TAGS = "no_tags"
-    FRESHNESS = "freshness"
-    COMPLETENESS = "completeness"
-    SCHEMA_DRIFT = "schema_drift"
-
-
-class IssuePriority(StrEnum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
 
 
 class RelationshipType(StrEnum):

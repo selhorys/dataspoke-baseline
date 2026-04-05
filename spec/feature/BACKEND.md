@@ -97,7 +97,6 @@ Route handler function names must mirror the REST path they serve.
 | Route | Function name |
 |-------|---------------|
 | `GET /metric/{id}/attr/conf` | `get_metric_conf` |
-| `GET /metric/{id}/attr/issue/{iid}` | `get_metric_issue` |
 | `POST /metric/{id}/method/deactivate` | `post_metric_deactivate` |
 | `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
 | `POST /data/{urn}/attr/gen/method/generate` | `post_data_gen_generate` |
@@ -120,7 +119,7 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 | Qdrant | `vector/client.py` | Collection management, typed search/upsert | Wraps `qdrant-client` |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
-| Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Metrics (UC6) and Validation (UC2, UC3). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
+| Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2, UC3). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
 | Domain Models | `models/` | Shared Pydantic models (`QualityScore`, `EventRecord`, etc.) -- internal domain objects, not API schemas | API schemas live in `src/api/schemas/` |
 | Exceptions | `exceptions.py` | `DataSpokeError` hierarchy with error codes for HTTP mapping | See [Error Handling](#error-handling) |
 | Settings | `settings.py` | Pydantic `Settings` class reading `DATASPOKE_*` env vars | -- |
@@ -233,20 +232,30 @@ Concept category CRUD, concept-to-dataset mapping, cross-concept relationship ma
 
 **Covers**: UC6 (Enterprise Metrics Dashboard)
 
-Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-demand measurement execution, health score aggregation by department, alarm evaluation and notification, issue tracking lifecycle (auto-detect -> create issues -> email owners -> auto-resolve when fixed; PostgreSQL: `metric_issues`), activate/deactivate metric scheduling.
+> **Core principle**: Metrics are pure aggregation over pre-existing data. A metric does
+> not observe the data estate directly — it aggregates results that already exist in
+> DataHub metadata or DataSpoke validation results.
 
-**Health Score Aggregation** (`aggregator.py`): Enumerates datasets, computes quality scores, aggregates by department. Department mapping: dataset ownership URN -> department via HR API or static mapping table.
+Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-demand measurement execution. Activate/deactivate metric scheduling. No alarm evaluation, no issue tracking, no notification dispatch.
 
 **Built-in metric types**:
 
 | Metric Type | Description |
 |------------|-------------|
-| `dataset_count` | Total datasets per platform |
-| `poorly_documented` | Datasets with description < 20 chars |
-| `stale_datasets` | Datasets not updated in > 7 days |
-| `low_quality` | Datasets with quality score < 50 |
-| `unowned_datasets` | Datasets with no ownership aspect |
-| `tag_coverage` | % of datasets with at least 1 classifying tag |
+| `poorly_documented` | Reads `DatasetPropertiesClass.description` from DataHub; counts datasets where description length < 20 chars |
+| `stale_datasets` | Aggregates over DataSpoke `validation_results`; counts datasets with no active freshness rule, or whose latest freshness validation result is `FAILURE` |
+
+**`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only datasets matching ANY of the listed tags or glossary terms are included in the measurement. Filters are OR-ed across all dimensions.
+
+**Breakdown format**: Every measurement result includes a `breakdown` JSONB with a unified per-dataset entry shape:
+
+```
+{"dataset_count": <total scanned>, "datasets": [{"urn": "...", "category": "<classification>", "detail": {...}}]}
+```
+
+`category` is a machine-readable classification (e.g. `short_description`, `no_freshness_rule`, `freshness_failure`). `detail` is optional, type-specific metadata (e.g. `{"length": 5, "value": "short"}` for poorly_documented, `{"rule_id": "fresh-1"}` for stale_datasets).
+
+**Health Score Aggregation** (`aggregator.py`): Enumerates datasets, computes quality scores, aggregates by department. Department mapping: dataset ownership URN -> department via HR API or static mapping table.
 
 ### Overview Service (`src/backend/overview/`)
 
@@ -314,8 +323,6 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `METRIC.CONFIG_UPDATE` | PUT definition (existing) or PATCH |
 | `METRIC.CONFIG_DELETE` | DELETE definition |
 | `METRIC.RUN_COMPLETE` | POST run measurement succeeds |
-| `METRIC.ALARM_TRIGGER` | Alarm threshold breached during run |
-| `METRIC.FINDINGS_DETECT` | Findings detected during run |
 | `METRIC.ACTIVATE` | POST activate |
 | `METRIC.DEACTIVATE` | POST deactivate |
 
@@ -361,7 +368,9 @@ Wraps Kestra's REST API via `httpx`: flow CRUD, execution lifecycle (trigger, po
 | `validation-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual | Per-config schedule |
 | `generation` | `generation.yaml` | API | On-demand |
 | `embedding-sync` | `embedding_sync.yaml` | Kafka event + API | Event-driven + on-demand |
-| `metrics` | `metrics.yaml` | API + Kestra schedule | On-demand + scheduled |
+| `metrics` | `metrics.yaml` | API + Kestra schedule | On-demand + periodic (per-config) |
+| `metrics-config-sync` | `metrics_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
+| `metrics-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) | Per-config schedule |
 | `ontology-rebuild` | `ontology_rebuild.yaml` | Kestra schedule | Weekly (configurable) |
 
 ### Workflow Design Conventions
@@ -478,7 +487,6 @@ Non-critical operations execute best-effort -- if they fail, the primary operati
 | Redis pub/sub + cache write | ValidationService | WebSocket unnotified; next read hits DB |
 | Qdrant similarity search | GenerationService | No alternative suggestions |
 | LLM sample query generation | SearchService | SQL context without example query |
-| DataHub ownership lookup | MetricsService | Issues created without assignee |
 | LLM dataset classification | OntologyRebuild | Dataset excluded from classification |
 
 ---

@@ -1,6 +1,6 @@
 id: metrics
 namespace: dataspoke
-description: "Metric collection, health aggregation, and update publishing"
+description: "Metric collection and update publishing"
 
 concurrency:
   limit: 2
@@ -11,9 +11,6 @@ inputs:
     type: STRING
   - id: metric_id
     type: STRING
-  - id: aggregate
-    type: STRING
-    defaults: "false"
   - id: dry_run
     type: STRING
     defaults: "false"
@@ -33,24 +30,6 @@ tasks:
       type: constant
       maxAttempt: 3
       interval: PT10S
-
-  - id: aggregate_health
-    type: io.kestra.plugin.core.flow.If
-    condition: "{{ inputs.aggregate == 'true' }}"
-    then:
-      - id: do_aggregate
-        type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.callback_base_url }}/internal/activities/metrics/aggregate-health"
-        method: POST
-        contentType: application/json
-        body: "{}"
-        options:
-          connectTimeout: PT5S
-          readTimeout: PT30S
-        retry:
-          type: constant
-          maxAttempt: 3
-          interval: PT10S
 
   - id: publish_metric_update
     type: io.kestra.plugin.core.http.Request

@@ -32,7 +32,6 @@ EXPECTED_TABLES = {
     "concept_relationships",
     "metric_definitions",
     "metric_results",
-    "metric_issues",
     "events",
     "department_mapping",
     "overview_config",
@@ -43,9 +42,6 @@ EXPECTED_INDEXES = {
     "ix_generation_results_urn_generated",
     "ix_metric_results_metric_measured",
     "ix_events_entity_occurred",
-    "ix_metric_issues_status_priority",
-    "ix_metric_issues_urn_status",
-    "ix_metric_issues_metric_created",
     "ix_dataset_concept_map_concept",
     "ix_concept_categories_parent",
 }
@@ -65,7 +61,7 @@ async def test_dataspoke_schema_exists(async_engine: AsyncEngine) -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_15_tables_created(async_engine: AsyncEngine) -> None:
+async def test_all_14_tables_created(async_engine: AsyncEngine) -> None:
     async with async_engine.connect() as conn:
         result = await conn.execute(
             sa.text(
@@ -102,7 +98,6 @@ async def test_column_types(async_engine: AsyncEngine) -> None:
         ("validation_results", "assertion_result", "text"),
         ("metric_definitions", "id", "text"),
         ("overview_config", "id", "integer"),
-        ("metric_issues", "estimated_fix_minutes", "integer"),
     ]
     async with async_engine.connect() as conn:
         for table, column, expected_type in checks:

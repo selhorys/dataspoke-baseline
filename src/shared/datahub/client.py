@@ -168,15 +168,32 @@ class DataHubClient:
         version_list = inner.get("semanticVersionList") or []
         return [v for v in version_list if v.get("semanticVersion")]
 
-    async def enumerate_datasets(self, platform: str | None = None) -> list[str]:
-        extra_filters = []
+    async def enumerate_datasets(
+        self,
+        platform: str | None = None,
+        tags: list[str] | None = None,
+        glossary_terms: list[str] | None = None,
+    ) -> list[str]:
+        """Return all dataset URNs matching the given filters (OR-ed).
+
+        Each filter (platform, tag, glossary term) becomes its own AND-group so
+        DataHub OR-combines them. When no filters are provided, all datasets are
+        returned.
+        """
+        or_groups: list[dict] = []
         if platform:
-            extra_filters.append({"field": "platform", "value": f"urn:li:dataPlatform:{platform}"})
+            or_groups.append(
+                {"and": [{"field": "platform", "value": f"urn:li:dataPlatform:{platform}"}]}
+            )
+        for tag in (tags or []):
+            or_groups.append({"and": [{"field": "tags", "value": tag}]})
+        for term in (glossary_terms or []):
+            or_groups.append({"and": [{"field": "glossaryTerms", "value": term}]})
 
         def _fetch() -> list[str]:
             result = self._graph.get_urns_by_filter(
                 entity_types=["dataset"],
-                extra_or_filters=extra_filters if extra_filters else None,
+                extra_or_filters=or_groups if or_groups else None,
             )
             return list(result) if result else []
 

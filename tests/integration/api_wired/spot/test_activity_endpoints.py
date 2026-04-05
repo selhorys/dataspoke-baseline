@@ -149,7 +149,7 @@ async def test_run_metric_activity_dry_run(
                 "title": "Activity Test Metric",
                 "description": "Direct activity endpoint test",
                 "theme": "quality",
-                "measurement_query": {"type": "dataset_count"},
+                "measurement_query": {"type": "poorly_documented"},
             },
         )
         assert resp.status_code in (200, 201)

@@ -283,10 +283,9 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "dataset_count"},
+            measurement_query={"type": "poorly_documented"},
             is_active=False,
         )
-        assert req.alarm_enabled is False
         assert req.is_active is False
 
     def test_upsert_request_active_with_schedule(self) -> None:
@@ -294,7 +293,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "dataset_count"},
+            measurement_query={"type": "poorly_documented"},
             is_active=True,
             schedule_cron="0 0 * * *",
         )
@@ -306,7 +305,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "dataset_count"},
+            measurement_query={"type": "poorly_documented"},
             is_active=True,
         )
         assert req.is_active is True
@@ -319,10 +318,8 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "dataset_count"},
+            measurement_query={"type": "poorly_documented"},
             schedule_cron=None,
-            alarm_enabled=False,
-            alarm_threshold=None,
             is_active=True,
             created_at=now,
             updated_at=now,

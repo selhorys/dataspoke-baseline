@@ -16,7 +16,6 @@ from src.shared.db.models import (
     GenerationResult,
     IngestionConfig,
     MetricDefinition,
-    MetricIssue,
     MetricResult,
     OverviewConfig,
     ValidationConfig,
@@ -35,7 +34,6 @@ ALL_MODELS = [
     ConceptRelationship,
     MetricDefinition,
     MetricResult,
-    MetricIssue,
     Event,
     DepartmentMapping,
     OverviewConfig,
@@ -53,15 +51,14 @@ EXPECTED_TABLES = {
     "concept_relationships",
     "metric_definitions",
     "metric_results",
-    "metric_issues",
     "events",
     "department_mapping",
     "overview_config",
 }
 
 
-def test_all_15_models_exist() -> None:
-    assert len(ALL_MODELS) == 15
+def test_all_14_models_exist() -> None:
+    assert len(ALL_MODELS) == 14
 
 
 def test_table_names_match() -> None:
@@ -85,7 +82,6 @@ def test_uuid_primary_keys() -> None:
         ConceptCategory,
         ConceptRelationship,
         MetricResult,
-        MetricIssue,
         Event,
     ]
     for model in uuid_pk_models:
@@ -190,11 +186,19 @@ def test_metric_result_fk() -> None:
     assert fks[0].column.table.name == "metric_definitions"
 
 
-def test_metric_issue_fk() -> None:
-    table = MetricIssue.__table__
-    fks = list(table.foreign_keys)
-    assert len(fks) == 1
-    assert fks[0].column.table.name == "metric_definitions"
+def test_metric_result_has_no_alarm_or_run_id_columns() -> None:
+    """Alarm and run_id columns were removed from metric_results in migration 013."""
+    col_names = {col.name for col in MetricResult.__table__.columns}
+    assert "alarm_triggered" not in col_names
+    assert "run_id" not in col_names
+
+
+def test_metric_definition_has_no_alarm_columns() -> None:
+    """Alarm fields were removed from metric_definitions in migration 013."""
+    col_names = {col.name for col in MetricDefinition.__table__.columns}
+    assert "alarm_enabled" not in col_names
+    assert "alarm_threshold" not in col_names
+    assert "alarm_recipients" not in col_names
 
 
 def test_indexes_exist() -> None:
@@ -204,9 +208,6 @@ def test_indexes_exist() -> None:
         "ix_generation_results_urn_generated",
         "ix_metric_results_metric_measured",
         "ix_events_entity_occurred",
-        "ix_metric_issues_status_priority",
-        "ix_metric_issues_urn_status",
-        "ix_metric_issues_metric_created",
         "ix_dataset_concept_map_concept",
         "ix_concept_categories_parent",
     }
@@ -219,6 +220,6 @@ def test_indexes_exist() -> None:
     )
 
 
-def test_base_metadata_has_15_tables() -> None:
+def test_base_metadata_has_14_tables() -> None:
     tables_in_schema = [t for t in Base.metadata.sorted_tables if t.schema == "dataspoke"]
-    assert len(tables_in_schema) == 15
+    assert len(tables_in_schema) == 14
