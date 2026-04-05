@@ -13,10 +13,20 @@ class CreateValidationConfigRequest(BaseModel):
     dataset_urn: str = Field(description="DataHub URN of the dataset to validate, e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'")
     rules: list[dict[str, Any]] = Field(
         description=(
-            "List of validation rules. Each rule is a dict with at minimum a 'type' key.\n"
-            "Supported types: freshness, volume, field, schema, sql, custom.\n"
-            "Example: [{\"type\": \"freshness\", \"max_age_hours\": 24}, "
-            "{\"type\": \"volume\", \"min_rows\": 100}]"
+            "List of validation rules. Each rule is a dict with at minimum `rule_id` and `type` keys.\n\n"
+            "**Common fields** (all types): `rule_id` (unique ID), `type`, "
+            "`partition` (optional: `{\"field\": \"...\", \"order\": \"desc\"}`)\n\n"
+            "**Structure by type:**\n"
+            "- **freshness**: `lookback_interval` (e.g. `\"24 hours\"`), `last_modified_field` (column name)\n"
+            "- **volume**: `metric` (`\"row_count\"`), `condition` (`{\"type\": \"between\", \"min\": N, \"max\": N}`)\n"
+            "- **field**: `field` (column name), `metric` (`\"null_count\"`, `\"distinct_count\"`, etc.), "
+            "`condition` (`{\"type\": \"less_than_or_equal_to\", \"value\": N}`)\n"
+            "- **schema**: `fields` (list of `{\"field\": \"col\", \"type\": \"VARCHAR\"}`), "
+            "`compatibility` (`\"superset\"` or `\"exact\"`)\n"
+            "- **sql**: `statement` (SQL query returning a scalar), "
+            "`condition` (`{\"type\": \"equal_to\", \"value\": 0}`)\n"
+            "- **custom**: `subtype` (e.g. `\"sql_timeseries\"`), `sql`, `partition` (list), "
+            "`order` (list), `values` (list), optional `ml_validation` config"
         )
     )
     schedule_cron: str | None = Field(default=None, description="Cron expression for periodic validation runs, e.g. '0 6 * * *' for daily at 06:00 UTC. Required when is_active is true.")
@@ -26,15 +36,67 @@ class CreateValidationConfigRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)",
+                "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
                 "rules": [
-                    {"type": "freshness", "max_age_hours": 24},
-                    {"type": "volume", "min_rows": 100},
-                    {"type": "field", "column": "order_id", "not_null": True},
+                    {
+                        "rule_id": "r-fresh-001",
+                        "type": "freshness",
+                        "lookback_interval": "24 hours",
+                        "last_modified_field": "updated_at",
+                        "partition": {"field": "updated_at", "order": "desc"},
+                    },
+                    {
+                        "rule_id": "r-vol-001",
+                        "type": "volume",
+                        "metric": "row_count",
+                        "condition": {"type": "between", "min": 10, "max": 10000},
+                    },
+                    {
+                        "rule_id": "r-field-001",
+                        "type": "field",
+                        "field": "list_price",
+                        "metric": "null_count",
+                        "condition": {"type": "less_than_or_equal_to", "value": 0},
+                    },
+                    {
+                        "rule_id": "r-schema-001",
+                        "type": "schema",
+                        "fields": [
+                            {"field": "isbn", "type": "VARCHAR"},
+                            {"field": "title", "type": "VARCHAR"},
+                            {"field": "list_price", "type": "NUMERIC"},
+                        ],
+                        "compatibility": "superset",
+                    },
+                    {
+                        "rule_id": "r-sql-001",
+                        "type": "sql",
+                        "statement": "SELECT COUNT(*) FROM catalog.title_master WHERE list_price <= 0",
+                        "condition": {"type": "equal_to", "value": 0},
+                    },
+                    {
+                        "rule_id": "r-custom-ts-001",
+                        "type": "custom",
+                        "subtype": "sql_timeseries",
+                        "description": "Daily volume and null-rate trend for anomaly detection",
+                        "sql": (
+                            "SELECT updated_at::date AS day, COUNT(*) AS row_count, "
+                            "SUM(CASE WHEN list_price IS NULL THEN 1 ELSE 0 END)::float / COUNT(*) AS null_rate "
+                            "FROM catalog.title_master GROUP BY day"
+                        ),
+                        "partition": ["day"],
+                        "order": ["day"],
+                        "values": ["row_count", "null_rate"],
+                        "ml_validation": {
+                            "targets": ["null_rate"],
+                            "model": "range",
+                            "lookback_partitions": 30,
+                        },
+                    },
                 ],
                 "schedule_cron": "0 6 * * *",
                 "is_active": True,
-                "owner": "analyst@example.com",
+                "owner": "de-lead@imazon.com",
             }
         }
     }
@@ -65,12 +127,37 @@ class PatchValidationConfigRequest(BaseModel):
             )
         return self
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "rules": [
+                    {
+                        "rule_id": "r-fresh-001",
+                        "type": "freshness",
+                        "lookback_interval": "12 hours",
+                        "last_modified_field": "updated_at",
+                    },
+                ],
+                "schedule_cron": "0 */6 * * *",
+                "is_active": True,
+            }
+        }
+    }
+
 
 class RunValidationRequest(BaseModel):
     partition: dict[str, Any] | None = Field(
         default=None,
         description="Optional partition filter for incremental validation. Example: {\"date\": \"2024-01-15\"} or {\"partition_id\": 42}"
     )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "partition": {"updated_at": "2026-04-04"},
+            }
+        }
+    }
 
 
 class ValidationConfigResponse(SingleResponse):
@@ -82,6 +169,25 @@ class ValidationConfigResponse(SingleResponse):
     owner: str = Field(description="Owner identifier responsible for this validation config")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "resp_time": "2026-04-05T10:00:00Z",
+                "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+                "rules": [
+                    {"rule_id": "r-fresh-001", "type": "freshness", "lookback_interval": "24 hours", "last_modified_field": "updated_at"},
+                    {"rule_id": "r-vol-001", "type": "volume", "metric": "row_count", "condition": {"type": "between", "min": 10, "max": 10000}},
+                ],
+                "schedule_cron": "0 6 * * *",
+                "is_active": True,
+                "owner": "de-lead@imazon.com",
+                "created_at": "2026-04-01T06:00:00Z",
+                "updated_at": "2026-04-04T06:00:00Z",
+            }
+        }
+    }
 
 
 class ValidationConfigListResponse(PaginatedResponse):
@@ -100,6 +206,24 @@ class ValidationResultResponse(SingleResponse):
     run_id: str = Field(description="Kestra execution ID for the run that produced this result")
     measured_at: datetime = Field(description="UTC timestamp when the measurement was taken")
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "resp_time": "2026-04-05T10:00:00Z",
+                "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+                "rule_id": "r-field-001",
+                "partition": {"updated_at": "2026-04-04"},
+                "values": {"null_count": 0},
+                "validation": {"null_count": True},
+                "assertion_result": "SUCCESS",
+                "issues": [],
+                "run_id": "kestra-exec-20260404-001",
+                "measured_at": "2026-04-04T06:05:12Z",
+            }
+        }
+    }
+
 
 class ValidationResultListResponse(PaginatedResponse):
     results: list[ValidationResultResponse] = Field(default=[], description="Page of validation result records")
@@ -112,3 +236,17 @@ class RunResultResponse(SingleResponse):
     passed: int = Field(default=0, description="Number of rules that passed")
     failed: int = Field(default=0, description="Number of rules that failed")
     errored: int = Field(default=0, description="Number of rules that encountered an error")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "resp_time": "2026-04-05T10:00:00Z",
+                "run_id": "kestra-exec-20260404-001",
+                "status": "success",
+                "total": 6,
+                "passed": 5,
+                "failed": 1,
+                "errored": 0,
+            }
+        }
+    }

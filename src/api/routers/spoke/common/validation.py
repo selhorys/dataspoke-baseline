@@ -49,7 +49,12 @@ async def get_validation_configs(
     is_active_filter: bool | None = Query(default=None, alias="is_active"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigListResponse:
-    """List validation configs with optional active filter and pagination."""
+    """List validation configs with optional active filter and pagination.
+
+    Returns all validation configs across datasets. Use the `is_active` query
+    parameter to filter by scheduling status. Sort by `created_at_asc` or
+    `created_at_desc`.
+    """
     order_by = parse_sort(sort, {"created_at": ValidationConfig.created_at}, None)
     configs, total_count = await service.list_configs(
         offset=offset, limit=limit, is_active_filter=is_active_filter, order_by=order_by
@@ -67,7 +72,11 @@ async def get_validation_config(
     dataset_urn: str,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    """Retrieve a single validation config by dataset URN."""
+    """Retrieve a single validation config by dataset URN.
+
+    Returns the complete config including all rules, schedule, owner, and
+    timestamps. Returns 404 if no config exists for the given URN.
+    """
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
@@ -79,7 +88,12 @@ async def get_validation_config_attr(
     dataset_urn: str,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    """Retrieve the attribute sub-resource of a validation config."""
+    """Retrieve the attribute sub-resource of a validation config.
+
+    Equivalent to the config detail endpoint. This path follows the
+    `attr/method/event` sub-resource convention used across DataSpoke
+    domain resources.
+    """
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
@@ -92,7 +106,13 @@ async def patch_validation_config_attr(
     body: PatchValidationConfigRequest,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    """Partially update a validation config's attributes."""
+    """Partially update a validation config's attributes.
+
+    Accepts any combination of `rules`, `schedule_cron`, and `is_active`.
+    When `rules` is provided, it replaces the entire rule set (no partial
+    rule merge). Setting `is_active` to true requires `schedule_cron` in
+    the same request.
+    """
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return _config_response(config)
@@ -109,7 +129,14 @@ async def get_validation_result(
     partition: str | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
-    """List validation results with optional time range, partition, and pagination filters."""
+    """List validation results with optional time range, partition, and pagination filters.
+
+    Each result is an assertion outcome stored as a DataHub `assertionRunEvent`.
+    Contains measured values, per-check pass/fail mapping, and the overall
+    assertion outcome (SUCCESS, FAILURE, or ERROR). Filter by time range with
+    `from`/`to` and by partition using a JSON-encoded `partition` query parameter
+    (e.g., `?partition={"updated_at":"2026-04-04"}`).
+    """
     order_by = parse_sort(sort, {"measured_at": ValidationResult.measured_at}, None)
     partition_filter: dict | None = None
     if partition:
@@ -156,7 +183,14 @@ async def post_validation_run(
     service: ValidationService = Depends(get_validation_service),
     cache: RedisClient = Depends(get_redis),
 ) -> RunResultResponse:
-    """Trigger a validation run for the specified dataset."""
+    """Trigger a validation run for the specified dataset.
+
+    Executes all rules in the dataset's validation config against the target
+    partition. If `partition` is provided in the request body, that partition is
+    targeted; otherwise the latest partition is determined from each rule's
+    partition/order variables. Returns a summary with pass/fail/error counts.
+    Concurrent runs for the same dataset are rejected with 409.
+    """
     from src.backend.validation.service import run_validation_with_lock
 
     config = await service.get_config(dataset_urn)
@@ -183,7 +217,13 @@ async def get_validation_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> EventListResponse:
-    """List events for a validation config with time range and pagination."""
+    """List events for a validation config with time range and pagination.
+
+    Returns event records for the dataset's validation lifecycle (config
+    create/update, run complete). Events are ordered by `occurred_at`
+    (newest first by default). Use `from`/`to` for time-range filtering
+    and `sort=occurred_at_asc` to reverse order.
+    """
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by

@@ -16,7 +16,7 @@ Your job is to write production-quality Next.js + TypeScript code in `src/fronte
    - `spec/feature/FRONTEND_DE.md` — Data Engineering workspace (if building DE features)
    - `spec/feature/FRONTEND_DA.md` — Data Analysis workspace (if building DA features)
    - `spec/feature/FRONTEND_DG.md` — Data Governance workspace (if building DG features)
-2. Read `src/api/routers/` — the API contract your frontend consumes. Alternatively, check the live Swagger UI at `http://localhost:8000/docs` if the API is running.
+2. Read `src/api/routers/` — the API contract your frontend consumes. Alternatively, check the live ReDoc UI at `http://localhost:8000/redoc` if the API is running.
 3. Scan `src/frontend/` with Glob. If the directory is empty or missing, you are **bootstrapping from scratch** — initialize the Next.js project and establish the layout below before building features.
 
 ## Source layout

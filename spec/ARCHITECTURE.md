@@ -95,7 +95,7 @@ All REST APIs conform to [`API_DESIGN_PRINCIPLE_en.md`](API_DESIGN_PRINCIPLE_en.
 
 The FastAPI implementation in `src/api/` is the **single source of truth** for the API contract. FastAPI auto-generates OpenAPI 3.0 documentation from Pydantic models and route definitions:
 - AI agents read route definitions and Pydantic schemas directly from `src/api/` for accurate, always-in-sync API knowledge.
-- Frontend development references the live Swagger UI (`/docs`) or reads `src/api/routers/` for the current contract.
+- Frontend development references the live ReDoc UI (`/redoc`) or reads `src/api/routers/` for the current contract.
 - Feature specs in `spec/feature/API.md` define the architectural route catalogue; the implementation must conform to it.
 
 ### 4. Layer Separation

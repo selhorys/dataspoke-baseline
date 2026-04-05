@@ -202,7 +202,7 @@ Parse `$ARGUMENTS` and the user's request for these options:
 3. Wait a few seconds, then read the background task output to confirm the banner appeared and the server started successfully.
 4. Report the running state to the user:
    - API URL (`http://localhost:<port>`)
-   - Swagger UI (`http://localhost:<port>/docs`)
+   - ReDoc UI (`http://localhost:<port>/redoc`)
    - Components started
    - How to stop: user can press Ctrl+C or ask to stop
 

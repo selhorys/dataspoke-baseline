@@ -123,7 +123,37 @@ def create_app() -> FastAPI:
         },
         {
             "name": "common/validation",
-            "description": "Validation config CRUD, run, and result queries. Requires common auth.",
+            "description": (
+                "Validation config CRUD, run, and result queries. Requires common auth.\n\n"
+                "DataSpoke provides a convenience and customization layer on top of "
+                "[DataHub's assertion framework](https://datahubproject.io/docs/managed-datahub/observe/assertions). "
+                "Each validation config registers assertion rules per dataset; DataSpoke executes them and "
+                "reports results back to DataHub as `assertionRunEvent` timeseries aspects.\n\n"
+                "## Supported Rule Types\n\n"
+                "| Type | Purpose | DataHub Assertion |\n"
+                "|------|---------|-------------------|\n"
+                "| **freshness** | Verify data was updated within a lookback window | "
+                "[Freshness](https://datahubproject.io/docs/managed-datahub/observe/freshness-assertions) |\n"
+                "| **volume** | Check row count stays within expected bounds | "
+                "[Volume](https://datahubproject.io/docs/managed-datahub/observe/volume-assertions) |\n"
+                "| **field** | Validate column-level metrics (null count, distinct count, min/max, etc.) | "
+                "[Column](https://datahubproject.io/docs/managed-datahub/observe/column-assertions) |\n"
+                "| **schema** | Ensure required fields exist with expected types | "
+                "[Schema](https://datahubproject.io/docs/managed-datahub/observe/schema-assertions) |\n"
+                "| **sql** | Run a custom SQL statement and assert on the scalar result | "
+                "[Custom SQL](https://datahubproject.io/docs/managed-datahub/observe/custom-sql-assertions) |\n"
+                "| **custom** | DataSpoke-original logic (e.g., `sql_timeseries` with ML-based anomaly detection) | N/A (DataSpoke extension) |\n\n"
+                "All rule types support `partition` and `order` variables for targeting specific data partitions. "
+                "The `custom` type with `subtype: sql_timeseries` enables trend tracking with configurable "
+                "ML validation (model type, lookback window, target columns).\n\n"
+                "Rule format follows the "
+                "[DataHub Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec) "
+                "with DataSpoke extensions (`rule_id`, `partition`, `order`, `ml_validation`)."
+            ),
+            "externalDocs": {
+                "description": "DataHub Assertion Entity — assertionInfo and assertionRunEvent aspects",
+                "url": "https://datahubproject.io/docs/generated/metamodel/entities/assertion",
+            },
         },
         {
             "name": "common/gen",
@@ -167,7 +197,7 @@ def create_app() -> FastAPI:
         title="DataSpoke API",
         version="0.1.0",
         description="Sidecar extension to DataHub — DataSpoke API server.",
-        docs_url="/docs",
+        docs_url=None,
         redoc_url="/redoc",
         lifespan=lifespan,
         openapi_tags=openapi_tags,

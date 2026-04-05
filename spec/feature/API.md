@@ -62,7 +62,7 @@ DataHub  Postgres  Qdrant / Redis / Kestra
 The FastAPI implementation in `src/api/` is the **single source of truth** for the API
 contract. Pydantic schemas and route definitions auto-generate OpenAPI 3.0 documentation,
 ensuring docs are always in sync with the implementation. AI agents and the frontend team
-reference `src/api/routers/` for the current contract or the live Swagger UI at `/docs`.
+reference `src/api/routers/` for the current contract or the live ReDoc UI at `/redoc`.
 This spec (`API.md`) defines the architectural route catalogue; the implementation must
 conform to it.
 

@@ -41,7 +41,6 @@ uv run uvicorn src.api.main:app --reload --port 8000
 ```
 
 The interactive docs are available at:
-- Swagger UI: <http://localhost:8000/docs>
 - ReDoc: <http://localhost:8000/redoc>
 
 ---
