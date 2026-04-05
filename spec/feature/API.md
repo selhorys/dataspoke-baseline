@@ -238,6 +238,12 @@ identity with the ingestion data stored under
 `common/data/{dataset_urn}/attr/ingestion/`. Useful for operations dashboards and bulk
 management.
 
+DataSpoke ingestion implements source-agnostic metadata extraction built on DataHub's
+entity-aspect model — connecting to heterogeneous data sources and emitting results as
+standard DataHub aspects. Design framework, source abstraction model, and aspect emission
+details: see [BACKEND §Ingestion Service](BACKEND.md#ingestion-service-srcbackendingestion)
+and [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
+
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
@@ -253,6 +259,13 @@ A cross-dataset view of validation configurations, results, and events. Each ent
 dataset identity with the validation data stored under
 `common/data/{dataset_urn}/attr/validation/`. Useful for quality dashboards and bulk rule
 management.
+
+DataSpoke validation is a convenience and customization layer on top of DataHub's native
+assertion framework and the Open Assertions Spec — wrapping all six assertion types and
+adding DataSpoke-original extensions (partition awareness, ML-based anomaly detection).
+Design framework, assertion type catalogue, and comparison with DataHub native assertions:
+see [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)
+and [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -306,6 +319,12 @@ department-wide signals rather than per-dataset observations.
 
 > **Pure aggregation principle**: A metric does not observe the data estate directly. It
 > aggregates results that already exist in DataHub metadata or DataSpoke validation results.
+
+Metrics are read-only consumers of DataHub metadata — they never write aspects or connect
+to source databases. Design framework (observatory pattern, governance
+dimensions), built-in metric types, and extensibility model: see
+[BACKEND §Metrics Service](BACKEND.md#metrics-service-srcbackendmetrics) and
+[DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
 **`measurement_query.dataset_filter`**: Optional filter object in the metric definition.
 Fields: `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary

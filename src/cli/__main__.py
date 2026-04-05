@@ -81,7 +81,6 @@ def _print_banner(port: int, components: list[str], env_file: Path) -> None:
         "  DataSpoke Dev Server",
         _LINE,
         f"  API:       http://localhost:{port}",
-        f"  Swagger:   http://localhost:{port}/docs",
         f"  ReDoc:     http://localhost:{port}/redoc",
         f"  Kestra UI: {kestra_url}",
         "",

@@ -148,6 +148,41 @@ Thin read-through service. Reads dataset identity/attributes from DataHub, aggre
 
 **Covers**: UC1 (Deep Technical Spec Ingestion)
 
+#### Design Framework — DataHub Entity-Aspect Model & Source-Agnostic Extraction
+
+DataSpoke ingestion implements a **source-agnostic metadata extraction** pattern built on [DataHub's entity-aspect model](https://datahubproject.io/docs/what/aspect). In DataHub, every dataset entity is described by composable _aspects_ — typed metadata facets such as `DatasetPropertiesClass` (human-readable name, description), `SchemaMetadataClass` (column-level schema), and `StatusClass` (entity lifecycle). DataSpoke's ingestion pipeline discovers schema metadata from heterogeneous data sources and expresses the results as standard DataHub aspects via the REST Emitter API.
+
+This is architecturally similar to DataHub's own ingestion framework (which uses CLI-driven _recipes_ with pluggable _sources_), but DataSpoke provides a simplified, API-driven model optimized for on-demand and scheduled metadata refresh:
+
+| Concern | DataHub Native Ingestion | DataSpoke Ingestion |
+|---------|--------------------------|---------------------|
+| Trigger | CLI batch (`datahub ingest`) | HTTP API + Kestra cron |
+| Configuration | YAML recipes | JSONB config in PostgreSQL |
+| Source plugins | 200+ community connectors | Focused extractors (extensible) |
+| Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |
+
+**Source abstraction**: The `source_type` / `locator` / `identifier` / `auth` model provides a uniform interface across data platforms. Each `source_type` maps to a dedicated extractor that handles connection, schema discovery, and type mapping — mirroring DataHub's source plugin architecture but scoped to DataSpoke's metadata-first requirements rather than full profiling and lineage extraction.
+
+| Source Type | Status | Locator | Identifier |
+|------------|--------|---------|------------|
+| **POSTGRESQL** | Implemented | host, port | database, schema_name, table |
+| **KAFKA** | Implemented | bootstrap_servers | topic, cluster |
+| **MYSQL** | Planned | host, port | database, schema_name, table |
+| **ORACLE** | Planned | host, port | database, schema_name, table |
+| **BIGQUERY** | Planned | project_id | dataset, table |
+| **SNOWFLAKE** | Planned | account_id | database, schema_name, table |
+
+**Aspect emission**: A successful non-dry-run ingestion emits three aspects to DataHub per discovered dataset:
+- `StatusClass(removed=False)` — marks the entity as active
+- `DatasetPropertiesClass` — name, qualified name, description, custom properties (source, database, schema)
+- `SchemaMetadataClass` — field list with native-to-DataHub type mapping (e.g., PostgreSQL `integer` → DataHub `NUMBER`)
+
+See [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference) for the full aspect catalogue.
+
+**`dry_run` semantics**: Extracts and validates source metadata without calling DataHub's REST Emitter — useful for verifying connection parameters and previewing schema before committing to DataHub.
+
+#### Implementation
+
 CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
 
 Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `source_type` (`POSTGRESQL`, `KAFKA` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_cron` (cron trigger), `status` (Kestra registration outcome).
@@ -167,7 +202,35 @@ Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEM
 
 **Covers**: UC2 (Data Validation), UC3 (Predictive SLA via timeseries validation)
 
-A convenience and customization layer on top of DataHub's native assertion framework. Does **not** implement its own quality scoring engine. CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule execution, assertion registration in DataHub, and result reporting. Config upsert registers the dataset URN in `dataset_registry` (requires the dataset to already exist in DataHub).
+#### Design Framework — DataHub Assertion Framework & Open Assertions Spec
+
+DataSpoke validation is a **convenience and customization layer** on top of DataHub's native [assertion framework](https://datahubproject.io/docs/managed-datahub/observe/assertions) — it does not implement its own quality scoring engine. DataHub models data quality through _assertions_: named checks that evaluate a specific quality dimension of a dataset and report pass/fail results. The [Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec) defines six assertion types that cover the primary data quality dimensions:
+
+| DataHub Assertion Type | Quality Dimension | Example |
+|----------------------|------------------|---------|
+| [FRESHNESS](https://datahubproject.io/docs/managed-datahub/observe/freshness-assertions) | Timeliness | "Table updated within last 24 hours" |
+| [VOLUME](https://datahubproject.io/docs/managed-datahub/observe/volume-assertions) | Completeness | "Row count between 1,000 and 100,000" |
+| [FIELD](https://datahubproject.io/docs/managed-datahub/observe/column-assertions) | Accuracy / Validity | "Column `email` matches regex pattern" |
+| [SCHEMA](https://datahubproject.io/docs/managed-datahub/observe/schema-assertions) | Conformance | "Required columns exist with expected types" |
+| [SQL](https://datahubproject.io/docs/managed-datahub/observe/custom-sql-assertions) | Custom | "No orphaned foreign keys in `orders`" |
+| CUSTOM | Any | DataSpoke-extended assertions (not in DataHub native) |
+
+DataSpoke wraps all six types and adds a **DataSpoke-original extension**: `custom` type with `subtype: "sql_timeseries"`, which enables partition-aware SQL validation with optional ML-based anomaly detection. This is designed for SQL-runnable datasets (PostgreSQL, Trino, Snowflake) where traditional threshold-based assertions are insufficient — e.g., detecting whether today's row count deviates from the day-of-week historical pattern.
+
+**How DataSpoke extends DataHub assertions**:
+
+| Concern | DataHub Native Assertions | DataSpoke Validation |
+|---------|--------------------------|---------------------|
+| Configuration | Per-assertion definition | Per-dataset bundled config (multiple rules in one `validation_config`) |
+| Partition targeting | Manual | Automatic via `partition`/`order` variables (SQL window-function semantics) |
+| Result storage | `assertionRunEvent` timeseries aspect | DataHub aspect + PostgreSQL `validation_results` (for ML training data) |
+| ML validation | Not supported | `ml_validation` extension (range model, day-of-week baseline) |
+
+DataSpoke registers assertion definitions (`assertionInfo` aspect) and reports results (`assertionRunEvent` aspect) back to DataHub, making DataSpoke-managed validations visible in DataHub's native assertion UI. See [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects) for the assertion entity model.
+
+#### Implementation
+
+CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule execution, assertion registration in DataHub, and result reporting. Config upsert registers the dataset URN in `dataset_registry` (requires the dataset to already exist in DataHub).
 
 **Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema, SQL, custom. Each rule can specify partition and order variables (like SQL window functions) for determining the target partition.
 
@@ -232,18 +295,31 @@ Concept category CRUD, concept-to-dataset mapping, cross-concept relationship ma
 
 **Covers**: UC6 (Enterprise Metrics Dashboard)
 
+#### Design Framework — Observatory Pattern & Data Governance Dimensions
+
 > **Core principle**: Metrics are pure aggregation over pre-existing data. A metric does
 > not observe the data estate directly — it aggregates results that already exist in
 > DataHub metadata or DataSpoke validation results.
 
+DataSpoke metrics implement what governance frameworks call the **observatory pattern**: metrics aggregate pre-existing metadata rather than directly probing source data. This architectural separation means the metrics layer has no data source credentials, no SQL execution against production databases, and no network access to external systems beyond DataHub's API. This makes metrics lightweight, fast, and free of credential management.
+
+Built-in metric types are categorized by the data governance quality dimension they measure:
+
+| Governance Dimension | Metric Type | Data Source |
+|---------------------|-------------|-------------|
+| **Completeness** (metadata) | `poorly_documented` | DataHub `DatasetPropertiesClass.description` — counts datasets where description < 20 chars |
+| **Freshness** (timeliness) | `stale_datasets` | DataSpoke `validation_results` — counts datasets with no active freshness rule or failing freshness validation |
+| *(extensible)* | Custom types | Any DataHub aspect or DataSpoke result table |
+
+New metric types are added by implementing a measurement function that reads from DataHub aspects or DataSpoke tables — never by adding direct source connections. This constraint preserves the observatory pattern.
+
+**DataHub relationship**: Metrics are **read-only consumers** of DataHub metadata. They read aspects (`DatasetPropertiesClass`, `OwnershipClass`, `globalTags`, `glossaryTerms`) via the DataHub SDK but never write aspects. Metric results are stored exclusively in DataSpoke's PostgreSQL `metric_results` table. See [DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature) for the full read/write matrix.
+
+**`measurement_query` model**: Each metric definition carries a `measurement_query` JSONB with a `type` field that selects the aggregation function. The query vocabulary is currently fixed (`poorly_documented`, `stale_datasets`); unsupported types return `422 UNSUPPORTED_METRIC_TYPE`. The vocabulary is extensible by adding new measurement functions to the metrics service without schema changes.
+
+#### Implementation
+
 Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-demand measurement execution. Activate/deactivate metric scheduling. No alarm evaluation, no issue tracking, no notification dispatch.
-
-**Built-in metric types**:
-
-| Metric Type | Description |
-|------------|-------------|
-| `poorly_documented` | Reads `DatasetPropertiesClass.description` from DataHub; counts datasets where description length < 20 chars |
-| `stale_datasets` | Aggregates over DataSpoke `validation_results`; counts datasets with no active freshness rule, or whose latest freshness validation result is `FAILURE` |
 
 **`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only datasets matching ANY of the listed tags or glossary terms are included in the measurement. Filters are OR-ed across all dimensions.
 

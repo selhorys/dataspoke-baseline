@@ -119,7 +119,45 @@ def create_app() -> FastAPI:
     openapi_tags = [
         {
             "name": "common/ingestion",
-            "description": "Ingestion config CRUD and run operations. Requires common auth (de/da/dg/admin groups).",
+            "description": (
+                "Ingestion config CRUD and run operations. Requires common auth (de/da/dg/admin groups).\n\n"
+                "DataSpoke ingestion implements a **source-agnostic metadata extraction** pattern built on "
+                "[DataHub's entity-aspect model](https://datahubproject.io/docs/what/aspect). "
+                "Each dataset in DataHub is described by composable *aspects* — typed metadata facets. "
+                "DataSpoke's ingestion pipeline connects to heterogeneous data sources, discovers schema "
+                "metadata, and expresses the results as standard DataHub aspects via the REST Emitter API.\n\n"
+                "## DataSpoke vs DataHub Native Ingestion\n\n"
+                "| Concern | DataHub Native Ingestion | DataSpoke Ingestion |\n"
+                "|---------|--------------------------|---------------------|\n"
+                "| Trigger | CLI batch (`datahub ingest`) | HTTP API + Kestra cron |\n"
+                "| Configuration | YAML recipes | JSONB config in PostgreSQL |\n"
+                "| Source plugins | 200+ community connectors | Focused extractors (extensible) |\n"
+                "| Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |\n\n"
+                "## Source Abstraction\n\n"
+                "The `source_type` / `locator` / `identifier` / `auth` model provides a uniform interface "
+                "across data platforms. Each `source_type` maps to a dedicated extractor that handles "
+                "connection, schema discovery, and type mapping.\n\n"
+                "| Source Type | Status | Locator | Identifier |\n"
+                "|------------|--------|---------|------------|\n"
+                "| **POSTGRESQL** | Implemented | host, port | database, schema_name, table |\n"
+                "| **KAFKA** | Implemented | bootstrap_servers | topic, cluster |\n"
+                "| **MYSQL** | Planned | host, port | database, schema_name, table |\n"
+                "| **ORACLE** | Planned | host, port | database, schema_name, table |\n"
+                "| **BIGQUERY** | Planned | project_id | dataset, table |\n"
+                "| **SNOWFLAKE** | Planned | account_id | database, schema_name, table |\n\n"
+                "## Aspect Emission\n\n"
+                "A successful non-dry-run ingestion emits three aspects to DataHub per discovered dataset:\n"
+                "- `StatusClass(removed=False)` — marks the entity as active\n"
+                "- `DatasetPropertiesClass` — name, qualified name, description, custom properties\n"
+                "- `SchemaMetadataClass` — field list with native-to-DataHub type mapping "
+                "(e.g., PostgreSQL `integer` → DataHub `NUMBER`)\n\n"
+                "**`dry_run` mode**: Extracts and validates source metadata without calling DataHub's "
+                "REST Emitter — useful for verifying connection parameters and previewing schema."
+            ),
+            "externalDocs": {
+                "description": "DataHub Dataset Entity — aspect catalog and REST endpoints",
+                "url": "https://datahubproject.io/docs/generated/metamodel/entities/dataset",
+            },
         },
         {
             "name": "common/validation",
@@ -173,7 +211,41 @@ def create_app() -> FastAPI:
         },
         {
             "name": "dg/metric",
-            "description": "Metric definitions, results, issues, and alarms. Requires DG auth (dg/admin groups).",
+            "description": (
+                "Governance metric definitions, measurement results, and scheduling. "
+                "Requires DG auth (dg/admin groups).\n\n"
+                "## Pure Aggregation Principle\n\n"
+                "DataSpoke metrics implement the **observatory pattern**: a metric does not observe the "
+                "data estate directly — it aggregates results that already exist in DataHub metadata or "
+                "DataSpoke validation results. The metrics layer has no data source credentials, no SQL "
+                "execution against production databases, and no network access to external systems beyond "
+                "DataHub's API.\n\n"
+                "## Data Governance Dimensions\n\n"
+                "Built-in metric types are categorized by the data governance quality dimension they measure:\n\n"
+                "| Governance Dimension | Metric Type | Data Source |\n"
+                "|---------------------|-------------|-------------|\n"
+                "| **Completeness** (metadata) | `poorly_documented` | "
+                "DataHub `DatasetPropertiesClass.description` — counts datasets with description < 20 chars |\n"
+                "| **Freshness** (timeliness) | `stale_datasets` | "
+                "DataSpoke `validation_results` — counts datasets with no freshness rule or failing freshness validation |\n"
+                "| *(extensible)* | Custom types | "
+                "Any DataHub aspect or DataSpoke result table |\n\n"
+                "New metric types are added by implementing a measurement function that reads from "
+                "DataHub aspects or DataSpoke tables — never by adding direct source connections.\n\n"
+                "## DataHub Relationship\n\n"
+                "Metrics are **read-only consumers** of DataHub metadata. They read aspects "
+                "(`DatasetPropertiesClass`, `OwnershipClass`, `globalTags`, `glossaryTerms`) via "
+                "the DataHub SDK but never write aspects. Metric results are stored exclusively in "
+                "DataSpoke's PostgreSQL `metric_results` table.\n\n"
+                "## Measurement Query & Dataset Filter\n\n"
+                "Each metric definition carries a `measurement_query` with a `type` field that selects "
+                "the aggregation function. The query vocabulary is currently fixed (`poorly_documented`, "
+                "`stale_datasets`); unsupported types return `422 UNSUPPORTED_METRIC_TYPE`.\n\n"
+                "**`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub "
+                "tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only "
+                "datasets matching ANY of the listed tags or glossary terms are included. "
+                "Filters are OR-ed across all dimensions."
+            ),
         },
         {
             "name": "dg/overview",
