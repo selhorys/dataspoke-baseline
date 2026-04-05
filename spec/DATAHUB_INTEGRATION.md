@@ -71,7 +71,7 @@ Each DataSpoke feature has a clear integration direction:
 | Predictive SLA | DE | **Read** | Query timeseries profiles, lineage for anomaly detection |
 | Doc Generation | DE | **Read + Write** | Read schemas for clustering; write deprecation, tags |
 | NL Search | DA | **Read** | Read properties, tags, lineage, usage for vector index |
-| Metrics Dashboard | DG | **Read** | Read properties, ownership, schemas, tags for health scoring |
+| Metrics Dashboard | DG | **Read** | Aggregate pre-existing metadata (properties, ownership) and DataSpoke validation results |
 | Redefined DataHub Functions *(TBD)* | All | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
 ### Client Initialization
@@ -153,14 +153,14 @@ Which features read (R) or write (W) each aspect:
 | Aspect | Deep Ingestion | Validator | Predictive SLA | Doc Generation | NL Search | Metrics Dashboard |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|
 | `datasetProperties` | W | R | — | R | R | R |
-| `schemaMetadata` | W | R | — | R | R | R |
+| `schemaMetadata` | W | R | — | R | R | — |
 | `ownership` | W | — | — | — | R | R |
-| `globalTags` | W | — | — | W | R | R |
+| `globalTags` | W | — | — | W | R | — |
 | `upstreamLineage` | W | R | R | R | R | — |
 | `deprecation` | — | R | — | W | — | — |
 | `datasetProfile` | — | R | R | — | — | — |
 | `operation` | — | R | R | — | — | — |
-| `datasetUsageStatistics` | — | — | — | — | R | R |
+| `datasetUsageStatistics` | — | — | — | — | R | — |
 | `assertionRunEvent` | W | R | — | — | — | — |
 
 ## SDK Patterns
@@ -365,7 +365,7 @@ A single `confluent_kafka.Consumer` (group `dataspoke-consumers`, `auto.offset.r
 | `datasetProfile` | Validator, Predictive SLA | Run anomaly detection on new profile |
 | `operation` | Predictive SLA | Check freshness against SLA targets |
 | `ownership` | Metrics Dashboard | Re-compute department health score |
-| `globalTags` | NL Search, Metrics Dashboard | Update PII index, re-score tag coverage |
+| `globalTags` | NL Search | Update PII index |
 
 ## Error Handling & Resilience
 

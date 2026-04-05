@@ -1331,6 +1331,8 @@ Metrics:
 
 #### DataHub Integration Points
 
+> **Pure aggregation principle**: The Metrics Dashboard does not observe data sources directly — it aggregates metadata that already exists in DataHub aspects and DataSpoke validation results.
+
 The Metrics Dashboard is a **read** consumer. It queries across all datasets to compute aggregate health scores:
 
 | Health Metric | DataHub Aspect | REST API Path | What It Returns |
@@ -1372,10 +1374,8 @@ for dataset_urn in dataset_urns:
 
 | Component | Responsibility | Why DataHub Can't Do This |
 |-----------|---------------|--------------------------|
-| **Health Score Aggregator** | Compute 0–100 score from description, ownership, tags, column docs, freshness | DataHub has no cross-aspect scoring system |
+| **Health Score Aggregator** | Aggregate pre-existing metadata (descriptions, ownership) and validation results into 0–100 scores | DataHub has no cross-aspect scoring system |
 | **Department Mapper** | Map datasets to departments via ownership → HR API lookup | DataHub stores ownership URNs but has no org-structure awareness |
-| **Issue Tracker** | Detect, prioritize, and track metadata gaps (critical/high/medium) in PostgreSQL | DataHub has no issue lifecycle management |
-| **Notification Engine** | Email dataset owners with action items, estimated fix time, projected score impact | DataHub has no outbound notification system |
 | **Trend Analysis** | Track health scores over time, compute decay rates, forecast improvement | DataHub stores point-in-time aspects, no time-series aggregation of metadata quality |
 
 #### Outcome

@@ -190,7 +190,7 @@ Accessible from user menu → "Settings" or `/settings`. Persisted in `localStor
 │  Notifications                                  │
 │  ┌─────────────────────────────────────┐       │
 │  │ [x] Validation alerts               │       │
-│  │ [x] Metric threshold alarms         │       │
+│  │ [x] Metric run completions           │       │
 │  │ [ ] Ingestion run completions       │       │
 │  └─────────────────────────────────────┘       │
 │                                                 │
@@ -290,7 +290,7 @@ Natural language search input with type-ahead suggestions. Submits to `GET /spok
 
 ### NotificationCenter
 
-Popover from the bell icon. Lists recent events (validation alerts, metric alarms, ingestion completions). Events arrive via WebSocket or are polled.
+Popover from the bell icon. Lists recent events (validation alerts, metric run completions, ingestion completions). Events arrive via WebSocket or are polled.
 
 ### ConfirmDialog
 

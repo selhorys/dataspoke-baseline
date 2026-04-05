@@ -95,7 +95,7 @@ Enterprise-wide health dashboard with department breakdown. Uses `GET /spoke/dg/
 |----------|--------|-----------|
 | Score visualization | Large number + bar chart per department | CDO needs instant grasp of enterprise state |
 | Trend chart | 90-day line chart (Recharts) | Shows improvement trajectory, matches initiative timeline |
-| Issue list | Priority-sorted, paginated | Actionable; click → dataset detail |
+| Breakdown list | Per-dataset detail from measurement result | Actionable; click → dataset detail |
 | Real-time updates | WS `/spoke/dg/metric/stream` | Dashboard stays current without manual refresh |
 | Department click | Drill into department detail view | CDO → department lead handoff |
 
@@ -108,14 +108,12 @@ Browse all defined metrics. Uses `GET /spoke/dg/metric`.
 │  Metrics                                    [+ New Metric] │
 │                                                            │
 │  [Search...          ]  Theme: [All v]  Status: [All v]    │
-├───────────────────────────┬────────┬──────────┬────────────┤
-│  Metric                   │ Value  │  Alarm   │  Trend     │
-├───────────────────────────┼────────┼──────────┼────────────┤
-│  Poorly documented        │  42    │  ● Off   │  ↓ -8/wk   │
-│  Unowned high-usage       │  15    │  ▲ On    │  ↓ -3/wk   │
-│  Erroneous Bronze layer   │  23    │  ▲ On    │  → stable  │
-│  Data downtime (hrs)      │  4.2   │  ● Off   │  ↓ -1.1/wk │
-├───────────────────────────┴────────┴──────────┴────────────┤
+├───────────────────────────┬────────┬────────────┤
+│  Metric                   │ Value  │  Trend     │
+├───────────────────────────┼────────┼────────────┤
+│  Poorly documented        │  42    │  ↓ -8/wk   │
+│  Stale datasets           │  15    │  ↓ -3/wk   │
+├───────────────────────────┴────────┴────────────┤
 │  1-20 of 12                                                │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -146,14 +144,10 @@ Shows metric definition, timeseries chart, and events.
 │  │  [1W] [1M] [3M] [6M] [1Y]  Range: [from] [to]    │    │
 │  └────────────────────────────────────────────────────┘    │
 │                                                            │
-│  ┌─ Alarm Configuration ─────────────────────────────┐    │
-│  │  Threshold: > 50  │  Notify: data-gov@imazon.com  │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
 │  ┌─ Events ──────────────────────────────────────────┐    │
-│  │  2026-03-05 ✓ Measured: 42 (no alarm)              │    │
-│  │  2026-02-26 ✓ Measured: 48 (no alarm)              │    │
-│  │  2026-02-19 ▲ Measured: 52 (alarm triggered)       │    │
+│  │  2026-03-05 ✓ Measured: 42                          │    │
+│  │  2026-02-26 ✓ Measured: 48                          │    │
+│  │  2026-02-19 ✓ Measured: 52                          │    │
 │  └────────────────────────────────────────────────────┘    │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -174,13 +168,13 @@ Modal for creating or editing a metric definition.
 │  Metric Definition                           │
 │                                              │
 │  Title:  [Poorly Documented Datasets    ]    │
+│  Type:   [poorly_documented          v]      │
 │  Theme:  [Documentation             v]       │
-│  Period: [Weekly                     v]       │
+│  Schedule: [0 8 * * 1 (Weekly Mon 8am) ]     │
 │                                              │
-│  Alarm                                       │
-│  [x] Enable alarm                            │
-│  Threshold: [>] [50]                         │
-│  Notify:    [data-gov@imazon.com    ]        │
+│  Dataset Filter (optional)                   │
+│  Tags:           [urn:li:tag:pii, ...   ]    │
+│  Glossary Terms: [urn:li:glossaryTerm:… ]    │
 │                                              │
 │  [Cancel]                    [Save]          │
 └──────────────────────────────────────────────┘

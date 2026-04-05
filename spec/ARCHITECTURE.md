@@ -275,15 +275,15 @@ Ontology/Taxonomy Builder (LLM-powered)
 Covers UC6 (Metrics Dashboard), UC8 (Multi-Perspective Overview).
 
 ```
-Kestra Scheduled Flow (periodic)
+Kestra Periodic Flow (per-metric schedule)
       │
       ▼
-Metrics Collector
-  1. Enumerate all datasets (DataHub GraphQL)
-  2. Compute health scores per dataset (description, ownership, tags, freshness)
-  3. Aggregate by department (ownership → HR API mapping)
-  4. Detect trends, decay rates, blind spots
-  5. Persist to PostgreSQL time-series tables
+Metrics Aggregator (pure aggregation — no direct data observation)
+  1. Read pre-existing metadata from DataHub (e.g. datasetProperties.description)
+     or DataSpoke validation results (PostgreSQL)
+  2. Apply dataset_filter (tags / glossary_terms, OR-ed) if configured
+  3. Aggregate into a single measured value + per-dataset breakdown
+  4. Persist to PostgreSQL metric_results
       │
       ▼
 API: /api/v1/spoke/dg/metric   (dashboard)
@@ -320,7 +320,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
-| Enterprise Metrics Dashboard | UC6 | `/spoke/dg/metric/` | Health Score Aggregator, Department Mapper, Issue Tracker, Notification Engine | PostgreSQL, Kestra |
+| Enterprise Metrics Dashboard | UC6 | `/spoke/dg/metric/` | Health Score Aggregator, Department Mapper, Trend Analysis | PostgreSQL, Kestra |
 | Multi-Perspective Data Overview | UC8 | `/spoke/dg/overview/` | Ontology Builder (shared), Graph Layout Engine, Medallion Detector, Blind Spot Analyzer | Qdrant, LLM API, PostgreSQL |
 
 ### Common (cross-group)
@@ -334,7 +334,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 
 | Concern | Infrastructure | Consumers |
 |---------|---------------|-----------|
-| Kafka Event Consumers | Kafka (shared with DataHub) | Vector DB sync (DA), validator triggers (DE), metrics update (DG), ontology re-index |
+| Kafka Event Consumers | Kafka (shared with DataHub) | Vector DB sync (DA), validator triggers (DE), ontology re-index |
 | Kestra Flows | Kestra | Periodic ingestion + config sync (DE), validation (DE), embedding maintenance (DA), metrics collection (DG) |
 | PostgreSQL Operational Tables | PostgreSQL | Ingestion configs/runs, quality rules/results, health scores, ontology graph, user preferences |
 | Redis Caching | Redis | Validation result cache (AI agent loops), API response cache, rate limiting |

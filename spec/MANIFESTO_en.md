@@ -112,7 +112,7 @@ DataSpoke consists of four components:
 
 #### Data Governance (DG) Group
 
-- **Enterprise Metrics Time-Series Monitoring**: Dashboards tracking dataset counts per platform, total volume, data availability ratios, and more.
+- **Enterprise Metrics Time-Series Monitoring**: Dashboards aggregating metadata health signals — documentation coverage, data freshness, and more — from existing metadata and validation results.
 - **Multi-Perspective Data Overview**:
   - Taxonomy/ontology graph visualization with dataset coloring/sizing by statistics (2D/3D).
   - Medallion Architecture-based dataset overview.
