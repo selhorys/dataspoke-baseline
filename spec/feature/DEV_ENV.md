@@ -69,7 +69,7 @@ Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)
 - Example data sources (PostgreSQL + Kafka) in a dedicated namespace for testing ingestion workflows
 - Advisory lock service for coordinating multi-tester access to shared dev state
 - Idempotent installs — re-running `install.sh` is always safe
-- Resource-constrained sizing that fits within ~70% of a typical dev cluster (8+ CPU / 16 GB RAM)
+- Resource-constrained sizing that fits within ~70% of a typical dev cluster (8+ CPU / 24 GB RAM)
 
 ### Non-Goals
 
@@ -168,7 +168,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| kestra | Deployment | 1536 Mi | — |
+| kestra | Deployment | 6 Gi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
@@ -281,7 +281,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~77%** → ~12.3 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~70%** → ~16.8 GiB RAM, ~7.75 CPU limits.
 
 ### Memory Budget (limits)
 
@@ -296,16 +296,16 @@ Cluster capacity: **8 CPU / 16 GB RAM / 150 GB storage**. Target usage: **~77%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| kestra | dataspoke-01 | 1536 Mi | 1024m heap + G1GC; polling/cleaner/telemetry tuned for dev |
+| kestra | dataspoke-01 | 6 Gi | 1g–4g heap + G1GC; polling/cleaner/telemetry tuned for dev |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~12.3 Gi** | |
+| **Total** | | **~16.8 Gi** | |
 
-~3.7 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~7.2 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 
@@ -328,12 +328,17 @@ Total: **7750m** across all components. Pods rarely hit limits simultaneously. E
 ### Pod stuck in Pending
 
 **Cause**: Insufficient cluster resources.
-**Fix**: Check `kubectl describe node`. The full environment requires ~11.1 GiB / ~7.75 CPU — 16 GB / 8+ CPU recommended.
+**Fix**: Check `kubectl describe node`. The full environment requires ~16.8 GiB / ~7.75 CPU — 24 GB / 8+ CPU recommended.
 
 ### datahub-system-update takes 5-10 minutes
 
 **Cause**: Expected on first install — bootstraps all DataHub metadata schemas.
 **Fix**: Wait. The script polls every 10s with progress logging.
+
+### MAE consumer stalled after restart
+
+**Cause**: The embedded MAE consumer in GMS crashes when processing stale MCL messages accumulated from previous runs. The Spring Kafka error handler shuts down the consumer permanently, leaving timeseries aspects unindexed in Elasticsearch.
+**Fix**: Already automated in `datahub/install.sh` — detects stalled consumer group, resets offsets to latest, and restarts GMS. If it recurs outside install, manually reset offsets on `MetadataChangeLog_Timeseries_v1` and `MetadataChangeLog_Versioned_v1` for group `generic-mae-consumer-job-client`, then restart the GMS pod.
 
 ### Port-forward connection refused
 

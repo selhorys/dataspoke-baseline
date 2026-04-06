@@ -8,7 +8,7 @@ By default, the cluster hosts only **infrastructure dependencies**. DataSpoke ap
 
 - `kubectl` installed and configured
 - `helm` v3 installed
-- A Kubernetes cluster with **8+ CPUs / 16 GB RAM**
+- A Kubernetes cluster with **8+ CPUs / 24 GB RAM**
 
 ## Quick Start
 
@@ -126,7 +126,7 @@ Two-tier naming convention in `.env`:
 
 ### Resource budget
 
-~12.3 GiB total memory limits on 8+ CPU / 16 GB cluster (~77% utilization). See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
+~16.8 GiB total memory limits on 8+ CPU / 24 GB cluster (~70% utilization). See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
 
 ## Troubleshooting
 

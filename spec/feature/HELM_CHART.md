@@ -177,7 +177,7 @@ Two approaches:
 
 ### Dev Minimums
 
-See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget). The dev profile uses ~2.8 Gi memory limits / ~1.75 CPU limits for DataSpoke infrastructure alone.
+See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget). The dev profile uses ~7.9 Gi memory limits / ~3.5 CPU limits for DataSpoke infrastructure alone.
 
 ---
 
