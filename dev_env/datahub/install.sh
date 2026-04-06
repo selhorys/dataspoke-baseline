@@ -208,6 +208,41 @@ info "[3/3] Actions..."
 wait_for_pod_by_label "app.kubernetes.io/name=acryl-datahub-actions" "$NS" 300
 
 # ---------------------------------------------------------------------------
+# Step 6: Fix MAE consumer stall (DataHub bug workaround)
+#   The embedded MAE consumer in GMS crashes when processing stale MCL
+#   messages accumulated from previous runs.  The Spring Kafka error handler
+#   throws an exception and shuts down the consumer permanently, leaving
+#   timeseries aspects (OperationClass, DatasetProfileClass) unindexed in ES.
+#   Fix: reset offsets to latest so there's no stale backlog, then restart GMS.
+# ---------------------------------------------------------------------------
+KAFKA_POD="datahub-prerequisites-kafka-broker-0"
+MAE_GROUP="generic-mae-consumer-job-client"
+
+# Check if the MAE consumer has active members (healthy) or is stalled
+MAE_STATE=$(kubectl exec -n "$NS" "$KAFKA_POD" -- \
+  /opt/bitnami/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 \
+  --describe --group "$MAE_GROUP" 2>&1 || true)
+
+if echo "$MAE_STATE" | grep -q "has no active members"; then
+  info "MAE consumer is stalled — resetting offsets to skip stale backlog..."
+  kubectl exec -n "$NS" "$KAFKA_POD" -- \
+    /opt/bitnami/kafka/bin/kafka-consumer-groups.sh \
+    --bootstrap-server localhost:9092 \
+    --group "$MAE_GROUP" \
+    --reset-offsets --to-latest \
+    --topic MetadataChangeLog_Timeseries_v1 \
+    --topic MetadataChangeLog_Versioned_v1 \
+    --execute
+
+  info "Restarting GMS to pick up clean offsets..."
+  kubectl delete pod -n "$NS" -l app.kubernetes.io/name=datahub-gms
+  wait_for_pod_by_label "app.kubernetes.io/name=datahub-gms" "$NS" 600
+else
+  info "MAE consumer is active — no offset reset needed."
+fi
+
+# ---------------------------------------------------------------------------
 # Print access instructions
 # ---------------------------------------------------------------------------
 echo ""

@@ -86,12 +86,12 @@ kestra:
     resources:
       requests:
         cpu: 500m
-        memory: 2Gi
+        memory: 3Gi
       limits:
         cpu: "2"
-        memory: 4Gi
+        memory: 6Gi
     jvm:
-      extraOpts: "-Xms512m -Xmx3g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms1g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     startupProbe:
       httpGet:
         path: /health

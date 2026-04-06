@@ -281,7 +281,7 @@ async def _extract_kafka(
 
 
 def _poll_kafka_messages(
-    bootstrap_servers: str, topic: str, *, max_messages: int = 100, timeout_s: float = 5.0,
+    bootstrap_servers: str, topic: str, *, max_messages: int = 100, timeout_s: float = 15.0,
 ) -> list[dict[str, Any]]:
     """Synchronous helper: poll Kafka topic and return parsed JSON messages."""
     import time
