@@ -21,14 +21,14 @@ from datahub.metadata.schema_classes import (
 )
 from pydantic import BaseModel
 
-from src.shared.models.ingestion import SourceType
+from src.shared.models.ingestion import Platform
 
 if TYPE_CHECKING:
     from src.shared.datahub.client import DataHubClient
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SOURCE_TYPES: frozenset[str] = frozenset(st.value for st in SourceType)
+SUPPORTED_PLATFORMS: frozenset[str] = frozenset(p.value for p in Platform)
 
 # ── Type mappings ─────────────────────────────────────────────────────────────
 
@@ -86,6 +86,7 @@ async def _extract_postgresql(
     auth: dict[str, Any] | None,
     dataset_urn: str,
     dry_run: bool,
+    platform: str,
 ) -> IngestionResult:
     """Connect to PostgreSQL, discover columns, emit schema to DataHub."""
     host = locator["host"]
@@ -182,7 +183,7 @@ async def _extract_postgresql(
                     table_urn,
                     SchemaMetadataClass(
                         schemaName=f"{s}.{t}",
-                        platform="urn:li:dataPlatform:postgres",
+                        platform=f"urn:li:dataPlatform:{platform}",
                         version=0,
                         hash="",
                         platformSchema=OtherSchemaClass(rawSchema=""),
@@ -207,6 +208,7 @@ async def _extract_kafka(
     identifier: dict[str, Any],
     dataset_urn: str,
     dry_run: bool,
+    platform: str,
 ) -> IngestionResult:
     """Consume sample messages from a Kafka topic, infer schema, emit to DataHub."""
     bootstrap_servers = locator["bootstrap_servers"]
@@ -266,7 +268,7 @@ async def _extract_kafka(
                 dataset_urn,
                 SchemaMetadataClass(
                     schemaName=topic,
-                    platform="urn:li:dataPlatform:kafka",
+                    platform=f"urn:li:dataPlatform:{platform}",
                     version=0,
                     hash="",
                     platformSchema=OtherSchemaClass(rawSchema=""),
@@ -327,7 +329,7 @@ def _poll_kafka_messages(
 
 async def run_datahub_ingestion(
     datahub: DataHubClient,
-    source_type: str,
+    platform: str,
     locator: dict[str, Any],
     identifier: dict[str, Any],
     auth: dict[str, Any] | None,
@@ -336,28 +338,28 @@ async def run_datahub_ingestion(
 ) -> IngestionResult:
     """Extract metadata from a data source and emit aspects to DataHub.
 
-    Dispatches to source-specific extractors based on source_type.
+    Dispatches to source-specific extractors based on platform.
     """
     logger.info(
         "run_datahub_ingestion",
-        extra={"source_type": source_type, "dataset_urn": dataset_urn, "dry_run": dry_run},
+        extra={"platform": platform, "dataset_urn": dataset_urn, "dry_run": dry_run},
     )
 
-    if source_type == SourceType.POSTGRESQL.value:
-        return await _extract_postgresql(datahub, locator, identifier, auth, dataset_urn, dry_run)
+    if platform == Platform.POSTGRESQL.value:
+        return await _extract_postgresql(datahub, locator, identifier, auth, dataset_urn, dry_run, platform=platform)
 
-    if source_type == SourceType.KAFKA.value:
-        return await _extract_kafka(datahub, locator, identifier, dataset_urn, dry_run)
+    if platform == Platform.KAFKA.value:
+        return await _extract_kafka(datahub, locator, identifier, dataset_urn, dry_run, platform=platform)
 
-    if source_type in SUPPORTED_SOURCE_TYPES:
+    if platform in SUPPORTED_PLATFORMS:
         return IngestionResult(
             entities_ingested=0,
             errors=[],
-            warnings=[f"Extraction for {source_type} is not yet implemented"],
+            warnings=[f"Extraction for {platform} is not yet implemented"],
         )
 
     return IngestionResult(
         entities_ingested=0,
-        errors=[f"Unsupported source_type: {source_type}"],
+        errors=[f"Unsupported platform: {platform}"],
         warnings=[],
     )

@@ -545,9 +545,9 @@ class TestExampleKafkaIntegration:
                 consumed.append(json.loads(msg.value()))
 
             assert len(consumed) == len(expected)
-            # Compare by order_id to verify content (order-preserving within partition)
-            consumed_ids = [m.get("order_id") for m in consumed]
-            expected_ids = [m.get("order_id") for m in expected]
+            # Compare as sets — cross-partition interleaving makes global order non-deterministic
+            consumed_ids = sorted(m.get("order_id") for m in consumed)
+            expected_ids = sorted(m.get("order_id") for m in expected)
             assert consumed_ids == expected_ids
         finally:
             consumer.close()

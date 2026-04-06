@@ -74,7 +74,7 @@ class TestIngestionSchemas:
     def test_create_request_round_trip(self) -> None:
         req = CreateIngestionConfigRequest(
             dataset_urn="urn:li:dataset:test",
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
             auth={"username": "user", "secret_ref": "pw"},
@@ -87,17 +87,17 @@ class TestIngestionSchemas:
     def test_create_request_kafka_no_auth(self) -> None:
         req = CreateIngestionConfigRequest(
             dataset_urn="urn:li:dataset:test",
-            source_type="KAFKA",
+            platform="kafka",
             locator={"bootstrap_servers": "kafka:9092"},
             identifier={"topic": "my-topic"},
         )
         assert req.auth is None
 
-    def test_create_request_invalid_source_type(self) -> None:
+    def test_create_request_invalid_platform(self) -> None:
         with pytest.raises(ValidationError):
             CreateIngestionConfigRequest(
                 dataset_urn="urn:li:dataset:test",
-                source_type="UNSUPPORTED",
+                platform="unsupported",
                 locator={},
                 identifier={},
             )
@@ -106,7 +106,7 @@ class TestIngestionSchemas:
         with pytest.raises(ValidationError, match="auth is required"):
             CreateIngestionConfigRequest(
                 dataset_urn="urn:li:dataset:test",
-                source_type="POSTGRESQL",
+                platform="postgres",
                 locator={"host": "localhost", "port": 5432},
                 identifier={"database": "testdb"},
             )
@@ -115,7 +115,7 @@ class TestIngestionSchemas:
         resp = IngestionConfigResponse(
             id="1",
             dataset_urn="urn:li:dataset:test",
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
             auth={"username": "user", "secret_ref": "pw"},

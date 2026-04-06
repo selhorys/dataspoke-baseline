@@ -51,7 +51,7 @@ async def test_ingestion_config_crud_via_http(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -62,7 +62,7 @@ async def test_ingestion_config_crud_via_http(
         assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
-        assert body["source_type"] == "POSTGRESQL"
+        assert body["platform"] == "postgres"
         assert body["is_active"] is False
         assert body["schedule_cron"] == "0 0 * * *"
         config_id = body["id"]
@@ -126,7 +126,7 @@ async def test_list_ingestion_configs(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "source_type": "POSTGRESQL",
+                    "platform": "postgres",
                     "locator": EXAMPLE_PG_LOCATOR,
                     "identifier": EXAMPLE_PG_IDENTIFIER,
                     "auth": EXAMPLE_PG_AUTH,
@@ -167,7 +167,7 @@ async def test_run_ingestion_dry_run(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,

@@ -43,7 +43,7 @@ class IngestionConfig(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[str] = mapped_column(Text, nullable=False)
     locator: Mapped[dict] = mapped_column(JSONB, nullable=False)
     identifier: Mapped[dict] = mapped_column(JSONB, nullable=False)
     auth: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

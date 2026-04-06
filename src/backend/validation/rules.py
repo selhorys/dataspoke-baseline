@@ -508,10 +508,10 @@ async def _evaluate_sql(
         )
 
     try:
-        source_type, locator, identifier, auth = await resolve_source_config(
+        platform, locator, identifier, auth = await resolve_source_config(
             db, dataset_urn, rule
         )
-        rows = await execute_sql(source_type, locator, identifier, auth, statement)
+        rows = await execute_sql(platform, locator, identifier, auth, statement)
     except Exception as exc:
         return RuleEvaluation(
             rule_id=rule_id,

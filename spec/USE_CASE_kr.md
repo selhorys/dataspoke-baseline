@@ -58,7 +58,7 @@ Imazon의 Oracle 데이터 웨어하우스는 15년에 걸쳐 구축된 500개 �
 # POST /api/v1/spoke/de/ingestion/configs
 dataspoke.ingestion.register_config({
   "name": "oracle_book_catalog_enriched",
-  "source_type": "ORACLE",
+  "platform": "oracle",
   "schedule": "0 2 * * *",  # 매일 오전 2시
 
   "enrichment_sources": [

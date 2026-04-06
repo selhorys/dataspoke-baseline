@@ -5,17 +5,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.backend.ingestion.extractors import (
-    SUPPORTED_SOURCE_TYPES,
+    SUPPORTED_PLATFORMS,
     IngestionResult,
     run_datahub_ingestion,
 )
 
-# ── SUPPORTED_SOURCE_TYPES ────────────────────────────────────────────────────
+# ── SUPPORTED_PLATFORMS ────────────────────────────────────────────────────
 
 
-def test_supported_source_types_contains_expected():
-    assert {"POSTGRESQL", "MYSQL", "ORACLE", "BIGQUERY", "SNOWFLAKE", "KAFKA"}.issubset(
-        SUPPORTED_SOURCE_TYPES
+def test_supported_platforms_contains_expected():
+    assert {"postgres", "mysql", "oracle", "bigquery", "snowflake", "kafka"}.issubset(
+        SUPPORTED_PLATFORMS
     )
 
 
@@ -26,7 +26,7 @@ async def test_unsupported_source_returns_error():
     datahub = AsyncMock()
     result = await run_datahub_ingestion(
         datahub=datahub,
-        source_type="unknown_source",
+        platform="unknown_source",
         locator={},
         identifier={},
         auth=None,
@@ -35,14 +35,14 @@ async def test_unsupported_source_returns_error():
     )
     assert result.entities_ingested == 0
     assert len(result.errors) == 1
-    assert "Unsupported source_type" in result.errors[0]
+    assert "Unsupported platform" in result.errors[0]
 
 
 async def test_not_yet_implemented_source_returns_warning():
     datahub = AsyncMock()
     result = await run_datahub_ingestion(
         datahub=datahub,
-        source_type="MYSQL",
+        platform="mysql",
         locator={"host": "x", "port": 3306},
         identifier={"database": "db"},
         auth={"username": "u", "secret_ref": "s"},
@@ -82,7 +82,7 @@ async def test_postgresql_dry_run_discovers_but_does_not_emit():
         mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
         result = await run_datahub_ingestion(
             datahub=datahub,
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb", "schema_name": "public", "table": "users"},
             auth={"username": "u", "secret_ref": "p"},
@@ -113,7 +113,7 @@ async def test_postgresql_run_emits_three_aspects():
         mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
         result = await run_datahub_ingestion(
             datahub=datahub,
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
             auth={"username": "u", "secret_ref": "p"},
@@ -134,7 +134,7 @@ async def test_postgresql_connection_failure_returns_error():
         mock_asyncpg.connect = AsyncMock(side_effect=ConnectionRefusedError("refused"))
         result = await run_datahub_ingestion(
             datahub=datahub,
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "badhost", "port": 5432},
             identifier={"database": "testdb"},
             auth={"username": "u", "secret_ref": "p"},
@@ -163,7 +163,7 @@ async def test_kafka_dry_run_discovers_but_does_not_emit():
     ):
         result = await run_datahub_ingestion(
             datahub=datahub,
-            source_type="KAFKA",
+            platform="kafka",
             locator={"bootstrap_servers": "kafka:9092"},
             identifier={"topic": "orders", "cluster": "test"},
             auth=None,
@@ -186,7 +186,7 @@ async def test_kafka_run_emits_three_aspects():
     ):
         result = await run_datahub_ingestion(
             datahub=datahub,
-            source_type="KAFKA",
+            platform="kafka",
             locator={"bootstrap_servers": "kafka:9092"},
             identifier={"topic": "orders"},
             auth=None,

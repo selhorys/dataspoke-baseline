@@ -9,36 +9,36 @@ from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import IngestionConfigStatus
 from src.shared.models.ingestion import (
     NoAuth,
-    SourceType,
-    validate_source_fields,
+    Platform,
+    validate_platform_fields,
 )
 
 
 class CreateIngestionConfigRequest(BaseModel):
     dataset_urn: str = Field(description="DataHub URN of the dataset to ingest, e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'")
-    source_type: SourceType = Field(description="Source system type that determines the locator/identifier/auth structure")
+    platform: Platform = Field(description="Data platform that determines the locator/identifier/auth structure")
     locator: dict[str, Any] = Field(
         description=(
-            "Infrastructure location. Structure varies by source_type:\n"
-            "- POSTGRESQL/MYSQL/ORACLE: {\"host\": \"db.example.com\", \"port\": 5432}\n"
-            "- BIGQUERY: {\"project_id\": \"my-project\"}\n"
-            "- SNOWFLAKE: {\"account_id\": \"abc12345\"}\n"
-            "- KAFKA: {\"bootstrap_servers\": \"kafka:9092\"}"
+            "Infrastructure location. Structure varies by platform:\n"
+            "- postgres/mysql/oracle: {\"host\": \"db.example.com\", \"port\": 5432}\n"
+            "- bigquery: {\"project_id\": \"my-project\"}\n"
+            "- snowflake: {\"account_id\": \"abc12345\"}\n"
+            "- kafka: {\"bootstrap_servers\": \"kafka:9092\"}"
         )
     )
     identifier: dict[str, Any] = Field(
         description=(
-            "Dataset identity within the source infrastructure. Structure varies by source_type:\n"
-            "- POSTGRESQL/MYSQL/ORACLE: {\"database\": \"mydb\", \"schema_name\": \"public\", \"table\": \"orders\"}\n"
-            "- BIGQUERY: {\"dataset\": \"analytics\", \"table\": \"events\"}\n"
-            "- SNOWFLAKE: {\"database\": \"DW\", \"schema_name\": \"PUBLIC\", \"table\": \"SALES\"}\n"
-            "- KAFKA: {\"topic\": \"user-events\", \"cluster\": \"prod\"}"
+            "Dataset identity within the source infrastructure. Structure varies by platform:\n"
+            "- postgres/mysql/oracle: {\"database\": \"mydb\", \"schema_name\": \"public\", \"table\": \"orders\"}\n"
+            "- bigquery: {\"dataset\": \"analytics\", \"table\": \"events\"}\n"
+            "- snowflake: {\"database\": \"DW\", \"schema_name\": \"PUBLIC\", \"table\": \"SALES\"}\n"
+            "- kafka: {\"topic\": \"user-events\", \"cluster\": \"prod\"}"
         )
     )
     auth: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Access credentials. Required for POSTGRESQL/MYSQL/ORACLE/SNOWFLAKE, omit for BIGQUERY/KAFKA.\n"
+            "Access credentials. Required for postgres/mysql/oracle/snowflake, omit for bigquery/kafka.\n"
             "Example: {\"username\": \"readonly\", \"secret_ref\": \"k8s-secret/db-password\"}"
         )
     )
@@ -51,7 +51,7 @@ class CreateIngestionConfigRequest(BaseModel):
         "json_schema_extra": {
             "example": {
                 "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)",
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": {"host": "db.example.com", "port": 5432},
                 "identifier": {"database": "mydb", "schema_name": "public", "table": "orders"},
                 "auth": {"username": "readonly", "secret_ref": "k8s-secret/db-password"},
@@ -65,16 +65,16 @@ class CreateIngestionConfigRequest(BaseModel):
     def validate_fields(self) -> "CreateIngestionConfigRequest":
         if self.is_active and not self.schedule_cron:
             raise ValueError("schedule_cron is required when is_active is true")
-        validate_source_fields(
-            self.source_type, self.locator, self.identifier, self.auth
+        validate_platform_fields(
+            self.platform, self.locator, self.identifier, self.auth
         )
         return self
 
 
 class PatchIngestionConfigRequest(BaseModel):
-    source_type: SourceType | None = Field(default=None, description="Update the source system type (also re-validates locator/identifier/auth when provided)")
-    locator: dict[str, Any] | None = Field(default=None, description="Updated infrastructure location dict. See CreateIngestionConfigRequest.locator for structure by source_type.")
-    identifier: dict[str, Any] | None = Field(default=None, description="Updated dataset identity dict. See CreateIngestionConfigRequest.identifier for structure by source_type.")
+    platform: Platform | None = Field(default=None, description="Update the data platform (also re-validates locator/identifier/auth when provided)")
+    locator: dict[str, Any] | None = Field(default=None, description="Updated infrastructure location dict. See CreateIngestionConfigRequest.locator for structure by platform.")
+    identifier: dict[str, Any] | None = Field(default=None, description="Updated dataset identity dict. See CreateIngestionConfigRequest.identifier for structure by platform.")
     auth: dict[str, Any] | None = Field(default=None, description="Updated access credentials dict. See CreateIngestionConfigRequest.auth for structure.")
     is_active: bool | None = Field(default=None, description="Set to true to activate scheduling (schedule_cron must be provided in the same request), false to pause.")
     schedule_cron: str | None = Field(default=None, description="Cron expression for periodic runs, e.g. '0 6 * * *' for daily at 06:00 UTC.")
@@ -88,12 +88,12 @@ class PatchIngestionConfigRequest(BaseModel):
             raise ValueError(
                 "schedule_cron must be provided in the same patch when setting is_active to true"
             )
-        # Per-source_type sub-field validation only when source_type is present.
-        if self.source_type is not None:
-            from src.shared.models.ingestion import SOURCE_TYPE_REGISTRY
+        # Per-platform sub-field validation only when platform is present.
+        if self.platform is not None:
+            from src.shared.models.ingestion import PLATFORM_REGISTRY
 
-            locator_cls, identifier_cls, auth_cls = SOURCE_TYPE_REGISTRY[
-                self.source_type
+            locator_cls, identifier_cls, auth_cls = PLATFORM_REGISTRY[
+                self.platform
             ]
             if self.locator is not None:
                 locator_cls.model_validate(self.locator)
@@ -111,7 +111,7 @@ class RunIngestionRequest(BaseModel):
 class IngestionConfigResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the ingestion config")
     dataset_urn: str = Field(description="DataHub URN of the dataset")
-    source_type: SourceType = Field(description="Source system type, e.g. 'POSTGRESQL'")
+    platform: Platform = Field(description="Data platform, e.g. 'postgres'")
     locator: dict[str, Any] = Field(description="Infrastructure location configuration")
     identifier: dict[str, Any] = Field(description="Dataset identity within the source infrastructure")
     auth: dict[str, Any] | None = Field(description="Access credentials (secret references only, no plaintext passwords)")

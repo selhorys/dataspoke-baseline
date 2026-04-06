@@ -26,18 +26,18 @@ async def test_resolve_source_config_uses_rule_source_override(db):
     rule = {
         "rule_id": "r1",
         "source": {
-            "source_type": "POSTGRESQL",
+            "platform": "postgres",
             "locator": {"host": "pg.example.com", "port": 5432},
             "identifier": {"database": "imazon"},
             "auth": {"username": "reader", "password": "secret"},
         },
     }
 
-    source_type, locator, identifier, auth = await resolve_source_config(
+    platform, locator, identifier, auth = await resolve_source_config(
         db, _DATASET_URN, rule
     )
 
-    assert source_type == "POSTGRESQL"
+    assert platform == "postgres"
     assert locator == {"host": "pg.example.com", "port": 5432}
     assert identifier == {"database": "imazon"}
     assert auth == {"username": "reader", "password": "secret"}
@@ -48,7 +48,7 @@ async def test_resolve_source_config_uses_rule_source_override(db):
 async def test_resolve_source_config_falls_back_to_ingestion_config(db):
     """Rule without source override queries DB for IngestionConfig."""
     ingestion_row = MagicMock()
-    ingestion_row.source_type = "POSTGRESQL"
+    ingestion_row.platform = "postgres"
     ingestion_row.locator = {"host": "db.imazon.internal", "port": 5432}
     ingestion_row.identifier = {"database": "imazon"}
     ingestion_row.auth = {"username": "etl", "password": "pw"}
@@ -59,11 +59,11 @@ async def test_resolve_source_config_falls_back_to_ingestion_config(db):
 
     rule = {"rule_id": "r1"}
 
-    source_type, locator, identifier, auth = await resolve_source_config(
+    platform, locator, identifier, auth = await resolve_source_config(
         db, _DATASET_URN, rule
     )
 
-    assert source_type == "POSTGRESQL"
+    assert platform == "postgres"
     assert locator["host"] == "db.imazon.internal"
     assert identifier["database"] == "imazon"
     db.execute.assert_called_once()
@@ -83,10 +83,10 @@ async def test_resolve_source_config_raises_when_no_config_and_no_override(db):
 
 
 @pytest.mark.asyncio
-async def test_resolve_source_config_partial_source_override_missing_source_type(db):
-    """source dict present but missing source_type falls back to DB lookup."""
+async def test_resolve_source_config_partial_source_override_missing_platform(db):
+    """source dict present but missing platform falls back to DB lookup."""
     ingestion_row = MagicMock()
-    ingestion_row.source_type = "POSTGRESQL"
+    ingestion_row.platform = "postgres"
     ingestion_row.locator = {"host": "db.host", "port": 5432}
     ingestion_row.identifier = {"database": "imazon"}
     ingestion_row.auth = None
@@ -95,13 +95,13 @@ async def test_resolve_source_config_partial_source_override_missing_source_type
     result_mock.scalar_one_or_none.return_value = ingestion_row
     db.execute = AsyncMock(return_value=result_mock)
 
-    # source dict present but no source_type key
+    # source dict present but no platform key
     rule = {"rule_id": "r1", "source": {"locator": {"host": "override"}}}
 
-    source_type, locator, _, _ = await resolve_source_config(db, _DATASET_URN, rule)
+    platform, locator, _, _ = await resolve_source_config(db, _DATASET_URN, rule)
 
     # Must have fallen back to ingestion config
-    assert source_type == "POSTGRESQL"
+    assert platform == "postgres"
     assert locator["host"] == "db.host"
 
 
@@ -110,14 +110,14 @@ async def test_resolve_source_config_partial_source_override_missing_source_type
 
 @pytest.mark.asyncio
 async def test_execute_sql_postgresql_calls_asyncpg_fetch():
-    """PostgreSQL source_type: asyncpg.connect is called and fetch returns rows."""
+    """PostgreSQL platform: asyncpg.connect is called and fetch returns rows."""
     mock_conn = AsyncMock()
     mock_row = {"row_count": 42}
     mock_conn.fetch = AsyncMock(return_value=[mock_row])
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=mock_conn)):
         rows = await execute_sql(
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "imazon"},
             auth={"username": "user", "password": "pass"},
@@ -131,14 +131,14 @@ async def test_execute_sql_postgresql_calls_asyncpg_fetch():
 
 
 @pytest.mark.asyncio
-async def test_execute_sql_postgresql_source_type_case_insensitive():
-    """source_type matching is case-insensitive ('postgresql' works)."""
+async def test_execute_sql_postgresql_platform_canonical_value():
+    """Canonical lowercase platform value 'postgres' works correctly."""
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=[{"v": 1}])
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=mock_conn)):
         rows = await execute_sql(
-            source_type="postgresql",
+            platform="postgres",
             locator={"host": "h", "port": 5432},
             identifier={"database": "db"},
             auth=None,
@@ -156,7 +156,7 @@ async def test_execute_sql_connection_always_closed_on_success():
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=mock_conn)):
         await execute_sql(
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "h", "port": 5432},
             identifier={"database": "db"},
             auth=None,
@@ -175,7 +175,7 @@ async def test_execute_sql_connection_closed_even_on_fetch_error():
     with patch("asyncpg.connect", new=AsyncMock(return_value=mock_conn)):
         with pytest.raises(RuntimeError, match="connection reset"):
             await execute_sql(
-                source_type="POSTGRESQL",
+                platform="postgres",
                 locator={"host": "h", "port": 5432},
                 identifier={"database": "db"},
                 auth=None,
@@ -186,11 +186,11 @@ async def test_execute_sql_connection_closed_even_on_fetch_error():
 
 
 @pytest.mark.asyncio
-async def test_execute_sql_unsupported_source_type_raises():
-    """Non-PostgreSQL source type raises NotImplementedError."""
-    with pytest.raises(NotImplementedError, match="SQL execution not supported for BIGQUERY"):
+async def test_execute_sql_unsupported_platform_raises():
+    """Non-PostgreSQL platform raises NotImplementedError."""
+    with pytest.raises(NotImplementedError, match="SQL execution not supported for bigquery"):
         await execute_sql(
-            source_type="BIGQUERY",
+            platform="bigquery",
             locator={},
             identifier={},
             auth=None,
@@ -214,7 +214,7 @@ async def test_execute_timeseries_sql_returns_latest_partition(db):
         patch(
             "src.backend.validation.timeseries.resolve_source_config",
             new=AsyncMock(
-                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+                return_value=("postgres", {"host": "h", "port": 5432}, {"database": "d"}, None)
             ),
         ),
         patch(
@@ -251,7 +251,7 @@ async def test_execute_timeseries_sql_with_explicit_partition_filter(db):
         patch(
             "src.backend.validation.timeseries.resolve_source_config",
             new=AsyncMock(
-                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+                return_value=("postgres", {"host": "h", "port": 5432}, {"database": "d"}, None)
             ),
         ),
         patch(
@@ -282,7 +282,7 @@ async def test_execute_timeseries_sql_empty_result_returns_empty_dicts(db):
         patch(
             "src.backend.validation.timeseries.resolve_source_config",
             new=AsyncMock(
-                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+                return_value=("postgres", {"host": "h", "port": 5432}, {"database": "d"}, None)
             ),
         ),
         patch(
@@ -316,7 +316,7 @@ async def test_execute_timeseries_sql_extracts_only_declared_value_columns(db):
         patch(
             "src.backend.validation.timeseries.resolve_source_config",
             new=AsyncMock(
-                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+                return_value=("postgres", {"host": "h", "port": 5432}, {"database": "d"}, None)
             ),
         ),
         patch(
@@ -349,7 +349,7 @@ async def test_execute_sql_postgresql_connect_kwargs():
 
     with patch("asyncpg.connect", new=connect_mock):
         await execute_sql(
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "pg.imazon.internal", "port": 5433},
             identifier={"database": "imazon"},
             auth={"username": "etl", "password": "s3cret"},
@@ -374,7 +374,7 @@ async def test_execute_sql_postgresql_auth_none_uses_empty_credentials():
 
     with patch("asyncpg.connect", new=connect_mock):
         await execute_sql(
-            source_type="POSTGRESQL",
+            platform="postgres",
             locator={"host": "h", "port": 5432},
             identifier={"database": "db"},
             auth=None,
@@ -398,7 +398,7 @@ async def test_execute_timeseries_sql_no_order_columns_takes_first_row(db):
         patch(
             "src.backend.validation.timeseries.resolve_source_config",
             new=AsyncMock(
-                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+                return_value=("postgres", {"host": "h", "port": 5432}, {"database": "d"}, None)
             ),
         ),
         patch(
@@ -434,7 +434,7 @@ async def test_execute_timeseries_sql_unmatched_partition_falls_back_to_first_ro
         patch(
             "src.backend.validation.timeseries.resolve_source_config",
             new=AsyncMock(
-                return_value=("POSTGRESQL", {"host": "h", "port": 5432}, {"database": "d"}, None)
+                return_value=("postgres", {"host": "h", "port": 5432}, {"database": "d"}, None)
             ),
         ),
         patch(

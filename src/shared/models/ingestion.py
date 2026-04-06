@@ -1,6 +1,6 @@
-"""Ingestion source-type definitions and per-source-type sub-models.
+"""Ingestion platform definitions and per-platform sub-models.
 
-The SourceType enum and sub-model registry live here (not in api/schemas)
+The Platform enum and sub-model registry live here (not in api/schemas)
 so that both the API layer and the backend layer can import them without
 circular dependencies.
 """
@@ -11,16 +11,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 
-# ── SourceType enum ───────────────────────────────────────────────────────────
+# ── Platform enum ─────────────────────────────────────────────────────────────
 
 
-class SourceType(str, Enum):
-    POSTGRESQL = "POSTGRESQL"
-    MYSQL = "MYSQL"
-    ORACLE = "ORACLE"
-    BIGQUERY = "BIGQUERY"
-    SNOWFLAKE = "SNOWFLAKE"
-    KAFKA = "KAFKA"
+class Platform(str, Enum):
+    POSTGRESQL = "postgres"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
+    BIGQUERY = "bigquery"
+    SNOWFLAKE = "snowflake"
+    KAFKA = "kafka"
 
 
 # ── Locator sub-models (infra location) ──────────────────────────────────────
@@ -87,39 +87,39 @@ class CredentialAuth(BaseModel):
 
 
 class NoAuth(BaseModel):
-    """Marker for source types that use ambient / no explicit credentials."""
+    """Marker for platforms that use ambient / no explicit credentials."""
 
     model_config = ConfigDict(extra="allow")
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
-SOURCE_TYPE_REGISTRY: dict[
-    SourceType, tuple[type[BaseModel], type[BaseModel], type[BaseModel]]
+PLATFORM_REGISTRY: dict[
+    Platform, tuple[type[BaseModel], type[BaseModel], type[BaseModel]]
 ] = {
-    SourceType.POSTGRESQL: (RdbmsLocator, RdbmsIdentifier, CredentialAuth),
-    SourceType.MYSQL: (RdbmsLocator, RdbmsIdentifier, CredentialAuth),
-    SourceType.ORACLE: (RdbmsLocator, RdbmsIdentifier, CredentialAuth),
-    SourceType.BIGQUERY: (BigQueryLocator, BigQueryIdentifier, NoAuth),
-    SourceType.SNOWFLAKE: (SnowflakeLocator, SnowflakeIdentifier, CredentialAuth),
-    SourceType.KAFKA: (KafkaLocator, KafkaIdentifier, NoAuth),
+    Platform.POSTGRESQL: (RdbmsLocator, RdbmsIdentifier, CredentialAuth),
+    Platform.MYSQL: (RdbmsLocator, RdbmsIdentifier, CredentialAuth),
+    Platform.ORACLE: (RdbmsLocator, RdbmsIdentifier, CredentialAuth),
+    Platform.BIGQUERY: (BigQueryLocator, BigQueryIdentifier, NoAuth),
+    Platform.SNOWFLAKE: (SnowflakeLocator, SnowflakeIdentifier, CredentialAuth),
+    Platform.KAFKA: (KafkaLocator, KafkaIdentifier, NoAuth),
 }
 
 
-def validate_source_fields(
-    source_type: SourceType,
+def validate_platform_fields(
+    platform: Platform,
     locator: dict[str, Any],
     identifier: dict[str, Any],
     auth: dict[str, Any] | None,
 ) -> None:
-    """Validate locator/identifier/auth dicts against the registry for *source_type*.
+    """Validate locator/identifier/auth dicts against the registry for *platform*.
 
     Raises ``ValueError`` on validation failure.
     """
-    locator_cls, identifier_cls, auth_cls = SOURCE_TYPE_REGISTRY[source_type]
+    locator_cls, identifier_cls, auth_cls = PLATFORM_REGISTRY[platform]
     locator_cls.model_validate(locator)
     identifier_cls.model_validate(identifier)
     if auth is not None:
         auth_cls.model_validate(auth)
     elif auth_cls is not NoAuth:
-        raise ValueError(f"auth is required for source_type {source_type.value}")
+        raise ValueError(f"auth is required for platform {platform.value}")

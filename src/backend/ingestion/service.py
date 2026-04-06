@@ -32,7 +32,7 @@ class IngestionConfigRecord(BaseModel):
 
     id: str
     dataset_urn: str
-    source_type: str
+    platform: str
     locator: dict[str, Any]
     identifier: dict[str, Any]
     auth: dict[str, Any] | None = None
@@ -59,7 +59,7 @@ def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:
     return IngestionConfigRecord(
         id=str(row.id),
         dataset_urn=row.dataset_urn,
-        source_type=row.source_type,
+        platform=row.platform,
         locator=row.locator,
         identifier=row.identifier,
         auth=row.auth,
@@ -100,7 +100,7 @@ class IngestionService:
     async def upsert_config(
         self,
         dataset_urn: str,
-        source_type: str,
+        platform: str,
         locator: dict[str, Any],
         identifier: dict[str, Any],
         auth: dict[str, Any] | None,
@@ -117,7 +117,7 @@ class IngestionService:
         existing = result.scalar_one_or_none()
 
         if existing:
-            existing.source_type = source_type
+            existing.platform = platform
             existing.locator = locator
             existing.identifier = identifier
             existing.auth = auth
@@ -131,7 +131,7 @@ class IngestionService:
         else:
             existing = IngestionConfig(
                 dataset_urn=dataset_urn,
-                source_type=source_type,
+                platform=platform,
                 locator=locator,
                 identifier=identifier,
                 auth=auth,
@@ -173,8 +173,8 @@ class IngestionService:
         if row is None:
             raise EntityNotFoundError("ingestion_config", dataset_urn)
 
-        if "source_type" in patch and patch["source_type"] is not None:
-            row.source_type = patch["source_type"]
+        if "platform" in patch and patch["platform"] is not None:
+            row.platform = patch["platform"]
         if "locator" in patch and patch["locator"] is not None:
             row.locator = patch["locator"]
         if "identifier" in patch and patch["identifier"] is not None:
@@ -290,7 +290,7 @@ class IngestionService:
         """Run the full ingestion pipeline.
 
         1. Load config from PostgreSQL.
-        2. Call run_datahub_ingestion() for source_type via acryl-datahub SDK.
+        2. Call run_datahub_ingestion() for platform via acryl-datahub SDK.
         3. Skip enrichment/custom extractors (TBD).
         4. If not dry_run, emit results to DataHub.
         5. Record run event in PostgreSQL.
@@ -304,7 +304,7 @@ class IngestionService:
 
         ingestion_result = await run_datahub_ingestion(
             datahub=self._datahub,
-            source_type=config.source_type,
+            platform=config.platform,
             locator=config.locator,
             identifier=config.identifier,
             auth=config.auth,
@@ -344,7 +344,7 @@ class IngestionService:
 
         detail: dict[str, Any] = {
             "run_id": run_id,
-            "source_type": config.source_type,
+            "platform": config.platform,
             "entities_ingested": ingestion_result.entities_ingested,
             "dry_run": dry_run,
         }

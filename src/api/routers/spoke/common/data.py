@@ -145,7 +145,7 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
     return IngestionConfigResponse(
         id=c.id if isinstance(c.id, str) else str(c.id),
         dataset_urn=c.dataset_urn,
-        source_type=c.source_type,
+        platform=c.platform,
         locator=c.locator,
         identifier=c.identifier,
         auth=c.auth,
@@ -183,7 +183,7 @@ async def put_data_ingestion_conf(
     """Create or replace the ingestion config for the dataset (upsert)."""
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
-        source_type=body.source_type,
+        platform=body.platform,
         locator=body.locator,
         identifier=body.identifier,
         auth=body.auth,

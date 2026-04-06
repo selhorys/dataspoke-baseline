@@ -37,7 +37,7 @@ Stores per-dataset ingestion configuration.
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `source_type` | `TEXT` | Ingestion source identifier (`POSTGRESQL`, `MYSQL`, `BIGQUERY`, etc.) |
+| `platform` | `TEXT` | DataHub platform name (`postgres`, `mysql`, `bigquery`, etc.) |
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
 | `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth |

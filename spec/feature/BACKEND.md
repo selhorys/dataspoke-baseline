@@ -161,16 +161,16 @@ This is architecturally similar to DataHub's own ingestion framework (which uses
 | Source plugins | 200+ community connectors | Focused extractors (extensible) |
 | Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |
 
-**Source abstraction**: The `source_type` / `locator` / `identifier` / `auth` model provides a uniform interface across data platforms. Each `source_type` maps to a dedicated extractor that handles connection, schema discovery, and type mapping — mirroring DataHub's source plugin architecture but scoped to DataSpoke's metadata-first requirements rather than full profiling and lineage extraction.
+**Source abstraction**: The `platform` / `locator` / `identifier` / `auth` model provides a uniform interface across data platforms. Each `platform` maps to a dedicated extractor that handles connection, schema discovery, and type mapping — mirroring DataHub's source plugin architecture but scoped to DataSpoke's metadata-first requirements rather than full profiling and lineage extraction.
 
-| Source Type | Status | Locator | Identifier |
-|------------|--------|---------|------------|
-| **POSTGRESQL** | Implemented | host, port | database, schema_name, table |
-| **KAFKA** | Implemented | bootstrap_servers | topic, cluster |
-| **MYSQL** | Planned | host, port | database, schema_name, table |
-| **ORACLE** | Planned | host, port | database, schema_name, table |
-| **BIGQUERY** | Planned | project_id | dataset, table |
-| **SNOWFLAKE** | Planned | account_id | database, schema_name, table |
+| Platform | Status | Locator | Identifier |
+|----------|--------|---------|------------|
+| **postgres** | Implemented | host, port | database, schema_name, table |
+| **kafka** | Implemented | bootstrap_servers | topic, cluster |
+| **mysql** | Planned | host, port | database, schema_name, table |
+| **oracle** | Planned | host, port | database, schema_name, table |
+| **bigquery** | Planned | project_id | dataset, table |
+| **snowflake** | Planned | account_id | database, schema_name, table |
 
 **Aspect emission**: A successful non-dry-run ingestion emits three aspects to DataHub per discovered dataset:
 - `StatusClass(removed=False)` — marks the entity as active
@@ -185,7 +185,7 @@ See [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-re
 
 CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
 
-Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `source_type` (`POSTGRESQL`, `KAFKA` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_cron` (cron trigger), `status` (Kestra registration outcome).
+Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_cron` (cron trigger), `status` (Kestra registration outcome).
 
 **Run pipeline** (`IngestionService.run()`):
 

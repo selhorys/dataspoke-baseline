@@ -23,21 +23,21 @@ async def resolve_source_config(
     dataset_urn: str,
     rule: dict[str, Any],
 ) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any] | None]:
-    """Return (source_type, locator, identifier, auth) for SQL execution.
+    """Return (platform, locator, identifier, auth) for SQL execution.
 
     Resolution order:
-    1. If rule contains a ``source`` dict with source_type/locator/identifier/auth,
+    1. If rule contains a ``source`` dict with platform/locator/identifier/auth,
        use it as an override.
     2. Otherwise, look up the ingestion config for dataset_urn in the DB.
     3. Raise EntityNotFoundError if neither source is available.
     """
     source_override = rule.get("source")
-    if isinstance(source_override, dict) and source_override.get("source_type"):
-        source_type: str = source_override["source_type"]
+    if isinstance(source_override, dict) and source_override.get("platform"):
+        platform: str = source_override["platform"]
         locator: dict[str, Any] = source_override.get("locator", {})
         identifier: dict[str, Any] = source_override.get("identifier", {})
         auth: dict[str, Any] | None = source_override.get("auth")
-        return source_type, locator, identifier, auth
+        return platform, locator, identifier, auth
 
     # Fall back to ingestion config
     result = await db.execute(
@@ -47,11 +47,11 @@ async def resolve_source_config(
     if row is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
 
-    return row.source_type, row.locator, row.identifier, row.auth
+    return row.platform, row.locator, row.identifier, row.auth
 
 
 async def execute_sql(
-    source_type: str,
+    platform: str,
     locator: dict[str, Any],
     identifier: dict[str, Any],
     auth: dict[str, Any] | None,
@@ -59,12 +59,12 @@ async def execute_sql(
 ) -> list[dict[str, Any]]:
     """Execute SQL against the source and return a list of row dicts.
 
-    Currently supports PostgreSQL only.  Other source types raise NotImplementedError.
+    Currently supports PostgreSQL only.  Other platforms raise NotImplementedError.
     """
-    if source_type.upper() == "POSTGRESQL":
+    if platform == "postgres":
         return await _execute_postgresql(locator, identifier, auth, sql)
 
-    raise NotImplementedError(f"SQL execution not supported for {source_type}")
+    raise NotImplementedError(f"SQL execution not supported for {platform}")
 
 
 async def _execute_postgresql(
@@ -111,12 +111,12 @@ async def execute_timeseries_sql(
     5. Extract ``rule["values"]`` columns from the resolved row.
     6. Return ``{"partitions": {...}, "values": {...}}``.
     """
-    source_type, locator, identifier, auth = await resolve_source_config(
+    platform, locator, identifier, auth = await resolve_source_config(
         db, dataset_urn, rule
     )
 
     sql = rule.get("sql", "")
-    rows = await execute_sql(source_type, locator, identifier, auth, sql)
+    rows = await execute_sql(platform, locator, identifier, auth, sql)
 
     if not rows:
         return {"partitions": {}, "values": {}}

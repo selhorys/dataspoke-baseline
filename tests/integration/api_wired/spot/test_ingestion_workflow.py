@@ -95,7 +95,7 @@ async def test_run_ingestion_via_public_api(
     """POST run on a configured dataset executes the pipeline, records events,
     and emits schema metadata to DataHub.
 
-    Setup: PUT ingestion config for title_master (source_type=POSTGRESQL).
+    Setup: PUT ingestion config for title_master (platform=postgres).
     Action: POST .../method/run with dry_run=false.
     Assertions: 200, run_id present, status == "success",
                 GET events returns total_count >= 1,
@@ -113,7 +113,7 @@ async def test_run_ingestion_via_public_api(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -180,7 +180,7 @@ async def test_run_ingestion_dry_run(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -242,7 +242,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_a,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -258,7 +258,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_b,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -274,7 +274,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_c,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -290,7 +290,7 @@ async def test_list_periodic_datasets(
             headers=headers,
             json={
                 "dataset_urn": urn_d,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -355,7 +355,7 @@ async def test_sync_creates_flows_per_schedule(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "source_type": "POSTGRESQL",
+                    "platform": "postgres",
                     "locator": EXAMPLE_PG_LOCATOR,
                     "identifier": EXAMPLE_PG_IDENTIFIER,
                     "auth": EXAMPLE_PG_AUTH,
@@ -371,7 +371,7 @@ async def test_sync_creates_flows_per_schedule(
             headers=headers,
             json={
                 "dataset_urn": _GENRE_URN,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -454,7 +454,7 @@ async def test_sync_removes_stale_flows(
             headers=headers,
             json={
                 "dataset_urn": _CATALOG_URN,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -530,7 +530,7 @@ async def test_sync_updates_on_schedule_change(
                 headers=headers,
                 json={
                     "dataset_urn": urn,
-                    "source_type": "POSTGRESQL",
+                    "platform": "postgres",
                     "locator": EXAMPLE_PG_LOCATOR,
                     "identifier": EXAMPLE_PG_IDENTIFIER,
                     "auth": EXAMPLE_PG_AUTH,
@@ -638,7 +638,7 @@ async def test_concurrency_guard_prevents_duplicate(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -692,16 +692,16 @@ async def test_concurrency_guard_prevents_duplicate(
         await async_session.commit()
 
 
-# ── Kafka source type tests ──────────────────────────────────────────────────
+# ── Kafka platform tests ────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_run_kafka_ingestion(
     http_client, async_session: AsyncSession, datahub_client
 ):
-    """PUT a KAFKA config and POST run — verify schema lands in DataHub.
+    """PUT a kafka config and POST run — verify schema lands in DataHub.
 
-    Validates that source_type=KAFKA (locator with bootstrap_servers,
+    Validates that platform=kafka (locator with bootstrap_servers,
     identifier with topic/cluster, no auth) works end-to-end: config
     creation, pipeline execution, and DataHub aspect emission.
 
@@ -722,7 +722,7 @@ async def test_run_kafka_ingestion(
             headers=headers,
             json={
                 "dataset_urn": dataset_urn,
-                "source_type": "KAFKA",
+                "platform": "kafka",
                 "locator": EXAMPLE_KAFKA_LOCATOR,
                 "identifier": EXAMPLE_KAFKA_IDENTIFIER,
                 "is_active": False,
@@ -730,14 +730,14 @@ async def test_run_kafka_ingestion(
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
-        # Verify the stored config has the expected KAFKA shape
+        # Verify the stored config has the expected kafka shape
         resp = await http_client.get(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
             headers=headers,
         )
         assert resp.status_code == 200, f"GET config failed: {resp.text}"
         config_body = resp.json()
-        assert config_body["source_type"] == "KAFKA"
+        assert config_body["platform"] == "kafka"
         assert config_body["locator"]["bootstrap_servers"] == "localhost:9104"
         assert config_body["identifier"]["topic"] == "imazon.orders.events"
         assert config_body["auth"] is None
@@ -751,7 +751,7 @@ async def test_run_kafka_ingestion(
         assert resp.status_code == 200, f"Kafka run failed: {resp.text}"
         body = resp.json()
         assert body["status"] == "success", f"Ingestion failed: {body.get('detail')}"
-        assert body["detail"]["source_type"] == "KAFKA"
+        assert body["detail"]["platform"] == "kafka"
         assert body["detail"]["entities_ingested"] >= 1
 
         # Verify metadata landed in DataHub
@@ -782,12 +782,12 @@ async def test_run_kafka_ingestion(
 
 
 @pytest.mark.asyncio
-async def test_mixed_source_types_in_periodic_sync(
+async def test_mixed_platforms_in_periodic_sync(
     http_client, async_session: AsyncSession, kestra_client
 ):
-    """Periodic sync groups configs by schedule regardless of source_type.
+    """Periodic sync groups configs by schedule regardless of platform.
 
-    Setup: PUT POSTGRESQL config (title_master) and KAFKA config (transient URN),
+    Setup: PUT postgres config (title_master) and kafka config (transient URN),
            both periodic with the same schedule.
     Action: POST ingestion/sync-periodic-flows.
     Assertions:
@@ -802,13 +802,13 @@ async def test_mixed_source_types_in_periodic_sync(
     headers = _auth_headers()
 
     try:
-        # POSTGRESQL config
+        # postgres config
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{pg_urn}/attr/ingestion/conf",
             headers=headers,
             json={
                 "dataset_urn": pg_urn,
-                "source_type": "POSTGRESQL",
+                "platform": "postgres",
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
@@ -818,13 +818,13 @@ async def test_mixed_source_types_in_periodic_sync(
         )
         assert resp.status_code in (200, 201), f"PUT PG config failed: {resp.text}"
 
-        # KAFKA config
+        # kafka config
         resp = await http_client.put(
             f"/api/v1/spoke/common/data/{kafka_urn}/attr/ingestion/conf",
             headers=headers,
             json={
                 "dataset_urn": kafka_urn,
-                "source_type": "KAFKA",
+                "platform": "kafka",
                 "locator": EXAMPLE_KAFKA_LOCATOR,
                 "identifier": EXAMPLE_KAFKA_IDENTIFIER,
                 "is_active": True,
@@ -852,7 +852,7 @@ async def test_mixed_source_types_in_periodic_sync(
         assert pg_urn in result, f"Expected PG URN in result: {result}"
         assert kafka_urn in result, f"Expected Kafka URN in result: {result}"
 
-        # Check side-effect events — CONFIG_CREATE for both source types
+        # Check side-effect events — CONFIG_CREATE for both platforms
         for urn in (pg_urn, kafka_urn):
             resp = await http_client.get(
                 f"/api/v1/spoke/common/data/{urn}/attr/ingestion/event",
@@ -874,10 +874,10 @@ async def test_mixed_source_types_in_periodic_sync(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "source_type, locator, identifier, auth",
+    "platform, locator, identifier, auth",
     [
         pytest.param(
-            "POSTGRESQL",
+            "postgres",
             EXAMPLE_PG_LOCATOR,
             {
                 "database": EXAMPLE_PG_IDENTIFIER["database"],
@@ -888,7 +888,7 @@ async def test_mixed_source_types_in_periodic_sync(
             id="postgresql-nonexistent-table",
         ),
         pytest.param(
-            "KAFKA",
+            "kafka",
             EXAMPLE_KAFKA_LOCATOR,
             {
                 "topic": "nonexistent.topic.xyz",
@@ -901,7 +901,7 @@ async def test_mixed_source_types_in_periodic_sync(
 )
 async def test_run_ingestion_nonexistent_source(
     http_client, async_session: AsyncSession,
-    source_type, locator, identifier, auth,
+    platform, locator, identifier, auth,
 ):
     """Non-dry-run ingestion against a non-existent source target fails.
 
@@ -912,13 +912,13 @@ async def test_run_ingestion_nonexistent_source(
                 errors non-empty, INGESTION.FAIL event recorded.
     Cleanup: DELETE config + events.
     """
-    dataset_urn = _urn(f"nonexistent_{source_type.lower()}")
+    dataset_urn = _urn(f"nonexistent_{platform}")
     headers = _auth_headers()
 
     try:
         payload = {
             "dataset_urn": dataset_urn,
-            "source_type": source_type,
+            "platform": platform,
             "locator": locator,
             "identifier": identifier,
             "is_active": False,

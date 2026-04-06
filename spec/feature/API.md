@@ -248,7 +248,7 @@ and [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-re
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (source_type, locator, identifier, auth, is_active, schedule_cron, status) | Ingestion Config | UC1 |
+| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (platform, locator, identifier, auth, is_active, schedule_cron, status) | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
 | `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |

@@ -23,7 +23,7 @@ _AUTH = {"username": "user", "secret_ref": "pw"}
 
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
-    source_type: str = "POSTGRESQL",
+    platform: str = "postgres",
     locator: dict | None = None,
     identifier: dict | None = None,
     auth: dict | None = None,
@@ -38,7 +38,7 @@ def _make_config_row(
     row = MagicMock()
     row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
-    row.source_type = source_type
+    row.platform = platform
     row.locator = locator or _LOCATOR
     row.identifier = identifier or _IDENTIFIER
     row.auth = auth if auth is not None else _AUTH
@@ -69,7 +69,7 @@ async def test_get_config_found(service, db):
     config = await service.get_config(_DATASET_URN)
     assert config is not None
     assert config.dataset_urn == _DATASET_URN
-    assert config.source_type == "POSTGRESQL"
+    assert config.platform == "postgres"
     assert config.locator == _LOCATOR
     assert config.identifier == _IDENTIFIER
     assert config.auth == _AUTH
@@ -91,7 +91,7 @@ async def test_upsert_config_creates_new(service, db):
 
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        source_type="POSTGRESQL",
+        platform="postgres",
         locator=_LOCATOR,
         identifier=_IDENTIFIER,
         auth=_AUTH,
@@ -112,7 +112,7 @@ async def test_upsert_config_updates_existing(service, db):
     new_auth = {"username": "admin", "secret_ref": "newpw"}
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        source_type="MYSQL",
+        platform="mysql",
         locator=new_locator,
         identifier=new_identifier,
         auth=new_auth,
@@ -121,7 +121,7 @@ async def test_upsert_config_updates_existing(service, db):
     )
     assert db.add.called
     assert db.commit.await_count >= 1
-    assert existing_row.source_type == "MYSQL"
+    assert existing_row.platform == "mysql"
     assert existing_row.locator == new_locator
     assert existing_row.identifier == new_identifier
     assert existing_row.auth == new_auth
@@ -137,7 +137,7 @@ async def test_upsert_config_with_optional_fields(service, db):
     custom = {"plugin_a": {"class": "mymodule.MyExtractor"}}
     await service.upsert_config(
         dataset_urn=_DATASET_URN,
-        source_type="POSTGRESQL",
+        platform="postgres",
         locator=_LOCATOR,
         identifier=_IDENTIFIER,
         auth=_AUTH,
@@ -162,13 +162,13 @@ async def test_patch_config_applies_schedule(service, db):
     assert db.commit.await_count >= 1
 
 
-async def test_patch_config_applies_source_type(service, db):
+async def test_patch_config_applies_platform(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"source_type": "MYSQL"})
-    assert existing_row.source_type == "MYSQL"
+    await service.patch_config(_DATASET_URN, {"platform": "mysql"})
+    assert existing_row.platform == "mysql"
 
 
 async def test_patch_config_applies_periodic_and_schedule(service, db):
