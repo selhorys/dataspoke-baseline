@@ -23,6 +23,8 @@ import pytest_asyncio
 
 from .conftest import emit_test_dataset, make_test_urn, soft_delete_test_dataset
 
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
+
 # --- DataHub ---
 
 

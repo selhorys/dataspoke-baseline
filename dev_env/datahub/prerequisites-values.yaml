@@ -78,6 +78,27 @@ elasticsearch:
   antiAffinity: "soft"
   clusterHealthCheckParams: "wait_for_status=yellow&timeout=1s"
   esJavaOpts: "-Xmx512m -Xms512m"
+  # --- GKE Autopilot compatibility ---
+  # 1. Disable the privileged sysctl init container (Autopilot blocks it).
+  sysctlInitContainer:
+    enabled: false
+  # 2. Use single-node discovery to skip bootstrap checks (vm.max_map_count).
+  esConfig:
+    elasticsearch.yml: |
+      discovery.type: single-node
+  # 3. Set roles.master="false" so the chart template does NOT emit
+  #    cluster.initial_master_nodes (conflicts with single-node mode).
+  #    Restore node.master=true via extraEnvs (appended after the roles
+  #    block in the StatefulSet template, so it wins).
+  roles:
+    master: "false"
+    ingest: "true"
+    data: "true"
+    remote_cluster_client: "true"
+    ml: "true"
+  extraEnvs:
+    - name: node.master
+      value: "true"
   resources:
     requests:
       cpu: "200m"

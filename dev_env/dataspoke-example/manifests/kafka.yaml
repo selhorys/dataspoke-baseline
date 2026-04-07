@@ -21,6 +21,8 @@ metadata:
     app: example-kafka
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: example-kafka
@@ -29,6 +31,13 @@ spec:
       labels:
         app: example-kafka
     spec:
+      initContainers:
+        - name: fix-data-permissions
+          image: busybox:1.37
+          command: ["sh", "-c", "rm -rf /var/lib/kafka/data/lost+found && chown -R 1000:1000 /var/lib/kafka/data"]
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
       containers:
         - name: kafka
           image: apache/kafka:3.9.0
