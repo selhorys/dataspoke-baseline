@@ -7,9 +7,7 @@ PID_FILE="$SCRIPT_DIR/.datahub-port-forward.pid"
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-info()  { echo -e "\033[0;32m[INFO]\033[0m  $*"; }
-warn()  { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
-error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
+source "$SCRIPT_DIR/lib/helpers.sh"
 
 # ---------------------------------------------------------------------------
 # Load configuration
@@ -99,14 +97,11 @@ KAFKA_POD=$(kubectl get pods -n "${NS}" \
 # ---------------------------------------------------------------------------
 # Start port-forwards in the background
 # ---------------------------------------------------------------------------
-kubectl port-forward --namespace "${NS}" "${FRONTEND_POD}" "${UI_PORT}:9002" >/dev/null 2>&1 &
-UI_PID=$!
+UI_PID=$(port_forward_loop "${NS}" "${FRONTEND_POD}" "${UI_PORT}:9002")
 
-kubectl port-forward --namespace "${NS}" "svc/${GMS_SVC}" "${GMS_PORT}:8080" >/dev/null 2>&1 &
-GMS_PID=$!
+GMS_PID=$(port_forward_loop "${NS}" "svc/${GMS_SVC}" "${GMS_PORT}:8080")
 
-kubectl port-forward --namespace "${NS}" "${KAFKA_POD}" "${KAFKA_PORT}:9095" >/dev/null 2>&1 &
-KAFKA_PID=$!
+KAFKA_PID=$(port_forward_loop "${NS}" "${KAFKA_POD}" "${KAFKA_PORT}:9095")
 
 # Write PIDs
 echo "$UI_PID" > "$PID_FILE"

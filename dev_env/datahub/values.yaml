@@ -1,7 +1,7 @@
 # DataHub Helm values — dev sizing
 # Chart: datahub/datahub version 0.8.21 (app version v1.4.0.3)
-# Target cluster: 8 CPU / 14 GB RAM
-# Total memory limits (datahub services): ~3.6 GiB of ~7 GiB cluster-wide budget
+# Target cluster: GKE Autopilot (gke-dev-env-01)
+# Total memory limits (datahub services): ~6.5 GiB
 #
 # Service name overrides point to the datahub-prerequisites release.
 # Because the prerequisites chart is installed as release name
@@ -44,11 +44,11 @@ datahub-gms:
       value: "false"
   resources:
     requests:
-      cpu: "500m"
-      memory: "768Mi"
-    limits:
-      cpu: "1500m"
+      cpu: "1000m"
       memory: "1536Mi"
+    limits:
+      cpu: "2000m"
+      memory: "3Gi"
   # Relaxed probes: GMS depends on ES, Kafka, and MySQL.  On a single-node
   # dev cluster a transient ES restart can make /health unreachable for
   # 30-60 s.  failureThreshold × periodSeconds ≈ 2 min tolerance prevents
@@ -67,11 +67,11 @@ datahub-gms:
 datahub-frontend:
   resources:
     requests:
-      cpu: "200m"
-      memory: "384Mi"
+      cpu: "250m"
+      memory: "512Mi"
     limits:
-      cpu: "500m"
-      memory: "768Mi"
+      cpu: "1000m"
+      memory: "1Gi"
   livenessProbe:
     initialDelaySeconds: 60
     periodSeconds: 15
@@ -81,26 +81,26 @@ datahub-frontend:
 datahub-mae-consumer:
   resources:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
+      cpu: "250m"
       memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
 
 datahub-mce-consumer:
   resources:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
+      cpu: "250m"
       memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
 
 datahub-actions:
   resources:
     requests:
-      cpu: "50m"
-      memory: "128Mi"
-    limits:
-      cpu: "200m"
+      cpu: "250m"
       memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

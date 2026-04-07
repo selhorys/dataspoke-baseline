@@ -7,9 +7,7 @@ PID_FILE="$SCRIPT_DIR/.dataspoke-port-forward.pid"
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-info()  { echo -e "\033[0;32m[INFO]\033[0m  $*"; }
-warn()  { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
-error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
+source "$SCRIPT_DIR/lib/helpers.sh"
 
 # ---------------------------------------------------------------------------
 # Load configuration
@@ -78,24 +76,19 @@ kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}" >/dev/null 2>&1
 PIDS=()
 
 # PostgreSQL
-kubectl port-forward --namespace "${NS}" svc/dataspoke-postgresql "${PG_PORT}:5432" >/dev/null 2>&1 &
-PIDS+=($!)
+PIDS+=( $(port_forward_loop "${NS}" "svc/dataspoke-postgresql" "${PG_PORT}:5432") )
 
 # Redis
-kubectl port-forward --namespace "${NS}" svc/dataspoke-redis-master "${REDIS_PORT}:6379" >/dev/null 2>&1 &
-PIDS+=($!)
+PIDS+=( $(port_forward_loop "${NS}" "svc/dataspoke-redis-master" "${REDIS_PORT}:6379") )
 
 # Qdrant HTTP
-kubectl port-forward --namespace "${NS}" svc/dataspoke-qdrant "${QDRANT_HTTP_PORT}:6333" >/dev/null 2>&1 &
-PIDS+=($!)
+PIDS+=( $(port_forward_loop "${NS}" "svc/dataspoke-qdrant" "${QDRANT_HTTP_PORT}:6333") )
 
 # Qdrant gRPC
-kubectl port-forward --namespace "${NS}" svc/dataspoke-qdrant "${QDRANT_GRPC_PORT}:6334" >/dev/null 2>&1 &
-PIDS+=($!)
+PIDS+=( $(port_forward_loop "${NS}" "svc/dataspoke-qdrant" "${QDRANT_GRPC_PORT}:6334") )
 
 # Kestra (API + UI on single port)
-kubectl port-forward --namespace "${NS}" svc/dataspoke-kestra "${KESTRA_PORT}:8080" >/dev/null 2>&1 &
-PIDS+=($!)
+PIDS+=( $(port_forward_loop "${NS}" "svc/dataspoke-kestra" "${KESTRA_PORT}:8080") )
 
 # Write PIDs
 printf '%s\n' "${PIDS[@]}" > "$PID_FILE"

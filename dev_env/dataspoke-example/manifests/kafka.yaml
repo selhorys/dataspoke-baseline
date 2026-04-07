@@ -31,13 +31,8 @@ spec:
       labels:
         app: example-kafka
     spec:
-      initContainers:
-        - name: fix-data-permissions
-          image: busybox:1.37
-          command: ["sh", "-c", "rm -rf /var/lib/kafka/data/lost+found && chown -R 1000:1000 /var/lib/kafka/data"]
-          volumeMounts:
-            - name: kafka-data
-              mountPath: /var/lib/kafka/data
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: kafka
           image: apache/kafka:3.9.0
@@ -75,14 +70,14 @@ spec:
               value: "dataspoke-example-kafka-001"
           resources:
             requests:
-              cpu: "100m"
-              memory: "256Mi"
+              cpu: "250m"
+              memory: "512Mi"
             limits:
               cpu: "500m"
               memory: "1Gi"
           volumeMounts:
             - name: kafka-data
-              mountPath: /var/lib/kafka/data
+              mountPath: /var/lib/kafka
           readinessProbe:
             tcpSocket:
               port: 9092
@@ -144,12 +139,19 @@ spec:
             - -c
             - |
               echo "Waiting for Kafka to be ready..."
-              until /opt/kafka/bin/kafka-broker-api-versions.sh \
-                --bootstrap-server example-kafka:9092 >/dev/null 2>&1; do
+              until /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server example-kafka:9092 --list >/dev/null 2>&1; do
                 echo "  Kafka not ready yet, retrying in 5s..."
                 sleep 5
               done
               echo "Kafka is ready."
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
       containers:
         - name: topic-init
           image: apache/kafka:3.9.0
@@ -168,3 +170,10 @@ spec:
               /opt/kafka/bin/kafka-topics.sh \
                 --bootstrap-server example-kafka:9092 \
                 --list
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

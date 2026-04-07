@@ -1,5 +1,6 @@
 # DataSpoke Umbrella Chart — Dev Overlay
 # Infrastructure only. Application subcharts disabled (run on the host).
+# Target cluster: GKE Autopilot (gke-dev-env-01)
 # Used by: dev_env/dataspoke-infra/install.sh
 
 # ---------------------------------------------------------------------------
@@ -25,11 +26,11 @@ postgresql:
   primary:
     resources:
       limits:
-        memory: 512Mi
-        cpu: 500m
+        memory: 1Gi
+        cpu: 1000m
       requests:
-        memory: 256Mi
-        cpu: 100m
+        memory: 512Mi
+        cpu: 250m
     persistence:
       size: 10Gi
     initdb:
@@ -44,11 +45,11 @@ redis:
   master:
     resources:
       limits:
+        memory: 512Mi
+        cpu: 500m
+      requests:
         memory: 256Mi
         cpu: 250m
-      requests:
-        memory: 128Mi
-        cpu: 50m
   replica:
     replicaCount: 0
 
@@ -56,11 +57,11 @@ qdrant:
   enabled: true
   resources:
     limits:
-      memory: 1024Mi
-      cpu: 500m
+      memory: 2Gi
+      cpu: 1000m
     requests:
-      memory: 512Mi
-      cpu: 100m
+      memory: 1Gi
+      cpu: 250m
   persistence:
     size: 10Gi
 
@@ -83,15 +84,22 @@ kestra:
               sleep 2
             done
             echo "PostgreSQL is reachable."
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
     resources:
       requests:
-        cpu: 500m
-        memory: 3Gi
+        cpu: 1000m
+        memory: 4Gi
       limits:
-        cpu: "2"
-        memory: 6Gi
+        cpu: "4"
+        memory: 8Gi
     jvm:
-      extraOpts: "-Xms1g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms2g -Xmx6g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     startupProbe:
       httpGet:
         path: /health
@@ -116,7 +124,7 @@ kestra:
       failureThreshold: 6
   deployments:
     standalone:
-      workerThreads: 8
+      workerThreads: 16
   dind:
     enabled: false
   configurations:
@@ -126,8 +134,8 @@ kestra:
           url: jdbc:postgresql://dataspoke-postgresql:5432/kestra
           driverClassName: org.postgresql.Driver
           # username/password: passed via --set from .env
-          maximumPoolSize: 30
-          minimumIdle: 5
+          maximumPoolSize: 50
+          minimumIdle: 10
       kestra:
         repository:
           type: postgres
@@ -150,8 +158,8 @@ kestra:
             heartbeatInterval: 10s
         jdbc:
           queues:
-            min-poll-interval: 100ms
-            max-poll-interval: 1000ms
+            min-poll-interval: 25ms
+            max-poll-interval: 500ms
             poll-switch-interval: 300s
           cleaner:
             initial-delay: 2h

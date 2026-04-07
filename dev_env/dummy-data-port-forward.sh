@@ -7,9 +7,7 @@ PID_FILE="$SCRIPT_DIR/.dummy-data-port-forward.pid"
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-info()  { echo -e "\033[0;32m[INFO]\033[0m  $*"; }
-warn()  { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
-error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
+source "$SCRIPT_DIR/lib/helpers.sh"
 
 # ---------------------------------------------------------------------------
 # Load configuration
@@ -83,14 +81,12 @@ kubectl get svc example-kafka -n "${NS}" >/dev/null 2>&1 \
 # ---------------------------------------------------------------------------
 # Start port-forwards in the background
 # ---------------------------------------------------------------------------
-kubectl port-forward --namespace "${NS}" svc/example-postgres "${PG_PORT}:5432" >/dev/null 2>&1 &
-PG_PID=$!
+PG_PID=$(port_forward_loop "${NS}" "svc/example-postgres" "${PG_PORT}:5432")
 
 # Forward to the EXTERNAL listener (9094), which advertises localhost:9104
 # for host-side access.  The internal PLAINTEXT listener (9092) advertises
 # example-kafka:9092, which is unresolvable from the host.
-kubectl port-forward --namespace "${NS}" svc/example-kafka "${KAFKA_PORT}:9094" >/dev/null 2>&1 &
-KAFKA_PID=$!
+KAFKA_PID=$(port_forward_loop "${NS}" "svc/example-kafka" "${KAFKA_PORT}:9094")
 
 # Write PIDs
 echo "$PG_PID" > "$PID_FILE"
