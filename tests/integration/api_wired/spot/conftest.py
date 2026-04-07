@@ -184,3 +184,44 @@ async def delete_dataset_registry_db(
         text("DELETE FROM dataspoke.dataset_registry WHERE dataset_urn = :urn"),
         {"urn": dataset_urn},
     )
+
+
+# ── Metrics helpers ──────────────────────────────────────────────────────
+
+
+async def delete_metric_definition_db(
+    session: AsyncSession, metric_id: str
+) -> None:
+    """Directly remove a metric_definitions row from PostgreSQL (for finally blocks)."""
+    await session.execute(
+        text(
+            "DELETE FROM dataspoke.metric_definitions WHERE id = :id"
+        ),
+        {"id": metric_id},
+    )
+
+
+async def delete_metric_results_db(
+    session: AsyncSession, metric_id: str
+) -> None:
+    """Remove metric results for a metric ID (for finally blocks)."""
+    await session.execute(
+        text(
+            "DELETE FROM dataspoke.metric_results WHERE metric_id = :id"
+        ),
+        {"id": metric_id},
+    )
+
+
+async def delete_metric_events_db(
+    session: AsyncSession, metric_id: str
+) -> None:
+    """Remove metric events for a metric ID (for finally blocks)."""
+    await session.execute(
+        text(
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = :id"
+            " AND entity_type = 'metric'"
+        ),
+        {"id": metric_id},
+    )
