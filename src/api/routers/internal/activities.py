@@ -174,6 +174,7 @@ async def sync_periodic_validation_flows() -> dict:
 class RunValidationRequest(BaseModel):
     dataset_urn: str
     partition: dict | None = None
+    dry_run: bool = False
 
 
 @router.post("/validation/run")
@@ -185,7 +186,9 @@ async def run_validation(body: RunValidationRequest) -> dict:
     try:
         async with make_db_session() as db:
             service = ValidationService(datahub=datahub, db=db, cache=cache)
-            summary = await service.run(body.dataset_urn, partition=body.partition)
+            summary = await service.run(
+                body.dataset_urn, partition=body.partition, dry_run=body.dry_run,
+            )
             return {
                 "run_id": summary.run_id,
                 "status": summary.status,

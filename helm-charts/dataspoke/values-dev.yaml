@@ -91,15 +91,24 @@ kestra:
           limits:
             cpu: 100m
             memory: 128Mi
+    # Mount emptyDir over /app/plugins to shadow the 175 bundled plugin JARs.
+    # DataSpoke flows use only core plugins (HTTP Request, Schedule, Log)
+    # which are built into the Kestra base image — no external plugins needed.
+    extraVolumes:
+      - name: kestra-plugins-empty
+        emptyDir: {}
+    extraVolumeMounts:
+      - name: kestra-plugins-empty
+        mountPath: /app/plugins
     resources:
       requests:
-        cpu: 1000m
-        memory: 4Gi
+        cpu: 500m
+        memory: 2Gi
       limits:
-        cpu: "4"
-        memory: 8Gi
+        cpu: "2"
+        memory: 4Gi
     jvm:
-      extraOpts: "-Xms2g -Xmx6g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms1g -Xmx3g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     startupProbe:
       httpGet:
         path: /health
@@ -124,7 +133,7 @@ kestra:
       failureThreshold: 6
   deployments:
     standalone:
-      workerThreads: 16
+      workerThreads: 4
   dind:
     enabled: false
   configurations:
@@ -134,8 +143,8 @@ kestra:
           url: jdbc:postgresql://dataspoke-postgresql:5432/kestra
           driverClassName: org.postgresql.Driver
           # username/password: passed via --set from .env
-          maximumPoolSize: 50
-          minimumIdle: 10
+          maximumPoolSize: 10
+          minimumIdle: 2
       kestra:
         repository:
           type: postgres
@@ -158,13 +167,13 @@ kestra:
             heartbeatInterval: 10s
         jdbc:
           queues:
-            min-poll-interval: 25ms
-            max-poll-interval: 500ms
-            poll-switch-interval: 300s
+            min-poll-interval: 100ms
+            max-poll-interval: 1s
+            poll-switch-interval: 60s
           cleaner:
-            initial-delay: 2h
-            fixed-delay: 4h
-            retention: 1d
+            initial-delay: 5m
+            fixed-delay: 30m
+            retention: 1h
 
 # ---------------------------------------------------------------------------
 # ConfigMap/Secret: not created in dev (app reads env vars directly)

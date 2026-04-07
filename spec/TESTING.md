@@ -181,6 +181,9 @@ API-wired tests exercise the **API server and backend services as a combined uni
 API-wired tests require the host-mode server:
 
 ```bash
+# Reset seed data for clean baseline
+uv run python -m tests.integration.util --reset-all
+
 # Start server
 ./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
 until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done

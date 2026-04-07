@@ -560,6 +560,16 @@ async def post_data_gen_generate(
     kestra: KestraClient = Depends(get_kestra_client),
 ) -> GenerationRunResultResponse:
     """Trigger AI metadata generation for the dataset via the data sub-resource."""
+    if settings.test_mode:
+        from src.api.routers.internal.activities import RunGenerationRequest, run_generation
+
+        result = await run_generation(RunGenerationRequest(dataset_urn=dataset_urn))
+        return GenerationRunResultResponse(
+            run_id=result.get("run_id", ""),
+            status=result.get("status", "error"),
+            detail=result.get("detail", {}),
+        )
+
     label_value = f"generation-{urn_to_workflow_id(dataset_urn)}"
     await kestra.check_no_duplicate(
         "generation", "workflow_id", label_value, "GENERATION_RUNNING"

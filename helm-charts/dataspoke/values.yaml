@@ -156,13 +156,27 @@ kestra:
               sleep 2
             done
             echo "PostgreSQL is reachable."
+    # Mount emptyDir over /app/plugins to shadow the 175 bundled plugin JARs.
+    # DataSpoke flows use only core plugins (HTTP Request, Schedule, Log)
+    # which are built into the Kestra base image — no external plugins needed.
+    extraVolumes:
+      - name: kestra-plugins-empty
+        emptyDir: {}
+    extraVolumeMounts:
+      - name: kestra-plugins-empty
+        mountPath: /app/plugins
+    jvm:
+      extraOpts: "-Xms1g -Xmx3g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
   resources:
     requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
       cpu: "2"
       memory: 4Gi
-    limits:
-      cpu: "3"
-      memory: 8Gi
+  deployments:
+    standalone:
+      workerThreads: 4
   dind:
     enabled: false
   configurations:
@@ -173,6 +187,8 @@ kestra:
           driverClassName: org.postgresql.Driver
           username: dataspoke
           password: ""
+          maximumPoolSize: 10
+          minimumIdle: 2
       kestra:
         repository:
           type: postgres

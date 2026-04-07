@@ -240,7 +240,7 @@ async def test_wait_for_execution_timeout(kestra_client: KestraClient):
             await kestra_client.wait_for_execution(
                 execution.id,
                 flow_id=_NOOP_FLOW_ID,
-                timeout_seconds=0.001,
+                timeout_seconds=0,
                 poll_interval=0.001,
             )
     finally:

@@ -308,6 +308,7 @@ class ValidationService:
         dataset_urn: str,
         partition: dict[str, Any] | None = None,
         run_id: str | None = None,
+        dry_run: bool = False,
     ) -> ValidationRunSummary:
         """Execute all rules for a dataset against the specified partition.
 
@@ -322,10 +323,24 @@ class ValidationService:
         8. Publish summary to Redis pub/sub
         9. Cache summary in Redis
         10. Record VALIDATION.COMPLETE event
+
+        If ``dry_run`` is True, validate that the config exists and return a
+        success summary without executing any rules.
         """
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("validation_config", dataset_urn)
+
+        if dry_run:
+            return ValidationRunSummary(
+                run_id=run_id or str(uuid.uuid4()),
+                status="success",
+                total=len(config.rules),
+                passed=0,
+                failed=0,
+                errored=0,
+                results=[],
+            )
 
         if run_id is None:
             run_id = str(uuid.uuid4())
@@ -580,6 +595,7 @@ async def run_validation_with_lock(
     cache: RedisClient,
     dataset_urn: str,
     partition: dict | None = None,
+    dry_run: bool = False,
 ) -> ValidationRunSummary:
     """Run validation with a Redis concurrency guard.
 
@@ -593,6 +609,6 @@ async def run_validation_with_lock(
             "VALIDATION_RUNNING", f"Validation is already running for {dataset_urn}"
         )
     try:
-        return await service.run(dataset_urn, partition=partition)
+        return await service.run(dataset_urn, partition=partition, dry_run=dry_run)
     finally:
         await cache.delete(lock_key)
