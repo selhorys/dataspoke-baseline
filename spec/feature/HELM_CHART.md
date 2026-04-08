@@ -20,7 +20,7 @@
 `helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components — application services and infrastructure dependencies — into a single installable unit. The same chart serves both production and development — only the values file differs:
 
 - **Production** (`values.yaml`): All components enabled — frontend, API, plus infrastructure (including Kestra). Deploy with `helm upgrade --install` and a customized values file for your environment.
-- **Dev** (`values-dev.yaml`): Infrastructure only — application subcharts disabled, reduced resources. Used by `dev_env/dataspoke-infra/install.sh`. Developers run application services on the host (host mode) or enable app subcharts via `--set` flags for on-demand in-cluster testing.
+- **Dev** (`values-dev.yaml`): Infrastructure + API server, reduced resources. Used by `dev_env/dataspoke-infra/install.sh`. The API runs in-cluster so Kestra can reach it directly. Frontend and workers are disabled.
 
 ```
 Production Deployment                    Dev Deployment (dev_env)
@@ -121,11 +121,11 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 
 ### Dev (`values-dev.yaml`)
 
-- Application subcharts disabled — developers run them on the host
+- API enabled in-cluster (1 replica, `testMode: true`); frontend/workers disabled
 - Single replicas, reduced resource limits
 - Kestra minimized for dev: reduced resources, single port (8080) for API + UI
 - Redis replicas set to 0
-- ConfigMap/Secret not created
+- ConfigMap/Secret created for in-cluster API env vars
 
 ### Key design decisions
 
@@ -206,7 +206,7 @@ A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namesp
 2. Register Helm repos (`bitnami`, `qdrant`, `kestra`) and build chart dependencies
 3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL auth credentials via `--set`
 
-The dev profile disables application subcharts (frontend, api) because developers run them on the host during normal development (host mode). Kestra runs in the cluster in both dev and production. For on-demand in-cluster testing, enable application subcharts via `--set` flags — see [§In-Cluster Testing](#in-cluster-testing).
+The dev profile enables the API in-cluster (so Kestra callbacks work via cluster DNS) while keeping frontend/workers disabled. Kestra runs in the cluster in both dev and production.
 
 This means:
 1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments — both production and dev
@@ -230,7 +230,7 @@ helm upgrade --install dataspoke ./helm-charts/dataspoke \
   # Optionally add: --set event-consumer.enabled=true
 ```
 
-This is **not** the default development workflow — every code change requires a container rebuild and `helm upgrade`. Use only when the user explicitly requests it. For normal development, run application services on the host and connect to port-forwarded infrastructure. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+The API is already enabled in `values-dev.yaml`. Frontend and workers can be enabled on-demand for full in-cluster testing. Every code change requires a container rebuild and `helm upgrade` — this is automated by `dev_env/dataspoke-test-mode.sh`. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 ---
 

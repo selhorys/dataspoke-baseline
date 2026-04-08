@@ -15,7 +15,7 @@ dependencies:
   - name: api
     version: "0.1.0"
     repository: "file://subcharts/api"
-    condition: api.enabled
+    condition: api.subchart.enabled
 
   - name: workers
     version: "0.1.0"

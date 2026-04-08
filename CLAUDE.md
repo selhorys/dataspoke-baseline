@@ -114,11 +114,11 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 **Test execution groups**: Run tests in three separate groups, do not mix:
 1. `uv run pytest tests/unit/`
 2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
-3. `uv run python -m tests.integration.util --reset-all`, then start `./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &`, wait for health, run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
+3. `uv run python -m tests.integration.util --reset-all`, then deploy the in-cluster API via `./dev_env/dataspoke-test-mode.sh` (builds image, deploys via Helm, port-forwards to localhost:8002), run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
 
-Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process** (not just the server), server health, and `ingestion-config-sync` flow registration before api-wired tests run. The env var must be passed to the `uv run pytest` command because `dataspoke-test-mode.sh` only exports it for the server subprocess.
+Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process**, server health, and `ingestion-config-sync` flow registration before api-wired tests run.
 
-**Manual API testing**: See `spec/TESTING.md §Manual REST API Testing`. Start test-mode server, get a token via `POST /api/v1/auth/token`, then `curl` endpoints. Refer to spot tests in `tests/integration/api_wired/spot/` for valid URNs and payloads.
+**Manual API testing**: See `spec/TESTING.md §Manual REST API Testing`. Deploy the in-cluster API via `dataspoke-test-mode.sh`, get a token via `POST /api/v1/auth/token`, then `curl` endpoints. Refer to spot tests in `tests/integration/api_wired/spot/` for valid URNs and payloads.
 
 **Output rules**:
 - Never truncate integration test output (no `| tail`, `| head`, or piping through filters) — always show the complete pytest output

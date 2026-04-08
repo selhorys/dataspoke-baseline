@@ -4,10 +4,11 @@ Extends the root ``tests/integration/conftest.py`` (inherited automatically
 by pytest).  Provides fixtures specific to REST-based testing so that spot
 and story tests get a ready-to-use auth header dict without boilerplate.
 
-API-wired tests assume a host-mode DataSpoke runtime is already running
-**with test mode enabled** (``DATASPOKE_TEST_MODE=true``).  Start it via::
+API-wired tests assume the in-cluster DataSpoke API is deployed and
+port-forwarded **with test mode enabled** (``DATASPOKE_TEST_MODE=true``).
+Start it via::
 
-    ./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
+    ./dev_env/dataspoke-test-mode.sh
 
 The ``require_server`` fixture verifies three things at session start:
 
@@ -29,7 +30,7 @@ from tests.integration.conftest import _auth_headers
 
 @pytest.fixture(scope="session", autouse=True)
 def require_server():
-    """Fail fast if the host-mode DataSpoke server is not running in test mode.
+    """Fail fast if the in-cluster DataSpoke API is not running in test mode.
 
     Checks three conditions:
     1. Server liveness via ``GET /health``.
@@ -48,14 +49,14 @@ def require_server():
         )
 
     # -- Check server health --
-    port = os.environ.get("DATASPOKE_API_PORT", "8000")
+    port = os.environ.get("DATASPOKE_API_PORT", "8002")
     try:
         resp = httpx.get(f"http://localhost:{port}/health", timeout=5.0)
         resp.raise_for_status()
     except Exception:
         pytest.fail(
-            f"DataSpoke server not running on localhost:{port}. "
-            "Start with: ./dev_env/dataspoke-test-mode.sh"
+            f"DataSpoke API not reachable on localhost:{port}. "
+            "Deploy and port-forward with: ./dev_env/dataspoke-test-mode.sh"
         )
 
     # Verify required flows are registered

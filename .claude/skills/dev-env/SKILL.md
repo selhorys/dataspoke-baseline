@@ -27,7 +27,8 @@ When the user specifies components, match against these names. If no components 
 | Component | Install script | Uninstall script | Port-forward script |
 |-----------|---------------|------------------|-------------------|
 | `datahub` | `dev_env/datahub/install.sh` | `dev_env/datahub/uninstall.sh` | `dev_env/datahub-port-forward.sh` |
-| `dataspoke-infra` (aliases: `infra`, `infrastructure`) | `dev_env/dataspoke-infra/install.sh` | `dev_env/dataspoke-infra/uninstall.sh` | `dev_env/dataspoke-port-forward.sh` |
+| `dataspoke-infra` (aliases: `infra`, `infrastructure`) | `dev_env/dataspoke-infra/install.sh` | `dev_env/dataspoke-infra/uninstall.sh` | `dev_env/dataspoke-port-forward.sh --infra-start` |
+| `dataspoke-api` (aliases: `api`) | (via dataspoke-infra Helm) | (via dataspoke-infra Helm) | `dev_env/dataspoke-port-forward.sh --api-start` |
 | `dataspoke-example` (aliases: `example`, `dummy-data`) | `dev_env/dataspoke-example/install.sh` | `dev_env/dataspoke-example/uninstall.sh` | `dev_env/dummy-data-port-forward.sh` |
 | `dataspoke-lock` (aliases: `lock`) | `dev_env/dataspoke-lock/install.sh` | `dev_env/dataspoke-lock/uninstall.sh` | `dev_env/lock-port-forward.sh` |
 
@@ -109,7 +110,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 ### Stop port-forwarding
 
-1. Check if port-forwarding processes are running by looking for PID files: `dev_env/.datahub-port-forward.pid`, `dev_env/.dataspoke-port-forward.pid`, `dev_env/.dummy-data-port-forward.pid`, `dev_env/.lock-port-forward.pid`.
+1. Check if port-forwarding processes are running by looking for PID files: `dev_env/.datahub-port-forward.pid`, `dev_env/.dataspoke-port-forward-infra.pid`, `dev_env/.dataspoke-port-forward-api.pid`, `dev_env/.dummy-data-port-forward.pid`, `dev_env/.lock-port-forward.pid`.
 2. Stop any running port-forwards for the components being uninstalled.
 
 ### Full uninstall (all components)
@@ -140,7 +141,9 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 1. For each requested component (or all if none specified), run the port-forward script:
    - `./dev_env/datahub-port-forward.sh`
-   - `./dev_env/dataspoke-port-forward.sh`
+   - `./dev_env/dataspoke-port-forward.sh --infra-start` (PostgreSQL, Redis, Qdrant, Kestra)
+   - `./dev_env/dataspoke-port-forward.sh --api-start` (in-cluster API)
+   - `./dev_env/dataspoke-port-forward.sh --all-start` (infra + API together)
    - `./dev_env/dummy-data-port-forward.sh`
    - `./dev_env/lock-port-forward.sh`
 2. After starting, verify the PID files were created and report the forwarded ports.
@@ -149,9 +152,11 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 If the user asks to stop port-forwarding:
 
-1. For each requested component (or all if none specified), run with `--stop`:
+1. For each requested component (or all if none specified):
    - `./dev_env/datahub-port-forward.sh --stop`
-   - `./dev_env/dataspoke-port-forward.sh --stop`
+   - `./dev_env/dataspoke-port-forward.sh --infra-stop`
+   - `./dev_env/dataspoke-port-forward.sh --api-stop`
+   - `./dev_env/dataspoke-port-forward.sh --all-stop` (infra + API together)
    - `./dev_env/dummy-data-port-forward.sh --stop`
    - `./dev_env/lock-port-forward.sh --stop`
 2. Confirm the PID files are cleaned up.

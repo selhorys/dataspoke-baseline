@@ -69,6 +69,10 @@ DD_KAFKA_PORT="${_DD_KAFKA_BROKERS##*:}"
 # Lock (lock-port-forward.sh)
 LOCK_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_DEV_ENV_LOCK_PORT:-9221}"
 
+# DataSpoke API (dataspoke-port-forward.sh --api-start) — only checked if PID file exists
+API_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_API_PORT:-8002}"
+API_PID_FILE="$SCRIPT_DIR/.dataspoke-port-forward-api.pid"
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -317,6 +321,27 @@ _release_lock() {
   fi
 }
 
+check_dataspoke_api() {
+  # Only check if the port-forward PID file exists (i.e. test-mode is active).
+  if [[ ! -f "$API_PID_FILE" ]]; then
+    _skip "dataspoke-api (localhost:${API_PORT}) — port-forward not active (run dataspoke-port-forward.sh --api-start)"
+    return
+  fi
+  local label="dataspoke-api (localhost:${API_PORT})"
+  if ! _tcp_check "localhost" "$API_PORT"; then
+    _fail "$label — port not reachable (stale PID file?)"
+    ((FAILURES++)); return
+  fi
+  if $QUICK; then _pass "$label (tcp)"; return; fi
+
+  if _http_ok "http://localhost:${API_PORT}/health"; then
+    _pass "$label"
+  else
+    _fail "$label — /health did not return 2xx"
+    ((FAILURES++))
+  fi
+}
+
 check_lock_service() {
   local label="lock-service (localhost:${LOCK_PORT})"
   if ! _tcp_check "localhost" "$LOCK_PORT"; then
@@ -381,6 +406,7 @@ check_dataspoke_postgresql
 check_dataspoke_redis
 check_dataspoke_qdrant
 check_dataspoke_kestra
+check_dataspoke_api
 
 echo ""
 echo "DataHub:"

@@ -188,24 +188,6 @@ async def post_metric_run(
     kestra: KestraClient = Depends(get_kestra_client),
 ) -> MetricRunResultResponse:
     """Trigger a metric measurement run via Kestra."""
-    if settings.test_mode:
-        from src.api.routers.internal.activities import (
-            PublishMetricUpdateRequest,
-            RunMetricRequest as InternalRunMetricRequest,
-            publish_metric_update,
-            run_metric,
-        )
-
-        result = await run_metric(
-            InternalRunMetricRequest(metric_id=metric_id, dry_run=body.dry_run)
-        )
-        await publish_metric_update(PublishMetricUpdateRequest(**result))
-        return MetricRunResultResponse(
-            run_id=result.get("run_id", ""),
-            status=result.get("status", "error"),
-            detail=result.get("detail", {}),
-        )
-
     label_value = f"metrics-{metric_id}"
     await kestra.check_no_duplicate(
         "metrics", "workflow_id", label_value, "METRIC_RUNNING"

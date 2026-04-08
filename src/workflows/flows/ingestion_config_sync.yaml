@@ -9,7 +9,7 @@ concurrency:
 inputs:
   - id: callback_base_url
     type: STRING
-    defaults: "http://host.docker.internal:8000"
+    defaults: "http://dataspoke-api:8002"
 
 triggers:
   - id: cron

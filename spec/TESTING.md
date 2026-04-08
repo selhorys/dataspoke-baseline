@@ -89,12 +89,7 @@ Integration tests run against the dev environment, exercising real infrastructur
 
 ### Testing Modes
 
-| Mode | App Services | When to Use |
-|------|-------------|-------------|
-| **Host (default)** | Run on host; Kestra in cluster | Normal development -- fast test-and-fix loop |
-| **In-cluster (on-demand)** | All components in K8s via Helm | Kubernetes-specific behavior only (health probes, ingress, resource limits) |
-
-Host mode does not require Helm chart reinstall between iterations. In-cluster mode requires container rebuild + `helm upgrade` per change. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing).
+The API runs **in-cluster** alongside Kestra so that Kestra workflows can call back to the API directly via `http://dataspoke-api:8002`. Developers port-forward the in-cluster API to `localhost:8002` for running tests and manual exploration. Code changes require `docker build` + `helm upgrade` (automated by `dataspoke-test-mode.sh`).
 
 ### Workflow
 
@@ -147,7 +142,7 @@ The script probes each service at the application layer (PostgreSQL, Redis, Qdra
 
 ### Test-Mode Stubs (`DATASPOKE_TEST_MODE`)
 
-When the host-mode server starts with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stubs:
+When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-dev.yaml` `api.testMode: true`), the `make_*` factories in `src/workflows/_common.py` return stubs:
 
 | Factory | Stub | Behavior |
 |---------|------|----------|
@@ -178,15 +173,16 @@ API-wired tests exercise the **API server and backend services as a combined uni
 
 ### Running
 
-API-wired tests require the host-mode server:
+API-wired tests require the in-cluster API server:
 
 ```bash
 # Reset seed data for clean baseline
 uv run python -m tests.integration.util --reset-all
 
-# Start server
-./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
-until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
+# Build, deploy, and port-forward the in-cluster API
+./dev_env/dataspoke-test-mode.sh                  # builds image, deploys, port-forwards to localhost:8002
+# Or skip rebuild if image already pushed:
+./dev_env/dataspoke-test-mode.sh --skip-build
 
 # Run (DATASPOKE_TEST_MODE must be set in the pytest process)
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
@@ -226,14 +222,13 @@ Interactive endpoint testing with `curl` against the test-mode server. Useful fo
 ```bash
 ./dev_env/health-check.sh                                        # Pre-flight
 uv run python -m tests.integration.util --reset-all              # Seed Imazon dummy data
-./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &    # Start server
-until curl -sf http://localhost:8000/health > /dev/null; do sleep 2; done
+./dev_env/dataspoke-test-mode.sh                                 # Build, deploy, port-forward
 ```
 
 ### Authentication
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/token \
+TOKEN=$(curl -s -X POST http://localhost:8002/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
 ```
@@ -243,7 +238,7 @@ Admin has groups `["admin", "de", "da", "dg"]` (all tiers). Tokens expire in 15 
 ### Making Requests
 
 ```bash
-curl -s http://localhost:8000/api/v1/spoke/common/data/$URN \
+curl -s http://localhost:8002/api/v1/spoke/common/data/$URN \
   -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
@@ -278,7 +273,7 @@ Route tiers: `/api/v1/spoke/common/…` (any group), `/api/v1/spoke/[de|da|dg]/�
 
 E2E tests verify the full stack through a real browser (Playwright, TypeScript, `tests/e2e/`).
 
-**Prerequisites**: All services running -- Frontend (`localhost:3000`), API (`localhost:8000`), all port-forwards active.
+**Prerequisites**: All services running -- Frontend (`localhost:3000`), API (`localhost:8002` via port-forward), all port-forwards active.
 
 **Lock protocol**: Same seven-step workflow as integration tests (acquire lock -> reset data -> run -> reset -> release lock).
 

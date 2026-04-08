@@ -4,12 +4,25 @@
 # Used by: dev_env/dataspoke-infra/install.sh
 
 # ---------------------------------------------------------------------------
-# Application components: disabled (developers run them on the host)
+# Application components: frontend/workers run on the host; API runs in-cluster
+# so Kestra can reach it via http://dataspoke-api:8000.
 # ---------------------------------------------------------------------------
 frontend:
   enabled: false
 api:
-  enabled: false
+  enabled: true
+  replicaCount: 1
+  image:
+    # repository + tag passed via --set from .env (DATASPOKE_DEV_IMAGE_REGISTRY)
+    pullPolicy: Always
+  testMode: true
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1024Mi
 workers:
   enabled: false
 
@@ -102,13 +115,13 @@ kestra:
         mountPath: /app/plugins
     resources:
       requests:
-        cpu: 500m
-        memory: 2Gi
-      limits:
-        cpu: "2"
+        cpu: "4"
         memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 8Gi
     jvm:
-      extraOpts: "-Xms1g -Xmx3g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
     startupProbe:
       httpGet:
         path: /health
@@ -122,15 +135,15 @@ kestra:
         path: /health/liveness
         port: management
       periodSeconds: 10
-      timeoutSeconds: 10
-      failureThreshold: 6
+      timeoutSeconds: 15
+      failureThreshold: 30
     readinessProbe:
       httpGet:
         path: /health/readiness
         port: management
       periodSeconds: 10
-      timeoutSeconds: 10
-      failureThreshold: 6
+      timeoutSeconds: 15
+      failureThreshold: 30
   deployments:
     standalone:
       workerThreads: 4
@@ -167,8 +180,8 @@ kestra:
             heartbeatInterval: 10s
         jdbc:
           queues:
-            min-poll-interval: 100ms
-            max-poll-interval: 1s
+            min-poll-interval: 2s
+            max-poll-interval: 5s
             poll-switch-interval: 60s
           cleaner:
             initial-delay: 5m
@@ -176,9 +189,9 @@ kestra:
             retention: 1h
 
 # ---------------------------------------------------------------------------
-# ConfigMap/Secret: not created in dev (app reads env vars directly)
+# ConfigMap/Secret: created in dev for in-cluster API deployment
 # ---------------------------------------------------------------------------
 config:
-  createConfigMap: false
+  createConfigMap: true
 secrets:
-  createSecret: false
+  createSecret: true

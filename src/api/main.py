@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
 
     kestra = get_kestra_client()
     try:
-        count = await asyncio.wait_for(register_all_flows(kestra), timeout=60)
+        count = await asyncio.wait_for(register_all_flows(kestra), timeout=120)
         logger.info("Registered %d Kestra flows", count)
     except asyncio.TimeoutError:
         logger.warning("Kestra flow registration timed out — Kestra may be unavailable")
@@ -296,7 +296,7 @@ def create_app() -> FastAPI:
     # 1. CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=settings.cors_origins_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

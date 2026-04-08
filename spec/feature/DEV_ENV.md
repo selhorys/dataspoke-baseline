@@ -20,11 +20,11 @@
 
 `dev_env/` provides a fully scripted Kubernetes-based environment for developing and testing DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the DataSpoke application connects to.
 
-By default, application components (frontend, API, workers) are **not** installed in the cluster — developers run them on the host, connecting to port-forwarded infrastructure services (host mode). For on-demand in-cluster testing, application subcharts can be enabled via the umbrella Helm chart — see [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+The API server is deployed **in-cluster** alongside Kestra so that workflow callbacks work directly via cluster DNS (`http://dataspoke-api:8002`). Developers port-forward the API to `localhost:8002` for testing. Frontend and workers are not installed in the dev cluster. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 DataHub is installed in the dev cluster **for convenience**; in production it is an external dependency deployed and managed separately.
 
-**Host Mode (Default):**
+**Dev Architecture:**
 
 ```
 Kubernetes Cluster (e.g. minikube, docker-desktop, or remote)

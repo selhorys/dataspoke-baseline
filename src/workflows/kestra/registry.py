@@ -5,9 +5,8 @@ Flow Registration Lifecycle
 Kestra flows are registered at two points:
 
 1. **Server startup (lifespan)** — ``register_all_flows()`` is called
-   during the FastAPI lifespan.  Flows are registered one-by-one with a
-   verification GET and cooldown delay between each to avoid overwhelming
-   Kestra in the dev cluster.
+   during the FastAPI lifespan.  All startup flows are registered in a
+   simple loop.
 
 2. **Dynamic registration** — Per-dataset periodic ingestion flows are
    synced separately by the ``ingestion-config-sync`` Kestra flow
@@ -23,12 +22,12 @@ To register additional flows at startup, add their YAML filename to
 ``_STARTUP_FLOWS``.  Flow YAML files live in ``src/workflows/flows/``.
 """
 
-import asyncio
 import logging
 from pathlib import Path
 
 import yaml
 
+from src.shared.settings import settings
 from src.workflows.kestra.client import KestraClient
 
 logger = logging.getLogger(__name__)
@@ -45,15 +44,9 @@ _STARTUP_FLOWS = frozenset({
     "ontology_rebuild.yaml",
 })
 
-_REGISTER_COOLDOWN = 2.0  # seconds between registrations
-
 
 async def register_all_flows(client: KestraClient) -> int:
-    """Register Kestra flows one-by-one from src/workflows/flows/.
-
-    Each flow is registered, then verified with a GET before proceeding
-    to the next.  A cooldown delay is inserted between registrations to
-    avoid overwhelming Kestra.
+    """Register Kestra flows from src/workflows/flows/.
 
     Returns the number of flows successfully registered.
     """
@@ -63,23 +56,19 @@ async def register_all_flows(client: KestraClient) -> int:
 
     count = 0
     yaml_files = sorted(f for f in FLOWS_DIR.glob("*.yaml") if f.name in _STARTUP_FLOWS)
-    for i, yaml_file in enumerate(yaml_files):
+    for yaml_file in yaml_files:
         flow_yaml = yaml_file.read_text()
+        if settings.kestra_callback_base_url != "http://dataspoke-api:8002":
+            flow_yaml = flow_yaml.replace(
+                "http://dataspoke-api:8002",
+                settings.kestra_callback_base_url,
+            )
         flow_id = yaml.safe_load(flow_yaml).get("id", yaml_file.stem)
         try:
             await client.create_or_update_flow(flow_yaml)
-            # Verify registration
-            registered = await client.get_flow(flow_id)
-            if registered is None:
-                logger.error("Flow %s not found after registration", flow_id)
-                continue
-            logger.info("Registered flow %s (%d/%d)", flow_id, i + 1, len(yaml_files))
+            logger.info("Registered flow %s", flow_id)
             count += 1
         except Exception:
             logger.error("Failed to register flow from %s", yaml_file.name, exc_info=True)
-
-        # Cooldown between registrations (skip after the last one)
-        if i < len(yaml_files) - 1:
-            await asyncio.sleep(_REGISTER_COOLDOWN)
 
     return count

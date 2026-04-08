@@ -1,0 +1,17 @@
+# Cloud Build: only upload files needed for docker-images/api/Dockerfile
+.git/
+.venv/
+ref/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.claude/
+dev_env/
+helm-charts/
+spec/
+tests/
+docs/
+.prauto/
+*.egg-info/

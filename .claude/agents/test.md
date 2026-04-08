@@ -50,8 +50,8 @@ tests/
 ### Kestra workflow test notes (read before writing any workflow/activity test)
 - **Architecture**: Kestra orchestrates workflows via HTTP Request tasks that call internal activity endpoints (`/internal/activities/{domain}/*`). Tests for activities are effectively FastAPI endpoint tests.
 - **DB session sharing**: Activity endpoints share a DB session within each request. Design tests so activities execute sequentially.
-- **Test-mode stubs**: When the host-mode server runs with `DATASPOKE_TEST_MODE=true`, the `make_*` factories in `src/workflows/_common.py` return stub implementations (`StubLLMClient`, `StubQdrantManager`, `StubRedisClient`, `StubNotificationService` from `src/workflows/_stubs.py`) instead of real clients. DataHub and DB always use real connections.
-- **Flow registration**: The host-mode server registers `ingestion-config-sync` in Kestra once during startup (lifespan). The `kestra_client` fixture does NOT re-register flows — it only performs a health check and closes the client on teardown. Execution cleanup is each test module's responsibility.
+- **Test-mode stubs**: When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-dev.yaml` `api.testMode: true`), the `make_*` factories in `src/workflows/_common.py` return stub implementations (`StubLLMClient`, `StubQdrantManager`, `StubRedisClient`, `StubNotificationService` from `src/workflows/_stubs.py`) instead of real clients. DataHub and DB always use real connections.
+- **Flow registration**: The in-cluster API registers all startup flows in Kestra during startup (lifespan). The `kestra_client` fixture does NOT re-register flows — it only performs a health check and closes the client on teardown. Execution cleanup is each test module's responsibility.
 
 ### API-wired test readability (critical)
 - **Inline API calls**: Write `http_client.put(…, json={…})` with the full request dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`, `create_dataset()`).
@@ -80,12 +80,10 @@ uv run pytest tests/unit/backend/test_validation_service.py  # Specific file
 # Group 2: Non-api-wired integration tests (no running server needed)
 uv run pytest tests/integration/ --ignore=tests/integration/api_wired/
 
-# Group 3: API-wired integration tests (requires dataspoke-test-mode server)
-# Start server (auto-kills previous instance), wait for ready, run tests, teardown
-./dev_env/dataspoke-test-mode.sh --skip-migrate --no-reload &
-until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
+# Group 3: API-wired integration tests (requires in-cluster API)
+# Build, deploy, and port-forward the in-cluster API
+./dev_env/dataspoke-test-mode.sh           # or --skip-build if image already pushed
 # DATASPOKE_TEST_MODE must be set in the pytest process (conftest checks it)
-# — the server script only exports it for its own subprocess
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 ./dev_env/dataspoke-test-mode.sh --stop
 

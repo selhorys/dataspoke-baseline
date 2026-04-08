@@ -21,6 +21,6 @@ COPY --from=builder /build/.venv /build/.venv
 WORKDIR /app
 COPY src/ ./src/
 
-EXPOSE 8000
+EXPOSE 8002
 
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8002"]

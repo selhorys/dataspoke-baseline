@@ -1,0 +1,65 @@
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataspoke-api
+  labels:
+    app.kubernetes.io/name: dataspoke-api
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dataspoke-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dataspoke-api
+    spec:
+      enableServiceLinks: false
+      {{- with .Values.api.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          ports:
+            - containerPort: 8002
+              protocol: TCP
+          envFrom:
+            {{- if .Values.config.createConfigMap }}
+            - configMapRef:
+                name: {{ include "dataspoke.fullname" . }}-config
+            {{- end }}
+            {{- if .Values.secrets.createSecret }}
+            - secretRef:
+                name: {{ include "dataspoke.fullname" . }}-secrets
+            {{- end }}
+          env:
+            - name: DATASPOKE_TEST_MODE
+              value: {{ .Values.api.testMode | default false | quote }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+{{- end }}

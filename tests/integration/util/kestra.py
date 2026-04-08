@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from src.workflows.kestra.client import KestraClient
@@ -19,6 +20,39 @@ from src.workflows.kestra.models import ExecutionStatus
 from src.workflows.kestra.registry import register_all_flows
 
 logger = logging.getLogger(__name__)
+
+
+def _load_dotenv() -> None:
+    """Load dev_env/.env into os.environ without overwriting existing vars."""
+    start = Path(__file__).resolve().parents[3]
+    for candidate in (start, *start.parents):
+        env_path = candidate / "dev_env" / ".env"
+        if env_path.is_file():
+            break
+    else:
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv()
+
+
+def _make_client() -> KestraClient:
+    """Create a KestraClient from environment variables."""
+    return KestraClient(
+        base_url=os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205"),
+        namespace=os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke"),
+        username=os.environ.get("DATASPOKE_KESTRA_USER", ""),
+        password=os.environ.get("DATASPOKE_KESTRA_PASSWORD", ""),
+    )
+
 
 # Flow IDs defined in src/workflows/flows/*.yaml
 ALL_FLOW_IDS = frozenset([
@@ -145,6 +179,33 @@ async def cleanup_flows(client: KestraClient) -> int:
                 logger.info("Deleted flow %s", flow_id)
         except Exception:
             logger.warning("Failed to delete flow %s", flow_id, exc_info=True)
+    return deleted
+
+
+async def reset_all() -> int:
+    """Kill running executions and delete all flows in the Kestra namespace.
+
+    Creates its own KestraClient from environment variables.
+    Returns the number of flows deleted.
+    """
+    client = _make_client()
+    await kill_running_executions(client)
+
+    # Use list_flows to discover all flows (including dynamic ones like
+    # metrics-periodic-*, validation-periodic-*) rather than relying on
+    # the static ALL_FLOW_IDS set.
+    flows = await client.list_flows()
+    deleted = 0
+    for flow in flows:
+        flow_id = flow.get("id")
+        if flow_id:
+            try:
+                await client.delete_flow(flow_id)
+                deleted += 1
+                logger.info("Deleted flow %s", flow_id)
+            except Exception:
+                logger.warning("Failed to delete flow %s", flow_id, exc_info=True)
+
     return deleted
 
 

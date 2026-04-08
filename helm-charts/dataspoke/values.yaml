@@ -38,14 +38,18 @@ frontend:
 
 api:
   enabled: true
+  subchart:
+    enabled: false    # Set true only to use the legacy subcharts/api deployment
   replicaCount: 2
   image:
     repository: dataspoke/api
     tag: latest
     pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  testMode: false
   service:
     type: ClusterIP
-    port: 8000
+    port: 8002
   ingress:
     enabled: true
     className: "nginx"
@@ -166,14 +170,14 @@ kestra:
       - name: kestra-plugins-empty
         mountPath: /app/plugins
     jvm:
-      extraOpts: "-Xms1g -Xmx3g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      extraOpts: "-Xms1g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
   resources:
     requests:
       cpu: 500m
       memory: 2Gi
     limits:
-      cpu: "2"
-      memory: 4Gi
+      cpu: "4"
+      memory: 8Gi
   deployments:
     standalone:
       workerThreads: 4
@@ -221,7 +225,7 @@ config:
   kestra:
     url: "http://dataspoke-kestra:8080"
     namespace: "dataspoke"
-    callbackBaseUrl: "http://dataspoke-api:8000"
+    callbackBaseUrl: "http://dataspoke-api:8002"
   llm:
     provider: "gemini"
     model: "gemini-2.0-flash"
@@ -241,6 +245,9 @@ secrets:
     password: ""
   qdrant:
     apiKey: ""
+  kestra:
+    user: ""
+    password: ""
   llm:
     apiKey: ""
   jwt:

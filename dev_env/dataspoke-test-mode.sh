@@ -1,34 +1,33 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Start the DataSpoke host-mode server in test mode for api-wired
-# integration testing.
+# Start the DataSpoke in-cluster API in test mode for api-wired integration
+# testing.
 #
-# Enables DATASPOKE_TEST_MODE so Kestra activity endpoints use stub
-# implementations for LLM, Qdrant, cache, and notification — avoiding
-# real external API calls.  DataHub and PostgreSQL use real dev-env
-# connections.
+# Builds and pushes the Docker image, deploys via Helm (dataspoke-infra
+# install.sh), waits for the rollout, and port-forwards localhost:8000 to
+# the in-cluster dataspoke-api service.
+#
+# DATASPOKE_TEST_MODE=true is baked into values-dev.yaml (api.testMode: true)
+# so Kestra callbacks reach the API via http://dataspoke-api:8000 within the
+# cluster.
 #
 # Usage:
-#   ./dev_env/dataspoke-test-mode.sh                     # Backend-only (default)
-#   ./dev_env/dataspoke-test-mode.sh --skip-migrate       # Skip Alembic migration
-#   ./dev_env/dataspoke-test-mode.sh --no-reload          # Disable uvicorn auto-reload
-#   ./dev_env/dataspoke-test-mode.sh --port 9000          # Custom API port
-#   ./dev_env/dataspoke-test-mode.sh --health-check       # Run health check first
-#   ./dev_env/dataspoke-test-mode.sh --health-check-only  # Health check without starting
-#   ./dev_env/dataspoke-test-mode.sh --stop               # Stop running instance and exit
+#   ./dev_env/dataspoke-test-mode.sh                  # Build + deploy + port-forward
+#   ./dev_env/dataspoke-test-mode.sh --skip-build     # Skip docker build, just deploy
+#   ./dev_env/dataspoke-test-mode.sh --health-check   # Run health check first
+#   ./dev_env/dataspoke-test-mode.sh --stop           # Stop port-forward, scale down API
 #
 # After the server is running, in a second terminal:
 #   DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/ -v
 #
 # Note: DATASPOKE_TEST_MODE must be set in the pytest process as well —
-# this script only exports it for the server subprocess.
+# the API pod has it baked in via values-dev.yaml.
 #
-# Exit: Ctrl+C (graceful shutdown)
+# Exit: Ctrl+C or --stop
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=lib/helpers.sh
 source "$SCRIPT_DIR/lib/helpers.sh"
@@ -36,21 +35,18 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
-SKIP_MIGRATE=false
-NO_RELOAD=false
-CUSTOM_PORT=""
+SKIP_BUILD=false
 HEALTH_CHECK=false
-HEALTH_CHECK_ONLY=false
 STOP_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --skip-migrate)      SKIP_MIGRATE=true ;;
-    --no-reload)         NO_RELOAD=true ;;
-    --port)              CUSTOM_PORT="$2"; shift ;;
-    --health-check)      HEALTH_CHECK=true ;;
-    --health-check-only) HEALTH_CHECK_ONLY=true; HEALTH_CHECK=true ;;
-    --stop)              STOP_ONLY=true ;;
+    --skip-build)       SKIP_BUILD=true ;;
+    --health-check)     HEALTH_CHECK=true ;;
+    --stop)             STOP_ONLY=true ;;
+    # Legacy flags accepted as no-ops (server is now in-cluster)
+    --skip-migrate|--no-reload|--backend-only) true ;;
+    --port) shift ;;  # consume the value too
     *) warn "Unknown option: $1" ;;
   esac
   shift
@@ -64,19 +60,21 @@ if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
 fi
 source "$SCRIPT_DIR/.env"
 
-PORT="${CUSTOM_PORT:-${DATASPOKE_API_PORT:-8000}}"
+NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
+API_PORT="${DATASPOKE_API_PORT:-8000}"
 
 # ---------------------------------------------------------------------------
-# --stop: kill running instance and exit
+# --stop: stop port-forward and scale down the API deployment
 # ---------------------------------------------------------------------------
 if [[ "$STOP_ONLY" == "true" ]]; then
-  EXISTING_PIDS=$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)
-  if [[ -n "$EXISTING_PIDS" ]]; then
-    info "Stopping test-mode server on port $PORT (PIDs: $(echo $EXISTING_PIDS | tr '\n' ' '))"
-    echo "$EXISTING_PIDS" | xargs kill 2>/dev/null || true
-  else
-    info "No test-mode server running on port $PORT"
-  fi
+  info "Stopping DataSpoke API port-forward..."
+  bash "$SCRIPT_DIR/dataspoke-port-forward.sh" --api-stop || true
+
+  info "Scaling down dataspoke-api deployment..."
+  kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}" >/dev/null 2>&1
+  kubectl scale deployment/dataspoke-api --replicas=0 -n "${NS}" 2>/dev/null \
+    && info "dataspoke-api scaled to 0." \
+    || warn "Could not scale dataspoke-api — it may not exist yet."
   exit 0
 fi
 
@@ -88,75 +86,95 @@ if [[ "$HEALTH_CHECK" == "true" ]]; then
   if ! bash "$SCRIPT_DIR/health-check.sh"; then
     error "Health check failed — fix the failing services before starting test mode."
   fi
-  if [[ "$HEALTH_CHECK_ONLY" == "true" ]]; then
-    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1: Build and push image (unless --skip-build)
+# ---------------------------------------------------------------------------
+if [[ "$SKIP_BUILD" == "false" ]]; then
+  info "Building and pushing DataSpoke API image..."
+  if ! bash "$SCRIPT_DIR/dataspoke-api/build.sh" dev; then
+    echo ""
+    warn "Image build failed. Common fixes by cloud vendor:"
+    echo ""
+    VENDOR="${DATASPOKE_DEV_CLOUD_VENDOR:-}"
+    case "${VENDOR}" in
+      GCP|gcp)
+        echo "  GCP Cloud Build prerequisites:"
+        echo "    1. Enable Cloud Build API:"
+        echo "       gcloud services enable cloudbuild.googleapis.com --project <PROJECT_ID>"
+        echo ""
+        echo "    2. Grant Cloud Build permissions to your account:"
+        echo "       gcloud projects add-iam-policy-binding <PROJECT_ID> \\"
+        echo "         --member='user:<YOUR_EMAIL>' \\"
+        echo "         --role='roles/cloudbuild.builds.editor'"
+        echo ""
+        echo "    3. Ensure Artifact Registry exists:"
+        echo "       gcloud artifacts repositories create dataspoke \\"
+        echo "         --repository-format=docker --location=<REGION> \\"
+        echo "         --project <PROJECT_ID>"
+        echo ""
+        echo "    4. Wait 1-2 minutes after enabling APIs, then retry."
+        ;;
+      AWS|aws)
+        echo "  AWS ECR prerequisites:"
+        echo "    1. Create ECR repository:"
+        echo "       aws ecr create-repository --repository-name dataspoke/api --region <REGION>"
+        echo ""
+        echo "    2. Authenticate Docker to ECR:"
+        echo "       aws ecr get-login-password --region <REGION> | \\"
+        echo "         docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com"
+        echo ""
+        echo "    (Note: AWS remote build via CodeBuild is not yet implemented.)"
+        ;;
+      *)
+        echo "  Local Docker build prerequisites:"
+        echo "    1. Ensure Docker daemon is running (Docker Desktop, colima, etc.)"
+        echo "    2. Authenticate to your container registry: docker login <REGISTRY>"
+        echo ""
+        echo "  Or set DATASPOKE_DEV_CLOUD_VENDOR=GCP in .env to use Google Cloud Build."
+        ;;
+    esac
+    echo ""
+    exit 1
   fi
+else
+  info "--skip-build: skipping docker build."
 fi
 
 # ---------------------------------------------------------------------------
-# Build CLI arguments
+# Step 2: Deploy via Helm (dataspoke-infra install.sh)
 # ---------------------------------------------------------------------------
-CLI_ARGS=(--backend-only)
-
-if [[ "$SKIP_MIGRATE" == "true" ]]; then
-  CLI_ARGS+=(--skip-migrate)
-fi
-
-if [[ "$NO_RELOAD" == "true" ]]; then
-  CLI_ARGS+=(--no-reload)
-fi
-
-CLI_ARGS+=(--port "$PORT")
+info "Deploying DataSpoke infra + API via Helm..."
+bash "$SCRIPT_DIR/dataspoke-infra/install.sh"
 
 # ---------------------------------------------------------------------------
-# Kill previous instance (if any)
+# Step 3: Wait for API rollout
 # ---------------------------------------------------------------------------
-EXISTING_PIDS=$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)
-if [[ -n "$EXISTING_PIDS" ]]; then
-  info "Killing previous process(es) on port $PORT (PIDs: $(echo $EXISTING_PIDS | tr '\n' ' '))"
-  echo "$EXISTING_PIDS" | xargs kill 2>/dev/null || true
-  sleep 1
-fi
+info "Waiting for dataspoke-api rollout..."
+kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}" >/dev/null 2>&1
+kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
+  && info "dataspoke-api is ready." \
+  || { warn "dataspoke-api did not become ready in time — check pod logs."; }
 
 # ---------------------------------------------------------------------------
-# Start
+# Step 4: Start port-forward
 # ---------------------------------------------------------------------------
-info "Starting DataSpoke in test mode (port=$PORT)"
-info "  DATASPOKE_TEST_MODE=true"
-info "  DATASPOKE_KESTRA_CALLBACK_BASE_URL=http://host.docker.internal:$PORT"
+info "Starting port-forward for dataspoke-api..."
+bash "$SCRIPT_DIR/dataspoke-port-forward.sh" --api-start
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
 echo ""
-
-export DATASPOKE_TEST_MODE=true
-export DATASPOKE_KESTRA_CALLBACK_BASE_URL="http://host.docker.internal:$PORT"
-
-# ---------------------------------------------------------------------------
-# Resolve DataHub token (if not already set)
-# ---------------------------------------------------------------------------
-if [[ -z "${DATASPOKE_DATAHUB_TOKEN:-}" ]]; then
-  FRONTEND_URL="${DATASPOKE_DATAHUB_FRONTEND_URL:-http://localhost:9002}"
-  TOKEN=$(python3 -c "
-import requests, base64, json, sys
-try:
-    r = requests.post('$FRONTEND_URL/logIn',
-        json={'username': 'datahub', 'password': 'datahub'}, timeout=5)
-    r.raise_for_status()
-    cookie = r.headers.get('Set-Cookie', '')
-    if 'PLAY_SESSION=' not in cookie: sys.exit(0)
-    ps = cookie.split('PLAY_SESSION=')[1].split(';')[0]
-    payload = ps.split('.')[1]
-    payload += '=' * (4 - len(payload) % 4)
-    data = json.loads(base64.b64decode(payload))
-    print(data.get('data', {}).get('token', ''))
-except Exception:
-    pass
-" 2>/dev/null || true)
-  if [[ -n "$TOKEN" ]]; then
-    export DATASPOKE_DATAHUB_TOKEN="$TOKEN"
-    info "Resolved DataHub token via frontend login"
-  else
-    warn "Could not resolve DataHub token — DataHub endpoints may return 401"
-  fi
-fi
-
-cd "$PROJECT_ROOT"
-exec uv run -m src.cli "${CLI_ARGS[@]}"
+info "DataSpoke test-mode is running."
+echo ""
+echo "  API:             http://localhost:${API_PORT}"
+echo "  ReDoc:           http://localhost:${API_PORT}/redoc"
+echo "  DATASPOKE_TEST_MODE: true (baked into deployment via values-dev.yaml)"
+echo ""
+echo "  In a second terminal:"
+echo "    DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/ -v"
+echo ""
+echo "  Stop with: $0 --stop"
+echo ""

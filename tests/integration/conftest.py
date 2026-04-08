@@ -348,7 +348,7 @@ def module_dummy_data(request) -> None:
 async def kestra_client():
     """Create a KestraClient pointing at the dev-env Kestra instance; skip if unreachable.
 
-    Flow registration is handled by the host-mode DataSpoke server's
+    Flow registration is handled by the in-cluster DataSpoke API's
     lifespan, so this fixture only performs a health check on setup.
     Execution cleanup is each test module's responsibility (scoped to
     the specific flow it uses).
@@ -379,8 +379,8 @@ async def kestra_client():
 async def activity_server():
     """Start an ActivityServer for Kestra callback integration tests.
 
-    Uses a free port to avoid conflicts with the host-mode test server
-    that may be running on DATASPOKE_API_PORT for api-wired tests.
+    Uses a free port to avoid conflicts with the in-cluster API
+    that may be port-forwarded on DATASPOKE_API_PORT for api-wired tests.
     """
     import socket
 

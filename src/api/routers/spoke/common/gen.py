@@ -149,16 +149,6 @@ async def post_gen_generate(
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
 
-    if settings.test_mode:
-        from src.api.routers.internal.activities import RunGenerationRequest, run_generation
-
-        result = await run_generation(RunGenerationRequest(dataset_urn=dataset_urn))
-        return RunResultResponse(
-            run_id=result.get("run_id", ""),
-            status=result.get("status", "error"),
-            detail=result.get("detail", {}),
-        )
-
     label_value = f"generation-{urn_to_workflow_id(dataset_urn)}"
     await kestra.check_no_duplicate(
         "generation", "workflow_id", label_value, "GENERATION_RUNNING"

@@ -5,7 +5,6 @@ backend, api) can import them without violating the layered architecture
 rule.
 """
 
-from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,10 +23,14 @@ class Settings(BaseSettings):
     admin_groups: list[str] = ["admin", "de", "da", "dg"]
 
     # Application ports
-    api_port: int = 8000
+    api_port: int = 8002
 
-    # CORS
-    cors_origins: list[str] = ["http://localhost:3000"]
+    # CORS (comma-separated string from env)
+    cors_origins: str = "http://localhost:3000"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [s.strip() for s in self.cors_origins.split(",") if s.strip()]
 
     # Rate limiting
     rate_limit_per_minute: int = 120
@@ -61,11 +64,10 @@ class Settings(BaseSettings):
     kestra_namespace: str = "dataspoke"
     kestra_user: str = ""
     kestra_password: str = ""
-    # Base URL that Kestra (in K8s) uses to call back to activity endpoints on
-    # the host.  ``dataspoke-test-mode.sh`` sets this to
-    # ``http://host.docker.internal:<port>`` automatically.  If empty, defaults
-    # to ``http://localhost:<api_port>`` (see ``_derive_callback_url`` below).
-    kestra_callback_base_url: str = ""
+    # Base URL that Kestra (in K8s) uses to call back to activity endpoints.
+    # The API runs in-cluster, so the default is the in-cluster service address.
+    # Override via DATASPOKE_KESTRA_CALLBACK_BASE_URL when running outside the cluster.
+    kestra_callback_base_url: str = "http://dataspoke-api:8002"
     kestra_ingestion_concurrent: int = 5
 
     # LLM
@@ -81,12 +83,5 @@ class Settings(BaseSettings):
     # ``DATASPOKE_TEST_MODE=true`` before starting the server.
     # See ``src/workflows/_stubs.py`` for stub behavior details.
     test_mode: bool = False
-
-    @model_validator(mode="after")
-    def _derive_callback_url(self) -> "Settings":
-        if not self.kestra_callback_base_url:
-            self.kestra_callback_base_url = f"http://localhost:{self.api_port}"
-        return self
-
 
 settings = Settings()

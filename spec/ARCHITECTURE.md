@@ -475,14 +475,7 @@ cd dev_env && ./uninstall.sh  # Tear down
 
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Two testing modes are available:
 
-| Mode | App Services | When to Use |
-|------|-------------|-------------|
-| **Host (default)** | Run on host (`uvicorn`, `npm run dev`); Kestra runs in cluster | Normal development — fast test-and-fix loop |
-| **In-cluster (on-demand)** | Deployed via Helm chart into K8s cluster | Kubernetes-specific testing only (health probes, ingress, network policy) |
-
-**Host mode** installs only infrastructure dependencies into the cluster. Application services run on the developer's host, connecting to port-forwarded infrastructure. This is the standard workflow — no container rebuild needed between iterations.
-
-**In-cluster mode** enables application subcharts on top of the dev profile via `--set` flags. Every code change requires a container rebuild and `helm upgrade`. See [`HELM_CHART.md §In-Cluster Testing`](feature/HELM_CHART.md#in-cluster-testing) and [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
+The API server runs **in-cluster** so that Kestra can call back to it directly via `http://dataspoke-api:8002`. Developers port-forward the API to `localhost:8002` for testing. Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 
 See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for the full dev environment specification.
 

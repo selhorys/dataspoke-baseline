@@ -10,15 +10,15 @@ dependencies:
   version: 0.1.0
 - name: postgresql
   repository: https://charts.bitnami.com/bitnami
-  version: 18.5.7
+  version: 18.5.15
 - name: redis
   repository: https://charts.bitnami.com/bitnami
-  version: 25.3.5
+  version: 25.3.9
 - name: qdrant
   repository: https://qdrant.github.io/qdrant-helm
-  version: 1.17.0
+  version: 1.17.1
 - name: kestra
   repository: https://helm.kestra.io/
-  version: 1.0.42
-digest: sha256:5c8004487a2b1114d20e18868707fc8c690b84a2d6595c04ce98ea4b705798a9
-generated: "2026-03-18T22:40:02.391836+09:00"
+  version: 1.0.46
+digest: sha256:028fc3282771555c813c7d1e519d4718ac958d7103f3dde87b390d3d2d1cb64a
+generated: "2026-04-08T23:30:20.583233+09:00"

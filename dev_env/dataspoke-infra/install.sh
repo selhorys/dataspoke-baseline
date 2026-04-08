@@ -111,6 +111,18 @@ if [[ -d "$CHART_DIR" ]]; then
     --set kestra.configurations.application.datasources.postgres.username="${DATASPOKE_POSTGRES_USER}" \
     --set kestra.configurations.application.datasources.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set api.image.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/api" \
+    --set api.image.tag=dev \
+    --set-string secrets.postgres.user="${DATASPOKE_POSTGRES_USER}" \
+    --set-string secrets.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set-string secrets.redis.password="${DATASPOKE_REDIS_PASSWORD}" \
+    --set-string secrets.datahub.token="${DATASPOKE_DATAHUB_TOKEN:-}" \
+    --set-string secrets.kestra.user="${DATASPOKE_KESTRA_USER:-}" \
+    --set-string secrets.kestra.password="${DATASPOKE_KESTRA_PASSWORD:-}" \
+    --set-string secrets.llm.apiKey="${DATASPOKE_LLM_API_KEY:-}" \
+    --set-string config.kestra.callbackBaseUrl="http://dataspoke-api:8002" \
+    --set-string config.datahub.gmsUrl="http://datahub-datahub-gms.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:8080" \
+    --set-string config.datahub.kafkaBrokers="datahub-prerequisites-kafka.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:9092" \
     --timeout 5m --wait
 else
   warn "Helm chart not found at $CHART_DIR — skipping Helm install."
