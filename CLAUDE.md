@@ -17,7 +17,7 @@ cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Red
 cd dev_env && ./uninstall.sh  # Tear down everything
 ```
 
-Settings in `dev_env/.env`. See `dev_env/README.md` for access details and port-forwarding.
+Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.
 
 Quick-start (host mode): `uv run -m src.cli` starts API + runs migrations. Workflow orchestration is handled by Kestra (running in K8s). See `uv run -m src.cli --help` for options.
 
@@ -89,7 +89,7 @@ For testing conventions (unit/integration/api-wired integration/E2E, toolchain, 
 
 Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
-**Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. It verifies all port-forwarded peripherals are reachable AND responding (not just that port-forward processes exist). Do not proceed if any check fails — reinstall the failing component's subsystem:
+**Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. It verifies all peripherals are reachable via nginx-ingress AND responding at the application layer. Do not proceed if any check fails — reinstall the failing component's subsystem:
 
 | Failing service | Reinstall |
 |---|---|
@@ -114,7 +114,7 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 **Test execution groups**: Run tests in three separate groups, do not mix:
 1. `uv run pytest tests/unit/`
 2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
-3. `uv run python -m tests.integration.util --reset-all`, then deploy the in-cluster API via `./dev_env/dataspoke-test-mode.sh` (builds image, deploys via Helm, port-forwards to localhost:8002), run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
+3. `uv run python -m tests.integration.util --reset-all`, then deploy the in-cluster API via `./dev_env/dataspoke-test-mode.sh` (builds image, deploys via Helm, accessible via ingress at the configured host), run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
 
 Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process**, server health, and `ingestion-config-sync` flow registration before api-wired tests run.
 

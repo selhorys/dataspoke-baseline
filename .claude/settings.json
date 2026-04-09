@@ -23,7 +23,6 @@
       "Bash(kubectl describe *)",
       "Bash(kubectl get *)",
       "Bash(kubectl logs *)",
-      "Bash(kubectl port-forward *)",
       "Bash(kubectl top *)",
       "Bash(kubectl version *)",
       "Bash(minikube *)",

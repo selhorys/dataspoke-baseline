@@ -2,8 +2,8 @@
 # ---------------------------------------------------------------------------
 # Health check for dev-env peripherals used by integration tests.
 #
-# Verifies each port-forwarded service is reachable AND responding at the
-# application layer — not just that a port-forward process exists.
+# Verifies each ingress-exposed service is reachable AND responding at the
+# application layer — not just that the TCP port is open.
 #
 # Usage:
 #   ./dev_env/health-check.sh                   # Check all; prompt to release held lock
@@ -37,41 +37,56 @@ fi
 source "$SCRIPT_DIR/.env"
 
 # ---------------------------------------------------------------------------
-# Port / credential variables (same defaults as port-forward scripts & conftest)
+# Ingress coordinates
 # ---------------------------------------------------------------------------
+INGRESS_IP="${DATASPOKE_DEV_INGRESS_IP:-}"
+DOMAIN="${DATASPOKE_DEV_INGRESS_DOMAIN:-}"
 
-# DataSpoke infra (dataspoke-port-forward.sh)
-DS_PG_HOST="localhost"
-DS_PG_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT:-9201}"
-DS_PG_USER="${DATASPOKE_POSTGRES_USER:-dataspoke}"
-DS_PG_DB="${DATASPOKE_POSTGRES_DB:-dataspoke}"
-DS_REDIS_HOST="localhost"
-DS_REDIS_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_REDIS_PORT:-9202}"
-DS_REDIS_PASSWORD="${DATASPOKE_REDIS_PASSWORD:-}"
-DS_QDRANT_HTTP_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_HTTP_PORT:-9203}"
-DS_KESTRA_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_KESTRA_PORT:-9205}"
+if [[ -z "$INGRESS_IP" || -z "$DOMAIN" ]]; then
+  echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_DEV_INGRESS_IP and DATASPOKE_DEV_INGRESS_DOMAIN must be set in .env." >&2
+  echo "       Run dev_env/nginx-ingress/install.sh first." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Tier A: HTTP services via ingress hostname
+# ---------------------------------------------------------------------------
+DS_API_URL="http://app.${DOMAIN}"
+DH_GMS_URL="http://datahub.${DOMAIN}/gms"
+DH_UI_URL="http://datahub.${DOMAIN}"
+KESTRA_URL="http://kestra.${DOMAIN}"
 DS_KESTRA_USER="${DATASPOKE_KESTRA_USER:-}"
 DS_KESTRA_PASSWORD="${DATASPOKE_KESTRA_PASSWORD:-}"
 
-# DataHub (datahub-port-forward.sh)
-DH_GMS_PORT="${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_GMS_PORT:-9004}"
-_DH_KAFKA_BROKERS="${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_KAFKA_BROKERS:-localhost:9005}"
-DH_KAFKA_PORT="${_DH_KAFKA_BROKERS##*:}"
+# ---------------------------------------------------------------------------
+# Tier B: TCP services via ingress IP + fixed ports
+# ---------------------------------------------------------------------------
+DS_PG_HOST="${INGRESS_IP}"
+DS_PG_PORT=9201
+DS_PG_USER="${DATASPOKE_POSTGRES_USER:-dataspoke}"
+DS_PG_DB="${DATASPOKE_POSTGRES_DB:-dataspoke}"
 
-# Dummy data (dummy-data-port-forward.sh)
-DD_PG_HOST="localhost"
-DD_PG_PORT="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT:-9102}"
+DS_REDIS_HOST="${INGRESS_IP}"
+DS_REDIS_PORT=9202
+DS_REDIS_PASSWORD="${DATASPOKE_REDIS_PASSWORD:-}"
+
+DS_QDRANT_HOST="${INGRESS_IP}"
+DS_QDRANT_HTTP_PORT=9203
+
+DH_KAFKA_HOST="${INGRESS_IP}"
+DH_KAFKA_PORT=9005
+
+DD_PG_HOST="${DATASPOKE_EXAMPLE_PG_HOST:-${INGRESS_IP}}"
+DD_PG_PORT="${DATASPOKE_EXAMPLE_PG_PORT:-9102}"
 DD_PG_USER="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER:-postgres}"
 DD_PG_DB="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB:-example_db}"
-_DD_KAFKA_BROKERS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS:-localhost:9104}"
+
+_DD_KAFKA_BROKERS="${DATASPOKE_EXAMPLE_KAFKA_BROKERS:-${INGRESS_IP}:9104}"
+DD_KAFKA_HOST="${_DD_KAFKA_BROKERS%%:*}"
 DD_KAFKA_PORT="${_DD_KAFKA_BROKERS##*:}"
 
-# Lock (lock-port-forward.sh)
-LOCK_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_DEV_ENV_LOCK_PORT:-9221}"
-
-# DataSpoke API (dataspoke-port-forward.sh --api-start) — only checked if PID file exists
-API_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_API_PORT:-8002}"
-API_PID_FILE="$SCRIPT_DIR/.dataspoke-port-forward-api.pid"
+LOCK_HOST="${INGRESS_IP}"
+LOCK_PORT=9221
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -87,7 +102,7 @@ FAILURES=0
 # Check primitives
 # ---------------------------------------------------------------------------
 
-# TCP connect check (fastest — catches port-forward down).
+# TCP connect check.
 # Uses bash /dev/tcp which is available on macOS and Linux.
 _tcp_check() {
   local host="$1" port="$2"
@@ -117,7 +132,7 @@ _http_alive() {
 # ---------------------------------------------------------------------------
 
 check_dataspoke_postgresql() {
-  local label="dataspoke-postgresql (localhost:${DS_PG_PORT})"
+  local label="dataspoke-postgresql (${DS_PG_HOST}:${DS_PG_PORT})"
   if ! _tcp_check "$DS_PG_HOST" "$DS_PG_PORT"; then
     _fail "$label — port not reachable"
     ((FAILURES++)); return
@@ -156,7 +171,7 @@ asyncio.run(check())
 }
 
 check_example_postgres() {
-  local label="example-postgres (localhost:${DD_PG_PORT})"
+  local label="example-postgres (${DD_PG_HOST}:${DD_PG_PORT})"
   if ! _tcp_check "$DD_PG_HOST" "$DD_PG_PORT"; then
     _fail "$label — port not reachable"
     ((FAILURES++)); return
@@ -194,7 +209,7 @@ asyncio.run(check())
 }
 
 check_dataspoke_redis() {
-  local label="dataspoke-redis (localhost:${DS_REDIS_PORT})"
+  local label="dataspoke-redis (${DS_REDIS_HOST}:${DS_REDIS_PORT})"
   if ! _tcp_check "$DS_REDIS_HOST" "$DS_REDIS_PORT"; then
     _fail "$label — port not reachable"
     ((FAILURES++)); return
@@ -220,14 +235,14 @@ check_dataspoke_redis() {
 }
 
 check_dataspoke_qdrant() {
-  local label="dataspoke-qdrant (localhost:${DS_QDRANT_HTTP_PORT})"
-  if ! _tcp_check "localhost" "$DS_QDRANT_HTTP_PORT"; then
+  local label="dataspoke-qdrant (${DS_QDRANT_HOST}:${DS_QDRANT_HTTP_PORT})"
+  if ! _tcp_check "$DS_QDRANT_HOST" "$DS_QDRANT_HTTP_PORT"; then
     _fail "$label — port not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  if _http_ok "http://localhost:${DS_QDRANT_HTTP_PORT}/healthz"; then
+  if _http_ok "http://${DS_QDRANT_HOST}:${DS_QDRANT_HTTP_PORT}/healthz"; then
     _pass "$label"
   else
     _fail "$label — /healthz did not return 2xx"
@@ -236,9 +251,9 @@ check_dataspoke_qdrant() {
 }
 
 check_dataspoke_kestra() {
-  local label="dataspoke-kestra (localhost:${DS_KESTRA_PORT})"
-  if ! _tcp_check "localhost" "$DS_KESTRA_PORT"; then
-    _fail "$label — port not reachable"
+  local label="dataspoke-kestra (${KESTRA_URL})"
+  if ! _tcp_check "${INGRESS_IP}" 80; then
+    _fail "$label — ingress port 80 not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
@@ -250,9 +265,9 @@ check_dataspoke_kestra() {
     auth_args=(-u "${DS_KESTRA_USER}:${DS_KESTRA_PASSWORD}")
   fi
 
-  if _http_ok "http://localhost:${DS_KESTRA_PORT}/api/v1/flows/search" "${auth_args[@]+"${auth_args[@]}"}"; then
+  if _http_ok "${KESTRA_URL}/api/v1/flows/search" "${auth_args[@]+"${auth_args[@]}"}"; then
     _pass "$label"
-  elif _http_alive "http://localhost:${DS_KESTRA_PORT}/api/v1/flows/search" "${auth_args[@]+"${auth_args[@]}"}"; then
+  elif _http_alive "${KESTRA_URL}/api/v1/flows/search" "${auth_args[@]+"${auth_args[@]}"}"; then
     _fail "$label — HTTP alive but flows endpoint unhealthy"
     ((FAILURES++))
   else
@@ -261,15 +276,30 @@ check_dataspoke_kestra() {
   fi
 }
 
-check_datahub_gms() {
-  local label="datahub-gms (localhost:${DH_GMS_PORT})"
-  if ! _tcp_check "localhost" "$DH_GMS_PORT"; then
-    _fail "$label — port not reachable"
+check_dataspoke_api() {
+  local label="dataspoke-api (${DS_API_URL})"
+  if ! _tcp_check "${INGRESS_IP}" 80; then
+    _fail "$label — ingress port 80 not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  if _http_ok "http://localhost:${DH_GMS_PORT}/health"; then
+  if _http_ok "${DS_API_URL}/health"; then
+    _pass "$label"
+  else
+    _skip "$label — /health not 2xx (API may not be deployed; run dataspoke-test-mode.sh)"
+  fi
+}
+
+check_datahub_gms() {
+  local label="datahub-gms (${DH_GMS_URL})"
+  if ! _tcp_check "${INGRESS_IP}" 80; then
+    _fail "$label — ingress port 80 not reachable"
+    ((FAILURES++)); return
+  fi
+  if $QUICK; then _pass "$label (tcp)"; return; fi
+
+  if _http_ok "${DH_GMS_URL}/health"; then
     _pass "$label"
   else
     _fail "$label — /health did not return 2xx"
@@ -312,7 +342,7 @@ _release_lock() {
   release_resp=$(curl -sf -X POST --connect-timeout 3 --max-time 5 \
     -H 'Content-Type: application/json' \
     -d "{\"owner\": \"${owner}\"}" \
-    "http://localhost:${LOCK_PORT}/lock/release" 2>/dev/null) || true
+    "http://${LOCK_HOST}:${LOCK_PORT}/lock/release" 2>/dev/null) || true
   if echo "$release_resp" | grep -q '"locked" *: *false'; then
     _info "released lock from '${owner}' (${message})"
   else
@@ -321,36 +351,15 @@ _release_lock() {
   fi
 }
 
-check_dataspoke_api() {
-  # Only check if the port-forward PID file exists (i.e. test-mode is active).
-  if [[ ! -f "$API_PID_FILE" ]]; then
-    _skip "dataspoke-api (localhost:${API_PORT}) — port-forward not active (run dataspoke-port-forward.sh --api-start)"
-    return
-  fi
-  local label="dataspoke-api (localhost:${API_PORT})"
-  if ! _tcp_check "localhost" "$API_PORT"; then
-    _fail "$label — port not reachable (stale PID file?)"
-    ((FAILURES++)); return
-  fi
-  if $QUICK; then _pass "$label (tcp)"; return; fi
-
-  if _http_ok "http://localhost:${API_PORT}/health"; then
-    _pass "$label"
-  else
-    _fail "$label — /health did not return 2xx"
-    ((FAILURES++))
-  fi
-}
-
 check_lock_service() {
-  local label="lock-service (localhost:${LOCK_PORT})"
-  if ! _tcp_check "localhost" "$LOCK_PORT"; then
+  local label="lock-service (${LOCK_HOST}:${LOCK_PORT})"
+  if ! _tcp_check "$LOCK_HOST" "$LOCK_PORT"; then
     _fail "$label — port not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  if _http_ok "http://localhost:${LOCK_PORT}/health"; then
+  if _http_ok "http://${LOCK_HOST}:${LOCK_PORT}/health"; then
     _pass "$label"
   else
     _fail "$label — /health did not return 2xx"
@@ -360,7 +369,7 @@ check_lock_service() {
 
   # Check if the dev-env lock is currently held
   local lock_json
-  lock_json=$(curl -sf --connect-timeout 3 --max-time 5 "http://localhost:${LOCK_PORT}/lock" 2>/dev/null) || true
+  lock_json=$(curl -sf --connect-timeout 3 --max-time 5 "http://${LOCK_HOST}:${LOCK_PORT}/lock" 2>/dev/null) || true
   if [[ -n "$lock_json" ]]; then
     local locked owner message
     locked=$(echo "$lock_json" | grep -o '"locked" *: *true' || true)
@@ -398,6 +407,8 @@ check_lock_service() {
 echo ""
 echo "DataSpoke dev-env health check"
 echo "=============================="
+echo "  Ingress IP:     ${INGRESS_IP}"
+echo "  Ingress domain: ${DOMAIN}"
 $QUICK && echo "(quick mode — TCP only, no deep checks)"
 echo ""
 
@@ -411,12 +422,12 @@ check_dataspoke_api
 echo ""
 echo "DataHub:"
 check_datahub_gms
-check_kafka "datahub-kafka (localhost:${DH_KAFKA_PORT})" "localhost" "$DH_KAFKA_PORT"
+check_kafka "datahub-kafka (${DH_KAFKA_HOST}:${DH_KAFKA_PORT})" "$DH_KAFKA_HOST" "$DH_KAFKA_PORT"
 
 echo ""
 echo "Dummy Data:"
 check_example_postgres
-check_kafka "example-kafka (localhost:${DD_KAFKA_PORT})" "localhost" "$DD_KAFKA_PORT"
+check_kafka "example-kafka (${DD_KAFKA_HOST}:${DD_KAFKA_PORT})" "$DD_KAFKA_HOST" "$DD_KAFKA_PORT"
 
 echo ""
 echo "Dev Coordination:"

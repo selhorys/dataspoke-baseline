@@ -22,7 +22,6 @@ echo "=== Installing dev-env lock service ==="
 echo ""
 
 NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
-LOCK_PORT="${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_DEV_ENV_LOCK_PORT:-9221}"
 
 # ---------------------------------------------------------------------------
 # Ensure namespace exists
@@ -54,12 +53,10 @@ kubectl rollout status deployment/dev-lock \
 echo ""
 info "Lock service installation complete."
 echo ""
-echo "Port-forward with:  ../lock-port-forward.sh"
+echo "  Lock API: ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9221  (-> dev-lock:8080)"
 echo ""
-echo "  Lock API: localhost:${LOCK_PORT}   (-> dev-lock:8080)"
-echo ""
-echo "  GET    http://localhost:${LOCK_PORT}/lock              # status"
-echo "  POST   http://localhost:${LOCK_PORT}/lock/acquire      # acquire"
-echo "  POST   http://localhost:${LOCK_PORT}/lock/release      # release"
-echo "  DELETE http://localhost:${LOCK_PORT}/lock              # force-release"
+echo "  GET    http://${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9221/lock              # status"
+echo "  POST   http://${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9221/lock/acquire      # acquire"
+echo "  POST   http://${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9221/lock/release      # release"
+echo "  DELETE http://${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9221/lock              # force-release"
 echo ""

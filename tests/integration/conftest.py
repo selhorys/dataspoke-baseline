@@ -1,13 +1,15 @@
 """Shared fixtures for integration tests against the dev-env infrastructure.
 
-Port-forwards must be active before running:
-- PostgreSQL on localhost:9201 (dataspoke-port-forward.sh)
-- DataHub GMS on localhost:9004 (datahub-port-forward.sh)
-- Redis on localhost:9202 (dataspoke-port-forward.sh)
-- Qdrant on localhost:9203/9204 (dataspoke-port-forward.sh)
-- Kestra on localhost:9205 (dataspoke-port-forward.sh)
-- Lock service on localhost:9221 (lock-port-forward.sh)
-- Dummy-data ports on localhost:9102/9104 (dummy-data-port-forward.sh)
+Services are accessed via nginx-ingress (HTTP) or TCP passthrough ports.
+All endpoint values are read from dev_env/.env, which is populated by the
+install scripts.  Tier B TCP defaults:
+- PostgreSQL (dataspoke)  : <INGRESS_IP>:9201
+- Redis                   : <INGRESS_IP>:9202
+- Qdrant HTTP/gRPC        : <INGRESS_IP>:9203 / 9204
+- DataHub Kafka           : <INGRESS_IP>:9005
+- Example PostgreSQL      : <INGRESS_IP>:9102
+- Example Kafka           : <INGRESS_IP>:9104
+- Lock service            : <INGRESS_IP>:9221
 """
 
 import asyncio
@@ -78,7 +80,7 @@ _redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
 _kafka_brokers = os.environ.get(
-    "DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS", "localhost:9104"
+    "DATASPOKE_EXAMPLE_KAFKA_BROKERS", "localhost:9104"
 )
 _datahub_kafka_brokers = os.environ.get("DATASPOKE_DATAHUB_KAFKA_BROKERS", "localhost:9005")
 

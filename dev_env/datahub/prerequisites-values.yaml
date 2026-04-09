@@ -32,9 +32,9 @@ kafka:
   kraft:
     enabled: false
   # Listeners: CLIENT (9092) for in-cluster DataHub components, INTERNAL (9094)
-  # for inter-broker, EXTERNAL (9095) for host-side port-forwarded access.
-  # advertisedListeners must include the namespace matching the Helm install
-  # target (DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE in .env, default: datahub-01).
+  # for inter-broker, EXTERNAL (9095) for external access via nginx-ingress TCP passthrough.
+  # advertisedListeners EXTERNAL is overridden by datahub/install.sh with the
+  # actual ingress IP (from DATASPOKE_DEV_INGRESS_IP in .env).
   listeners:
     client:
       protocol: PLAINTEXT

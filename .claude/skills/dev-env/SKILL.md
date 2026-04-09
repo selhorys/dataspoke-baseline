@@ -1,9 +1,9 @@
 ---
 name: dev-env
-description: Manage the kubernetes-based DataSpoke development environment — configure, install, port-forward, health-check, run-dataspoke-test-mode, and uninstall.
+description: Manage the kubernetes-based DataSpoke development environment — configure, install, health-check, run-dataspoke-test-mode, and uninstall. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
 disable-model-invocation: false
 user-invocable: true
-argument-hint: [configure|install|uninstall|port-forward|health-check|run-dataspoke-test-mode] [options...]
+argument-hint: [configure|install|uninstall|health-check|run-dataspoke-test-mode] [options...]
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -15,7 +15,6 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 |--------|-----------------|
 | **configure** | `configure`, `config`, `setup`, `env` |
 | **install** | `install`, `up`, `create` |
-| **port-forward** | `port-forward`, `forward`, `pf`, `ports` |
 | **health-check** | `health-check`, `health`, `check`, `status`, `monitor` |
 | **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `host-mode`, `backend-only` |
 | **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
@@ -24,13 +23,13 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 
 When the user specifies components, match against these names. If no components are specified, operate on **all**.
 
-| Component | Install script | Uninstall script | Port-forward script |
-|-----------|---------------|------------------|-------------------|
-| `datahub` | `dev_env/datahub/install.sh` | `dev_env/datahub/uninstall.sh` | `dev_env/datahub-port-forward.sh` |
-| `dataspoke-infra` (aliases: `infra`, `infrastructure`) | `dev_env/dataspoke-infra/install.sh` | `dev_env/dataspoke-infra/uninstall.sh` | `dev_env/dataspoke-port-forward.sh --infra-start` |
-| `dataspoke-api` (aliases: `api`) | (via dataspoke-infra Helm) | (via dataspoke-infra Helm) | `dev_env/dataspoke-port-forward.sh --api-start` |
-| `dataspoke-example` (aliases: `example`, `dummy-data`) | `dev_env/dataspoke-example/install.sh` | `dev_env/dataspoke-example/uninstall.sh` | `dev_env/dummy-data-port-forward.sh` |
-| `dataspoke-lock` (aliases: `lock`) | `dev_env/dataspoke-lock/install.sh` | `dev_env/dataspoke-lock/uninstall.sh` | `dev_env/lock-port-forward.sh` |
+| Component | Install script | Uninstall script |
+|-----------|---------------|------------------|
+| `nginx-ingress` | `dev_env/nginx-ingress/install.sh` | `dev_env/nginx-ingress/uninstall.sh` |
+| `datahub` | `dev_env/datahub/install.sh` | `dev_env/datahub/uninstall.sh` |
+| `dataspoke-infra` (aliases: `infra`, `infrastructure`) | `dev_env/dataspoke-infra/install.sh` | `dev_env/dataspoke-infra/uninstall.sh` |
+| `dataspoke-example` (aliases: `example`, `dummy-data`) | `dev_env/dataspoke-example/install.sh` | `dev_env/dataspoke-example/uninstall.sh` |
+| `dataspoke-lock` (aliases: `lock`) | `dev_env/dataspoke-lock/install.sh` | `dev_env/dataspoke-lock/uninstall.sh` |
 
 ---
 
@@ -41,7 +40,8 @@ When the user specifies components, match against these names. If no components 
    - Dev variables: `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`
    - Dev chart versions: `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION`
    - Dev credentials: `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_ROOT_PASSWORD`, `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_PASSWORD`
-   - Dev port-forwards: `DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT` through `..._KESTRA_PORT`
+   - Dev ingress: `DATASPOKE_DEV_INGRESS_IP`, `DATASPOKE_DEV_INGRESS_DOMAIN`
+   - Example service endpoints: `DATASPOKE_EXAMPLE_PG_HOST`, `DATASPOKE_EXAMPLE_PG_PORT`, `DATASPOKE_EXAMPLE_KAFKA_BROKERS`
    - App runtime: `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_POSTGRES_PORT`, `DATASPOKE_REDIS_HOST`, etc.
 3. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
 4. **Show the final `.env` content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if `.env` already has all required variables.)
@@ -73,28 +73,43 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 ### Partial install (specific components)
 
 1. Ensure namespaces exist (create if needed, same logic as `install.sh`).
-2. For each requested component **in dependency order** (datahub → dataspoke-infra → dataspoke-example → dataspoke-lock), run the component's install script directly: `bash dev_env/<component>/install.sh`
+2. For each requested component **in dependency order** (nginx-ingress → datahub → dataspoke-infra → dataspoke-example → dataspoke-lock), run the component's install script directly: `bash dev_env/<component>/install.sh`
 3. Monitor with `/k8s-work` after each component completes.
 
 ### Post-install
 
 1. Confirm all expected components are running.
-2. Start port-forwarding for dummy-data and DataHub GMS (needed for the next step).
-3. Seed dummy data and register datasets in DataHub:
+2. Seed dummy data and register datasets in DataHub:
    ```bash
    uv run python -m tests.integration.util --reset-all
    ```
-4. Show access information:
-   - **DataHub**: `./dev_env/datahub-port-forward.sh` → UI at `http://localhost:9002`, credentials `datahub / datahub`
-   - **DataSpoke infra**: `./dev_env/dataspoke-port-forward.sh` → PostgreSQL `:9201`, Redis `:9202`, Qdrant `:9203`/`:9204`, Kestra `:9205`
-   - **Dummy data**: `./dev_env/dummy-data-port-forward.sh` → PostgreSQL `:9102`, Kafka `:9104`
-   - **Lock service**: `./dev_env/lock-port-forward.sh` → API `:9221`
+3. Show access information (read `DATASPOKE_DEV_INGRESS_IP` and `DATASPOKE_DEV_INGRESS_DOMAIN` from `dev_env/.env`):
+
+   **Tier A — HTTP ingress (nginx virtual hosts)**:
+   | Service | URL |
+   |---------|-----|
+   | DataSpoke UI + API | `http://app.<DOMAIN>/` and `http://app.<DOMAIN>/api/v1/…` |
+   | DataHub UI + GMS | `http://datahub.<DOMAIN>/` and `http://datahub.<DOMAIN>/gms/…` |
+   | Kestra UI | `http://kestra.<DOMAIN>/` |
+
+   **Tier B — TCP passthrough (direct IP:port)**:
+   | Service | Address |
+   |---------|---------|
+   | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` |
+   | DataSpoke Redis | `<INGRESS_IP>:9202` |
+   | Qdrant HTTP | `<INGRESS_IP>:9203` |
+   | Qdrant gRPC | `<INGRESS_IP>:9204` |
+   | DataHub Kafka | `<INGRESS_IP>:9005` |
+   | Example PostgreSQL | `<INGRESS_IP>:9102` |
+   | Example Kafka | `<INGRESS_IP>:9104` |
+   | Lock service | `<INGRESS_IP>:9221` |
+
+4. Inform the user that `dev_env/.env` has been populated with ingress-derived runtime variables (hosts, URLs, ports) by `nginx-ingress/install.sh`, and that they should run `source dev_env/.env` to load them into their shell.
 5. Show how to run DataSpoke app services on the host:
    - `source dev_env/.env`
    - Frontend: `cd src/frontend && npm run dev` (http://localhost:3000)
    - API: `uv run uvicorn src.api.main:app --reload --port 8000`
    - Workers: `uv run python -m src.workflows.worker`
-6. **Ask the user** if they want to start port-forwarding now.
 
 ---
 
@@ -108,11 +123,6 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
    - `kubectl get pvc` in each namespace
 2. **Ask the user to confirm** they want to remove resources before proceeding.
 
-### Stop port-forwarding
-
-1. Check if port-forwarding processes are running by looking for PID files: `dev_env/.datahub-port-forward.pid`, `dev_env/.dataspoke-port-forward-infra.pid`, `dev_env/.dataspoke-port-forward-api.pid`, `dev_env/.dummy-data-port-forward.pid`, `dev_env/.lock-port-forward.pid`.
-2. Stop any running port-forwards for the components being uninstalled.
-
 ### Full uninstall (all components)
 
 1. **Ask the user** whether to also delete the namespaces and their PVCs.
@@ -120,46 +130,18 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
    - Always pass `--yes` (user already confirmed).
    - If user wants namespace deletion, also pass `--delete-namespaces`: `bash dev_env/uninstall.sh --yes --delete-namespaces`
    - Otherwise: `bash dev_env/uninstall.sh --yes`
-   - If the uninstall script does not exist or fails, fall back to manual teardown (run each component's uninstall.sh in reverse order).
+   - If the uninstall script does not exist or fails, fall back to manual teardown (run each component's uninstall.sh in reverse order, ending with `nginx-ingress/uninstall.sh`).
 3. Clean up any orphaned PersistentVolumes in `Released` state.
 
 ### Partial uninstall (specific components)
 
-1. For each requested component **in reverse dependency order** (dataspoke-lock → dataspoke-example → dataspoke-infra → datahub), run: `bash dev_env/<component>/uninstall.sh`
+1. For each requested component **in reverse dependency order** (dataspoke-lock → dataspoke-example → dataspoke-infra → datahub → nginx-ingress), run: `bash dev_env/<component>/uninstall.sh`
 2. Do NOT delete namespaces during partial uninstall.
 
 ### Post-uninstall
 
 1. Confirm cleanup with `/k8s-work`.
 2. Report the clean state.
-
----
-
-## Action: port-forward
-
-### Start
-
-1. For each requested component (or all if none specified), run the port-forward script:
-   - `./dev_env/datahub-port-forward.sh`
-   - `./dev_env/dataspoke-port-forward.sh --infra-start` (PostgreSQL, Redis, Qdrant, Kestra)
-   - `./dev_env/dataspoke-port-forward.sh --api-start` (in-cluster API)
-   - `./dev_env/dataspoke-port-forward.sh --all-start` (infra + API together)
-   - `./dev_env/dummy-data-port-forward.sh`
-   - `./dev_env/lock-port-forward.sh`
-2. After starting, verify the PID files were created and report the forwarded ports.
-
-### Stop
-
-If the user asks to stop port-forwarding:
-
-1. For each requested component (or all if none specified):
-   - `./dev_env/datahub-port-forward.sh --stop`
-   - `./dev_env/dataspoke-port-forward.sh --infra-stop`
-   - `./dev_env/dataspoke-port-forward.sh --api-stop`
-   - `./dev_env/dataspoke-port-forward.sh --all-stop` (infra + API together)
-   - `./dev_env/dummy-data-port-forward.sh --stop`
-   - `./dev_env/lock-port-forward.sh --stop`
-2. Confirm the PID files are cleaned up.
 
 ---
 
@@ -177,7 +159,7 @@ If the user asks to stop port-forwarding:
 
 ## Action: run-dataspoke-test-mode
 
-Run DataSpoke application services on the host in test/development mode, connecting to port-forwarded infrastructure in the Kubernetes cluster.
+Run DataSpoke application services on the host in test/development mode, connecting to infrastructure accessible via nginx-ingress.
 
 ### Pre-flight
 

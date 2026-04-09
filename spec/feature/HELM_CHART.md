@@ -26,9 +26,9 @@
 Production Deployment                    Dev Deployment (dev_env)
 ┌────────────────────────┐              ┌────────────────────────┐
 │  dataspoke namespace   │              │  dataspoke namespace   │
-│                        │              │  (infra only)          │
+│                        │              │  (infra + api)         │
 │  frontend  ✓           │              │  frontend  ✗           │
-│  api       ✓           │              │  api       ✗           │
+│  api       ✓           │              │  api       ✓           │
 │  event-consumer (opt)  │              │  event-consumer ✗      │
 │  kestra    ✓           │              │  kestra    ✓           │
 │  qdrant    ✓           │              │  qdrant    ✓           │
@@ -36,11 +36,11 @@ Production Deployment                    Dev Deployment (dev_env)
 │  redis     ✓           │              │  redis     ✓           │
 └────────────────────────┘              └────────────────────────┘
                                            ▲
-                                           │ port-forward
+                                           │ nginx-ingress
                                         ┌──┴─────────────────┐
                                         │ Host               │
                                         │ frontend (npm dev) │
-                                        │ api (uvicorn)      │
+                                        │ (api via ingress)  │
                                         └────────────────────┘
 ```
 
@@ -185,12 +185,22 @@ See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget). The dev profile 
 
 ### Ingress
 
-Frontend and API each have an `ingress` section in their subchart values supporting:
+Frontend, API, and Kestra each have an `ingress` section in their values supporting:
 - `className` (nginx, alb, traefik, etc.)
 - TLS via cert-manager annotations
 - Customizable host and path rules
 
-In dev, ingress is disabled — services are accessed via port-forward.
+In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controller (installed separately in `ingress-nginx` namespace) routes traffic to all services. Key ingress resources:
+
+| Resource | Location | Routes |
+|----------|----------|--------|
+| `templates/api-ingress.yaml` | umbrella chart | `app.<INGRESS_IP>.nip.io/api` → `dataspoke-api:8002` |
+| `subcharts/frontend/templates/ingress.yaml` | frontend subchart | `app.<INGRESS_IP>.nip.io/` → `dataspoke-frontend:3000` |
+| `kestra.ingress` values | kestra chart (native) | `kestra.<INGRESS_IP>.nip.io/` → `dataspoke-kestra:8080` |
+| `dev_env/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
+| `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
+
+TCP passthrough (PostgreSQL, Redis, Qdrant, Kafka, Lock) is handled by the nginx-ingress `tcp-services` ConfigMap — no Ingress resource needed for TCP. See [`DEV_ENV.md §Ingress`](DEV_ENV.md#ingress) for the full port map.
 
 ### Network Policy
 
@@ -206,7 +216,7 @@ A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namesp
 2. Register Helm repos (`bitnami`, `qdrant`, `kestra`) and build chart dependencies
 3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL auth credentials via `--set`
 
-The dev profile enables the API in-cluster (so Kestra callbacks work via cluster DNS) while keeping frontend/workers disabled. Kestra runs in the cluster in both dev and production.
+The dev profile enables the API in-cluster (so Kestra callbacks work via cluster DNS) and enables ingress for the API and Kestra (so developers can access them via the nginx-ingress endpoints). Frontend and workers remain disabled. Kestra runs in the cluster in both dev and production.
 
 This means:
 1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments — both production and dev

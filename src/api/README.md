@@ -26,11 +26,11 @@ uv sync
 ### 2. Set environment variables
 
 Copy or export the variables listed in the [Environment Variables](#environment-variables) table.
-For local dev, the defaults work when `dev_env/` port-forwards are active.
+For local dev, the defaults work when the dev environment is installed and services are reachable via nginx-ingress.
 
 ```bash
-# Start port-forwards (from another terminal)
-cd dev_env && ./dataspoke-port-forward.sh
+# Verify the dev environment is healthy
+./dev_env/health-check.sh
 ```
 
 ### 3. Run the server

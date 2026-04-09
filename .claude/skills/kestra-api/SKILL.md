@@ -71,17 +71,21 @@ The full Kestra source lives in `ref/github/kestra/`. Use the reference lookup t
 Run these checks before executing any code:
 
 ```bash
-# 1. Check Kestra is reachable (port-forward must be running)
-curl -s http://localhost:8080/api/v1/configs \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print('Kestra ok')" \
-  || echo "ERROR: Kestra not reachable. Check port-forward or dev-env status."
+# 1. Derive Kestra URL from .env (ingress-based)
+source dev_env/.env 2>/dev/null || true
+KESTRA_URL="http://kestra.${DATASPOKE_DEV_INGRESS_DOMAIN}"
 
-# 2. Check KestraClient dependencies
+# 2. Check Kestra is reachable via ingress
+curl -s "${KESTRA_URL}/api/v1/configs" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print('Kestra ok')" \
+  || echo "ERROR: Kestra not reachable at ${KESTRA_URL}. Run: ./dev_env/health-check.sh"
+
+# 3. Check KestraClient dependencies
 python3 -c "import httpx; print('httpx', httpx.__version__)" 2>/dev/null \
   || echo "ERROR: httpx not installed"
 
-# 3. Check existing flows in dataspoke namespace
-curl -s http://localhost:8080/api/v1/flows/dataspoke \
+# 4. Check existing flows in dataspoke namespace
+curl -s "${KESTRA_URL}/api/v1/flows/dataspoke" \
   | python3 -c "import sys,json; flows=json.load(sys.stdin); print(f'{len(flows)} flows in dataspoke namespace')" \
   2>/dev/null || echo "No flows found or Kestra unreachable"
 ```
@@ -94,11 +98,13 @@ If any prerequisite fails, stop and inform the user with the fix instructions.
 
 Only use this if the static `ref/` files don't answer the question.
 
-| Resource | URL | Notes |
+Derive the Kestra URL from `dev_env/.env`: `source dev_env/.env`, then `KESTRA_URL="http://kestra.${DATASPOKE_DEV_INGRESS_DOMAIN}"`.
+
+| Resource | URL pattern | Notes |
 |---|---|---|
-| Kestra UI | `http://localhost:8080` | Full web UI with flow editor, execution viewer |
+| Kestra UI | `http://kestra.<DOMAIN>/` | Full web UI with flow editor, execution viewer |
 | OpenAPI spec (static) | `ref/github/kestra/openapi.yml` | Complete API schema |
-| Health check | `curl http://localhost:8080/api/v1/configs` | No auth needed in dev |
+| Health check | `curl http://kestra.<DOMAIN>/api/v1/configs` | No auth needed in dev |
 
 ---
 
@@ -106,20 +112,25 @@ Only use this if the static `ref/` files don't answer the question.
 
 ### 5.1 KestraClient Setup (DataSpoke pattern)
 
+Read the Kestra URL from the environment (set by `source dev_env/.env`):
 ```python
 from src.workflows.kestra.client import KestraClient
+import os
+
+# Kestra is accessible via ingress: http://kestra.<INGRESS_DOMAIN>
+kestra_url = os.environ["DATASPOKE_KESTRA_URL"]  # set in dev_env/.env
 
 client = KestraClient(
-    base_url="http://localhost:8080",
+    base_url=kestra_url,
     namespace="dataspoke",
 )
 ```
 
 For direct HTTP (without the wrapper):
 ```python
-import httpx
+import httpx, os
 
-client = httpx.Client(base_url="http://localhost:8080", timeout=30.0)
+client = httpx.Client(base_url=os.environ["DATASPOKE_KESTRA_URL"], timeout=30.0)
 ```
 
 ### 5.2 Common Operations
@@ -202,7 +213,7 @@ Key conventions:
 ## Constraints
 
 1. **Never use `kubectl exec`** to interact with Kestra — use the REST API.
-2. **Never run ad-hoc `kubectl port-forward`** for Kestra — if port-forwarding is needed, use the dev-env tooling.
+2. **Never run ad-hoc `kubectl port-forward`** — Kestra is accessible via ingress at `http://kestra.<INGRESS_DOMAIN>`. If the ingress is unreachable, run `./dev_env/health-check.sh` to diagnose.
 3. **Always read the existing KestraClient** (`src/workflows/kestra/client.py`) before adding new API calls — avoid duplicating existing wrappers.
 4. **Prefer static `ref/` lookup over live API exploration** for speed — only fall back to the live UI when the static ref is ambiguous.
 5. **Flow YAML must follow DataSpoke conventions** — HTTP Request tasks calling internal activity endpoints, not inline scripts.

@@ -76,6 +76,15 @@ datahub-frontend:
     periodSeconds: 15
     timeoutSeconds: 10
     failureThreshold: 6
+  ingress:
+    enabled: true
+    ingressClassName: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    hosts:
+      - host: "datahub.dev.dataspoke.example.com"
+        paths:
+          - /*
 
 datahub-mae-consumer:
   resources:

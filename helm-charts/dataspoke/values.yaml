@@ -202,6 +202,23 @@ kestra:
           type: local
           local:
             basePath: /app/storage
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10240m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    hosts:
+      - host: kestra.dataspoke.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: kestra-tls
+        hosts:
+          - kestra.dataspoke.example.com
 
 # ---------------------------------------------------------------------------
 # Shared application configuration (injected into ConfigMap)

@@ -89,19 +89,19 @@ Integration tests run against the dev environment, exercising real infrastructur
 
 ### Testing Modes
 
-The API runs **in-cluster** alongside Kestra so that Kestra workflows can call back to the API directly via `http://dataspoke-api:8002`. Developers port-forward the in-cluster API to `localhost:8002` for running tests and manual exploration. Code changes require `docker build` + `helm upgrade` (automated by `dataspoke-test-mode.sh`).
+The API runs **in-cluster** alongside Kestra so that Kestra workflows can call back to the API directly via `http://dataspoke-api:8002`. Developers access the in-cluster API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for running tests and manual exploration. Code changes require `docker build` + `helm upgrade` (automated by `dataspoke-test-mode.sh`).
 
 ### Workflow
 
 Follow these seven steps in order. `conftest.py` automates Steps 2/7 (lock) at session scope and Steps 3/6 (dummy-data reset) at module scope. It also loads `dev_env/.env` and runs `alembic upgrade head`. The manual commands below are for reference.
 
 1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place REST-only tests under `api_wired/`, others under `integration/`.
-2. **Acquire dev-env lock** -- `POST http://localhost:9221/lock/acquire` with `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
+2. **Acquire dev-env lock** -- `POST http://<INGRESS_IP>:9221/lock/acquire` with `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
 3. **Reset dummy data** -- always reset before running, even if data appears clean. `conftest.py` resets via `tests/integration/util/`. Manual: `uv run python -m tests.integration.util --reset-all`.
 4. **Extend dummy data** if needed -- insert after reset, document in test file's module docstring.
 5. **Run and iterate** -- `uv run pytest tests/integration/`. Re-run from Step 3 as needed.
 6. **Reset on exit** -- module-scoped teardowns restore baseline. Manual fallback: `--reset-all`.
-7. **Release lock** -- `POST http://localhost:9221/lock/release` with `{"owner": "..."}`. Force-release: `DELETE http://localhost:9221/lock`.
+7. **Release lock** -- `POST http://<INGRESS_IP>:9221/lock/release` with `{"owner": "..."}`. Force-release: `DELETE http://<INGRESS_IP>:9221/lock`.
 
 #### Per-Module Dummy-Data Reset
 
@@ -117,13 +117,13 @@ DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 
 ### Prerequisites
 
-Before running integration tests, ensure port-forwards are active and health check passes:
+Before running integration tests, ensure the dev environment is installed and the health check passes:
 
 ```bash
 ./dev_env/health-check.sh
 ```
 
-The script probes each service at the application layer (PostgreSQL, Redis, Qdrant, Kestra, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
+The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis, Qdrant, Kestra, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
 
 | Failing service | Subsystem directory |
 |---|---|
@@ -134,10 +134,10 @@ The script probes each service at the application layer (PostgreSQL, Redis, Qdra
 
 ### Kestra Integration Test Pitfalls
 
-- **Connection**: Kestra is accessed via port-forward on port 9205 (`DATASPOKE_KESTRA_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests in worktrees must source it explicitly.
+- **Connection**: Kestra is accessed via nginx-ingress at `http://kestra.<INGRESS_IP>.nip.io` (`DATASPOKE_KESTRA_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests in worktrees must source it explicitly.
 - **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via `httpx.AsyncClient` (ASGI transport) without Kestra orchestration.
 - **Full flow testing**: Requires running Kestra + deployed flow YAML. Use `KestraClient` to trigger and poll. Keep timeouts short (30s max).
-- **Stale executions**: Cancel via Kestra REST API or UI (`http://localhost:9205`) before starting new ones.
+- **Stale executions**: Cancel via Kestra REST API or UI (`http://kestra.<INGRESS_IP>.nip.io`) before starting new ones.
 - **Kestra utilities** (`tests/integration/util/kestra.py`): kill/cleanup stale executions, register/verify flows, poll until terminal state.
 
 ### Test-Mode Stubs (`DATASPOKE_TEST_MODE`)
@@ -179,8 +179,8 @@ API-wired tests require the in-cluster API server:
 # Reset seed data for clean baseline
 uv run python -m tests.integration.util --reset-all
 
-# Build, deploy, and port-forward the in-cluster API
-./dev_env/dataspoke-test-mode.sh                  # builds image, deploys, port-forwards to localhost:8002
+# Build and deploy the in-cluster API (accessible via ingress)
+./dev_env/dataspoke-test-mode.sh                  # builds image, deploys via Helm
 # Or skip rebuild if image already pushed:
 ./dev_env/dataspoke-test-mode.sh --skip-build
 
@@ -222,13 +222,14 @@ Interactive endpoint testing with `curl` against the test-mode server. Useful fo
 ```bash
 ./dev_env/health-check.sh                                        # Pre-flight
 uv run python -m tests.integration.util --reset-all              # Seed Imazon dummy data
-./dev_env/dataspoke-test-mode.sh                                 # Build, deploy, port-forward
+./dev_env/dataspoke-test-mode.sh                                 # Build and deploy in-cluster API
 ```
 
 ### Authentication
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8002/api/v1/auth/token \
+# Replace <INGRESS_IP> with DATASPOKE_DEV_INGRESS_IP from dev_env/.env
+TOKEN=$(curl -s -X POST http://app.<INGRESS_IP>.nip.io/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
 ```
@@ -238,7 +239,7 @@ Admin has groups `["admin", "de", "da", "dg"]` (all tiers). Tokens expire in 15 
 ### Making Requests
 
 ```bash
-curl -s http://localhost:8002/api/v1/spoke/common/data/$URN \
+curl -s http://app.<INGRESS_IP>.nip.io/api/v1/spoke/common/data/$URN \
   -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
@@ -251,9 +252,9 @@ Route tiers: `/api/v1/spoke/common/â€¦` (any group), `/api/v1/spoke/[de|da|dg]/â
 | Side effect | How to check |
 |---|---|
 | Event logged | `GET /api/v1/spoke/common/data/{urn}/event` |
-| Kestra flow | `curl -u "dataspoke@dataspoke.local:DataSpoke1" http://localhost:9205/api/v1/flows/dataspoke/{flow_id}` |
-| DB row | `psql -h localhost -p 9201 -U dataspoke -d dataspoke` |
-| DataHub aspect | `curl http://localhost:9004/aspects?urn={urn}&aspect={aspect}` |
+| Kestra flow | `curl -u "dataspoke@dataspoke.local:DataSpoke1" http://kestra.<INGRESS_IP>.nip.io/api/v1/flows/dataspoke/{flow_id}` |
+| DB row | `psql -h <INGRESS_IP> -p 9201 -U dataspoke -d dataspoke` |
+| DataHub aspect | `curl http://datahub.<INGRESS_IP>.nip.io/gms/aspects?urn={urn}&aspect={aspect}` |
 
 ### References
 
@@ -273,7 +274,7 @@ Route tiers: `/api/v1/spoke/common/â€¦` (any group), `/api/v1/spoke/[de|da|dg]/â
 
 E2E tests verify the full stack through a real browser (Playwright, TypeScript, `tests/e2e/`).
 
-**Prerequisites**: All services running -- Frontend (`localhost:3000`), API (`localhost:8002` via port-forward), all port-forwards active.
+**Prerequisites**: All services running -- Frontend (`http://app.<INGRESS_IP>.nip.io/`), API (`http://app.<INGRESS_IP>.nip.io/api/v1/`), dev environment installed with nginx-ingress.
 
 **Lock protocol**: Same seven-step workflow as integration tests (acquire lock -> reset data -> run -> reset -> release lock).
 

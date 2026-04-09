@@ -1,8 +1,8 @@
 """Integration tests for Kafka consumer, handler dispatch, and example-kafka.
 
 Prerequisites:
-- DataHub Kafka port-forwarded on localhost:9005 (datahub-port-forward.sh)
-- Example Kafka port-forwarded on localhost:9104 (dummy-data-port-forward.sh)
+- DataHub Kafka accessible via nginx-ingress TCP passthrough (<INGRESS_IP>:9005)
+- Example Kafka accessible via nginx-ingress TCP passthrough (<INGRESS_IP>:9104)
 
 Test-specific data additions:
 - Synthetic JSON MCL messages produced to MetadataChangeLog_Versioned_v1 and

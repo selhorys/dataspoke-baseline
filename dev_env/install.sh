@@ -54,6 +54,15 @@ for NS in "${NAMESPACES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# Install nginx-ingress controller
+# ---------------------------------------------------------------------------
+info "Running nginx-ingress/install.sh..."
+bash "$SCRIPT_DIR/nginx-ingress/install.sh"
+
+# Re-source .env to pick up DATASPOKE_DEV_INGRESS_IP and DATASPOKE_DEV_INGRESS_DOMAIN
+source "$SCRIPT_DIR/.env"
+
+# ---------------------------------------------------------------------------
 # Install DataHub
 # ---------------------------------------------------------------------------
 info "Running datahub/install.sh..."
@@ -88,23 +97,28 @@ kubectl get namespaces "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}" \
   "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}" \
   "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}" 2>/dev/null || true
 echo ""
-echo "Port-forward scripts:"
+echo "Ingress endpoints (via nginx-ingress at ${DATASPOKE_DEV_INGRESS_IP:-<not set>}):"
 echo ""
-echo "  DataHub (UI + GMS):         ./datahub-port-forward.sh"
-echo "  DataSpoke infra (PG, etc.): ./dataspoke-port-forward.sh"
-echo "  Example sources:            ./dummy-data-port-forward.sh"
-echo "  Lock service:               ./lock-port-forward.sh"
+echo "  DataHub UI:    http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/"
+echo "  DataHub GMS:   http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/gms/"
+echo "  DataSpoke API: http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/api/v1/"
+echo "  Kestra UI:     http://kestra.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/"
 echo ""
-echo "DataHub UI:  http://localhost:${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_UI_PORT:-9002}"
-echo "DataHub GMS: http://localhost:${DATASPOKE_DEV_KUBE_DATAHUB_PORT_FORWARD_GMS_PORT:-9004}"
-echo "Credentials: datahub / datahub"
+echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9201"
+echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9202"
+echo "  Qdrant:        ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9203 (HTTP), :9204 (gRPC)"
+echo "  DataHub Kafka: ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9005"
+echo "  Example PG:    ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9102"
+echo "  Example Kafka: ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9104"
+echo "  Lock API:      ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9221"
 echo ""
-echo "DataSpoke infrastructure (after port-forward):"
-echo "  PostgreSQL: localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT:-9201}"
-echo "  Redis:      localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_REDIS_PORT:-9202}"
-echo "  Qdrant:     localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_HTTP_PORT:-9203} (HTTP), :${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_GRPC_PORT:-9204} (gRPC)"
-echo "  Kestra:     localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_KESTRA_PORT:-9205}"
-echo "  Lock API:   localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_DEV_ENV_LOCK_PORT:-9221}"
+echo "  Credentials:"
+echo "    DataHub:  datahub / datahub"
+echo "    Kestra:   dataspoke@dataspoke.local / DataSpoke1"
+echo ""
+echo "Environment:"
+echo "  .env has been populated with ingress-derived variables."
+echo "  Run 'source .env' to load them into your shell."
 echo ""
 echo "Run app services locally:"
 echo "  source .env"

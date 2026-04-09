@@ -50,8 +50,11 @@ kubectl create secret generic example-postgres-secret \
 # ---------------------------------------------------------------------------
 # Apply manifests
 # ---------------------------------------------------------------------------
-info "Applying manifests from $SCRIPT_DIR/manifests/..."
-kubectl apply -f "$SCRIPT_DIR/manifests/" --namespace "${NS}"
+INGRESS_IP="${DATASPOKE_DEV_INGRESS_IP:-localhost}"
+info "Applying manifests (EXTERNAL listener → ${INGRESS_IP}:9104)..."
+for manifest in "$SCRIPT_DIR"/manifests/*.yaml; do
+  sed "s/__INGRESS_IP__/${INGRESS_IP}/g" "$manifest" | kubectl apply -n "${NS}" -f -
+done
 
 # ---------------------------------------------------------------------------
 # Wait for deployments to be ready
@@ -77,11 +80,8 @@ kubectl wait --for=condition=complete job/example-kafka-topic-init \
 echo ""
 info "dataspoke-example installation complete."
 echo ""
-echo "Port-forward with:  ../dummy-data-port-forward.sh"
-echo ""
-echo "  PostgreSQL: localhost:${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT:-9102}  (-> example-postgres:5432)"
+echo "  PostgreSQL: ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9102  (-> example-postgres:5432)"
 echo "  Connection: ${PG_USER} / ${PG_PASS} — database: ${PG_DB}"
 echo ""
-KAFKA_BROKERS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_PORT_FORWARDED_BROKERS:-localhost:9104}"
-echo "  Kafka:      ${KAFKA_BROKERS}  (-> example-kafka:9094 EXTERNAL)"
+echo "  Kafka:      ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9104  (-> example-kafka:9094 EXTERNAL)"
 echo ""

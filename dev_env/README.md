@@ -2,7 +2,7 @@
 
 A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
 
-By default, the cluster hosts only **infrastructure dependencies**. DataSpoke application services run on your host machine, connecting to port-forwarded infrastructure (host mode). For in-cluster testing, see [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
+By default, the cluster hosts only **infrastructure dependencies**. DataSpoke application services run on your host machine, connecting to infrastructure via nginx-ingress (host mode). For in-cluster testing, see [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
 
 ## Prerequisites
 
@@ -18,40 +18,50 @@ By default, the cluster hosts only **infrastructure dependencies**. DataSpoke ap
 
 ```bash
 cp .env.example .env
-# Edit .env — set DATASPOKE_DEV_KUBE_CLUSTER to your context (e.g., minikube, docker-desktop)
+# Edit .env — set DATASPOKE_DEV_KUBE_CLUSTER to your context
+# Set DATASPOKE_DEV_INGRESS_IP after install (written automatically by nginx-ingress/install.sh)
 ```
 
-### 2. Install
+### 2. Install nginx-ingress controller (first time only)
+
+```bash
+./nginx-ingress/install.sh   # Installs ingress-nginx, waits for external IP, writes IP to .env
+```
+
+### 3. Install all other components
 
 ```bash
 ./install.sh    # ~5-10 min first run
 ```
 
-### 3. Port-forward and verify
+### 4. Verify
 
 ```bash
-./datahub-port-forward.sh       # DataHub UI (9002) + GMS (9004) + Kafka (9005)
-./dataspoke-port-forward.sh     # PostgreSQL (9201), Redis (9202), Qdrant (9203-4), Kestra (9205)
-./dummy-data-port-forward.sh    # Example PostgreSQL (9102), Kafka (9104)
-./lock-port-forward.sh          # Advisory lock (9221)
-./health-check.sh               # Verify all services respond
+./health-check.sh    # Checks all services via nginx-ingress endpoints
 ```
 
-All port-forward scripts support `--stop` to terminate.
+### Ingress Endpoints
+
+All HTTP services are accessed via virtual-host routing on the nginx-ingress LoadBalancer IP (`DATASPOKE_DEV_INGRESS_IP`). TCP services (databases, brokers) are exposed on dedicated ports.
 
 | Service | Address | Credentials |
 |---------|---------|-------------|
-| DataHub UI | http://localhost:9002 | `datahub` / `datahub` |
-| DataHub GMS | http://localhost:9004 | -- |
-| DataSpoke PostgreSQL | localhost:9201 | per `.env` |
-| Redis | localhost:9202 | per `.env` |
-| Qdrant | localhost:9203 (HTTP), :9204 (gRPC) | -- |
-| Kestra | http://localhost:9205 | -- |
-| Example PostgreSQL | localhost:9102 | `postgres` / `ExampleDev2024!` |
-| Example Kafka | localhost:9104 | -- |
-| Lock API | http://localhost:9221 | -- |
+| DataHub UI | `http://datahub.<INGRESS_IP>.nip.io/` | `datahub` / `datahub` |
+| DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
+| DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
+| Kestra UI | `http://kestra.<INGRESS_IP>.nip.io/` | -- |
+| DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
+| Redis | `<INGRESS_IP>:9202` | per `.env` |
+| Qdrant HTTP | `<INGRESS_IP>:9203` | -- |
+| Qdrant gRPC | `<INGRESS_IP>:9204` | -- |
+| DataHub Kafka | `<INGRESS_IP>:9005` | -- |
+| Example PostgreSQL | `<INGRESS_IP>:9102` | `postgres` / `ExampleDev2024!` |
+| Example Kafka | `<INGRESS_IP>:9104` | -- |
+| Lock API | `<INGRESS_IP>:9221` | -- |
 
-### 4. Run DataSpoke (host mode)
+Replace `<INGRESS_IP>` with the value of `DATASPOKE_DEV_INGRESS_IP` from `dev_env/.env`. The `nip.io` suffix provides automatic wildcard DNS resolution — no `/etc/hosts` entries needed.
+
+### 5. Run DataSpoke (host mode)
 
 ```bash
 uv sync              # Install Python dependencies (from repo root)
@@ -59,12 +69,13 @@ uv run -m src.cli    # Start API + auto-migrate
 uv run -m src.cli --help   # All options
 ```
 
-### 5. Lock service (multi-tester coordination)
+### 6. Lock service (multi-tester coordination)
 
 Use the advisory lock before destructive operations (data resets, migrations, ingestion tests):
 
 ```bash
-curl -s -X POST http://localhost:9221/lock/acquire \
+INGRESS_IP=$(grep DATASPOKE_DEV_INGRESS_IP dev_env/.env | cut -d= -f2)
+curl -s -X POST http://${INGRESS_IP}:9221/lock/acquire \
   -H "Content-Type: application/json" \
   -d '{"owner": "alice", "message": "running ingestion test"}'
 ```
@@ -78,20 +89,19 @@ curl -s -X POST http://localhost:9221/lock/acquire \
 
 Lock state is in-memory (resets on pod restart). The lock is advisory -- it does not block infra access directly.
 
-### 6. API-wired integration tests (test mode)
+### 7. API-wired integration tests (test mode)
 
 Test mode (`DATASPOKE_TEST_MODE=true`) stubs LLM, Qdrant, cache, and notification while keeping DataHub and PostgreSQL real. See [spec/TESTING.md](../spec/TESTING.md) for the three-group test execution sequence.
 
 ```bash
-./dataspoke-test-mode.sh --skip-migrate --no-reload &
-until curl -s http://localhost:8000/health > /dev/null 2>&1; do sleep 2; done
+./dataspoke-test-mode.sh --skip-migrate --no-reload
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 ./dataspoke-test-mode.sh --stop
 ```
 
 Flags: `--skip-migrate`, `--no-reload`, `--port <N>`, `--health-check`, `--stop`.
 
-### 7. Populate dummy data
+### 8. Populate dummy data
 
 ```bash
 uv run python -m tests.integration.util --reset-all   # Idempotent: PG + Kafka + DataHub
@@ -102,15 +112,29 @@ Seeds 11 schemas, 17 tables (~600 rows), 3 Kafka topics (~45 messages), and 20 D
 ## Uninstall
 
 ```bash
-./uninstall.sh    # Prompts before destructive operations
+./uninstall.sh    # Prompts before destructive operations (includes nginx-ingress teardown)
 ```
 
 ## Reference
+
+### nginx-ingress controller
+
+The nginx-ingress controller lives in the `ingress-nginx` namespace and is installed/uninstalled independently of the application namespaces:
+
+```bash
+./nginx-ingress/install.sh    # Install controller, wait for IP, write to .env
+./nginx-ingress/uninstall.sh  # Remove controller (run after ./uninstall.sh)
+```
+
+The controller serves:
+- **HTTP virtual hosts** on port 80 (and 443 for TLS) for DataHub, DataSpoke API, DataSpoke UI, and Kestra
+- **TCP passthrough** on dedicated ports (9201-9204, 9005, 9102, 9104, 9221) for databases, brokers, and the lock service
 
 ### Namespace architecture
 
 | Namespace | Purpose | Managed by |
 |-----------|---------|------------|
+| `ingress-nginx` | nginx-ingress controller | `nginx-ingress/install.sh` |
 | `datahub-01` | DataHub + backing services | `datahub/install.sh` |
 | `dataspoke-01` | DataSpoke infrastructure + lock service | `dataspoke-infra/install.sh`, `dataspoke-lock/install.sh` |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka | `dataspoke-example/install.sh` |
@@ -121,7 +145,7 @@ Two-tier naming convention in `.env`:
 
 | Prefix | Scope | Example |
 |--------|-------|---------|
-| `DATASPOKE_DEV_*` | Dev scripts only | `DATASPOKE_DEV_KUBE_CLUSTER` |
+| `DATASPOKE_DEV_*` | Dev scripts only | `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_INGRESS_IP` |
 | `DATASPOKE_*` (no `DEV`) | App runtime | `DATASPOKE_POSTGRES_HOST` |
 
 ### Resource budget

@@ -42,7 +42,7 @@ tests/
 - **Structure**: Mirror the source tree — `src/backend/validation/service.py` → `tests/unit/backend/test_validation_service.py`
 
 ### Integration tests
-- **Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. Do not proceed if any check fails — reinstall the failing component (`dataspoke-infra/` for PG/Redis/Qdrant/Kestra, `datahub/` for GMS/Kafka, `dataspoke-example/` for example-postgres/kafka, `dataspoke-lock/` for lock). Each subdirectory under `dev_env/` has `uninstall.sh` + `install.sh`.
+- **Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. Do not proceed if any check fails — reinstall the failing component (`dataspoke-infra/` for PG/Redis/Qdrant/Kestra, `datahub/` for GMS/Kafka, `dataspoke-example/` for example-postgres/kafka, `dataspoke-lock/` for lock, `nginx-ingress/` if ingress itself is down). Each subdirectory under `dev_env/` has `uninstall.sh` + `install.sh`.
 - **Lock protocol**: Acquire the dev-env advisory lock before state-mutating operations.
 - **Data reset**: `conftest.py` auto-resets dummy data. For manual reset: `uv run python -m tests.integration.util --reset-all`
 - **Test data**: All scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies.
@@ -81,7 +81,7 @@ uv run pytest tests/unit/backend/test_validation_service.py  # Specific file
 uv run pytest tests/integration/ --ignore=tests/integration/api_wired/
 
 # Group 3: API-wired integration tests (requires in-cluster API)
-# Build, deploy, and port-forward the in-cluster API
+# Build and deploy the in-cluster API (accessible via nginx-ingress, no port-forwarding needed)
 ./dev_env/dataspoke-test-mode.sh           # or --skip-build if image already pushed
 # DATASPOKE_TEST_MODE must be set in the pytest process (conftest checks it)
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/

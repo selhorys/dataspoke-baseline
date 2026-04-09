@@ -130,7 +130,16 @@ helm upgrade --install datahub-prerequisites datahub/datahub-prerequisites \
   --version "${PREREQS_VERSION}" \
   --namespace "${NS}" \
   --values "$SCRIPT_DIR/prerequisites-values.yaml" \
+  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${DATASPOKE_DEV_INGRESS_IP:-localhost}:9005" \
   --timeout 5m
+
+# ---------------------------------------------------------------------------
+# Create Kafka external listener service (for nginx-ingress TCP passthrough)
+# The Bitnami Kafka chart only exposes CLIENT (9092) on its ClusterIP service.
+# The EXTERNAL listener (9095) needs a dedicated service.
+# ---------------------------------------------------------------------------
+info "Creating Kafka external listener service..."
+kubectl apply -n "${NS}" -f "$SCRIPT_DIR/kafka-external-svc.yaml"
 
 # ---------------------------------------------------------------------------
 # Step 2: Wait for each prerequisite sequentially
@@ -164,6 +173,7 @@ helm upgrade --install datahub datahub/datahub \
   --version "${DATAHUB_VERSION}" \
   --namespace "${NS}" \
   --values "$SCRIPT_DIR/values.yaml" \
+  --set "datahub-frontend.ingress.hosts[0].host=datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
   --timeout 15m
 
 # ---------------------------------------------------------------------------
@@ -243,21 +253,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Apply GMS ingress (custom resource — DataHub chart has no native GMS ingress)
+# ---------------------------------------------------------------------------
+if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
+  info "Applying DataHub GMS ingress..."
+  DATAHUB_HOST="datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}"
+  sed "s/__DATAHUB_INGRESS_HOST__/${DATAHUB_HOST}/g" \
+    "$SCRIPT_DIR/gms-ingress.yaml" | kubectl apply -n "${NS}" -f -
+  info "GMS ingress applied: http://${DATAHUB_HOST}/gms/"
+else
+  warn "DATASPOKE_DEV_INGRESS_DOMAIN not set — skipping GMS ingress."
+fi
+
+# ---------------------------------------------------------------------------
 # Print access instructions
 # ---------------------------------------------------------------------------
 echo ""
 info "DataHub installation complete."
 kubectl get pods -n "${NS}"
 echo ""
-echo "Access the DataHub UI with:"
-echo ""
-echo "  kubectl port-forward \\"
-echo "    --namespace ${NS} \\"
-echo "    \$(kubectl get pods -n ${NS} \\"
-echo "      -l 'app.kubernetes.io/name=datahub-frontend' \\"
-echo "      -o jsonpath='{.items[0].metadata.name}') \\"
-echo "    9002:9002"
-echo ""
-echo "  Open: http://localhost:9002"
+if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
+  echo "  DataHub UI:  http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}/"
+  echo "  DataHub GMS: http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}/gms/"
+fi
 echo "  Credentials: datahub / datahub"
 echo ""

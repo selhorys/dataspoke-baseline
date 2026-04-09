@@ -1,7 +1,7 @@
 """Integration tests for WebSocket feed mechanism via Redis pub/sub.
 
 Prerequisites:
-- Redis port-forwarded to localhost:9202 (dataspoke-port-forward.sh)
+- Redis accessible via nginx-ingress TCP passthrough (<INGRESS_IP>:9202)
 
 These tests verify that Redis pub/sub channels used by the WebSocket feed
 handlers work correctly end-to-end. No dummy-data dependencies — Redis only.

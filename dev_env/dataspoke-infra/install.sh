@@ -123,6 +123,12 @@ if [[ -d "$CHART_DIR" ]]; then
     --set-string config.kestra.callbackBaseUrl="http://dataspoke-api:8002" \
     --set-string config.datahub.gmsUrl="http://datahub-datahub-gms.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:8080" \
     --set-string config.datahub.kafkaBrokers="datahub-prerequisites-kafka.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:9092" \
+    --set "api.ingress.hosts[0].host=app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+    --set "api.ingress.hosts[0].paths[0].path=/api" \
+    --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
+    --set "kestra.ingress.hosts[0].host=kestra.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+    --set "kestra.ingress.hosts[0].paths[0].path=/" \
+    --set "kestra.ingress.hosts[0].paths[0].pathType=Prefix" \
     --timeout 5m --wait
 else
   warn "Helm chart not found at $CHART_DIR — skipping Helm install."
@@ -144,10 +150,11 @@ echo ""
 info "DataSpoke infrastructure installation complete."
 kubectl get pods -n "${NS}" 2>/dev/null || true
 echo ""
-echo "Port-forward with:  ../dataspoke-port-forward.sh"
-echo ""
-echo "  PostgreSQL: localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_POSTGRES_PORT:-9201}"
-echo "  Redis:      localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_REDIS_PORT:-9202}"
-echo "  Qdrant:     localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_HTTP_PORT:-9203} (HTTP), :${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_QDRANT_GRPC_PORT:-9204} (gRPC)"
-echo "  Kestra:     localhost:${DATASPOKE_DEV_KUBE_DATASPOKE_PORT_FORWARD_KESTRA_PORT:-9205} (API + UI)"
+if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
+  echo "  DataSpoke API: http://app.${DATASPOKE_DEV_INGRESS_DOMAIN}/api/v1/"
+  echo "  Kestra UI:     http://kestra.${DATASPOKE_DEV_INGRESS_DOMAIN}/"
+fi
+echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9201"
+echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9202"
+echo "  Qdrant:        ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9203 (HTTP), :9204 (gRPC)"
 echo ""

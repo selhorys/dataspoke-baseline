@@ -89,8 +89,8 @@ _load_dotenv()
 # Connection config
 # ---------------------------------------------------------------------------
 
-_pg_host = "localhost"
-_pg_port = int(os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PORT_FORWARD_PORT", "9102"))
+_pg_host = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "localhost")
+_pg_port = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
 _pg_user = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
 _pg_password = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
 _pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")

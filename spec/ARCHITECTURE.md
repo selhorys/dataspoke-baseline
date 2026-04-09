@@ -456,11 +456,11 @@ All runtime configuration is driven by **environment variables** with two tiers:
 | `DATASPOKE_DEV_*` | Dev environment only | `dev_env/*.sh` scripts |
 | `DATASPOKE_*` (no `DEV`) | Application runtime | DataSpoke app code (FastAPI, frontend) |
 
-Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, namespace names, chart versions, and port-forward ports. The application code never reads them.
+Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, namespace names, chart versions, and the nginx-ingress IP. The application code never reads them.
 
-Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values differ. In dev, they point to `localhost` (port-forwarded from k8s). In production, they are injected via Helm values → Kubernetes ConfigMap/Secret.
+Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values differ. In dev, they point to the nginx-ingress external IP (TCP services) or ingress hostnames (HTTP services). In production, they are injected via Helm values → Kubernetes ConfigMap/Secret.
 
-Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Qdrant, Kestra, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, port-forward ports. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
+Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Qdrant, Kestra, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
 
 For production, secrets are stored as Kubernetes Secrets and injected via Helm values → ConfigMap/Secret → container environment. See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
 
@@ -475,7 +475,7 @@ cd dev_env && ./uninstall.sh  # Tear down
 
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Two testing modes are available:
 
-The API server runs **in-cluster** so that Kestra can call back to it directly via `http://dataspoke-api:8002`. Developers port-forward the API to `localhost:8002` for testing. Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
+The API server runs **in-cluster** so that Kestra can call back to it directly via `http://dataspoke-api:8002`. Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 
 See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for the full dev environment specification.
 

@@ -89,6 +89,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Uninstall nginx-ingress controller
+# ---------------------------------------------------------------------------
+if [[ -f "$SCRIPT_DIR/nginx-ingress/uninstall.sh" ]]; then
+  info "Running nginx-ingress/uninstall.sh..."
+  bash "$SCRIPT_DIR/nginx-ingress/uninstall.sh"
+else
+  warn "nginx-ingress/uninstall.sh not found — skipping."
+fi
+
+# ---------------------------------------------------------------------------
 # Optionally delete namespaces
 # ---------------------------------------------------------------------------
 echo ""

@@ -57,17 +57,13 @@ cd dev_env && ./install.sh             # ~5-10 min first run
 
 > Using Claude Code? Run `/dev-env install` for guided setup.
 
-After install, start port-forwards and verify:
+After install, verify all services are reachable:
 
 ```bash
-dev_env/datahub-port-forward.sh       # DataHub UI (9002) + GMS (9004)
-dev_env/dataspoke-port-forward.sh     # PostgreSQL (9201), Redis (9202), Qdrant (9203-4), Kestra (9205)
-dev_env/dummy-data-port-forward.sh    # Example PostgreSQL (9102), Kafka (9104)
-dev_env/lock-port-forward.sh          # Advisory lock (9221)
-./dev_env/health-check.sh             # Verify all services respond
+./dev_env/health-check.sh             # Verify all services respond via nginx-ingress
 ```
 
-See [`dev_env/README.md`](dev_env/README.md) for credentials, lock service, namespace architecture, resource budgets, and troubleshooting.
+Services are accessed via nginx-ingress endpoints — HTTP services use virtual-host routing (`http://<service>.<INGRESS_IP>.nip.io/`) and TCP services use dedicated ports on the ingress IP. See [`dev_env/README.md`](dev_env/README.md) for the full endpoint table, credentials, lock service, namespace architecture, resource budgets, and troubleshooting.
 
 #### Uninstall
 
@@ -102,7 +98,7 @@ For in-cluster testing (Kubernetes-specific behavior only), see [`spec/feature/H
 
 ```bash
 uv run pytest tests/unit/                      # Unit tests (no infra needed)
-uv run pytest tests/integration/               # Integration tests (requires port-forwards)
+uv run pytest tests/integration/               # Integration tests (requires dev environment with ingress)
 uv run python -m tests.integration.util --reset-all  # Seed dummy data (Imazon use-case)
 ```
 

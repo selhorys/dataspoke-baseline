@@ -15,6 +15,17 @@ api:
     # repository + tag passed via --set from .env (DATASPOKE_DEV_IMAGE_REGISTRY)
     pullPolicy: Always
   testMode: true
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    hosts:
+      - host: "app.dev.dataspoke.example.com"
+        paths:
+          - path: /api
+            pathType: Prefix
   resources:
     requests:
       cpu: 250m
@@ -186,6 +197,19 @@ kestra:
             initial-delay: 5m
             fixed-delay: 30m
             retention: 1h
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "10240m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    hosts:
+      - host: "kestra.dev.dataspoke.example.com"
+        paths:
+          - path: /
+            pathType: Prefix
 
 # ---------------------------------------------------------------------------
 # ConfigMap/Secret: created in dev for in-cluster API deployment

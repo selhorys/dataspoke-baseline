@@ -4,26 +4,24 @@
 # testing.
 #
 # Builds and pushes the Docker image, deploys via Helm (dataspoke-infra
-# install.sh), waits for the rollout, and port-forwards localhost:8000 to
-# the in-cluster dataspoke-api service.
+# install.sh), and waits for the rollout. The API is accessible via nginx
+# ingress — no port-forward needed.
 #
 # DATASPOKE_TEST_MODE=true is baked into values-dev.yaml (api.testMode: true)
 # so Kestra callbacks reach the API via http://dataspoke-api:8000 within the
 # cluster.
 #
 # Usage:
-#   ./dev_env/dataspoke-test-mode.sh                  # Build + deploy + port-forward
+#   ./dev_env/dataspoke-test-mode.sh                  # Build + deploy
 #   ./dev_env/dataspoke-test-mode.sh --skip-build     # Skip docker build, just deploy
 #   ./dev_env/dataspoke-test-mode.sh --health-check   # Run health check first
-#   ./dev_env/dataspoke-test-mode.sh --stop           # Stop port-forward, scale down API
+#   ./dev_env/dataspoke-test-mode.sh --stop           # Scale down API deployment
 #
 # After the server is running, in a second terminal:
 #   DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/ -v
 #
 # Note: DATASPOKE_TEST_MODE must be set in the pytest process as well —
 # the API pod has it baked in via values-dev.yaml.
-#
-# Exit: Ctrl+C or --stop
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -61,15 +59,12 @@ fi
 source "$SCRIPT_DIR/.env"
 
 NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
-API_PORT="${DATASPOKE_API_PORT:-8000}"
+DOMAIN="${DATASPOKE_DEV_INGRESS_DOMAIN:-}"
 
 # ---------------------------------------------------------------------------
-# --stop: stop port-forward and scale down the API deployment
+# --stop: scale down the API deployment
 # ---------------------------------------------------------------------------
 if [[ "$STOP_ONLY" == "true" ]]; then
-  info "Stopping DataSpoke API port-forward..."
-  bash "$SCRIPT_DIR/dataspoke-port-forward.sh" --api-stop || true
-
   info "Scaling down dataspoke-api deployment..."
   kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}" >/dev/null 2>&1
   kubectl scale deployment/dataspoke-api --replicas=0 -n "${NS}" 2>/dev/null \
@@ -158,19 +153,18 @@ kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
   || { warn "dataspoke-api did not become ready in time — check pod logs."; }
 
 # ---------------------------------------------------------------------------
-# Step 4: Start port-forward
-# ---------------------------------------------------------------------------
-info "Starting port-forward for dataspoke-api..."
-bash "$SCRIPT_DIR/dataspoke-port-forward.sh" --api-start
-
-# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 echo ""
 info "DataSpoke test-mode is running."
 echo ""
-echo "  API:             http://localhost:${API_PORT}"
-echo "  ReDoc:           http://localhost:${API_PORT}/redoc"
+if [[ -n "$DOMAIN" ]]; then
+  echo "  API:             http://app.${DOMAIN}/api"
+  echo "  ReDoc:           http://app.${DOMAIN}/redoc"
+else
+  echo "  API:             http://app.<INGRESS_DOMAIN>/api"
+  echo "  Note: set DATASPOKE_DEV_INGRESS_DOMAIN in .env for the correct URL"
+fi
 echo "  DATASPOKE_TEST_MODE: true (baked into deployment via values-dev.yaml)"
 echo ""
 echo "  In a second terminal:"

@@ -1,0 +1,38 @@
+# nginx-ingress controller values — dev (GKE Autopilot)
+# Installed by dev_env/nginx-ingress/install.sh as release "ingress-nginx"
+# in namespace "ingress-nginx".
+
+controller:
+  ingressClassResource:
+    name: nginx
+    default: true
+  service:
+    type: LoadBalancer
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# TCP services — maps LoadBalancer ports to in-cluster services.
+# The ingress-nginx chart creates a ConfigMap called "tcp-services" from
+# this map and adds the ports to the controller's Service automatically.
+#
+# Format: "<external-port>": "<namespace>/<service-name>:<target-port>"
+#
+# Tier B: dev-only TCP passthrough for datastores and message brokers.
+tcp:
+  # DataSpoke infra (dataspoke-01)
+  9201: "dataspoke-01/dataspoke-postgresql:5432"
+  9202: "dataspoke-01/dataspoke-redis-master:6379"
+  9203: "dataspoke-01/dataspoke-qdrant:6333"
+  9204: "dataspoke-01/dataspoke-qdrant:6334"
+  # DataHub Kafka (datahub-01)
+  9005: "datahub-01/datahub-kafka-external:9095"
+  # Example data sources (dataspoke-dummy-data-01)
+  9102: "dataspoke-dummy-data-01/example-postgres:5432"
+  9104: "dataspoke-dummy-data-01/example-kafka:9094"
+  # Dev-env lock service (dataspoke-01)
+  9221: "dataspoke-01/dev-lock:8080"
