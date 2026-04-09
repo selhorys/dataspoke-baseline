@@ -5,7 +5,7 @@ by pytest).  Provides fixtures specific to REST-based testing so that spot
 and story tests get a ready-to-use auth header dict without boilerplate.
 
 API-wired tests assume the in-cluster DataSpoke API is deployed and
-port-forwarded **with test mode enabled** (``DATASPOKE_TEST_MODE=true``).
+accessible via nginx-ingress **with test mode enabled** (``DATASPOKE_TEST_MODE=true``).
 Start it via::
 
     ./dev_env/dataspoke-test-mode.sh
@@ -49,14 +49,15 @@ def require_server():
         )
 
     # -- Check server health --
-    port = os.environ.get("DATASPOKE_API_PORT", "8002")
+    domain = os.environ.get("DATASPOKE_DEV_INGRESS_DOMAIN", "")
+    api_base = f"http://app.{domain}" if domain else f"http://localhost:{os.environ.get('DATASPOKE_API_PORT', '8002')}"
     try:
-        resp = httpx.get(f"http://localhost:{port}/health", timeout=5.0)
+        resp = httpx.get(f"{api_base}/health", timeout=5.0)
         resp.raise_for_status()
     except Exception:
         pytest.fail(
-            f"DataSpoke API not reachable on localhost:{port}. "
-            "Deploy and port-forward with: ./dev_env/dataspoke-test-mode.sh"
+            f"DataSpoke API not reachable at {api_base}. "
+            "Deploy with: ./dev_env/dataspoke-test-mode.sh"
         )
 
     # Verify required flows are registered

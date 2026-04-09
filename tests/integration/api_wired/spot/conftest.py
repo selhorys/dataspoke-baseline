@@ -20,10 +20,15 @@ from tests.integration.conftest import make_test_urn
 
 @pytest_asyncio.fixture
 async def http_client():
-    """HTTP client pointing at the host-mode DataSpoke server."""
-    port = os.environ.get("DATASPOKE_API_PORT", "8000")
+    """HTTP client pointing at the in-cluster DataSpoke API via ingress."""
+    domain = os.environ.get("DATASPOKE_DEV_INGRESS_DOMAIN", "")
+    if domain:
+        base_url = f"http://app.{domain}"
+    else:
+        port = os.environ.get("DATASPOKE_API_PORT", "8000")
+        base_url = f"http://localhost:{port}"
     async with httpx.AsyncClient(
-        base_url=f"http://localhost:{port}",
+        base_url=base_url,
         timeout=120.0,
     ) as client:
         yield client
