@@ -1,6 +1,5 @@
 # DataSpoke Umbrella Chart — Dev Overlay
 # Infrastructure only. Application subcharts disabled (run on the host).
-# Target cluster: GKE Autopilot (gke-dev-env-01)
 # Used by: dev_env/dataspoke-infra/install.sh
 
 # ---------------------------------------------------------------------------

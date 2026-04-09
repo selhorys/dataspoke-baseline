@@ -1,6 +1,5 @@
 # DataHub prerequisites Helm values — dev sizing
 # Chart: datahub/datahub-prerequisites version 0.2.1
-# Target cluster: GKE Autopilot (gke-dev-env-01)
 # All components use replicaCount: 1 for minimal resource usage.
 # Total memory limits (prerequisites): ~9 GiB
 

@@ -1,6 +1,5 @@
 # DataHub Helm values — dev sizing
 # Chart: datahub/datahub version 0.8.21 (app version v1.4.0.3)
-# Target cluster: GKE Autopilot (gke-dev-env-01)
 # Total memory limits (datahub services): ~6.5 GiB
 #
 # Service name overrides point to the datahub-prerequisites release.
