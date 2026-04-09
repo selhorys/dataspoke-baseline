@@ -24,7 +24,7 @@ api:
     hosts:
       - host: "app.dev.dataspoke.example.com"
         paths:
-          - path: /api
+          - path: /
             pathType: Prefix
   resources:
     requests:

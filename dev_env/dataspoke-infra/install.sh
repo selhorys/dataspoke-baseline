@@ -124,7 +124,7 @@ if [[ -d "$CHART_DIR" ]]; then
     --set-string config.datahub.gmsUrl="http://datahub-datahub-gms.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:8080" \
     --set-string config.datahub.kafkaBrokers="datahub-prerequisites-kafka.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:9092" \
     --set "api.ingress.hosts[0].host=app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-    --set "api.ingress.hosts[0].paths[0].path=/api" \
+    --set "api.ingress.hosts[0].paths[0].path=/" \
     --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
     --set "kestra.ingress.hosts[0].host=kestra.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
     --set "kestra.ingress.hosts[0].paths[0].path=/" \

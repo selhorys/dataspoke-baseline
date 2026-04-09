@@ -59,7 +59,7 @@ api:
     hosts:
       - host: api.dataspoke.example.com
         paths:
-          - path: /api
+          - path: /
             pathType: Prefix
     tls:
       - secretName: dataspoke-api-tls
