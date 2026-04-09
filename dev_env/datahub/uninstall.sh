@@ -43,6 +43,16 @@ else
   warn "Helm release 'datahub-prerequisites' not found in namespace '${NS}' — skipping."
 fi
 
+# ---------------------------------------------------------------------------
+# Clean up non-Helm resources created by install.sh
+# ---------------------------------------------------------------------------
+for RESOURCE in ingress/datahub-gms service/datahub-kafka-external secret/mysql-secrets; do
+  if kubectl get "${RESOURCE}" -n "${NS}" >/dev/null 2>&1; then
+    info "Deleting ${RESOURCE}..."
+    kubectl delete "${RESOURCE}" -n "${NS}"
+  fi
+done
+
 echo ""
-info "DataHub Helm releases removed."
+info "DataHub removed."
 echo ""

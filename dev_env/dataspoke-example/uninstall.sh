@@ -29,6 +29,12 @@ NS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 if kubectl get namespace "${NS}" >/dev/null 2>&1; then
   info "Deleting manifests from namespace '${NS}'..."
   kubectl delete -f "$SCRIPT_DIR/manifests/" --namespace "${NS}" --ignore-not-found=true
+
+  # Clean up secret created outside manifests/ by install.sh
+  if kubectl get secret/example-postgres-secret -n "${NS}" >/dev/null 2>&1; then
+    info "Deleting secret/example-postgres-secret..."
+    kubectl delete secret/example-postgres-secret -n "${NS}"
+  fi
 else
   warn "Namespace '${NS}' does not exist — nothing to delete."
 fi
