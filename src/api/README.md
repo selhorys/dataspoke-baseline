@@ -33,15 +33,18 @@ For local dev, the defaults work when the dev environment is installed and servi
 ./dev_env/health-check.sh
 ```
 
-### 3. Run the server
+### 3. Access the API
+
+The API runs **in-cluster** by default (deployed via `./dev_env/dataspoke-test-mode.sh`). Access via nginx-ingress:
+- API: `http://app.<INGRESS_DOMAIN>/api/v1/`
+- ReDoc: `http://app.<INGRESS_DOMAIN>/redoc`
+
+For optional host-mode development (no Kestra callbacks):
 
 ```bash
 # From repo root
 uv run uvicorn src.api.main:app --reload --port 8000
 ```
-
-The interactive docs are available at:
-- ReDoc: <http://localhost:8000/redoc>
 
 ---
 

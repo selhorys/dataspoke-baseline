@@ -2,7 +2,7 @@
 
 A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
 
-By default, the cluster hosts only **infrastructure dependencies**. DataSpoke application services run on your host machine, connecting to infrastructure via nginx-ingress (host mode). For in-cluster testing, see [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
+The API runs **in-cluster** alongside Kestra so that workflow callbacks work via cluster DNS. Developers access the API via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Frontend runs on the host. See [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
 
 ## Prerequisites
 
@@ -61,13 +61,15 @@ All HTTP services are accessed via virtual-host routing on the nginx-ingress Loa
 
 Replace `<INGRESS_IP>` with the value of `DATASPOKE_DEV_INGRESS_IP` from `dev_env/.env`. The `nip.io` suffix provides automatic wildcard DNS resolution — no `/etc/hosts` entries needed.
 
-### 5. Run DataSpoke (host mode)
+### 5. Deploy DataSpoke API (in-cluster)
 
 ```bash
-uv sync              # Install Python dependencies (from repo root)
-uv run -m src.cli    # Start API + auto-migrate
-uv run -m src.cli --help   # All options
+./dataspoke-test-mode.sh              # Build image, deploy via Helm, wait for rollout
+./dataspoke-test-mode.sh --skip-build # Deploy without rebuilding the image
+./dataspoke-test-mode.sh --stop       # Scale down the API deployment
 ```
+
+The API is accessible at `http://app.<INGRESS_IP>.nip.io/api/v1/` via nginx-ingress. For optional host-mode development (no Kestra callbacks): `uv run -m src.cli` from the repo root.
 
 ### 6. Lock service (multi-tester coordination)
 
@@ -94,12 +96,12 @@ Lock state is in-memory (resets on pod restart). The lock is advisory -- it does
 Test mode (`DATASPOKE_TEST_MODE=true`) stubs LLM, Qdrant, cache, and notification while keeping DataHub and PostgreSQL real. See [spec/TESTING.md](../spec/TESTING.md) for the three-group test execution sequence.
 
 ```bash
-./dataspoke-test-mode.sh --skip-migrate --no-reload
+./dataspoke-test-mode.sh                                          # Build + deploy
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 ./dataspoke-test-mode.sh --stop
 ```
 
-Flags: `--skip-migrate`, `--no-reload`, `--port <N>`, `--health-check`, `--stop`.
+Flags: `--skip-build`, `--health-check`, `--stop`.
 
 ### 8. Populate dummy data
 

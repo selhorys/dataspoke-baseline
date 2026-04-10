@@ -42,10 +42,7 @@ while [[ $# -gt 0 ]]; do
     --skip-build)       SKIP_BUILD=true ;;
     --health-check)     HEALTH_CHECK=true ;;
     --stop)             STOP_ONLY=true ;;
-    # Legacy flags accepted as no-ops (server is now in-cluster)
-    --skip-migrate|--no-reload|--backend-only) true ;;
-    --port) shift ;;  # consume the value too
-    *) warn "Unknown option: $1" ;;
+    *) error "Unknown option: $1" ;;
   esac
   shift
 done

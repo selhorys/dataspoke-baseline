@@ -19,9 +19,9 @@ cd dev_env && ./uninstall.sh  # Tear down everything
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.
 
-Quick-start (host mode): `uv run -m src.cli` starts API + runs migrations. Workflow orchestration is handled by Kestra (running in K8s). See `uv run -m src.cli --help` for options.
+The API runs **in-cluster** alongside Kestra so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). For optional host-mode development (no Kestra callbacks): `uv run -m src.cli`.
 
-The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). Two testing modes: **host** (default — app on host, infra in cluster) and **in-cluster** (on-demand — all components in K8s via `--set` flags). See `spec/TESTING.md §Testing Modes`.
+The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). See `spec/TESTING.md §Testing Modes`.
 
 ## Key Design Decisions
 

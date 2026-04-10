@@ -42,13 +42,13 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 ### Prerequisites
 
 - **kubectl** + **Helm v3** installed and configured
-- A local Kubernetes cluster (Docker Desktop, minikube, or kind) with **8+ CPUs / 16 GB RAM**
+- A Kubernetes cluster (GKE Autopilot recommended; Docker Desktop, minikube, or kind also work) with **8+ CPUs / 16 GB RAM**
 - **Python 3.13** and [`uv`](https://github.com/astral-sh/uv)
 - **Node.js 18+** (TBD — frontend not yet implemented)
 
 ### Dev Environment Setup
 
-The dev environment provisions infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Kestra, example data sources) into a local Kubernetes cluster. Application services run on the host by default.
+The dev environment provisions infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Kestra, example data sources) into a Kubernetes cluster. The API runs **in-cluster** alongside Kestra (for workflow callbacks); frontend runs on the host.
 
 ```bash
 cp dev_env/.env.example dev_env/.env   # Set your Kubernetes context
@@ -74,12 +74,12 @@ cd dev_env && ./uninstall.sh
 ### Running DataSpoke
 
 ```bash
-uv sync                    # Install dependencies
-uv run -m src.cli          # Start API + auto-migrate (host mode)
-uv run -m src.cli --help   # See all options
+uv sync                                  # Install dependencies
+./dev_env/dataspoke-test-mode.sh         # Build image, deploy API in-cluster via Helm
+./dev_env/dataspoke-test-mode.sh --stop  # Scale down in-cluster API
 ```
 
-For in-cluster testing (Kubernetes-specific behavior only), see [`spec/feature/HELM_CHART.md` §In-Cluster Testing](spec/feature/HELM_CHART.md#in-cluster-testing).
+The API is accessible via nginx-ingress at `http://app.<INGRESS_IP>.nip.io/api/v1/`. For optional host-mode development (no Kestra callbacks): `uv run -m src.cli`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
 
 ### Implementation Status
 

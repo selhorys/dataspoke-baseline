@@ -16,7 +16,7 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 | **configure** | `configure`, `config`, `setup`, `env` |
 | **install** | `install`, `up`, `create` |
 | **health-check** | `health-check`, `health`, `check`, `status`, `monitor` |
-| **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `host-mode`, `backend-only` |
+| **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `deploy`, `test-mode` |
 | **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
 
 ### Component names
@@ -105,11 +105,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
    | Lock service | `<INGRESS_IP>:9221` |
 
 4. Inform the user that `dev_env/.env` has been populated with ingress-derived runtime variables (hosts, URLs, ports) by `nginx-ingress/install.sh`, and that they should run `source dev_env/.env` to load them into their shell.
-5. Show how to run DataSpoke app services on the host:
-   - `source dev_env/.env`
-   - Frontend: `cd src/frontend && npm run dev` (http://localhost:3000)
-   - API: `uv run uvicorn src.api.main:app --reload --port 8000`
-   - Workers: `uv run python -m src.workflows.worker`
+5. Note that the API is deployed in-cluster by `dataspoke-infra/install.sh` (via the umbrella Helm chart). To rebuild and redeploy after code changes, use `./dev_env/dataspoke-test-mode.sh`. Frontend runs on the host: `cd src/frontend && npm run dev` (http://localhost:3000).
 
 ---
 
@@ -159,12 +155,12 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 ## Action: run-dataspoke-test-mode
 
-Run DataSpoke application services on the host in test/development mode, connecting to infrastructure accessible via nginx-ingress.
+Build a Docker image of the DataSpoke API, deploy it in-cluster via the umbrella Helm chart, and wait for the rollout. The API is accessible via nginx-ingress — no port-forward needed. `DATASPOKE_TEST_MODE=true` is baked into `values-dev.yaml` so Kestra callbacks reach the API via cluster DNS (`http://dataspoke-api:8002`).
 
 ### Pre-flight
 
 1. Verify `dev_env/.env` exists. If not, run **configure** first.
-2. Run `./dev_env/health-check.sh --quick` to confirm infrastructure is reachable. If it fails, suggest running `/dev-env health-check` or `/dev-env install` and stop.
+2. If the user requests it (or `--health-check` flag), run `./dev_env/health-check.sh --quick` to confirm infrastructure is reachable. If it fails, suggest `/dev-env health-check` or `/dev-env install` and stop.
 3. Run `uv sync` to ensure Python dependencies are up to date.
 
 ### Option parsing
@@ -173,29 +169,24 @@ Parse `$ARGUMENTS` and the user's request for these options:
 
 | Option | CLI flag | Default | Description |
 |--------|----------|---------|-------------|
-| `backend-only` | `--backend-only` | off | Start only backend (API); skip frontend when it exists |
-| `skip-migrate` | `--skip-migrate` | off | Skip Alembic database migration on startup |
-| `port <N>` | `--port <N>` | `8000` | API listen port |
-| `no-reload` | `--no-reload` | off | Disable uvicorn auto-reload (hot-reloading) |
-| `env-file <path>` | `--env-file <path>` | `dev_env/.env` | Path to `.env` file |
+| `skip-build` | `--skip-build` | off | Skip Docker build, deploy existing image only |
+| `health-check` | `--health-check` | off | Run health check before deploying |
+| `stop` | `--stop` | off | Scale down the API deployment and exit |
 
-### Start
+### Deploy
 
-1. Build the command from parsed options:
-   ```bash
-   uv run -m src.cli [--backend-only] [--skip-migrate] [--port N] [--no-reload] [--env-file PATH]
-   ```
-2. Run the command **in the background** so the conversation remains interactive.
-3. Wait a few seconds, then read the background task output to confirm the banner appeared and the server started successfully.
-4. Report the running state to the user:
-   - API URL (`http://localhost:<port>`)
-   - ReDoc UI (`http://localhost:<port>/redoc`)
-   - Components started
-   - How to stop: user can press Ctrl+C or ask to stop
+1. Run `./dev_env/dataspoke-test-mode.sh` with parsed flags in the foreground (it builds the image, deploys via Helm, and waits for rollout — typically 1-2 minutes).
+2. Monitor the output for errors. If the build or rollout fails, report the error and suggest remediation.
+3. On success, report the running state to the user:
+   - API URL: `http://app.<INGRESS_DOMAIN>/api/v1/`
+   - ReDoc UI: `http://app.<INGRESS_DOMAIN>/redoc`
+   - Health: `http://app.<INGRESS_DOMAIN>/health`
+   - How to run tests: `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`
+   - How to stop: `./dev_env/dataspoke-test-mode.sh --stop`
 
 ### Stop
 
-If the user asks to stop the running DataSpoke process:
+If the user asks to stop:
 
-1. Find the background task and stop it.
-2. Confirm the process has exited.
+1. Run `./dev_env/dataspoke-test-mode.sh --stop` (scales down the `dataspoke-api` deployment to 0 replicas).
+2. Confirm the deployment has been scaled down.

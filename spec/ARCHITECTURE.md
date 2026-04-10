@@ -473,9 +473,9 @@ cd dev_env && ./uninstall.sh  # Tear down
 # Settings: dev_env/.env (DATASPOKE_DEV_* for cluster config, DATASPOKE_* for app config)
 ```
 
-The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that disables application subcharts and reduces resource limits. Two testing modes are available:
+The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that reduces resource limits and disables frontend/workers. The target cluster is GKE Autopilot (Docker Desktop, minikube, or kind also work).
 
-The API server runs **in-cluster** so that Kestra can call back to it directly via `http://dataspoke-api:8002`. Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
+The API server runs **in-cluster** so that Kestra can call back to it directly via `http://dataspoke-api:8002`. Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 
 See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for the full dev environment specification.
 
