@@ -241,7 +241,8 @@ def acquire_lock() -> None:
         yield  # type: ignore[misc]
         return
 
-    lock_url = os.environ.get("DATASPOKE_LOCK_URL", "http://localhost:9221")
+    _ingress_ip = os.environ.get("DATASPOKE_DEV_INGRESS_IP", "localhost")
+    lock_url = os.environ.get("DATASPOKE_LOCK_URL", f"http://{_ingress_ip}:9221")
     try:
         resp = httpx.post(
             f"{lock_url}/lock/acquire",
@@ -252,7 +253,7 @@ def acquire_lock() -> None:
             pytest.skip("Dev-env lock held by another tester")
         resp.raise_for_status()
     except httpx.ConnectError:
-        pytest.skip("Lock service not reachable at localhost:9221")
+        pytest.skip(f"Lock service not reachable at {lock_url}")
 
     yield  # type: ignore[misc]
 
