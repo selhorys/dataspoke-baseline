@@ -266,6 +266,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Generate Personal Access Token (PAT) for SDK/CLI access
+#   GraphQL requires authentication; the reset script and integration tests
+#   need a valid token in .env.  Generate one if missing or stale.
+# ---------------------------------------------------------------------------
+if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
+  DATAHUB_FRONTEND="http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}"
+  GMS_URL="${DATAHUB_FRONTEND}/gms"
+
+  # Re-read .env to pick up any existing token
+  source "$SCRIPT_DIR/../.env"
+  EXISTING_TOKEN="${DATASPOKE_DATAHUB_TOKEN:-}"
+
+  NEED_TOKEN=true
+  if [[ -n "$EXISTING_TOKEN" ]]; then
+    # Verify the existing token still works (DataHub may have been reinstalled)
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X POST "${GMS_URL}/api/graphql" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${EXISTING_TOKEN}" \
+      -d '{"query":"{ me { corpUser { username } } }"}' 2>/dev/null || echo "000")
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      info "Existing DataHub PAT is valid — skipping token generation."
+      NEED_TOKEN=false
+    else
+      info "Existing DataHub PAT is stale (HTTP $HTTP_CODE) — regenerating."
+    fi
+  fi
+
+  if [[ "$NEED_TOKEN" == "true" ]]; then
+    info "Generating DataHub personal access token..."
+    COOKIE_FILE=$(mktemp)
+    trap 'rm -f "$COOKIE_FILE"' EXIT
+    curl -s -X POST "${DATAHUB_FRONTEND}/logIn" \
+      -H "Content-Type: application/json" \
+      -d '{"username":"datahub","password":"datahub"}' \
+      -c "$COOKIE_FILE" -o /dev/null 2>/dev/null
+
+    PAT_RESPONSE=$(curl -s -X POST "${DATAHUB_FRONTEND}/api/graphql" \
+      -H "Content-Type: application/json" \
+      -b "$COOKIE_FILE" \
+      -d '{"query":"mutation { createAccessToken(input: { type: PERSONAL, actorUrn: \"urn:li:corpuser:datahub\", duration: NO_EXPIRY, name: \"dev-env-token\" }) { accessToken } }"}' 2>/dev/null)
+    rm -f "$COOKIE_FILE"
+    trap - EXIT
+
+    NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
+    if [[ -n "$NEW_TOKEN" ]]; then
+      sed -i '' "s|^DATASPOKE_DATAHUB_TOKEN=.*|DATASPOKE_DATAHUB_TOKEN=${NEW_TOKEN}|" "$SCRIPT_DIR/../.env"
+      info "DataHub PAT written to .env."
+    else
+      warn "Failed to generate DataHub PAT. You may need to create one manually."
+      warn "Response: $PAT_RESPONSE"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Print access instructions
 # ---------------------------------------------------------------------------
 echo ""
