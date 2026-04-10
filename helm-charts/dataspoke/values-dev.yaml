@@ -166,8 +166,8 @@ kestra:
           url: jdbc:postgresql://dataspoke-postgresql:5432/kestra
           driverClassName: org.postgresql.Driver
           # username/password: passed via --set from .env
-          maximumPoolSize: 10
-          minimumIdle: 2
+          maximumPoolSize: 50
+          minimumIdle: 5
       kestra:
         repository:
           type: postgres
@@ -185,9 +185,13 @@ kestra:
           basic-auth:
             username: dataspoke@dataspoke.local
             password: DataSpoke1
+          # Disable liveness coordinator — it's designed for distributed
+          # multi-node deployments.  In standalone mode (single JVM),
+          # it causes deadlocks on service_instance FOR UPDATE queries
+          # and burns 2.4+ CPU cores.  Kubernetes handles pod liveness
+          # via restart instead.
           liveness:
-            interval: 30s
-            heartbeatInterval: 10s
+            enabled: false
         jdbc:
           queues:
             min-poll-interval: 2s

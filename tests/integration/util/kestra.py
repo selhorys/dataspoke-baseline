@@ -183,7 +183,7 @@ async def cleanup_flows(client: KestraClient) -> int:
 
 
 async def reset_all() -> int:
-    """Kill running executions and delete all flows in the Kestra namespace.
+    """Kill running executions, delete all flows, and re-register startup flows.
 
     Creates its own KestraClient from environment variables.
     Returns the number of flows deleted.
@@ -205,6 +205,15 @@ async def reset_all() -> int:
                 logger.info("Deleted flow %s", flow_id)
             except Exception:
                 logger.warning("Failed to delete flow %s", flow_id, exc_info=True)
+
+    # Let Kestra settle after bulk delete before re-registering
+    if deleted > 0:
+        logger.info("Waiting for Kestra to settle after deleting %d flows...", deleted)
+        await asyncio.sleep(5)
+
+    # Re-register startup flows so the environment is left in a usable state
+    registered = await register_all_flows(client)
+    logger.info("Re-registered %d startup flows", registered)
 
     return deleted
 

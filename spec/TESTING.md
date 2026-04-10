@@ -176,13 +176,13 @@ API-wired tests exercise the **API server and backend services as a combined uni
 API-wired tests require the in-cluster API server:
 
 ```bash
-# Reset seed data for clean baseline
-uv run python -m tests.integration.util --reset-all
-
-# Build and deploy the in-cluster API (accessible via ingress)
+# Build and deploy the in-cluster API (may restart pods via Helm)
 ./dev_env/dataspoke-test-mode.sh                  # builds image, deploys via Helm
 # Or skip rebuild if image already pushed:
 ./dev_env/dataspoke-test-mode.sh --skip-build
+
+# Reset seed data after deploy (into stable infrastructure)
+uv run python -m tests.integration.util --reset-all
 
 # Run (DATASPOKE_TEST_MODE must be set in the pytest process)
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
@@ -221,8 +221,8 @@ Interactive endpoint testing with `curl` against the test-mode server. Useful fo
 
 ```bash
 ./dev_env/health-check.sh                                        # Pre-flight
-uv run python -m tests.integration.util --reset-all              # Seed Imazon dummy data
 ./dev_env/dataspoke-test-mode.sh                                 # Build and deploy in-cluster API
+uv run python -m tests.integration.util --reset-all              # Seed Imazon dummy data
 ```
 
 ### Authentication

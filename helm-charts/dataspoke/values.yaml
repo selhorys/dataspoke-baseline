@@ -191,8 +191,8 @@ kestra:
           driverClassName: org.postgresql.Driver
           username: dataspoke
           password: ""
-          maximumPoolSize: 10
-          minimumIdle: 2
+          maximumPoolSize: 50
+          minimumIdle: 5
       kestra:
         repository:
           type: postgres
@@ -202,6 +202,13 @@ kestra:
           type: local
           local:
             basePath: /app/storage
+        server:
+          # Disable liveness coordinator — designed for distributed
+          # multi-node deployments.  In standalone mode (single JVM),
+          # it deadlocks on service_instance FOR UPDATE queries.
+          # Kubernetes handles pod liveness via restart instead.
+          liveness:
+            enabled: false
   ingress:
     enabled: true
     className: "nginx"

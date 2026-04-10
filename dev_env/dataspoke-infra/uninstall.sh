@@ -28,10 +28,30 @@ NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
 # ---------------------------------------------------------------------------
 if helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
   info "Uninstalling Helm release 'dataspoke' from namespace '${NS}'..."
-  helm uninstall dataspoke --namespace "${NS}"
+  helm uninstall dataspoke --namespace "${NS}" --wait --timeout 60s 2>/dev/null \
+    || warn "Helm uninstall timed out — force-deleting remaining pods."
 else
   warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
 fi
+
+# Force-kill any pods still terminating (Kestra often hangs during shutdown)
+kubectl delete pod -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
+  --force --grace-period=0 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Delete PVCs for a clean slate
+#
+# Stale data in PVCs (Kestra service_instance, cached embeddings, Redis
+# keys) causes recovery loops and test pollution on reinstall.  Deleting
+# PVCs is simpler and more reliable than trying to purge data in place.
+# ---------------------------------------------------------------------------
+info "Deleting PVCs..."
+for pvc in $(kubectl get pvc -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+  kubectl delete pvc "$pvc" -n "${NS}" 2>/dev/null \
+    && info "  Deleted PVC '${pvc}'." \
+    || warn "  Could not delete PVC '${pvc}'."
+done
 
 # ---------------------------------------------------------------------------
 # Clean up secrets

@@ -27,7 +27,7 @@ def main() -> None:
         asyncio.run(datahub.reset_and_ingest())
         from tests.integration.util import kestra, qdrant
         deleted = asyncio.run(kestra.reset_all())
-        print(f"  Deleted {deleted} Kestra flows.")
+        print(f"  Deleted {deleted} Kestra flows (startup flows re-registered).")
         qdrant_deleted = asyncio.run(qdrant.reset_all())
         print(f"  Deleted {qdrant_deleted} Qdrant collections.")
         print("[INFO] Done.")
@@ -46,10 +46,10 @@ def main() -> None:
         asyncio.run(datahub.reset_and_ingest())
 
     if "--kestra" in args:
-        print("[INFO] Resetting Kestra (delete flows + kill executions)...")
+        print("[INFO] Resetting Kestra (delete flows + kill executions + re-register)...")
         from tests.integration.util import kestra
         deleted = asyncio.run(kestra.reset_all())
-        print(f"  Deleted {deleted} Kestra flows.")
+        print(f"  Deleted {deleted} Kestra flows (startup flows re-registered).")
 
     if "--qdrant" in args:
         print("[INFO] Resetting Qdrant (delete all collections)...")
