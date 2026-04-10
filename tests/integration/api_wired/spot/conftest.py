@@ -1,7 +1,7 @@
 """Shared fixtures and helpers for spot integration tests.
 
-Provides the ``http_client`` fixture pointing at the host-mode DataSpoke
-server used by ingestion, validation, generation, and metrics modules.
+Provides the ``http_client`` fixture pointing at the in-cluster DataSpoke
+API via nginx-ingress, used by ingestion, validation, generation, and metrics modules.
 Also exposes ingestion-specific connection constants and cleanup helpers
 reused by both ``test_ingestion_service`` and ``test_ingestion_workflow``.
 """
@@ -25,7 +25,7 @@ async def http_client():
     if domain:
         base_url = f"http://app.{domain}"
     else:
-        port = os.environ.get("DATASPOKE_API_PORT", "8000")
+        port = os.environ.get("DATASPOKE_API_PORT", "8002")
         base_url = f"http://localhost:{port}"
     async with httpx.AsyncClient(
         base_url=base_url,
@@ -37,8 +37,8 @@ async def http_client():
 # ── Ingestion connection constants (resolved from dev_env/.env) ────────────
 
 EXAMPLE_PG_LOCATOR = {
-    "host": os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "localhost"),
-    "port": int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102")),
+    "host": os.environ["DATASPOKE_EXAMPLE_PG_HOST"],
+    "port": int(os.environ["DATASPOKE_EXAMPLE_PG_PORT"]),
 }
 EXAMPLE_PG_IDENTIFIER = {
     "database": os.environ.get(
@@ -56,10 +56,7 @@ EXAMPLE_PG_AUTH = {
 }
 
 EXAMPLE_KAFKA_LOCATOR = {
-    "bootstrap_servers": os.environ.get(
-        "DATASPOKE_EXAMPLE_KAFKA_BROKERS",
-        "localhost:9104",
-    ),
+    "bootstrap_servers": os.environ["DATASPOKE_EXAMPLE_KAFKA_BROKERS"],
 }
 EXAMPLE_KAFKA_IDENTIFIER = {
     "topic": "imazon.orders.events",

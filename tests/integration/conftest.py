@@ -71,25 +71,23 @@ _load_dotenv()
 
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
-_datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
-_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
+_datahub_gms_url = os.environ["DATASPOKE_DATAHUB_GMS_URL"]
+_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "")
 _datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
 
-_redis_host = os.environ.get("DATASPOKE_REDIS_HOST", "localhost")
-_redis_port = int(os.environ.get("DATASPOKE_REDIS_PORT", "9202"))
+_redis_host = os.environ["DATASPOKE_REDIS_HOST"]
+_redis_port = int(os.environ["DATASPOKE_REDIS_PORT"])
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
-_kafka_brokers = os.environ.get(
-    "DATASPOKE_EXAMPLE_KAFKA_BROKERS", "localhost:9104"
-)
-_datahub_kafka_brokers = os.environ.get("DATASPOKE_DATAHUB_KAFKA_BROKERS", "localhost:9005")
+_kafka_brokers = os.environ["DATASPOKE_EXAMPLE_KAFKA_BROKERS"]
+_datahub_kafka_brokers = os.environ["DATASPOKE_DATAHUB_KAFKA_BROKERS"]
 
-_qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
-_qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
-_qdrant_grpc_port = int(os.environ.get("DATASPOKE_QDRANT_GRPC_PORT", "9204"))
+_qdrant_host = os.environ["DATASPOKE_QDRANT_HOST"]
+_qdrant_http_port = int(os.environ["DATASPOKE_QDRANT_HTTP_PORT"])
+_qdrant_grpc_port = int(os.environ["DATASPOKE_QDRANT_GRPC_PORT"])
 _qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
 
-_kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
+_kestra_url = os.environ["DATASPOKE_KESTRA_URL"]
 _kestra_namespace = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
 _kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
 _kestra_password = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
@@ -152,10 +150,10 @@ def _auth_headers() -> dict[str, str]:
 
 def _alembic_cmd(*args: str) -> subprocess.CompletedProcess[str]:
     """Run an alembic command against the dev-env PostgreSQL."""
-    host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-    port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
-    user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-    password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "dataspoke")
+    host = os.environ["DATASPOKE_POSTGRES_HOST"]
+    port = os.environ["DATASPOKE_POSTGRES_PORT"]
+    user = os.environ["DATASPOKE_POSTGRES_USER"]
+    password = os.environ["DATASPOKE_POSTGRES_PASSWORD"]
     db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
     alembic_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
 
@@ -172,10 +170,10 @@ def _alembic_cmd(*args: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.fixture(scope="session")
 def integration_db_url() -> str:
-    host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-    port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
-    user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-    password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "dataspoke")
+    host = os.environ["DATASPOKE_POSTGRES_HOST"]
+    port = os.environ["DATASPOKE_POSTGRES_PORT"]
+    user = os.environ["DATASPOKE_POSTGRES_USER"]
+    password = os.environ["DATASPOKE_POSTGRES_PASSWORD"]
     db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
 
@@ -241,7 +239,7 @@ def acquire_lock() -> None:
         yield  # type: ignore[misc]
         return
 
-    _ingress_ip = os.environ.get("DATASPOKE_DEV_INGRESS_IP", "localhost")
+    _ingress_ip = os.environ["DATASPOKE_DEV_INGRESS_IP"]
     lock_url = os.environ.get("DATASPOKE_LOCK_URL", f"http://{_ingress_ip}:9221")
     try:
         resp = httpx.post(

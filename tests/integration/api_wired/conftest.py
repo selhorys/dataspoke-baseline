@@ -61,7 +61,7 @@ def require_server():
         )
 
     # Verify required flows are registered
-    kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
+    kestra_url = os.environ["DATASPOKE_KESTRA_URL"]
     kestra_ns = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
     kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
     kestra_pass = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
@@ -103,7 +103,7 @@ def suspend_ingestion_config_sync(require_server):
     flow_path = Path("src/workflows/flows/ingestion_config_sync.yaml")
     flow = yaml.safe_load(flow_path.read_text())
 
-    kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
+    kestra_url = os.environ["DATASPOKE_KESTRA_URL"]
     kestra_ns = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
     kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
     kestra_pass = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
