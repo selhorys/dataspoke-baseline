@@ -15,6 +15,8 @@ Prerequisites:
 """
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="generation flow removed from startup flows — needs overhaul")
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 

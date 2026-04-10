@@ -22,6 +22,7 @@ To register additional flows at startup, add their YAML filename to
 ``_STARTUP_FLOWS``.  Flow YAML files live in ``src/workflows/flows/``.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -38,10 +39,7 @@ _STARTUP_FLOWS = frozenset({
     "ingestion_config_sync.yaml",
     "validation_config_sync.yaml",
     "metrics_config_sync.yaml",
-    "generation.yaml",
     "metrics.yaml",
-    "embedding_sync.yaml",
-    "ontology_rebuild.yaml",
 })
 
 
@@ -70,5 +68,10 @@ async def register_all_flows(client: KestraClient) -> int:
             count += 1
         except Exception:
             logger.error("Failed to register flow from %s", yaml_file.name, exc_info=True)
+
+        # Let Kestra's JDBC queue drain between registrations to avoid
+        # cumulative overload that causes later flows to time out.
+        if yaml_file != yaml_files[-1]:
+            await asyncio.sleep(3)
 
     return count
