@@ -121,9 +121,10 @@ class KestraClient:
         *,
         flow_id: str = "",
         timeout_seconds: float = 300,
-        poll_interval: float = 1.0,
+        poll_interval: float = 5.0,
     ) -> ExecutionResponse:
         """Poll until execution reaches a terminal state."""
+        interval = max(poll_interval, 5.0)
         deadline = asyncio.get_event_loop().time() + timeout_seconds
         while True:
             if asyncio.get_event_loop().time() >= deadline:
@@ -134,7 +135,7 @@ class KestraClient:
                     detail = parse_execution_error(execution.model_dump())
                     raise KestraExecutionFailedError(flow_id, execution_id, detail)
                 return execution
-            await asyncio.sleep(poll_interval)
+            await asyncio.sleep(interval)
 
     async def find_running_executions(
         self, flow_id: str, label_key: str | None = None, label_value: str | None = None

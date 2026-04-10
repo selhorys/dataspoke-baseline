@@ -14,6 +14,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from src.api.config import settings
 from src.api.middleware.logging import RequestLoggingMiddleware
 from src.api.middleware.rate_limit import limiter
+from src.api.routers import admin as admin_router
 from src.api.routers import auth as auth_router
 from src.api.routers import health
 from src.api.routers import hub as hub_router
@@ -59,23 +60,11 @@ HUB = f"{API_PREFIX}/hub"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Register Kestra flows at startup, close client on shutdown."""
-    import asyncio
-
+    """Application lifespan — manage shared clients."""
     from src.api.dependencies import get_kestra_client
-    from src.workflows.kestra.registry import register_all_flows
 
     kestra = get_kestra_client()
-    try:
-        count = await asyncio.wait_for(register_all_flows(kestra), timeout=120)
-        logger.info("Registered %d Kestra flows", count)
-    except asyncio.TimeoutError:
-        logger.warning("Kestra flow registration timed out — Kestra may be unavailable")
-    except Exception:
-        logger.warning("Failed to register Kestra flows (Kestra may not be available)", exc_info=True)
-
     yield
-
     await kestra.close()
 
 
@@ -314,8 +303,9 @@ def create_app() -> FastAPI:
     # ── Auth routes (no auth required) ────────────────────────────────────────
     app.include_router(auth_router.router, prefix=API_PREFIX)
 
-    # ── Internal activity endpoints (called by Kestra, no auth) ────────────────
+    # ── Internal endpoints (called by Kestra / scripts, no auth) ────────────────
     app.include_router(internal_activities.router, include_in_schema=False)
+    app.include_router(admin_router.internal_router, include_in_schema=False)
 
     # ── Spoke/common routes ────────────────────────────────────────────────────
     app.include_router(common_ontology.router, prefix=SPOKE_COMMON)
@@ -333,6 +323,9 @@ def create_app() -> FastAPI:
 
     # ── Hub pass-through routes ────────────────────────────────────────────────
     app.include_router(hub_router.router, prefix=API_PREFIX)
+
+    # ── Admin routes (admin group only) ───────────────────────────────────────
+    app.include_router(admin_router.router, prefix=API_PREFIX)
 
     return app
 

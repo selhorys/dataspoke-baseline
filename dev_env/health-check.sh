@@ -216,17 +216,16 @@ check_dataspoke_redis() {
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  # Send AUTH + PING over raw TCP and look for +PONG
-  local response
+  # Use redis-cli for reliable AUTH + PING (nc is unreliable over TCP passthrough)
+  local auth_args=()
   if [[ -n "$DS_REDIS_PASSWORD" ]]; then
-    response=$(printf "AUTH %s\r\nPING\r\n" "$DS_REDIS_PASSWORD" \
-      | nc -w 2 "$DS_REDIS_HOST" "$DS_REDIS_PORT" 2>/dev/null) || true
-  else
-    response=$(printf "PING\r\n" \
-      | nc -w 2 "$DS_REDIS_HOST" "$DS_REDIS_PORT" 2>/dev/null) || true
+    auth_args=(-a "$DS_REDIS_PASSWORD")
   fi
+  local response
+  response=$(redis-cli -h "$DS_REDIS_HOST" -p "$DS_REDIS_PORT" "${auth_args[@]}" \
+    PING 2>/dev/null) || true
 
-  if echo "$response" | grep -q "+PONG"; then
+  if [[ "$response" == "PONG" ]]; then
     _pass "$label"
   else
     _fail "$label — PING did not return PONG"

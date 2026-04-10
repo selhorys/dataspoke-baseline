@@ -144,6 +144,17 @@ kubectl rollout status deployment/dataspoke-kestra-standalone -n "${NS}" --timeo
   || warn "Kestra did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
+# Warm up Kestra JVM
+# ---------------------------------------------------------------------------
+KESTRA_URL="http://kestra.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+warm_up_kestra \
+  "$KESTRA_URL" \
+  "${DATASPOKE_KESTRA_USER:-}" \
+  "${DATASPOKE_KESTRA_PASSWORD:-}" \
+  "${DATASPOKE_KESTRA_NAMESPACE:-dataspoke}" \
+  || warn "Kestra warm-up failed — JVM may not be fully primed."
+
+# ---------------------------------------------------------------------------
 # Print access instructions
 # ---------------------------------------------------------------------------
 echo ""

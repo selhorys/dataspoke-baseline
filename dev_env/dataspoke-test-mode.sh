@@ -150,6 +150,28 @@ kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
   || { warn "dataspoke-api did not become ready in time — check pod logs."; }
 
 # ---------------------------------------------------------------------------
+# Step 4: Warm up Kestra JVM + register flows
+# ---------------------------------------------------------------------------
+if [[ -n "$DOMAIN" ]]; then
+  info "Warming up Kestra JVM..."
+  if curl -sf -X POST "http://app.${DOMAIN}/internal/admin/flows/warm_up_kestra" \
+      -m 360 -o /dev/null; then
+    info "Kestra JVM warm-up complete."
+  else
+    warn "Kestra JVM warm-up failed. Retry with:"
+    echo "    curl -X POST http://app.${DOMAIN}/internal/admin/flows/warm_up_kestra"
+  fi
+
+  info "Registering Kestra flows..."
+  if curl -sf -X POST "http://app.${DOMAIN}/internal/admin/flows/init" -o /dev/null; then
+    info "Kestra flows registered."
+  else
+    warn "Failed to register Kestra flows — Kestra may not be ready. Retry with:"
+    echo "    curl -X POST http://app.${DOMAIN}/internal/admin/flows/init"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 echo ""
