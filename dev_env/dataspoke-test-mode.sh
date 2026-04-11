@@ -141,10 +141,16 @@ info "Deploying DataSpoke infra + API via Helm..."
 bash "$SCRIPT_DIR/dataspoke-infra/install.sh"
 
 # ---------------------------------------------------------------------------
-# Step 3: Wait for API rollout
+# Step 3: Force pod recreation and wait for API rollout
 # ---------------------------------------------------------------------------
-info "Waiting for dataspoke-api rollout..."
+# helm upgrade won't trigger a rollout when the image tag is unchanged (e.g.
+# :dev), so we force a restart to ensure the freshly-pushed image is pulled.
+info "Restarting dataspoke-api to pick up the new image..."
 kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}" >/dev/null 2>&1
+if [[ "$SKIP_BUILD" == "false" ]]; then
+  kubectl rollout restart deployment/dataspoke-api -n "${NS}"
+fi
+info "Waiting for dataspoke-api rollout..."
 kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
   && info "dataspoke-api is ready." \
   || { warn "dataspoke-api did not become ready in time — check pod logs."; }

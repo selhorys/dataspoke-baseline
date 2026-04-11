@@ -171,6 +171,28 @@ kestra:
         mountPath: /app/plugins
     jvm:
       extraOpts: "-Xms1g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+    startupProbe:
+      httpGet:
+        path: /health
+        port: management
+      initialDelaySeconds: 60
+      periodSeconds: 5
+      timeoutSeconds: 5
+      failureThreshold: 60
+    livenessProbe:
+      httpGet:
+        path: /health/liveness
+        port: management
+      periodSeconds: 30
+      timeoutSeconds: 30
+      failureThreshold: 10
+    readinessProbe:
+      httpGet:
+        path: /health/readiness
+        port: management
+      periodSeconds: 10
+      timeoutSeconds: 30
+      failureThreshold: 30
   resources:
     requests:
       cpu: 500m

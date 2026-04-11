@@ -136,10 +136,10 @@ kestra:
       httpGet:
         path: /health
         port: management
-      initialDelaySeconds: 5
-      periodSeconds: 2
-      timeoutSeconds: 3
-      failureThreshold: 150
+      initialDelaySeconds: 60
+      periodSeconds: 5
+      timeoutSeconds: 5
+      failureThreshold: 60
     livenessProbe:
       httpGet:
         path: /health/liveness

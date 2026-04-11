@@ -16,6 +16,7 @@ triggers:
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "*/10 * * * *"
     disabled: true
+    recoverMissedSchedules: NONE
 
 tasks:
   - id: sync
