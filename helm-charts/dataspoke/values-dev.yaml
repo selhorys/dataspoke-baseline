@@ -144,15 +144,15 @@ kestra:
       httpGet:
         path: /health/liveness
         port: management
-      periodSeconds: 10
-      timeoutSeconds: 15
-      failureThreshold: 30
+      periodSeconds: 30
+      timeoutSeconds: 30
+      failureThreshold: 10
     readinessProbe:
       httpGet:
         path: /health/readiness
         port: management
       periodSeconds: 10
-      timeoutSeconds: 15
+      timeoutSeconds: 30
       failureThreshold: 30
   deployments:
     standalone:
@@ -222,3 +222,5 @@ config:
   createConfigMap: true
 secrets:
   createSecret: true
+  jwt:
+    secretKey: "changeme-dev-secret-do-not-use-in-prod"

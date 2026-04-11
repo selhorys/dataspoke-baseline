@@ -96,10 +96,21 @@ async def test_wait_for_execution_failure(client: KestraClient):
 async def test_wait_for_execution_timeout(client: KestraClient):
     client._client.get = AsyncMock(return_value=_mock_response(_make_execution("RUNNING")))
 
-    with pytest.raises(KestraTimeoutError) as exc_info:
-        await client.wait_for_execution(
-            "exec-1", flow_id="test", timeout_seconds=0.1, poll_interval=0.05
-        )
+    # Simulate elapsed time via a fake clock so the timeout fires deterministically
+    # without depending on real wall-clock delays.
+    fake_time = 0.0
+
+    def advance_time(*_args):
+        nonlocal fake_time
+        fake_time += 10.0  # jump past the deadline on each sleep
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("asyncio.sleep", AsyncMock(side_effect=advance_time))
+        mp.setattr("asyncio.get_event_loop", lambda: type("L", (), {"time": lambda self: fake_time})())
+        with pytest.raises(KestraTimeoutError) as exc_info:
+            await client.wait_for_execution(
+                "exec-1", flow_id="test", timeout_seconds=5, poll_interval=5
+            )
     assert exc_info.value.flow_id == "test"
     assert exc_info.value.execution_id == "exec-1"
 
@@ -113,9 +124,13 @@ async def test_wait_for_execution_polls_until_terminal(client: KestraClient):
     ]
     client._client.get = AsyncMock(side_effect=responses)
 
-    execution = await client.wait_for_execution(
-        "exec-1", flow_id="test", timeout_seconds=5, poll_interval=0.01
-    )
+    # Patch asyncio.sleep to be instant so the 5-second poll_interval floor
+    # in wait_for_execution doesn't cause real delays or timeouts.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("asyncio.sleep", AsyncMock())
+        execution = await client.wait_for_execution(
+            "exec-1", flow_id="test", timeout_seconds=300, poll_interval=5
+        )
     assert execution.status == ExecutionStatus.SUCCESS
     assert client._client.get.call_count == 3
 
