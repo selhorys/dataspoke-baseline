@@ -1,9 +1,9 @@
 ---
 name: dev-env
-description: Manage the kubernetes-based DataSpoke development environment — configure, install, reinstall, health-check, run-dataspoke-test-mode, and uninstall. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
+description: Manage the kubernetes-based DataSpoke development environment — configure, install, reinstall, uninstall, health-check, monitor-kestra, and run-dataspoke-test-mode. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
 disable-model-invocation: false
 user-invocable: true
-argument-hint: [configure|install|reinstall|uninstall|health-check|run-dataspoke-test-mode] [options...]
+argument-hint: [configure|install|reinstall|uninstall|health-check|monitor-kestra|run-dataspoke-test-mode] [options...]
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -15,7 +15,8 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 |--------|-----------------|
 | **configure** | `configure`, `config`, `setup`, `env` |
 | **install** | `install`, `up`, `create` |
-| **health-check** | `health-check`, `health`, `check`, `status`, `monitor` |
+| **health-check** | `health-check`, `health`, `check`, `status` |
+| **monitor-kestra** | `monitor-kestra`, `monitor kestra`, `kestra load`, `kestra monitor` |
 | **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `deploy`, `test-mode` |
 | **reinstall** | `reinstall`, `reset` |
 | **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
@@ -170,6 +171,39 @@ Selectively reinstall a single component (pods, PVCs, database state) without te
    - `--force-release` — release a held lock without prompting
 3. If any service is unhealthy, show the reinstall command from CLAUDE.md's "Integration Test Protocol" table.
 4. For deeper cluster-level diagnostics, invoke the `/k8s-work` skill.
+
+---
+
+## Action: monitor-kestra
+
+Monitor Kestra's resource consumption, health, and execution state. Runs `./dev_env/monitor-kestra.sh`.
+
+### Supported flags
+
+| Flag | Description |
+|------|-------------|
+| `--brief` | One-line summary (for scripting or CI) |
+| `--watch [N]` | Repeat every N seconds (default: 15). Ctrl-C to stop. |
+
+### What it monitors
+
+| Signal | Source | Warn / Crit thresholds |
+|--------|--------|----------------------|
+| CPU usage | `kubectl top` | 50% / 75% of 4-core limit |
+| Memory usage | `kubectl top` | 60% / 80% of 8Gi limit |
+| PostgreSQL connections | `pg_stat_activity WHERE datname='kestra'` | 30 / 45 of 50-connection pool |
+| Health probes | `kubectl exec` → management port 8081 (`/health`, `/health/liveness`, `/health/readiness`) |
+| Ingress reachability | `curl` → `KESTRA_URL/api/v1/flows/search` |
+| Running / queued / failed executions | Kestra REST API `/api/v1/executions/search` |
+| JVM GC activity | Pod logs (last 5m), grep for GC pause/concurrent lines |
+| Recent errors | Pod logs (last 5m), grep for ERROR/OOM/deadlock/FATAL |
+
+### Steps
+
+1. Run `./dev_env/monitor-kestra.sh` with any parsed flags.
+2. Report the output to the user.
+3. If the verdict is **CRITICAL**, suggest: `./dev_env/reinstall.sh --kestra`
+4. If the verdict is **WARNING**, suggest waiting 1-2 minutes for the load to settle, then re-checking.
 
 ---
 

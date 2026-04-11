@@ -119,6 +119,19 @@ Reinstall a single component without tearing down the entire environment:
 ./reinstall.sh --kestra    # Full Kestra reset: pods, PVCs, database state, then redeploy
 ```
 
+## Monitor Kestra
+
+Check Kestra's resource usage, health, and execution state:
+
+```bash
+./monitor-kestra.sh              # Full snapshot (CPU, memory, PG connections, health, executions, logs)
+./monitor-kestra.sh --brief      # One-line summary for scripting
+./monitor-kestra.sh --watch      # Repeat every 15s (Ctrl-C to stop)
+./monitor-kestra.sh --watch 30   # Custom interval
+```
+
+All commands are timeout-wrapped so the script never hangs, even when Kestra is overloaded. Exit codes: 0 = healthy, 1 = warning, 2 = critical.
+
 ## Uninstall
 
 ```bash
@@ -160,7 +173,7 @@ Two-tier naming convention in `.env`:
 
 ### Resource budget
 
-~16.8 GiB total memory limits on 8+ CPU / 24 GB cluster (~70% utilization). See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
+~18.8 GiB total memory limits on 8+ CPU / 24 GB cluster (~78% utilization). See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
 
 ## Troubleshooting
 

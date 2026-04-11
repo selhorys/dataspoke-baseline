@@ -184,7 +184,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| kestra | Deployment | 6 Gi | — |
+| kestra | Deployment | 8 Gi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
@@ -263,6 +263,29 @@ Selective component reinstall without tearing down the full umbrella release. De
 
 Extensible via `case` dispatch — additional component flags (e.g. `--postgresql`) can be added as needed.
 
+### monitor-kestra.sh
+
+Kestra load monitor — collects and displays a snapshot of Kestra health signals. All external commands are wrapped with hard timeouts so the script never hangs, even when Kestra is overloaded and unresponsive.
+
+| Flag | Effect |
+|------|--------|
+| `--brief` | One-line summary for scripting/CI |
+| `--watch [N]` | Repeat every N seconds (default: 15) |
+
+Signals collected:
+
+| Signal | Source | Warn / Crit thresholds |
+|--------|--------|----------------------|
+| CPU / memory | `kubectl top` | 50% / 75% CPU; 60% / 80% memory (of 4-core / 8 Gi limits) |
+| PostgreSQL connections | `pg_stat_activity` on `kestra` DB | 30 / 45 of 50-connection pool |
+| Health probes | `kubectl exec` → management port 8081 | — |
+| Ingress reachability | Kestra API via ingress | — |
+| Running / queued / failed executions | Kestra REST API | — |
+| JVM GC activity | Pod logs (last 5m) | — |
+| Recent errors | Pod logs (last 5m): ERROR, OOM, deadlock, FATAL | — |
+
+Exit codes: 0 = healthy, 1 = warning (elevated load), 2 = critical (overloaded).
+
 ### Shell conventions
 
 All scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, and source shared helpers from `lib/helpers.sh`. All mutating kubectl/helm operations are idempotent.
@@ -311,7 +334,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~70%** → ~16.8 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~78%** → ~18.8 GiB RAM, ~7.75 CPU limits.
 
 ### Memory Budget (limits)
 
@@ -326,16 +349,16 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~70%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| kestra | dataspoke-01 | 6 Gi | 1g–4g heap + G1GC; polling/cleaner/telemetry tuned for dev |
+| kestra | dataspoke-01 | 8 Gi | 2g–4g heap + G1GC; polling/cleaner/telemetry tuned for dev |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~16.8 Gi** | |
+| **Total** | | **~18.8 Gi** | |
 
-~7.2 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~5.2 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 
