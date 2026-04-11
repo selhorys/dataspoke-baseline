@@ -111,6 +111,14 @@ uv run python -m tests.integration.util --reset-all   # Idempotent: PG + Kafka +
 
 Seeds 11 schemas, 17 tables (~600 rows), 3 Kafka topics (~45 messages), and 20 DataHub dataset entities with Imazon use-case data. See `spec/feature/DEV_ENV.md §Dummy Data` for details.
 
+## Selective Reinstall
+
+Reinstall a single component without tearing down the entire environment:
+
+```bash
+./reinstall.sh --kestra    # Full Kestra reset: pods, PVCs, database state, then redeploy
+```
+
 ## Uninstall
 
 ```bash

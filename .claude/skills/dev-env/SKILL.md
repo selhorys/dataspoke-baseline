@@ -1,9 +1,9 @@
 ---
 name: dev-env
-description: Manage the kubernetes-based DataSpoke development environment — configure, install, health-check, run-dataspoke-test-mode, and uninstall. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
+description: Manage the kubernetes-based DataSpoke development environment — configure, install, reinstall, health-check, run-dataspoke-test-mode, and uninstall. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
 disable-model-invocation: false
 user-invocable: true
-argument-hint: [configure|install|uninstall|health-check|run-dataspoke-test-mode] [options...]
+argument-hint: [configure|install|reinstall|uninstall|health-check|run-dataspoke-test-mode] [options...]
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -17,6 +17,7 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 | **install** | `install`, `up`, `create` |
 | **health-check** | `health-check`, `health`, `check`, `status`, `monitor` |
 | **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `deploy`, `test-mode` |
+| **reinstall** | `reinstall`, `reset` |
 | **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
 
 ### Component names
@@ -138,6 +139,25 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 1. Confirm cleanup with `/k8s-work`.
 2. Report the clean state.
+
+---
+
+## Action: reinstall
+
+Selectively reinstall a single component (pods, PVCs, database state) without tearing down the full umbrella release.
+
+### Supported components
+
+| Component flag | What it resets |
+|----------------|----------------|
+| `--kestra` | Kestra deployment, pods, PVCs, `kestra` PostgreSQL database |
+
+### Steps
+
+1. Parse `$ARGUMENTS` for the component flag (e.g. `--kestra`). If no component specified, ask the user which component to reinstall.
+2. Run `./dev_env/reinstall.sh <flag>` in the foreground (it deletes targeted resources, resets DB state, runs `helm upgrade`, and waits for rollout).
+3. Monitor output for errors. If the DB reset or rollout fails, report the error and suggest remediation.
+4. On success, confirm the component is running and report access URLs.
 
 ---
 

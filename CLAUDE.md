@@ -15,6 +15,7 @@ Run every command from the directory it expects (usually project root). Do not `
 ```bash
 cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Kestra)
 cd dev_env && ./uninstall.sh  # Tear down everything
+cd dev_env && ./reinstall.sh --kestra  # Selective component reinstall (pods + PVCs + DB state)
 ```
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.
@@ -93,7 +94,8 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
 | Failing service | Reinstall |
 |---|---|
-| dataspoke-postgresql, redis, qdrant, kestra | `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh` |
+| kestra | `cd dev_env && ./reinstall.sh --kestra` |
+| dataspoke-postgresql, redis, qdrant | `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh` |
 | datahub-gms, datahub-kafka | `cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh` |
 | example-postgres, example-kafka | `cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh` |
 | lock-service | `cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh` |

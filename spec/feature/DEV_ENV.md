@@ -253,6 +253,16 @@ Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/`
 | `--yes` | Skip "remove all resources?" confirmation |
 | `--delete-namespaces` | Also delete the three namespaces |
 
+### reinstall.sh
+
+Selective component reinstall without tearing down the full umbrella release. Deletes the target component's pods, PVCs, and database state, then runs `helm upgrade` to recreate it.
+
+| Flag | Effect |
+|------|--------|
+| `--kestra` | Full Kestra reinstall: deployment + pods + PVCs + `kestra` database DROP/CREATE |
+
+Extensible via `case` dispatch — additional component flags (e.g. `--postgresql`) can be added as needed.
+
 ### Shell conventions
 
 All scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, and source shared helpers from `lib/helpers.sh`. All mutating kubectl/helm operations are idempotent.
