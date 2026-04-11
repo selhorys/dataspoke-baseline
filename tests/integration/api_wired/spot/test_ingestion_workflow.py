@@ -714,7 +714,7 @@ async def test_run_kafka_ingestion(
         assert resp.status_code == 200, f"GET config failed: {resp.text}"
         config_body = resp.json()
         assert config_body["platform"] == "kafka"
-        assert config_body["locator"]["bootstrap_servers"] == "localhost:9104"
+        assert config_body["locator"]["bootstrap_servers"] == EXAMPLE_KAFKA_LOCATOR["bootstrap_servers"]
         assert config_body["identifier"]["topic"] == "imazon.orders.events"
         assert config_body["auth"] is None
 

@@ -38,6 +38,7 @@ triggers:
   - id: cron
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "$schedule"
+    recoverMissedSchedules: NONE
 
 tasks:
   - id: list_metrics
