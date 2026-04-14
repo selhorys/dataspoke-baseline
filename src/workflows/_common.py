@@ -37,7 +37,7 @@ All workflow IDs follow the pattern ``{type}-{identifier}``:
   (``ingestion``, ``validation``, ``generation``, ``metrics``,
   ``embedding-sync``, ``ontology-rebuild``).
 - Test IDs always start with ``test-`` so they can be identified and
-  cleaned up in the Kestra UI.  Use short, readable labels — never
+  cleaned up in the Airflow UI.  Use short, readable labels — never
   embed full URNs.
 """
 

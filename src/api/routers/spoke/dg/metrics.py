@@ -5,7 +5,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from src.api.auth.dependencies import require_dg
 from src.api.auth.ws import ws_authenticate
-from src.api.dependencies import get_kestra_client, get_metrics_service, get_redis
+from src.api.dependencies import get_airflow_client, get_metrics_service, get_redis
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
@@ -22,7 +22,7 @@ from src.api.schemas.metrics import (
 from src.backend.metrics.service import MetricsService
 from src.shared.db.models import Event, MetricDefinition, MetricResult
 from src.shared.settings import settings
-from src.workflows.kestra.client import KestraClient
+from src.workflows.airflow.client import AirflowClient
 
 router = APIRouter(
     prefix="/metric",
@@ -38,7 +38,7 @@ def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
         description=m.description,
         theme=m.theme,
         measurement_query=m.measurement_query,
-        schedule_cron=m.schedule_cron,
+        schedule_tier=m.schedule_tier,
         is_active=m.is_active,
         created_at=m.created_at,
         updated_at=m.updated_at,
@@ -115,7 +115,7 @@ async def put_metric_conf(
         description=body.description,
         theme=body.theme,
         measurement_query=body.measurement_query,
-        schedule_cron=body.schedule_cron,
+        schedule_tier=body.schedule_tier,
         is_active=body.is_active,
     )
     if created:
@@ -185,27 +185,27 @@ async def get_metric_result(
 async def post_metric_run(
     metric_id: str,
     body: RunMetricRequest,
-    kestra: KestraClient = Depends(get_kestra_client),
+    airflow: AirflowClient = Depends(get_airflow_client),
 ) -> MetricRunResultResponse:
-    """Trigger a metric measurement run via Kestra."""
-    label_value = f"metrics-{metric_id}"
-    await kestra.check_no_duplicate(
-        "metrics", "workflow_id", label_value, "METRIC_RUNNING"
+    """Trigger a metric measurement run via Airflow."""
+    workflow_id = f"metrics-{metric_id}"
+    await airflow.check_no_duplicate(
+        "metrics", "workflow_id", workflow_id, "METRIC_RUNNING"
     )
-    execution = await kestra.trigger_and_wait(
+    dag_run = await airflow.trigger_and_wait(
         "metrics",
-        inputs={
-            "callback_base_url": settings.kestra_callback_base_url,
+        conf={
+            "callback_base_url": settings.airflow_callback_base_url,
             "metric_id": metric_id,
             "dry_run": str(body.dry_run).lower(),
+            "workflow_id": workflow_id,
         },
-        labels={"workflow_id": label_value},
     )
-    outputs = execution.outputs or {}
+    conf_out = dag_run.conf or {}
     return MetricRunResultResponse(
-        run_id=outputs.get("run_id", execution.id),
-        status=outputs.get("status", execution.status.value),
-        detail=outputs.get("detail", {}),
+        run_id=conf_out.get("run_id", dag_run.dag_run_id),
+        status=conf_out.get("status", dag_run.state.value),
+        detail=conf_out.get("detail", {}),
     )
 
 

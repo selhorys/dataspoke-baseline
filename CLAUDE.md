@@ -13,14 +13,14 @@ Run every command from the directory it expects (usually project root). Do not `
 ## Dev Environment
 
 ```bash
-cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Kestra)
+cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Airflow)
 cd dev_env && ./uninstall.sh  # Tear down everything
-cd dev_env && ./reinstall.sh --kestra  # Selective component reinstall (pods + PVCs + DB state)
+cd dev_env && ./reinstall.sh --airflow  # Selective component reinstall (pods + DB state)
 ```
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.
 
-The API runs **in-cluster** alongside Kestra so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). For optional host-mode development (no Kestra callbacks): `uv run -m src.cli`.
+The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). For optional host-mode development (no Airflow callbacks): `uv run -m src.cli`.
 
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). See `spec/TESTING.md §Testing Modes`.
 
@@ -29,7 +29,7 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core
 - **API-first**: FastAPI implementation in `src/api/` is the SSOT for the API contract; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
-- **Kestra** for workflow orchestration (HTTP-triggered, YAML flows), **Qdrant** for vector search, **PostgreSQL** for operational DB
+- **Airflow** for workflow orchestration (HTTP-triggered DAGs, LocalExecutor, fixed schedule tiers), **Qdrant** for vector search, **PostgreSQL** for operational DB
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
 - **DataHub debugging protocol**: For any DataHub integration or infrastructure issue, consult `ref/github/datahub/` source code and use the `/datahub-api` skill before guessing configs or iterating through Helm upgrades.
 - **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/feature/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows; `spec/feature/BACKEND_SCHEMA.md` for DB schema, Qdrant collections; `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
@@ -63,7 +63,7 @@ The scaffold uses a **plan → approve → generate → evaluate** architecture.
 
 **You MUST enter Plan mode before writing any implementation code** unless the change meets **all** of these skip-plan criteria:
 - Touches ≤ 2 files and adds/modifies ≤ ~30 lines of logic
-- Does not introduce a new API endpoint, DB table/column, Kestra flow, or Qdrant collection
+- Does not introduce a new API endpoint, DB table/column, Airflow DAG, or Qdrant collection
 - Does not require coordination across layers (backend + frontend, backend + workflow, etc.)
 - The user explicitly says "just do it" / "quick fix" / "no need to plan"
 
@@ -94,7 +94,7 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 
 | Failing service | Reinstall |
 |---|---|
-| kestra | `cd dev_env && ./reinstall.sh --kestra` |
+| airflow | `cd dev_env && ./reinstall.sh --airflow` |
 | dataspoke-postgresql, redis, qdrant | `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh` |
 | datahub-gms, datahub-kafka | `cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh` |
 | example-postgres, example-kafka | `cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh` |
@@ -118,7 +118,7 @@ Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
 2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
 3. Deploy the in-cluster API via `./dev_env/dataspoke-test-mode.sh` (builds image, deploys via Helm, accessible via ingress at the configured host), then `uv run python -m tests.integration.util --reset-all`, run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
 
-Mixing groups causes Kestra overload. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process**, server health, and `ingestion-config-sync` flow registration before api-wired tests run.
+Mixing groups causes resource contention. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process**, server health, and Airflow DAG availability before api-wired tests run.
 
 **Manual API testing**: See `spec/TESTING.md §Manual REST API Testing`. Deploy the in-cluster API via `dataspoke-test-mode.sh`, get a token via `POST /api/v1/auth/token`, then `curl` endpoints. Refer to spot tests in `tests/integration/api_wired/spot/` for valid URNs and payloads.
 
@@ -135,7 +135,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 ## Claude Code Configuration
 
-**Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `kestra-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-from-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`
-_(Note: `datahub-api` requires `ref/github/datahub/`, `kestra-api` requires `ref/github/kestra/` — run `/ref-setup` once if not present.)_
+**Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-from-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`
+_(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

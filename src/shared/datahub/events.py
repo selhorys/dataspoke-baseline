@@ -2,7 +2,7 @@
 
 DataHub publishes MetadataChangeLog events to Kafka topics. This module
 deserializes those events, routes them by aspect name to registered handlers,
-and delegates to downstream services and Kestra workflows.
+and delegates to downstream services and Airflow workflows.
 """
 
 import asyncio
@@ -26,8 +26,8 @@ logger = structlog.get_logger(__name__)
 # Type alias for async handler functions
 Handler = Callable[["MetadataChangeLogEvent"], Coroutine[Any, Any, None]]
 
-# Module-level Kestra client, set by build_router()
-_kestra_client: Any = None
+# Module-level Airflow client, set by build_router()
+_airflow_client: Any = None
 
 
 # ── MCL Pydantic Model ──────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ def _urn_to_workflow_id(urn: str) -> str:
 
 
 async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
-    """Re-generate vector embedding for the changed dataset via embedding-sync flow."""
+    """Re-generate vector embedding for the changed dataset via embedding-sync DAG."""
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -133,18 +133,18 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    if _kestra_client is None:
-        logger.warning("kestra_unavailable_skipping", handler="sync_vector_index", entity_urn=event.entity_urn)
+    if _airflow_client is None:
+        logger.warning("airflow_unavailable_skipping", handler="sync_vector_index", entity_urn=event.entity_urn)
         return
     try:
-        await _kestra_client.trigger_execution(
+        await _airflow_client.trigger_dag_run(
             "embedding-sync",
-            inputs={
-                "callback_base_url": settings.kestra_callback_base_url,
+            conf={
+                "callback_base_url": settings.airflow_callback_base_url,
                 "mode": "single",
                 "dataset_urn": event.entity_urn,
+                "workflow_id": f"embedding-sync-{_urn_to_workflow_id(event.entity_urn)}",
             },
-            labels={"workflow_id": f"embedding-sync-{_urn_to_workflow_id(event.entity_urn)}"},
         )
     except Exception:
         logger.exception(
@@ -155,7 +155,7 @@ async def sync_vector_index(event: MetadataChangeLogEvent) -> None:
 
 
 async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
-    """Detect new ontology clusters when schema changes via ontology-rebuild flow."""
+    """Detect new ontology clusters when schema changes via ontology-rebuild DAG."""
     if event.entity_type != "dataset":
         return
     logger.info(
@@ -163,17 +163,17 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
         entity_urn=event.entity_urn,
         aspect_name=event.aspect_name,
     )
-    if _kestra_client is None:
-        logger.warning("kestra_unavailable_skipping", handler="detect_new_clusters", entity_urn=event.entity_urn)
+    if _airflow_client is None:
+        logger.warning("airflow_unavailable_skipping", handler="detect_new_clusters", entity_urn=event.entity_urn)
         return
     try:
-        await _kestra_client.trigger_execution(
+        await _airflow_client.trigger_dag_run(
             "ontology-rebuild",
-            inputs={
-                "callback_base_url": settings.kestra_callback_base_url,
+            conf={
+                "callback_base_url": settings.airflow_callback_base_url,
                 "force": "false",
+                "workflow_id": "ontology-rebuild",
             },
-            labels={"workflow_id": "ontology-rebuild"},
         )
     except Exception:
         logger.exception(
@@ -210,16 +210,16 @@ async def update_health_score(event: MetadataChangeLogEvent) -> None:
 # ── Router Factory ───────────────────────────────────────────────────────────
 
 
-def build_router(*, kestra_client: Any = None) -> EventRouter:
+def build_router(*, airflow_client: Any = None) -> EventRouter:
     """Wire the routing table per spec (BACKEND.md:930-941).
 
     Args:
-        kestra_client: Optional Kestra client for triggering workflow executions.
-            When None, handlers that require Kestra log the event but
+        airflow_client: Optional Airflow client for triggering DAG runs.
+            When None, handlers that require Airflow log the event but
             do not trigger workflows.
     """
-    global _kestra_client  # noqa: PLW0603
-    _kestra_client = kestra_client
+    global _airflow_client  # noqa: PLW0603
+    _airflow_client = airflow_client
 
     router = EventRouter()
     # Search (UC5)

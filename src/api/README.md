@@ -39,7 +39,7 @@ The API runs **in-cluster** by default (deployed via `./dev_env/dataspoke-test-m
 - API: `http://app.<INGRESS_DOMAIN>/api/v1/`
 - ReDoc: `http://app.<INGRESS_DOMAIN>/redoc`
 
-For optional host-mode development (no Kestra callbacks):
+For optional host-mode development (no Airflow callbacks):
 
 ```bash
 # From repo root
@@ -77,8 +77,9 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_QDRANT_HTTP_PORT` | `6333` | Qdrant HTTP port |
 | `DATASPOKE_QDRANT_GRPC_PORT` | `6334` | Qdrant gRPC port |
 | `DATASPOKE_QDRANT_API_KEY` | _(empty)_ | Qdrant API key |
-| `DATASPOKE_KESTRA_URL` | `http://localhost:8080` | Kestra API base URL |
-| `DATASPOKE_KESTRA_NAMESPACE` | `dataspoke` | Kestra flow namespace |
+| `DATASPOKE_AIRFLOW_URL` | `http://localhost:8080` | Airflow API base URL |
+| `DATASPOKE_AIRFLOW_USER` | _(empty)_ | Airflow basic auth username |
+| `DATASPOKE_AIRFLOW_PASSWORD` | _(empty)_ | Airflow basic auth password |
 | `DATASPOKE_LLM_PROVIDER` | `openai` | LLM provider name |
 | `DATASPOKE_LLM_API_KEY` | _(empty)_ | LLM provider API key |
 | `DATASPOKE_LLM_MODEL` | `gpt-4o` | LLM model identifier |

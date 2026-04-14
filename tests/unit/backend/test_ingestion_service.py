@@ -28,11 +28,10 @@ def _make_config_row(
     identifier: dict | None = None,
     auth: dict | None = None,
     is_active: bool = False,
-    schedule_cron: str | None = "0 0 * * *",
+    schedule_tier: str | None = "daily",
     enrichment_sources: dict | None = None,
     custom_extractors: dict | None = None,
-    kestra_flow_namespace: str | None = None,
-    kestra_flow_id: str | None = None,
+    workflow_dag_id: str | None = None,
     status: str = "OK",
 ):
     row = MagicMock()
@@ -43,11 +42,10 @@ def _make_config_row(
     row.identifier = identifier or _IDENTIFIER
     row.auth = auth if auth is not None else _AUTH
     row.is_active = is_active
-    row.schedule_cron = schedule_cron
+    row.schedule_tier = schedule_tier
     row.enrichment_sources = enrichment_sources
     row.custom_extractors = custom_extractors
-    row.kestra_flow_namespace = kestra_flow_namespace
-    row.kestra_flow_id = kestra_flow_id
+    row.workflow_dag_id = workflow_dag_id
     row.status = status
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
@@ -96,7 +94,7 @@ async def test_upsert_config_creates_new(service, db):
         identifier=_IDENTIFIER,
         auth=_AUTH,
         is_active=False,
-        schedule_cron=None,
+        schedule_tier=None,
     )
     assert db.add.called
     assert db.commit.await_count >= 1
@@ -117,7 +115,7 @@ async def test_upsert_config_updates_existing(service, db):
         identifier=new_identifier,
         auth=new_auth,
         is_active=True,
-        schedule_cron="0 6 * * *",
+        schedule_tier="weekly",
     )
     assert db.add.called
     assert db.commit.await_count >= 1
@@ -126,7 +124,7 @@ async def test_upsert_config_updates_existing(service, db):
     assert existing_row.identifier == new_identifier
     assert existing_row.auth == new_auth
     assert existing_row.is_active is True
-    assert existing_row.schedule_cron == "0 6 * * *"
+    assert existing_row.schedule_tier == "weekly"
 
 
 async def test_upsert_config_with_optional_fields(service, db):
@@ -142,7 +140,7 @@ async def test_upsert_config_with_optional_fields(service, db):
         identifier=_IDENTIFIER,
         auth=_AUTH,
         is_active=False,
-        schedule_cron=None,
+        schedule_tier=None,
         enrichment_sources=enrichment,
         custom_extractors=custom,
     )
@@ -152,13 +150,13 @@ async def test_upsert_config_with_optional_fields(service, db):
 # ── patch_config ─────────────────────────────────────────────────────────────
 
 
-async def test_patch_config_applies_schedule(service, db):
+async def test_patch_config_applies_schedule_tier(service, db):
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"schedule_cron": "0 12 * * *"})
-    assert existing_row.schedule_cron == "0 12 * * *"
+    await service.patch_config(_DATASET_URN, {"schedule_tier": "hourly"})
+    assert existing_row.schedule_tier == "hourly"
     assert db.commit.await_count >= 1
 
 
@@ -176,17 +174,16 @@ async def test_patch_config_applies_periodic_and_schedule(service, db):
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"is_active": True, "schedule_cron": "0 2 * * *"})
+    await service.patch_config(_DATASET_URN, {"is_active": True, "schedule_tier": "daily"})
     assert existing_row.is_active is True
-    assert existing_row.schedule_cron == "0 2 * * *"
-
+    assert existing_row.schedule_tier == "daily"
 
 
 async def test_patch_config_not_found(service, db):
     mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.patch_config("nonexistent", {"schedule_cron": "0 12 * * *"})
+        await service.patch_config("nonexistent", {"schedule_tier": "daily"})
     assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
 
 
@@ -242,7 +239,7 @@ async def test_list_periodic_datasets_returns_urns(service, db):
     result_mock.scalars.return_value.all.return_value = urns
     db.execute = AsyncMock(return_value=result_mock)
 
-    datasets = await service.list_periodic_datasets("0 2 * * *")
+    datasets = await service.list_periodic_datasets("daily")
     assert datasets == urns
 
 
@@ -251,7 +248,7 @@ async def test_list_periodic_datasets_empty(service, db):
     result_mock.scalars.return_value.all.return_value = []
     db.execute = AsyncMock(return_value=result_mock)
 
-    datasets = await service.list_periodic_datasets("0 2 * * *")
+    datasets = await service.list_periodic_datasets("weekly")
     assert datasets == []
 
 

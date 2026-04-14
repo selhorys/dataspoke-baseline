@@ -133,7 +133,7 @@ update_env() {
 # Tier A: HTTP endpoints (use domain-based URLs)
 update_env "DATASPOKE_DATAHUB_GMS_URL"      "http://datahub.${INGRESS_DOMAIN}/gms"
 update_env "DATASPOKE_DATAHUB_KAFKA_BROKERS" "${EXTERNAL_IP}:9005"
-update_env "DATASPOKE_KESTRA_URL"            "http://kestra.${INGRESS_DOMAIN}"
+update_env "DATASPOKE_AIRFLOW_URL"           "http://airflow.${INGRESS_DOMAIN}"
 
 # Tier B: TCP endpoints (use IP directly)
 update_env "DATASPOKE_POSTGRES_HOST"         "${EXTERNAL_IP}"
@@ -166,7 +166,7 @@ echo "  DataSpoke UI:  http://app.${INGRESS_DOMAIN}/"
 echo "  DataSpoke API: http://app.${INGRESS_DOMAIN}/api/v1/..."
 echo "  DataHub UI:    http://datahub.${INGRESS_DOMAIN}/"
 echo "  DataHub GMS:   http://datahub.${INGRESS_DOMAIN}/gms/..."
-echo "  Kestra UI:     http://kestra.${INGRESS_DOMAIN}/"
+echo "  Airflow UI:    http://airflow.${INGRESS_DOMAIN}/"
 echo ""
 echo "TCP endpoints (Tier B):"
 echo "  PostgreSQL:      ${EXTERNAL_IP}:9201"

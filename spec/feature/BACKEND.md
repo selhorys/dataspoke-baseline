@@ -1,7 +1,7 @@
 # DataSpoke Backend
 
 > This document specifies the backend service layer — feature services, shared
-> libraries, Kestra workflow definitions, and infrastructure integration patterns
+> libraries, Airflow DAG definitions, and infrastructure integration patterns
 > that sit behind the API layer.
 > Data contracts (PostgreSQL schema, Qdrant collections) in
 > [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
@@ -21,7 +21,7 @@
 3. [Shared Services (`src/shared/`)](#shared-services-srcshared)
 4. [Feature Services (`src/backend/`)](#feature-services-srcbackend)
 5. [Event Emission](#event-emission)
-6. [Kestra Workflows (`src/workflows/`)](#kestra-workflows-srcworkflows)
+6. [Airflow Workflows (`src/workflows/`)](#airflow-workflows-srcworkflows)
 7. [Kafka Consumers](#kafka-consumers)
 8. [WebSocket Feed Mechanism](#websocket-feed-mechanism)
 9. [Dependency Injection](#dependency-injection)
@@ -48,7 +48,7 @@ src/backend/              <- Feature service implementations
        |
        |---> src/shared/   <- DataHub client, DB sessions, LLM client, Qdrant client
        |
-       +---> src/workflows/  <- Kestra flow YAML definitions + internal activity endpoints
+       +---> src/workflows/  <- Airflow DAG definitions + internal activity endpoints
 ```
 
 **Key rule**: Business logic lives in `src/backend/`, not in API route handlers.
@@ -57,8 +57,8 @@ This keeps services testable independently of HTTP concerns.
 
 Source layout is visible in the `src/` directory tree. The backend is organized
 into feature modules under `src/backend/`, shared libraries under `src/shared/`,
-and workflow definitions under `src/workflows/`. See the code itself for the
-current file structure.
+and Airflow DAG definitions under `src/workflows/dags/`. See the code itself for
+the current file structure.
 
 ---
 
@@ -104,7 +104,7 @@ Route handler function names must mirror the REST path they serve.
 
 ### Service Pattern
 
-Every feature service is **stateless** -- dependencies are injected via constructor (`DataHubClient`, `AsyncSession`, `RedisClient`, etc.), and all persistent state lives in PostgreSQL, Redis, or DataHub. This allows any API instance or Kestra activity endpoint to instantiate a service and call its methods. See any `src/backend/<feature>/service.py` for the pattern.
+Every feature service is **stateless** -- dependencies are injected via constructor (`DataHubClient`, `AsyncSession`, `RedisClient`, etc.), and all persistent state lives in PostgreSQL, Redis, or DataHub. This allows any API instance or Airflow activity endpoint to instantiate a service and call its methods. See any `src/backend/<feature>/service.py` for the pattern.
 
 ---
 
@@ -156,7 +156,7 @@ This is architecturally similar to DataHub's own ingestion framework (which uses
 
 | Concern | DataHub Native Ingestion | DataSpoke Ingestion |
 |---------|--------------------------|---------------------|
-| Trigger | CLI batch (`datahub ingest`) | HTTP API + Kestra cron |
+| Trigger | CLI batch (`datahub ingest`) | HTTP API + Airflow cron |
 | Configuration | YAML recipes | JSONB config in PostgreSQL |
 | Source plugins | 200+ community connectors | Focused extractors (extensible) |
 | Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |
@@ -185,7 +185,7 @@ See [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-re
 
 CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
 
-Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_cron` (cron trigger), `status` (Kestra registration outcome).
+Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_tier` (tier-based scheduling), `status` (DAG verification outcome).
 
 **Run pipeline** (`IngestionService.run()`):
 
@@ -235,12 +235,12 @@ CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition
 **Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema, SQL, custom. Each rule can specify partition and order variables (like SQL window functions) for determining the target partition.
 
 **Configuration model**: Per-dataset config stored in `validation_configs` with:
-- `schedule_cron` (TEXT): Cron expression for periodic execution (required when `is_active=true`).
+- `schedule_tier` (TEXT): Schedule tier for periodic execution — `hourly`, `daily`, or `weekly` (required when `is_active=true`).
 - `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec, extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
 
 **SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value variables, and optional ML-based validation settings (model type, lookback window, validation range).
 
-**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated via `validation-periodic-*` flows):
+**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated via tier-based Airflow DAGs):
 
 1. Resolve target partition (manual request → specified partition; cron → latest partition via partition/order variables)
 2. For each rule in the dataset's config, compute metrics for the target partition
@@ -257,7 +257,7 @@ CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition
 
 CRUD for generation configurations (PostgreSQL: `generation_configs`). LLM-powered metadata generation (descriptions, tags, deprecation notes), source code analysis, similar-table diffing (Qdrant + LLM), apply generated results to DataHub with approval gate.
 
-**Generation Pipeline** (Kestra flow):
+**Generation Pipeline** (Airflow DAG):
 
 1. Read current DataHub aspects (schema, properties, lineage, tags)
 2. Find similar datasets via Qdrant embedding search
@@ -283,7 +283,7 @@ NL query parsing, embedding generation, hybrid search (Qdrant vectors + DataHub 
 
 Concept category CRUD, concept-to-dataset mapping, cross-concept relationship management (all PostgreSQL). LLM-powered taxonomy construction and drift detection. Approve/reject workflow for pending proposals.
 
-**Taxonomy Build Pipeline** (Kestra flow, scheduled weekly):
+**Taxonomy Build Pipeline** (Airflow DAG, scheduled weekly):
 
 1. Enumerate all datasets from DataHub
 2. LLM classifies each dataset into business concept categories
@@ -424,38 +424,40 @@ for the response contract.
 
 ---
 
-## Kestra Workflows (`src/workflows/`)
+## Airflow Workflows (`src/workflows/`)
 
 ### Architecture
 
-Kestra v1.3.3 serves as the workflow orchestration engine. Workflows are defined as YAML flow definitions in `src/workflows/flows/`. Each flow uses Kestra's `io.kestra.plugin.core.http.Request` tasks to call internal activity endpoints on the DataSpoke API at `/internal/activities/{domain}/*`. Kestra handles scheduling, retry, and execution.
+Apache Airflow serves as the workflow orchestration engine with LocalExecutor. Workflows are defined as Python DAG files in `src/workflows/dags/`. Each DAG uses Airflow's `SimpleHttpOperator` to call internal activity endpoints on the DataSpoke API at `/internal/activities/{domain}/*`. Airflow handles scheduling, retry, and execution.
 
-### Kestra Client Subpackage (`src/workflows/kestra/`)
+### Airflow Client Subpackage (`src/workflows/airflow/`)
 
-Wraps Kestra's REST API via `httpx`: flow CRUD, execution lifecycle (trigger, poll, wait), label-based dedup, and cleanup. See the source files for current API.
+Wraps Airflow's REST API via `httpx`: DAG verification, DAG run lifecycle (trigger, poll, wait), conf-based dedup, and cleanup. See the source files for current API.
 
-### Flow Catalogue
+### DAG Catalogue
 
-| Flow | File | Trigger | Schedule |
-|------|------|---------|----------|
-| `ingestion-config-sync` | `ingestion_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
-| `ingestion-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual | Per-config |
-| `validation-config-sync` | `validation_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
-| `validation-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) + manual | Per-config schedule |
-| `generation` | `generation.yaml` | API | On-demand |
-| `embedding-sync` | `embedding_sync.yaml` | Kafka event + API | Event-driven + on-demand |
-| `metrics` | `metrics.yaml` | API + Kestra schedule | On-demand + periodic (per-config) |
-| `metrics-config-sync` | `metrics_config_sync.yaml` | Kestra cron | `*/10 * * * *` (default) |
-| `metrics-periodic-*` | dynamically generated | Kestra cron (grouped by schedule) | Per-config schedule |
-| `ontology-rebuild` | `ontology_rebuild.yaml` | Kestra schedule | Weekly (configurable) |
+| DAG | File | Trigger | Schedule |
+|-----|------|---------|----------|
+| `ingestion-hourly` | `ingestion_hourly.py` | Airflow schedule | `@hourly` |
+| `ingestion-daily` | `ingestion_daily.py` | Airflow schedule | `@daily` |
+| `ingestion-weekly` | `ingestion_weekly.py` | Airflow schedule | `@weekly` |
+| `validation-hourly` | `validation_hourly.py` | Airflow schedule | `@hourly` |
+| `validation-daily` | `validation_daily.py` | Airflow schedule | `@daily` |
+| `validation-weekly` | `validation_weekly.py` | Airflow schedule | `@weekly` |
+| `generation` | `generation.py` | API | On-demand |
+| `embedding-sync` | `embedding_sync.py` | Kafka event + API | Event-driven + on-demand |
+| `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
+| `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
+| `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
+| `ontology-rebuild` | `ontology_rebuild.py` | Airflow schedule | Weekly (configurable) |
 
 ### Workflow Design Conventions
 
-1. **Flows are YAML-defined orchestration** -- each task is an HTTP Request to an internal activity endpoint
+1. **DAGs are Python-defined orchestration** -- each task is a SimpleHttpOperator call to an internal activity endpoint
 2. **Activity endpoints are idempotent** -- safe to retry on transient failures
-3. **Timeouts**: Per-task = 5 minutes (default); flow-level = 1 hour
+3. **Timeouts**: Per-task = 5 minutes (default); DAG-level = 1 hour
 4. **Retry policy**: Max 3 attempts, 10s initial interval
-5. **Concurrency**: Per-entity guards prevent duplicate runs
+5. **Concurrency**: `max_active_runs` per DAG prevents overlapping runs
 
 ### Concurrency Guards
 
@@ -466,10 +468,10 @@ Wraps Kestra's REST API via `httpx`: flow CRUD, execution lifecycle (trigger, po
 | `ingestion` | `ingestion:running:{dataset_urn}` | 1 hour |
 | `validation` | `validation:running:{dataset_urn}` | 1 hour |
 
-**Kestra label-based dedup** (for Kestra-orchestrated flows):
+**Airflow DAG run conf-based dedup** (for Airflow-orchestrated DAGs):
 
-| Flow | Label Value |
-|------|-------------|
+| DAG | Conf Key |
+|-----|----------|
 | `generation` | `generation-{md5(urn)[:12]}` |
 | `metrics` | `metrics-{metric_id}` |
 
@@ -481,12 +483,10 @@ Ingestion supports two trigger modes per dataset:
 
 | Mode | Trigger | How |
 |------|---------|-----|
-| **Periodic** | Kestra cron schedule | Datasets with the same `schedule` value are grouped into a single Kestra flow |
+| **Periodic** | Airflow schedule | Datasets are assigned to a schedule tier (`hourly`, `daily`, `weekly`); the corresponding static DAG runs all configs in that tier |
 | **Manual** | User HTTP request | `POST .../attr/ingestion/method/run` calls `IngestionService.run()` directly |
 
-**Periodic flow generation**: DataSpoke dynamically generates one Kestra flow per unique cron schedule. Sync runs on backend startup and via the `ingestion-config-sync` workflow (cron `*/10 * * * *`). Sync logic: query distinct schedules -> generate/update flows -> delete orphaned flows.
-
-Each generated flow fetches the dataset list dynamically at execution time (`POST /internal/activities/ingestion/list-periodic`), then runs ingestion for each dataset in parallel (concurrency limit: 5).
+**Static tier-based DAGs**: DataSpoke uses three static Airflow DAGs per domain (hourly, daily, weekly). Each DAG fetches the dataset list for its tier at execution time (`POST /internal/activities/ingestion/list-periodic`), then uses dynamic task mapping (`expand()`) to run ingestion for each dataset in parallel (`max_active_runs`: 5).
 
 ---
 
@@ -533,7 +533,7 @@ Activity endpoints publish JSON progress/result messages to the appropriate Redi
 
 **Internal activity endpoints** use factory functions from `src/workflows/_common.py` (`make_datahub`, `make_cache`, `make_db_session`, `make_llm`, `make_qdrant`) instead of FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories work in any context (tests, CLI).
 
-Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retryable) JSON responses, letting Kestra distinguish between errors worth retrying and permanent failures.
+Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retryable) JSON responses, letting Airflow distinguish between errors worth retrying and permanent failures.
 
 ---
 

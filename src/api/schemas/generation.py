@@ -81,7 +81,7 @@ class GenerationResultResponse(SingleResponse):
     proposals: dict[str, Any] = Field(default={}, description="Generated metadata proposals keyed by field name. Values are the proposed metadata values.")
     similar_diffs: list[dict[str, Any]] = Field(default=[], description="Similar historical metadata changes retrieved via vector search for context")
     approval_status: ApprovalStatus = Field(default=ApprovalStatus.PENDING, description="Review status of the generated proposals: 'pending' (awaiting review) or 'approved' (applied to DataHub)")
-    run_id: str = Field(description="Kestra execution ID for the run that produced this result")
+    run_id: str = Field(description="Airflow DAG run ID for the run that produced this result")
     generated_at: datetime = Field(description="UTC timestamp when the proposals were generated")
     applied_at: datetime | None = Field(default=None, description="UTC timestamp when the proposals were applied to DataHub, null if not yet applied")
 
@@ -91,6 +91,6 @@ class GenerationResultListResponse(PaginatedResponse):
 
 
 class RunResultResponse(SingleResponse):
-    run_id: str = Field(description="Kestra execution ID for this generation run")
-    status: str = Field(description="Execution status returned by Kestra, e.g. 'RUNNING' or 'SUCCESS'")
-    detail: dict[str, Any] = Field(default={}, description="Additional execution metadata returned by Kestra")
+    run_id: str = Field(description="Airflow DAG run ID for this generation run")
+    status: str = Field(description="Execution status returned by Airflow, e.g. 'running' or 'success'")
+    detail: dict[str, Any] = Field(default={}, description="Additional execution metadata returned by Airflow")

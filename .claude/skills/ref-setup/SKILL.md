@@ -14,13 +14,11 @@ Use `AskUserQuestion` with the following options:
 |--------|-------|-------------|
 | 1 | **all** | Download all reference materials (default) |
 | 2 | **datahub** | Download only DataHub source code |
-| 3 | **kestra** | Download only Kestra source code |
-| 4 | **clean** | Remove all downloaded content |
+| 3 | **clean** | Remove all downloaded content |
 
 Map the selected option to a `ref/setup.sh` argument:
 - **all** → `bash ref/setup.sh` (no argument)
 - **datahub** → `bash ref/setup.sh datahub`
-- **kestra** → `bash ref/setup.sh kestra`
 - **clean** → `bash ref/setup.sh --clean`
 
 ## Step 2 — Run setup
@@ -49,9 +47,3 @@ When the script exits successfully:
      - `datahub-web-react/` — Frontend (TypeScript/React)
      - `metadata-ingestion/` — Python SDK and ingestion framework
      - `datahub-graphql-core/` — GraphQL API schemas
-   - **Kestra** (`ref/github/kestra/`):
-     - `core/` — Core engine and execution model
-     - `jdbc/` — JDBC storage backends
-     - `webserver/` — REST API and controllers
-     - `script/` — Script plugin runners
-     - `plugin-core/` — Built-in plugins (HTTP, etc.)

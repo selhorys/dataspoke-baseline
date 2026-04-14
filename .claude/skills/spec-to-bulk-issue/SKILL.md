@@ -106,7 +106,7 @@ Write one markdown file per issue: `issues/{NN}_{slug}.md`
 ### Implementation Scope
 
 - [ ] Backend - API routes and services
-- [ ] Backend - Kestra workflows
+- [ ] Backend - Airflow DAGs
 - [ ] Backend - DataHub integration, PostgreSQL models, Qdrant vector search
 - [ ] Frontend UI
 - [ ] Helm charts / Kubernetes manifests

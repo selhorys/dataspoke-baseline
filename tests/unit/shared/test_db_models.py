@@ -187,14 +187,14 @@ def test_metric_result_fk() -> None:
 
 
 def test_metric_result_has_no_alarm_or_run_id_columns() -> None:
-    """Alarm and run_id columns were removed from metric_results in migration 013."""
+    """metric_results should not have alarm or run_id columns."""
     col_names = {col.name for col in MetricResult.__table__.columns}
     assert "alarm_triggered" not in col_names
     assert "run_id" not in col_names
 
 
 def test_metric_definition_has_no_alarm_columns() -> None:
-    """Alarm fields were removed from metric_definitions in migration 013."""
+    """metric_definitions should not have alarm columns."""
     col_names = {col.name for col in MetricDefinition.__table__.columns}
     assert "alarm_enabled" not in col_names
     assert "alarm_threshold" not in col_names

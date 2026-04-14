@@ -5,9 +5,8 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient dataspoke.events rows for event pagination tests.
 
 Prerequisites:
-- PostgreSQL port-forwarded to localhost:9201
-- DataHub GMS port-forwarded to localhost:9004
-- Kestra port-forwarded to localhost:9205
+- PostgreSQL accessible via DATASPOKE_DEV_PG_HOST/PORT
+- DataHub GMS accessible via DATASPOKE_DATAHUB_GMS_URL
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -55,16 +54,16 @@ async def test_ingestion_config_crud_via_http(
                 "locator": EXAMPLE_PG_LOCATOR,
                 "identifier": EXAMPLE_PG_IDENTIFIER,
                 "auth": EXAMPLE_PG_AUTH,
-                "is_active": False,
-                "schedule_cron": "0 0 * * *",
+                "is_active": True,
+                "schedule_tier": "daily",
             },
         )
         assert resp.status_code in (200, 201)
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["platform"] == "postgres"
-        assert body["is_active"] is False
-        assert body["schedule_cron"] == "0 0 * * *"
+        assert body["is_active"] is True
+        assert body["schedule_tier"] == "daily"
         config_id = body["id"]
 
         # GET - read config
@@ -75,14 +74,14 @@ async def test_ingestion_config_crud_via_http(
         assert resp.status_code == 200
         assert resp.json()["id"] == config_id
 
-        # PATCH - update schedule
+        # PATCH - update schedule tier
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf",
             headers=headers,
-            json={"schedule_cron": "0 6 * * *"},
+            json={"schedule_tier": "weekly"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule_cron"] == "0 6 * * *"
+        assert resp.json()["schedule_tier"] == "weekly"
 
         # GET via ingestion router
         resp = await http_client.get(
@@ -90,7 +89,7 @@ async def test_ingestion_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule_cron"] == "0 6 * * *"
+        assert resp.json()["schedule_tier"] == "weekly"
 
         # DELETE
         resp = await http_client.delete(
@@ -156,7 +155,7 @@ async def test_list_ingestion_configs(
 async def test_run_ingestion_dry_run(
     http_client, async_session: AsyncSession,
 ):
-    """PUT config -> POST run dry_run=true -> verify events recorded directly (no Kestra)."""
+    """PUT config -> POST run dry_run=true -> verify events recorded directly (no Airflow DAG)."""
     dataset_urn = _urn("run_test")
     headers = _auth_headers()
 
@@ -176,7 +175,7 @@ async def test_run_ingestion_dry_run(
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
-        # Run with dry_run=true (direct pipeline — no Kestra involved)
+        # Run with dry_run=true (direct pipeline — no Airflow DAG involved)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/method/run",
             headers=headers,

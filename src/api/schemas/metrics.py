@@ -3,10 +3,12 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import MetricTheme
+
+_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 
 
 class UpsertMetricConfigRequest(BaseModel):
@@ -26,13 +28,20 @@ class UpsertMetricConfigRequest(BaseModel):
             "Optional key: 'dataset_filter' with 'tags' and/or 'glossary_terms' lists for OR-filtering."
         )
     )
-    schedule_cron: str | None = Field(
+    schedule_tier: str | None = Field(
         default=None,
-        description="Cron expression for periodic measurement runs, e.g. '0 6 * * *' for daily at 06:00 UTC",
+        description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'",
     )
     is_active: bool = Field(
         default=True, description="Whether the metric is active and scheduled for measurement"
     )
+
+    @field_validator("schedule_tier")
+    @classmethod
+    def validate_schedule_tier(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
+        return v
 
     model_config = {
         "json_schema_extra": {
@@ -47,7 +56,7 @@ class UpsertMetricConfigRequest(BaseModel):
                         "glossary_terms": ["urn:li:glossaryTerm:CustomerData"],
                     },
                 },
-                "schedule_cron": "0 6 * * *",
+                "schedule_tier": "daily",
                 "is_active": True,
             }
         }
@@ -63,12 +72,19 @@ class PatchMetricConfigRequest(BaseModel):
     measurement_query: dict[str, Any] | None = Field(
         default=None, description="Updated query configuration for metric measurement."
     )
-    schedule_cron: str | None = Field(
-        default=None, description="Updated cron expression for periodic measurement runs."
+    schedule_tier: str | None = Field(
+        default=None, description="Updated schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'."
     )
     is_active: bool | None = Field(
         default=None, description="Set to true to enable the metric, false to pause"
     )
+
+    @field_validator("schedule_tier")
+    @classmethod
+    def validate_schedule_tier(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
+        return v
 
 
 class RunMetricRequest(BaseModel):
@@ -86,7 +102,7 @@ class MetricDefinitionResponse(SingleResponse):
     measurement_query: dict[str, Any] = Field(
         description="Query configuration used to measure this metric"
     )
-    schedule_cron: str | None = Field(description="Cron expression for scheduled measurement runs")
+    schedule_tier: str | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
     is_active: bool = Field(description="Whether the metric is actively being measured")
     created_at: datetime = Field(description="UTC timestamp when the metric was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
@@ -105,7 +121,7 @@ class MetricAttrResponse(SingleResponse):
     title: str = Field(description="Human-readable metric title")
     theme: MetricTheme = Field(description="Metric theme: 'quality', 'governance', or 'freshness'")
     is_active: bool = Field(description="Whether the metric is actively being measured")
-    schedule_cron: str | None = Field(description="Cron expression for scheduled measurement runs")
+    schedule_tier: str | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
     latest_value: float | None = Field(
         default=None, description="Most recent measured value for this metric"
     )
@@ -134,10 +150,10 @@ class MetricResultListResponse(PaginatedResponse):
 
 
 class MetricRunResultResponse(SingleResponse):
-    run_id: str = Field(description="Kestra execution ID for this metric run")
+    run_id: str = Field(description="Airflow DAG run ID for this metric run")
     status: str = Field(
-        description="Execution status returned by Kestra, e.g. 'RUNNING' or 'SUCCESS'"
+        description="Execution status returned by Airflow, e.g. 'running' or 'success'"
     )
     detail: dict[str, Any] = Field(
-        default={}, description="Additional execution metadata returned by Kestra"
+        default={}, description="Additional execution metadata returned by Airflow"
     )

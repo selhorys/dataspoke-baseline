@@ -7,10 +7,10 @@ from starlette.websockets import WebSocketDisconnect
 from src.api.auth.dependencies import require_common
 from src.api.auth.ws import ws_authenticate
 from src.api.dependencies import (
+    get_airflow_client,
     get_dataset_service,
     get_generation_service,
     get_ingestion_service,
-    get_kestra_client,
     get_redis,
     get_validation_service,
 )
@@ -51,7 +51,7 @@ from src.shared.db.models import Event, GenerationResult, ValidationResult
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.shared.settings import settings
 from src.workflows._common import urn_to_workflow_id
-from src.workflows.kestra.client import KestraClient
+from src.workflows.airflow.client import AirflowClient
 
 router = APIRouter(
     prefix="/data",
@@ -150,11 +150,10 @@ def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
         identifier=c.identifier,
         auth=c.auth,
         is_active=c.is_active,
-        schedule_cron=c.schedule_cron,
+        schedule_tier=c.schedule_tier,
         enrichment_sources=c.enrichment_sources,
         custom_extractors=c.custom_extractors,
-        kestra_flow_namespace=c.kestra_flow_namespace,
-        kestra_flow_id=c.kestra_flow_id,
+        workflow_dag_id=c.workflow_dag_id,
         status=c.status,
         created_at=c.created_at,
         updated_at=c.updated_at,
@@ -188,7 +187,7 @@ async def put_data_ingestion_conf(
         identifier=body.identifier,
         auth=body.auth,
         is_active=body.is_active,
-        schedule_cron=body.schedule_cron,
+        schedule_tier=body.schedule_tier,
         enrichment_sources=body.enrichment_sources,
         custom_extractors=body.custom_extractors,
     )
@@ -274,7 +273,7 @@ def _validation_config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         id=c.id if isinstance(c.id, str) else str(c.id),
         dataset_urn=c.dataset_urn,
         rules=c.rules,
-        schedule_cron=c.schedule_cron,
+        schedule_tier=c.schedule_tier,
         is_active=c.is_active,
         owner=c.owner,
         created_at=c.created_at,
@@ -305,7 +304,7 @@ async def put_data_validation_conf(
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         rules=body.rules,
-        schedule_cron=body.schedule_cron,
+        schedule_tier=body.schedule_tier,
         is_active=body.is_active,
         owner=body.owner,
     )
@@ -557,26 +556,26 @@ async def get_data_gen_result(
 @router.post("/{dataset_urn}/attr/gen/method/generate", response_model=GenerationRunResultResponse)
 async def post_data_gen_generate(
     dataset_urn: str,
-    kestra: KestraClient = Depends(get_kestra_client),
+    airflow: AirflowClient = Depends(get_airflow_client),
 ) -> GenerationRunResultResponse:
     """Trigger AI metadata generation for the dataset via the data sub-resource."""
-    label_value = f"generation-{urn_to_workflow_id(dataset_urn)}"
-    await kestra.check_no_duplicate(
-        "generation", "workflow_id", label_value, "GENERATION_RUNNING"
+    workflow_id = f"generation-{urn_to_workflow_id(dataset_urn)}"
+    await airflow.check_no_duplicate(
+        "generation", "workflow_id", workflow_id, "GENERATION_RUNNING"
     )
-    execution = await kestra.trigger_and_wait(
+    dag_run = await airflow.trigger_and_wait(
         "generation",
-        inputs={
-            "callback_base_url": settings.kestra_callback_base_url,
+        conf={
+            "callback_base_url": settings.airflow_callback_base_url,
             "dataset_urn": dataset_urn,
+            "workflow_id": workflow_id,
         },
-        labels={"workflow_id": label_value},
     )
-    outputs = execution.outputs or {}
+    conf_out = dag_run.conf or {}
     return GenerationRunResultResponse(
-        run_id=outputs.get("run_id", execution.id),
-        status=outputs.get("status", execution.status.value),
-        detail=outputs.get("detail", {}),
+        run_id=conf_out.get("run_id", dag_run.dag_run_id),
+        status=conf_out.get("status", dag_run.state.value),
+        detail=conf_out.get("detail", {}),
     )
 
 

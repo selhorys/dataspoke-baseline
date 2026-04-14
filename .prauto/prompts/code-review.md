@@ -37,7 +37,7 @@ Does it follow DataSpoke conventions?
 - Three-tier API routing (`/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`)
 - Service layer separation (routers thin, logic in `src/backend/`)
 - DataHub integration patterns per `spec/DATAHUB_INTEGRATION.md`
-- Kestra flow conventions (namespace, inputs, retry, timeout)
+- Airflow DAG conventions (max_active_runs, retries, SimpleHttpOperator)
 - Existing naming conventions and file organization
 
 ### 3. Code quality (weight: medium)
@@ -56,8 +56,8 @@ Does it follow DataSpoke conventions?
 
 ### 5. Inter-component consistency (weight: medium)
 - Backend API response shapes match what frontend expects
-- Kestra flow inputs match what the API layer sends
-- Activity endpoint signatures match flow YAML task definitions
+- Airflow DAG conf values match what the API layer sends
+- Activity endpoint signatures match DAG task definitions
 - Shared Pydantic models used consistently across layers
 
 ## Output format

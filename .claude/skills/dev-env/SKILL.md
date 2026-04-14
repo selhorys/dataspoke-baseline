@@ -1,9 +1,9 @@
 ---
 name: dev-env
-description: Manage the kubernetes-based DataSpoke development environment — configure, install, reinstall, uninstall, health-check, monitor-kestra, and run-dataspoke-test-mode. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
+description: Manage the kubernetes-based DataSpoke development environment — configure, install, reinstall, uninstall, health-check, and run-dataspoke-test-mode. Services are accessed via nginx-ingress (HTTP ingress for APIs/UIs, TCP passthrough for databases and message brokers).
 disable-model-invocation: false
 user-invocable: true
-argument-hint: [configure|install|reinstall|uninstall|health-check|monitor-kestra|run-dataspoke-test-mode] [options...]
+argument-hint: [configure|install|reinstall|uninstall|health-check|run-dataspoke-test-mode] [options...]
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -16,7 +16,6 @@ Parse `$ARGUMENTS` and the user's request to determine the action. If ambiguous 
 | **configure** | `configure`, `config`, `setup`, `env` |
 | **install** | `install`, `up`, `create` |
 | **health-check** | `health-check`, `health`, `check`, `status` |
-| **monitor-kestra** | `monitor-kestra`, `monitor kestra`, `kestra load`, `kestra monitor` |
 | **run-dataspoke-test-mode** | `run-dataspoke-test-mode`, `run`, `start`, `deploy`, `test-mode` |
 | **reinstall** | `reinstall`, `reset` |
 | **uninstall** | `uninstall`, `teardown`, `down`, `remove`, `destroy` |
@@ -92,7 +91,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
    |---------|-----|
    | DataSpoke UI + API | `http://app.<DOMAIN>/` and `http://app.<DOMAIN>/api/v1/…` |
    | DataHub UI + GMS | `http://datahub.<DOMAIN>/` and `http://datahub.<DOMAIN>/gms/…` |
-   | Kestra UI | `http://kestra.<DOMAIN>/` |
+   | Airflow UI | `http://airflow.<DOMAIN>/` |
 
    **Tier B — TCP passthrough (direct IP:port)**:
    | Service | Address |
@@ -151,11 +150,11 @@ Selectively reinstall a single component (pods, PVCs, database state) without te
 
 | Component flag | What it resets |
 |----------------|----------------|
-| `--kestra` | Kestra deployment, pods, PVCs, `kestra` PostgreSQL database |
+| `--airflow` | Airflow deployment, pods, `airflow` PostgreSQL database |
 
 ### Steps
 
-1. Parse `$ARGUMENTS` for the component flag (e.g. `--kestra`). If no component specified, ask the user which component to reinstall.
+1. Parse `$ARGUMENTS` for the component flag (e.g. `--airflow`). If no component specified, ask the user which component to reinstall.
 2. Run `./dev_env/reinstall.sh <flag>` in the foreground (it deletes targeted resources, resets DB state, runs `helm upgrade`, and waits for rollout).
 3. Monitor output for errors. If the DB reset or rollout fails, report the error and suggest remediation.
 4. On success, confirm the component is running and report access URLs.
@@ -174,42 +173,11 @@ Selectively reinstall a single component (pods, PVCs, database state) without te
 
 ---
 
-## Action: monitor-kestra
-
-Monitor Kestra's resource consumption, health, and execution state. Runs `./dev_env/monitor-kestra.sh`.
-
-### Supported flags
-
-| Flag | Description |
-|------|-------------|
-| `--brief` | One-line summary (for scripting or CI) |
-| `--watch [N]` | Repeat every N seconds (default: 15). Ctrl-C to stop. |
-
-### What it monitors
-
-| Signal | Source | Warn / Crit thresholds |
-|--------|--------|----------------------|
-| CPU usage | `kubectl top` | 50% / 75% of 4-core limit |
-| Memory usage | `kubectl top` | 60% / 80% of 8Gi limit |
-| PostgreSQL connections | `pg_stat_activity WHERE datname='kestra'` | 30 / 45 of 50-connection pool |
-| Health probes | `kubectl exec` → management port 8081 (`/health`, `/health/liveness`, `/health/readiness`) |
-| Ingress reachability | `curl` → `KESTRA_URL/api/v1/flows/search` |
-| Running / queued / failed executions | Kestra REST API `/api/v1/executions/search` |
-| JVM GC activity | Pod logs (last 5m), grep for GC pause/concurrent lines |
-| Recent errors | Pod logs (last 5m), grep for ERROR/OOM/deadlock/FATAL |
-
-### Steps
-
-1. Run `./dev_env/monitor-kestra.sh` with any parsed flags.
-2. Report the output to the user.
-3. If the verdict is **CRITICAL**, suggest: `./dev_env/reinstall.sh --kestra`
-4. If the verdict is **WARNING**, suggest waiting 1-2 minutes for the load to settle, then re-checking.
-
 ---
 
 ## Action: run-dataspoke-test-mode
 
-Build a Docker image of the DataSpoke API, deploy it in-cluster via the umbrella Helm chart, and wait for the rollout. The API is accessible via nginx-ingress — no port-forward needed. `DATASPOKE_TEST_MODE=true` is baked into `values-dev.yaml` so Kestra callbacks reach the API via cluster DNS (`http://dataspoke-api:8002`).
+Build a Docker image of the DataSpoke API, deploy it in-cluster via the umbrella Helm chart, and wait for the rollout. The API is accessible via nginx-ingress — no port-forward needed. `DATASPOKE_TEST_MODE=true` is baked into `values-dev.yaml` so Airflow callbacks reach the API via cluster DNS (`http://dataspoke-api:8002`).
 
 ### Pre-flight
 

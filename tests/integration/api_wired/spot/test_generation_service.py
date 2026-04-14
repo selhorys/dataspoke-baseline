@@ -10,7 +10,7 @@ Prerequisites:
 - Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)
 - PostgreSQL port-forwarded to localhost:9201
 - DataHub GMS port-forwarded to localhost:9004
-- Kestra port-forwarded to localhost:9205
+- Airflow port-forwarded to localhost:9205
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -187,7 +187,7 @@ async def test_generate_produces_result(
         )
         assert resp.status_code in (200, 201)
 
-        # Run generate (goes through real Kestra)
+        # Run generate (goes through real Airflow)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/gen/method/generate",
             headers=headers,
@@ -263,7 +263,7 @@ async def test_apply_after_approval(
         )
         assert resp.status_code in (200, 201)
 
-        # Run generate (through real Kestra)
+        # Run generate (through real Airflow)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/gen/method/generate",
             headers=headers,
@@ -338,7 +338,7 @@ async def test_apply_after_approval(
 async def test_generate_config_not_found(http_client):
     """POST generate for unconfigured URN -> error.
 
-    The data router triggers Kestra without checking config. The flow
+    The data router triggers Airflow without checking config. The flow
     fails because the activity can't find the config. Returns 500.
     """
     fake_urn = _urn("nonexistent")

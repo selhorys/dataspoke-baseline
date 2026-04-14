@@ -4,7 +4,7 @@
 
 # ---------------------------------------------------------------------------
 # Application components: frontend/workers run on the host; API runs in-cluster
-# so Kestra can reach it via http://dataspoke-api:8000.
+# so Airflow can reach it via http://dataspoke-api:8000.
 # ---------------------------------------------------------------------------
 frontend:
   enabled: false
@@ -58,8 +58,8 @@ postgresql:
       size: 10Gi
     initdb:
       scripts:
-        create-kestra-db.sql: |
-          CREATE DATABASE kestra;
+        create-airflow-db.sql: |
+          CREATE DATABASE airflow;
 
 redis:
   enabled: true
@@ -88,132 +88,101 @@ qdrant:
   persistence:
     size: 10Gi
 
-kestra:
+airflow:
   enabled: true
-  deploymentType: STANDALONE
-  image:
-    tag: "v1.3.3"
-  common:
-    initContainers:
-      - name: wait-for-postgresql
-        image: busybox:1.37
-        command:
-          - sh
-          - -c
-          - |
-            echo "Waiting for PostgreSQL at dataspoke-postgresql:5432..."
-            until nc -z dataspoke-postgresql 5432; do
-              echo "  PostgreSQL not ready — retrying in 2s"
-              sleep 2
-            done
-            echo "PostgreSQL is reachable."
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 100m
-            memory: 128Mi
-    # Mount emptyDir over /app/plugins to shadow the 175 bundled plugin JARs.
-    # DataSpoke flows use only core plugins (HTTP Request, Schedule, Log)
-    # which are built into the Kestra base image — no external plugins needed.
-    extraVolumes:
-      - name: kestra-plugins-empty
-        emptyDir: {}
-    extraVolumeMounts:
-      - name: kestra-plugins-empty
-        mountPath: /app/plugins
+  executor: LocalExecutor
+
+  # Use existing PostgreSQL — do not deploy Airflow's bundled instance
+  postgresql:
+    enabled: false
+  redis:
+    enabled: false
+
+  # Metadata DB connection to existing dataspoke PostgreSQL
+  data:
+    metadataConnection:
+      user: dataspoke
+      pass: ""
+      protocol: postgresql
+      host: dataspoke-postgresql
+      port: 5432
+      db: airflow
+      sslmode: disable
+
+  # Airflow configuration overrides
+  config:
+    core:
+      executor: LocalExecutor
+      dags_folder: /opt/airflow/dags
+      load_examples: "False"
+      dag_dir_list_interval: "60"
+    api:
+      auth_backends: airflow.api.auth.backend.basic_auth
+    webserver:
+      expose_config: "False"
+      base_url: http://localhost:8080
+
+  # DAGs from ConfigMap
+  dags:
+    persistence:
+      enabled: false
+    gitSync:
+      enabled: false
+
+  # Mount DAGs from our ConfigMap
+  extraVolumes:
+    - name: dataspoke-dags
+      configMap:
+        name: dataspoke-airflow-dags
+  extraVolumeMounts:
+    - name: dataspoke-dags
+      mountPath: /opt/airflow/dags
+      readOnly: true
+
+  # Pre-configure the dataspoke_api HTTP connection
+  extraEnv: |
+    - name: AIRFLOW_CONN_DATASPOKE_API
+      value: "http://dataspoke-api:8002"
+
+  # Component resources (dev minimums)
+  webserver:
     resources:
       requests:
-        cpu: "4"
-        memory: 4Gi
+        cpu: 100m
+        memory: 256Mi
       limits:
-        cpu: "4"
-        memory: 8Gi
-    jvm:
-      extraOpts: "-Xms2g -Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
-    startupProbe:
-      httpGet:
-        path: /health
-        port: management
-      initialDelaySeconds: 60
-      periodSeconds: 5
-      timeoutSeconds: 5
-      failureThreshold: 60
-    livenessProbe:
-      httpGet:
-        path: /health/liveness
-        port: management
-      periodSeconds: 30
-      timeoutSeconds: 30
-      failureThreshold: 10
-    readinessProbe:
-      httpGet:
-        path: /health/readiness
-        port: management
-      periodSeconds: 10
-      timeoutSeconds: 30
-      failureThreshold: 30
-  deployments:
-    standalone:
-      workerThreads: 4
-  dind:
+        cpu: 250m
+        memory: 512Mi
+  scheduler:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  triggerer:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 125m
+        memory: 256Mi
+  workers:
     enabled: false
-  configurations:
-    application:
-      datasources:
-        postgres:
-          url: jdbc:postgresql://dataspoke-postgresql:5432/kestra
-          driverClassName: org.postgresql.Driver
-          # username/password: passed via --set from .env
-          maximumPoolSize: 50
-          minimumIdle: 5
-      kestra:
-        repository:
-          type: postgres
-        queue:
-          type: postgres
-        storage:
-          type: local
-          local:
-            basePath: /app/storage
-        tutorial-flows:
-          enabled: false
-        anonymous-usage-report:
-          enabled: false
-        server:
-          basic-auth:
-            username: dataspoke@dataspoke.local
-            password: DataSpoke1
-          # Disable liveness coordinator — it's designed for distributed
-          # multi-node deployments.  In standalone mode (single JVM),
-          # it causes deadlocks on service_instance FOR UPDATE queries
-          # and burns 2.4+ CPU cores.  Kubernetes handles pod liveness
-          # via restart instead.
-          liveness:
-            enabled: false
-        jdbc:
-          queues:
-            min-poll-interval: 2s
-            max-poll-interval: 5s
-            poll-switch-interval: 60s
-          cleaner:
-            initial-delay: 5m
-            fixed-delay: 30m
-            retention: 1h
+  flower:
+    enabled: false
+
   ingress:
-    enabled: true
-    className: "nginx"
-    annotations:
-      nginx.ingress.kubernetes.io/proxy-body-size: "10240m"
-      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    hosts:
-      - host: "kestra.dev.dataspoke.example.com"
-        paths:
-          - path: /
-            pathType: Prefix
+    web:
+      enabled: true
+      annotations:
+        nginx.ingress.kubernetes.io/ssl-redirect: "false"
+      hosts:
+        - name: "airflow.dev.dataspoke.example.com"
+          tls:
+            enabled: false
 
 # ---------------------------------------------------------------------------
 # ConfigMap/Secret: created in dev for in-cluster API deployment

@@ -23,14 +23,14 @@ tests/
 │   ├── api/                   # FastAPI router tests (httpx.AsyncClient)
 │   ├── backend/               # Service logic tests (mocked dependencies)
 │   ├── shared/                # Integration client tests (mocked external services)
-│   └── workflows/             # Kestra workflow tests (mocked activities)
+│   └── workflows/             # Airflow workflow tests (mocked activities)
 ├── integration/
 │   ├── conftest.py            # Root fixtures (infra, lifecycle, mocks, data helpers)
-│   ├── test_*_integration.py  # Non-api-wired tests (infra clients, Kafka, Kestra, etc.)
+│   ├── test_*_integration.py  # Non-api-wired tests (infra clients, Kafka, Airflow, etc.)
 │   ├── api_wired/
 │   │   ├── spot/              # Individual endpoint CRUD + error cases
 │   │   └── story/             # Multi-step USE_CASE scenario tests
-│   └── util/                  # Dummy-data reset helpers + Kestra test utilities + fixtures
+│   └── util/                  # Dummy-data reset helpers + Airflow test utilities + fixtures
 └── conftest.py                # Shared pytest configuration
 ```
 
@@ -42,16 +42,16 @@ tests/
 - **Structure**: Mirror the source tree — `src/backend/validation/service.py` → `tests/unit/backend/test_validation_service.py`
 
 ### Integration tests
-- **Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. Do not proceed if any check fails — reinstall the failing component (`dataspoke-infra/` for PG/Redis/Qdrant/Kestra, `datahub/` for GMS/Kafka, `dataspoke-example/` for example-postgres/kafka, `dataspoke-lock/` for lock, `nginx-ingress/` if ingress itself is down). Each subdirectory under `dev_env/` has `uninstall.sh` + `install.sh`.
+- **Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. Do not proceed if any check fails — reinstall the failing component (`dataspoke-infra/` for PG/Redis/Qdrant/Airflow, `datahub/` for GMS/Kafka, `dataspoke-example/` for example-postgres/kafka, `dataspoke-lock/` for lock, `nginx-ingress/` if ingress itself is down). Each subdirectory under `dev_env/` has `uninstall.sh` + `install.sh`.
 - **Lock protocol**: Acquire the dev-env advisory lock before state-mutating operations.
 - **Data reset**: `conftest.py` auto-resets dummy data. For manual reset: `uv run python -m tests.integration.util --reset-all`
 - **Test data**: All scenarios use **Imazon** as the canonical company context. Do not invent alternative test companies.
 
-### Kestra workflow test notes (read before writing any workflow/activity test)
-- **Architecture**: Kestra orchestrates workflows via HTTP Request tasks that call internal activity endpoints (`/internal/activities/{domain}/*`). Tests for activities are effectively FastAPI endpoint tests.
+### Airflow workflow test notes (read before writing any workflow/activity test)
+- **Architecture**: Airflow orchestrates workflows via SimpleHttpOperator DAG tasks that call internal activity endpoints (`/internal/activities/{domain}/*`). Tests for activities are effectively FastAPI endpoint tests.
 - **DB session sharing**: Activity endpoints share a DB session within each request. Design tests so activities execute sequentially.
 - **Test-mode stubs**: When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-dev.yaml` `api.testMode: true`), the `make_*` factories in `src/workflows/_common.py` return stub implementations (`StubLLMClient`, `StubQdrantManager`, `StubRedisClient`, `StubNotificationService` from `src/workflows/_stubs.py`) instead of real clients. DataHub and DB always use real connections.
-- **Flow registration**: The in-cluster API registers all startup flows in Kestra during startup (lifespan). The `kestra_client` fixture does NOT re-register flows — it only performs a health check and closes the client on teardown. Execution cleanup is each test module's responsibility.
+- **DAG availability**: Airflow DAGs are loaded from a ConfigMap at scheduler startup. The `airflow_client` fixture verifies DAG availability. Execution cleanup is each test module's responsibility.
 
 ### API-wired test readability (critical)
 - **Inline API calls**: Write `http_client.put(…, json={…})` with the full request dictionary visible in the test body. Do **not** abstract API calls into helper functions (e.g., `put_config()`, `create_dataset()`).
@@ -91,7 +91,7 @@ DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 npx playwright test
 ```
 
-**Why separate groups?** The test-mode server registers Kestra flows at startup and some api-wired tests trigger Kestra executions. Non-api-wired Kestra tests use a self-contained noop flow and must run without the server. Mixing groups causes Kestra overload on memory-constrained dev instances.
+**Why separate groups?** The test-mode server starts with Airflow DAGs available and some api-wired tests trigger Airflow DAG runs. Non-api-wired workflow tests use mocked clients and must run without the server. Mixing groups causes resource contention on memory-constrained dev instances.
 
 ## Invocation modes
 

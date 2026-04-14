@@ -54,9 +54,9 @@ fi
 DS_API_URL="http://app.${DOMAIN}"
 DH_GMS_URL="http://datahub.${DOMAIN}/gms"
 DH_UI_URL="http://datahub.${DOMAIN}"
-KESTRA_URL="http://kestra.${DOMAIN}"
-DS_KESTRA_USER="${DATASPOKE_KESTRA_USER:-}"
-DS_KESTRA_PASSWORD="${DATASPOKE_KESTRA_PASSWORD:-}"
+AIRFLOW_URL="http://airflow.${DOMAIN}"
+DS_AIRFLOW_USER="${DATASPOKE_AIRFLOW_USER:-admin}"
+DS_AIRFLOW_PASSWORD="${DATASPOKE_AIRFLOW_PASSWORD:-admin}"
 
 # ---------------------------------------------------------------------------
 # Tier B: TCP services via ingress IP + fixed ports
@@ -249,28 +249,33 @@ check_dataspoke_qdrant() {
   fi
 }
 
-check_dataspoke_kestra() {
-  local label="dataspoke-kestra (${KESTRA_URL})"
+check_dataspoke_airflow() {
+  local label="dataspoke-airflow (${AIRFLOW_URL})"
   if ! _tcp_check "${INGRESS_IP}" 80; then
     _fail "$label — ingress port 80 not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  # Kestra may require basic auth; any HTTP response (even 401) means alive.
-  # A 2xx on the flows endpoint means fully operational.
+  # Airflow health endpoint returns {"metadatabase":{"status":"healthy"},"scheduler":{"status":"healthy"}}
+  # Basic auth required if configured.
   local auth_args=()
-  if [[ -n "$DS_KESTRA_USER" && -n "$DS_KESTRA_PASSWORD" ]]; then
-    auth_args=(-u "${DS_KESTRA_USER}:${DS_KESTRA_PASSWORD}")
+  if [[ -n "$DS_AIRFLOW_USER" && -n "$DS_AIRFLOW_PASSWORD" ]]; then
+    auth_args=(-u "${DS_AIRFLOW_USER}:${DS_AIRFLOW_PASSWORD}")
   fi
 
-  if _http_ok "${KESTRA_URL}/api/v1/flows/search" "${auth_args[@]+"${auth_args[@]}"}"; then
+  local health_body
+  health_body=$(curl -s -o - -w "" --connect-timeout 3 --max-time 5 \
+    "${auth_args[@]+"${auth_args[@]}"}" \
+    "${AIRFLOW_URL}/api/v1/health" 2>/dev/null) || true
+
+  if echo "$health_body" | grep -q '"status": *"healthy"'; then
     _pass "$label"
-  elif _http_alive "${KESTRA_URL}/api/v1/flows/search" "${auth_args[@]+"${auth_args[@]}"}"; then
-    _fail "$label — HTTP alive but flows endpoint unhealthy"
+  elif _http_alive "${AIRFLOW_URL}/api/v1/health" "${auth_args[@]+"${auth_args[@]}"}"; then
+    _fail "$label — HTTP alive but health endpoint reports unhealthy: ${health_body}"
     ((FAILURES++))
   else
-    _fail "$label — no HTTP response (pod may be restarting)"
+    _fail "$label — no HTTP response (pod may be starting)"
     ((FAILURES++))
   fi
 }
@@ -415,7 +420,7 @@ echo "DataSpoke Infra:"
 check_dataspoke_postgresql
 check_dataspoke_redis
 check_dataspoke_qdrant
-check_dataspoke_kestra
+check_dataspoke_airflow
 check_dataspoke_api
 
 echo ""

@@ -5,9 +5,8 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient dataspoke.events rows for event pagination tests.
 
 Prerequisites:
-- PostgreSQL port-forwarded to localhost:9201
-- DataHub GMS port-forwarded to localhost:9004
-- Kestra port-forwarded to localhost:9205
+- PostgreSQL accessible via DATASPOKE_DEV_PG_HOST/PORT
+- DataHub GMS accessible via DATASPOKE_DATAHUB_GMS_URL
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -54,7 +53,8 @@ async def test_validation_config_crud_via_http(
             json={
                 "dataset_urn": dataset_urn,
                 "rules": [{"rule_id": "freshness_01", "type": "freshness", "max_age_hours": 24}],
-                "schedule_cron": "0 0 * * *",
+                "schedule_tier": "daily",
+                "is_active": True,
                 "owner": "test@imazon.com",
             },
         )
@@ -62,8 +62,8 @@ async def test_validation_config_crud_via_http(
         body = resp.json()
         assert body["dataset_urn"] == dataset_urn
         assert body["owner"] == "test@imazon.com"
-        assert body["is_active"] is False
-        assert body["schedule_cron"] == "0 0 * * *"
+        assert body["is_active"] is True
+        assert body["schedule_tier"] == "daily"
         config_id = body["id"]
 
         # GET - read config via data router
@@ -74,14 +74,14 @@ async def test_validation_config_crud_via_http(
         assert resp.status_code == 200
         assert resp.json()["id"] == config_id
 
-        # PATCH - update schedule
+        # PATCH - update schedule tier
         resp = await http_client.patch(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf",
             headers=headers,
-            json={"schedule_cron": "0 6 * * *"},
+            json={"schedule_tier": "weekly"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule_cron"] == "0 6 * * *"
+        assert resp.json()["schedule_tier"] == "weekly"
 
         # GET via validation domain router
         resp = await http_client.get(
@@ -89,7 +89,7 @@ async def test_validation_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule_cron"] == "0 6 * * *"
+        assert resp.json()["schedule_tier"] == "weekly"
 
         # DELETE
         resp = await http_client.delete(
@@ -181,7 +181,7 @@ async def test_run_validation_basic(
         )
         assert resp.status_code in (200, 201), f"PUT config failed: {resp.text}"
 
-        # POST run (no partition — direct pipeline, no Kestra involved)
+        # POST run (no partition — direct pipeline, no Airflow DAG involved)
         resp = await http_client.post(
             f"/api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run",
             headers=headers,

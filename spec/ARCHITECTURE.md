@@ -57,7 +57,7 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 │   API                   │  Kafka  │   Kafka                 │
 │   Backend               │  GQL    │   Search (ES)           │
 │   Qdrant / PostgreSQL   │         │   MySQL / Postgres      │
-│   Kestra / Redis        │         │                         │
+│   Airflow / Redis       │         │                         │
 └─────────────────────────┘         └─────────────────────────┘
 ```
 
@@ -102,7 +102,7 @@ The FastAPI implementation in `src/api/` is the **single source of truth** for t
 
 | Benefit | Mechanism |
 |---------|-----------|
-| Independent scaling | UI, API scale separately; Kestra handles workflow execution |
+| Independent scaling | UI, API scale separately; Airflow handles workflow execution |
 | Technology flexibility | Swap Next.js for another framework without affecting backend |
 | Security boundaries | UI never accesses DB directly |
 | Team autonomy | Frontend and backend teams work independently |
@@ -143,9 +143,9 @@ For the complete route catalogue, JWT authentication model, middleware stack, er
 
 ### 3. DataSpoke Backend / Pipeline
 
-**Technology**: Python 3.13, Kestra for orchestration
+**Technology**: Python 3.13, Airflow for orchestration
 
-Core computational layer. For the full backend specification — layered architecture, shared services, Kestra workflows, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL schema, Qdrant collections) in [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
+Core computational layer. For the full backend specification — layered architecture, shared services, Airflow workflows, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL schema, Qdrant collections) in [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
 
 **Key capabilities by domain**:
 
@@ -159,7 +159,7 @@ Core computational layer. For the full backend specification — layered archite
 | Metrics (DG) | Health score aggregation, department mapping, trend analysis |
 | Visualization (DG) | Graph layout, medallion classification, blind spot detection |
 
-Source layout: `src/backend/` (feature services), `src/workflows/` (Kestra flow YAML + helpers), `src/shared/` (DataHub client, shared models, LLM integration).
+Source layout: `src/backend/` (feature services), `src/workflows/` (Airflow DAGs + helpers), `src/shared/` (DataHub client, shared models, LLM integration).
 
 ### 4. DataHub (External)
 
@@ -179,7 +179,7 @@ For SDK entry points, aspect catalog, error handling, and configuration, see [`D
 |-----------|-----------|---------|
 | Vector DB | Qdrant | Semantic search, embedding storage, metadata similarity |
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
-| Orchestration | Kestra | Workflow execution via YAML flow definitions and HTTP Request tasks (ingestion, validation, embedding sync, metrics collection) |
+| Orchestration | Airflow | Workflow execution via Python DAGs and SimpleHttpOperator tasks (ingestion, validation, embedding sync, metrics collection) |
 | Operational DB | PostgreSQL | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences |
 | Cache | Redis | Validation result caching for AI agent loops, API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
@@ -210,7 +210,7 @@ Data Sources                        DataSpoke Backend               DataHub
 Covers UC2 (Assertion-Based Monitoring), UC3 (Timeseries Validation / Predictive SLA). Shared across DE and DA groups.
 
 ```
-Cron (Kestra) / Manual (API)
+Cron (Airflow) / Manual (API)
       │
       ▼
 API: POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
@@ -275,7 +275,7 @@ Ontology/Taxonomy Builder (LLM-powered)
 Covers UC6 (Metrics Dashboard), UC8 (Multi-Perspective Overview).
 
 ```
-Kestra Periodic Flow (per-metric schedule)
+Airflow Periodic DAG (per-tier schedule)
       │
       ▼
 Metrics Aggregator (pure aggregation — no direct data observation)
@@ -302,8 +302,8 @@ DE features are served through `/spoke/common/` routes (dataset-centric operatio
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
-| Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service | Kestra (periodic + config sync), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Data Validation | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine | Kestra (periodic + config sync), Redis (concurrency guard), DataHub SDK, PostgreSQL |
+| Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
+| Data Validation | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Automated Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Ontology Builder (shared), Source Code Analyzer, Consistency Engine | LLM API, Qdrant, PostgreSQL |
 
 ### Data Analysis (DA)
@@ -320,7 +320,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
-| Enterprise Metrics Dashboard | UC6 | `/spoke/dg/metric/` | Health Score Aggregator, Department Mapper, Trend Analysis | PostgreSQL, Kestra |
+| Enterprise Metrics Dashboard | UC6 | `/spoke/dg/metric/` | Health Score Aggregator, Department Mapper, Trend Analysis | PostgreSQL, Airflow |
 | Multi-Perspective Data Overview | UC8 | `/spoke/dg/overview/` | Ontology Builder (shared), Graph Layout Engine, Medallion Detector, Blind Spot Analyzer | Qdrant, LLM API, PostgreSQL |
 
 ### Common (cross-group)
@@ -335,7 +335,7 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 | Concern | Infrastructure | Consumers |
 |---------|---------------|-----------|
 | Kafka Event Consumers | Kafka (shared with DataHub) | Vector DB sync (DA), validator triggers (DE), ontology re-index |
-| Kestra Flows | Kestra | Periodic ingestion + config sync (DE), validation (DE), embedding maintenance (DA), metrics collection (DG) |
+| Airflow DAGs | Airflow | Periodic ingestion (DE), validation (DE), embedding maintenance (DA), metrics collection (DG) |
 | PostgreSQL Operational Tables | PostgreSQL | Ingestion configs/runs, quality rules/results, health scores, ontology graph, user preferences |
 | Redis Caching | Redis | Validation result cache (AI agent loops), API response cache, rate limiting |
 
@@ -383,7 +383,7 @@ Shared by all features.
 | Backend | Python 3.13 | Rich data/ML libraries, DataHub SDK compatibility |
 | Vector DB | Qdrant | Self-hostable, Rust-based performance, simple deployment |
 | Message Broker | Kafka | DataHub integration standard |
-| Orchestration | Kestra | YAML flow definitions, HTTP Request tasks calling internal activity endpoints, built-in scheduling and retry |
+| Orchestration | Airflow | Python DAG definitions, SimpleHttpOperator tasks calling internal activity endpoints, built-in scheduling and retry |
 | Operational DB | PostgreSQL | ACID guarantees, JSONB flexibility |
 | Cache | Redis | API caching, rate limiting, session management |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
@@ -419,7 +419,8 @@ Namespace: dataspoke
 ├── dataspoke-frontend         (Deployment)    Ingress: /app/*
 ├── dataspoke-api              (Deployment)    Ingress: /api/*
 ├── dataspoke-event-consumer   (Deployment)    — no ingress (Kafka consumer) [optional]
-├── kestra                     (Deployment)    Ingress: /kestra/* (UI + API on port 8080)
+├── airflow-webserver          (Deployment)    Ingress: /airflow/* (UI on port 8080)
+├── airflow-scheduler          (Deployment)    — no ingress (LocalExecutor)
 ├── qdrant                     (StatefulSet, PV)
 ├── postgresql                 (StatefulSet, PV)
 └── redis                      (Deployment)
@@ -438,12 +439,13 @@ Replica counts, resource requests/limits, and PV sizes are configurable via Helm
 | dataspoke-frontend | 1 | 256Mi | 0.25 | — |
 | dataspoke-api | 1 | 512Mi | 0.5 | — |
 | dataspoke-event-consumer† | 1 | 512Mi | 0.25 | — |
-| kestra | 1 | 1Gi | 0.5 | — |
+| airflow-webserver | 1 | 512Mi | 0.25 | — |
+| airflow-scheduler | 1 | 512Mi | 0.25 | — |
 | qdrant | 1 | 1Gi | 0.5 | 10Gi |
 | postgresql | 1 | 512Mi | 0.5 | 10Gi |
 | redis | 1 | 256Mi | 0.25 | — |
 
-† Optional — disabled by default; enable via `event-consumer.enabled`. Kestra handles execution internally — no separate worker process needed.
+† Optional — disabled by default; enable via `event-consumer.enabled`. Airflow uses LocalExecutor — no separate Celery worker needed.
 
 **Network**: DataSpoke namespace requires access to DataHub namespace. Configure NetworkPolicy if using strict policies.
 
@@ -460,7 +462,7 @@ Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, na
 
 Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values differ. In dev, they point to the nginx-ingress external IP (TCP services) or ingress hostnames (HTTP services). In production, they are injected via Helm values → Kubernetes ConfigMap/Secret.
 
-Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Qdrant, Kestra, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
+Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Qdrant, Airflow, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
 
 For production, secrets are stored as Kubernetes Secrets and injected via Helm values → ConfigMap/Secret → container environment. See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
 
@@ -475,7 +477,7 @@ cd dev_env && ./uninstall.sh  # Tear down
 
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that reduces resource limits and disables frontend/workers. The target cluster is GKE Autopilot (Docker Desktop, minikube, or kind also work).
 
-The API server runs **in-cluster** so that Kestra can call back to it directly via `http://dataspoke-api:8002`. Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
+The API server runs **in-cluster** so that Airflow can call back to it directly via `http://dataspoke-api:8002`. Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 
 See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for the full dev environment specification.
 
@@ -489,7 +491,7 @@ The repository is organized by deployment concern and application layer. Key top
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/` | Application source: `api/` (FastAPI), `backend/` (services), `shared/` (clients), `workflows/` (Kestra flows), `frontend/` (Next.js) |
+| `src/` | Application source: `api/` (FastAPI), `backend/` (services), `shared/` (clients), `workflows/` (Airflow DAGs), `frontend/` (Next.js) |
 | `spec/` | Architecture and feature specifications (`feature/` for cross-cutting, `feature/spoke/` for user-group-specific) |
 | `tests/` | Unit, integration, and E2E test suites |
 | `dev_env/` | Kubernetes dev environment scripts |
@@ -508,7 +510,7 @@ The repository is organized by deployment concern and application layer. Key top
 | API framework | FastAPI | Async, auto OpenAPI, Pydantic, high perf | Flask (simpler but no async), Django (too opinionated) |
 | Frontend | Next.js | SSR, file-based routing, React ecosystem | CRA (no SSR), Vue (smaller ecosystem) |
 | Vector DB | Qdrant | Self-hostable, Rust perf, simple binary | Weaviate (if multi-tenancy or GraphQL needed), Pinecone (managed only) |
-| Orchestration | Kestra | YAML flow definitions, HTTP Request tasks, built-in UI, single-port deployment | Temporal (heavier infra), Airflow (if existing infra or batch DAGs required) |
+| Orchestration | Airflow | Python DAG definitions, SimpleHttpOperator tasks, built-in UI, LocalExecutor | Temporal (heavier infra), Kestra (if YAML-first flows preferred) |
 | Operational DB | PostgreSQL | ACID, JSONB, mature ecosystem | MongoDB (no ACID for critical operational data) |
 | API documentation | FastAPI auto-generated OpenAPI + Pydantic schemas as SSOT | Always-in-sync docs; AI agents read route definitions directly | Standalone OpenAPI file (requires manual sync) |
 

@@ -20,7 +20,7 @@
 
 `dev_env/` provides a fully scripted Kubernetes-based environment for developing and testing DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the DataSpoke application connects to.
 
-The API server is deployed **in-cluster** alongside Kestra so that workflow callbacks work directly via cluster DNS (`http://dataspoke-api:8002`). Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Frontend and workers are not installed in the dev cluster. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+The API server is deployed **in-cluster** alongside Airflow so that workflow callbacks work directly via cluster DNS (`http://dataspoke-api:8002`). Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Frontend and workers are not installed in the dev cluster. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 DataHub is installed in the dev cluster **for convenience**; in production it is an external dependency deployed and managed separately.
 
@@ -40,7 +40,7 @@ Kubernetes Cluster (GKE Autopilot or any compatible cluster)
 │  │ Routes                                                   │ │
 │  │  datahub.<IP>.nip.io       → datahub-01/GMS + Frontend  │ │
 │  │  app.<IP>.nip.io/api       → dataspoke-01/API           │ │
-│  │  kestra.<IP>.nip.io        → dataspoke-01/Kestra        │ │
+│  │  airflow.<IP>.nip.io       → dataspoke-01/Airflow       │ │
 │  │  <IP>:9201                 → dataspoke-01/PostgreSQL     │ │
 │  │  <IP>:9202                 → dataspoke-01/Redis          │ │
 │  │  <IP>:9203/<IP>:9204       → dataspoke-01/Qdrant         │ │
@@ -58,7 +58,7 @@ Kubernetes Cluster (GKE Autopilot or any compatible cluster)
 │  │  - Elasticsearch    │   ┌──────────────────────────────┐  │
 │  │  - MySQL            │   │  dataspoke-01                │  │
 │  └─────────────────────┘   │  - api (in-cluster)          │  │
-│                            │  - kestra                    │  │
+│                            │  - airflow                   │  │
 │                            │  - qdrant                    │  │
 │                            │  - postgresql                │  │
 │                            │  - redis                     │  │
@@ -68,7 +68,7 @@ Kubernetes Cluster (GKE Autopilot or any compatible cluster)
 │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
 │  Host (outside cluster)                                      │
 │    dataspoke-frontend  (npm run dev, :3000)                  │
-│    (API, Kestra, all infra accessed via nginx-ingress)       │
+│    (API, Airflow, all infra accessed via nginx-ingress)      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -103,7 +103,7 @@ Kubernetes Cluster (GKE Autopilot or any compatible cluster)
 |-----------|---------|------------|
 | `ingress-nginx` | nginx-ingress controller (single LoadBalancer for all namespaces) | `nginx-ingress/install.sh` via Helm |
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
-| `dataspoke-01` | DataSpoke infrastructure (API, Kestra, Qdrant, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
+| `dataspoke-01` | DataSpoke infrastructure (API, Airflow, Qdrant, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 > Namespace names are **defaults** from `.env.example`. All scripts read them from environment variables and never hardcode them.
@@ -137,7 +137,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
 | Example data creds | `*_EXAMPLE_PG_HOST`, `*_EXAMPLE_PG_PORT`, `*_EXAMPLE_KAFKA_BROKERS` | Dev-only; host and port resolve via ingress IP |
 | DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `*_TOKEN`, `*_KAFKA_BROKERS` | App runtime — ingress URL in dev |
-| Infrastructure | `DATASPOKE_POSTGRES_HOST/PORT`, `*_REDIS_*`, `*_QDRANT_*`, `*_KESTRA_URL` | App runtime — ingress IP (TCP) or URL (HTTP) in dev |
+| Infrastructure | `DATASPOKE_POSTGRES_HOST/PORT`, `*_REDIS_*`, `*_QDRANT_*`, `*_AIRFLOW_URL` | App runtime — ingress IP (TCP) or URL (HTTP) in dev |
 | LLM | `DATASPOKE_LLM_PROVIDER`, `*_API_KEY`, `*_MODEL` | App runtime |
 
 ### Policies
@@ -184,7 +184,7 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| kestra | Deployment | 8 Gi | — |
+| airflow (webserver + scheduler) | Deployment | 2 Gi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
@@ -259,32 +259,9 @@ Selective component reinstall without tearing down the full umbrella release. De
 
 | Flag | Effect |
 |------|--------|
-| `--kestra` | Full Kestra reinstall: deployment + pods + PVCs + `kestra` database DROP/CREATE |
+| `--airflow` | Full Airflow reinstall: deployment + pods + `airflow` database DROP/CREATE |
 
 Extensible via `case` dispatch — additional component flags (e.g. `--postgresql`) can be added as needed.
-
-### monitor-kestra.sh
-
-Kestra load monitor — collects and displays a snapshot of Kestra health signals. All external commands are wrapped with hard timeouts so the script never hangs, even when Kestra is overloaded and unresponsive.
-
-| Flag | Effect |
-|------|--------|
-| `--brief` | One-line summary for scripting/CI |
-| `--watch [N]` | Repeat every N seconds (default: 15) |
-
-Signals collected:
-
-| Signal | Source | Warn / Crit thresholds |
-|--------|--------|----------------------|
-| CPU / memory | `kubectl top` | 50% / 75% CPU; 60% / 80% memory (of 4-core / 8 Gi limits) |
-| PostgreSQL connections | `pg_stat_activity` on `kestra` DB | 30 / 45 of 50-connection pool |
-| Health probes | `kubectl exec` → management port 8081 | — |
-| Ingress reachability | Kestra API via ingress | — |
-| Running / queued / failed executions | Kestra REST API | — |
-| JVM GC activity | Pod logs (last 5m) | — |
-| Recent errors | Pod logs (last 5m): ERROR, OOM, deadlock, FATAL | — |
-
-Exit codes: 0 = healthy, 1 = warning (elevated load), 2 = critical (overloaded).
 
 ### Shell conventions
 
@@ -305,7 +282,7 @@ HTTP services are accessed by virtual-host name on port 80. The `nip.io` suffix 
 | DataHub UI | `datahub-01/datahub-frontend:9002` | `http://datahub.<INGRESS_IP>.nip.io/` |
 | DataHub GMS | `datahub-01/datahub-datahub-gms:8080` | `http://datahub.<INGRESS_IP>.nip.io/gms/` |
 | DataSpoke API | `dataspoke-01/dataspoke-api:8002` | `http://app.<INGRESS_IP>.nip.io/api/v1/` |
-| Kestra UI | `dataspoke-01/dataspoke-kestra:8080` | `http://kestra.<INGRESS_IP>.nip.io/` |
+| Airflow UI | `dataspoke-01/dataspoke-airflow-webserver:8080` | `http://airflow.<INGRESS_IP>.nip.io/` |
 
 ### Tier B — TCP Passthrough
 
@@ -334,7 +311,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~78%** → ~18.8 GiB RAM, ~7.75 CPU limits.
+Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~53%** → ~12.8 GiB RAM, ~6.25 CPU limits.
 
 ### Memory Budget (limits)
 
@@ -349,16 +326,16 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~78%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| kestra | dataspoke-01 | 8 Gi | 2g–4g heap + G1GC; polling/cleaner/telemetry tuned for dev |
+| airflow (webserver + scheduler) | dataspoke-01 | 2 Gi | Python LocalExecutor; lightweight compared to JVM-based orchestrators |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~18.8 Gi** | |
+| **Total** | | **~12.8 Gi** | |
 
-~5.2 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~11.2 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 

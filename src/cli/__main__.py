@@ -74,15 +74,15 @@ _LINE = "\u2500" * 42
 
 
 def _print_banner(port: int, components: list[str], env_file: Path) -> None:
-    kestra_url = os.environ.get("DATASPOKE_KESTRA_URL", "http://localhost:9205")
+    airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")
     lines = [
         "",
         _LINE,
         "  DataSpoke Dev Server",
         _LINE,
-        f"  API:       http://localhost:{port}",
-        f"  ReDoc:     http://localhost:{port}/redoc",
-        f"  Kestra UI: {kestra_url}",
+        f"  API:        http://localhost:{port}",
+        f"  ReDoc:      http://localhost:{port}/redoc",
+        f"  Airflow UI: {airflow_url}",
         "",
         f"  Components:  {', '.join(components)}",
         f"  Env:         {env_file}",

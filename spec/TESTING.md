@@ -85,11 +85,11 @@ Unit tests verify business logic in isolation. They **must never** require a run
 
 ## Integration Testing
 
-Integration tests run against the dev environment, exercising real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Kestra, Redis, and dummy-data sources.
+Integration tests run against the dev environment, exercising real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Airflow, Redis, and dummy-data sources.
 
 ### Testing Modes
 
-The API runs **in-cluster** alongside Kestra so that Kestra workflows can call back to the API directly via `http://dataspoke-api:8002`. Developers access the in-cluster API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for running tests and manual exploration. Code changes require `docker build` + `helm upgrade` (automated by `dataspoke-test-mode.sh`).
+The API runs **in-cluster** alongside Airflow so that Airflow DAGs can call back to the API directly via `http://dataspoke-api:8002`. Developers access the in-cluster API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for running tests and manual exploration. Code changes require `docker build` + `helm upgrade` (automated by `dataspoke-test-mode.sh`).
 
 ### Workflow
 
@@ -123,22 +123,22 @@ Before running integration tests, ensure the dev environment is installed and th
 ./dev_env/health-check.sh
 ```
 
-The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis, Qdrant, Kestra, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
+The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis, Qdrant, Airflow, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
 
 | Failing service | Subsystem directory |
 |---|---|
-| dataspoke-postgresql, redis, qdrant, kestra | `dev_env/dataspoke-infra/` |
+| dataspoke-postgresql, redis, qdrant, airflow | `dev_env/dataspoke-infra/` |
 | datahub-gms, datahub-kafka | `dev_env/datahub/` |
 | example-postgres, example-kafka | `dev_env/dataspoke-example/` |
 | lock-service | `dev_env/dataspoke-lock/` |
 
-### Kestra Integration Test Pitfalls
+### Airflow Integration Test Pitfalls
 
-- **Connection**: Kestra is accessed via nginx-ingress at `http://kestra.<INGRESS_IP>.nip.io` (`DATASPOKE_KESTRA_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests in worktrees must source it explicitly.
-- **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via `httpx.AsyncClient` (ASGI transport) without Kestra orchestration.
-- **Full flow testing**: Requires running Kestra + deployed flow YAML. Use `KestraClient` to trigger and poll. Keep timeouts short (30s max).
-- **Stale executions**: Cancel via Kestra REST API or UI (`http://kestra.<INGRESS_IP>.nip.io`) before starting new ones.
-- **Kestra utilities** (`tests/integration/util/kestra.py`): kill/cleanup stale executions, register/verify flows, poll until terminal state.
+- **Connection**: Airflow is accessed via nginx-ingress at `http://airflow.<INGRESS_IP>.nip.io` (`DATASPOKE_AIRFLOW_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests in worktrees must source it explicitly.
+- **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via `httpx.AsyncClient` (ASGI transport) without Airflow orchestration.
+- **Full DAG testing**: Requires running Airflow + deployed DAG files. Use `AirflowClient` to trigger and poll. Keep timeouts short (30s max).
+- **Stale DAG runs**: Cancel via Airflow REST API or UI (`http://airflow.<INGRESS_IP>.nip.io`) before starting new ones.
+- **Airflow utilities** (`tests/integration/util/airflow.py`): kill/cleanup stale DAG runs, verify DAGs, poll until terminal state.
 
 ### Test-Mode Stubs (`DATASPOKE_TEST_MODE`)
 
@@ -191,7 +191,7 @@ DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 ./dev_env/dataspoke-test-mode.sh --stop
 ```
 
-The `require_server` fixture verifies: (1) `DATASPOKE_TEST_MODE` is set, (2) server health via `/health`, (3) `ingestion-config-sync` Kestra flow is registered.
+The `require_server` fixture verifies: (1) `DATASPOKE_TEST_MODE` is set, (2) server health via `/health`, (3) Airflow DAGs are registered via `/admin/dags/verify`.
 
 Non-api-wired tests do not require the running server.
 
@@ -205,7 +205,7 @@ Tests must run in **three separate groups**:
 | 2. Non-api-wired integration | `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/` | No |
 | 3. Api-wired integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/` | Yes |
 
-**Why separate groups?** The test-mode server registers Kestra flows at startup. Running api-wired and non-api-wired tests together causes competing Kestra load.
+**Why separate groups?** The test-mode server uses Airflow DAGs. Running api-wired and non-api-wired tests together causes competing Airflow load.
 
 ### Readability Principle
 
@@ -252,7 +252,7 @@ Route tiers: `/api/v1/spoke/common/â€¦` (any group), `/api/v1/spoke/[de|da|dg]/â
 | Side effect | How to check |
 |---|---|
 | Event logged | `GET /api/v1/spoke/common/data/{urn}/event` |
-| Kestra flow | `curl -u "dataspoke@dataspoke.local:DataSpoke1" http://kestra.<INGRESS_IP>.nip.io/api/v1/flows/dataspoke/{flow_id}` |
+| Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v1/dags/{dag_id}` |
 | DB row | `psql -h <INGRESS_IP> -p 9201 -U dataspoke -d dataspoke` |
 | DataHub aspect | `curl http://datahub.<INGRESS_IP>.nip.io/gms/aspects?urn={urn}&aspect={aspect}` |
 

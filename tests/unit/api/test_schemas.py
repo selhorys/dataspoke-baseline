@@ -120,11 +120,10 @@ class TestIngestionSchemas:
             identifier={"database": "testdb"},
             auth={"username": "user", "secret_ref": "pw"},
             is_active=False,
-            schedule_cron=None,
+            schedule_tier=None,
             enrichment_sources=None,
             custom_extractors=None,
-            kestra_flow_namespace=None,
-            kestra_flow_id=None,
+            workflow_dag_id=None,
             status="OK",
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
@@ -151,16 +150,16 @@ class TestValidationSchemas:
             rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
             owner="admin",
         )
-        assert req.schedule_cron is None
+        assert req.schedule_tier is None
 
     def test_create_request_with_schedule(self) -> None:
         req = CreateValidationConfigRequest(
             dataset_urn="urn:li:dataset:test",
             rules=[],
-            schedule_cron="0 0 * * *",
+            schedule_tier="daily",
             owner="admin",
         )
-        assert req.schedule_cron == "0 0 * * *"
+        assert req.schedule_tier == "daily"
 
     def test_config_response_round_trip(self) -> None:
         now = datetime.now(tz=UTC)
@@ -168,7 +167,7 @@ class TestValidationSchemas:
             id="1",
             dataset_urn="urn:li:dataset:test",
             rules=[{"rule_id": "r1", "type": "volume"}],
-            schedule_cron=None,
+            schedule_tier=None,
             is_active=False,
             owner="admin",
             created_at=now,
@@ -295,10 +294,10 @@ class TestMetricsSchemas:
             theme="quality",
             measurement_query={"type": "poorly_documented"},
             is_active=True,
-            schedule_cron="0 0 * * *",
+            schedule_tier="daily",
         )
         assert req.is_active is True
-        assert req.schedule_cron == "0 0 * * *"
+        assert req.schedule_tier == "daily"
 
     def test_upsert_request_active_without_schedule_ok(self) -> None:
         req = UpsertMetricConfigRequest(
@@ -309,7 +308,7 @@ class TestMetricsSchemas:
             is_active=True,
         )
         assert req.is_active is True
-        assert req.schedule_cron is None
+        assert req.schedule_tier is None
 
     def test_definition_response(self) -> None:
         now = datetime.now(tz=UTC)
@@ -319,7 +318,7 @@ class TestMetricsSchemas:
             description="Counts total rows",
             theme="quality",
             measurement_query={"type": "poorly_documented"},
-            schedule_cron=None,
+            schedule_tier=None,
             is_active=True,
             created_at=now,
             updated_at=now,

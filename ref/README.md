@@ -16,8 +16,7 @@ When designing or implementing DataSpoke features, AI assistants (like Claude Co
 ```
 ref/
 ├── github/               # Open source repositories cloned from GitHub
-│   ├── datahub/          # DataHub OSS (version-locked to dev_env deployment)
-│   └── kestra/           # Kestra workflow engine (version-locked to dev_env deployment)
+│   └── datahub/          # DataHub OSS (version-locked to dev_env deployment)
 └── README.md
 ```
 
@@ -28,7 +27,6 @@ Reference materials are version-locked to match the DataSpoke development enviro
 | Component | Version | Location | Source |
 |-----------|---------|----------|--------|
 | DataHub OSS | v1.4.0.3 | `github/datahub/` | https://github.com/datahub-project/datahub |
-| Kestra | v1.3.3 | `github/kestra/` | https://github.com/kestra-io/kestra |
 
 > **Note**: When `dev_env/.env` is updated with new DataHub versions, re-run the corresponding setup script to fetch matching source code.
 
@@ -45,7 +43,6 @@ Or download specific components:
 
 ```bash
 ./setup.sh datahub    # Download only DataHub source
-./setup.sh kestra     # Download only Kestra source
 ./setup.sh --all      # Download everything (default)
 ```
 

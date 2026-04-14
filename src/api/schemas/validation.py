@@ -3,10 +3,12 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import AssertionResult
+
+_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 
 
 class CreateValidationConfigRequest(BaseModel):
@@ -29,7 +31,7 @@ class CreateValidationConfigRequest(BaseModel):
             "`order` (list), `values` (list), optional `ml_validation` config"
         )
     )
-    schedule_cron: str | None = Field(default=None, description="Cron expression for periodic validation runs, e.g. '0 6 * * *' for daily at 06:00 UTC. Required when is_active is true.")
+    schedule_tier: str | None = Field(default=None, description="Schedule tier for periodic validation runs: 'hourly', 'daily', or 'weekly'. Required when is_active is true.")
     is_active: bool = Field(default=False, description="Whether the validation config is active and scheduled to run")
     owner: str = Field(description="Owner identifier (email or user URN) responsible for this validation config")
 
@@ -94,17 +96,24 @@ class CreateValidationConfigRequest(BaseModel):
                         },
                     },
                 ],
-                "schedule_cron": "0 6 * * *",
+                "schedule_tier": "daily",
                 "is_active": True,
                 "owner": "de-lead@imazon.com",
             }
         }
     }
 
+    @field_validator("schedule_tier")
+    @classmethod
+    def validate_schedule_tier(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
+        return v
+
     @model_validator(mode="after")
-    def validate_is_active_schedule_cron(self) -> "CreateValidationConfigRequest":
-        if self.is_active and not self.schedule_cron:
-            raise ValueError("schedule_cron is required when is_active is true")
+    def validate_is_active_schedule_tier(self) -> "CreateValidationConfigRequest":
+        if self.is_active and not self.schedule_tier:
+            raise ValueError("schedule_tier is required when is_active is true")
         return self
 
 
@@ -116,14 +125,21 @@ class PatchValidationConfigRequest(BaseModel):
             "Supported types: freshness, volume, field, schema, sql, custom."
         )
     )
-    schedule_cron: str | None = Field(default=None, description="Updated cron expression for periodic runs.")
-    is_active: bool | None = Field(default=None, description="Set to true to activate scheduling (schedule_cron must be provided in the same request), false to pause.")
+    schedule_tier: str | None = Field(default=None, description="Updated schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.")
+    is_active: bool | None = Field(default=None, description="Set to true to activate scheduling (schedule_tier must be provided in the same request), false to pause.")
+
+    @field_validator("schedule_tier")
+    @classmethod
+    def validate_schedule_tier(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
+        return v
 
     @model_validator(mode="after")
-    def validate_is_active_schedule_cron(self) -> "PatchValidationConfigRequest":
-        if self.is_active is True and self.schedule_cron is None:
+    def validate_is_active_schedule_tier(self) -> "PatchValidationConfigRequest":
+        if self.is_active is True and self.schedule_tier is None:
             raise ValueError(
-                "schedule_cron must be provided in the same patch when setting is_active to true"
+                "schedule_tier must be provided in the same patch when setting is_active to true"
             )
         return self
 
@@ -138,7 +154,7 @@ class PatchValidationConfigRequest(BaseModel):
                         "last_modified_field": "updated_at",
                     },
                 ],
-                "schedule_cron": "0 */6 * * *",
+                "schedule_tier": "daily",
                 "is_active": True,
             }
         }
@@ -164,7 +180,7 @@ class ValidationConfigResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the validation config")
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     rules: list[dict[str, Any]] = Field(description="List of validation rule definitions")
-    schedule_cron: str | None = Field(description="Cron expression for scheduled runs")
+    schedule_tier: str | None = Field(description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'")
     is_active: bool = Field(description="Whether scheduled validation runs are enabled")
     owner: str = Field(description="Owner identifier responsible for this validation config")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
@@ -180,7 +196,7 @@ class ValidationConfigResponse(SingleResponse):
                     {"rule_id": "r-fresh-001", "type": "freshness", "lookback_interval": "24 hours", "last_modified_field": "updated_at"},
                     {"rule_id": "r-vol-001", "type": "volume", "metric": "row_count", "condition": {"type": "between", "min": 10, "max": 10000}},
                 ],
-                "schedule_cron": "0 6 * * *",
+                "schedule_tier": "daily",
                 "is_active": True,
                 "owner": "de-lead@imazon.com",
                 "created_at": "2026-04-01T06:00:00Z",
@@ -203,7 +219,7 @@ class ValidationResultResponse(SingleResponse):
     validation: dict[str, bool] | None = Field(default=None, description="Per-check pass/fail mapping, keyed by check name")
     assertion_result: AssertionResult = Field(description="Overall assertion outcome: SUCCESS, FAILURE, or ERROR")
     issues: list[dict[str, Any]] = Field(default=[], description="List of issue details when assertion_result is FAILURE or ERROR")
-    run_id: str = Field(description="Kestra execution ID for the run that produced this result")
+    run_id: str = Field(description="Airflow DAG run ID for the run that produced this result")
     measured_at: datetime = Field(description="UTC timestamp when the measurement was taken")
 
     model_config = {
@@ -218,7 +234,7 @@ class ValidationResultResponse(SingleResponse):
                 "validation": {"null_count": True},
                 "assertion_result": "SUCCESS",
                 "issues": [],
-                "run_id": "kestra-exec-20260404-001",
+                "run_id": "airflow-run-20260404-001",
                 "measured_at": "2026-04-04T06:05:12Z",
             }
         }
@@ -230,7 +246,7 @@ class ValidationResultListResponse(PaginatedResponse):
 
 
 class RunResultResponse(SingleResponse):
-    run_id: str = Field(description="Kestra execution ID for this validation run")
+    run_id: str = Field(description="Airflow DAG run ID for this validation run")
     status: str = Field(description="Execution outcome, e.g. 'success'")
     total: int = Field(default=0, description="Total number of rules evaluated")
     passed: int = Field(default=0, description="Number of rules that passed")
@@ -241,7 +257,7 @@ class RunResultResponse(SingleResponse):
         "json_schema_extra": {
             "example": {
                 "resp_time": "2026-04-05T10:00:00Z",
-                "run_id": "kestra-exec-20260404-001",
+                "run_id": "airflow-run-20260404-001",
                 "status": "success",
                 "total": 6,
                 "passed": 5,

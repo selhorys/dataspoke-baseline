@@ -2,7 +2,7 @@
 
 Subscribes to MCL topics, deserializes events, and routes them through
 the EventRouter. Commits offsets only after successful processing.
-Creates a Kestra client at startup so handlers can trigger workflows.
+Creates an Airflow client at startup so handlers can trigger DAG runs.
 
 Usage:
     python -m src.shared.datahub.consumer
@@ -26,21 +26,22 @@ MCL_TOPICS = [
 ]
 
 
-def _create_kestra_client():
-    """Create a Kestra client; return None if configuration is missing."""
+def _create_airflow_client():
+    """Create an Airflow client; return None if configuration is missing."""
     try:
-        from src.workflows.kestra.client import KestraClient
+        from src.workflows.airflow.client import AirflowClient
 
-        client = KestraClient(
-            base_url=settings.kestra_url,
-            namespace=settings.kestra_namespace,
+        client = AirflowClient(
+            base_url=settings.airflow_url,
+            username=settings.airflow_user,
+            password=settings.airflow_password,
         )
-        logger.info("kestra_client_created", url=settings.kestra_url)
+        logger.info("airflow_client_created", url=settings.airflow_url)
         return client
     except Exception:
         logger.warning(
-            "kestra_unavailable",
-            msg="handlers requiring Kestra will be no-ops",
+            "airflow_unavailable",
+            msg="handlers requiring Airflow will be no-ops",
         )
         return None
 
@@ -60,8 +61,8 @@ async def run_consumer() -> None:
     consumer.subscribe(MCL_TOPICS)
     logger.info("consumer_started", topics=MCL_TOPICS)
 
-    kestra_client = _create_kestra_client()
-    router = build_router(kestra_client=kestra_client)
+    airflow_client = _create_airflow_client()
+    router = build_router(airflow_client=airflow_client)
 
     try:
         while True:

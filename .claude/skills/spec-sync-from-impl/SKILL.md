@@ -62,7 +62,7 @@ Select scopes to sync (comma-separated numbers or keywords):
   5. helm-charts  — Helm chart definitions and specs
   6. api          — API specs, src/api/ code
   7. ref          — ref/ setup scripts and reference materials
-  8. backend      — Backend services, Kestra workflows (TBD)
+  8. backend      — Backend services, Airflow workflows (TBD)
   9. frontend     — Next.js frontend code (TBD)
 
 Example: "1" or "prauto, api" or "2,3,6"

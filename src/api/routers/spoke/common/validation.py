@@ -33,7 +33,7 @@ def _config_response(c) -> ValidationConfigResponse:  # noqa: ANN001
         id=c.id if isinstance(c.id, str) else str(c.id),
         dataset_urn=c.dataset_urn,
         rules=c.rules,
-        schedule_cron=c.schedule_cron,
+        schedule_tier=c.schedule_tier,
         is_active=c.is_active,
         owner=c.owner,
         created_at=c.created_at,
@@ -108,9 +108,9 @@ async def patch_validation_config_attr(
 ) -> ValidationConfigResponse:
     """Partially update a validation config's attributes.
 
-    Accepts any combination of `rules`, `schedule_cron`, and `is_active`.
+    Accepts any combination of `rules`, `schedule_tier`, and `is_active`.
     When `rules` is provided, it replaces the entire rule set (no partial
-    rule merge). Setting `is_active` to true requires `schedule_cron` in
+    rule merge). Setting `is_active` to true requires `schedule_tier` in
     the same request.
     """
     patch = body.model_dump(exclude_unset=True)

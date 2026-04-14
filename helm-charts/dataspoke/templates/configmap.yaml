@@ -16,9 +16,8 @@ data:
   DATASPOKE_QDRANT_HOST: {{ .Values.config.qdrant.host | quote }}
   DATASPOKE_QDRANT_HTTP_PORT: {{ .Values.config.qdrant.httpPort | quote }}
   DATASPOKE_QDRANT_GRPC_PORT: {{ .Values.config.qdrant.grpcPort | quote }}
-  DATASPOKE_KESTRA_URL: {{ .Values.config.kestra.url | quote }}
-  DATASPOKE_KESTRA_NAMESPACE: {{ .Values.config.kestra.namespace | quote }}
-  DATASPOKE_KESTRA_CALLBACK_BASE_URL: {{ .Values.config.kestra.callbackBaseUrl | quote }}
+  DATASPOKE_AIRFLOW_URL: {{ .Values.config.airflow.url | quote }}
+  DATASPOKE_AIRFLOW_CALLBACK_BASE_URL: {{ .Values.config.airflow.callbackBaseUrl | quote }}
   DATASPOKE_LLM_PROVIDER: {{ .Values.config.llm.provider | quote }}
   DATASPOKE_LLM_MODEL: {{ .Values.config.llm.model | quote }}
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}

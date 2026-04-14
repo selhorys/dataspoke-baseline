@@ -1,7 +1,7 @@
 # DataSpoke Backend — Data Contracts
 
 > This document specifies the storage contracts shared across all DataSpoke
-> backend processes (API server, Kestra activity endpoints, event consumers):
+> backend processes (API server, Airflow activity endpoints, event consumers):
 > PostgreSQL tables, Qdrant vector collections, and related indexes.
 >
 > Companion to [BACKEND](BACKEND.md) (service logic, workflows, shared clients).
@@ -41,13 +41,12 @@ Stores per-dataset ingestion configuration.
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
 | `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth |
-| `is_active` | `BOOLEAN` | Enable cron-triggered execution via Kestra |
-| `schedule_cron` | `TEXT` NULL | Cron expression (required when `is_active=true`) |
+| `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow |
+| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `enrichment_sources` | `JSONB` NULL | External enrichment source configs (TBD) |
 | `custom_extractors` | `JSONB` NULL | Custom extractor plugin configs (TBD) |
-| `kestra_flow_namespace` | `TEXT` NULL | Kestra namespace of the registered periodic flow |
-| `kestra_flow_id` | `TEXT` NULL | Kestra flow ID of the registered periodic flow |
-| `status` | `TEXT` | `OK` (Kestra registration succeeded), `ERROR` (registration failed) |
+| `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG |
+| `status` | `TEXT` | `OK` (DAG verification succeeded), `ERROR` (verification failed) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
 
@@ -72,7 +71,7 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `schedule_cron` | `TEXT` NULL | Cron expression (required when `is_active=true`) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
 | `is_active` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
 | `owner` | `TEXT` | Owner user ID |
@@ -93,7 +92,7 @@ Per-rule, per-partition results from validation runs. Also reported to DataHub a
 | `validation` | `JSONB` NULL | ML validation verdicts per target (e.g., `{"null_rate": true}`) |
 | `assertion_result` | `TEXT` | `SUCCESS`, `FAILURE`, or `ERROR` |
 | `issues` | `JSONB` | Array of rule-specific issue objects |
-| `run_id` | `UUID` | Kestra flow execution ID |
+| `run_id` | `UUID` | Airflow DAG run ID |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
 #### `generation_configs`
@@ -106,7 +105,7 @@ Stores per-dataset doc generation configuration.
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `target_fields` | `JSONB` | Fields to generate (description, tags, deprecation) |
 | `code_refs` | `JSONB` NULL | GitHub repo/file references for code analysis |
-| `schedule_cron` | `TEXT` NULL | Cron expression for periodic runs |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs (`hourly`, `daily`, `weekly`) |
 | `status` | `TEXT` | `draft` |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -123,7 +122,7 @@ Historical generation results, pending approval.
 | `proposals` | `JSONB` | Proposed changes (field → value mappings) |
 | `similar_diffs` | `JSONB` | Diff summaries against similar tables |
 | `approval_status` | `TEXT` | `pending`, `approved`, `rejected` |
-| `run_id` | `UUID` | Kestra flow execution ID |
+| `run_id` | `UUID` | Airflow DAG run ID |
 | `generated_at` | `TIMESTAMPTZ` | |
 | `applied_at` | `TIMESTAMPTZ` NULL | When approved and applied |
 
@@ -178,7 +177,7 @@ Governance metric definitions.
 | `description` | `TEXT` | What this metric measures |
 | `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
 | `measurement_query` | `JSONB` | `{"type": "poorly_documented"\|"stale_datasets", "dataset_filter": {"tags": [...], "glossary_terms": [...]}}` |
-| `schedule_cron` | `TEXT` NULL | Cron expression for scheduled measurement |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement (`hourly`, `daily`, `weekly`) |
 | `is_active` | `BOOLEAN` | Whether scheduled measurement is active |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |

@@ -8,7 +8,7 @@
 # ingress — no port-forward needed.
 #
 # DATASPOKE_TEST_MODE=true is baked into values-dev.yaml (api.testMode: true)
-# so Kestra callbacks reach the API via http://dataspoke-api:8000 within the
+# so Airflow callbacks reach the API via http://dataspoke-api:8000 within the
 # cluster.
 #
 # Usage:
@@ -156,16 +156,15 @@ kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
   || { warn "dataspoke-api did not become ready in time — check pod logs."; }
 
 # ---------------------------------------------------------------------------
-# Step 4: Register Kestra flows
-# (JVM warm-up is handled by dataspoke-infra/install.sh in step 2)
+# Step 4: Verify Airflow DAGs are loaded
 # ---------------------------------------------------------------------------
 if [[ -n "$DOMAIN" ]]; then
-  info "Registering Kestra flows..."
-  if curl -sf -X POST "http://app.${DOMAIN}/internal/admin/flows/init" -o /dev/null; then
-    info "Kestra flows registered."
+  info "Verifying Airflow DAGs..."
+  if curl -sf -X POST "http://app.${DOMAIN}/internal/admin/dags/verify" -o /dev/null; then
+    info "Airflow DAGs verified."
   else
-    warn "Failed to register Kestra flows — Kestra may not be ready. Retry with:"
-    echo "    curl -X POST http://app.${DOMAIN}/internal/admin/flows/init"
+    warn "Failed to verify Airflow DAGs — Airflow may not be ready. Retry with:"
+    echo "    curl -X POST http://app.${DOMAIN}/internal/admin/dags/verify"
   fi
 fi
 

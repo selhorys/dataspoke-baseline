@@ -10,15 +10,15 @@ dependencies:
   version: 0.1.0
 - name: postgresql
   repository: https://charts.bitnami.com/bitnami
-  version: 18.5.15
+  version: 18.5.17
 - name: redis
   repository: https://charts.bitnami.com/bitnami
-  version: 25.3.9
+  version: 25.3.11
 - name: qdrant
   repository: https://qdrant.github.io/qdrant-helm
   version: 1.17.1
-- name: kestra
-  repository: https://helm.kestra.io/
-  version: 1.0.46
-digest: sha256:028fc3282771555c813c7d1e519d4718ac958d7103f3dde87b390d3d2d1cb64a
-generated: "2026-04-08T23:30:20.583233+09:00"
+- name: airflow
+  repository: https://airflow.apache.org
+  version: 1.16.0
+digest: sha256:d90cf586331e706abf2a076d1b87a2ff3e513948247020fecc39cdb124e075b2
+generated: "2026-04-15T00:10:33.462547+09:00"

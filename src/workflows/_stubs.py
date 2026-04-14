@@ -2,7 +2,7 @@
 
 When ``DATASPOKE_TEST_MODE=true``, the ``make_*`` factories in
 ``_common.py`` return these stubs instead of real clients.  This lets a
-host-mode DataSpoke server handle Kestra activity callbacks without
+host-mode DataSpoke server handle Airflow activity callbacks without
 requiring real LLM / Qdrant / cache / notification backends.
 
 DataHub and PostgreSQL are **never** stubbed — they always use real

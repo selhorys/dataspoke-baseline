@@ -1,6 +1,6 @@
 """Generation workflow — parameters and flow ID constant.
 
-Orchestration is handled by the Kestra flow definition in flows/generation.yaml.
+Orchestration is handled by the Airflow DAG definition in dags/generation.py.
 Business logic is in the internal activity endpoints.
 """
 

@@ -78,7 +78,7 @@ def build_run_event(
     Args:
         assertion_urn: The assertion URN built from build_assertion_urn().
         dataset_urn: The target dataset URN.
-        run_id: The Kestra flow execution / validation run ID.
+        run_id: The workflow execution / validation run ID.
         result: One of "SUCCESS", "FAILURE", "ERROR".
         values: Computed metric values for this run.
         partition: Partition context (empty dict = full-table scan).

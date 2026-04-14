@@ -2,7 +2,7 @@
 
 A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
 
-The API runs **in-cluster** alongside Kestra so that workflow callbacks work via cluster DNS. Developers access the API via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Frontend runs on the host. See [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
+The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access the API via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Frontend runs on the host. See [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
 
 ## Prerequisites
 
@@ -49,7 +49,7 @@ All HTTP services are accessed via virtual-host routing on the nginx-ingress Loa
 | DataHub UI | `http://datahub.<INGRESS_IP>.nip.io/` | `datahub` / `datahub` |
 | DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
 | DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
-| Kestra UI | `http://kestra.<INGRESS_IP>.nip.io/` | -- |
+| Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
 | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
 | Redis | `<INGRESS_IP>:9202` | per `.env` |
 | Qdrant HTTP | `<INGRESS_IP>:9203` | -- |
@@ -69,7 +69,7 @@ Replace `<INGRESS_IP>` with the value of `DATASPOKE_DEV_INGRESS_IP` from `dev_en
 ./dataspoke-test-mode.sh --stop       # Scale down the API deployment
 ```
 
-The API is accessible at `http://app.<INGRESS_IP>.nip.io/api/v1/` via nginx-ingress. For optional host-mode development (no Kestra callbacks): `uv run -m src.cli` from the repo root.
+The API is accessible at `http://app.<INGRESS_IP>.nip.io/api/v1/` via nginx-ingress. For optional host-mode development (no Airflow callbacks): `uv run -m src.cli` from the repo root.
 
 ### 6. Lock service (multi-tester coordination)
 
@@ -116,21 +116,8 @@ Seeds 11 schemas, 17 tables (~600 rows), 3 Kafka topics (~45 messages), and 20 D
 Reinstall a single component without tearing down the entire environment:
 
 ```bash
-./reinstall.sh --kestra    # Full Kestra reset: pods, PVCs, database state, then redeploy
+./reinstall.sh --airflow    # Full Airflow reset: pods, database state, then redeploy
 ```
-
-## Monitor Kestra
-
-Check Kestra's resource usage, health, and execution state:
-
-```bash
-./monitor-kestra.sh              # Full snapshot (CPU, memory, PG connections, health, executions, logs)
-./monitor-kestra.sh --brief      # One-line summary for scripting
-./monitor-kestra.sh --watch      # Repeat every 15s (Ctrl-C to stop)
-./monitor-kestra.sh --watch 30   # Custom interval
-```
-
-All commands are timeout-wrapped so the script never hangs, even when Kestra is overloaded. Exit codes: 0 = healthy, 1 = warning, 2 = critical.
 
 ## Uninstall
 
@@ -150,7 +137,7 @@ The nginx-ingress controller lives in the `ingress-nginx` namespace and is insta
 ```
 
 The controller serves:
-- **HTTP virtual hosts** on port 80 (and 443 for TLS) for DataHub, DataSpoke API, DataSpoke UI, and Kestra
+- **HTTP virtual hosts** on port 80 (and 443 for TLS) for DataHub, DataSpoke API, DataSpoke UI, and Airflow
 - **TCP passthrough** on dedicated ports (9201-9204, 9005, 9102, 9104, 9221) for databases, brokers, and the lock service
 
 ### Namespace architecture

@@ -47,7 +47,7 @@ class MetricDefinitionRecord(BaseModel):
     description: str
     theme: str
     measurement_query: dict[str, Any]
-    schedule_cron: str | None = None
+    schedule_tier: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -78,7 +78,7 @@ def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
         description=row.description,
         theme=row.theme,
         measurement_query=row.measurement_query,
-        schedule_cron=row.schedule_cron,
+        schedule_tier=row.schedule_tier,
         is_active=row.is_active,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -170,7 +170,7 @@ class MetricsService:
             "title": row.title,
             "theme": row.theme,
             "is_active": row.is_active,
-            "schedule_cron": row.schedule_cron,
+            "schedule_tier": row.schedule_tier,
             "latest_value": latest_row.value if latest_row else None,
             "latest_measured_at": latest_row.measured_at if latest_row else None,
         }
@@ -185,7 +185,7 @@ class MetricsService:
         description: str,
         theme: str,
         measurement_query: dict[str, Any],
-        schedule_cron: str | None = None,
+        schedule_tier: str | None = None,
         is_active: bool = True,
     ) -> tuple[MetricDefinitionRecord, bool]:
         result = await self._db.execute(
@@ -198,7 +198,7 @@ class MetricsService:
             existing.description = description
             existing.theme = theme
             existing.measurement_query = measurement_query
-            existing.schedule_cron = schedule_cron
+            existing.schedule_tier = schedule_tier
             existing.is_active = is_active
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
@@ -210,7 +210,7 @@ class MetricsService:
                 description=description,
                 theme=theme,
                 measurement_query=measurement_query,
-                schedule_cron=schedule_cron,
+                schedule_tier=schedule_tier,
                 is_active=is_active,
             )
             self._db.add(existing)
@@ -244,7 +244,7 @@ class MetricsService:
             "description",
             "theme",
             "measurement_query",
-            "schedule_cron",
+            "schedule_tier",
             "is_active",
         ):
             if field in patch and patch[field] is not None:

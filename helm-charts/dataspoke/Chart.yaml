@@ -38,7 +38,7 @@ dependencies:
     repository: "https://qdrant.github.io/qdrant-helm"
     condition: qdrant.enabled
 
-  - name: kestra
-    version: "~1.0.42"
-    repository: "https://helm.kestra.io/"
-    condition: kestra.enabled
+  - name: airflow
+    version: "~1.16.0"
+    repository: "https://airflow.apache.org"
+    condition: airflow.enabled

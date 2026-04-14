@@ -45,7 +45,7 @@ src/
 
 Internal activity endpoints (`/internal/activities/{domain}/*`) live in `src/api/routers/internal/activities.py` and are **in scope** for this agent — they use `make_*` factory functions from `src/workflows/_common.py` (not FastAPI `Depends()`) and delegate to `src/backend/` services.
 
-Kestra flow YAML and workflow parameter modules live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified flow definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
+Airflow DAG files and workflow parameter modules live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified DAG definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
 
 ## Invocation modes
 

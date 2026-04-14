@@ -1,14 +1,13 @@
-"""Integration tests for internal activity endpoints (Kestra-free).
+"""Integration tests for internal activity endpoints (Airflow-free).
 
 Calls /internal/activities/* endpoints directly through the test-mode
-server (DATASPOKE_TEST_MODE=true), bypassing Kestra orchestration.
-This verifies business logic that was previously only tested through
-Kestra E2E tests — without any Kestra overhead.
+server (DATASPOKE_TEST_MODE=true), bypassing Airflow DAG orchestration.
+This verifies business logic end-to-end without any Airflow overhead.
 
 Prerequisites:
-- Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true)
-- PostgreSQL port-forwarded to localhost:9201
-- DataHub GMS port-forwarded to localhost:9004
+- In-cluster DataSpoke server running (DATASPOKE_TEST_MODE=true via dataspoke-test-mode.sh)
+- PostgreSQL accessible via DATASPOKE_DEV_PG_HOST/PORT
+- DataHub GMS accessible via DATASPOKE_DATAHUB_GMS_URL
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -58,7 +57,7 @@ async def test_run_validation_activity_dry_run(
         )
         assert resp.status_code in (200, 201)
 
-        # Call activity endpoint directly (bypasses Kestra)
+        # Call activity endpoint directly (bypasses Airflow DAG)
         resp = await http_client.post(
             "/internal/activities/validation/run",
             json={

@@ -101,10 +101,10 @@ async def delete_ingestion_events_db(
     )
 
 
-async def delete_kestra_flow(kestra_client, flow_id: str) -> None:
-    """Delete a Kestra flow; ignores errors if not found."""
+async def delete_airflow_dag_run(airflow_client, dag_id: str, dag_run_id: str) -> None:
+    """Delete an Airflow DAG run; ignores errors if not found."""
     try:
-        await kestra_client.delete_flow(flow_id)
+        await airflow_client.delete_dag_run(dag_id, dag_run_id)
     except Exception:
         pass
 

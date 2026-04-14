@@ -40,7 +40,7 @@ structure that maps directly to the user-group taxonomy defined in the MANIFESTO
 
 The API is the only **HTTP-facing** component for external clients (the portal UI and
 AI agents). Backend services also access DataHub, PostgreSQL, Redis, and Qdrant directly.
-Kestra orchestrates workflows by calling internal activity endpoints on the API.
+Airflow orchestrates workflows by calling internal activity endpoints on the API.
 
 In the future, DataSpoke may also expose **redefined DataHub functions** — blended endpoints that proxy DataHub's basic operations (e.g., dataset creation, metadata browsing) while simultaneously handling DataSpoke-specific data in a single call. These would appear under `/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
 
@@ -54,7 +54,7 @@ Browser / AI Agent
 └──────────────────┘
    │      │      │
    ▼      ▼      ▼
-DataHub  Postgres  Qdrant / Redis / Kestra
+DataHub  Postgres  Qdrant / Redis / Airflow
 ```
 
 ### API-First Design
@@ -248,7 +248,7 @@ and [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-re
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (platform, locator, identifier, auth, is_active, schedule_cron, status) | Ingestion Config | UC1 |
+| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (platform, locator, identifier, auth, is_active, schedule_tier, status) | Ingestion Config | UC1 |
 | `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
 | `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
@@ -271,7 +271,7 @@ and [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertio
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/validation` | List all validation configs across datasets (paginated, filterable) | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, is_active, schedule_cron, owner) | Validation Config | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, is_active, schedule_tier, owner) | Validation Config | UC2, UC3, UC6 |
 | `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range) | DataHub Assertion Management | UC2, UC3, UC6 |
 | `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |
@@ -336,7 +336,7 @@ are included in the measurement. Filters are OR-ed across all dimensions.
 | `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Enterprise Metrics Dashboard | UC6 |
 | `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, active status) | Enterprise Metrics Dashboard | UC6 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, active status) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_cron, active status) | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, active status) | Enterprise Metrics Dashboard | UC6 |
 | `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Enterprise Metrics Dashboard | UC6 |
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Enterprise Metrics Dashboard | UC6 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Enterprise Metrics Dashboard | UC6 |
@@ -539,7 +539,7 @@ All errors follow the standard envelope:
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation) |
 | `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
-| `503 Service Unavailable` | Kestra, PostgreSQL, or Qdrant connection failure |
+| `503 Service Unavailable` | Airflow, PostgreSQL, or Qdrant connection failure |
 
 ### Application Error Codes
 
@@ -606,10 +606,10 @@ Messages sent during a validation run (rule-by-rule progress):
 
 ### Metric Update Stream (`/spoke/dg/metric/stream`)
 
-Pushed when the Kestra metrics flow completes a measurement run:
+Pushed when the Airflow metrics DAG completes a measurement run:
 
 ```json
 {"run_id": "abc-123", "status": "success", "detail": {"metric_id": "poorly-documented-datasets", "value": 3}}
 ```
 
-Fields: `run_id` (Kestra execution ID or null), `status` (execution outcome), `detail` (run metadata including metric_id and measured value).
+Fields: `run_id` (Airflow DAG run ID or null), `status` (execution outcome), `detail` (run metadata including metric_id and measured value).

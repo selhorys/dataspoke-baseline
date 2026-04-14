@@ -1,6 +1,6 @@
 """Embedding sync workflow — parameters and flow ID constant.
 
-Orchestration is handled by the Kestra flow definition in flows/embedding_sync.yaml.
+Orchestration is handled by the Airflow DAG definition in dags/embedding_sync.py.
 Business logic is in the internal activity endpoints.
 """
 

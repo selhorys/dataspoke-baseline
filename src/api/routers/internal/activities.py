@@ -1,11 +1,11 @@
-"""Internal activity endpoints — called by Kestra HTTP Request tasks.
+"""Internal activity endpoints — called by Airflow HTTP operator tasks.
 
-Each endpoint corresponds to a Kestra activity. Business logic
+Each endpoint corresponds to an Airflow activity. Business logic
 remains in the backend service layer; these endpoints are thin wrappers
 that handle error translation to HTTP status codes.
 
 These endpoints are NOT exposed to end users — they are called by the
-Kestra orchestrator running inside the same K8s namespace.
+Airflow orchestrator running inside the same K8s namespace.
 """
 
 import json
@@ -50,18 +50,16 @@ def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:
 
 
 class ListPeriodicDatasetsRequest(BaseModel):
-    schedule_cron: str
+    schedule_tier: str
 
 
 @router.post("/ingestion/list-periodic")
 async def list_periodic_datasets(body: ListPeriodicDatasetsRequest) -> list[str]:
-    from src.backend.ingestion.service import IngestionService
+    from src.workflows.ingestion import get_datasets_for_tier
 
-    datahub = make_datahub()
     try:
         async with make_db_session() as db:
-            service = IngestionService(datahub=datahub, db=db)
-            return await service.list_periodic_datasets(body.schedule_cron)
+            return await get_datasets_for_tier(db, body.schedule_tier)
     except DataSpokeError as exc:
         return _error_response(exc)
 
@@ -88,87 +86,25 @@ async def run_ingestion(body: RunIngestionRequest) -> dict:
         return _error_response(exc)
 
 
-@router.post("/ingestion/sync-periodic-flows")
-async def sync_periodic_ingestion_flows() -> dict:
-    from src.shared.settings import settings
-    from src.workflows.ingestion import sync_periodic_ingestion_flows as _sync
-    from src.workflows.kestra.client import KestraClient
-
-    kestra = KestraClient(
-        base_url=settings.kestra_url,
-        namespace=settings.kestra_namespace,
-        username=settings.kestra_user,
-        password=settings.kestra_password,
-    )
-    try:
-        async with make_db_session() as db:
-            result = await _sync(
-                kestra_client=kestra,
-                db=db,
-                callback_base_url=settings.kestra_callback_base_url,
-                concurrent=settings.kestra_ingestion_concurrent,
-            )
-            return result
-    except DataSpokeError as exc:
-        return _error_response(exc)
-    finally:
-        await kestra.close()
-
-
 # ── /validation ──────────────────────────────────────────────────────────────
 
 
 class ListPeriodicValidationDatasetsRequest(BaseModel):
-    schedule_cron: str
+    schedule_tier: str
 
 
 @router.post("/validation/list-periodic")
 async def list_periodic_validation_datasets(
     body: ListPeriodicValidationDatasetsRequest,
 ) -> list[str]:
-    """List dataset URNs with active validation configs for the given cron schedule."""
-    from sqlalchemy import select
-
-    from src.shared.db.models import ValidationConfig
+    """List dataset URNs with active validation configs for the given schedule tier."""
+    from src.workflows.validation_sync import get_datasets_for_tier
 
     try:
         async with make_db_session() as db:
-            result = await db.execute(
-                select(ValidationConfig.dataset_urn).where(
-                    ValidationConfig.is_active == True,  # noqa: E712
-                    ValidationConfig.schedule_cron == body.schedule_cron,
-                )
-            )
-            return [row[0] for row in result.all()]
+            return await get_datasets_for_tier(db, body.schedule_tier)
     except DataSpokeError as exc:
         return _error_response(exc)
-
-
-@router.post("/validation/sync-periodic-flows")
-async def sync_periodic_validation_flows() -> dict:
-    """Sync Kestra periodic validation flows based on active config schedules."""
-    from src.shared.settings import settings
-    from src.workflows.kestra.client import KestraClient
-    from src.workflows.validation_sync import sync_periodic_validation_flows as _sync
-
-    kestra = KestraClient(
-        base_url=settings.kestra_url,
-        namespace=settings.kestra_namespace,
-        username=settings.kestra_user,
-        password=settings.kestra_password,
-    )
-    try:
-        async with make_db_session() as db:
-            result = await _sync(
-                kestra_client=kestra,
-                db=db,
-                callback_base_url=settings.kestra_callback_base_url,
-            )
-            return result
-    except DataSpokeError as exc:
-        return _error_response(exc)
-    finally:
-        await kestra.close()
 
 
 class RunValidationRequest(BaseModel):
@@ -309,53 +245,19 @@ async def aggregate_health() -> dict:
 
 
 class ListPeriodicMetricsRequest(BaseModel):
-    schedule_cron: str
+    schedule_tier: str
 
 
 @router.post("/metrics/list-periodic")
 async def list_periodic_metrics(body: ListPeriodicMetricsRequest) -> list[str]:
-    """Return metric IDs with active configs matching the given cron schedule."""
-    from sqlalchemy import select
-
-    from src.shared.db.models import MetricDefinition
+    """Return metric IDs with active configs matching the given schedule tier."""
+    from src.workflows.metrics import get_metrics_for_tier
 
     try:
         async with make_db_session() as db:
-            result = await db.execute(
-                select(MetricDefinition.id).where(
-                    MetricDefinition.is_active == True,  # noqa: E712
-                    MetricDefinition.schedule_cron == body.schedule_cron,
-                )
-            )
-            return [row[0] for row in result.all()]
+            return await get_metrics_for_tier(db, body.schedule_tier)
     except DataSpokeError as exc:
         return _error_response(exc)
-
-
-@router.post("/metrics/sync-periodic-flows")
-async def sync_periodic_metrics_flows() -> dict:
-    """Sync Kestra periodic metrics flows based on active config schedules."""
-    from src.shared.settings import settings
-    from src.workflows.kestra.client import KestraClient
-    from src.workflows.metrics import sync_periodic_metrics_flows as _sync
-
-    kestra = KestraClient(
-        base_url=settings.kestra_url,
-        namespace=settings.kestra_namespace,
-        username=settings.kestra_user,
-        password=settings.kestra_password,
-    )
-    try:
-        async with make_db_session() as db:
-            return await _sync(
-                kestra_client=kestra,
-                db=db,
-                callback_base_url=settings.kestra_callback_base_url,
-            )
-    except DataSpokeError as exc:
-        return _error_response(exc)
-    finally:
-        await kestra.close()
 
 
 class PublishMetricUpdateRequest(BaseModel):

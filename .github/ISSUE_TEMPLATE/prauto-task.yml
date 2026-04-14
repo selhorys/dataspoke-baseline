@@ -29,7 +29,7 @@ body:
       description: Which part of the implementation is most affected?
       options:
         - label: Backend - API routes and services
-        - label: Backend - Kestra workflows
+        - label: Backend - Airflow DAGs
         - label: Backend - DataHub integration, PostgreSQL models, Qdrant vector search
         - label: Frontend UI
         - label: Helm charts / Kubernetes manifests

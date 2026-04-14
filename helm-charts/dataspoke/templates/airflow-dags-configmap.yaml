@@ -1,0 +1,836 @@
+{{- if .Values.airflow.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dataspoke-airflow-dags
+  labels:
+    {{- include "dataspoke.labels" . | nindent 4 }}
+    app.kubernetes.io/component: airflow-dags
+data:
+  embedding_sync.py: |
+    """Airflow DAG: embedding-sync
+
+    Reindexes dataset vectors in Qdrant. Triggered via API (no schedule).
+    """
+    from __future__ import annotations
+
+    import os
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _DEFAULT_CALLBACK_BASE_URL = os.environ.get(
+        "DATASPOKE_AIRFLOW_CALLBACK_BASE_URL", "http://dataspoke-api:8002"
+    )
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id="embedding-sync",
+        description="Reindex dataset vectors in Qdrant",
+        schedule=None,
+        catchup=False,
+        max_active_runs=1,
+        is_paused_upon_creation=False,
+        default_args=_DEFAULT_ARGS,
+        tags=["embedding", "search", "on-demand"],
+        doc_md="""
+    ## embedding-sync
+
+    Triggered via the DataSpoke API to reindex dataset vectors in Qdrant.
+
+    **Inputs** (via `dag_run.conf`):
+    - `callback_base_url`: DataSpoke API base URL (default: env `DATASPOKE_AIRFLOW_CALLBACK_BASE_URL`)
+    - `mode`: `"full"` or `"single"` (default: `"full"`)
+    - `dataset_urn`: dataset URN string (default: `""`, used when mode is `"single"`)
+
+    **Tasks**:
+    1. `enumerate_datasets` — POST `/internal/activities/search/enumerate` — returns list of URNs
+    2. `reindex_batch` — POST `/internal/activities/search/reindex-batch` — consumes URN list
+    """,
+    ) as dag:
+        enumerate_datasets = SimpleHttpOperator(
+            task_id="enumerate_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/search/enumerate",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=(
+                '{"mode": "{{ "{{" }} dag_run.conf.get(\'mode\', \'full\') {{ "}}" }}",'
+                ' "dataset_urn": "{{ "{{" }} dag_run.conf.get(\'dataset_urn\', \'\') {{ "}}" }}"}'
+            ),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        reindex_batch = SimpleHttpOperator(
+            task_id="reindex_batch",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/search/reindex-batch",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data='{"dataset_urns": {{ "{{" }} ti.xcom_pull(task_ids="enumerate_datasets") | tojson {{ "}}" }}}',
+            log_response=True,
+        )
+
+        enumerate_datasets >> reindex_batch
+
+  generation.py: |
+    """Airflow DAG: generation
+
+    LLM-powered metadata generation for a dataset. Triggered via API (no schedule).
+    """
+    from __future__ import annotations
+
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id="generation",
+        description="LLM-powered metadata generation",
+        schedule=None,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=False,
+        default_args=_DEFAULT_ARGS,
+        tags=["generation", "llm", "on-demand"],
+        doc_md="""
+    ## generation
+
+    Triggers LLM-powered metadata generation for a single dataset.
+
+    **Inputs** (via `dag_run.conf`):
+    - `callback_base_url`: DataSpoke API base URL (default: `"http://dataspoke-api:8002"`)
+    - `dataset_urn`: dataset URN string (required)
+
+    **Tasks**:
+    1. `run_generation` — POST `/internal/activities/generation/run`
+    """,
+    ) as dag:
+        run_generation = SimpleHttpOperator(
+            task_id="run_generation",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/generation/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data='{"dataset_urn": "{{ "{{" }} dag_run.conf.get(\'dataset_urn\', \'\') {{ "}}" }}"}',
+            log_response=True,
+        )
+
+  metrics.py: |
+    """Airflow DAG: metrics
+
+    Metric collection and update publishing. Triggered via API (no schedule).
+    """
+    from __future__ import annotations
+
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id="metrics",
+        description="Metric collection and update publishing",
+        schedule=None,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=False,
+        default_args=_DEFAULT_ARGS,
+        tags=["metrics", "on-demand"],
+        doc_md="""
+    ## metrics
+
+    Runs a metric computation and publishes the result update.
+
+    **Inputs** (via `dag_run.conf`):
+    - `callback_base_url`: DataSpoke API base URL (default: `"http://dataspoke-api:8002"`)
+    - `metric_id`: metric identifier string (required)
+    - `dry_run`: boolean flag (default: `false`)
+
+    **Tasks**:
+    1. `run_metric` — POST `/internal/activities/metrics/run` — computes the metric
+    2. `publish_metric_update` — POST `/internal/activities/metrics/publish-update` — publishes result (uses XCom from step 1)
+    """,
+    ) as dag:
+        run_metric = SimpleHttpOperator(
+            task_id="run_metric",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=(
+                '{"metric_id": "{{ "{{" }} dag_run.conf.get(\'metric_id\', \'\') {{ "}}" }}",'
+                ' "dry_run": {{ "{{" }} dag_run.conf.get(\'dry_run\', false) | lower {{ "}}" }}}'
+            ),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        publish_metric_update = SimpleHttpOperator(
+            task_id="publish_metric_update",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/publish-update",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data="{{ "{{" }} ti.xcom_pull(task_ids='run_metric') | tojson {{ "}}" }}",
+            log_response=True,
+        )
+
+        run_metric >> publish_metric_update
+
+  ontology_rebuild.py: |
+    """Airflow DAG: ontology-rebuild
+
+    Multi-step ontology rebuild: classify, build hierarchy, infer relationships, detect drift.
+    Triggered via API or events (no schedule).
+    """
+    from __future__ import annotations
+
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id="ontology-rebuild",
+        description="Multi-step ontology rebuild: classify, hierarchy, relationships, drift",
+        schedule=None,
+        catchup=False,
+        max_active_runs=1,
+        is_paused_upon_creation=False,
+        default_args=_DEFAULT_ARGS,
+        tags=["ontology", "on-demand"],
+        doc_md="""
+    ## ontology-rebuild
+
+    Runs a full ontology rebuild pipeline. Each step receives the output of the previous
+    step via XCom.
+
+    **Inputs** (via `dag_run.conf`):
+    - `callback_base_url`: DataSpoke API base URL (default: `"http://dataspoke-api:8002"`)
+    - `force`: boolean flag to force reclassification (default: `false`)
+
+    **Tasks** (sequential):
+    1. `classify_datasets` — POST `/internal/activities/ontology/classify`
+    2. `build_hierarchy` — POST `/internal/activities/ontology/build-hierarchy` (uses output of step 1)
+    3. `infer_relationships` — POST `/internal/activities/ontology/infer-relationships` (uses output of step 2)
+    4. `detect_drift` — POST `/internal/activities/ontology/detect-drift` (uses output of step 2)
+    """,
+    ) as dag:
+        classify_datasets = SimpleHttpOperator(
+            task_id="classify_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ontology/classify",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data='{"force": {{ "{{" }} dag_run.conf.get(\'force\', false) | lower {{ "}}" }}}',
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        build_hierarchy = SimpleHttpOperator(
+            task_id="build_hierarchy",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ontology/build-hierarchy",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data='{"classifications": {{ "{{" }} ti.xcom_pull(task_ids="classify_datasets") | tojson {{ "}}" }}}',
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        infer_relationships = SimpleHttpOperator(
+            task_id="infer_relationships",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ontology/infer-relationships",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data='{"hierarchy": {{ "{{" }} ti.xcom_pull(task_ids="build_hierarchy") | tojson {{ "}}" }}}',
+            log_response=True,
+        )
+
+        detect_drift = SimpleHttpOperator(
+            task_id="detect_drift",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ontology/detect-drift",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data='{"current_hierarchy": {{ "{{" }} ti.xcom_pull(task_ids="build_hierarchy") | tojson {{ "}}" }}}',
+            log_response=True,
+        )
+
+        # infer_relationships and detect_drift both depend on build_hierarchy but
+        # are independent of each other — run them in parallel after build_hierarchy.
+        classify_datasets >> build_hierarchy >> [infer_relationships, detect_drift]
+
+  ingestion_periodic_hourly.py: |
+    """Airflow DAG: ingestion-periodic-hourly
+
+    Periodic ingestion for the hourly schedule tier. Lists datasets due for hourly
+    ingestion, then fans out one `run_ingestion` task per dataset using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "hourly"
+    _SCHEDULE = "@hourly"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"ingestion-periodic-{_TIER}",
+        description=f"Periodic ingestion for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["ingestion", "periodic", _TIER],
+    ) as dag:
+        list_datasets = SimpleHttpOperator(
+            task_id="list_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ingestion/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(dataset_urns: list[str]) -> list[str]:
+            """Convert a list of dataset URNs into JSON-encoded request bodies."""
+            return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+
+        payloads = prepare_payloads(list_datasets.output)
+
+        run_ingestion = SimpleHttpOperator.partial(
+            task_id="run_ingestion",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ingestion/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  ingestion_periodic_daily.py: |
+    """Airflow DAG: ingestion-periodic-daily
+
+    Periodic ingestion for the daily schedule tier. Lists datasets due for daily
+    ingestion, then fans out one `run_ingestion` task per dataset using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "daily"
+    _SCHEDULE = "@daily"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"ingestion-periodic-{_TIER}",
+        description=f"Periodic ingestion for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["ingestion", "periodic", _TIER],
+    ) as dag:
+        list_datasets = SimpleHttpOperator(
+            task_id="list_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ingestion/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(dataset_urns: list[str]) -> list[str]:
+            """Convert a list of dataset URNs into JSON-encoded request bodies."""
+            return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+
+        payloads = prepare_payloads(list_datasets.output)
+
+        run_ingestion = SimpleHttpOperator.partial(
+            task_id="run_ingestion",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ingestion/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  ingestion_periodic_weekly.py: |
+    """Airflow DAG: ingestion-periodic-weekly
+
+    Periodic ingestion for the weekly schedule tier. Lists datasets due for weekly
+    ingestion, then fans out one `run_ingestion` task per dataset using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "weekly"
+    _SCHEDULE = "@weekly"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"ingestion-periodic-{_TIER}",
+        description=f"Periodic ingestion for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["ingestion", "periodic", _TIER],
+    ) as dag:
+        list_datasets = SimpleHttpOperator(
+            task_id="list_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ingestion/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(dataset_urns: list[str]) -> list[str]:
+            """Convert a list of dataset URNs into JSON-encoded request bodies."""
+            return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+
+        payloads = prepare_payloads(list_datasets.output)
+
+        run_ingestion = SimpleHttpOperator.partial(
+            task_id="run_ingestion",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/ingestion/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  validation_periodic_hourly.py: |
+    """Airflow DAG: validation-periodic-hourly
+
+    Periodic validation for the hourly schedule tier. Lists datasets due for hourly
+    validation, then fans out one `run_validation` task per dataset using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "hourly"
+    _SCHEDULE = "@hourly"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"validation-periodic-{_TIER}",
+        description=f"Periodic validation for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["validation", "periodic", _TIER],
+    ) as dag:
+        list_datasets = SimpleHttpOperator(
+            task_id="list_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/validation/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(dataset_urns: list[str]) -> list[str]:
+            """Convert a list of dataset URNs into JSON-encoded request bodies."""
+            return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+
+        payloads = prepare_payloads(list_datasets.output)
+
+        run_validation = SimpleHttpOperator.partial(
+            task_id="run_validation",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/validation/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  validation_periodic_daily.py: |
+    """Airflow DAG: validation-periodic-daily
+
+    Periodic validation for the daily schedule tier. Lists datasets due for daily
+    validation, then fans out one `run_validation` task per dataset using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "daily"
+    _SCHEDULE = "@daily"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"validation-periodic-{_TIER}",
+        description=f"Periodic validation for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["validation", "periodic", _TIER],
+    ) as dag:
+        list_datasets = SimpleHttpOperator(
+            task_id="list_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/validation/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(dataset_urns: list[str]) -> list[str]:
+            """Convert a list of dataset URNs into JSON-encoded request bodies."""
+            return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+
+        payloads = prepare_payloads(list_datasets.output)
+
+        run_validation = SimpleHttpOperator.partial(
+            task_id="run_validation",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/validation/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  validation_periodic_weekly.py: |
+    """Airflow DAG: validation-periodic-weekly
+
+    Periodic validation for the weekly schedule tier. Lists datasets due for weekly
+    validation, then fans out one `run_validation` task per dataset using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "weekly"
+    _SCHEDULE = "@weekly"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"validation-periodic-{_TIER}",
+        description=f"Periodic validation for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["validation", "periodic", _TIER],
+    ) as dag:
+        list_datasets = SimpleHttpOperator(
+            task_id="list_datasets",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/validation/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(dataset_urns: list[str]) -> list[str]:
+            """Convert a list of dataset URNs into JSON-encoded request bodies."""
+            return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+
+        payloads = prepare_payloads(list_datasets.output)
+
+        run_validation = SimpleHttpOperator.partial(
+            task_id="run_validation",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/validation/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  metrics_periodic_hourly.py: |
+    """Airflow DAG: metrics-periodic-hourly
+
+    Periodic metrics computation for the hourly schedule tier. Lists metrics due for
+    hourly execution, then fans out one `run_metric` task per metric using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "hourly"
+    _SCHEDULE = "@hourly"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"metrics-periodic-{_TIER}",
+        description=f"Periodic metrics computation for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["metrics", "periodic", _TIER],
+    ) as dag:
+        list_metrics = SimpleHttpOperator(
+            task_id="list_metrics",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(metric_ids: list[str]) -> list[str]:
+            """Convert a list of metric IDs into JSON-encoded request bodies."""
+            return [json.dumps({"metric_id": mid, "dry_run": False}) for mid in metric_ids]
+
+        payloads = prepare_payloads(list_metrics.output)
+
+        run_metric = SimpleHttpOperator.partial(
+            task_id="run_metric",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  metrics_periodic_daily.py: |
+    """Airflow DAG: metrics-periodic-daily
+
+    Periodic metrics computation for the daily schedule tier. Lists metrics due for
+    daily execution, then fans out one `run_metric` task per metric using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "daily"
+    _SCHEDULE = "@daily"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"metrics-periodic-{_TIER}",
+        description=f"Periodic metrics computation for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["metrics", "periodic", _TIER],
+    ) as dag:
+        list_metrics = SimpleHttpOperator(
+            task_id="list_metrics",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(metric_ids: list[str]) -> list[str]:
+            """Convert a list of metric IDs into JSON-encoded request bodies."""
+            return [json.dumps({"metric_id": mid, "dry_run": False}) for mid in metric_ids]
+
+        payloads = prepare_payloads(list_metrics.output)
+
+        run_metric = SimpleHttpOperator.partial(
+            task_id="run_metric",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+
+  metrics_periodic_weekly.py: |
+    """Airflow DAG: metrics-periodic-weekly
+
+    Periodic metrics computation for the weekly schedule tier. Lists metrics due for
+    weekly execution, then fans out one `run_metric` task per metric using dynamic
+    task mapping (Airflow 2.3+).
+    """
+    from __future__ import annotations
+
+    import json
+    from datetime import timedelta
+
+    from airflow import DAG
+    from airflow.decorators import task
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+
+    _TIER = "weekly"
+    _SCHEDULE = "@weekly"
+
+    _DEFAULT_ARGS = {
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+    }
+
+    with DAG(
+        dag_id=f"metrics-periodic-{_TIER}",
+        description=f"Periodic metrics computation for {_TIER} schedule",
+        schedule=_SCHEDULE,
+        catchup=False,
+        max_active_runs=2,
+        is_paused_upon_creation=True,
+        default_args=_DEFAULT_ARGS,
+        tags=["metrics", "periodic", _TIER],
+    ) as dag:
+        list_metrics = SimpleHttpOperator(
+            task_id="list_metrics",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/list-periodic",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"schedule_tier": _TIER}),
+            response_filter=lambda response: response.json(),
+            log_response=True,
+        )
+
+        @task
+        def prepare_payloads(metric_ids: list[str]) -> list[str]:
+            """Convert a list of metric IDs into JSON-encoded request bodies."""
+            return [json.dumps({"metric_id": mid, "dry_run": False}) for mid in metric_ids]
+
+        payloads = prepare_payloads(list_metrics.output)
+
+        run_metric = SimpleHttpOperator.partial(
+            task_id="run_metric",
+            http_conn_id="dataspoke_api",
+            endpoint="/internal/activities/metrics/run",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            log_response=True,
+        ).expand(data=payloads)
+{{- end }}

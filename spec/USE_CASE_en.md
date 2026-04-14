@@ -225,7 +225,7 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 | **Enrichment Source Connectors** | Fetch from Confluence, Excel/S3, taxonomy API | DataHub connectors are database/platform-focused |
 | **Custom Extractor Framework** | Plugin system for PL/SQL lineage parsing, CHECK constraint extraction | Parsing stored procedure bodies is outside DataHub's scope |
 | **Field Mapping Engine** | Map Confluence labels → tags, Excel columns → custom properties | DataHub accepts structured aspects but doesn't transform unstructured inputs |
-| **Orchestration (Kestra)** | Schedule, per-phase retry, notifications | DataHub runs recipes atomically; multi-source orchestration requires Kestra |
+| **Orchestration (Airflow)** | Schedule, per-phase retry, notifications | DataHub runs recipes atomically; multi-source orchestration requires Airflow |
 | **Vector Index Sync** | Generate embeddings → Qdrant on successful ingestion | DataHub has Elasticsearch keyword search, not vector similarity |
 
 #### Outcome
@@ -456,7 +456,7 @@ DataSpoke is a **read/write** layer on DataHub's assertion framework:
 | **Partition-Aware Executor** | Determine target partition, run rule against it, store result | Open-source DataHub doesn't execute assertions |
 | **SQL-Based Timeseries Engine** | Execute data manipulation SQL, compute partition values, track history | DataHub stores profiles but can't query source systems |
 | **ML-Based Anomaly Validation** | Range/model-based validation against historical partition values | DataHub has no statistical analysis |
-| **Cron/Manual Scheduler** | Kestra-orchestrated cron + on-demand manual triggering | DataHub has no scheduler (open-source) |
+| **Cron/Manual Scheduler** | Airflow-orchestrated cron + on-demand manual triggering | DataHub has no scheduler (open-source) |
 
 #### Outcome
 
@@ -592,7 +592,7 @@ GET /api/v1/spoke/common/data/urn:li:dataset:...orders.daily_fulfillment_summary
 | **SQL-Based Timeseries Engine** | Execute accumulation SQL, compute hourly partition values | Open-source DataHub doesn't query source systems |
 | **Day-of-Week Baseline Model** | Learn weekday patterns from 28-day history, adjust thresholds per day | DataHub stores raw data, no pattern learning |
 | **Assertion-Based Alerting** | Generate alerts when `assertionRunEvent` records FAILURE | Open-source DataHub has no alerting engine |
-| **Cron Scheduler** | Kestra flow triggers validation at 7 AM and 8 AM daily | DataHub has no scheduler (open-source) |
+| **Cron Scheduler** | Airflow DAG triggers validation at 7 AM and 8 AM daily | DataHub has no scheduler (open-source) |
 
 #### Outcome
 

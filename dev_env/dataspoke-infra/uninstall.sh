@@ -34,14 +34,14 @@ else
   warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
 fi
 
-# Force-kill any pods still terminating (Kestra often hangs during shutdown)
+# Force-kill any pods still terminating
 kubectl delete pod -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
   --force --grace-period=0 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Delete PVCs for a clean slate
 #
-# Stale data in PVCs (Kestra service_instance, cached embeddings, Redis
+# Stale data in PVCs (cached embeddings, Redis
 # keys) causes recovery loops and test pollution on reinstall.  Deleting
 # PVCs is simpler and more reliable than trying to purge data in place.
 # ---------------------------------------------------------------------------

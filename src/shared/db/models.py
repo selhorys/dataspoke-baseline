@@ -48,11 +48,10 @@ class IngestionConfig(Base):
     identifier: Mapped[dict] = mapped_column(JSONB, nullable=False)
     auth: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    schedule_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     enrichment_sources: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     custom_extractors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    kestra_flow_namespace: Mapped[str | None] = mapped_column(Text, nullable=True)
-    kestra_flow_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workflow_dag_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="OK")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -94,7 +93,7 @@ class ValidationConfig(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
     rules: Mapped[list] = mapped_column(JSONB, nullable=False)
-    schedule_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     owner: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -270,7 +269,7 @@ class MetricDefinition(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     theme: Mapped[str] = mapped_column(Text, nullable=False)
     measurement_query: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    schedule_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

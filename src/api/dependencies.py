@@ -21,10 +21,10 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import QdrantManager
-from src.workflows.kestra.client import KestraClient
+from src.workflows.airflow.client import AirflowClient
 
-# Module-level Kestra client singleton (created lazily on first use)
-_kestra_client: KestraClient | None = None
+# Module-level Airflow client singleton (created lazily on first use)
+_airflow_client: AirflowClient | None = None
 
 # ── Infrastructure client providers ──────────────────────────────
 
@@ -61,17 +61,16 @@ def get_notification():
     return NotificationService()
 
 
-def get_kestra_client() -> KestraClient:
-    """Return a shared Kestra client singleton."""
-    global _kestra_client  # noqa: PLW0603
-    if _kestra_client is None:
-        _kestra_client = KestraClient(
-            base_url=settings.kestra_url,
-            namespace=settings.kestra_namespace,
-            username=settings.kestra_user,
-            password=settings.kestra_password,
+def get_airflow_client() -> AirflowClient:
+    """Return a shared Airflow client singleton."""
+    global _airflow_client  # noqa: PLW0603
+    if _airflow_client is None:
+        _airflow_client = AirflowClient(
+            base_url=settings.airflow_url,
+            username=settings.airflow_user,
+            password=settings.airflow_password,
         )
-    return _kestra_client
+    return _airflow_client
 
 
 # ── Service providers (added as backend services are implemented) ──

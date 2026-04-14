@@ -13,20 +13,28 @@ Start it via::
 The ``require_server`` fixture verifies three things at session start:
 
 1. The server is running and healthy (``GET /health``).
-2. ``DATASPOKE_TEST_MODE`` is set in the environment — without it, Kestra
+2. ``DATASPOKE_TEST_MODE`` is set in the environment — without it, Airflow
    activity endpoints use real LLM/Qdrant/cache/notification clients, which
    will fail or produce non-deterministic results.
-3. Required Kestra flows are registered (e.g., ``ingestion-config-sync``).
+3. Expected Airflow DAGs are loaded (verified via ``GET /api/v1/dags``).
 """
 
 import os
-from pathlib import Path
 
 import httpx
 import pytest
-import yaml
 
 from tests.integration.conftest import _auth_headers
+
+# DAGs that must be loaded in Airflow for the in-cluster API to function
+_REQUIRED_DAG_IDS = frozenset({
+    "ingestion",
+    "generation",
+    "metrics",
+    "embedding-sync",
+    "ontology-rebuild",
+})
+
 
 @pytest.fixture(scope="session", autouse=True)
 def require_server():
@@ -36,8 +44,7 @@ def require_server():
     1. Server liveness via ``GET /health``.
     2. ``DATASPOKE_TEST_MODE`` is set — without it, activity endpoints use
        real external clients and tests will fail non-deterministically.
-    3. Required Kestra flows are registered (e.g., ``ingestion-config-sync``,
-       ``validation-config-sync``).
+    3. Required Airflow DAGs are loaded.
     """
     # -- Check test mode env var --
     test_mode = os.environ.get("DATASPOKE_TEST_MODE", "").lower()
@@ -50,7 +57,11 @@ def require_server():
 
     # -- Check server health --
     domain = os.environ.get("DATASPOKE_DEV_INGRESS_DOMAIN", "")
-    api_base = f"http://app.{domain}" if domain else f"http://localhost:{os.environ.get('DATASPOKE_API_PORT', '8002')}"
+    api_base = (
+        f"http://app.{domain}"
+        if domain
+        else f"http://localhost:{os.environ.get('DATASPOKE_API_PORT', '8002')}"
+    )
     try:
         resp = httpx.get(f"{api_base}/health", timeout=5.0)
         resp.raise_for_status()
@@ -60,70 +71,30 @@ def require_server():
             "Deploy with: ./dev_env/dataspoke-test-mode.sh"
         )
 
-    # Verify required flows are registered
-    kestra_url = os.environ["DATASPOKE_KESTRA_URL"]
-    kestra_ns = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
-    kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
-    kestra_pass = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
+    # -- Verify Airflow DAGs are loaded --
+    airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")
+    airflow_user = os.environ.get("DATASPOKE_AIRFLOW_USER", "")
+    airflow_pass = os.environ.get("DATASPOKE_AIRFLOW_PASSWORD", "")
 
-    auth = (kestra_user, kestra_pass) if kestra_user else None
+    auth = (airflow_user, airflow_pass) if airflow_user else None
     try:
         resp = httpx.get(
-            f"{kestra_url}/api/v1/flows/search",
-            params={"namespace": kestra_ns, "size": 100},
+            f"{airflow_url}/api/v1/dags",
+            params={"limit": 100},
             auth=auth,
             timeout=10.0,
         )
         resp.raise_for_status()
-        registered = {f["id"] for f in resp.json().get("results", [])}
+        loaded_ids = {d["dag_id"] for d in resp.json().get("dags", [])}
     except Exception as exc:
-        pytest.fail(
-            f"Cannot query Kestra at {kestra_url}: {exc}"
-        )
+        pytest.fail(f"Cannot query Airflow at {airflow_url}: {exc}")
 
-    required_flows = {
-        "ingestion-config-sync", "validation-config-sync",
-        "metrics-config-sync", "metrics",
-    }
-    missing = required_flows - registered
+    missing = _REQUIRED_DAG_IDS - loaded_ids
     if missing:
         pytest.fail(
-            f"Kestra flows not registered: {', '.join(sorted(missing))}. "
-            "Restart with: ./dev_env/dataspoke-test-mode.sh"
+            f"Airflow DAGs not loaded: {', '.join(sorted(missing))}. "
+            "Ensure the in-cluster API is deployed: ./dev_env/dataspoke-test-mode.sh"
         )
-
-
-@pytest.fixture(scope="session", autouse=True)
-def suspend_ingestion_config_sync(require_server):
-    """Disable the ingestion-config-sync cron trigger for the test session.
-
-    Prevents the periodic sync from racing with tests that create/delete
-    ingestion configs and Kestra flows.  Re-enables the trigger on teardown.
-    """
-    flow_path = Path("src/workflows/flows/ingestion_config_sync.yaml")
-    flow = yaml.safe_load(flow_path.read_text())
-
-    kestra_url = os.environ["DATASPOKE_KESTRA_URL"]
-    kestra_ns = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
-    kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
-    kestra_pass = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
-    auth = (kestra_user, kestra_pass) if kestra_user else None
-
-    def _put_flow(disabled: bool) -> None:
-        for trigger in flow.get("triggers", []):
-            if trigger.get("id") == "cron":
-                trigger["disabled"] = disabled
-        httpx.put(
-            f"{kestra_url}/api/v1/flows/{kestra_ns}/ingestion-config-sync",
-            content=yaml.dump(flow),
-            headers={"Content-Type": "application/x-yaml"},
-            auth=auth,
-            timeout=10.0,
-        ).raise_for_status()
-
-    _put_flow(disabled=True)
-    yield
-    _put_flow(disabled=False)
 
 
 @pytest.fixture

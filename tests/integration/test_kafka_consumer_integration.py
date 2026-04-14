@@ -298,9 +298,9 @@ class TestKafkaConsumerIntegration:
             _wait_for_assignment(consumer)
             _seek_to_end(consumer)
 
-            # Build router with mocked kestra client
-            mock_kestra = AsyncMock()
-            router = build_router(kestra_client=mock_kestra)
+            # Build router with mocked airflow client
+            mock_airflow = AsyncMock()
+            router = build_router(airflow_client=mock_airflow)
 
             for aspect in versioned_aspects:
                 test_id = uuid.uuid4().hex[:8]
@@ -313,7 +313,7 @@ class TestKafkaConsumerIntegration:
                 event = deserialize_mcl(received.value())
                 assert event.aspect_name == aspect
 
-                # Dispatch through the full router (handlers call mocked kestra)
+                # Dispatch through the full router (handlers call mocked airflow)
                 with (
                     patch(
                         "src.backend.metrics.aggregator.aggregate_health_scores",
@@ -334,13 +334,13 @@ class TestKafkaConsumerIntegration:
 
                 consumer.commit(message=received)
 
-            # Verify kestra executions were triggered for kestra-backed handlers.
-            # ownership → update_health_score (no kestra), so only 3 aspects
-            # trigger kestra: datasetProperties (1), schemaMetadata (2),
-            # globalTags (1) = 4 execution triggers.
-            assert mock_kestra.trigger_execution.await_count == 4
+            # Verify airflow DAG runs were triggered for airflow-backed handlers.
+            # ownership → update_health_score (no airflow), so only 3 aspects
+            # trigger airflow: datasetProperties (1), schemaMetadata (2),
+            # globalTags (1) = 4 DAG run triggers.
+            assert mock_airflow.trigger_dag_run.await_count == 4
         finally:
-            build_router()  # Reset _kestra_client
+            build_router()  # Reset _airflow_client
             consumer.close()
 
 
@@ -356,38 +356,38 @@ class TestEventHandlerDispatch:
 
     @pytest.fixture(autouse=True)
     def _reset_router(self):
-        """Reset the module-level _kestra_client after each test."""
+        """Reset the module-level _airflow_client after each test."""
         yield
         build_router()
 
     @pytest.mark.asyncio
     async def test_sync_vector_index_starts_embedding_workflow(self) -> None:
-        """sync_vector_index triggers embedding-sync flow in single mode."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
+        """sync_vector_index triggers embedding-sync DAG in single mode."""
+        mock_airflow = AsyncMock()
+        build_router(airflow_client=mock_airflow)
 
         event = _make_mcl_event(aspect_name="datasetProperties")
         await sync_vector_index(event)
 
-        mock_kestra.trigger_execution.assert_awaited_once()
-        call_args = mock_kestra.trigger_execution.call_args
+        mock_airflow.trigger_dag_run.assert_awaited_once()
+        call_args = mock_airflow.trigger_dag_run.call_args
         assert call_args.args[0] == "embedding-sync"
-        assert "callback_base_url" in call_args.kwargs["inputs"]
-        assert call_args.kwargs["labels"]["workflow_id"].startswith("embedding-sync-")
+        assert "callback_base_url" in call_args.kwargs["conf"]
+        assert call_args.kwargs["conf"]["workflow_id"].startswith("embedding-sync-")
 
     @pytest.mark.asyncio
     async def test_detect_new_clusters_starts_ontology_workflow(self) -> None:
-        """detect_new_clusters triggers ontology-rebuild flow with fixed ID."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
+        """detect_new_clusters triggers ontology-rebuild DAG with fixed ID."""
+        mock_airflow = AsyncMock()
+        build_router(airflow_client=mock_airflow)
 
         event = _make_mcl_event(aspect_name="schemaMetadata")
         await detect_new_clusters(event)
 
-        mock_kestra.trigger_execution.assert_awaited_once()
-        call_args = mock_kestra.trigger_execution.call_args
+        mock_airflow.trigger_dag_run.assert_awaited_once()
+        call_args = mock_airflow.trigger_dag_run.call_args
         assert call_args.args[0] == "ontology-rebuild"
-        assert call_args.kwargs["labels"]["workflow_id"] == "ontology-rebuild"
+        assert call_args.kwargs["conf"]["workflow_id"] == "ontology-rebuild"
 
     @pytest.mark.asyncio
     async def test_update_health_score_calls_aggregator(self) -> None:
@@ -410,24 +410,24 @@ class TestEventHandlerDispatch:
     @pytest.mark.asyncio
     async def test_multi_handler_schema_metadata_dispatch(self) -> None:
         """schemaMetadata dispatches to both sync_vector_index and detect_new_clusters."""
-        mock_kestra = AsyncMock()
-        router = build_router(kestra_client=mock_kestra)
+        mock_airflow = AsyncMock()
+        router = build_router(airflow_client=mock_airflow)
 
         event = _make_mcl_event(aspect_name="schemaMetadata")
         await router.dispatch(event)
 
-        # Two execution triggers: embedding-sync + ontology-rebuild
-        assert mock_kestra.trigger_execution.await_count == 2
+        # Two DAG run triggers: embedding-sync + ontology-rebuild
+        assert mock_airflow.trigger_dag_run.await_count == 2
 
-        call_flow_ids = [call.args[0] for call in mock_kestra.trigger_execution.call_args_list]
-        assert "embedding-sync" in call_flow_ids
-        assert "ontology-rebuild" in call_flow_ids
+        call_dag_ids = [call.args[0] for call in mock_airflow.trigger_dag_run.call_args_list]
+        assert "embedding-sync" in call_dag_ids
+        assert "ontology-rebuild" in call_dag_ids
 
     @pytest.mark.asyncio
     async def test_non_dataset_entity_type_skipped(self) -> None:
         """Handlers skip events with non-dataset entity types."""
-        mock_kestra = AsyncMock()
-        build_router(kestra_client=mock_kestra)
+        mock_airflow = AsyncMock()
+        build_router(airflow_client=mock_airflow)
 
         for aspect, handler in [
             ("datasetProperties", sync_vector_index),
@@ -439,15 +439,15 @@ class TestEventHandlerDispatch:
             )
             await handler(event)
 
-        mock_kestra.trigger_execution.assert_not_awaited()
+        mock_airflow.trigger_dag_run.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_handlers_noop_without_kestra_client(self) -> None:
-        """Workflow-backed handlers are no-ops when no kestra client is configured."""
-        build_router()  # No kestra_client
+    async def test_handlers_noop_without_airflow_client(self) -> None:
+        """Workflow-backed handlers are no-ops when no airflow client is configured."""
+        build_router()  # No airflow_client
 
         event = _make_mcl_event(aspect_name="datasetProperties")
-        # Should not raise or attempt any execution trigger
+        # Should not raise or attempt any DAG run trigger
         await sync_vector_index(event)
         await detect_new_clusters(_make_mcl_event(aspect_name="schemaMetadata"))
 

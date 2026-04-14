@@ -87,10 +87,9 @@ _qdrant_http_port = int(os.environ["DATASPOKE_QDRANT_HTTP_PORT"])
 _qdrant_grpc_port = int(os.environ["DATASPOKE_QDRANT_GRPC_PORT"])
 _qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
 
-_kestra_url = os.environ["DATASPOKE_KESTRA_URL"]
-_kestra_namespace = os.environ.get("DATASPOKE_KESTRA_NAMESPACE", "dataspoke")
-_kestra_user = os.environ.get("DATASPOKE_KESTRA_USER", "")
-_kestra_password = os.environ.get("DATASPOKE_KESTRA_PASSWORD", "")
+_airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")
+_airflow_user = os.environ.get("DATASPOKE_AIRFLOW_USER", "")
+_airflow_password = os.environ.get("DATASPOKE_AIRFLOW_PASSWORD", "")
 
 _lock_owner = os.environ.get(
     "DATASPOKE_LOCK_OWNER",
@@ -342,31 +341,30 @@ def module_dummy_data(request) -> None:
         _reset_pg_kafka()
 
 
-# ── Kestra fixture ───────────────────────────────────────────────────────────
+# ── Airflow fixture ───────────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture(scope="module")
-async def kestra_client():
-    """Create a KestraClient pointing at the dev-env Kestra instance; skip if unreachable.
+async def airflow_client():
+    """Create an AirflowClient pointing at the dev-env Airflow instance; skip if unreachable.
 
-    Flow registration is handled by the in-cluster DataSpoke API's
-    lifespan, so this fixture only performs a health check on setup.
+    DAG registration is handled by Airflow loading DAG files from the dags/
+    directory. This fixture only performs a health check on setup.
     Execution cleanup is each test module's responsibility (scoped to
-    the specific flow it uses).
+    the specific DAG it uses).
     """
-    from src.workflows.kestra.client import KestraClient
+    from src.workflows.airflow.client import AirflowClient
 
-    client = KestraClient(
-        base_url=_kestra_url,
-        namespace=_kestra_namespace,
-        username=_kestra_user,
-        password=_kestra_password,
+    client = AirflowClient(
+        base_url=_airflow_url,
+        username=_airflow_user,
+        password=_airflow_password,
     )
     try:
-        resp = await client._client.get("/api/v1/flows/search")
+        resp = await client._client.get("/api/v1/dags", params={"limit": 1})
         resp.raise_for_status()
     except Exception:
-        pytest.skip(f"Kestra not reachable at {_kestra_url}")
+        pytest.skip(f"Airflow not reachable at {_airflow_url}")
 
     yield client
 
@@ -378,14 +376,14 @@ async def kestra_client():
 
 @pytest_asyncio.fixture(scope="module")
 async def activity_server():
-    """Start an ActivityServer for Kestra callback integration tests.
+    """Start an ActivityServer for Airflow activity callback integration tests.
 
     Uses a free port to avoid conflicts with the in-cluster API
     that may be port-forwarded on DATASPOKE_API_PORT for api-wired tests.
     """
     import socket
 
-    from tests.integration.util.kestra import ActivityServer
+    from tests.integration.util.airflow import ActivityServer
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
@@ -436,7 +434,7 @@ async def override_app(
     redis=None,
     llm=None,
     qdrant=None,
-    kestra=None,
+    airflow=None,
 ):
     """Create an AsyncClient with FastAPI DI overrides for integration tests.
 
@@ -477,10 +475,10 @@ async def override_app(
 
         app.dependency_overrides[get_db] = _override_db
 
-    if kestra is not None:
-        from src.api.dependencies import get_kestra_client
+    if airflow is not None:
+        from src.api.dependencies import get_airflow_client
 
-        app.dependency_overrides[get_kestra_client] = lambda: kestra
+        app.dependency_overrides[get_airflow_client] = lambda: airflow
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

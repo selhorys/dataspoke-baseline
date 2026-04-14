@@ -22,7 +22,7 @@ def _make_definition_row(
     description: str = "Measures documentation quality",
     theme: str = "quality",
     measurement_query: dict | None = None,
-    schedule_cron: str | None = None,
+    schedule_tier: str | None = None,
     active: bool = True,
 ):
     row = MagicMock()
@@ -31,7 +31,7 @@ def _make_definition_row(
     row.description = description
     row.theme = theme
     row.measurement_query = measurement_query or {"type": "poorly_documented"}
-    row.schedule_cron = schedule_cron
+    row.schedule_tier = schedule_tier
     row.is_active = active
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)

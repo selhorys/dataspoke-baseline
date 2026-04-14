@@ -44,7 +44,7 @@ class ValidationConfigRecord(BaseModel):
     id: str
     dataset_urn: str
     rules: list[dict[str, Any]]
-    schedule_cron: str | None = None
+    schedule_tier: str | None = None
     is_active: bool = False
     owner: str
     created_at: datetime
@@ -87,7 +87,7 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
         id=str(row.id),
         dataset_urn=row.dataset_urn,
         rules=rules,
-        schedule_cron=row.schedule_cron,
+        schedule_tier=row.schedule_tier,
         is_active=row.is_active,
         owner=row.owner,
         created_at=row.created_at,
@@ -141,7 +141,7 @@ class ValidationService:
         self,
         dataset_urn: str,
         rules: list[dict[str, Any]],
-        schedule_cron: str | None,
+        schedule_tier: str | None,
         is_active: bool,
         owner: str,
     ) -> tuple[ValidationConfigRecord, bool]:
@@ -154,7 +154,7 @@ class ValidationService:
 
         if existing:
             existing.rules = rules
-            existing.schedule_cron = schedule_cron
+            existing.schedule_tier = schedule_tier
             existing.is_active = is_active
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
@@ -164,7 +164,7 @@ class ValidationService:
             existing = ValidationConfig(
                 dataset_urn=dataset_urn,
                 rules=rules,
-                schedule_cron=schedule_cron,
+                schedule_tier=schedule_tier,
                 is_active=is_active,
                 owner=owner,
             )
@@ -199,8 +199,8 @@ class ValidationService:
 
         if "rules" in patch and patch["rules"] is not None:
             row.rules = patch["rules"]
-        if "schedule_cron" in patch:
-            row.schedule_cron = patch["schedule_cron"]
+        if "schedule_tier" in patch:
+            row.schedule_tier = patch["schedule_tier"]
         if "is_active" in patch and patch["is_active"] is not None:
             row.is_active = patch["is_active"]
         row.updated_at = datetime.now(tz=UTC)

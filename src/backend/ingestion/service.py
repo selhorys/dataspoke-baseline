@@ -37,11 +37,10 @@ class IngestionConfigRecord(BaseModel):
     identifier: dict[str, Any]
     auth: dict[str, Any] | None = None
     is_active: bool
-    schedule_cron: str | None = None
+    schedule_tier: str | None = None
     enrichment_sources: dict[str, Any] | None = None
     custom_extractors: dict[str, Any] | None = None
-    kestra_flow_namespace: str | None = None
-    kestra_flow_id: str | None = None
+    workflow_dag_id: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -64,11 +63,10 @@ def _record_from_row(row: IngestionConfig) -> IngestionConfigRecord:
         identifier=row.identifier,
         auth=row.auth,
         is_active=row.is_active,
-        schedule_cron=row.schedule_cron,
+        schedule_tier=row.schedule_tier,
         enrichment_sources=row.enrichment_sources,
         custom_extractors=row.custom_extractors,
-        kestra_flow_namespace=row.kestra_flow_namespace,
-        kestra_flow_id=row.kestra_flow_id,
+        workflow_dag_id=row.workflow_dag_id,
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -105,7 +103,7 @@ class IngestionService:
         identifier: dict[str, Any],
         auth: dict[str, Any] | None,
         is_active: bool,
-        schedule_cron: str | None,
+        schedule_tier: str | None,
         enrichment_sources: dict[str, Any] | None = None,
         custom_extractors: dict[str, Any] | None = None,
     ) -> tuple[IngestionConfigRecord, bool]:
@@ -122,7 +120,7 @@ class IngestionService:
             existing.identifier = identifier
             existing.auth = auth
             existing.is_active = is_active
-            existing.schedule_cron = schedule_cron
+            existing.schedule_tier = schedule_tier
             existing.enrichment_sources = enrichment_sources
             existing.custom_extractors = custom_extractors
             existing.updated_at = datetime.now(tz=UTC)
@@ -136,7 +134,7 @@ class IngestionService:
                 identifier=identifier,
                 auth=auth,
                 is_active=is_active,
-                schedule_cron=schedule_cron,
+                schedule_tier=schedule_tier,
                 enrichment_sources=enrichment_sources,
                 custom_extractors=custom_extractors,
             )
@@ -158,8 +156,8 @@ class IngestionService:
                 "operation": "PUT",
                 "config_id": str(existing.id),
                 "is_active": existing.is_active,
-                "schedule_cron": existing.schedule_cron,
-                "kestra_flow_id": existing.kestra_flow_id,
+                "schedule_tier": existing.schedule_tier,
+                "workflow_dag_id": existing.workflow_dag_id,
             },
         )
 
@@ -183,8 +181,8 @@ class IngestionService:
             row.auth = patch["auth"]
         if "is_active" in patch and patch["is_active"] is not None:
             row.is_active = patch["is_active"]
-        if "schedule_cron" in patch:
-            row.schedule_cron = patch["schedule_cron"]
+        if "schedule_tier" in patch:
+            row.schedule_tier = patch["schedule_tier"]
         if "enrichment_sources" in patch:
             row.enrichment_sources = patch["enrichment_sources"]
         if "custom_extractors" in patch:
@@ -205,8 +203,8 @@ class IngestionService:
                 "config_id": str(row.id),
                 "fields_changed": list(patch.keys()),
                 "is_active": row.is_active,
-                "schedule_cron": row.schedule_cron,
-                "kestra_flow_id": row.kestra_flow_id,
+                "schedule_tier": row.schedule_tier,
+                "workflow_dag_id": row.workflow_dag_id,
             },
         )
 
@@ -222,8 +220,8 @@ class IngestionService:
 
         # Capture fields before deletion for the event
         config_id = str(row.id)
-        schedule_cron = row.schedule_cron
-        kestra_flow_id = row.kestra_flow_id
+        schedule_tier = row.schedule_tier
+        workflow_dag_id = row.workflow_dag_id
 
         await self._db.delete(row)
         await self._db.commit()
@@ -236,8 +234,8 @@ class IngestionService:
             {
                 "operation": "DELETE",
                 "config_id": config_id,
-                "schedule_cron": schedule_cron,
-                "kestra_flow_id": kestra_flow_id,
+                "schedule_tier": schedule_tier,
+                "workflow_dag_id": workflow_dag_id,
             },
         )
 
@@ -274,12 +272,12 @@ class IngestionService:
         rows = result.scalars().all()
         return [_record_from_row(r) for r in rows]
 
-    async def list_periodic_datasets(self, schedule_cron: str) -> list[str]:
-        """Return dataset URNs where is_active=true and schedule_cron matches the given cron expression."""
+    async def list_periodic_datasets(self, schedule_tier: str) -> list[str]:
+        """Return dataset URNs where is_active=true and schedule_tier matches the given tier."""
         result = await self._db.execute(
             select(IngestionConfig.dataset_urn).where(
                 IngestionConfig.is_active.is_(True),
-                IngestionConfig.schedule_cron == schedule_cron,
+                IngestionConfig.schedule_tier == schedule_tier,
             )
         )
         return list(result.scalars().all())
@@ -433,7 +431,7 @@ async def run_ingestion_with_lock(
 ) -> IngestionRunResult:
     """Run ingestion with a Redis concurrency guard.
 
-    Shared by the public API route and the internal Kestra activity.
+    Shared by the public API route and the internal Airflow activity.
     """
     lock_key = f"ingestion:running:{dataset_urn}"
     acquired = await cache.set_nx(lock_key, "1", ttl_seconds=3600)

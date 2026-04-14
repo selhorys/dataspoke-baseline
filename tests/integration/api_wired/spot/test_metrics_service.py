@@ -6,10 +6,9 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient dataspoke.events rows for event pagination and activate/deactivate tests.
 
 Prerequisites:
-- Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)
-- PostgreSQL port-forwarded to localhost:9201
-- DataHub GMS port-forwarded to localhost:9004
-- Kestra port-forwarded to localhost:9205
+- In-cluster DataSpoke server running (DATASPOKE_TEST_MODE=true via dataspoke-test-mode.sh)
+- PostgreSQL accessible via DATASPOKE_DEV_PG_HOST/PORT
+- DataHub GMS accessible via DATASPOKE_DATAHUB_GMS_URL
 - Dummy data ingested via conftest.py Python utilities
 """
 
@@ -50,7 +49,7 @@ async def test_metric_config_crud_via_http(
                 "description": "Integration test metric",
                 "theme": "quality",
                 "measurement_query": {"type": "poorly_documented"},
-                "schedule_cron": "0 * * * *",
+                "schedule_tier": "hourly",
             },
         )
         assert resp.status_code in (200, 201)
@@ -72,16 +71,16 @@ async def test_metric_config_crud_via_http(
             headers=headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule_cron"] == "0 * * * *"
+        assert resp.json()["schedule_tier"] == "hourly"
 
-        # PATCH - update
+        # PATCH - update schedule tier
         resp = await http_client.patch(
             f"{_DG_PREFIX}/{metric_id}/attr/conf",
             headers=headers,
-            json={"schedule_cron": "0 6 * * *"},
+            json={"schedule_tier": "weekly"},
         )
         assert resp.status_code == 200
-        assert resp.json()["schedule_cron"] == "0 6 * * *"
+        assert resp.json()["schedule_tier"] == "weekly"
 
         # DELETE
         resp = await http_client.delete(
@@ -128,7 +127,7 @@ async def test_metric_run_and_result_persistence(
         )
         assert resp.status_code in (200, 201)
 
-        # Run (goes through real Kestra)
+        # Run (activity endpoint via test-mode stubs)
         resp = await http_client.post(
             f"{_DG_PREFIX}/{metric_id}/method/run",
             headers=headers,
@@ -347,7 +346,7 @@ async def test_metric_attr_endpoint(
                 "description": "Attr endpoint test",
                 "theme": "freshness",
                 "measurement_query": {"type": "poorly_documented"},
-                "schedule_cron": "*/5 * * * *",
+                "schedule_tier": "hourly",
             },
         )
         assert resp.status_code in (200, 201)

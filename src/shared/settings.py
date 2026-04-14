@@ -59,16 +59,12 @@ class Settings(BaseSettings):
     qdrant_grpc_port: int = 6334
     qdrant_api_key: str = ""
 
-    # Kestra
-    kestra_url: str = "http://localhost:8080"
-    kestra_namespace: str = "dataspoke"
-    kestra_user: str = ""
-    kestra_password: str = ""
-    # Base URL that Kestra (in K8s) uses to call back to activity endpoints.
-    # The API runs in-cluster, so the default is the in-cluster service address.
-    # Override via DATASPOKE_KESTRA_CALLBACK_BASE_URL when running outside the cluster.
-    kestra_callback_base_url: str = "http://dataspoke-api:8002"
-    kestra_ingestion_concurrent: int = 5
+    # Airflow
+    airflow_url: str = "http://localhost:8080"
+    airflow_user: str = ""
+    airflow_password: str = ""
+    airflow_callback_base_url: str = "http://dataspoke-api:8002"
+    airflow_ingestion_concurrent: int = 5
 
     # LLM
     llm_provider: str = "openai"

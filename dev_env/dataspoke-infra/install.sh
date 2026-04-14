@@ -83,9 +83,9 @@ add_repo_if_missing() {
 }
 
 info "Adding/updating Helm repositories..."
-add_repo_if_missing bitnami  "https://charts.bitnami.com/bitnami"
-add_repo_if_missing qdrant   "https://qdrant.github.io/qdrant-helm"
-add_repo_if_missing kestra   "https://helm.kestra.io/"
+add_repo_if_missing bitnami         "https://charts.bitnami.com/bitnami"
+add_repo_if_missing qdrant          "https://qdrant.github.io/qdrant-helm"
+add_repo_if_missing apache-airflow  "https://airflow.apache.org"
 helm repo update
 
 # ---------------------------------------------------------------------------
@@ -108,8 +108,8 @@ if [[ -d "$CHART_DIR" ]]; then
     --set postgresql.auth.username="${DATASPOKE_POSTGRES_USER}" \
     --set postgresql.auth.database="${DATASPOKE_POSTGRES_DB}" \
     --set redis.auth.existingSecret=dataspoke-redis-secret \
-    --set kestra.configurations.application.datasources.postgres.username="${DATASPOKE_POSTGRES_USER}" \
-    --set kestra.configurations.application.datasources.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set airflow.data.metadataConnection.user="${DATASPOKE_POSTGRES_USER}" \
+    --set airflow.data.metadataConnection.pass="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set api.image.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/api" \
     --set api.image.tag=dev \
@@ -117,18 +117,16 @@ if [[ -d "$CHART_DIR" ]]; then
     --set-string secrets.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set-string secrets.redis.password="${DATASPOKE_REDIS_PASSWORD}" \
     --set-string secrets.datahub.token="${DATASPOKE_DATAHUB_TOKEN:-}" \
-    --set-string secrets.kestra.user="${DATASPOKE_KESTRA_USER:-}" \
-    --set-string secrets.kestra.password="${DATASPOKE_KESTRA_PASSWORD:-}" \
+    --set-string secrets.airflow.user="${DATASPOKE_AIRFLOW_USER:-admin}" \
+    --set-string secrets.airflow.password="${DATASPOKE_AIRFLOW_PASSWORD:-admin}" \
     --set-string secrets.llm.apiKey="${DATASPOKE_LLM_API_KEY:-}" \
-    --set-string config.kestra.callbackBaseUrl="http://dataspoke-api:8002" \
+    --set-string config.airflow.callbackBaseUrl="http://dataspoke-api:8002" \
     --set-string config.datahub.gmsUrl="http://datahub-datahub-gms.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:8080" \
     --set-string config.datahub.kafkaBrokers="datahub-prerequisites-kafka.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:9092" \
     --set "api.ingress.hosts[0].host=app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
     --set "api.ingress.hosts[0].paths[0].path=/" \
     --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
-    --set "kestra.ingress.hosts[0].host=kestra.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-    --set "kestra.ingress.hosts[0].paths[0].path=/" \
-    --set "kestra.ingress.hosts[0].paths[0].pathType=Prefix" \
+    --set "airflow.ingress.web.hosts[0].name=airflow.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
     --timeout 5m --wait
 else
   warn "Helm chart not found at $CHART_DIR — skipping Helm install."
@@ -136,12 +134,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Wait for Kestra to become ready
+# Wait for Airflow webserver to become ready
 # ---------------------------------------------------------------------------
-info "Waiting for Kestra to become ready..."
-kubectl rollout status deployment/dataspoke-kestra-standalone -n "${NS}" --timeout=120s \
-  && info "Kestra is ready." \
-  || warn "Kestra did not become ready in time — check pod logs."
+info "Waiting for Airflow webserver to become ready..."
+kubectl rollout status deployment/dataspoke-airflow-webserver -n "${NS}" --timeout=120s \
+  && info "Airflow webserver is ready." \
+  || warn "Airflow webserver did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
 # Print access instructions
@@ -152,7 +150,8 @@ kubectl get pods -n "${NS}" 2>/dev/null || true
 echo ""
 if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
   echo "  DataSpoke API: http://app.${DATASPOKE_DEV_INGRESS_DOMAIN}/api/v1/"
-  echo "  Kestra UI:     http://kestra.${DATASPOKE_DEV_INGRESS_DOMAIN}/"
+  echo "  Airflow UI:    http://airflow.${DATASPOKE_DEV_INGRESS_DOMAIN}/"
+  echo "  Airflow creds: ${DATASPOKE_AIRFLOW_USER:-admin} / ${DATASPOKE_AIRFLOW_PASSWORD:-admin}"
 fi
 echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9201"
 echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9202"

@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_generation_service, get_kestra_client
+from src.api.dependencies import get_airflow_client, get_generation_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.generation import (
@@ -20,7 +20,7 @@ from src.shared.db.models import Event, GenerationConfig, GenerationResult
 from src.shared.exceptions import EntityNotFoundError
 from src.shared.settings import settings
 from src.workflows._common import urn_to_workflow_id
-from src.workflows.kestra.client import KestraClient
+from src.workflows.airflow.client import AirflowClient
 
 router = APIRouter(
     prefix="/gen",
@@ -142,30 +142,30 @@ async def get_gen_result(
 async def post_gen_generate(
     dataset_urn: str,
     service: GenerationService = Depends(get_generation_service),
-    kestra: KestraClient = Depends(get_kestra_client),
+    airflow: AirflowClient = Depends(get_airflow_client),
 ) -> RunResultResponse:
     """Trigger AI metadata generation for the specified dataset."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
 
-    label_value = f"generation-{urn_to_workflow_id(dataset_urn)}"
-    await kestra.check_no_duplicate(
-        "generation", "workflow_id", label_value, "GENERATION_RUNNING"
+    workflow_id = f"generation-{urn_to_workflow_id(dataset_urn)}"
+    await airflow.check_no_duplicate(
+        "generation", "workflow_id", workflow_id, "GENERATION_RUNNING"
     )
-    execution = await kestra.trigger_and_wait(
+    dag_run = await airflow.trigger_and_wait(
         "generation",
-        inputs={
-            "callback_base_url": settings.kestra_callback_base_url,
+        conf={
+            "callback_base_url": settings.airflow_callback_base_url,
             "dataset_urn": dataset_urn,
+            "workflow_id": workflow_id,
         },
-        labels={"workflow_id": label_value},
     )
-    outputs = execution.outputs or {}
+    conf_out = dag_run.conf or {}
     return RunResultResponse(
-        run_id=outputs.get("run_id", execution.id),
-        status=outputs.get("status", execution.status.value),
-        detail=outputs.get("detail", {}),
+        run_id=conf_out.get("run_id", dag_run.dag_run_id),
+        status=conf_out.get("status", dag_run.state.value),
+        detail=conf_out.get("detail", {}),
     )
 
 

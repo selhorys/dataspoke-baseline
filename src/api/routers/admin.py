@@ -9,12 +9,19 @@ import logging
 from fastapi import APIRouter, Depends
 
 from src.api.auth.dependencies import require_admin
-from src.api.dependencies import get_kestra_client
-from src.workflows.kestra.client import KestraClient
-from src.workflows.kestra.registry import _STARTUP_FLOWS, register_all_flows
+from src.api.dependencies import get_airflow_client
+from src.workflows.airflow.client import AirflowClient
 
 logger = logging.getLogger(__name__)
 
+# Expected DAG IDs that must be loaded in Airflow for DataSpoke to function.
+_EXPECTED_DAGS = frozenset({
+    "ingestion",
+    "generation",
+    "metrics",
+    "embedding-sync",
+    "ontology-rebuild",
+})
 
 router = APIRouter(
     prefix="/admin",
@@ -28,24 +35,35 @@ internal_router = APIRouter(
 )
 
 
-async def _init_flows(kestra: KestraClient) -> dict:
-    count = await register_all_flows(kestra)
-    total = len(_STARTUP_FLOWS)
-    logger.info("Flow init: registered %d/%d flows", count, total)
-    return {"registered": count, "total": total}
+async def _verify_dags(airflow: AirflowClient) -> dict:
+    dags = await airflow.list_dags()
+    loaded_ids = {d.get("dag_id") for d in dags}
+    missing = sorted(_EXPECTED_DAGS - loaded_ids)
+    found = sorted(_EXPECTED_DAGS & loaded_ids)
+    logger.info(
+        "DAG verification: found %d/%d expected DAGs, missing=%s",
+        len(found),
+        len(_EXPECTED_DAGS),
+        missing,
+    )
+    return {
+        "found": found,
+        "missing": missing,
+        "total_expected": len(_EXPECTED_DAGS),
+    }
 
 
-@router.post("/flows/init")
-async def init_flows(
-    kestra: KestraClient = Depends(get_kestra_client),
+@router.post("/dags/verify")
+async def verify_dags(
+    airflow: AirflowClient = Depends(get_airflow_client),
 ) -> dict:
-    """Register or update all startup Kestra flows."""
-    return await _init_flows(kestra)
+    """Verify that all expected Airflow DAGs are loaded and visible."""
+    return await _verify_dags(airflow)
 
 
-@internal_router.post("/flows/init")
-async def internal_init_flows(
-    kestra: KestraClient = Depends(get_kestra_client),
+@internal_router.post("/dags/verify")
+async def internal_verify_dags(
+    airflow: AirflowClient = Depends(get_airflow_client),
 ) -> dict:
-    """Register or update all startup Kestra flows (internal, no auth)."""
-    return await _init_flows(kestra)
+    """Verify that all expected Airflow DAGs are loaded (internal, no auth)."""
+    return await _verify_dags(airflow)

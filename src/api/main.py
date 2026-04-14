@@ -61,11 +61,11 @@ HUB = f"{API_PREFIX}/hub"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — manage shared clients."""
-    from src.api.dependencies import get_kestra_client
+    from src.api.dependencies import get_airflow_client
 
-    kestra = get_kestra_client()
+    airflow = get_airflow_client()
     yield
-    await kestra.close()
+    await airflow.close()
 
 
 def _error_json(request: Request, status: int, error_code: str, message: str) -> JSONResponse:
@@ -118,7 +118,7 @@ def create_app() -> FastAPI:
                 "## DataSpoke vs DataHub Native Ingestion\n\n"
                 "| Concern | DataHub Native Ingestion | DataSpoke Ingestion |\n"
                 "|---------|--------------------------|---------------------|\n"
-                "| Trigger | CLI batch (`datahub ingest`) | HTTP API + Kestra cron |\n"
+                "| Trigger | CLI batch (`datahub ingest`) | HTTP API + Airflow cron |\n"
                 "| Configuration | YAML recipes | JSONB config in PostgreSQL |\n"
                 "| Source plugins | 200+ community connectors | Focused extractors (extensible) |\n"
                 "| Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |\n\n"
@@ -303,7 +303,7 @@ def create_app() -> FastAPI:
     # ── Auth routes (no auth required) ────────────────────────────────────────
     app.include_router(auth_router.router, prefix=API_PREFIX)
 
-    # ── Internal endpoints (called by Kestra / scripts, no auth) ────────────────
+    # ── Internal endpoints (called by Airflow / scripts, no auth) ────────────────
     app.include_router(internal_activities.router, include_in_schema=False)
     app.include_router(admin_router.internal_router, include_in_schema=False)
 

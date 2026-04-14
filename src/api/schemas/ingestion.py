@@ -1,9 +1,9 @@
 """Ingestion config CRUD and run request/response models."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import IngestionConfigStatus
@@ -12,6 +12,8 @@ from src.shared.models.ingestion import (
     Platform,
     validate_platform_fields,
 )
+
+_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 
 
 class CreateIngestionConfigRequest(BaseModel):
@@ -43,7 +45,7 @@ class CreateIngestionConfigRequest(BaseModel):
         )
     )
     is_active: bool = Field(default=False, description="Whether the ingestion config is active and scheduled to run")
-    schedule_cron: str | None = Field(default=None, description="Cron expression for periodic runs, e.g. '0 6 * * *' for daily at 06:00 UTC. Required when is_active is true.")
+    schedule_tier: str | None = Field(default=None, description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'. Required when is_active is true.")
     enrichment_sources: dict[str, Any] | None = Field(default=None, description="Optional additional enrichment sources to merge after primary ingestion. Keys are enrichment source identifiers.")
     custom_extractors: dict[str, Any] | None = Field(default=None, description="Optional custom extractor configuration overrides. Keys are extractor names, values are extractor-specific settings.")
 
@@ -56,15 +58,22 @@ class CreateIngestionConfigRequest(BaseModel):
                 "identifier": {"database": "mydb", "schema_name": "public", "table": "orders"},
                 "auth": {"username": "readonly", "secret_ref": "k8s-secret/db-password"},
                 "is_active": True,
-                "schedule_cron": "0 6 * * *",
+                "schedule_tier": "daily",
             }
         }
     }
 
+    @field_validator("schedule_tier")
+    @classmethod
+    def validate_schedule_tier(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
+        return v
+
     @model_validator(mode="after")
     def validate_fields(self) -> "CreateIngestionConfigRequest":
-        if self.is_active and not self.schedule_cron:
-            raise ValueError("schedule_cron is required when is_active is true")
+        if self.is_active and not self.schedule_tier:
+            raise ValueError("schedule_tier is required when is_active is true")
         validate_platform_fields(
             self.platform, self.locator, self.identifier, self.auth
         )
@@ -76,17 +85,24 @@ class PatchIngestionConfigRequest(BaseModel):
     locator: dict[str, Any] | None = Field(default=None, description="Updated infrastructure location dict. See CreateIngestionConfigRequest.locator for structure by platform.")
     identifier: dict[str, Any] | None = Field(default=None, description="Updated dataset identity dict. See CreateIngestionConfigRequest.identifier for structure by platform.")
     auth: dict[str, Any] | None = Field(default=None, description="Updated access credentials dict. See CreateIngestionConfigRequest.auth for structure.")
-    is_active: bool | None = Field(default=None, description="Set to true to activate scheduling (schedule_cron must be provided in the same request), false to pause.")
-    schedule_cron: str | None = Field(default=None, description="Cron expression for periodic runs, e.g. '0 6 * * *' for daily at 06:00 UTC.")
+    is_active: bool | None = Field(default=None, description="Set to true to activate scheduling (schedule_tier must be provided in the same request), false to pause.")
+    schedule_tier: str | None = Field(default=None, description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.")
     enrichment_sources: dict[str, Any] | None = Field(default=None, description="Updated enrichment sources configuration.")
     custom_extractors: dict[str, Any] | None = Field(default=None, description="Updated custom extractor configuration.")
+
+    @field_validator("schedule_tier")
+    @classmethod
+    def validate_schedule_tier(cls, v: str | None) -> str | None:
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
+        return v
 
     @model_validator(mode="after")
     def validate_fields(self) -> "PatchIngestionConfigRequest":
         # Only validate when is_active is explicitly set to true in this patch.
-        if self.is_active is True and self.schedule_cron is None:
+        if self.is_active is True and self.schedule_tier is None:
             raise ValueError(
-                "schedule_cron must be provided in the same patch when setting is_active to true"
+                "schedule_tier must be provided in the same patch when setting is_active to true"
             )
         # Per-platform sub-field validation only when platform is present.
         if self.platform is not None:
@@ -116,12 +132,11 @@ class IngestionConfigResponse(SingleResponse):
     identifier: dict[str, Any] = Field(description="Dataset identity within the source infrastructure")
     auth: dict[str, Any] | None = Field(description="Access credentials (secret references only, no plaintext passwords)")
     is_active: bool = Field(description="Whether scheduled ingestion runs are enabled")
-    schedule_cron: str | None = Field(description="Cron expression for scheduled runs")
+    schedule_tier: str | None = Field(description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'")
     enrichment_sources: dict[str, Any] | None = Field(description="Enrichment sources configuration")
     custom_extractors: dict[str, Any] | None = Field(description="Custom extractor configuration")
-    kestra_flow_namespace: str | None = Field(description="Kestra namespace of the registered ingestion flow")
-    kestra_flow_id: str | None = Field(description="Kestra flow ID of the registered ingestion flow")
-    status: IngestionConfigStatus = Field(description="Config lifecycle status: 'OK' (flow registered and ready) or 'draft' (not yet registered)")
+    workflow_dag_id: str | None = Field(description="Airflow DAG ID for the registered ingestion DAG")
+    status: IngestionConfigStatus = Field(description="Config lifecycle status: 'OK' (DAG registered and ready) or 'draft' (not yet registered)")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
@@ -131,6 +146,6 @@ class IngestionConfigListResponse(PaginatedResponse):
 
 
 class RunResultResponse(SingleResponse):
-    run_id: str = Field(description="Kestra execution ID for this run")
-    status: str = Field(description="Execution status returned by Kestra, e.g. 'RUNNING' or 'SUCCESS'")
-    detail: dict[str, Any] = Field(default={}, description="Additional execution metadata returned by Kestra")
+    run_id: str = Field(description="Airflow DAG run ID for this run")
+    status: str = Field(description="Execution status returned by Airflow, e.g. 'running' or 'success'")
+    detail: dict[str, Any] = Field(default={}, description="Additional execution metadata returned by Airflow")

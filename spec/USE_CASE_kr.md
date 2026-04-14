@@ -225,7 +225,7 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 | **보강 소스 커넥터** | Confluence, Excel/S3, 분류 체계 API에서 가져오기 | DataHub 커넥터는 데이터베이스/플랫폼 중심 |
 | **커스텀 추출기 프레임워크** | PL/SQL 리니지 파싱, CHECK 제약조건 추출 플러그인 | 스토어드 프로시저 본문 파싱은 DataHub 범위 밖 |
 | **필드 매핑 엔진** | Confluence 라벨 → 태그, Excel 컬럼 → 커스텀 속성 변환 | DataHub는 구조화된 aspect를 수용하지만 비정형 입력을 변환하지 않음 |
-| **오케스트레이션 (Kestra)** | 스케줄링, 단계별 재시도, 알림 | DataHub는 레시피를 원자적으로 실행; 다중 소스 오케스트레이션은 Kestra 필요 |
+| **오케스트레이션 (Airflow)** | 스케줄링, 단계별 재시도, 알림 | DataHub는 레시피를 원자적으로 실행; 다중 소스 오케스트레이션은 Airflow 필요 |
 | **벡터 인덱스 동기화** | 성공적 인제스천 시 임베딩 생성 → Qdrant | DataHub는 Elasticsearch 키워드 검색만 제공, 벡터 유사도 검색 없음 |
 
 #### 결과
@@ -456,7 +456,7 @@ DataSpoke는 DataHub assertion 프레임워크 위의 **읽기/쓰기** 레이�
 | **파티션 인식 실행기** | 대상 파티션 결정, 규칙 실행, 결과 저장 | 오픈소스 DataHub는 assertion을 실행하지 않음 |
 | **SQL 기반 시계열 엔진** | 데이터 조작 SQL 실행, 파티션 값 계산, 이력 추적 | DataHub는 프로필을 저장하지만 소스 시스템에 쿼리할 수 없음 |
 | **ML 기반 이상 검증** | 이력 파티션 값 대비 range/모델 기반 검증 | DataHub에는 통계 분석 없음 |
-| **Cron/Manual 스케줄러** | Kestra 기반 cron + 온디맨드 수동 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
+| **Cron/Manual 스케줄러** | Airflow 기반 cron + 온디맨드 수동 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
 
 #### 결과
 
@@ -592,7 +592,7 @@ GET /api/v1/spoke/common/data/urn:li:dataset:...orders.daily_fulfillment_summary
 | **SQL 기반 시계열 엔진** | 누적 SQL 실행, 시간별 파티션 값 계산 | 오픈소스 DataHub는 소스 시스템에 쿼리하지 않음 |
 | **요일별 기준선 모델** | 28일 이력에서 평일 패턴 학습, 요일별 임계값 조정 | DataHub는 원시 데이터를 저장하지만 패턴 학습 없음 |
 | **Assertion 기반 알림** | `assertionRunEvent`에 FAILURE가 기록되면 알림 생성 | 오픈소스 DataHub에는 알림 엔진 없음 |
-| **Cron 스케줄러** | Kestra 플로우가 매일 오전 7시, 8시에 검증 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
+| **Cron 스케줄러** | Airflow DAG가 매일 오전 7시, 8시에 검증 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
 
 #### 결과
 
