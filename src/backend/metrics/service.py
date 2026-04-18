@@ -18,14 +18,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.backend.metrics.measurers import get_measurer, list_measurers
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import (
     Event,
     MetricDefinition,
     MetricResult,
-    ValidationConfig,
-    ValidationResult,
 )
 from src.shared.events import (
     METRIC_ACTIVATE,
@@ -473,91 +472,13 @@ class MetricsService:
             tags=tags, glossary_terms=glossary_terms
         )
 
-        if metric_type == "poorly_documented":
-            return await self._measure_poorly_documented(datasets)
-
-        if metric_type == "stale_datasets":
-            return await self._measure_stale_datasets(datasets)
-
-        raise PreconditionError(
-            "UNSUPPORTED_METRIC_TYPE",
-            f"Unsupported metric type: '{metric_type}'. "
-            "Supported types: 'poorly_documented', 'stale_datasets'.",
-        )
-
-    async def _measure_poorly_documented(
-        self, datasets: list[str]
-    ) -> tuple[float, dict[str, Any]]:
-        from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-        affected: list[dict[str, Any]] = []
-        for urn in datasets:
-            props = await self._datahub.get_aspect(urn, DatasetPropertiesClass)
-            desc = getattr(props, "description", None) or "" if props else ""
-            if len(desc) < 20:
-                affected.append(
-                    {"urn": urn, "category": "short_description", "detail": {"length": len(desc), "value": desc}}
-                )
-
-        return float(len(affected)), {
-            "dataset_count": len(datasets),
-            "datasets": affected,
-        }
-
-    async def _measure_stale_datasets(
-        self, datasets: list[str]
-    ) -> tuple[float, dict[str, Any]]:
-        """Aggregate stale-dataset count over validation_results.
-
-        A dataset is counted as stale if:
-        - It has no active ValidationConfig with a freshness rule
-          (category: ``no_freshness_rule``), OR
-        - Its latest ValidationResult for the freshness rule is a FAILURE
-          (category: ``freshness_failure``).
-        """
-        affected: list[dict[str, Any]] = []
-
-        for urn in datasets:
-            # Query active validation config for this dataset
-            config_q = select(ValidationConfig).where(
-                ValidationConfig.dataset_urn == urn,
-                ValidationConfig.is_active == True,  # noqa: E712
+        measurer = get_measurer(metric_type)
+        if measurer is None:
+            supported = ", ".join(f"'{m}'" for m in list_measurers())
+            raise PreconditionError(
+                "UNSUPPORTED_METRIC_TYPE",
+                f"Unsupported metric type: '{metric_type}'. "
+                f"Supported types: {supported}.",
             )
-            config_result = await self._db.execute(config_q)
-            config_row = config_result.scalar_one_or_none()
 
-            if config_row is None:
-                affected.append({"urn": urn, "category": "no_freshness_rule"})
-                continue
-
-            # Find a freshness rule in the config
-            freshness_rule_id: str | None = None
-            for rule in (config_row.rules or []):
-                if isinstance(rule, dict) and rule.get("type") == "freshness":
-                    freshness_rule_id = rule.get("rule_id")
-                    break
-
-            if freshness_rule_id is None:
-                affected.append({"urn": urn, "category": "no_freshness_rule"})
-                continue
-
-            # Query the latest validation result for that freshness rule
-            result_q = (
-                select(ValidationResult)
-                .where(
-                    ValidationResult.dataset_urn == urn,
-                    ValidationResult.rule_id == freshness_rule_id,
-                )
-                .order_by(ValidationResult.measured_at.desc())
-                .limit(1)
-            )
-            val_result = await self._db.execute(result_q)
-            val_row = val_result.scalar_one_or_none()
-
-            if val_row is None or val_row.assertion_result == "FAILURE":
-                affected.append({"urn": urn, "category": "freshness_failure", "detail": {"rule_id": freshness_rule_id}})
-
-        return float(len(affected)), {
-            "dataset_count": len(datasets),
-            "datasets": affected,
-        }
+        return await measurer(datasets, datahub=self._datahub, db=self._db)
