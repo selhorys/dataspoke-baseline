@@ -187,16 +187,7 @@ CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports pe
 
 Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_tier` (tier-based scheduling), `status` (DAG verification outcome).
 
-**Run pipeline** (`IngestionService.run()`):
-
-1. Load config from PostgreSQL
-2. Connect to source using `locator`/`auth`
-3. Discover schema metadata using `identifier`
-4. Emit aspects to DataHub (`StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`; skip if `dry_run`). A non-dry-run that ingests zero entities is treated as failure.
-5. Run enrichment sources, if configured (TBD)
-6. Run custom extractors, if configured (TBD)
-7. On success (non-dry-run): mark `dataset_registry.datahub_registered = true` via the `mark_registered()` helper in `src/shared/db/registry.py`
-8. Record event (`INGESTION.COMPLETE` or `INGESTION.FAIL`; see [Event Catalogue](#event-catalogue))
+**Run pipeline** (`IngestionService.run()`): load config → connect to source via `locator`/`auth` → discover schema via `identifier` → emit `StatusClass` + `DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as failure) → run enrichment sources and custom extractors if configured (TBD) → on success mark `dataset_registry.datahub_registered = true` via `mark_registered()` in `src/shared/db/registry.py` → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (see [Event Catalogue](#event-catalogue)).
 
 ### Validation Service (`src/backend/validation/`)
 
@@ -240,16 +231,7 @@ CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition
 
 **SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value variables, and optional ML-based validation settings (model type, lookback window, validation range).
 
-**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated via tier-based Airflow DAGs):
-
-1. Resolve target partition (manual request → specified partition; cron → latest partition via partition/order variables)
-2. For each rule in the dataset's config, compute metrics for the target partition
-3. For `custom/sql_timeseries` rules: execute SQL against source, extract partition values
-4. For rules with `ml_validation`: validate selected values against historical records (range model, day-of-week baseline, etc.)
-5. Register assertion definitions in DataHub (`assertionInfo` aspect) if not already present
-6. Report each rule's result to DataHub (`assertionRunEvent` aspect: SUCCESS/FAILURE/ERROR)
-7. Persist results in PostgreSQL (`validation_results`), publish progress to Redis pub/sub channel (`ws:validation:{dataset_urn}`)
-8. Record event (`VALIDATION.COMPLETE`)
+**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated via tier-based Airflow DAGs): resolve target partition (manual → specified; cron → latest via partition/order variables) → compute metrics per rule for that partition (executing source SQL for `custom/sql_timeseries`, running `ml_validation` against historical records when configured) → register `assertionInfo` in DataHub if absent → report each rule's `assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` and publish progress to the `ws:validation:{dataset_urn}` Redis pub/sub channel → record `VALIDATION.COMPLETE` event.
 
 ### Generation Service (`src/backend/generation/`)
 
@@ -257,15 +239,7 @@ CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition
 
 CRUD for generation configurations (PostgreSQL: `generation_configs`). LLM-powered metadata generation (descriptions, tags, deprecation notes), source code analysis, similar-table diffing (Qdrant + LLM), apply generated results to DataHub with approval gate.
 
-**Generation Pipeline** (Airflow DAG):
-
-1. Read current DataHub aspects (schema, properties, lineage, tags)
-2. Find similar datasets via Qdrant embedding search
-3. LLM analysis: generate field descriptions, table summary, suggested tags
-4. If code references configured, analyze source code
-5. Diff against similar tables
-6. Produce `GenerationResult` (stored in PostgreSQL)
-7. On `apply` -- write approved proposals to DataHub
+**Generation Pipeline** (Airflow DAG): read current DataHub aspects (schema, properties, lineage, tags) → find similar datasets via Qdrant embedding search → LLM analysis to generate field descriptions, table summary, suggested tags → analyze source code if `code_refs` configured → diff against similar tables → produce a `GenerationResult` row in PostgreSQL. `apply` writes approved proposals to DataHub.
 
 ### Search Service (`src/backend/search/`)
 
@@ -283,13 +257,7 @@ NL query parsing, embedding generation, hybrid search (Qdrant vectors + DataHub 
 
 Concept category CRUD, concept-to-dataset mapping, cross-concept relationship management (all PostgreSQL). LLM-powered taxonomy construction and drift detection. Approve/reject workflow for pending proposals.
 
-**Taxonomy Build Pipeline** (Airflow DAG, scheduled weekly):
-
-1. Enumerate all datasets from DataHub
-2. LLM classifies each dataset into business concept categories
-3. Synthesize categories into hierarchy, infer cross-concept relationships
-4. Score confidence per mapping; low-confidence (< 0.7) queued for human review
-5. Persist to PostgreSQL, detect drift against existing approved taxonomy
+**Taxonomy Build Pipeline** (Airflow DAG, scheduled weekly): enumerate all datasets from DataHub → LLM classifies each into business concept categories → synthesize categories into a hierarchy and infer cross-concept relationships → score confidence per mapping (mappings below 0.7 queued for human review) → persist to PostgreSQL and detect drift against the existing approved taxonomy.
 
 ### Metrics Service (`src/backend/metrics/`)
 

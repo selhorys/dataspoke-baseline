@@ -62,7 +62,7 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 The scaffold uses a **plan → approve → generate → evaluate** architecture. This separation prevents the self-praise failure mode where agents approve their own mediocre work.
 
 **You MUST enter Plan mode before writing any implementation code** unless the change meets **all** of these skip-plan criteria:
-- Touches ≤ 2 files and adds/modifies ≤ ~30 lines of logic
+- Touches < 3 files and adds/modifies < 60 lines of logic
 - Does not introduce a new API endpoint, DB table/column, Airflow DAG, or Qdrant collection
 - Does not require coordination across layers (backend + frontend, backend + workflow, etc.)
 - The user explicitly says "just do it" / "quick fix" / "no need to plan"
@@ -90,42 +90,11 @@ For testing conventions (unit/integration/api-wired integration/E2E, toolchain, 
 
 ## Integration Test Protocol
 
-Follow `spec/TESTING.md §Integration Testing` (7-step workflow). Key rules:
+Follow `spec/TESTING.md §Integration Testing` for the full 7-step workflow, pre-flight + reinstall table, lock protocol, data reset, Imazon test-data rule, assertion rules, and manual API testing. Key reminders:
 
-**Pre-flight**: Run `./dev_env/health-check.sh` before integration tests. It verifies all peripherals are reachable via nginx-ingress AND responding at the application layer. Do not proceed if any check fails — reinstall the failing component's subsystem:
-
-| Failing service | Reinstall |
-|---|---|
-| airflow | `cd dev_env && ./reinstall.sh --airflow` |
-| dataspoke-postgresql, redis, qdrant | `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh` |
-| datahub-gms, datahub-kafka | `cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh` |
-| example-postgres, example-kafka | `cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh` |
-| lock-service | `cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh` |
-
-**Lock protocol**: acquire the dev-env advisory lock before any state-mutating operation.
-
-**Data reset**: `conftest.py` automatically resets dummy data via Python utilities in `tests/integration/util/` before and after test runs. For manual reset: `uv run python -m tests.integration.util --reset-all`
-
-**Dummy-data fixtures**: SQL seed files, Kafka JSONL messages, and DataHub ingestion logic live in `tests/integration/util/`.
-
-**Test data**: all integration/E2E scenarios use **Imazon** as the canonical company context — do not invent alternative test companies.
-
-**Assertion rules**:
-- Never hardcode row counts — query actual counts within the test
-- Never hardcode surrogate IDs — look up by stable natural key (ISBN, URN, email)
-- Never assert on wall-clock timestamps — assert on relative ordering or freshness windows
-
-**Test execution groups**: Run tests in three separate groups, do not mix:
-1. `uv run pytest tests/unit/`
-2. `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/`
-3. Deploy the in-cluster API via `./dev_env/dataspoke-test-mode.sh` (builds image, deploys via Helm, accessible via ingress at the configured host), then `uv run python -m tests.integration.util --reset-all`, run `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`, then `./dev_env/dataspoke-test-mode.sh --stop`.
-
-Mixing groups causes resource contention. The `require_server` fixture verifies `DATASPOKE_TEST_MODE` is set **in the pytest process**, server health, and Airflow DAG availability before api-wired tests run.
-
-**Manual API testing**: See `spec/TESTING.md §Manual REST API Testing`. Deploy the in-cluster API via `dataspoke-test-mode.sh`, get a token via `POST /api/v1/auth/token`, then `curl` endpoints. Refer to spot tests in `tests/integration/api_wired/spot/` for valid URNs and payloads.
-
-**Output rules**:
-- Never truncate integration test output (no `| tail`, `| head`, or piping through filters) — always show the complete pytest output
+- Run `./dev_env/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
+- Run tests in three **separate** groups (unit → non-api-wired integration → api-wired integration). Mixing causes Airflow resource contention.
+- Never truncate integration test output (no `| tail`, `| head`, or piped filters) — always show complete pytest output.
 
 ## Testing prauto
 

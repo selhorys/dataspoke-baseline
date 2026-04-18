@@ -40,12 +40,7 @@ Does the implementation match the feature spec?
 - Nothing was added that contradicts the spec
 
 ### 2. Architecture adherence (weight: high)
-Does it follow DataSpoke conventions?
-- Three-tier API routing (`/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`)
-- Service layer separation (routers thin, logic in `src/backend/`)
-- DataHub integration patterns per `spec/DATAHUB_INTEGRATION.md`
-- Airflow DAG conventions (max_active_runs, retries, SimpleHttpOperator)
-- Existing naming conventions and file organization
+Does it follow DataSpoke conventions per `spec/feature/API.md` (three-tier routing), `spec/feature/BACKEND.md` (service layer, Airflow DAG conventions), and `spec/DATAHUB_INTEGRATION.md` (SDK patterns)? Also check existing naming conventions and file organization for consistency.
 
 ### 3. Code quality (weight: medium)
 - Type hints on every function signature (Python 3.13)

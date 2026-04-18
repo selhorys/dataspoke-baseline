@@ -61,20 +61,15 @@ A single machine may run multiple prauto instances (distinct worker IDs) sharing
 
 ## Heartbeat Cycle
 
-```
-crontab trigger
-    |
-    +-- 1. Acquire lock (PID-based; exit if locked)
-    +-- 2. Load config (config.env + config.local.env)
-    +-- 3. Secure secrets (backup config.local.env; protected by denylist)
-    +-- 4. Check token quota (exit if exhausted; post quota-paused on WIP issues)
-    +-- 5. Claim new issue (if under PRAUTO_OPEN_ISSUE_LIMIT)
-    +-- 6. Process all claimed issues (oldest first, self-contained state machine per issue)
-    |       +-- prauto:done / prauto:failed -> skip
-    |       +-- prauto:wip -> derive phase, handle or skip
-    |       +-- prauto:review -> squash-finalize or address feedback
-    +-- 7. Restore secrets + release lock (EXIT trap)
-```
+Each heartbeat runs seven steps in order:
+
+1. Acquire the PID-based lock (exit if already held).
+2. Load `config.env` + `config.local.env`.
+3. Secure secrets — back up `config.local.env`; protected by the Claude tool denylist.
+4. Check token quota — exit if exhausted; post a quota-paused comment on WIP issues.
+5. Claim a new issue if under `PRAUTO_OPEN_ISSUE_LIMIT`.
+6. Process all claimed issues (oldest first, self-contained state machine per issue): `prauto:done`/`prauto:failed` skip, `prauto:wip` derives phase and handles, `prauto:review` squash-finalizes or addresses feedback.
+7. Restore secrets and release the lock (EXIT trap).
 
 **Claim-first, then process-all**: Step 5 counts open issues assigned to this worker (excluding ready-only restarted issues). If under limit, claims the oldest `prauto:ready` issue. Step 6 loops over all claimed issues.
 
@@ -98,16 +93,7 @@ Two-step probe: (1) `claude auth status`, (2) minimal 1-turn dry-run. If either 
 
 ### Phases
 
-```
-New issue (minor):
-  analysis -> implementation -> integration-fix -> pr -> (complete)
-
-New issue (non-minor):
-  analysis -> plan-approval -> implementation -> integration-fix -> pr -> (complete)
-                    |  ^
-                    |  +-- counter-proposal -> re-analysis
-                    +-- no response -> wait (next heartbeat)
-```
+Minor issues flow `analysis → implementation → integration-fix → pr → complete`. Non-minor issues insert a `plan-approval` gate between `analysis` and `implementation`; from `plan-approval`, an approval advances, a counter-proposal loops back to re-analysis, and no response waits until the next heartbeat.
 
 Phase is always derived fresh from GitHub -- never read from local state.
 
@@ -148,16 +134,7 @@ Each heartbeat posts a marker comment on the issue. `count_heartbeat_comments()`
 
 ### Label lifecycle
 
-```
-[human adds prauto:ready]
-    +-- prauto claims -> removes prauto:ready, adds prauto:wip, sets assignee
-    |       +-- if non-minor: adds prauto:plan-review
-    |       |       +-- on approval: removes prauto:plan-review
-    |       +-- success -> removes prauto:wip, adds prauto:review (issue + PR)
-    |       |       +-- approved + squash-finalized -> prauto:done (issue + PR)
-    |       +-- failure -> removes prauto:wip, adds prauto:failed
-    +-- (no pickup yet -> stays prauto:ready)
-```
+A human sets `prauto:ready`. On claim, prauto removes `prauto:ready`, adds `prauto:wip`, sets the assignee — and for non-minor issues also adds `prauto:plan-review` (removed on approval). On success the issue and PR both move `prauto:wip` → `prauto:review`; once approved and squash-finalized, both move to `prauto:done`. On failure, `prauto:wip` is replaced with `prauto:failed`. An unclaimed issue simply stays `prauto:ready`.
 
 ### Search and claiming
 

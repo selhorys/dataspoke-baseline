@@ -188,107 +188,25 @@ For SDK entry points, aspect catalog, error handling, and configuration, see [`D
 
 ## Data Flow
 
-### 1. Metadata Enrichment & Synchronization
+### 1. Metadata Enrichment & Synchronization (UC1)
 
-Covers UC1 (Deep Ingestion) → event-driven downstream processing.
+Source systems (PostgreSQL, MySQL, BigQuery, …) feed the Ingestion Service, which uses the DataHub SDK to persist aspects in GMS. GMS emits MCE/MAE events through Kafka, which DataSpoke event consumers pick up and fan out to: vector DB sync (DA), validator triggers (DE), metrics updates (DG), and ontology re-indexing.
 
-```
-Data Sources                        DataSpoke Backend               DataHub
-(PostgreSQL, MySQL,         ──►    Ingestion Service        ──►   GMS
- BigQuery, etc.)                   (DataHub SDK ingestion,         (persist aspects,
-                                    enrichment TBD)                emit MCE/MAE)
-                                                                      │
-                                   Event Consumers           ◄──   Kafka
-                                   ├─ Vector DB Sync (DA)
-                                   ├─ Validator Trigger (DE)
-                                   ├─ Metrics Update (DG)
-                                   └─ Ontology Re-index
-```
+### 2. Data Validation (UC2, UC3)
 
-### 2. Data Validation
+Validation runs are triggered by Airflow cron or by `POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run`. The service (1) resolves the target partition (manual → specified; cron → latest), (2) computes metrics per rule for that partition, (3) executes source SQL for `custom/sql_timeseries` rules, (4) validates against historical records when `ml_validation` is set, (5) registers `assertionInfo` in DataHub, (6) reports results as `assertionRunEvent`. Output: per-rule results `(partition, values, verdict, SUCCESS/FAILURE/ERROR)`. **Predictive SLA** (UC3) uses a SQL-based timeseries rule with ML validation to detect anomalies before breach via cron-scheduled checks.
 
-Covers UC2 (Assertion-Based Monitoring), UC3 (Timeseries Validation / Predictive SLA). Shared across DE and DA groups.
+### 3. Semantic Search & Text-to-SQL (UC5, UC7)
 
-```
-Cron (Airflow) / Manual (API)
-      │
-      ▼
-API: POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run
-      │
-      ▼
-Validation Service
-  1. Resolve target partition (manual → specified; cron → latest)
-  2. For each rule: compute metrics for target partition
-  3. For custom/sql_timeseries: execute SQL against source system
-  4. For rules with ml_validation: validate against historical records
-  5. Register assertions in DataHub (assertionInfo)
-  6. Report results to DataHub (assertionRunEvent)
-      │
-      ▼
-Per-Rule Results (partition, values, validation verdicts, SUCCESS/FAILURE/ERROR)
-```
+Queries go to `/api/v1/spoke/common/search` (`?sql_context=true` for Text-to-SQL). The Search/Context Service parses NL intent, generates an embedding via LLM, runs a hybrid search (Qdrant vectors + DataHub GraphQL filters), enriches results with metadata (tags, lineage, usage stats), and — for `sql_context=true` — adds column profiles, join paths, and sample queries.
 
-For **predictive SLA** (UC3), a SQL-based timeseries rule with ML validation detects anomalies before SLA breach via cron-scheduled checks.
+### 4. Ontology & Documentation (UC4, UC8)
 
-### 3. Semantic Search & Text-to-SQL
+The shared Ontology/Taxonomy Builder (see [Shared Services](#shared-services)) reads all datasets (schema, descriptions, tags, lineage, code refs) and runs an LLM-powered pipeline that classifies them into business concepts, detects semantic clusters, proposes canonical entities + consistency rules, and scans weekly for drift/violations. Outputs feed **UC4 Doc Generation** (ontology proposals, similar-table diffs, code-based docs) and **UC8 Multi-Perspective Overview** (graph node grouping, domain classification).
 
-Covers UC5 (NL Search), UC7 (Text-to-SQL Metadata).
+### 5. Metrics Collection & Visualization (UC6, UC8)
 
-```
-User Query (natural language)
-      │
-      ▼
-API: /api/v1/spoke/common/search  (add ?sql_context=true for Text-to-SQL context)
-      │
-      ▼
-Search / Context Service
-  1. Parse NL intent (entity type, filters, compliance context)
-  2. Generate query embedding via LLM
-  3. Hybrid search: Qdrant vectors + DataHub GraphQL filters
-  4. Enrich results with metadata (tags, lineage, usage stats)
-  5. [Text-to-SQL] Add column profiles, join paths, sample queries
-      │
-      ▼
-Search Results / SQL Context (ranked, enriched, conversational)
-```
-
-### 4. Ontology & Documentation
-
-Covers UC4 (Doc Generation), UC8 (Multi-Perspective Overview). Both use the shared Ontology/Taxonomy Builder (see [Shared Services](#shared-services)).
-
-```
-All Datasets (schema, descriptions, tags, lineage, code refs)
-      │
-      ▼
-Ontology/Taxonomy Builder (LLM-powered)
-  1. Classify datasets into business concept categories
-  2. Detect semantic clusters and overlaps
-  3. Propose canonical entities + consistency rules
-  4. Weekly drift/violation scanning
-      │
-      ├──► UC4: Doc Generation (ontology proposals, similar-table diffs, code-based docs)
-      └──► UC8: Multi-Perspective Overview (graph node grouping, domain classification)
-```
-
-### 5. Metrics Collection & Visualization
-
-Covers UC6 (Metrics Dashboard), UC8 (Multi-Perspective Overview).
-
-```
-Airflow Periodic DAG (per-tier schedule)
-      │
-      ▼
-Metrics Aggregator (pure aggregation — no direct data observation)
-  1. Read pre-existing metadata from DataHub (e.g. datasetProperties.description)
-     or DataSpoke validation results (PostgreSQL)
-  2. Apply dataset_filter (tags / glossary_terms, OR-ed) if configured
-  3. Aggregate into a single measured value + per-dataset breakdown
-  4. Persist to PostgreSQL metric_results
-      │
-      ▼
-API: /api/v1/spoke/dg/metric   (dashboard)
-API: /api/v1/spoke/dg/overview  (graph visualization)
-```
+Airflow per-tier periodic DAGs invoke the Metrics Aggregator — pure aggregation with no direct data observation. It reads pre-existing DataHub metadata (e.g. `datasetProperties.description`) or DataSpoke validation results (PostgreSQL), applies the optional `dataset_filter` (tags / glossary_terms, OR-ed), and writes a single measured value + per-dataset breakdown to `metric_results`. Surfaced via `/api/v1/spoke/dg/metric` (dashboard) and `/api/v1/spoke/dg/overview` (graph visualization).
 
 ---
 
@@ -412,42 +330,11 @@ For full testing conventions, toolchain configuration, mocking rules, and the in
 
 ### Kubernetes Topology
 
-DataHub exists in a separate namespace or cluster. DataSpoke deploys into its own namespace.
+DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed), `dataspoke-event-consumer` (optional Kafka consumer Deployment — co-located in the API by default), `airflow-webserver` + `airflow-scheduler` (Deployments, LocalExecutor), `qdrant` + `postgresql` (StatefulSets with PV), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST) and `datahub-kafka:9092` (event streaming).
 
-```
-Namespace: dataspoke
-├── dataspoke-frontend         (Deployment)    Ingress: /app/*
-├── dataspoke-api              (Deployment)    Ingress: /api/*
-├── dataspoke-event-consumer   (Deployment)    — no ingress (Kafka consumer) [optional]
-├── airflow-webserver          (Deployment)    Ingress: /airflow/* (UI on port 8080)
-├── airflow-scheduler          (Deployment)    — no ingress (LocalExecutor)
-├── qdrant                     (StatefulSet, PV)
-├── postgresql                 (StatefulSet, PV)
-└── redis                      (Deployment)
+`dataspoke-event-consumer` is optional — enable the separate pod for independent scaling in production (Kafka consumers scale by partition count).
 
-External Dependencies:
-  datahub-gms:8080    (GraphQL / REST)
-  datahub-kafka:9092  (Event streaming)
-```
-
-`dataspoke-event-consumer` is optional — by default Kafka consumers are co-located in the `dataspoke-api` deployment. Enable the separate pod for independent scaling in production (Kafka consumers scale by partition count). See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
-
-Replica counts, resource requests/limits, and PV sizes are configurable via Helm values. The table below shows **minimum requirements** for a functional single-node deployment:
-
-| Component | Min Replicas | Min Memory | Min CPU | Min PV |
-|-----------|-------------|-----------|---------|--------|
-| dataspoke-frontend | 1 | 256Mi | 0.25 | — |
-| dataspoke-api | 1 | 512Mi | 0.5 | — |
-| dataspoke-event-consumer† | 1 | 512Mi | 0.25 | — |
-| airflow-webserver | 1 | 512Mi | 0.25 | — |
-| airflow-scheduler | 1 | 512Mi | 0.25 | — |
-| qdrant | 1 | 1Gi | 0.5 | 10Gi |
-| postgresql | 1 | 512Mi | 0.5 | 10Gi |
-| redis | 1 | 256Mi | 0.25 | — |
-
-† Optional — disabled by default; enable via `event-consumer.enabled`. Airflow uses LocalExecutor — no separate Celery worker needed.
-
-**Network**: DataSpoke namespace requires access to DataHub namespace. Configure NetworkPolicy if using strict policies.
+For replica counts, resource requests/limits, PV sizes, component matrix, and network policy, see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md). DataSpoke's namespace requires egress access to the DataHub namespace; configure NetworkPolicy in clusters with default-deny.
 
 ### Configuration
 
@@ -468,18 +355,7 @@ For production, secrets are stored as Kubernetes Secrets and injected via Helm v
 
 ### Development Environment
 
-For dev/CI, DataHub and DataSpoke infrastructure dependencies are provisioned via `dev_env/`:
-```bash
-cd dev_env && ./install.sh    # Install DataHub + DataSpoke infra + examples (5–10 min first run)
-cd dev_env && ./uninstall.sh  # Tear down
-# Settings: dev_env/.env (DATASPOKE_DEV_* for cluster config, DATASPOKE_* for app config)
-```
-
-The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) but with a dev overlay (`values-dev.yaml`) that reduces resource limits and disables frontend/workers. The target cluster is GKE Autopilot (Docker Desktop, minikube, or kind also work).
-
-The API server runs **in-cluster** so that Airflow can call back to it directly via `http://dataspoke-api:8002`. Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). Unit tests run locally without the cluster. See [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
-
-See [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for the full dev environment specification.
+For dev/CI, DataHub and DataSpoke infrastructure dependencies are provisioned by `dev_env/` scripts (see [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for install/uninstall, configuration, and resource budget). The dev environment reuses the production umbrella Helm chart (`helm-charts/dataspoke/`) with a `values-dev.yaml` overlay that reduces resources and disables frontend/workers; the API runs in-cluster so Airflow callbacks reach it via `http://dataspoke-api:8002`. Unit tests run locally without the cluster; see [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 
 The bundled dev environment is **NOT** for production. For production Kubernetes deployment, see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 

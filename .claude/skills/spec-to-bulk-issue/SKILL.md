@@ -84,62 +84,7 @@ mkdir -p issues
 
 Write one markdown file per issue: `issues/{NN}_{slug}.md`
 
-**File format** — must match the rendered structure of `.github/ISSUE_TEMPLATE/prauto-task.yml`:
-
-```markdown
-# Title
-
-<type>: <scope> - <short description>
-
-# Body
-
-### Spec Scope
-
-- [ ] Architecture or high-level spec (spec/)
-- [ ] Cross-role feature spec (spec/feature/)
-- [ ] Role-specific feature spec (spec/feature/spoke/)
-- [ ] General documentation or settings (README.md, CLAUDE.md, .claude/, etc)
-- [ ] Tooling or CI/CD (PRAUTO, GitHub Actions, hooks, etc.)
-- [ ] No spec change (implementation only)
-- [ ] Other (documented in description)
-
-### Implementation Scope
-
-- [ ] Backend - API routes and services
-- [ ] Backend - Airflow DAGs
-- [ ] Backend - DataHub integration, PostgreSQL models, Qdrant vector search
-- [ ] Frontend UI
-- [ ] Helm charts / Kubernetes manifests
-- [ ] Dev environment
-- [ ] Tooling or CI/CD (PRAUTO, GitHub Actions, hooks, etc.)
-- [ ] No impl change (spec only)
-- [ ] Other (documented in description)
-
-### Change Size
-
-<Minor | Medium | Major> (<parenthetical>)
-
-### Description
-
-#### Background
-
-<1-3 sentences: why this is needed, dependency references>
-
-#### Spec
-
-<Bullet list: key components, interfaces, data models from spec>
-
-#### TODO
-
-- [ ] implement `<path>`
-- [ ] wire to API route `<METHOD /api/v1/…>` and verify via API test (if the function can serve an API endpoint)
-- [ ] unit test: <what>
-- [ ] integration test: <what> (if needed)
-
-### Spec References
-
-- <spec-file> (section: <section name>)
-```
+**File format** — produce a `# Title` section (line 3 = the title) followed by `# Body` whose contents render the four sections of the GitHub issue form at `.github/ISSUE_TEMPLATE/prauto-task.yml`: **Spec Scope** checkboxes, **Implementation Scope** checkboxes, **Change Size** (`Minor | Medium | Major`), and **Description** (with `#### Background`, `#### Spec`, `#### TODO` subsections). End with a `### Spec References` list. Read `.github/ISSUE_TEMPLATE/prauto-task.yml` for the current checkbox labels — do not hardcode them here.
 
 **Constraints:**
 - Each file should be under 30 lines in the Body section (excluding Title). Keep descriptions concise — logic details are in the spec documents, so issue tickets only need to specify *which* spec components are implemented and *how* they are tested.

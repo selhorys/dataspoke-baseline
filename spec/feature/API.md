@@ -86,19 +86,7 @@ Token issuance and refresh are handled at:
 
 ### JWT Claims
 
-```json
-{
-  "sub": "user-uuid",
-  "email": "user@example.com",
-  "groups": ["de"],
-  "exp": 1234567890,
-  "iat": 1234567890
-}
-```
-
-The `groups` claim is an array of user-group identifiers (`de`, `da`, `dg`). A user may
-belong to multiple groups. The middleware enforces that a request targeting
-`/spoke/de/…` must have `"de"` in the `groups` claim.
+Access-token payload: `sub` (user uuid), `email`, `groups` (array of user-group identifiers — `de`, `da`, `dg`; a user may belong to multiple), `exp`, `iat`. The middleware enforces that a request targeting `/spoke/de/…` must have `"de"` in the `groups` claim.
 
 ### Group-to-Route Access Control
 
@@ -131,18 +119,7 @@ All stub code is marked with `TBD(user-accounts)` comments. See [BACKEND §User 
 
 ### Auth Flow
 
-```
-Client                       DataSpoke API              Identity Store
-  │                               │                          │
-  │── POST /auth/token ──────────►│                          │
-  │   {email, password}           │── verify credentials ───►│
-  │                               │◄─ user record, groups ───│
-  │◄── {access_token,             │
-  │     refresh_token cookie} ────│
-  │                               │
-  │── GET /spoke/common/data/{dataset_urn}/attr/ingestion/conf ►│
-  │   Authorization: Bearer <at>  │── validate JWT, check groups ─► 200 OK
-```
+Login: client `POST /auth/token` with `{email, password}` → API verifies credentials against the identity store, receives the user record + groups, and returns `{access_token}` in the body plus the refresh token as an HttpOnly cookie. Subsequent protected calls (e.g. `GET /spoke/common/data/{urn}/attr/ingestion/conf`) carry `Authorization: Bearer <access_token>`; the API validates the JWT signature/expiry and enforces the `groups` claim against the URI tier before dispatching.
 
 ---
 
@@ -470,44 +447,9 @@ All timestamps use ISO 8601 with UTC: `2026-02-27T10:00:00.000Z`.
 
 ## Middleware Stack
 
-Requests pass through middleware in the following order:
+Requests pass through, in order: (1) **CORS** — allow configured origins, reject others with 403; (2) **request logging** — method, path, trace ID, client IP before the handler; (3) **rate limiting** — SlowAPI fixed-window per user (Redis with in-memory fallback, default 120 req/min); (4) **JWT validation** — verify signature/expiry and extract claims; (5) **group enforcement** — check the `groups` claim against the URI tier; (6) **route handler** — FastAPI DI + business logic; (7) **response logging** — status, latency, trace ID.
 
-```
-Incoming Request
-       │
-       ▼
-┌─────────────────────────┐
-│ 1. CORS                 │  Allow configured origins; reject others with 403
-├─────────────────────────┤
-│ 2. Request Logging      │  Log method, path, trace ID, client IP (before handler)
-├─────────────────────────┤
-│ 3. Rate Limiting        │  SlowAPI fixed-window per user (Redis; in-memory fallback)
-│                         │  Default: 120 req/min
-├─────────────────────────┤
-│ 4. Auth (JWT Validate)  │  Verify signature, expiry, extract claims
-│                         │  Route-level Depends() — see note below
-├─────────────────────────┤
-│ 5. Group Enforcement    │  Check groups claim against URI tier
-│                         │  Route-level Depends() — see note below
-├─────────────────────────┤
-│ 6. Route Handler        │  FastAPI dependency injection + business logic
-├─────────────────────────┤
-│ 7. Response Logging     │  Log status code, latency, trace ID (after handler)
-└─────────────────────────┘
-       │
-       ▼
-Outgoing Response
-```
-
-> **Rate limiting (layer 3)** runs as Starlette middleware before any route
-> handler, so unauthenticated clients are rate-limited too. The per-user key
-> is extracted from the JWT `sub` claim when present, falling back to client IP.
->
-> **Authentication and authorization (layers 4–5)** are implemented as
-> route-level dependencies (`Depends(require_common)`, `Depends(require_dg)`,
-> etc.) rather than blanket middleware. This approach allows unauthenticated
-> routes (`/health`, `/auth/*`) to coexist naturally without exclusion lists,
-> and gives each router explicit control over its required group membership.
+> Rate limiting runs as Starlette middleware before any route handler so unauthenticated clients are rate-limited too. The per-user key is the JWT `sub` claim when present, falling back to client IP. Auth/group checks (layers 4–5) are route-level dependencies (`Depends(require_common)`, `Depends(require_dg)`, etc.) rather than blanket middleware, so unauthenticated routes (`/health`, `/auth/*`) coexist without exclusion lists and each router controls its required group membership.
 
 ### Trace ID
 
@@ -576,45 +518,16 @@ a valid JWT in the first message after opening the connection.
 
 ### Connection Handshake
 
-```
-Client                        DataSpoke API
-  │                                │
-  │── WS upgrade ─────────────────►│
-  │                                │
-  │── {"type":"auth",              │
-  │    "token":"<access_token>"} ──►│
-  │                                │── validate JWT
-  │◄── {"type":"auth_ok"} ─────────│
-  │                                │   (stream begins)
-  │◄── {"type":"progress", …} ─────│
-  │◄── {"type":"result", …} ───────│
-  │                                │── server closes on completion
-```
-
-If auth fails, the server sends `{"type":"auth_error","error_code":"UNAUTHORIZED"}` and
-closes the connection.
+After the WebSocket upgrade, the client's first message must be `{"type":"auth","token":"<access_token>"}`. The server validates the JWT and replies with `{"type":"auth_ok"}`, then streams `progress` / `result` messages and closes on completion. If auth fails the server sends `{"type":"auth_error","error_code":"UNAUTHORIZED"}` and closes.
 
 ### Validation Progress Stream (`/spoke/common/data/{dataset_urn}/stream/validation`)
 
-Messages sent during a validation run (rule-by-rule progress):
+Messages sent during a validation run use three `type` values:
 
-```json
-{"type": "progress", "rule_id": "r-fresh-001", "pct": 25, "msg": "Evaluating freshness rule"}
-{"type": "rule_result", "rule_id": "r-fresh-001", "assertion_result": "SUCCESS",
- "partition": {"load_date": "2025-03-10"}, "values": {"last_update_age_hours": 2.1}}
-{"type": "progress", "rule_id": "r-custom-ts-001", "pct": 75, "msg": "Running SQL timeseries validation"}
-{"type": "rule_result", "rule_id": "r-custom-ts-001", "assertion_result": "FAILURE",
- "partition": {"load_date": "2025-03-10"}, "values": {"row_count": 320000, "null_rate": 0.003},
- "validation": {"row_count": false}}
-{"type": "summary", "status": "completed", "total": 4, "passed": 3, "failed": 1}
-```
+- `progress` — `{rule_id, pct, msg}` per rule as it evaluates.
+- `rule_result` — `{rule_id, assertion_result (SUCCESS|FAILURE|ERROR), partition, values, validation?}` when a rule completes (`validation` carries ML verdicts when present).
+- `summary` — `{status, total, passed, failed}` when the run finishes.
 
 ### Metric Update Stream (`/spoke/dg/metric/stream`)
 
-Pushed when the Airflow metrics DAG completes a measurement run:
-
-```json
-{"run_id": "abc-123", "status": "success", "detail": {"metric_id": "poorly-documented-datasets", "value": 3}}
-```
-
-Fields: `run_id` (Airflow DAG run ID or null), `status` (execution outcome), `detail` (run metadata including metric_id and measured value).
+Pushed when the Airflow metrics DAG completes a measurement run. Fields: `run_id` (Airflow DAG run ID or null), `status` (execution outcome), `detail` (run metadata including `metric_id` and measured `value`).

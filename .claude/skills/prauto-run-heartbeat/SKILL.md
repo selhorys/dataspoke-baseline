@@ -71,20 +71,7 @@ The heartbeat logs all key events to `.prauto/state/heartbeat.log` and writes ar
 
 ### Session directory structure
 
-Each issue processed by the heartbeat gets a session directory:
-```
-.prauto/state/sessions/
-  issue-{N}/
-    {yyyyMMDD}-{HHmmss}-{uuid8}/  # e.g. 20260303-135959-05bb59b7
-      claude-output-{pid}.json # raw Claude CLI output
-      analysis.txt             # analysis phase output
-      implementation.json      # implementation phase output
-      integration-fix.json     # integration fix phase output
-      review.json              # PR review phase output
-      complete.json            # job completion record
-      abandon.json             # job abandonment record
-      squash-msg.txt           # squash commit message (temp)
-```
+Each issue processed by the heartbeat gets a session directory at `.prauto/state/sessions/issue-{N}/{yyyyMMDD}-{HHmmss}-{uuid8}/` (e.g. `issue-42/20260303-135959-05bb59b7/`). Per-phase artifact files land there: `claude-output-{pid}.json` (raw Claude CLI), `analysis.txt`, `implementation.json`, `integration-fix.json`, `review.json`, `complete.json` or `abandon.json`, and `squash-msg.txt` (temp).
 
 ### Primary: Persistent log file
 
@@ -112,17 +99,7 @@ Log file notes:
 
 ### Heartbeat patterns
 
-The heartbeat processes **all** claimed issues in a single run (oldest first). You may see multiple phase transitions in one execution. Key patterns:
-
-1. **New issue claimed** (Step 5): Log shows `Claimed issue #N`. The heartbeat then re-fetches all claimed issues to include the new one in the processing loop.
-
-2. **WIP issue processing** (Step 6 loop): Log shows `WIP #N: phase=<phase>`. A heartbeat marker comment is posted, a worktree is created, and the phase handler runs. After completion, the worktree is cleaned up before moving to the next issue.
-
-3. **Squash-finalize** (Step 6 loop, prauto:review issues): Log shows `Squash-finalizing PR #N for issue #M`. The heartbeat rebases, squashes commits, generates a commit message via Claude, force-pushes, and swaps `prauto:review` → `prauto:done` labels.
-
-4. **Plan-approval wait** (Step 6 loop): Log shows `waiting for plan approval. Skipping.` No session files created. No heartbeat marker comment posted (retries not counted for waiting). The loop continues to the next issue.
-
-5. **PR review feedback** (Step 6 loop, prauto:review issues): Log shows `Addressing reviewer feedback on PR #N`. A worktree is created, Claude addresses comments, pushes, and posts a feedback-addressed marker.
+The heartbeat processes **all** claimed issues in a single run (oldest first), so you may see multiple phase transitions in one execution. Expect these log patterns: `Claimed issue #N` (new claim, then re-fetches WIP set), `WIP #N: phase=<phase>` (worktree created, phase handler runs, worktree cleaned), `Squash-finalizing PR #N for issue #M` (rebase → squash → force-push → label swap `prauto:review` → `prauto:done`), `waiting for plan approval. Skipping.` (no session files, no marker comment, loop continues), and `Addressing reviewer feedback on PR #N` (worktree, address comments, push, post feedback-addressed marker).
 
 ### Milestones to report
 

@@ -165,121 +165,18 @@ Which features read (R) or write (W) each aspect:
 
 ## SDK Patterns
 
-All imports come from these three packages:
+SDK imports resolve from three packages: `datahub.ingestion.graph.client` (for `DataHubGraph`, `DatahubClientConfig`), `datahub.emitter.{rest_emitter,mcp,mce_builder}` (for `DatahubRestEmitter`, `MetadataChangeProposalWrapper`, `make_dataset_urn`), and `datahub.metadata.schema_classes` (for aspect classes — `DatasetPropertiesClass`, `SchemaMetadataClass`, `OwnershipClass`, `GlobalTagsClass`, `UpstreamLineageClass`, `UpstreamClass`, `DeprecationClass`, `DatasetProfileClass`, `OperationClass`, `DatasetUsageStatisticsClass`, `DatasetLineageTypeClass`).
 
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.rest_emitter import DatahubRestEmitter
-from datahub.emitter.mcp import MetadataChangeProposalWrapper
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetLineageTypeClass,
-    DatasetProfileClass,
-    DatasetPropertiesClass,
-    DatasetUsageStatisticsClass,
-    DeprecationClass,
-    GlobalTagsClass,
-    OperationClass,
-    OwnershipClass,
-    SchemaMetadataClass,
-    UpstreamClass,
-    UpstreamLineageClass,
-)
-```
+| Pattern | Call | REST equivalent | Notes |
+|---------|------|-----------------|-------|
+| A. Read regular aspect | `graph.get_aspect(urn, AspectClass)` | `GET /aspects/{urn}?aspect=<name>` | Returns `None` if absent — always null-check. |
+| B. Read timeseries aspect | `graph.get_timeseries_values(urn, AspectClass, filter={}, limit=30)` | `POST /aspects?action=getTimeseriesAspectValues` | Results newest-first; `filter` takes a field-level dict. |
+| C. Write regular aspect | `emitter.emit_mcp(MetadataChangeProposalWrapper(entityUrn=urn, aspect=AspectClass(...)))` | `POST /openapi/v3/entity/dataset` | Upsert semantics — creates or overwrites. |
+| D. Write lineage | Same as C with `UpstreamLineageClass(upstreams=[UpstreamClass(dataset=upstream_urn, type=...)])` | `POST /openapi/v3/entity/dataset` (aspect `upstreamLineage`) | Use `make_dataset_urn()` for upstream URN. |
+| E. Write deprecation | Same as C with `DeprecationClass(deprecated=True, note=..., replacement=...)` | `POST /openapi/v3/entity/dataset` (aspect `deprecation`) | Replacement is a dataset URN. |
+| F. Enumerate datasets | `list(graph.get_urns_by_filter(entity_types=["dataset"], ...))` | GraphQL `scrollAcrossEntities` | Supports `platform`, `env`, `query` filters; used by Metrics Dashboard bulk scan. |
 
-### Pattern A: Read Regular Aspect
-
-```python
-# Read the current state of a regular aspect
-# REST equivalent: GET /aspects/{urn}?aspect=<aspectName>
-aspect = graph.get_aspect(dataset_urn, DatasetPropertiesClass)
-
-if aspect is not None:
-    description = aspect.description
-    custom_props = aspect.customProperties
-```
-
-Returns `None` if the aspect does not exist for the given URN.
-
-### Pattern B: Read Timeseries Aspect
-
-```python
-# Read historical values of a timeseries aspect
-# REST equivalent: POST /aspects?action=getTimeseriesAspectValues
-profiles = graph.get_timeseries_values(
-    dataset_urn,
-    DatasetProfileClass,
-    filter={},
-    limit=30,
-)
-
-for profile in profiles:
-    row_count = profile.rowCount
-    timestamp = profile.timestampMillis
-```
-
-The `filter` parameter accepts a dict for field-level filtering. Use `limit` to control history depth. Results are ordered newest-first.
-
-### Pattern C: Write Regular Aspect via MCP
-
-```python
-# Write (create or update) a regular aspect
-# REST equivalent: POST /openapi/v3/entity/dataset  (aspect: datasetProperties)
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=dataset_urn,
-    aspect=DatasetPropertiesClass(
-        description="Master catalog of all book titles...",
-        customProperties={"genre_taxonomy": "4-level"},
-    ),
-))
-```
-
-`emit_mcp()` is an upsert — it creates the aspect if missing, or overwrites if present.
-
-### Pattern D: Write Lineage
-
-```python
-# Emit upstream lineage edges
-# REST equivalent: POST /openapi/v3/entity/dataset  (aspect: upstreamLineage)
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=dataset_urn,
-    aspect=UpstreamLineageClass(
-        upstreams=[UpstreamClass(
-            dataset=make_dataset_urn(platform="oracle", name="publishers.feed_raw", env="PROD"),
-            type=DatasetLineageTypeClass.TRANSFORMED,
-        )],
-    ),
-))
-```
-
-### Pattern E: Write Deprecation
-
-```python
-# Mark a dataset as deprecated with a replacement pointer
-# REST equivalent: POST /openapi/v3/entity/dataset  (aspect: deprecation)
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=dataset_urn,
-    aspect=DeprecationClass(
-        deprecated=True,
-        note="Migrated to catalog.product_master per ontology reconciliation",
-        replacement=make_dataset_urn(platform="oracle", name="catalog.product_master", env="PROD"),
-    ),
-))
-```
-
-### Pattern F: Enumerate Datasets
-
-```python
-# Iterate over all datasets matching a filter
-# REST equivalent: GraphQL scrollAcrossEntities
-dataset_urns = list(graph.get_urns_by_filter(entity_types=["dataset"]))
-
-for urn in dataset_urns:
-    props = graph.get_aspect(urn, DatasetPropertiesClass)
-    ownership = graph.get_aspect(urn, OwnershipClass)
-```
-
-Use `get_urns_by_filter()` for bulk enumeration (e.g., Metrics Dashboard health scan). Supports `platform`, `env`, and `query` filters.
+For live examples see `src/shared/datahub/client.py` (DataSpoke's wrapper) and per-feature service files under `src/backend/`.
 
 ## GraphQL Patterns
 
@@ -287,48 +184,11 @@ GraphQL is used when the REST API lacks an equivalent — primarily for **downst
 
 ### Downstream Lineage
 
-The REST API only exposes `upstreamLineage` (which upstream feeds into this dataset). To find **downstream consumers** (what depends on this dataset), use GraphQL:
-
-```python
-# Find downstream datasets affected by an SLA miss or deprecation
-result = graph.execute_graphql("""
-    query {
-        searchAcrossLineage(input: {
-            urn: "%s",
-            direction: DOWNSTREAM,
-            types: [DATASET],
-            query: "*"
-        }) {
-            searchResults {
-                entity { urn }
-                degree
-            }
-        }
-    }
-""" % dataset_urn)
-```
-
-**Used by**: Predictive SLA (downstream impact), Doc Generation (shared consumers), NL Search (marketing lineage).
+The REST API only exposes `upstreamLineage` (what this dataset reads from). To find **downstream consumers** (what depends on this dataset), call `graph.execute_graphql(...)` with a `searchAcrossLineage` query (`direction: DOWNSTREAM`, `types: [DATASET]`) and read `searchResults[].entity.urn` + `degree`. Used by Predictive SLA (downstream impact), Doc Generation (shared consumers), NL Search (marketing lineage).
 
 ### Entity Enumeration by Domain
 
-```python
-# List all datasets in a domain for health scoring
-result = graph.execute_graphql("""
-    query {
-        scrollAcrossEntities(input: {
-            types: [DATASET],
-            query: "*",
-            count: 100
-        }) {
-            searchResults { entity { urn } }
-            nextScrollId
-        }
-    }
-""")
-```
-
-**Used by**: Metrics Dashboard (department-level enumeration).
+For cross-entity enumeration (e.g., listing all datasets for health scoring), call `graph.execute_graphql(...)` with `scrollAcrossEntities` (`types: [DATASET]`) and paginate via `nextScrollId`. Used by Metrics Dashboard (department-level enumeration).
 
 ### When to Use GraphQL vs REST
 

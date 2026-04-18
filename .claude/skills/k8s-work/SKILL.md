@@ -47,87 +47,20 @@ Run a full cluster health snapshot and produce a formatted report.
 
 ### Data collection
 
-Substitute `$NS_DH`, `$NS_DS`, `$NS_EX` with the namespace names from `.env`:
+Substitute `$NS_DH`, `$NS_DS`, `$NS_EX` with the namespace names from `.env`. Collect, per namespace where applicable:
 
-```bash
-# Node health
-kubectl get nodes -o custom-columns=\
-NAME:.metadata.name,\
-STATUS:.status.conditions[-1].type,\
-CPU:.status.capacity.cpu,\
-MEMORY:.status.capacity.memory
-kubectl top nodes 2>/dev/null || echo "metrics-server not available"
+- Nodes: `kubectl get nodes` (name, status, CPU, memory); `kubectl top nodes` if metrics-server present.
+- Pods: `kubectl get pods -n <ns> -o wide` for all three namespaces (tolerate empty/missing namespaces).
+- PVCs: `kubectl get pvc -n <ns>`.
+- Resource usage: `kubectl top pods -n <ns> --sort-by=cpu`.
+- Helm releases: `helm list -n <ns>`; plus `helm list --all-namespaces --failed`.
+- Warning events: `kubectl get events -n <ns> --field-selector type=Warning --sort-by='.lastTimestamp'` (last ~20).
 
-# Component status
-kubectl get componentstatuses 2>/dev/null
-
-# Pod status — all three namespaces
-kubectl get pods -n $NS_DH -o wide
-kubectl get pods -n $NS_DS -o wide 2>/dev/null || echo "$NS_DS namespace not found or empty"
-kubectl get pods -n $NS_EX -o wide 2>/dev/null || echo "$NS_EX namespace not found or empty"
-
-# PVC status
-kubectl get pvc -n $NS_DH 2>/dev/null
-kubectl get pvc -n $NS_DS 2>/dev/null
-kubectl get pvc -n $NS_EX 2>/dev/null
-
-# Resource usage
-kubectl top pods -n $NS_DH --sort-by=cpu 2>/dev/null
-kubectl top pods -n $NS_DS --sort-by=cpu 2>/dev/null
-kubectl top pods -n $NS_EX 2>/dev/null
-
-# Helm releases
-helm list -n $NS_DH
-helm list -n $NS_DS 2>/dev/null
-helm list --all-namespaces --failed 2>/dev/null
-
-# Warning events (all namespaces)
-kubectl get events -n $NS_DH --field-selector type=Warning --sort-by='.lastTimestamp' | tail -20
-kubectl get events -n $NS_DS --field-selector type=Warning --sort-by='.lastTimestamp' 2>/dev/null | tail -20
-kubectl get events -n $NS_EX --field-selector type=Warning --sort-by='.lastTimestamp' 2>/dev/null | tail -20
-```
-
-If `$ARGUMENTS` specifies a **focus area** (e.g., a pod name, release name, or component), also run the troubleshooting workflow from [troubleshooting.md](troubleshooting.md):
-- Find matching pods/releases
-- Show `kubectl describe` output
-- Show logs (last 100 lines)
-- Show helm history and values if it's a release
+If `$ARGUMENTS` specifies a **focus area** (pod, release, component), run the troubleshooting workflow in [troubleshooting.md](troubleshooting.md): describe the resource, tail logs (last 100 lines), and for Helm releases show history + values.
 
 ### Report format
 
-```
-## Cluster Health Report — <timestamp>
-
-**Context**: <context-name>
-
-### Nodes
-| Node | Status | CPU | Memory |
-...
-
-### DataHub Namespace ($NS_DH)
-| Pod | Status | Restarts | Age | CPU | Memory |
-...
-
-### DataSpoke Namespace ($NS_DS)
-(not yet deployed / pod table)
-
-### Example Sources Namespace ($NS_EX)
-| Pod | Status | Restarts | Age | CPU | Memory |
-...
-
-### Helm Releases
-| Release | Chart | Status | Revision | Updated |
-...
-
-### Warnings
-- <warning events, newest first>
-
-### Resource Pressure
-- <any nodes near capacity, pods without limits>
-
-### Summary
-✅ / ⚠️ / ❌  <overall status with brief notes and suggested next steps>
-```
+Produce a Markdown report titled `## Cluster Health Report — <timestamp>` with the current kube context, then sections for Nodes, each namespace's Pods, Helm Releases, Warnings, Resource Pressure, and a final one-line Summary (✅ / ⚠️ / ❌ with brief notes and suggested next steps). Use tables for tabular data (nodes, pods, releases).
 
 ---
 
@@ -162,50 +95,12 @@ For any kubectl or helm operation requested by the user.
 
 ### Execution strategy
 
-**Before acting**: identify the operation type — read, create, modify, or delete.
+Classify the operation before acting:
 
-**Read operations** (safe, execute immediately):
-```bash
-kubectl get <type> -n <namespace>
-kubectl describe <type> <name> -n <namespace>
-kubectl logs <pod> -n <namespace> --tail=100
-kubectl get events -n <namespace> --sort-by='.lastTimestamp'
-helm status <release> -n <namespace>
-helm history <release> -n <namespace>
-helm get values <release> -n <namespace>
-```
-
-**Create/apply operations** (use dry-run first):
-```bash
-# Validate first
-kubectl apply -f <file.yaml> --dry-run=server
-
-# Then apply
-kubectl apply -f <file.yaml> -n <namespace>
-```
-
-**Modify operations** (confirm intent, then execute):
-```bash
-kubectl rollout restart deployment/<name> -n <namespace>
-helm upgrade <release> <chart> -n <namespace> -f <values.yaml>
-```
-
-**Delete operations** — always follow this safety workflow:
-```bash
-# 1. Confirm you're in the right context
-kubectl config current-context
-
-# 2. Describe before deleting
-kubectl describe <type> <name> -n <namespace>
-
-# 3. Delete
-kubectl delete <type> <name> -n <namespace>
-
-# 4. Verify
-kubectl get <type> -n <namespace>
-```
-
-**Never delete namespaces.** For scale-to-zero or namespace-level destructive operations, confirm with the user first.
+- **Read** (safe, execute immediately): `kubectl get/describe/logs/events`, `helm status/history/get values`.
+- **Create/apply**: run `kubectl apply --dry-run=server` first, then apply.
+- **Modify** (restart, upgrade, scale): confirm intent with the user, then execute.
+- **Delete**: confirm context (`kubectl config current-context`), describe the resource, delete, verify. **Never delete namespaces.** Confirm with the user before any namespace-level or scale-to-zero destructive operation.
 
 ### Report results
 

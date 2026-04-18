@@ -24,53 +24,7 @@ The API server is deployed **in-cluster** alongside Airflow so that workflow cal
 
 DataHub is installed in the dev cluster **for convenience**; in production it is an external dependency deployed and managed separately.
 
-**Dev Architecture:**
-
-```
-Kubernetes Cluster (GKE Autopilot or any compatible cluster)
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│  ┌──────────────────┐  nginx-ingress  LoadBalancer IP        │
-│  │ ingress-nginx    │◄─────────────────────────────────────  │
-│  │ (controller)     │  HTTP :80 (virtual hosts)              │
-│  └──────────────────┘  TCP :9201-9204, :9005, :9102,        │
-│         │              :9104, :9221                          │
-│         │                                                    │
-│  ┌──────▼──────────────────────────────────────────────────┐ │
-│  │ Routes                                                   │ │
-│  │  datahub.<IP>.nip.io       → datahub-01/GMS + Frontend  │ │
-│  │  app.<IP>.nip.io/api       → dataspoke-01/API           │ │
-│  │  airflow.<IP>.nip.io       → dataspoke-01/Airflow       │ │
-│  │  <IP>:9201                 → dataspoke-01/PostgreSQL     │ │
-│  │  <IP>:9202                 → dataspoke-01/Redis          │ │
-│  │  <IP>:9203/<IP>:9204       → dataspoke-01/Qdrant         │ │
-│  │  <IP>:9005                 → datahub-01/Kafka            │ │
-│  │  <IP>:9102/<IP>:9104       → dummy-data-01/PG+Kafka      │ │
-│  │  <IP>:9221                 → dataspoke-01/Lock           │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                              │
-│  ┌─────────────────────┐   ┌──────────────────────────────┐  │
-│  │  datahub-01         │   │  dataspoke-dummy-data-01     │  │
-│  │  - GMS              │   │  - PostgreSQL (example src)  │  │
-│  │  - Frontend         │   │  - Kafka (example src)       │  │
-│  │  - MAE/MCE consumer │   └──────────────────────────────┘  │
-│  │  - Kafka + ZK       │                                     │
-│  │  - Elasticsearch    │   ┌──────────────────────────────┐  │
-│  │  - MySQL            │   │  dataspoke-01                │  │
-│  └─────────────────────┘   │  - api (in-cluster)          │  │
-│                            │  - airflow                   │  │
-│                            │  - qdrant                    │  │
-│                            │  - postgresql                │  │
-│                            │  - redis                     │  │
-│                            │  - dev-lock (advisory mutex) │  │
-│                            └──────────────────────────────┘  │
-│                                                              │
-│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
-│  Host (outside cluster)                                      │
-│    dataspoke-frontend  (npm run dev, :3000)                  │
-│    (API, Airflow, all infra accessed via nginx-ingress)      │
-└──────────────────────────────────────────────────────────────┘
-```
+**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9204, 9221 — Kafka, PostgreSQL, Redis, Qdrant, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE consumers, Kafka + ZK, Elasticsearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, Qdrant, PostgreSQL, Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 
 ---
 
@@ -223,18 +177,7 @@ Advisory mutex for coordinating multi-tester access. Lightweight Python HTTP ser
 | Deployment | `dev-lock` — 1 replica, `python:3.12-slim`, 64 Mi / 100m CPU |
 | Service | `dev-lock` — ClusterIP, port 8080 |
 
-Lock state is **in-memory only** — resets on pod restart. See [TESTING.md §Integration Testing](../TESTING.md#integration-testing) for the full lock protocol.
-
-**API**:
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/lock` | Check current lock status |
-| `POST` | `/lock/acquire` | Acquire (body: `{"owner": "...", "message": "..."}`) |
-| `POST` | `/lock/release` | Release (body: `{"owner": "..."}`) |
-| `DELETE` | `/lock` | Force-release (no owner check) |
-
-Response codes: `200` success, `400` missing owner, `403` non-owner release, `409` already held.
+Lock state is **in-memory only** — resets on pod restart. Full protocol in [TESTING.md §Integration Testing](../TESTING.md#integration-testing); HTTP API surface (GET/POST acquire/release + DELETE force-release) documented in [`dev_env/README.md §Lock service`](../../dev_env/README.md).
 
 ---
 
@@ -271,35 +214,14 @@ All scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, and source shared he
 
 ## Ingress
 
-All services are accessed via the nginx-ingress controller deployed in the `ingress-nginx` namespace. The controller acquires a single external LoadBalancer IP (`DATASPOKE_DEV_INGRESS_IP`) that is written to `dev_env/.env` by `nginx-ingress/install.sh`.
+All services are reached via a single nginx-ingress controller in the `ingress-nginx` namespace. The controller acquires one external LoadBalancer IP (`DATASPOKE_DEV_INGRESS_IP`) written to `dev_env/.env` by `nginx-ingress/install.sh`.
 
-### Tier A — HTTP Virtual Hosts
+Two tiers:
 
-HTTP services are accessed by virtual-host name on port 80. The `nip.io` suffix provides automatic wildcard DNS resolution — no `/etc/hosts` entries needed.
+- **Tier A — HTTP virtual hosts** on port 80, keyed by hostname (DataHub UI/GMS at `datahub.<IP>.nip.io`, DataSpoke API at `app.<IP>.nip.io/api/v1/`, Airflow UI at `airflow.<IP>.nip.io`). The `nip.io` suffix gives automatic wildcard DNS — no `/etc/hosts` entries required.
+- **Tier B — TCP passthrough** on dedicated ports via the same LoadBalancer IP, mapped by the nginx-ingress `tcp-services` ConfigMap. Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side producers/consumers reach them through the ingress. `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these addresses.
 
-| Service | Cluster Address | Ingress URL |
-|---------|----------------|-------------|
-| DataHub UI | `datahub-01/datahub-frontend:9002` | `http://datahub.<INGRESS_IP>.nip.io/` |
-| DataHub GMS | `datahub-01/datahub-datahub-gms:8080` | `http://datahub.<INGRESS_IP>.nip.io/gms/` |
-| DataSpoke API | `dataspoke-01/dataspoke-api:8002` | `http://app.<INGRESS_IP>.nip.io/api/v1/` |
-| Airflow UI | `dataspoke-01/dataspoke-airflow-webserver:8080` | `http://airflow.<INGRESS_IP>.nip.io/` |
-
-### Tier B — TCP Passthrough
-
-TCP services are accessed directly on dedicated ports via the ingress LoadBalancer IP. The nginx-ingress `tcp-services` ConfigMap maps each external port to the target cluster service.
-
-| Service | Cluster Address | External Port |
-|---------|----------------|---------------|
-| DataSpoke PostgreSQL | `dataspoke-01/dataspoke-postgresql:5432` | `<INGRESS_IP>:9201` |
-| Redis | `dataspoke-01/dataspoke-redis-master:6379` | `<INGRESS_IP>:9202` |
-| Qdrant HTTP | `dataspoke-01/dataspoke-qdrant:6333` | `<INGRESS_IP>:9203` |
-| Qdrant gRPC | `dataspoke-01/dataspoke-qdrant:6334` | `<INGRESS_IP>:9204` |
-| DataHub Kafka | `datahub-01/datahub-prerequisites-kafka:9095` (EXTERNAL) | `<INGRESS_IP>:9005` |
-| Lock API | `dataspoke-01/dev-lock:8080` | `<INGRESS_IP>:9221` |
-| example-postgres | `dataspoke-dummy-data-01/example-postgres:5432` | `<INGRESS_IP>:9102` |
-| example-kafka | `dataspoke-dummy-data-01/example-kafka:9094` (EXTERNAL) | `<INGRESS_IP>:9104` |
-
-The `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these ingress addresses. Kafka Tier B services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so that host-side producers and consumers can connect through the ingress.
+Full endpoint table (service ↔ cluster address ↔ ingress URL/port) is the operational reference in [`dev_env/README.md §Ingress Endpoints`](../../dev_env/README.md).
 
 ---
 

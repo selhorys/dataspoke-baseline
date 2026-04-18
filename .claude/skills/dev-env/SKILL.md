@@ -84,27 +84,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
    ```bash
    uv run python -m tests.integration.util --reset-all
    ```
-3. Show access information (read `DATASPOKE_DEV_INGRESS_IP` and `DATASPOKE_DEV_INGRESS_DOMAIN` from `dev_env/.env`):
-
-   **Tier A — HTTP ingress (nginx virtual hosts)**:
-   | Service | URL |
-   |---------|-----|
-   | DataSpoke UI + API | `http://app.<DOMAIN>/` and `http://app.<DOMAIN>/api/v1/…` |
-   | DataHub UI + GMS | `http://datahub.<DOMAIN>/` and `http://datahub.<DOMAIN>/gms/…` |
-   | Airflow UI | `http://airflow.<DOMAIN>/` |
-
-   **Tier B — TCP passthrough (direct IP:port)**:
-   | Service | Address |
-   |---------|---------|
-   | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` |
-   | DataSpoke Redis | `<INGRESS_IP>:9202` |
-   | Qdrant HTTP | `<INGRESS_IP>:9203` |
-   | Qdrant gRPC | `<INGRESS_IP>:9204` |
-   | DataHub Kafka | `<INGRESS_IP>:9005` |
-   | Example PostgreSQL | `<INGRESS_IP>:9102` |
-   | Example Kafka | `<INGRESS_IP>:9104` |
-   | Lock service | `<INGRESS_IP>:9221` |
-
+3. Show access information (ingress endpoints table is in `dev_env/README.md §Ingress Endpoints`; substitute `DATASPOKE_DEV_INGRESS_IP` / `DATASPOKE_DEV_INGRESS_DOMAIN` from `dev_env/.env`).
 4. Inform the user that `dev_env/.env` has been populated with ingress-derived runtime variables (hosts, URLs, ports) by `nginx-ingress/install.sh`, and that they should run `source dev_env/.env` to load them into their shell.
 5. Note that the API is deployed in-cluster by `dataspoke-infra/install.sh` (via the umbrella Helm chart). To rebuild and redeploy after code changes, use `./dev_env/dataspoke-test-mode.sh`. Frontend runs on the host: `cd src/frontend && npm run dev` (http://localhost:3000).
 

@@ -90,25 +90,9 @@ Both reviewers use read-only tools — they analyze and report but do not write 
 
 ### Implementation workflow
 
-The standard workflow uses the **plan → approve → generate → evaluate** pattern:
+The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles (backend → workflow → test → frontend, each followed by `reviewer` with a single fix pass) → `k8s-helm` when ready (no review loop). Sequential by default; backend and workflow may run concurrently when workflow does not consume new API contracts, and frontend may run concurrently with the test phase when it does not depend on pending backend changes. The main agent orchestrates by passing the approved plan into generators, generator completion reports into the reviewer, and reviewer findings back to generators for fix passes; issues that persist after one fix pass escalate to the user.
 
-```
-1. Plan    — Read the relevant spec, then use Claude's built-in Plan mode
-             to produce an implementation plan. See §Plan quality checklist below.
-2. Approve — Human reviews the plan and approves (or iterates interactively).
-3. Generate + Evaluate:
-   a. backend  → reviewer → [fix pass if REVISE, max 1 iteration]
-   b. workflow → reviewer → [fix pass if REVISE, max 1 iteration]
-   c. test (writes + runs tests; can verify reviewer findings)
-   d. frontend → reviewer → [fix pass if REVISE, max 1 iteration]
-   e. k8s-helm (when ready, no review loop)
-```
-
-Steps 3a and 3b are sequential by default (backend establishes API contracts that workflow consumes). When workflow changes are independent of backend (e.g., modifying an existing flow's retry policy), they may run concurrently. Steps 3c and 3d may also be concurrent when frontend does not depend on pending backend changes.
-
-The main agent orchestrates by passing context between agents: the approved plan feeds into generators, generator completion reports feed into the reviewer, reviewer findings feed back to generators for fix passes. If issues persist after one fix pass, they are escalated to the user.
-
-See `CLAUDE.md` §Implementation Workflow for the authoritative reference.
+See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 
 ### Plan quality checklist
 
