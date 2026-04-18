@@ -1,21 +1,32 @@
+import hashlib
+import logging
+import time
 from datetime import timedelta
 
-from fastapi import APIRouter, Cookie, HTTPException, Response, status
+import jwt as pyjwt
+import redis.exceptions
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from passlib.context import CryptContext
 
 from src.api.auth.jwt import create_access_token, create_refresh_token, decode_token
 from src.api.config import settings
+from src.api.dependencies import get_redis
 from src.api.schemas.auth import RefreshRequest, RevokeRequest, TokenRequest, TokenResponse
+from src.shared.cache.client import RedisClient
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# TBD(user-accounts): Replace with Redis-backed set for multi-instance correctness
-_revoked_refresh_tokens: set[str] = set()
-
 _REFRESH_COOKIE = "refresh_token"
 _REFRESH_MAX_AGE = int(timedelta(days=settings.jwt_refresh_token_expire_days).total_seconds())
+
+
+def _revocation_key(token: str) -> str:
+    """Return a Redis key for the given raw refresh token (hashed for compactness)."""
+    return f"revoked_refresh:{hashlib.sha256(token.encode()).hexdigest()[:16]}"
 
 
 def _verify_credentials(email: str, password: str) -> bool:
@@ -70,6 +81,7 @@ async def refresh_token(
     response: Response,
     _body: RefreshRequest = RefreshRequest(),
     refresh_token_cookie: str | None = Cookie(default=None, alias=_REFRESH_COOKIE),
+    cache: RedisClient = Depends(get_redis),
 ) -> TokenResponse:
     """Issue a new access token using the HttpOnly refresh token cookie."""
     if refresh_token_cookie is None:
@@ -78,13 +90,24 @@ async def refresh_token(
             detail={"error_code": "UNAUTHORIZED", "message": "Refresh token cookie missing."},
         )
 
-    if refresh_token_cookie in _revoked_refresh_tokens:
+    # Fail-closed by design: if the revocation store is unavailable we deny the refresh.
+    try:
+        is_revoked = await cache.get(_revocation_key(refresh_token_cookie))
+    except redis.exceptions.RedisError as exc:
+        logger.warning("revocation_check_failed", exc_info=exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error_code": "SERVICE_UNAVAILABLE",
+                "message": "Token revocation store unavailable; refresh denied.",
+            },
+        )
+
+    if is_revoked:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error_code": "UNAUTHORIZED", "message": "Refresh token has been revoked."},
         )
-
-    import jwt as pyjwt
 
     try:
         payload = decode_token(refresh_token_cookie)
@@ -107,14 +130,33 @@ async def refresh_token(
 
     subject: str = payload["sub"]
     groups = _get_user_groups(subject)
+
+    # Compute TTL from the old token's expiry before minting the new one.
+    ttl = max(0, int(payload["exp"]) - int(time.time()))
+
+    # Revoke old cookie in Redis BEFORE minting the new token and setting the cookie.
+    # If this write fails, we return 503; the old token remains valid and the client
+    # can retry safely — no new token has been issued yet.
+    # Fail-closed by design: deny refresh if revocation write fails.
+    if ttl > 0:
+        try:
+            await cache.set_nx(_revocation_key(refresh_token_cookie), "1", ttl)
+        except redis.exceptions.RedisError as exc:
+            logger.warning("revocation_write_failed", exc_info=exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error_code": "SERVICE_UNAVAILABLE",
+                    "message": "Token revocation store unavailable; refresh denied.",
+                },
+            )
+
     # TBD(user-accounts): Read email from user record instead of fabricating
     access_token, expires_in = create_access_token(
         subject=subject, groups=groups, email=subject
     )
-
-    # Rotate refresh token
     new_refresh = create_refresh_token(subject=subject)
-    _revoked_refresh_tokens.add(refresh_token_cookie)
+
     response.set_cookie(
         key=_REFRESH_COOKIE,
         value=new_refresh,
@@ -133,9 +175,21 @@ async def revoke_token(
     response: Response,
     _body: RevokeRequest = RevokeRequest(),
     refresh_token_cookie: str | None = Cookie(default=None, alias=_REFRESH_COOKIE),
+    cache: RedisClient = Depends(get_redis),
 ) -> None:
     """Revoke the refresh token (logout). Clears the HttpOnly cookie."""
     if refresh_token_cookie is not None:
-        _revoked_refresh_tokens.add(refresh_token_cookie)
+        try:
+            payload = decode_token(refresh_token_cookie)
+            ttl = max(0, int(payload.get("exp", 0)) - int(time.time()))
+            if ttl > 0:
+                # Best-effort: revocation write is idempotent; Redis failure is logged
+                # but the cookie is still cleared so the client is logged out locally.
+                try:
+                    await cache.set_nx(_revocation_key(refresh_token_cookie), "1", ttl)
+                except redis.exceptions.RedisError as exc:
+                    logger.warning("revocation_write_failed_on_revoke", exc_info=exc)
+        except pyjwt.PyJWTError:
+            pass  # invalid token — nothing to revoke
 
     response.delete_cookie(key=_REFRESH_COOKIE, path="/auth/token")

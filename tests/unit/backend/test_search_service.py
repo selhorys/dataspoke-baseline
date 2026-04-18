@@ -164,6 +164,56 @@ class TestSearch:
         assert result["datasets"] == []
         assert result["total_count"] == 0
 
+    async def test_partial_enrichment_failure_excludes_failed_keeps_total_count(
+        self, service, cache, llm, qdrant, datahub
+    ):
+        """One _enrich_result raises — only successful datasets are returned;
+        total_count stays at the full scored_points length (pagination math)."""
+        cache.get.return_value = None
+        llm.embed.return_value = [0.1] * 1536
+
+        urns = [
+            "urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t1,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t2,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t3,PROD)",
+        ]
+        points = [_make_scored_point(urn=u) for u in urns]
+        qdrant.search.return_value = points
+
+        # _enrich_result calls get_aspect three times per point (props, tags, ownership).
+        # Point at index 1 will raise; points 0 and 2 succeed.
+        props_ok = MagicMock()
+        props_ok.name = "db.s.table"
+        props_ok.description = "ok"
+        tags_ok = MagicMock()
+        tags_ok.tags = []
+        ownership_ok = MagicMock()
+        ownership_ok.owners = []
+
+        call_count = 0
+
+        async def _get_aspect_side_effect(urn, cls):
+            nonlocal call_count
+            call_count += 1
+            # Point-1 aspects (calls 4, 5, 6) raise on the first call for that point
+            if urn == urns[1]:
+                raise RuntimeError("datahub boom")
+            return props_ok if "Properties" in cls.__name__ else (
+                tags_ok if "GlobalTags" in cls.__name__ else ownership_ok
+            )
+
+        datahub.get_aspect = _get_aspect_side_effect
+
+        result = await service.search(q="partial failure test")
+
+        # Two points enriched successfully; one failed and was silently dropped
+        assert len(result["datasets"]) == len(urns) - 1
+        # total_count is the pre-enrichment Qdrant match count
+        assert result["total_count"] == len(urns)
+        # No exception propagated — the call returned normally
+        returned_urns = {d["urn"] for d in result["datasets"]}
+        assert urns[1] not in returned_urns
+
 
 class TestReindex:
     async def test_fetches_and_upserts(self, service, datahub, llm, qdrant):

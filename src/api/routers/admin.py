@@ -15,13 +15,14 @@ from src.workflows.airflow.client import AirflowClient
 logger = logging.getLogger(__name__)
 
 # Expected DAG IDs that must be loaded in Airflow for DataSpoke to function.
-_EXPECTED_DAGS = frozenset({
-    "ingestion",
-    "generation",
-    "metrics",
-    "embedding-sync",
-    "ontology-rebuild",
-})
+_ON_DEMAND_DAGS = ("generation", "metrics", "embedding-sync", "ontology-rebuild")
+_PERIODIC_TIERS = ("hourly", "daily", "weekly")
+_PERIODIC_DAGS = tuple(
+    f"{domain}-periodic-{tier}"
+    for domain in ("ingestion", "metrics", "validation")
+    for tier in _PERIODIC_TIERS
+)
+_EXPECTED_DAGS = frozenset(_ON_DEMAND_DAGS + _PERIODIC_DAGS)
 
 router = APIRouter(
     prefix="/admin",

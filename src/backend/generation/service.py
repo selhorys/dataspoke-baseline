@@ -350,12 +350,15 @@ class GenerationService:
 
         # 4. Code reference analysis (if configured)
         code_insights: dict[str, Any] = {}
+        code_analysis_status: str = "not_configured"
         if config.code_refs:
             analyzer = SourceCodeAnalyzer(self._llm)
             try:
                 code_insights = await analyzer.analyze(config.code_refs, schema_fields)
+                code_analysis_status = "ok"
             except Exception:
                 logger.warning("code_analysis_failed", exc_info=True, extra={"dataset_urn": dataset_urn})
+                code_analysis_status = "failed"
 
         # 5. Build LLM prompt
         field_info = "\n".join(
@@ -413,6 +416,7 @@ class GenerationService:
             "fields_count": len(schema_fields),
             "proposals_keys": list(proposals.keys()),
             "code_refs_used": config.code_refs is not None,
+            "code_analysis_status": code_analysis_status,
         }
         await self._record_event(dataset_urn, GENERATION_COMPLETE, "success", detail)
 

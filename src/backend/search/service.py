@@ -53,7 +53,14 @@ class SearchService:
         offset: int = 0,
         limit: int = 20,
     ) -> dict[str, Any]:
-        """Search datasets by natural language query."""
+        """Search datasets by natural language query.
+
+        ``total_count`` reflects the number of Qdrant matches in the current fetch
+        window (≤ ``offset + limit``).  It is not the unbounded match total — Qdrant's
+        ``search()`` does not return one.  Clients should treat ``total_count == limit``
+        as "there may be more".  The value is stable across partial enrichment failures
+        so that pagination math stays consistent.
+        """
         cache_key = self._cache_key(q, sql_context, offset, limit)
 
         # Check cache
@@ -74,10 +81,21 @@ class SearchService:
         )
         paged_points = scored_points[offset:]
 
-        # Enrich each result with DataHub metadata
-        datasets = await asyncio.gather(
-            *[self._enrich_result(pt, sql_context) for pt in paged_points]
+        # Enrich each result with DataHub metadata — failures are isolated per URN
+        raw_results = await asyncio.gather(
+            *[self._enrich_result(pt, sql_context) for pt in paged_points],
+            return_exceptions=True,
         )
+        datasets: list[dict[str, Any]] = []
+        for pt, item in zip(paged_points, raw_results, strict=True):
+            if isinstance(item, Exception):
+                logger.warning(
+                    "search_enrich_failed",
+                    exc_info=item,
+                    extra={"dataset_urn": (pt.payload or {}).get("dataset_urn", "")},
+                )
+                continue
+            datasets.append(item)
 
         result = {
             "datasets": datasets,

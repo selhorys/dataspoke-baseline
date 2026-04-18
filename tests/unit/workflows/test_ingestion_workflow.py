@@ -13,17 +13,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.workflows.ingestion import (
-    FLOW_ID,
     PERIODIC_FLOW_PREFIX,
     schedule_to_flow_id,
 )
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-
-
-def test_flow_id_constant():
-    assert FLOW_ID == "ingestion"
 
 
 def test_periodic_flow_prefix():

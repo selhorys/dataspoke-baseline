@@ -296,6 +296,86 @@ async def test_generate_config_not_found(service, db):
     assert exc_info.value.error_code == "GENERATION_CONFIG_NOT_FOUND"
 
 
+async def test_generate_code_analysis_status_not_configured(service, db, datahub, llm):
+    """code_refs is None → detail['code_analysis_status'] == 'not_configured'."""
+    config_row = _make_config_row(code_refs=None)
+    mock_scalar_query(db, config_row)
+
+    datahub.get_aspect = AsyncMock(return_value=None)
+    llm.complete_json = AsyncMock(
+        return_value={
+            "field_descriptions": {},
+            "table_summary": "Table",
+            "suggested_tags": [],
+        }
+    )
+
+    with patch("src.backend.generation.service.SourceCodeAnalyzer") as MockAnalyzer:
+        analyzer_instance = AsyncMock()
+        analyzer_instance.diff_similar_tables = AsyncMock(return_value=[])
+        MockAnalyzer.return_value = analyzer_instance
+
+        result = await service.generate(_DATASET_URN)
+
+    assert result.detail["code_analysis_status"] == "not_configured"
+    assert result.status == "success"
+
+
+async def test_generate_code_analysis_status_ok(service, db, datahub, llm):
+    """code_refs set + analyzer.analyze succeeds → detail['code_analysis_status'] == 'ok'."""
+    config_row = _make_config_row(code_refs={"owner": "org", "repo": "app", "token": "tok"})
+    mock_scalar_query(db, config_row)
+
+    datahub.get_aspect = AsyncMock(return_value=None)
+    llm.complete_json = AsyncMock(
+        return_value={
+            "field_descriptions": {},
+            "table_summary": "Table",
+            "suggested_tags": [],
+        }
+    )
+
+    with patch("src.backend.generation.service.SourceCodeAnalyzer") as MockAnalyzer:
+        analyzer_instance = AsyncMock()
+        analyzer_instance.analyze = AsyncMock(return_value={"col1": "description"})
+        analyzer_instance.diff_similar_tables = AsyncMock(return_value=[])
+        MockAnalyzer.return_value = analyzer_instance
+
+        result = await service.generate(_DATASET_URN)
+
+    assert result.detail["code_analysis_status"] == "ok"
+    assert result.status == "success"
+
+
+async def test_generate_code_analysis_status_failed(service, db, datahub, llm):
+    """code_refs set + analyzer.analyze raises → detail['code_analysis_status'] == 'failed';
+    generation still completes and proposals are still persisted."""
+    config_row = _make_config_row(code_refs={"owner": "org", "repo": "app", "token": "tok"})
+    mock_scalar_query(db, config_row)
+
+    datahub.get_aspect = AsyncMock(return_value=None)
+    expected_proposals = {
+        "field_descriptions": {"id": "Primary key"},
+        "table_summary": "Main table",
+        "suggested_tags": ["important"],
+    }
+    llm.complete_json = AsyncMock(return_value=expected_proposals)
+
+    with patch("src.backend.generation.service.SourceCodeAnalyzer") as MockAnalyzer:
+        analyzer_instance = AsyncMock()
+        analyzer_instance.analyze = AsyncMock(side_effect=RuntimeError("analyzer boom"))
+        analyzer_instance.diff_similar_tables = AsyncMock(return_value=[])
+        MockAnalyzer.return_value = analyzer_instance
+
+        result = await service.generate(_DATASET_URN)
+
+    assert result.detail["code_analysis_status"] == "failed"
+    assert result.status == "success"
+    # Proposals were still persisted despite the analyzer failure
+    add_calls = db.add.call_args_list
+    assert len(add_calls) >= 1
+
+
 async def test_generate_produces_structured_proposals(service, db, datahub, llm):
     config_row = _make_config_row(code_refs=None)
     mock_scalar_query(db, config_row)
