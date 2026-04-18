@@ -14,6 +14,8 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _TIER = "weekly"
 _SCHEDULE = "@weekly"
 
@@ -48,7 +50,7 @@ validation and triggers a parallel validation run for each one.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/validation/list-periodic",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data=json.dumps({"schedule_tier": _TIER}),
         response_filter=lambda response: response.json(),
         log_response=True,
@@ -66,6 +68,6 @@ validation and triggers a parallel validation run for each one.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/validation/run",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         log_response=True,
     ).expand(data=payloads)

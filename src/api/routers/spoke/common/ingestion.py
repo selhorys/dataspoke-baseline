@@ -1,21 +1,18 @@
-from datetime import datetime
+"""Cross-dataset ingestion list and detail views.
+
+Per-dataset operations (attr CRUD, method/run, event) live under the
+canonical /spoke/common/data/{dataset_urn}/attr/ingestion/ surface.
+"""
 
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_common
-from src.api.dependencies import get_ingestion_service, get_redis
+from src.api.dependencies import get_ingestion_service
 from src.api.schemas.common import parse_sort
-from src.api.schemas.events import EventListResponse, EventResponse
-from src.api.schemas.ingestion import (
-    IngestionConfigListResponse,
-    IngestionConfigResponse,
-    PatchIngestionConfigRequest,
-    RunIngestionRequest,
-    RunResultResponse,
-)
+from src.api.schemas.ingestion import IngestionConfigListResponse, IngestionConfigResponse
+from src.api.schemas.mappers import ingestion_config_response
 from src.backend.ingestion.service import IngestionService
-from src.shared.cache.client import RedisClient
-from src.shared.db.models import Event, IngestionConfig
+from src.shared.db.models import IngestionConfig
 from src.shared.exceptions import EntityNotFoundError
 
 router = APIRouter(
@@ -23,25 +20,6 @@ router = APIRouter(
     tags=["common/ingestion"],
     dependencies=[Depends(require_common)],
 )
-
-
-def _config_response(c) -> IngestionConfigResponse:  # noqa: ANN001
-    return IngestionConfigResponse(
-        id=c.id if isinstance(c.id, str) else str(c.id),
-        dataset_urn=c.dataset_urn,
-        platform=c.platform,
-        locator=c.locator,
-        identifier=c.identifier,
-        auth=c.auth,
-        is_active=c.is_active,
-        schedule_tier=c.schedule_tier,
-        enrichment_sources=c.enrichment_sources,
-        custom_extractors=c.custom_extractors,
-        workflow_dag_id=c.workflow_dag_id,
-        status=c.status,
-        created_at=c.created_at,
-        updated_at=c.updated_at,
-    )
 
 
 @router.get("", response_model=IngestionConfigListResponse)
@@ -59,7 +37,7 @@ async def get_ingestion_configs(
         offset=offset,
         limit=limit,
         total_count=total,
-        configs=[_config_response(c) for c in configs],
+        configs=[ingestion_config_response(c) for c in configs],
     )
 
 
@@ -72,76 +50,4 @@ async def get_ingestion_config(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
-    return _config_response(config)
-
-
-@router.get("/{dataset_urn}/attr", response_model=IngestionConfigResponse)
-async def get_ingestion_config_attr(
-    dataset_urn: str,
-    service: IngestionService = Depends(get_ingestion_service),
-) -> IngestionConfigResponse:
-    """Retrieve the attribute sub-resource of an ingestion config."""
-    config = await service.get_config(dataset_urn)
-    if config is None:
-        raise EntityNotFoundError("ingestion_config", dataset_urn)
-    return _config_response(config)
-
-
-@router.patch("/{dataset_urn}/attr", response_model=IngestionConfigResponse)
-async def patch_ingestion_config_attr(
-    dataset_urn: str,
-    body: PatchIngestionConfigRequest,
-    service: IngestionService = Depends(get_ingestion_service),
-) -> IngestionConfigResponse:
-    """Partially update an ingestion config's attributes."""
-    patch = body.model_dump(exclude_unset=True)
-    config = await service.patch_config(dataset_urn, patch)
-    return _config_response(config)
-
-
-@router.post("/{dataset_urn}/method/run", response_model=RunResultResponse)
-async def post_ingestion_run(
-    dataset_urn: str,
-    body: RunIngestionRequest,
-    service: IngestionService = Depends(get_ingestion_service),
-    cache: RedisClient = Depends(get_redis),
-) -> RunResultResponse:
-    """Trigger an ingestion run for the specified dataset."""
-    from src.backend.ingestion.service import run_ingestion_with_lock
-
-    result = await run_ingestion_with_lock(service, cache, dataset_urn, dry_run=body.dry_run)
-    return RunResultResponse(run_id=result.run_id, status=result.status, detail=result.detail)
-
-
-@router.get("/{dataset_urn}/event", response_model=EventListResponse)
-async def get_ingestion_events(
-    dataset_urn: str,
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-    sort: str | None = Query(default=None),
-    from_time: datetime | None = Query(default=None, alias="from"),
-    to_time: datetime | None = Query(default=None, alias="to"),
-    service: IngestionService = Depends(get_ingestion_service),
-) -> EventListResponse:
-    """List events for an ingestion config with time range and pagination."""
-    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
-    events, total_count = await service.get_events(
-        dataset_urn, offset, limit, from_time, to_time, order_by=order_by
-    )
-    return EventListResponse(
-        offset=offset,
-        limit=limit,
-        total_count=total_count,
-        events=[
-            EventResponse(
-                id=e["id"],
-                entity_type=e["entity_type"],
-                entity_id=e["entity_id"],
-                event_type=e["event_type"],
-                status=e["status"],
-                detail=e["detail"],
-                occurred_at=e["occurred_at"],
-            )
-            for e in events
-        ],
-    )
+    return ingestion_config_response(config)

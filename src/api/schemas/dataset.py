@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 
@@ -14,6 +14,8 @@ class QualityScoreResponse(BaseModel):
 
 
 class DatasetResponse(SingleResponse):
+    model_config = ConfigDict(from_attributes=True)
+
     urn: str = Field(description="DataHub URN uniquely identifying this dataset, e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'")
     name: str = Field(description="Human-readable dataset name")
     platform: str = Field(description="Data platform where this dataset lives, e.g. 'postgres', 'bigquery'")

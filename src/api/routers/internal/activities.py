@@ -11,10 +11,11 @@ Airflow orchestrator running inside the same K8s namespace.
 import json
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from src.api.auth.internal import require_internal_token
 from src.shared.exceptions import DataSpokeError
 from src.workflows._common import (
     make_cache,
@@ -24,17 +25,20 @@ from src.workflows._common import (
     make_qdrant,
 )
 
-
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/internal/activities", tags=[
-    "internal/activities/ingestion",
-    "internal/activities/validation",
-    "internal/activities/generation",
-    "internal/activities/search",
-    "internal/activities/metrics",
-    "internal/activities/ontology",
-])
+router = APIRouter(
+    prefix="/internal/activities",
+    tags=[
+        "internal/activities/ingestion",
+        "internal/activities/validation",
+        "internal/activities/generation",
+        "internal/activities/search",
+        "internal/activities/metrics",
+        "internal/activities/ontology",
+    ],
+    dependencies=[Depends(require_internal_token)],
+)
 
 
 def _error_response(exc: Exception, non_retryable: bool = True) -> JSONResponse:

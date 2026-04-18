@@ -153,10 +153,12 @@ All routes are prefixed with `/api/v1`. Routes marked **WS** are WebSocket endpo
 > **User-group routing principle**: User-group-specific paths (`/spoke/de/…`,
 > `/spoke/da/…`, `/spoke/dg/…`) should be defined **only when a feature is exclusively
 > used by that user group**. For dataset-centric operations — ingestion, validation,
-> generation, search — the `/spoke/common/data/{dataset_urn}/…` structure is preferred
-> so that any team owning a dataset can access the feature regardless of group membership.
-> As a result, the current catalogue has no `/spoke/de` or `/spoke/da` sections; all
-> shared dataset operations live under `/spoke/common`.
+> generation, search — the `/spoke/common/data/{dataset_urn}/…` structure is the
+> **canonical surface** for per-dataset operations; the dedicated routers
+> `/spoke/common/{ingestion,validation,gen}` expose list and detail views only. Any
+> team that owns a dataset can access per-dataset features regardless of group
+> membership. As a result, the current catalogue has no `/spoke/de` or `/spoke/da`
+> sections; all shared dataset operations live under `/spoke/common`.
 
 ### Auth
 
@@ -244,14 +246,13 @@ standard DataHub aspects. Design framework, source abstraction model, and aspect
 details: see [BACKEND §Ingestion Service](BACKEND.md#ingestion-service-srcbackendingestion)
 and [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
 
+Per-dataset operations (attr CRUD, method/run, event) live under the canonical
+`/spoke/common/data/{dataset_urn}/attr/ingestion/…` surface.
+
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
 | `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}/attr` | Get config attributes (platform, locator, identifier, auth, is_active, schedule_tier, status) | Ingestion Config | UC1 |
-| `PATCH` | `/spoke/common/ingestion/{dataset_urn}/attr` | Update config attributes | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/ingestion/{dataset_urn}/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
 
 #### Validation (`/spoke/common/validation`)
 
@@ -267,15 +268,13 @@ Design framework, assertion type catalogue, and comparison with DataHub native a
 see [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)
 and [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
 
+Per-dataset operations (attr CRUD, result, method/run, event) live under the canonical
+`/spoke/common/data/{dataset_urn}/attr/validation/…` surface.
+
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/validation` | List all validation configs across datasets (paginated, filterable) | Validation Config | UC2, UC3, UC6 |
 | `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/attr` | Get config attributes (rules, result spec, is_active, schedule_tier, owner) | Validation Config | UC2, UC3, UC6 |
-| `PATCH` | `/spoke/common/validation/{dataset_urn}/attr` | Update config attributes | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/attr/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/validation/{dataset_urn}/method/run` | Trigger manual validation run (optional `partition` in body) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}/event` | Validation event reports (success/failure notices) | DataHub Assertion Management | UC2, UC3, UC6 |
 
 #### Generation (`/spoke/common/gen`)
 
@@ -284,16 +283,13 @@ combines dataset identity with the generation data stored under
 `common/data/{dataset_urn}/attr/gen/`. Useful for monitoring generation status across
 all datasets and bulk management.
 
+Per-dataset operations (attr CRUD, result, method/generate, method/apply, event) live
+under the canonical `/spoke/common/data/{dataset_urn}/attr/gen/…` surface.
+
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/gen` | List all generation configs across datasets (paginated, filterable) | Automated Doc Generation | UC4 |
 | `GET` | `/spoke/common/gen/{dataset_urn}` | Get generation detail (dataset identity + config + latest result) | Automated Doc Generation | UC4 |
-| `GET` | `/spoke/common/gen/{dataset_urn}/attr` | Get config attributes (target fields, period, status, owner) | Automated Doc Generation | UC4 |
-| `PATCH` | `/spoke/common/gen/{dataset_urn}/attr` | Update config attributes | Automated Doc Generation | UC4 |
-| `GET` | `/spoke/common/gen/{dataset_urn}/attr/result` | Get generation results for this dataset (historical; `?from=…&to=…` for time range) | Automated Doc Generation | UC4 |
-| `POST` | `/spoke/common/gen/{dataset_urn}/method/generate` | Trigger generation run | Automated Doc Generation | UC4 |
-| `POST` | `/spoke/common/gen/{dataset_urn}/method/apply` | Apply approved results to DataHub | Automated Doc Generation | UC4 |
-| `GET` | `/spoke/common/gen/{dataset_urn}/event` | Generation event reports (success/failure notices) | Automated Doc Generation | UC4 |
 
 #### Search (`/spoke/common/search`)
 

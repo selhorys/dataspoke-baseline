@@ -15,6 +15,7 @@ api:
     # repository + tag passed via --set from .env (DATASPOKE_DEV_IMAGE_REGISTRY)
     pullPolicy: Always
   testMode: true
+  enableStubAuth: true
   ingress:
     enabled: true
     className: "nginx"
@@ -139,10 +140,15 @@ airflow:
       mountPath: /opt/airflow/dags
       readOnly: true
 
-  # Pre-configure the dataspoke_api HTTP connection
+  # Pre-configure the dataspoke_api HTTP connection and internal auth token
   extraEnv: |
     - name: AIRFLOW_CONN_DATASPOKE_API
       value: "http://dataspoke-api:8002"
+    - name: DATASPOKE_INTERNAL_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: dataspoke-internal-auth
+          key: token
 
   # Component resources (dev minimums)
   webserver:

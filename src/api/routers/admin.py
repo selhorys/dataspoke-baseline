@@ -1,7 +1,7 @@
 """Admin endpoints — system configuration and operational tasks.
 
 Accessible to users with the ``admin`` group claim via ``/api/v1/admin/…``.
-Also mounted as ``/internal/admin/…`` (no auth) for scripts and automation.
+Also mounted as ``/internal/admin/…`` for scripts and automation (requires ``X-Internal-Token`` shared-secret header via ``require_internal_token``).
 """
 
 import logging
@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Depends
 
 from src.api.auth.dependencies import require_admin
+from src.api.auth.internal import require_internal_token
 from src.api.dependencies import get_airflow_client
 from src.workflows.airflow.client import AirflowClient
 
@@ -33,6 +34,7 @@ router = APIRouter(
 internal_router = APIRouter(
     prefix="/internal/admin",
     tags=["internal/admin"],
+    dependencies=[Depends(require_internal_token)],
 )
 
 
@@ -66,5 +68,5 @@ async def verify_dags(
 async def internal_verify_dags(
     airflow: AirflowClient = Depends(get_airflow_client),
 ) -> dict:
-    """Verify that all expected Airflow DAGs are loaded (internal, no auth)."""
+    """Verify that all expected Airflow DAGs are loaded (internal — requires X-Internal-Token)."""
     return await _verify_dags(airflow)

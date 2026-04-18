@@ -1,12 +1,31 @@
 """Unit tests for auth endpoints: /api/v1/auth/token, /refresh, /revoke."""
 
+import pytest
 from httpx import AsyncClient
 
+from src.api.routers.auth import _verify_credentials, _get_user_groups
 from tests.unit.api.conftest import auth_headers
 
 AUTH_TOKEN = "/api/v1/auth/token"
 AUTH_REFRESH = "/api/v1/auth/token/refresh"
 AUTH_REVOKE = "/api/v1/auth/token/revoke"
+
+
+# ── Fixture: enable stub auth (patch settings for tests that need a working login) ───
+
+
+@pytest.fixture(autouse=True)
+def enable_stub_auth(monkeypatch):
+    """Enable stub auth so existing tests that POST /auth/token can succeed.
+
+    All tests in this module run with ``settings.enable_stub_auth=True`` unless
+    they override this fixture explicitly (e.g., the stub-gate tests below).
+    """
+    import src.api.routers.auth as auth_mod
+    import src.shared.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod.settings, "enable_stub_auth", True)
+    monkeypatch.setattr(auth_mod.settings, "enable_stub_auth", True)
 
 
 # ── Fake Redis double for revocation tests ─────────────────────────────────────
@@ -312,3 +331,71 @@ async def test_refresh_redis_failure_returns_503(client: AsyncClient) -> None:
         assert body["detail"]["error_code"] == "SERVICE_UNAVAILABLE"
     finally:
         app.dependency_overrides.pop(get_redis, None)
+
+
+# ── Stub-auth gate tests ───────────────────────────────────────────────────────
+
+
+async def test_stub_auth_disabled_rejects_correct_admin_creds(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """With enable_stub_auth=False, POST /auth/token with correct admin creds → 401.
+
+    Even valid credentials must be rejected when the stub-auth gate is off.
+    This guards against accidentally enabling stub credentials in production.
+    """
+    import src.api.routers.auth as auth_mod
+    import src.shared.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod.settings, "enable_stub_auth", False)
+    monkeypatch.setattr(auth_mod.settings, "enable_stub_auth", False)
+
+    response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
+    assert response.status_code == 401
+    body = response.json()
+    assert body["detail"]["error_code"] == "UNAUTHORIZED"
+
+
+async def test_stub_auth_disabled_rejects_verify_credentials() -> None:
+    """_verify_credentials returns False when enable_stub_auth is False."""
+    import src.api.routers.auth as auth_mod
+    import src.shared.settings as settings_mod
+
+    original = settings_mod.settings.enable_stub_auth
+    settings_mod.settings.enable_stub_auth = False
+    auth_mod.settings.enable_stub_auth = False
+    try:
+        result = _verify_credentials("admin", "admin")
+        assert result is False, "_verify_credentials should return False when stub auth is disabled"
+    finally:
+        settings_mod.settings.enable_stub_auth = original
+        auth_mod.settings.enable_stub_auth = original
+
+
+async def test_stub_auth_disabled_returns_empty_groups() -> None:
+    """_get_user_groups returns [] when enable_stub_auth is False."""
+    import src.api.routers.auth as auth_mod
+    import src.shared.settings as settings_mod
+
+    original = settings_mod.settings.enable_stub_auth
+    settings_mod.settings.enable_stub_auth = False
+    auth_mod.settings.enable_stub_auth = False
+    try:
+        groups = _get_user_groups("admin")
+        assert groups == [], "_get_user_groups should return [] when stub auth is disabled"
+    finally:
+        settings_mod.settings.enable_stub_auth = original
+        auth_mod.settings.enable_stub_auth = original
+
+
+async def test_stub_auth_enabled_accepts_correct_admin_creds(client: AsyncClient) -> None:
+    """With enable_stub_auth=True (from autouse fixture), POST /auth/token → 200.
+
+    This is the positive counterpart to the disabled test: the autouse fixture
+    already sets enable_stub_auth=True, so this test confirms that toggling the
+    flag to True restores normal stub-auth behavior.
+    """
+    response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
+    assert response.status_code == 200
+    body = response.json()
+    assert "access_token" in body

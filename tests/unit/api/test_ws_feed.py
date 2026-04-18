@@ -57,7 +57,7 @@ class TestStreamValidationAuth:
             },
         ]
         with patch(
-            "src.api.routers.spoke.common.data.get_redis", return_value=_mock_redis(messages)
+            "src.api.routers.spoke.common.data.ws.get_redis", return_value=_mock_redis(messages)
         ):
             client = TestClient(app)
             with client.websocket_connect(_VALIDATION_WS) as ws:
@@ -123,7 +123,7 @@ class TestStreamValidationMessages:
             },
         ]
         with patch(
-            "src.api.routers.spoke.common.data.get_redis", return_value=_mock_redis(messages)
+            "src.api.routers.spoke.common.data.ws.get_redis", return_value=_mock_redis(messages)
         ):
             client = TestClient(app)
             with client.websocket_connect(_VALIDATION_WS) as ws:
@@ -149,7 +149,7 @@ class TestStreamValidationMessages:
 
         mock_redis.subscribe = _tracking_subscribe
 
-        with patch("src.api.routers.spoke.common.data.get_redis", return_value=mock_redis):
+        with patch("src.api.routers.spoke.common.data.ws.get_redis", return_value=mock_redis):
             client = TestClient(app)
             with client.websocket_connect(_VALIDATION_WS) as ws:
                 ws.send_text(_auth_message())

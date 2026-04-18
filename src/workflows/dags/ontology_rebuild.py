@@ -10,6 +10,8 @@ from datetime import timedelta
 from airflow import DAG
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _DEFAULT_ARGS = {
     "retries": 3,
     "retry_delay": timedelta(seconds=10),
@@ -46,7 +48,7 @@ step via XCom.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/classify",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data='{"force": {{ dag_run.conf.get(\'force\', false) | lower }}}',
         response_filter=lambda response: response.json(),
         log_response=True,
@@ -57,7 +59,7 @@ step via XCom.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/build-hierarchy",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data='{"classifications": {{ ti.xcom_pull(task_ids="classify_datasets") | tojson }}}',
         response_filter=lambda response: response.json(),
         log_response=True,
@@ -68,7 +70,7 @@ step via XCom.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/infer-relationships",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data='{"hierarchy": {{ ti.xcom_pull(task_ids="build_hierarchy") | tojson }}}',
         log_response=True,
     )
@@ -78,7 +80,7 @@ step via XCom.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/detect-drift",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data='{"current_hierarchy": {{ ti.xcom_pull(task_ids="build_hierarchy") | tojson }}}',
         log_response=True,
     )

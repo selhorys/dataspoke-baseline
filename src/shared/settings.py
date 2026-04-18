@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     admin_password: str = "admin"
     admin_groups: list[str] = ["admin", "de", "da", "dg"]
 
+    # Stub-auth gate — must be true for /auth/token to accept the stub admin credentials.
+    # Production MUST keep this false until a real user store is wired.
+    enable_stub_auth: bool = False
+
+    # Internal auth — shared secret for Airflow-to-API calls (blank disables internal endpoints)
+    internal_token: str = ""
+
     # Application ports
     api_port: int = 8002
 

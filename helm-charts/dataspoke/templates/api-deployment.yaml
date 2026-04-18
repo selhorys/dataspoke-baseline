@@ -39,6 +39,13 @@ spec:
           env:
             - name: DATASPOKE_TEST_MODE
               value: {{ .Values.api.testMode | default false | quote }}
+            - name: DATASPOKE_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dataspoke-internal-auth
+                  key: token
+            - name: DATASPOKE_ENABLE_STUB_AUTH
+              value: {{ .Values.api.enableStubAuth | default false | quote }}
           startupProbe:
             httpGet:
               path: /health

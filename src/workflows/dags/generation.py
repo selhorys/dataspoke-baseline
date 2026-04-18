@@ -9,6 +9,8 @@ from datetime import timedelta
 from airflow import DAG
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _DEFAULT_ARGS = {
     "retries": 3,
     "retry_delay": timedelta(seconds=10),
@@ -41,7 +43,7 @@ Triggers LLM-powered metadata generation for a single dataset.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/generation/run",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data='{"dataset_urn": "{{ dag_run.conf.get(\'dataset_urn\', \'\') }}"}',
         log_response=True,
     )

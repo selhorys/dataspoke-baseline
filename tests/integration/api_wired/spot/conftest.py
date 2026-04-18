@@ -4,6 +4,9 @@ Provides the ``http_client`` fixture pointing at the in-cluster DataSpoke
 API via nginx-ingress, used by ingestion, validation, generation, and metrics modules.
 Also exposes ingestion-specific connection constants and cleanup helpers
 reused by both ``test_ingestion_service`` and ``test_ingestion_workflow``.
+
+``internal_http_client`` is a separate fixture that includes the
+``X-Internal-Token`` header for calling /internal/* endpoints.
 """
 
 import os
@@ -15,21 +18,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.integration.conftest import make_test_urn
 
-# ── Shared fixture ─────────────────────────────────────────────────────────
+
+def _base_url() -> str:
+    """Resolve the API base URL from environment."""
+    domain = os.environ.get("DATASPOKE_DEV_INGRESS_DOMAIN", "")
+    if domain:
+        return f"http://app.{domain}"
+    port = os.environ.get("DATASPOKE_API_PORT", "8002")
+    return f"http://localhost:{port}"
+
+
+# ── Shared fixtures ────────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture
 async def http_client():
     """HTTP client pointing at the in-cluster DataSpoke API via ingress."""
-    domain = os.environ.get("DATASPOKE_DEV_INGRESS_DOMAIN", "")
-    if domain:
-        base_url = f"http://app.{domain}"
-    else:
-        port = os.environ.get("DATASPOKE_API_PORT", "8002")
-        base_url = f"http://localhost:{port}"
     async with httpx.AsyncClient(
-        base_url=base_url,
+        base_url=_base_url(),
         timeout=120.0,
+    ) as client:
+        yield client
+
+
+@pytest_asyncio.fixture
+async def internal_http_client():
+    """HTTP client pre-configured with X-Internal-Token for /internal/* calls.
+
+    Reads DATASPOKE_INTERNAL_TOKEN from the environment (set by
+    dataspoke-test-mode.sh via values-dev.yaml).
+    """
+    token = os.environ.get("DATASPOKE_INTERNAL_TOKEN", "")
+    async with httpx.AsyncClient(
+        base_url=_base_url(),
+        timeout=120.0,
+        headers={"X-Internal-Token": token},
     ) as client:
         yield client
 

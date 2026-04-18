@@ -4,8 +4,12 @@ Calls /internal/activities/* endpoints directly through the test-mode
 server (DATASPOKE_TEST_MODE=true), bypassing Airflow DAG orchestration.
 This verifies business logic end-to-end without any Airflow overhead.
 
+All /internal/* calls use the ``internal_http_client`` fixture which
+pre-configures the ``X-Internal-Token`` header from DATASPOKE_INTERNAL_TOKEN.
+
 Prerequisites:
 - In-cluster DataSpoke server running (DATASPOKE_TEST_MODE=true via dataspoke-test-mode.sh)
+- DATASPOKE_INTERNAL_TOKEN set in the test environment (matches the server)
 - PostgreSQL accessible via DATASPOKE_DEV_PG_HOST/PORT
 - DataHub GMS accessible via DATASPOKE_DATAHUB_GMS_URL
 - Dummy data ingested via conftest.py Python utilities
@@ -29,12 +33,34 @@ def _urn(suffix: str) -> str:
     return make_test_urn("activity", suffix)
 
 
+# ── X-Internal-Token auth enforcement ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_internal_endpoint_without_token_returns_401(http_client):
+    """Calling /internal/activities/* without X-Internal-Token → 401 UNAUTHORIZED.
+
+    Uses the plain ``http_client`` (no token header) to confirm that the
+    require_internal_token dependency rejects unauthenticated requests.
+    """
+    resp = await http_client.post(
+        "/internal/activities/metrics/publish-update",
+        json={"run_id": "test-run-id", "status": "success", "detail": {}},
+    )
+    # 401 when token is configured; 503 when DATASPOKE_INTERNAL_TOKEN is blank server-side
+    assert resp.status_code in (401, 503)
+    if resp.status_code == 401:
+        assert resp.json()["detail"]["error_code"] == "UNAUTHORIZED"
+    else:
+        assert resp.json()["detail"]["error_code"] == "INTERNAL_AUTH_NOT_CONFIGURED"
+
+
 # ── /validation ──────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_run_validation_activity_dry_run(
-    http_client, async_session: AsyncSession, datahub_client,
+    http_client, internal_http_client, async_session: AsyncSession, datahub_client,
 ):
     """POST /internal/activities/validation/run (dry_run=true) → 200."""
     dataset_urn = _urn("val_dry")
@@ -58,7 +84,7 @@ async def test_run_validation_activity_dry_run(
         assert resp.status_code in (200, 201)
 
         # Call activity endpoint directly (bypasses Airflow DAG)
-        resp = await http_client.post(
+        resp = await internal_http_client.post(
             "/internal/activities/validation/run",
             json={
                 "dataset_urn": dataset_urn,
@@ -134,7 +160,7 @@ async def test_run_generation_activity(
 
 @pytest.mark.asyncio
 async def test_run_metric_activity_dry_run(
-    http_client, async_session: AsyncSession,
+    http_client, internal_http_client, async_session: AsyncSession,
 ):
     """POST /internal/activities/metrics/run (dry_run=true) → 200."""
     metric_id = "imazon.test.activity.metric_dry"
@@ -154,8 +180,8 @@ async def test_run_metric_activity_dry_run(
         )
         assert resp.status_code in (200, 201)
 
-        # Call activity endpoint directly
-        resp = await http_client.post(
+        # Call activity endpoint directly with internal auth
+        resp = await internal_http_client.post(
             "/internal/activities/metrics/run",
             json={"metric_id": metric_id, "dry_run": True},
         )
@@ -407,9 +433,9 @@ async def test_ontology_rebuild_chain(
 
 
 @pytest.mark.asyncio
-async def test_publish_metric_update(http_client):
+async def test_publish_metric_update(internal_http_client):
     """metrics/publish-update should succeed (stub cache is no-op)."""
-    resp = await http_client.post(
+    resp = await internal_http_client.post(
         "/internal/activities/metrics/publish-update",
         json={"run_id": "test-run-id", "status": "success", "detail": {}},
     )

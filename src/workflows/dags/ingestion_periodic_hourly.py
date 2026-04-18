@@ -14,6 +14,8 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _TIER = "hourly"
 _SCHEDULE = "@hourly"
 
@@ -48,7 +50,7 @@ ingestion and triggers a parallel ingestion run for each one.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ingestion/list-periodic",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data=json.dumps({"schedule_tier": _TIER}),
         response_filter=lambda response: response.json(),
         log_response=True,
@@ -66,6 +68,6 @@ ingestion and triggers a parallel ingestion run for each one.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ingestion/run",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         log_response=True,
     ).expand(data=payloads)

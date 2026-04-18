@@ -34,6 +34,8 @@ def _verify_credentials(email: str, password: str) -> bool:
 
     TBD(user-accounts): Replace with DB/LDAP user lookup + bcrypt verify
     """
+    if not settings.enable_stub_auth:
+        return False
     return email == settings.admin_email and password == settings.admin_password
 
 
@@ -42,6 +44,8 @@ def _get_user_groups(email: str) -> list[str]:
 
     TBD(user-accounts): Look up groups from identity store
     """
+    if not settings.enable_stub_auth:
+        return []
     if email == settings.admin_email:
         return list(settings.admin_groups)
     return []

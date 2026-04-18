@@ -47,6 +47,7 @@ api:
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   testMode: false
+  enableStubAuth: false  # Never set true in production
   service:
     type: ClusterIP
     port: 8002
@@ -192,10 +193,15 @@ airflow:
       mountPath: /opt/airflow/dags
       readOnly: true
 
-  # Pre-configure the dataspoke_api HTTP connection
+  # Pre-configure the dataspoke_api HTTP connection and internal auth token
   extraEnv: |
     - name: AIRFLOW_CONN_DATASPOKE_API
       value: "http://dataspoke-api:8002"
+    - name: DATASPOKE_INTERNAL_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: dataspoke-internal-auth
+          key: token
 
   # Component resources
   webserver:

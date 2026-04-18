@@ -14,6 +14,8 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _TIER = "daily"
 _SCHEDULE = "@daily"
 
@@ -48,7 +50,7 @@ execution and triggers a parallel metric run for each one.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/list-periodic",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data=json.dumps({"schedule_tier": _TIER}),
         response_filter=lambda response: response.json(),
         log_response=True,
@@ -66,6 +68,6 @@ execution and triggers a parallel metric run for each one.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/run",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         log_response=True,
     ).expand(data=payloads)

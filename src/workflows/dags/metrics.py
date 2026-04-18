@@ -9,6 +9,8 @@ from datetime import timedelta
 from airflow import DAG
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _DEFAULT_ARGS = {
     "retries": 3,
     "retry_delay": timedelta(seconds=10),
@@ -43,7 +45,7 @@ Runs a metric computation and publishes the result update.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/run",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data=(
             '{"metric_id": "{{ dag_run.conf.get(\'metric_id\', \'\') }}",'
             ' "dry_run": {{ dag_run.conf.get(\'dry_run\', false) | lower }}}'
@@ -57,7 +59,7 @@ Runs a metric computation and publishes the result update.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/publish-update",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data="{{ ti.xcom_pull(task_ids='run_metric') | tojson }}",
         log_response=True,
     )

@@ -69,6 +69,17 @@ else
   info "DATASPOKE_QDRANT_API_KEY not set — skipping qdrant secret."
 fi
 
+# Generate internal-auth token for Airflow→API calls (idempotent: skip if secret exists)
+if kubectl -n "${NS}" get secret dataspoke-internal-auth >/dev/null 2>&1; then
+  info "dataspoke-internal-auth already exists — skipping."
+else
+  info "Generating dataspoke-internal-auth token..."
+  token="$(openssl rand -hex 32)"
+  kubectl -n "${NS}" create secret generic dataspoke-internal-auth \
+    --from-literal=token="${token}"
+  info "dataspoke-internal-auth created."
+fi
+
 # ---------------------------------------------------------------------------
 # Register required Helm repositories (idempotent)
 # ---------------------------------------------------------------------------

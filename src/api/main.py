@@ -63,6 +63,12 @@ async def lifespan(app: FastAPI):
     """Application lifespan — manage shared clients."""
     from src.api.dependencies import get_airflow_client
 
+    if settings.enable_stub_auth and settings.admin_password == "admin":
+        logger.warning(
+            "stub_auth_enabled_with_default_password",
+            extra={"risk": "Stub auth enabled with default admin password — not for production."},
+        )
+
     airflow = get_airflow_client()
     yield
     await airflow.close()

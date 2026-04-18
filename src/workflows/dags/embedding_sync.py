@@ -10,6 +10,8 @@ from datetime import timedelta
 from airflow import DAG
 from airflow.providers.http.operators.http import SimpleHttpOperator
 
+from _internal_headers import internal_headers
+
 _DEFAULT_CALLBACK_BASE_URL = os.environ.get(
     "DATASPOKE_AIRFLOW_CALLBACK_BASE_URL", "http://dataspoke-api:8002"
 )
@@ -48,7 +50,7 @@ Triggered via the DataSpoke API to reindex dataset vectors in Qdrant.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/search/enumerate",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data=(
             '{"mode": "{{ dag_run.conf.get(\'mode\', \'full\') }}",'
             ' "dataset_urn": "{{ dag_run.conf.get(\'dataset_urn\', \'\') }}"}'
@@ -62,7 +64,7 @@ Triggered via the DataSpoke API to reindex dataset vectors in Qdrant.
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/search/reindex-batch",
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=internal_headers(),
         data='{"dataset_urns": {{ ti.xcom_pull(task_ids="enumerate_datasets") | tojson }}}',
         log_response=True,
     )
