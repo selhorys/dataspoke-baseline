@@ -1,6 +1,7 @@
 """Dataset registry — tracks whether dataset URNs are known to DataHub."""
 
 import logging
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -65,3 +66,119 @@ async def ensure_dataset_registered(
         )
 
     return registered
+
+
+async def mark_registered(db: AsyncSession, dataset_urn: str) -> None:
+    """Set datahub_registered=True for an existing registry row.
+
+    If the row is missing, logs a warning and returns without error.
+    If already True, no-ops.
+    Does NOT commit — caller commits.
+    """
+    result = await db.execute(
+        select(DatasetRegistry).where(DatasetRegistry.dataset_urn == dataset_urn)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        logger.warning(
+            "dataset_registry_row_missing_after_run",
+            extra={"dataset_urn": dataset_urn},
+        )
+        return
+    if row.datahub_registered:
+        return
+    row.datahub_registered = True
+    row.updated_at = datetime.now(tz=UTC)
+    db.add(row)
+
+
+async def mark_unregistered(db: AsyncSession, dataset_urn: str) -> None:
+    """Set datahub_registered=False for an existing registry row.
+
+    If the row is missing, logs a warning and returns without error.
+    If already False, no-ops.
+    Does NOT commit — caller commits.
+    """
+    result = await db.execute(
+        select(DatasetRegistry).where(DatasetRegistry.dataset_urn == dataset_urn)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        logger.warning(
+            "dataset_registry_row_missing_after_run",
+            extra={"dataset_urn": dataset_urn},
+        )
+        return
+    if not row.datahub_registered:
+        return
+    row.datahub_registered = False
+    row.updated_at = datetime.now(tz=UTC)
+    db.add(row)
+
+
+async def sync_with_datahub(
+    db: AsyncSession,
+    datahub: DataHubClient,
+    dataset_urns: list[str] | None = None,
+) -> dict:
+    """Bidirectional reconciliation of dataset_registry against DataHub.
+
+    Calls datahub.enumerate_datasets() once to obtain the current DataHub URN set.
+    Then queries registry rows — all rows when dataset_urns is None, otherwise only
+    rows whose dataset_urn appears in the provided list.
+
+    For each selected row:
+    - urn in DataHub and datahub_registered=False → mark registered (flip true)
+    - urn not in DataHub and datahub_registered=True → mark unregistered (flip false)
+    - otherwise → unchanged
+
+    URNs passed in dataset_urns that have no registry row are counted as not_found.
+    No new rows are inserted — the registry stays scoped to config-referenced URNs.
+
+    Does NOT commit — caller commits.
+
+    Returns:
+        dict with keys: checked, flipped_true, flipped_false, unchanged, not_found
+    """
+    if dataset_urns is not None and not dataset_urns:
+        return {"checked": 0, "flipped_true": 0, "flipped_false": 0, "unchanged": 0, "not_found": 0}
+
+    datahub_urn_set = set(await datahub.enumerate_datasets())
+
+    if dataset_urns is None:
+        result = await db.execute(select(DatasetRegistry))
+        rows = list(result.scalars().all())
+        not_found = 0
+    else:
+        result = await db.execute(
+            select(DatasetRegistry).where(
+                DatasetRegistry.dataset_urn.in_(dataset_urns)
+            )
+        )
+        rows = list(result.scalars().all())
+        registry_urns = {row.dataset_urn for row in rows}
+        not_found = len({urn for urn in dataset_urns if urn not in registry_urns})
+
+    checked = len(rows)
+    flipped_true = 0
+    flipped_false = 0
+    unchanged = 0
+
+    for row in rows:
+        in_datahub = row.dataset_urn in datahub_urn_set
+        if in_datahub and not row.datahub_registered:
+            flipped_true += 1
+            await mark_registered(db, row.dataset_urn)
+        elif not in_datahub and row.datahub_registered:
+            flipped_false += 1
+            await mark_unregistered(db, row.dataset_urn)
+        else:
+            unchanged += 1
+
+    return {
+        "checked": checked,
+        "flipped_true": flipped_true,
+        "flipped_false": flipped_false,
+        "unchanged": unchanged,
+        "not_found": not_found,
+    }

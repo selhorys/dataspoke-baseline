@@ -61,7 +61,10 @@ Tracks dataset URNs referenced by DataSpoke configs and whether they exist in Da
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-Created by `ensure_dataset_registered()` during config upsert. Ingestion sets `datahub_registered=true` on success.
+- **Creation**: lazy, via `ensure_dataset_registered()` on ingestion/validation config upsert.
+- **Updates**: `mark_registered()` called from `IngestionService.run()` on successful non-dry-run; `mark_unregistered()` reserved for DataHub sync.
+- **DataHub sync**: bidirectional reconciliation against DataHub via `POST /internal/admin/datahub/sync` (manual/scripted) and the `datahub-sync-daily` Airflow DAG.
+- **SSOT**: DataHub is authoritative for dataset existence; the registry caches state for the validation precondition gate.
 
 #### `validation_configs`
 

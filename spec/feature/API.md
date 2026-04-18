@@ -371,6 +371,15 @@ after JWT validation.
 
 Routes for user management and system configuration. Accessible only to users with `"admin"` in the `groups` claim. Specific routes are defined in dedicated admin feature specs and are not catalogued here.
 
+### Internal Admin (`/internal/admin`)
+
+Internal-only routes gated by the `X-Internal-Token` shared-secret header. Used by scripts, Airflow DAGs, and automation.
+
+| Method | Path | Body | Response | Auth |
+|--------|------|------|----------|------|
+| `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
+| `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
+
 ### System
 
 | Method | Path | Purpose |

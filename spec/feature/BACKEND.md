@@ -195,7 +195,7 @@ Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEM
 4. Emit aspects to DataHub (`StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`; skip if `dry_run`). A non-dry-run that ingests zero entities is treated as failure.
 5. Run enrichment sources, if configured (TBD)
 6. Run custom extractors, if configured (TBD)
-7. On success (non-dry-run): mark `dataset_registry.datahub_registered = true`
+7. On success (non-dry-run): mark `dataset_registry.datahub_registered = true` via the `mark_registered()` helper in `src/shared/db/registry.py`
 8. Record event (`INGESTION.COMPLETE` or `INGESTION.FAIL`; see [Event Catalogue](#event-catalogue))
 
 ### Validation Service (`src/backend/validation/`)
@@ -450,6 +450,11 @@ Wraps Airflow's REST API via `httpx`: DAG verification, DAG run lifecycle (trigg
 | `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
 | `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
 | `ontology-rebuild` | `ontology_rebuild.py` | Airflow schedule | Weekly (configurable) |
+| `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
+
+### DataHub Sync
+
+`POST /internal/admin/datahub/sync` reconciles `dataset_registry.datahub_registered` against the live DataHub URN set. Accepts an optional `dataset_urns` list in the body (null/omitted = full sweep). Flips the flag bidirectionally: sets it true when a URN is found in DataHub, false when it has disappeared. Returns counts `{checked, flipped_true, flipped_false, unchanged, not_found}`. The `datahub-sync-daily` DAG calls this endpoint daily (unparameterized, full sweep).
 
 ### Workflow Design Conventions
 

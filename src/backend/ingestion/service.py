@@ -10,9 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.extractors import run_datahub_ingestion
-from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import DatasetRegistry, Event, IngestionConfig
 from src.shared.cache.client import RedisClient
+from src.shared.datahub.client import DataHubClient
+from src.shared.db.models import Event, IngestionConfig
+from src.shared.db.registry import ensure_dataset_registered, mark_registered
 from src.shared.events import (
     INGESTION_COMPLETE,
     INGESTION_CONFIG_CREATE,
@@ -21,7 +22,6 @@ from src.shared.events import (
     INGESTION_FAIL,
     INGESTION_PREFIX,
 )
-from src.shared.db.registry import ensure_dataset_registered
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -324,21 +324,8 @@ class IngestionService:
             status = "success"
 
         if status == "success" and not dry_run:
-            # Mark dataset as registered in DataHub after successful ingestion
-            result_reg = await self._db.execute(
-                select(DatasetRegistry).where(DatasetRegistry.dataset_urn == dataset_urn)
-            )
-            reg_row = result_reg.scalar_one_or_none()
-            if reg_row is None:
-                logger.warning(
-                    "dataset_registry_row_missing_after_run",
-                    extra={"dataset_urn": dataset_urn},
-                )
-            elif not reg_row.datahub_registered:
-                reg_row.datahub_registered = True
-                reg_row.updated_at = datetime.now(tz=UTC)
-                self._db.add(reg_row)
-                await self._db.commit()
+            await mark_registered(self._db, dataset_urn)
+            await self._db.commit()
 
         detail: dict[str, Any] = {
             "run_id": run_id,
