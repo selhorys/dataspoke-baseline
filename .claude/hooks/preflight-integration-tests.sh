@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# PreToolUse hook: run dev-env health-check before integration tests.
+# Blocks (exit 2) if health-check fails so pytest does not waste minutes
+# against a broken dev-env. Rate-limited to one real check per 60 seconds.
+
+set -u
+
+MARKER=/tmp/dataspoke-healthcheck-ok.mtime
+MAX_AGE=60
+
+# Parse the hook event JSON on stdin and extract the Bash command.
+# Exit fast if this isn't a pytest-against-integration invocation — settings.json
+# `if` clauses have been unreliable, so we gate inside the script too.
+input=$(cat)
+tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+
+if [[ "$tool_name" != "Bash" ]]; then
+  exit 0
+fi
+
+# Anchor at start-of-command (after optional leading whitespace and env prefixes).
+# Supported prefixes: DATASPOKE_TEST_MODE=true, DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1.
+# Match only literal pytest invocations; commands that merely mention the string
+# (e.g., echo or grep arguments) should not trigger.
+pytest_re='^[[:space:]]*(DATASPOKE_TEST_MODE=true[[:space:]]+)?(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1[[:space:]]+)?uv run pytest[[:space:]]+tests/integration'
+if ! printf '%s' "$cmd" | grep -qE "$pytest_re"; then
+  exit 0
+fi
+
+project_root=${CLAUDE_PROJECT_DIR:-$(pwd)}
+health_check="$project_root/dev_env/health-check.sh"
+
+if [[ ! -x "$health_check" ]]; then
+  # health-check missing — don't fight the user, let pytest proceed
+  exit 0
+fi
+
+if [[ -f "$MARKER" ]]; then
+  now=$(date +%s)
+  last=$(stat -f %m "$MARKER" 2>/dev/null || stat -c %Y "$MARKER" 2>/dev/null || echo 0)
+  if (( now - last < MAX_AGE )); then
+    exit 0
+  fi
+fi
+
+output=$("$health_check" --quick 2>&1)
+rc=$?
+
+if [[ $rc -eq 0 ]]; then
+  touch "$MARKER"
+  exit 0
+fi
+
+cat >&2 <<EOF
+Dev-env health-check failed (exit $rc). Integration tests will fail misleadingly against a broken cluster.
+
+health-check output:
+$output
+
+Reinstall the failing subsystem (per CLAUDE.md §Integration Test Protocol):
+  airflow                 → cd dev_env && ./reinstall.sh --airflow
+  postgres / redis / qdrant → cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
+  datahub-gms / kafka     → cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh
+  example-postgres/kafka  → cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh
+  lock-service            → cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh
+
+Fix the failing component, then re-run the pytest command.
+EOF
+exit 2

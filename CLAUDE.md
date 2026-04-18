@@ -81,6 +81,8 @@ End-to-end steps:
 7. `frontend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
 8. `k8s-helm` agent — containerize and deploy (when ready, no review loop)
 
+When a generator's diff touches paths listed in `.claude/agents/security-reviewer.md`, also run `security-reviewer` in parallel with `reviewer`; merge their findings before deciding APPROVE / REVISE / ESCALATE.
+
 Delegate implementation to the appropriate generator agent rather than writing code directly in the main conversation. Each generator runs in a confined context — it sees only the approved plan, the relevant spec, and the files in its scope. The reviewer receives the plan + generator's completion report + changed files. If the reviewer's verdict is REVISE, the generator is re-invoked with the findings for a fix pass. If issues persist after one fix pass, they are escalated to the user.
 
 For spec authoring, use `/plan-doc` directly.
@@ -137,5 +139,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 **Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-from-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
-**Subagents**: `reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
+**Subagents**: `reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.
+**Hooks**: `.claude/hooks/` — integration-test preflight (blocking), plan-gate reminder, permission-hygiene warning. Wired via `.claude/settings.json`.
+**Statusline**: `.claude/statusline.sh` — model · cwd · git-branch · 5-hour plan usage. Usage segment requires `ccusage` on `$PATH` (`npm i -g ccusage` on node ≥ 18, or `brew install bun && bun add -g ccusage`); omitted silently if unavailable.

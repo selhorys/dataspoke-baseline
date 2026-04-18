@@ -26,7 +26,7 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 
 ## Scaffold Structure
 
-`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (subagent system prompts — one `.md` per agent), `settings.json` (tool permissions), and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full catalogue.
+`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code lifecycle events — preflight health-check, plan-gate reminder, permission-hygiene warning), `statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full catalogue.
 
 The scaffold works alongside these structural elements:
 
@@ -74,8 +74,9 @@ Subagents are specialized Claude instances with focused system prompts. They liv
 | Subagent | Role | Scope | Tools |
 |----------|------|-------|-------|
 | `reviewer` | Evaluator | Independently reviews generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after each generator | Read, Glob, Grep, Bash |
+| `security-reviewer` | Evaluator | Parallel security review when a generator's diff touches sensitive paths (auth, secrets, migrations, DataHub emission, Helm credentials, new dependencies, `.prauto/`). Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, crypto. Authoritative glob list lives in the agent file | Read, Glob, Grep, Bash |
 
-The reviewer uses read-only tools — it analyzes and reports but does not write code.
+Both reviewers use read-only tools — they analyze and report but do not write code.
 
 ### Generators (sonnet model)
 
