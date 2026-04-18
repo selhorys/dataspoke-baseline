@@ -60,8 +60,12 @@ HUB = f"{API_PREFIX}/hub"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan — manage shared clients."""
-    from src.api.dependencies import get_airflow_client
+    """Application lifespan — construct and close shared infrastructure clients."""
+    from src.shared.cache.client import RedisClient
+    from src.shared.datahub.client import DataHubClient
+    from src.shared.llm.client import LLMClient
+    from src.shared.vector.client import QdrantManager
+    from src.workflows.airflow.client import AirflowClient
 
     if settings.enable_stub_auth and settings.admin_password == "admin":
         logger.warning(
@@ -69,9 +73,42 @@ async def lifespan(app: FastAPI):
             extra={"risk": "Stub auth enabled with default admin password — not for production."},
         )
 
-    airflow = get_airflow_client()
-    yield
-    await airflow.close()
+    app.state.airflow = AirflowClient(
+        base_url=settings.airflow_url,
+        username=settings.airflow_user,
+        password=settings.airflow_password,
+    )
+    app.state.datahub = DataHubClient(settings.datahub_gms_url, settings.datahub_token)
+    app.state.redis = RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
+    app.state.qdrant = QdrantManager(
+        host=settings.qdrant_host,
+        port=settings.qdrant_http_port,
+        api_key=settings.qdrant_api_key,
+        grpc_port=settings.qdrant_grpc_port,
+    )
+    app.state.llm = LLMClient(settings.llm_provider, settings.llm_api_key, settings.llm_model)
+
+    logger.info(
+        "lifespan_startup_complete",
+        extra={"clients": ["airflow", "datahub", "redis", "qdrant", "llm"]},
+    )
+    try:
+        yield
+    finally:
+        for name in ("airflow", "redis"):
+            client = getattr(app.state, name, None)
+            if client is None:
+                continue
+            try:
+                await client.close()
+            except Exception:
+                logger.warning(
+                    "lifespan_shutdown_close_failed",
+                    extra={"client": name},
+                    exc_info=True,
+                )
+        # DataHubClient, QdrantManager, LLMClient have no close() — rely on GC.
+        logger.info("lifespan_shutdown_complete")
 
 
 def _error_json(request: Request, status: int, error_code: str, message: str) -> JSONResponse:

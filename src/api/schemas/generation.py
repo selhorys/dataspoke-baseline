@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import ApprovalStatus, GenerationConfigStatus
@@ -60,6 +60,8 @@ class ApplyGenerationRequest(BaseModel):
 
 
 class GenerationConfigResponse(SingleResponse):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str = Field(description="Unique identifier of the generation config")
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     target_fields: dict[str, Any] = Field(description="Fields to generate metadata for with their generation config")
@@ -69,6 +71,11 @@ class GenerationConfigResponse(SingleResponse):
     owner: str = Field(description="Owner identifier responsible for this generation config")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v: object) -> str:
+        return v if isinstance(v, str) else str(v)
 
 
 class GenerationConfigListResponse(PaginatedResponse):

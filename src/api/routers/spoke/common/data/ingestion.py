@@ -14,7 +14,6 @@ from src.api.schemas.ingestion import (
     RunIngestionRequest,
     RunResultResponse,
 )
-from src.api.schemas.mappers import ingestion_config_response
 from src.backend.ingestion.service import IngestionService
 from src.shared.cache.client import RedisClient
 from src.shared.db.models import Event
@@ -32,7 +31,7 @@ async def get_data_ingestion_conf(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
-    return ingestion_config_response(config)
+    return IngestionConfigResponse.model_validate(config)
 
 
 @sub_router.put("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
@@ -56,7 +55,7 @@ async def put_data_ingestion_conf(
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
-    return ingestion_config_response(config)
+    return IngestionConfigResponse.model_validate(config)
 
 
 @sub_router.patch("/{dataset_urn}/attr/ingestion/conf", response_model=IngestionConfigResponse)
@@ -68,7 +67,7 @@ async def patch_data_ingestion_conf(
     """Partially update the ingestion config for the dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
-    return ingestion_config_response(config)
+    return IngestionConfigResponse.model_validate(config)
 
 
 @sub_router.delete("/{dataset_urn}/attr/ingestion/conf", status_code=status.HTTP_204_NO_CONTENT)

@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi import HTTPException
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,26 +11,31 @@ from src.api.auth.internal import require_internal_token
 from src.api.dependencies import get_datahub, get_db, get_llm, get_qdrant, get_redis
 
 
+def _fake_request(**state: object):
+    """Return a stand-in Request object exposing .app.state.<key> attributes.
+
+    Providers like get_datahub() read request.app.state.X; we don't need a real
+    Starlette Request for that — SimpleNamespace lookups suffice.
+    """
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(**state)))
+
+
 class TestInfraProviders:
-    @patch("src.api.dependencies.DataHubClient")
-    def test_get_datahub_returns_client(self, mock_cls: object) -> None:
-        client = get_datahub()
-        assert client is not None
+    def test_get_datahub_returns_client(self) -> None:
+        sentinel = object()
+        assert get_datahub(_fake_request(datahub=sentinel)) is sentinel
 
-    @patch("src.api.dependencies.RedisClient")
-    def test_get_redis_returns_client(self, mock_cls: object) -> None:
-        client = get_redis()
-        assert client is not None
+    def test_get_redis_returns_client(self) -> None:
+        sentinel = object()
+        assert get_redis(_fake_request(redis=sentinel)) is sentinel
 
-    @patch("src.api.dependencies.QdrantManager")
-    def test_get_qdrant_returns_manager(self, mock_cls: object) -> None:
-        manager = get_qdrant()
-        assert manager is not None
+    def test_get_qdrant_returns_manager(self) -> None:
+        sentinel = object()
+        assert get_qdrant(_fake_request(qdrant=sentinel)) is sentinel
 
-    @patch("src.api.dependencies.LLMClient")
-    def test_get_llm_returns_client(self, mock_cls: object) -> None:
-        client = get_llm()
-        assert client is not None
+    def test_get_llm_returns_client(self) -> None:
+        sentinel = object()
+        assert get_llm(_fake_request(llm=sentinel)) is sentinel
 
     @patch("src.api.dependencies.SessionLocal")
     async def test_get_db_yields_session(self, mock_session_local: object) -> None:

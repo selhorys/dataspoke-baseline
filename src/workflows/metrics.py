@@ -13,7 +13,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-FLOW_ID = "metrics"
 PERIODIC_FLOW_PREFIX = "metrics-periodic-"
 
 

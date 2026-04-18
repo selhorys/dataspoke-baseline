@@ -17,19 +17,9 @@ from src.api.dependencies import get_airflow_client, get_datahub, get_db
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.registry import sync_with_datahub
 from src.workflows.airflow.client import AirflowClient
+from src.workflows.registry import ALL_DAG_IDS as _EXPECTED_DAGS
 
 logger = logging.getLogger(__name__)
-
-# Expected DAG IDs that must be loaded in Airflow for DataSpoke to function.
-_ON_DEMAND_DAGS = ("generation", "metrics", "embedding-sync", "ontology-rebuild")
-_PERIODIC_TIERS = ("hourly", "daily", "weekly")
-_PERIODIC_DAGS = tuple(
-    f"{domain}-periodic-{tier}"
-    for domain in ("ingestion", "metrics", "validation")
-    for tier in _PERIODIC_TIERS
-)
-_SYNC_DAGS = ("datahub-sync-daily",)
-_EXPECTED_DAGS = frozenset(_ON_DEMAND_DAGS + _PERIODIC_DAGS + _SYNC_DAGS)
 
 DatasetUrn = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^urn:li:dataset:")]
 

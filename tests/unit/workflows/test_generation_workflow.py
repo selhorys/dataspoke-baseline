@@ -1,10 +1,6 @@
-"""Unit tests for generation workflow params and flow ID."""
+"""Unit tests for generation workflow params."""
 
-from src.workflows.generation import FLOW_ID, GenerationParams
-
-
-def test_flow_id():
-    assert FLOW_ID == "generation"
+from src.workflows.generation import GenerationParams
 
 
 def test_params():

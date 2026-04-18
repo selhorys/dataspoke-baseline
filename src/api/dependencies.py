@@ -1,8 +1,9 @@
 """Dependency injection provider functions for infrastructure clients.
 
-Each provider creates a fresh client per request. The DataHub SDK manages
-its own connection pooling internally; Redis and Qdrant clients are
-lightweight wrappers around pooled connections.
+Long-lived clients (DataHub, Redis, Qdrant, LLM, Airflow) are constructed
+once during application startup (via the lifespan in src/api/main.py) and
+stored on app.state. Per-request providers below simply retrieve the shared
+instance, which keeps constructors out of the hot path.
 
 Service providers (get_ingestion_service, get_validation_service, etc.)
 will be added as backend services are implemented in src/backend/.
@@ -10,10 +11,9 @@ will be added as backend services are implemented in src/backend/.
 
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.config import settings
 from src.backend.dataset.service import DatasetService
 from src.backend.ingestion.service import IngestionService
 from src.shared.cache.client import RedisClient
@@ -23,14 +23,11 @@ from src.shared.llm.client import LLMClient
 from src.shared.vector.client import QdrantManager
 from src.workflows.airflow.client import AirflowClient
 
-# Module-level Airflow client singleton (created lazily on first use)
-_airflow_client: AirflowClient | None = None
-
 # ── Infrastructure client providers ──────────────────────────────
 
 
-def get_datahub() -> DataHubClient:
-    return DataHubClient(settings.datahub_gms_url, settings.datahub_token)
+def get_datahub(request: Request) -> DataHubClient:
+    return request.app.state.datahub
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -38,21 +35,16 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         yield session
 
 
-def get_redis() -> RedisClient:
-    return RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
+def get_redis(request: Request) -> RedisClient:
+    return request.app.state.redis
 
 
-def get_qdrant() -> QdrantManager:
-    return QdrantManager(
-        host=settings.qdrant_host,
-        port=settings.qdrant_http_port,
-        api_key=settings.qdrant_api_key,
-        grpc_port=settings.qdrant_grpc_port,
-    )
+def get_qdrant(request: Request) -> QdrantManager:
+    return request.app.state.qdrant
 
 
-def get_llm() -> LLMClient:
-    return LLMClient(settings.llm_provider, settings.llm_api_key, settings.llm_model)
+def get_llm(request: Request) -> LLMClient:
+    return request.app.state.llm
 
 
 def get_notification():
@@ -61,16 +53,9 @@ def get_notification():
     return NotificationService()
 
 
-def get_airflow_client() -> AirflowClient:
-    """Return a shared Airflow client singleton."""
-    global _airflow_client  # noqa: PLW0603
-    if _airflow_client is None:
-        _airflow_client = AirflowClient(
-            base_url=settings.airflow_url,
-            username=settings.airflow_user,
-            password=settings.airflow_password,
-        )
-    return _airflow_client
+def get_airflow_client(request: Request) -> AirflowClient:
+    """Return the shared Airflow client from app state."""
+    return request.app.state.airflow
 
 
 # ── Service providers (added as backend services are implemented) ──

@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, Query
 from src.api.auth.dependencies import require_common
 from src.api.dependencies import get_validation_service
 from src.api.schemas.common import parse_sort
-from src.api.schemas.mappers import validation_config_response
 from src.api.schemas.validation import ValidationConfigListResponse, ValidationConfigResponse
 from src.backend.validation.service import ValidationService
 from src.shared.db.models import ValidationConfig
@@ -44,7 +43,7 @@ async def get_validation_configs(
         offset=offset,
         limit=limit,
         total_count=total_count,
-        configs=[validation_config_response(c) for c in configs],
+        configs=[ValidationConfigResponse.model_validate(c) for c in configs],
     )
 
 
@@ -61,4 +60,4 @@ async def get_validation_config(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
-    return validation_config_response(config)
+    return ValidationConfigResponse.model_validate(config)

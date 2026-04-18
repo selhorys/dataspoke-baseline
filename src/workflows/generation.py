@@ -1,12 +1,10 @@
-"""Generation workflow — parameters and flow ID constant.
+"""Generation workflow — parameters.
 
 Orchestration is handled by the Airflow DAG definition in dags/generation.py.
 Business logic is in the internal activity endpoints.
 """
 
 from dataclasses import dataclass
-
-FLOW_ID = "generation"
 
 
 @dataclass

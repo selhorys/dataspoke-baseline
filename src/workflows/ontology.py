@@ -1,12 +1,10 @@
-"""Ontology rebuild workflow — parameters and flow ID constant.
+"""Ontology rebuild workflow — parameters.
 
 Orchestration is handled by the Airflow DAG definition in dags/ontology_rebuild.py.
 Business logic is in the internal activity endpoints.
 """
 
 from dataclasses import dataclass
-
-FLOW_ID = "ontology-rebuild"
 
 
 @dataclass

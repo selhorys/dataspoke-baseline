@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import AssertionResult
@@ -177,17 +177,9 @@ class RunValidationRequest(BaseModel):
 
 
 class ValidationConfigResponse(SingleResponse):
-    id: str = Field(description="Unique identifier of the validation config")
-    dataset_urn: str = Field(description="DataHub URN of the dataset")
-    rules: list[dict[str, Any]] = Field(description="List of validation rule definitions")
-    schedule_tier: str | None = Field(description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'")
-    is_active: bool = Field(description="Whether scheduled validation runs are enabled")
-    owner: str = Field(description="Owner identifier responsible for this validation config")
-    created_at: datetime = Field(description="UTC timestamp when the config was created")
-    updated_at: datetime = Field(description="UTC timestamp of the most recent update")
-
-    model_config = {
-        "json_schema_extra": {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "resp_time": "2026-04-05T10:00:00Z",
                 "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -202,8 +194,22 @@ class ValidationConfigResponse(SingleResponse):
                 "created_at": "2026-04-01T06:00:00Z",
                 "updated_at": "2026-04-04T06:00:00Z",
             }
-        }
-    }
+        },
+    )
+
+    id: str = Field(description="Unique identifier of the validation config")
+    dataset_urn: str = Field(description="DataHub URN of the dataset")
+    rules: list[dict[str, Any]] = Field(description="List of validation rule definitions")
+    schedule_tier: str | None = Field(description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'")
+    is_active: bool = Field(description="Whether scheduled validation runs are enabled")
+    owner: str = Field(description="Owner identifier responsible for this validation config")
+    created_at: datetime = Field(description="UTC timestamp when the config was created")
+    updated_at: datetime = Field(description="UTC timestamp of the most recent update")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v: object) -> str:
+        return v if isinstance(v, str) else str(v)
 
 
 class ValidationConfigListResponse(PaginatedResponse):

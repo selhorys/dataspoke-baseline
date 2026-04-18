@@ -1,7 +1,7 @@
 """Unit tests for metrics workflow: DAG ID helpers and tier query logic.
 
 Tests cover:
-- FLOW_ID and PERIODIC_FLOW_PREFIX constants
+- PERIODIC_FLOW_PREFIX constant
 - schedule_to_flow_id() stability and prefix
 - get_metrics_for_tier() DB query logic
 """
@@ -14,17 +14,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.workflows.metrics import (
-    FLOW_ID,
     PERIODIC_FLOW_PREFIX,
     schedule_to_flow_id,
 )
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-
-
-def test_flow_id():
-    assert FLOW_ID == "metrics"
 
 
 def test_periodic_flow_prefix():

@@ -1,10 +1,6 @@
-"""Unit tests for ontology workflow params and flow ID."""
+"""Unit tests for ontology workflow params."""
 
-from src.workflows.ontology import FLOW_ID, OntologyRebuildParams
-
-
-def test_flow_id():
-    assert FLOW_ID == "ontology-rebuild"
+from src.workflows.ontology import OntologyRebuildParams
 
 
 def test_params_defaults():

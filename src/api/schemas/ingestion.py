@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import IngestionConfigStatus
@@ -125,6 +125,8 @@ class RunIngestionRequest(BaseModel):
 
 
 class IngestionConfigResponse(SingleResponse):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str = Field(description="Unique identifier of the ingestion config")
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     platform: Platform = Field(description="Data platform, e.g. 'postgres'")
@@ -139,6 +141,11 @@ class IngestionConfigResponse(SingleResponse):
     status: IngestionConfigStatus = Field(description="Config lifecycle status: 'OK' (DAG registered and ready) or 'draft' (not yet registered)")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v: object) -> str:
+        return v if isinstance(v, str) else str(v)
 
 
 class IngestionConfigListResponse(PaginatedResponse):

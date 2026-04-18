@@ -10,7 +10,6 @@ from src.api.auth.dependencies import require_common
 from src.api.dependencies import get_generation_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.generation import GenerationConfigListResponse, GenerationConfigResponse
-from src.api.schemas.mappers import generation_config_response
 from src.backend.generation.service import GenerationService
 from src.shared.db.models import GenerationConfig
 from src.shared.exceptions import EntityNotFoundError
@@ -39,7 +38,7 @@ async def get_gen_configs(
         offset=offset,
         limit=limit,
         total_count=total_count,
-        configs=[generation_config_response(c) for c in configs],
+        configs=[GenerationConfigResponse.model_validate(c) for c in configs],
     )
 
 
@@ -52,4 +51,4 @@ async def get_gen_config(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
-    return generation_config_response(config)
+    return GenerationConfigResponse.model_validate(config)

@@ -10,7 +10,6 @@ from src.api.auth.dependencies import require_common
 from src.api.dependencies import get_ingestion_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.ingestion import IngestionConfigListResponse, IngestionConfigResponse
-from src.api.schemas.mappers import ingestion_config_response
 from src.backend.ingestion.service import IngestionService
 from src.shared.db.models import IngestionConfig
 from src.shared.exceptions import EntityNotFoundError
@@ -37,7 +36,7 @@ async def get_ingestion_configs(
         offset=offset,
         limit=limit,
         total_count=total,
-        configs=[ingestion_config_response(c) for c in configs],
+        configs=[IngestionConfigResponse.model_validate(c) for c in configs],
     )
 
 
@@ -50,4 +49,4 @@ async def get_ingestion_config(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("ingestion_config", dataset_urn)
-    return ingestion_config_response(config)
+    return IngestionConfigResponse.model_validate(config)

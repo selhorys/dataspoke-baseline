@@ -1,10 +1,6 @@
-"""Unit tests for embedding sync workflow params and flow ID."""
+"""Unit tests for embedding sync workflow params."""
 
-from src.workflows.embedding_sync import FLOW_ID, EmbeddingSyncParams
-
-
-def test_flow_id():
-    assert FLOW_ID == "embedding-sync"
+from src.workflows.embedding_sync import EmbeddingSyncParams
 
 
 def test_params_defaults():

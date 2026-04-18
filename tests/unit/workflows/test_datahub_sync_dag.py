@@ -65,14 +65,12 @@ def test_datahub_sync_daily_calls_sync_endpoint():
 
 
 def test_datahub_sync_daily_is_singleton():
-    """datahub-sync-daily is a singleton DAG (not in _PERIODIC_DAGS)."""
-    from src.api.routers.admin import _PERIODIC_DAGS, _SYNC_DAGS
+    """datahub-sync-daily is a singleton DAG (not in PERIODIC_DAG_IDS)."""
+    from src.workflows.registry import PERIODIC_DAG_IDS, SYNC_DAG_IDS
 
-    # Must appear in _SYNC_DAGS
-    assert _DAG_ID in _SYNC_DAGS, (
-        f"'{_DAG_ID}' not in _SYNC_DAGS — verify admin.py DAG registration"
+    assert _DAG_ID in SYNC_DAG_IDS, (
+        f"'{_DAG_ID}' not in SYNC_DAG_IDS — verify src/workflows/registry.py"
     )
-    # Must NOT appear in _PERIODIC_DAGS (those are per-tier batch DAGs)
-    assert _DAG_ID not in _PERIODIC_DAGS, (
-        f"'{_DAG_ID}' erroneously added to _PERIODIC_DAGS"
+    assert _DAG_ID not in PERIODIC_DAG_IDS, (
+        f"'{_DAG_ID}' erroneously added to PERIODIC_DAG_IDS"
     )

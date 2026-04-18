@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from src.api.dependencies import get_redis, get_validation_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
-from src.api.schemas.mappers import validation_config_response
 from src.api.schemas.validation import (
     CreateValidationConfigRequest,
     PatchValidationConfigRequest,
@@ -35,7 +34,7 @@ async def get_data_validation_conf(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
-    return validation_config_response(config)
+    return ValidationConfigResponse.model_validate(config)
 
 
 @sub_router.put("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
@@ -55,7 +54,7 @@ async def put_data_validation_conf(
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
-    return validation_config_response(config)
+    return ValidationConfigResponse.model_validate(config)
 
 
 @sub_router.patch("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
@@ -67,7 +66,7 @@ async def patch_data_validation_conf(
     """Partially update the validation config for the dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
-    return validation_config_response(config)
+    return ValidationConfigResponse.model_validate(config)
 
 
 @sub_router.delete("/{dataset_urn}/attr/validation/conf", status_code=status.HTTP_204_NO_CONTENT)

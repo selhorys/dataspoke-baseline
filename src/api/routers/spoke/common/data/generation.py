@@ -16,7 +16,6 @@ from src.api.schemas.generation import (
     PatchGenerationConfigRequest,
 )
 from src.api.schemas.generation import RunResultResponse as GenerationRunResultResponse
-from src.api.schemas.mappers import generation_config_response
 from src.backend.generation.service import GenerationService
 from src.shared.db.models import Event, GenerationResult
 from src.shared.exceptions import EntityNotFoundError
@@ -36,7 +35,7 @@ async def get_data_gen_conf(
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("generation_config", dataset_urn)
-    return generation_config_response(config)
+    return GenerationConfigResponse.model_validate(config)
 
 
 @sub_router.put("/{dataset_urn}/attr/gen/conf", response_model=GenerationConfigResponse)
@@ -56,7 +55,7 @@ async def put_data_gen_conf(
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
-    return generation_config_response(config)
+    return GenerationConfigResponse.model_validate(config)
 
 
 @sub_router.patch("/{dataset_urn}/attr/gen/conf", response_model=GenerationConfigResponse)
@@ -68,7 +67,7 @@ async def patch_data_gen_conf(
     """Partially update the generation config for the dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
-    return generation_config_response(config)
+    return GenerationConfigResponse.model_validate(config)
 
 
 @sub_router.delete("/{dataset_urn}/attr/gen/conf", status_code=status.HTTP_204_NO_CONTENT)
