@@ -7,8 +7,8 @@ import pytest
 
 from src.backend.validation.rules import (
     RuleEvaluation,
-    _evaluate_condition,
-    _parse_duration_seconds,
+    evaluate_condition as _evaluate_condition,
+    parse_duration_seconds as _parse_duration_seconds,
     evaluate_rule,
 )
 
