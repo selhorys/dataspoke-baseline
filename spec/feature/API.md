@@ -123,7 +123,7 @@ require the `"admin"` claim exclusively.
 The current authentication implementation uses a stub identity store:
 
 - **Single admin account**: Only one user (configured via `DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`) can authenticate. All other credentials are rejected.
-- **In-memory token revocation**: Revoked refresh tokens are stored in a process-local set. In multi-instance deployments, a revoked token may still be accepted by a different API instance.
+- **Redis-backed token revocation**: Revoked refresh tokens are stored in Redis under `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime. Refresh and revoke are fail-closed on the Redis path — if the store is unreachable, `POST /auth/token/refresh` returns `503 SERVICE_UNAVAILABLE`.
 - **No group resolution**: The admin account receives all groups (`admin`, `de`, `da`, `dg`); non-admin users receive an empty group list.
 - **HTTP-only cookies**: The refresh token cookie uses `secure=False`. Production deployments must set `secure=True`.
 

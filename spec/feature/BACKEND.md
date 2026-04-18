@@ -436,19 +436,23 @@ Wraps Airflow's REST API via `httpx`: DAG verification, DAG run lifecycle (trigg
 
 ### DAG Catalogue
 
+Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
+(on-demand + periodic + sync). Admin DAG-verification imports it directly.
+
 | DAG | File | Trigger | Schedule |
 |-----|------|---------|----------|
-| `ingestion-hourly` | `ingestion_hourly.py` | Airflow schedule | `@hourly` |
-| `ingestion-daily` | `ingestion_daily.py` | Airflow schedule | `@daily` |
-| `ingestion-weekly` | `ingestion_weekly.py` | Airflow schedule | `@weekly` |
-| `validation-hourly` | `validation_hourly.py` | Airflow schedule | `@hourly` |
-| `validation-daily` | `validation_daily.py` | Airflow schedule | `@daily` |
-| `validation-weekly` | `validation_weekly.py` | Airflow schedule | `@weekly` |
+| `ingestion-periodic-hourly` | `ingestion_periodic_hourly.py` | Airflow schedule | `@hourly` |
+| `ingestion-periodic-daily` | `ingestion_periodic_daily.py` | Airflow schedule | `@daily` |
+| `ingestion-periodic-weekly` | `ingestion_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `validation-periodic-hourly` | `validation_periodic_hourly.py` | Airflow schedule | `@hourly` |
+| `validation-periodic-daily` | `validation_periodic_daily.py` | Airflow schedule | `@daily` |
+| `validation-periodic-weekly` | `validation_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `metrics-periodic-hourly` | `metrics_periodic_hourly.py` | Airflow schedule | `@hourly` |
+| `metrics-periodic-daily` | `metrics_periodic_daily.py` | Airflow schedule | `@daily` |
+| `metrics-periodic-weekly` | `metrics_periodic_weekly.py` | Airflow schedule | `@weekly` |
 | `generation` | `generation.py` | API | On-demand |
+| `metrics` | `metrics.py` | API | On-demand |
 | `embedding-sync` | `embedding_sync.py` | Kafka event + API | Event-driven + on-demand |
-| `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
-| `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
-| `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
 | `ontology-rebuild` | `ontology_rebuild.py` | Airflow schedule | Weekly (configurable) |
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
 
@@ -607,6 +611,5 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 - **User identity store**: PostgreSQL `users` table or external IdP integration (LDAP, OIDC)
 - **Password hashing**: bcrypt via `passlib`
 - **Group membership management**: Admin routes under `/admin/...`
-- **Redis-backed refresh token revocation**: Replace the in-memory `_revoked_refresh_tokens` set
 - **Account information transfer**: Map DataSpoke users to DataHub owner URNs
 - **Cookie `secure` flag**: Tied to `DATASPOKE_COOKIE_SECURE` env setting

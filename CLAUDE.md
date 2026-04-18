@@ -142,4 +142,4 @@ _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once i
 **Subagents**: `reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.
 **Hooks**: `.claude/hooks/` — integration-test preflight (blocking), plan-gate reminder, permission-hygiene warning. Wired via `.claude/settings.json`.
-**Statusline**: `.claude/statusline.sh` — model · cwd · git-branch · 5-hour plan usage. Usage segment requires `ccusage` on `$PATH` (`npm i -g ccusage` on node ≥ 18, or `brew install bun && bun add -g ccusage`); omitted silently if unavailable.
+**Statusline**: `.claude/statusline.sh` — model · effort · cwd · git-branch · 5-hour block reset countdown. Reset segment requires `ccusage` on `$PATH` (`npm i -g ccusage` on node ≥ 18, or `brew install bun && bun add -g ccusage`); omitted silently if unavailable.

@@ -1,66 +1,10 @@
-"""Unit tests for the ingestion workflow module.
-
-Tests cover:
-- schedule_to_flow_id() hashing stability and prefix
-- get_datasets_for_tier() DB query logic
-"""
+"""Unit tests for the ingestion workflow module."""
 
 from __future__ import annotations
 
-import hashlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from src.workflows.ingestion import (
-    PERIODIC_FLOW_PREFIX,
-    schedule_to_flow_id,
-)
-
-
-# ── Constants ──────────────────────────────────────────────────────────────────
-
-
-def test_periodic_flow_prefix():
-    assert PERIODIC_FLOW_PREFIX == "ingestion-periodic-"
-
-
-# ── schedule_to_flow_id ────────────────────────────────────────────────────────
-
-
-def test_schedule_to_flow_id_has_prefix():
-    flow_id = schedule_to_flow_id("daily")
-    assert flow_id.startswith(PERIODIC_FLOW_PREFIX)
-
-
-def test_schedule_to_flow_id_length():
-    # prefix (18) + 8 hex chars = 26
-    flow_id = schedule_to_flow_id("daily")
-    assert len(flow_id) == len(PERIODIC_FLOW_PREFIX) + 8
-
-
-def test_schedule_to_flow_id_stable():
-    """Same schedule always produces the same ID."""
-    assert schedule_to_flow_id("daily") == schedule_to_flow_id("daily")
-
-
-def test_schedule_to_flow_id_different_schedules():
-    """Different schedules produce different IDs."""
-    assert schedule_to_flow_id("daily") != schedule_to_flow_id("weekly")
-    assert schedule_to_flow_id("hourly") != schedule_to_flow_id("daily")
-
-
-def test_schedule_to_flow_id_known_hash():
-    """Regression test — MD5 of 'daily' first 8 chars."""
-    expected = "ingestion-periodic-" + hashlib.md5(b"daily").hexdigest()[:8]
-    assert schedule_to_flow_id("daily") == expected
-
-
-def test_schedule_to_flow_id_all_tiers():
-    """All three valid tiers produce unique IDs with the correct prefix."""
-    ids = [schedule_to_flow_id(t) for t in ("hourly", "daily", "weekly")]
-    assert len(set(ids)) == 3
-    assert all(i.startswith(PERIODIC_FLOW_PREFIX) for i in ids)
 
 
 # ── get_datasets_for_tier ──────────────────────────────────────────────────────

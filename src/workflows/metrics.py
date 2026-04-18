@@ -8,22 +8,9 @@ queries active metric definitions for a given tier and passes them to the DAG.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 
 logger = logging.getLogger(__name__)
-
-PERIODIC_FLOW_PREFIX = "metrics-periodic-"
-
-
-def schedule_to_flow_id(schedule: str) -> str:
-    """Return a stable DAG ID fragment for a given schedule string.
-
-    Uses the first 8 hex chars of the MD5 hash of the schedule for a
-    stable, human-readable short identifier.
-    """
-    digest = hashlib.md5(schedule.encode()).hexdigest()[:8]  # noqa: S324
-    return f"{PERIODIC_FLOW_PREFIX}{digest}"
 
 
 async def get_metrics_for_tier(db: object, tier: str) -> list[str]:

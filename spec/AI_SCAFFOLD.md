@@ -26,7 +26,7 @@ This document covers **Goal 2**. The scaffold is the set of Claude Code configur
 
 ## Scaffold Structure
 
-`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code lifecycle events — preflight health-check, plan-gate reminder, permission-hygiene warning), `statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full catalogue.
+`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code lifecycle events — integration-test preflight, plan-gate reminder, permission-hygiene warning), `statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full catalogue.
 
 The scaffold works alongside these structural elements:
 
