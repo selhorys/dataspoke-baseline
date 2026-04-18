@@ -15,7 +15,7 @@ if [[ -z "$prompt" ]]; then
   exit 0
 fi
 
-verb_re='(implement|build|write|create|add|refactor|introduce)'
+verb_re='(implement|build|write|create|add|refactor|introduce|develop)'
 noun_re='(endpoint|route|router|DAG|dag|table|migration|schema|page|component|feature|workflow|service|collection|agent|hook)'
 
 if printf '%s' "$prompt" | grep -qiE "$verb_re.*$noun_re"; then
@@ -23,7 +23,7 @@ if printf '%s' "$prompt" | grep -qiE "$verb_re.*$noun_re"; then
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "Plan-gate reminder: CLAUDE.md §Implementation Workflow requires Plan mode for changes that touch >2 files, >~30 lines, or introduce a new API endpoint, DB table/column, Airflow DAG, or Qdrant collection. Enter Plan mode before writing code unless all skip-plan criteria are met."
+    "additionalContext": "Plan-gate reminder: CLAUDE.md §Implementation Workflow requires Plan mode as the start of the plan → approve → generate → evaluate workflow, which should be applied to changes that touch >3 files, >60 lines, or introduce a new API endpoint, DB table/column, Airflow DAG, or Qdrant collection. Enter Plan mode before writing code unless all skip-plan criteria are met."
   }
 }
 JSON
