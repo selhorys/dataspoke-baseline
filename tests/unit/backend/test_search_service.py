@@ -13,12 +13,14 @@ _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,P
 
 
 @pytest.fixture
-def service(datahub, cache, llm, qdrant):
-    return SearchService(datahub=datahub, cache=cache, llm=llm, qdrant=qdrant)
+def service(datahub, cache, llm, vector):
+    return SearchService(datahub=datahub, cache=cache, llm=llm, vector=vector)
 
 
 def _make_scored_point(urn: str = _DATASET_URN, score: float = 0.95) -> MagicMock:
+    """Build a VectorHit-shaped mock (dataset_urn / score / payload attrs)."""
     point = MagicMock()
+    point.dataset_urn = urn
     point.payload = {
         "dataset_urn": urn,
         "platform": "postgres",
@@ -49,7 +51,7 @@ def _mock_datahub_enrichment(datahub: AsyncMock) -> None:
 
 
 class TestSearch:
-    async def test_returns_cached_result(self, service, cache, qdrant, llm):
+    async def test_returns_cached_result(self, service, cache, vector, llm):
         cached_data = {
             "datasets": [{"urn": _DATASET_URN, "name": "users", "score": 0.9}],
             "offset": 0,
@@ -62,26 +64,26 @@ class TestSearch:
         result = await service.search(q="user tables")
 
         assert result["datasets"][0]["urn"] == _DATASET_URN
-        qdrant.search.assert_not_called()
+        vector.search.assert_not_called()
         llm.embed.assert_not_called()
 
-    async def test_cache_miss_queries_qdrant(self, service, cache, llm, qdrant, datahub):
+    async def test_cache_miss_queries_vector(self, service, cache, llm, vector, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
-        qdrant.search.return_value = [_make_scored_point()]
+        vector.search.return_value = [_make_scored_point()]
         _mock_datahub_enrichment(datahub)
 
         result = await service.search(q="user tables")
 
         llm.embed.assert_called_once_with("user tables")
-        qdrant.search.assert_called_once()
+        vector.search.assert_called_once()
         assert len(result["datasets"]) == 1
         assert result["datasets"][0]["score"] == 0.95
 
-    async def test_enriches_with_datahub_metadata(self, service, cache, llm, qdrant, datahub):
+    async def test_enriches_with_datahub_metadata(self, service, cache, llm, vector, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
-        qdrant.search.return_value = [_make_scored_point()]
+        vector.search.return_value = [_make_scored_point()]
         _mock_datahub_enrichment(datahub)
 
         result = await service.search(q="user tables")
@@ -91,10 +93,10 @@ class TestSearch:
         assert "urn:li:corpuser:alice@example.com" in item["owners"]
         assert "production" in item["tags"]
 
-    async def test_without_sql_context(self, service, cache, llm, qdrant, datahub):
+    async def test_without_sql_context(self, service, cache, llm, vector, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
-        qdrant.search.return_value = [_make_scored_point()]
+        vector.search.return_value = [_make_scored_point()]
         _mock_datahub_enrichment(datahub)
 
         result = await service.search(q="user tables", sql_context=False)
@@ -102,10 +104,10 @@ class TestSearch:
         item = result["datasets"][0]
         assert item["sql_context"] is None
 
-    async def test_with_sql_context(self, service, cache, llm, qdrant, datahub):
+    async def test_with_sql_context(self, service, cache, llm, vector, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
-        qdrant.search.return_value = [_make_scored_point()]
+        vector.search.return_value = [_make_scored_point()]
 
         # Mock enrichment: props, tags, ownership (for _enrich_result)
         props = MagicMock()
@@ -141,10 +143,10 @@ class TestSearch:
         assert len(item["sql_context"]["columns"]) == 1
         assert item["sql_context"]["columns"][0]["name"] == "id"
 
-    async def test_caches_result(self, service, cache, llm, qdrant, datahub):
+    async def test_caches_result(self, service, cache, llm, vector, datahub):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
-        qdrant.search.return_value = [_make_scored_point()]
+        vector.search.return_value = [_make_scored_point()]
         _mock_datahub_enrichment(datahub)
 
         await service.search(q="user tables")
@@ -154,10 +156,10 @@ class TestSearch:
         assert call_args[0][0].startswith("search:")
         assert call_args[0][2] == 120  # TTL
 
-    async def test_empty_results(self, service, cache, llm, qdrant):
+    async def test_empty_results(self, service, cache, llm, vector):
         cache.get.return_value = None
         llm.embed.return_value = [0.1] * 1536
-        qdrant.search.return_value = []
+        vector.search.return_value = []
 
         result = await service.search(q="nonexistent dataset")
 
@@ -165,7 +167,7 @@ class TestSearch:
         assert result["total_count"] == 0
 
     async def test_partial_enrichment_failure_excludes_failed_keeps_total_count(
-        self, service, cache, llm, qdrant, datahub
+        self, service, cache, llm, vector, datahub
     ):
         """One _enrich_result raises — only successful datasets are returned;
         total_count stays at the full scored_points length (pagination math)."""
@@ -178,7 +180,7 @@ class TestSearch:
             "urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t3,PROD)",
         ]
         points = [_make_scored_point(urn=u) for u in urns]
-        qdrant.search.return_value = points
+        vector.search.return_value = points
 
         # _enrich_result calls get_aspect three times per point (props, tags, ownership).
         # Point at index 1 will raise; points 0 and 2 succeed.
@@ -208,7 +210,7 @@ class TestSearch:
 
         # Two points enriched successfully; one failed and was silently dropped
         assert len(result["datasets"]) == len(urns) - 1
-        # total_count is the pre-enrichment Qdrant match count
+        # total_count is the pre-enrichment pgvector match count
         assert result["total_count"] == len(urns)
         # No exception propagated — the call returned normally
         returned_urns = {d["urn"] for d in result["datasets"]}
@@ -216,7 +218,7 @@ class TestSearch:
 
 
 class TestReindex:
-    async def test_fetches_and_upserts(self, service, datahub, llm, qdrant):
+    async def test_fetches_and_upserts(self, service, datahub, llm, vector):
         # DataHub aspects for reindex: first get_aspect (props check), then generate_embedding calls
         props = MagicMock()
         props.name = "mydb.public.users"
@@ -246,12 +248,13 @@ class TestReindex:
         result = await service.reindex(_DATASET_URN)
 
         assert result["status"] == "ok"
-        qdrant.ensure_collection.assert_called_once_with("dataset_embeddings")
-        qdrant.upsert.assert_called_once()
-        upsert_args = qdrant.upsert.call_args
-        points = upsert_args[1]["points"]
-        assert len(points) == 1
-        assert points[0].payload["dataset_urn"] == _DATASET_URN
+        vector.ensure_collection.assert_called_once_with("dataset_embeddings")
+        vector.upsert.assert_called_once()
+        collection_arg, hits_arg = vector.upsert.call_args.args
+        assert collection_arg == "dataset_embeddings"
+        assert len(hits_arg) == 1
+        assert hits_arg[0].dataset_urn == _DATASET_URN
+        assert hits_arg[0].embedding == [0.1] * 1536
 
     async def test_dataset_not_found(self, service, datahub):
         datahub.get_aspect.return_value = None
@@ -259,7 +262,7 @@ class TestReindex:
         with pytest.raises(EntityNotFoundError):
             await service.reindex(_DATASET_URN)
 
-    async def test_builds_correct_payload(self, service, datahub, llm, qdrant):
+    async def test_builds_correct_payload(self, service, datahub, llm, vector):
         props = MagicMock()
         props.name = "mydb.public.users"
         props.description = "User table"
@@ -281,8 +284,8 @@ class TestReindex:
 
         await service.reindex(_DATASET_URN)
 
-        upsert_args = qdrant.upsert.call_args
-        payload = upsert_args[1]["points"][0].payload
+        _, hits_arg = vector.upsert.call_args.args
+        payload = hits_arg[0].payload
         assert payload["dataset_urn"] == _DATASET_URN
         assert payload["platform"] == "postgres"
         assert "pii" in payload["tags"]

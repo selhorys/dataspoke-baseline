@@ -268,7 +268,7 @@ is deployed.
 ### `dataset_embeddings`
 
 Primary table for natural language search and similarity matching. Lives in the
-`dataspoke` schema. Created by Alembic migration `002_add_dataset_embeddings`.
+`dataspoke` schema. Created by Alembic migration `001_initial_schema`.
 
 | Column | Type | Description |
 |--------|------|-------------|

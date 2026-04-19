@@ -34,8 +34,8 @@ def llm():
 
 
 @pytest.fixture
-def qdrant():
-    """Mock Qdrant client — no real vector DB connection."""
+def vector():
+    """Mock PgVectorManager — no real pgvector DB connection."""
     return AsyncMock()
 
 

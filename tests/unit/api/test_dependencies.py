@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.internal import require_internal_token
-from src.api.dependencies import get_datahub, get_db, get_llm, get_qdrant, get_redis
+from src.api.dependencies import get_datahub, get_db, get_llm, get_redis, get_vector
 
 
 def _fake_request(**state: object):
@@ -29,9 +29,9 @@ class TestInfraProviders:
         sentinel = object()
         assert get_redis(_fake_request(redis=sentinel)) is sentinel
 
-    def test_get_qdrant_returns_manager(self) -> None:
+    def test_get_vector_returns_manager(self) -> None:
         sentinel = object()
-        assert get_qdrant(_fake_request(qdrant=sentinel)) is sentinel
+        assert get_vector(_fake_request(vector=sentinel)) is sentinel
 
     def test_get_llm_returns_client(self) -> None:
         sentinel = object()

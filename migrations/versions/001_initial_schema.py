@@ -1,6 +1,7 @@
 """Initial schema — all DataSpoke tables in the ``dataspoke`` schema.
 
-Reflects the current ORM models in ``src/shared/db/models.py``.
+Reflects the current ORM models in ``src/shared/db/models.py`` plus the
+``dataset_embeddings`` pgvector table used by the search/reindex pipeline.
 
 Revision ID: 001
 Revises: None
@@ -13,6 +14,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 
+from src.shared.config import EMBEDDING_DIMENSION
+
 revision: str = "001"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
@@ -20,10 +23,17 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "dataspoke"
 TIMESTAMPTZ = TIMESTAMP(timezone=True)
+EMBEDDINGS_TABLE = "dataset_embeddings"
+EMBEDDINGS_HNSW_INDEX = "dataset_embeddings_embedding_hnsw_idx"
 
 
 def upgrade() -> None:
     op.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+
+    # pgvector extension — idempotent. The Bitnami initdb hook also creates
+    # this at cluster bootstrap; the guard here makes the migration safe
+    # against a DB that was provisioned without that hook.
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     # ── ingestion_configs ────────────────────────────────────────────────
     op.create_table(
@@ -275,9 +285,43 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
+    # ── dataset_embeddings (pgvector) ────────────────────────────────────
+    # The ``vector(N)`` type is not a SQLAlchemy built-in; the embedding
+    # column is added via raw DDL (below) so we don't need a custom type
+    # adapter. Application queries bind vectors with an explicit ``::vector``
+    # cast.
+    op.create_table(
+        EMBEDDINGS_TABLE,
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column("platform", sa.Text(), nullable=True),
+        sa.Column("tags", JSONB, nullable=True),
+        sa.Column("owners", JSONB, nullable=True),
+        sa.Column("quality_score", sa.Float(), nullable=True),
+        sa.Column("has_pii", sa.Boolean(), nullable=True),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{EMBEDDINGS_TABLE} "
+        f"ADD COLUMN embedding vector({EMBEDDING_DIMENSION}) NOT NULL "
+        f"DEFAULT array_fill(0, ARRAY[{EMBEDDING_DIMENSION}])::vector({EMBEDDING_DIMENSION})"
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{EMBEDDINGS_TABLE} ALTER COLUMN embedding DROP DEFAULT"
+    )
+    # HNSW index with cosine distance ops — matches the ``<=>`` operator
+    # used by ``PgVectorManager.search``.
+    op.execute(
+        f"CREATE INDEX {EMBEDDINGS_HNSW_INDEX} "
+        f"ON {SCHEMA}.{EMBEDDINGS_TABLE} "
+        f"USING hnsw (embedding vector_cosine_ops)"
+    )
+
 
 def downgrade() -> None:
+    op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.{EMBEDDINGS_HNSW_INDEX}")
     for table in [
+        EMBEDDINGS_TABLE,
         "overview_config",
         "department_mapping",
         "events",
@@ -295,3 +339,5 @@ def downgrade() -> None:
     ]:
         op.drop_table(table, schema=SCHEMA)
     op.execute(sa.text(f"DROP SCHEMA IF EXISTS {SCHEMA}"))
+    # The ``vector`` extension is intentionally NOT dropped — it may be
+    # shared with other schemas/databases on the same PostgreSQL cluster.

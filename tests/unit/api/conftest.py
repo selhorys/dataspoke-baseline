@@ -9,7 +9,7 @@ from src.api.auth.jwt import create_access_token
 from src.api.main import app
 
 
-_STATE_ATTRS = ("datahub", "redis", "qdrant", "llm", "airflow")
+_STATE_ATTRS = ("datahub", "redis", "vector", "llm", "airflow")
 
 
 @pytest.fixture

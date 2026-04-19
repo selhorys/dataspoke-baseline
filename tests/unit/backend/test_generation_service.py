@@ -63,8 +63,8 @@ def _make_result_row(
 
 
 @pytest.fixture
-def service(datahub, db, llm, qdrant):
-    return GenerationService(datahub=datahub, db=db, llm=llm, qdrant=qdrant)
+def service(datahub, db, llm, vector):
+    return GenerationService(datahub=datahub, db=db, llm=llm, vector=vector)
 
 
 # ── get_config ───────────────────────────────────────────────────────────────
