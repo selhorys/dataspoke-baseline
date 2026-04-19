@@ -16,7 +16,7 @@ The ``require_server`` fixture verifies three things at session start:
 2. ``DATASPOKE_TEST_MODE`` is set in the environment — without it, Airflow
    activity endpoints use real LLM/Qdrant/cache/notification clients, which
    will fail or produce non-deterministic results.
-3. Expected Airflow DAGs are loaded (verified via ``GET /api/v1/dags``).
+3. Expected Airflow DAGs are loaded (verified via ``GET /api/v2/dags``).
 """
 
 import os
@@ -79,7 +79,7 @@ def require_server():
     auth = (airflow_user, airflow_pass) if airflow_user else None
     try:
         resp = httpx.get(
-            f"{airflow_url}/api/v1/dags",
+            f"{airflow_url}/api/v2/dags",
             params={"limit": 100},
             auth=auth,
             timeout=10.0,

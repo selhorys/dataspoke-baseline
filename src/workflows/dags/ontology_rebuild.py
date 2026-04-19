@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 from _internal_headers import internal_headers
 
@@ -43,7 +43,7 @@ step via XCom.
 4. `detect_drift` — POST `/internal/activities/ontology/detect-drift` (uses output of step 2)
 """,
 ) as dag:
-    classify_datasets = SimpleHttpOperator(
+    classify_datasets = HttpOperator(
         task_id="classify_datasets",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/classify",
@@ -54,7 +54,7 @@ step via XCom.
         log_response=True,
     )
 
-    build_hierarchy = SimpleHttpOperator(
+    build_hierarchy = HttpOperator(
         task_id="build_hierarchy",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/build-hierarchy",
@@ -65,7 +65,7 @@ step via XCom.
         log_response=True,
     )
 
-    infer_relationships = SimpleHttpOperator(
+    infer_relationships = HttpOperator(
         task_id="infer_relationships",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/infer-relationships",
@@ -75,7 +75,7 @@ step via XCom.
         log_response=True,
     )
 
-    detect_drift = SimpleHttpOperator(
+    detect_drift = HttpOperator(
         task_id="detect_drift",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ontology/detect-drift",

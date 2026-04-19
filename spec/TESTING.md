@@ -252,7 +252,7 @@ Route tiers: `/api/v1/spoke/common/â€¦` (any group), `/api/v1/spoke/[de|da|dg]/â
 | Side effect | How to check |
 |---|---|
 | Event logged | `GET /api/v1/spoke/common/data/{urn}/event` |
-| Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v1/dags/{dag_id}` |
+| Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v2/dags/{dag_id}` |
 | DB row | `psql -h <INGRESS_IP> -p 9201 -U dataspoke -d dataspoke` |
 | DataHub aspect | `curl http://datahub.<INGRESS_IP>.nip.io/gms/aspects?urn={urn}&aspect={aspect}` |
 

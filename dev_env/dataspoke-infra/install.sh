@@ -108,6 +108,18 @@ if [[ -d "$CHART_DIR" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Build + push the custom Airflow image (DAGs baked in). Idempotent — the
+# existing :dev tag is overwritten. Skip with SKIP_AIRFLOW_BUILD=1 when
+# iterating on non-DAG changes.
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_AIRFLOW_BUILD:-0}" != "1" ]]; then
+  info "Building DataSpoke Airflow image (DAGs baked in)..."
+  bash "$SCRIPT_DIR/../dataspoke-airflow/build.sh" dev
+else
+  info "SKIP_AIRFLOW_BUILD=1 set — skipping Airflow image build."
+fi
+
+# ---------------------------------------------------------------------------
 # Install via umbrella Helm chart with dev profile
 # ---------------------------------------------------------------------------
 if [[ -d "$CHART_DIR" ]]; then
@@ -124,6 +136,9 @@ if [[ -d "$CHART_DIR" ]]; then
     --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set api.image.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/api" \
     --set api.image.tag=dev \
+    --set-string airflow.images.airflow.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/airflow" \
+    --set-string airflow.images.airflow.tag=dev \
+    --set airflow.images.airflow.pullPolicy=Always \
     --set-string secrets.postgres.user="${DATASPOKE_POSTGRES_USER}" \
     --set-string secrets.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set-string secrets.redis.password="${DATASPOKE_REDIS_PASSWORD}" \
@@ -137,20 +152,20 @@ if [[ -d "$CHART_DIR" ]]; then
     --set "api.ingress.hosts[0].host=app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
     --set "api.ingress.hosts[0].paths[0].path=/" \
     --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
-    --set "airflow.ingress.web.hosts[0].name=airflow.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-    --timeout 5m --wait
+    --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+    --timeout 10m
 else
   warn "Helm chart not found at $CHART_DIR — skipping Helm install."
   warn "DataSpoke infrastructure must be installed manually or the chart must be created first."
 fi
 
 # ---------------------------------------------------------------------------
-# Wait for Airflow webserver to become ready
+# Wait for Airflow api-server to become ready (Airflow 3.x renamed webserver → api-server)
 # ---------------------------------------------------------------------------
-info "Waiting for Airflow webserver to become ready..."
-kubectl rollout status deployment/dataspoke-airflow-webserver -n "${NS}" --timeout=120s \
-  && info "Airflow webserver is ready." \
-  || warn "Airflow webserver did not become ready in time — check pod logs."
+info "Waiting for Airflow api-server to become ready..."
+kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=120s \
+  && info "Airflow api-server is ready." \
+  || warn "Airflow api-server did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
 # Print access instructions

@@ -30,7 +30,7 @@ spec:
           envFrom:
             {{- if .Values.config.createConfigMap }}
             - configMapRef:
-                name: {{ include "dataspoke.fullname" . }}-config
+                name: {{ include "dataspoke.fullname" . }}-app-config
             {{- end }}
             {{- if .Values.secrets.createSecret }}
             - secretRef:

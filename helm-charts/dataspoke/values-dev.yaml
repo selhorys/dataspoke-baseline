@@ -91,12 +91,34 @@ qdrant:
 
 airflow:
   enabled: true
+  useStandardNaming: true
+  fullnameOverride: dataspoke-airflow
   executor: LocalExecutor
+  # Static secrets — avoids session invalidation on every helm upgrade.
+  # Dev-only; regenerate with `openssl rand -hex 16` if rotation is ever needed.
+  webserverSecretKey: "a968a7bb941f11dab42cfec47b7f7cc4"
+  jwtSecret: "164532da21ef6d23c44a9f82a3cacfa2"
+
+  # Airflow 3.1.8 on Python 3.13. DAGs are baked into the image; the
+  # repository + tag are overridden via --set at install time
+  # (dev_env/dataspoke-infra/install.sh) to point at the dev Artifact
+  # Registry image built by dev_env/dataspoke-airflow/build.sh.
+  airflowVersion: "3.1.8"
+  defaultAirflowTag: "3.1.8-python3.13"
+  images:
+    airflow:
+      repository: apache/airflow
+      tag: "3.1.8-python3.13"
+      pullPolicy: Always
 
   # Use existing PostgreSQL — do not deploy Airflow's bundled instance
   postgresql:
     enabled: false
   redis:
+    enabled: false
+  # StatsD metrics collector disabled in dev — no Prometheus scraping here.
+  # Enabled in prod (see values.yaml) for Airflow observability.
+  statsd:
     enabled: false
 
   # Metadata DB connection to existing dataspoke PostgreSQL
@@ -117,28 +139,26 @@ airflow:
       dags_folder: /opt/airflow/dags
       load_examples: "False"
       dag_dir_list_interval: "60"
-    api:
-      auth_backends: airflow.api.auth.backend.basic_auth
+      # Airflow 3.x built-in SimpleAuthManager (no FAB). all_admins=True makes
+      # /auth/token accept any credentials and issue a JWT with admin role —
+      # fine for dev.
+      auth_manager: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+      simple_auth_manager_all_admins: "True"
     webserver:
       expose_config: "False"
       base_url: http://localhost:8080
 
-  # DAGs from ConfigMap
+  # DAGs baked into the custom Airflow image — no PVC / gitSync in dev.
   dags:
     persistence:
       enabled: false
     gitSync:
       enabled: false
 
-  # Mount DAGs from our ConfigMap
-  extraVolumes:
-    - name: dataspoke-dags
-      configMap:
-        name: dataspoke-airflow-dags
-  extraVolumeMounts:
-    - name: dataspoke-dags
-      mountPath: /opt/airflow/dags
-      readOnly: true
+  # Skip the chart's createUserJob — 3.x removed `airflow users create` and
+  # SimpleAuthManager (all_admins=True) handles login without it.
+  createUserJob:
+    enabled: false
 
   # Pre-configure the dataspoke_api HTTP connection and internal auth token
   extraEnv: |
@@ -150,15 +170,18 @@ airflow:
           name: dataspoke-internal-auth
           key: token
 
-  # Component resources (dev minimums)
-  webserver:
+  # Component resources (dev minimums). Airflow 3.x api-server is FastAPI
+  # (uvicorn, 1 worker) — the 500m-CPU Gunicorn-monitor-SIGTERM class of
+  # bugs from 2.x does not apply. CPU requests are sized to observed
+  # steady-state load; limits stay generous for burst.
+  apiServer:
     resources:
       requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 250m
+        cpu: 200m
         memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
   scheduler:
     resources:
       requests:
@@ -167,21 +190,43 @@ airflow:
       limits:
         cpu: 500m
         memory: 1Gi
+    logGroomerSidecar:
+      resources: &logGroomerResources
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
   triggerer:
     resources:
       requests:
-        cpu: 50m
-        memory: 128Mi
+        cpu: 200m
+        memory: 512Mi
       limits:
-        cpu: 125m
-        memory: 256Mi
-  workers:
-    enabled: false
+        cpu: 500m
+        memory: 1Gi
+    logGroomerSidecar:
+      resources: *logGroomerResources
+  # dag-processor is a new standalone component in Airflow 3.x. The chart
+  # leaves it unset by default — pin it for predictable Autopilot scheduling.
+  dagProcessor:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    logGroomerSidecar:
+      resources: *logGroomerResources
   flower:
     enabled: false
 
+  # Airflow 3.x renamed the ingress sub-key from `web` to `apiServer` (gated on
+  # airflowVersion >= 3.0.0). The `web:` block is silently ignored.
   ingress:
-    web:
+    apiServer:
       enabled: true
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"

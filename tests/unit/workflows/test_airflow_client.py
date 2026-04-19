@@ -12,7 +12,12 @@ from src.workflows.airflow.models import DagRunResponse, DagRunState
 
 @pytest.fixture
 def client():
-    return AirflowClient(base_url="http://airflow:8080", username="admin", password="admin")
+    c = AirflowClient(base_url="http://airflow:8080", username="admin", password="admin")
+    # Skip the /auth/token round-trip by pre-seeding a JWT. Individual tests
+    # that exercise the login flow clear this.
+    c._token = "test-jwt"
+    c._client.headers["Authorization"] = "Bearer test-jwt"
+    return c
 
 
 def _make_dag_run(state: str = "success", dag_run_id: str = "run-1", dag_id: str = "ingestion") -> dict:
@@ -91,8 +96,12 @@ async def test_trigger_dag_run_posts_to_correct_url(client: AirflowClient):
 
     client._client.post.assert_called_once()
     call_args = client._client.post.call_args
-    assert call_args[0][0] == "/api/v1/dags/ingestion/dagRuns"
-    assert call_args[1]["json"] == {"conf": {"dataset_urn": "urn:test"}}
+    assert call_args[0][0] == "/api/v2/dags/ingestion/dagRuns"
+    # Airflow 3.x requires logical_date; verify conf without pinning the
+    # always-changing timestamp.
+    body = call_args[1]["json"]
+    assert body["conf"] == {"dataset_urn": "urn:test"}
+    assert "logical_date" in body
 
 
 async def test_trigger_dag_run_with_no_conf_defaults_to_empty(client: AirflowClient):
@@ -101,8 +110,9 @@ async def test_trigger_dag_run_with_no_conf_defaults_to_empty(client: AirflowCli
     )
 
     await client.trigger_dag_run("ingestion")
-    call_args = client._client.post.call_args
-    assert call_args[1]["json"] == {"conf": {}}
+    body = client._client.post.call_args[1]["json"]
+    assert body["conf"] == {}
+    assert "logical_date" in body
 
 
 async def test_trigger_dag_run_parses_response(client: AirflowClient):
@@ -133,7 +143,7 @@ async def test_get_dag_run_calls_correct_url(client: AirflowClient):
 
     await client.get_dag_run("metrics", "run-abc")
     call_args = client._client.get.call_args
-    assert call_args[0][0] == "/api/v1/dags/metrics/dagRuns/run-abc"
+    assert call_args[0][0] == "/api/v2/dags/metrics/dagRuns/run-abc"
 
 
 # ── wait_for_dag_run ─────────────────────────────────────────────────────────
@@ -306,7 +316,7 @@ async def test_kill_dag_run_success(client: AirflowClient):
     await client.kill_dag_run("ingestion", "run-1")
     client._client.patch.assert_called_once()
     call_args = client._client.patch.call_args
-    assert "/api/v1/dags/ingestion/dagRuns/run-1" in call_args[0][0]
+    assert "/api/v2/dags/ingestion/dagRuns/run-1" in call_args[0][0]
     assert call_args[1]["json"] == {"state": "failed"}
 
 

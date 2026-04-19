@@ -14,7 +14,7 @@ Your job is to write Airflow DAG definitions in `src/workflows/dags/` and workfl
 1. Read `spec/feature/BACKEND.md` §Airflow Workflows — defines DAG patterns, activity endpoint boundaries, retry policies, and the WebSocket feed mechanism.
 2. Scan `src/workflows/dags/` to understand existing DAG conventions.
 3. Scan `src/workflows/airflow/` for the AirflowClient wrapper and models.
-4. Scan `src/backend/` for the service classes your activity endpoints will call — DAGs orchestrate service methods via SimpleHttpOperator tasks, not raw infrastructure.
+4. Scan `src/backend/` for the service classes your activity endpoints will call — DAGs orchestrate service methods via HttpOperator tasks, not raw infrastructure.
 
 ## Source layout
 
@@ -28,15 +28,15 @@ src/workflows/
 
 ## Airflow conventions
 
-- **DAG files**: all DAGs live in `src/workflows/dags/` as self-contained Python files (no `src/` imports — deployed via Helm ConfigMap)
-- **Tasks**: use `SimpleHttpOperator` from `airflow.providers.http.operators.http` to call internal activity endpoints at `/internal/activities/{domain}/*`
+- **DAG files**: all DAGs live in `src/workflows/dags/` as self-contained Python files (no `src/` imports — baked into a custom Airflow 3.1.8 image built by `dev_env/dataspoke-airflow/build.sh`)
+- **Tasks**: use `HttpOperator` from `airflow.providers.http.operators.http` to call internal activity endpoints at `/internal/activities/{domain}/*`
 - **HTTP connection**: use `http_conn_id="dataspoke_api"` (pre-configured Airflow connection pointing to `http://dataspoke-api:8002`)
 - **DAG inputs**: passed via `dag_run.conf` (accessed as `{{ dag_run.conf.get('key', 'default') }}` in Jinja templates)
 - **Retry policy**: `retries=3`, `retry_delay=timedelta(seconds=10)`, configured in `default_args`
 - **Concurrency**: `max_active_runs` per DAG (1 for singletons like ontology-rebuild, 2 for generation/metrics)
 - **Deduplication**: `AirflowClient.check_no_duplicate()` queries running DAG runs by `conf` values. API returns 409 Conflict if a duplicate is running
-- **Inter-task data**: use XCom. `SimpleHttpOperator` with `response_filter=lambda response: response.json()` pushes parsed JSON to XCom. Downstream tasks pull via `{{ ti.xcom_pull(task_ids="task_name") | tojson }}`
-- **Dynamic fan-out**: use `@task` decorator + `SimpleHttpOperator.partial(...).expand(data=payloads)` for dynamic task mapping (Airflow 2.3+)
+- **Inter-task data**: use XCom. `HttpOperator` with `response_filter=lambda response: response.json()` pushes parsed JSON to XCom. Downstream tasks pull via `{{ ti.xcom_pull(task_ids="task_name") | tojson }}`
+- **Dynamic fan-out**: use `@task` decorator + `HttpOperator.partial(...).expand(data=payloads)` for dynamic task mapping (Airflow 2.3+)
 - **Periodic scheduling**: static DAGs per tier (`@hourly`, `@daily`, `@weekly`), paused on creation. Activity endpoints list entities for the tier
 - **AirflowClient**: use `src/workflows/airflow/client.py` to trigger DAG runs and poll status from the API layer
 - **Progress reporting**: long-running DAGs publish progress to Redis pub/sub for WebSocket feeds (see `spec/feature/BACKEND.md` §WebSocket Feed)

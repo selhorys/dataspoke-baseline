@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from _internal_headers import internal_headers
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 with DAG(
     dag_id="datahub-sync-daily",
@@ -34,7 +34,7 @@ reconciles the `datahub_registered` flag against the live DataHub instance.
 `{checked, flipped_true, flipped_false, unchanged, not_found}`.
 """,
 ) as dag:
-    datahub_sync = SimpleHttpOperator(
+    datahub_sync = HttpOperator(
         task_id="datahub_sync",
         http_conn_id="dataspoke_api",
         endpoint="/internal/admin/datahub/sync",

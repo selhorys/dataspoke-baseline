@@ -39,6 +39,6 @@ dependencies:
     condition: qdrant.enabled
 
   - name: airflow
-    version: "~1.16.0"
+    version: "~1.20.0"
     repository: "https://airflow.apache.org"
     condition: airflow.enabled

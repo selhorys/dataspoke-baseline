@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 from _internal_headers import internal_headers
 
@@ -38,7 +38,7 @@ Triggers LLM-powered metadata generation for a single dataset.
 1. `run_generation` — POST `/internal/activities/generation/run`
 """,
 ) as dag:
-    run_generation = SimpleHttpOperator(
+    run_generation = HttpOperator(
         task_id="run_generation",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/generation/run",

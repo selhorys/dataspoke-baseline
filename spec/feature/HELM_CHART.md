@@ -117,13 +117,13 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 - Ingress enabled for frontend and API (nginx class, cert-manager TLS)
 - NetworkPolicy for DataHub cross-namespace egress (disabled by default)
 - Airflow uses parent chart's PostgreSQL for metadata DB
-- Airflow webserver UI enabled
+- Airflow api-server UI enabled
 
 ### Dev (`values-dev.yaml`)
 
 - API enabled in-cluster (1 replica, `testMode: true`); frontend/workers disabled
 - Single replicas, reduced resource limits
-- Airflow minimized for dev: reduced resources, LocalExecutor, single webserver instance
+- Airflow 3.1.8 minimized for dev: reduced resources, LocalExecutor, single api-server instance, DAGs baked into a custom image built from `docker-images/airflow/Dockerfile` (`FROM apache/airflow:3.1.8-python3.13` + `COPY src/workflows/dags/`)
 - Redis replicas set to 0
 - ConfigMap/Secret created for in-cluster API env vars
 
@@ -170,7 +170,7 @@ Two approaches:
 | postgresql | 1 | 500m / 1000m | 1024Mi / 2048Mi | 50Gi |
 | redis | 1+1 | 250m / 500m | 256Mi / 512Mi | — |
 | qdrant | 1 | 500m / 1000m | 1024Mi / 2048Mi | 50Gi |
-| airflow (webserver + scheduler) | 1+1 | 250m / 500m | 512Mi / 1024Mi | — |
+| airflow (api-server + scheduler + triggerer) | 1+1+1 | 250m / 500m | 512Mi / 1024Mi | DAGs baked into a custom image |
 | **Total** | | **~5500m / ~11000m** | **~8.5Gi / ~17Gi** | **100Gi** |
 
 † event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m CPU and ~512Mi/1024Mi memory. Airflow uses LocalExecutor — no separate Celery worker needed.
@@ -196,7 +196,7 @@ In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controlle
 |----------|----------|--------|
 | `templates/api-ingress.yaml` | umbrella chart | `app.<INGRESS_IP>.nip.io/api` → `dataspoke-api:8002` |
 | `subcharts/frontend/templates/ingress.yaml` | frontend subchart | `app.<INGRESS_IP>.nip.io/` → `dataspoke-frontend:3000` |
-| `airflow.ingress` values | airflow chart (native) | `airflow.<INGRESS_IP>.nip.io/` → `dataspoke-airflow-webserver:8080` |
+| `airflow.ingress` values | airflow chart (native) | `airflow.<INGRESS_IP>.nip.io/` → `dataspoke-airflow-api-server:8080` |
 | `dev_env/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 

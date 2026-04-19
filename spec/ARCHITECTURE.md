@@ -179,7 +179,7 @@ For SDK entry points, aspect catalog, error handling, and configuration, see [`D
 |-----------|-----------|---------|
 | Vector DB | Qdrant | Semantic search, embedding storage, metadata similarity |
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
-| Orchestration | Airflow | Workflow execution via Python DAGs and SimpleHttpOperator tasks (ingestion, validation, embedding sync, metrics collection) |
+| Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, validation, embedding sync, metrics collection) |
 | Operational DB | PostgreSQL | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences |
 | Cache | Redis | Validation result caching for AI agent loops, API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
@@ -301,7 +301,7 @@ Shared by all features.
 | Backend | Python 3.13 | Rich data/ML libraries, DataHub SDK compatibility |
 | Vector DB | Qdrant | Self-hostable, Rust-based performance, simple deployment |
 | Message Broker | Kafka | DataHub integration standard |
-| Orchestration | Airflow | Python DAG definitions, SimpleHttpOperator tasks calling internal activity endpoints, built-in scheduling and retry |
+| Orchestration | Airflow | Python DAG definitions, HttpOperator tasks calling internal activity endpoints, built-in scheduling and retry |
 | Operational DB | PostgreSQL | ACID guarantees, JSONB flexibility |
 | Cache | Redis | API caching, rate limiting, session management |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
@@ -330,7 +330,7 @@ For full testing conventions, toolchain configuration, mocking rules, and the in
 
 ### Kubernetes Topology
 
-DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed), `dataspoke-event-consumer` (optional Kafka consumer Deployment — co-located in the API by default), `airflow-webserver` + `airflow-scheduler` (Deployments, LocalExecutor), `qdrant` + `postgresql` (StatefulSets with PV), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST) and `datahub-kafka:9092` (event streaming).
+DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed), `dataspoke-event-consumer` (optional Kafka consumer Deployment — co-located in the API by default), `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` + `dataspoke-airflow-triggerer` (Airflow 3.1 LocalExecutor; api-server replaces the former Flask webserver), `qdrant` + `postgresql` (StatefulSets with PV), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST) and `datahub-kafka:9092` (event streaming).
 
 `dataspoke-event-consumer` is optional — enable the separate pod for independent scaling in production (Kafka consumers scale by partition count).
 
@@ -386,7 +386,7 @@ The repository is organized by deployment concern and application layer. Key top
 | API framework | FastAPI | Async, auto OpenAPI, Pydantic, high perf | Flask (simpler but no async), Django (too opinionated) |
 | Frontend | Next.js | SSR, file-based routing, React ecosystem | CRA (no SSR), Vue (smaller ecosystem) |
 | Vector DB | Qdrant | Self-hostable, Rust perf, simple binary | Weaviate (if multi-tenancy or GraphQL needed), Pinecone (managed only) |
-| Orchestration | Airflow | Python DAG definitions, SimpleHttpOperator tasks, built-in UI, LocalExecutor | Temporal (heavier infra), Kestra (if YAML-first flows preferred) |
+| Orchestration | Airflow | Python DAG definitions, HttpOperator tasks, built-in UI, LocalExecutor | Temporal (heavier infra), Kestra (if YAML-first flows preferred) |
 | Operational DB | PostgreSQL | ACID, JSONB, mature ecosystem | MongoDB (no ACID for critical operational data) |
 | API documentation | FastAPI auto-generated OpenAPI + Pydantic schemas as SSOT | Always-in-sync docs; AI agents read route definitions directly | Standalone OpenAPI file (requires manual sync) |
 

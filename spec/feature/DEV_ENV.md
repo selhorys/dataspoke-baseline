@@ -138,10 +138,19 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| airflow (webserver + scheduler) | Deployment | 2 Gi | — |
+| airflow (api-server + scheduler + triggerer) | Deployment + StatefulSets | 3 Gi | — |
 | qdrant | StatefulSet | 1024 Mi | 10 Gi |
 | postgresql | StatefulSet | 512 Mi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
+
+> **Airflow DAGs are baked into a custom image.** The chart pulls
+> `${DATASPOKE_DEV_IMAGE_REGISTRY}/airflow:dev` (built by
+> `dev_env/dataspoke-airflow/build.sh` from `docker-images/airflow/Dockerfile`,
+> which does `FROM apache/airflow:3.1.8-python3.13` + `COPY src/workflows/dags/
+> /opt/airflow/dags/`). `dev_env/dataspoke-infra/install.sh` runs the build
+> automatically unless `SKIP_AIRFLOW_BUILD=1`. No PVC, no gitSync. Updating a
+> DAG requires a rebuild + `kubectl rollout restart` of the three Airflow
+> workloads.
 
 **Kubernetes Secrets** (created by `dataspoke-infra/install.sh` before Helm install):
 
@@ -248,7 +257,7 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~53%**
 | datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
-| airflow (webserver + scheduler) | dataspoke-01 | 2 Gi | Python LocalExecutor; lightweight compared to JVM-based orchestrators |
+| airflow (api-server + scheduler + triggerer) | dataspoke-01 | 3 Gi | Airflow 3.1 LocalExecutor; DAGs baked into a custom image (`${REGISTRY}/airflow:dev`, built from `docker-images/airflow/Dockerfile`) |
 | qdrant | dataspoke-01 | 1024 Mi | |
 | postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
 | redis | dataspoke-01 | 256 Mi | |

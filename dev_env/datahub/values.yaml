@@ -81,10 +81,12 @@ datahub-frontend:
     ingressClassName: "nginx"
     annotations:
       nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # Host is overridden by install.sh --set using DATASPOKE_DEV_INGRESS_DOMAIN.
+    # The placeholder below is intentionally obvious so a missed --set fails loud.
     hosts:
-      - host: "datahub.dev.dataspoke.example.com"
+      - host: "REPLACE-WITH-INGRESS-DOMAIN.invalid"
         paths:
-          - /*
+          - /
 
 datahub-mae-consumer:
   resources:

@@ -396,7 +396,7 @@ for the response contract.
 
 ### Architecture
 
-Apache Airflow serves as the workflow orchestration engine with LocalExecutor. Workflows are defined as Python DAG files in `src/workflows/dags/`. Each DAG uses Airflow's `SimpleHttpOperator` to call internal activity endpoints on the DataSpoke API at `/internal/activities/{domain}/*`. Airflow handles scheduling, retry, and execution.
+Apache Airflow serves as the workflow orchestration engine with LocalExecutor. Workflows are defined as Python DAG files in `src/workflows/dags/`. Each DAG uses Airflow's `HttpOperator` to call internal activity endpoints on the DataSpoke API at `/internal/activities/{domain}/*`. Airflow handles scheduling, retry, and execution.
 
 ### Airflow Client Subpackage (`src/workflows/airflow/`)
 
@@ -430,7 +430,7 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 
 ### Workflow Design Conventions
 
-1. **DAGs are Python-defined orchestration** -- each task is a SimpleHttpOperator call to an internal activity endpoint
+1. **DAGs are Python-defined orchestration** -- each task is a HttpOperator call to an internal activity endpoint
 2. **Activity endpoints are idempotent** -- safe to retry on transient failures
 3. **Timeouts**: Per-task = 5 minutes (default); DAG-level = 1 hour
 4. **Retry policy**: Max 3 attempts, 10s initial interval

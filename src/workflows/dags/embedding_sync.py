@@ -8,7 +8,7 @@ import os
 from datetime import timedelta
 
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 from _internal_headers import internal_headers
 
@@ -45,7 +45,7 @@ Triggered via the DataSpoke API to reindex dataset vectors in Qdrant.
 2. `reindex_batch` — POST `/internal/activities/search/reindex-batch` — consumes URN list
 """,
 ) as dag:
-    enumerate_datasets = SimpleHttpOperator(
+    enumerate_datasets = HttpOperator(
         task_id="enumerate_datasets",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/search/enumerate",
@@ -59,7 +59,7 @@ Triggered via the DataSpoke API to reindex dataset vectors in Qdrant.
         log_response=True,
     )
 
-    reindex_batch = SimpleHttpOperator(
+    reindex_batch = HttpOperator(
         task_id="reindex_batch",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/search/reindex-batch",

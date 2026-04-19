@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from airflow import DAG
 from airflow.decorators import task
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 from _internal_headers import internal_headers
 
@@ -45,7 +45,7 @@ execution and triggers a parallel metric run for each one.
 3. `run_metric` — POST `/internal/activities/metrics/run` — dynamically mapped, one task per metric ID
 """,
 ) as dag:
-    list_metrics = SimpleHttpOperator(
+    list_metrics = HttpOperator(
         task_id="list_metrics",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/list-periodic",
@@ -63,7 +63,7 @@ execution and triggers a parallel metric run for each one.
 
     payloads = prepare_payloads(list_metrics.output)
 
-    run_metric = SimpleHttpOperator.partial(
+    run_metric = HttpOperator.partial(
         task_id="run_metric",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/run",

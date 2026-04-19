@@ -261,6 +261,19 @@ if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
   sed "s/__DATAHUB_INGRESS_HOST__/${DATAHUB_HOST}/g" \
     "$SCRIPT_DIR/gms-ingress.yaml" | kubectl apply -n "${NS}" -f -
   info "GMS ingress applied: http://${DATAHUB_HOST}/gms/"
+
+  # Belt-and-suspenders: reconcile datahub-frontend ingress host.
+  # helm --set on hosts[0].host is correctly rendered, but helm rollback /
+  # partial upgrades have been observed to leave the live ingress pointing
+  # at the stale default host (breaking /logIn, /api/graphql, and PAT
+  # generation below). Force the live host to match.
+  LIVE_FE_HOST=$(kubectl get ingress datahub-datahub-frontend -n "${NS}" \
+    -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
+  if [[ -n "$LIVE_FE_HOST" && "$LIVE_FE_HOST" != "$DATAHUB_HOST" ]]; then
+    warn "datahub-frontend ingress host '${LIVE_FE_HOST}' drifted from '${DATAHUB_HOST}' — patching."
+    kubectl patch ingress datahub-datahub-frontend -n "${NS}" --type=json \
+      -p="[{\"op\":\"replace\",\"path\":\"/spec/rules/0/host\",\"value\":\"${DATAHUB_HOST}\"}]"
+  fi
 else
   warn "DATASPOKE_DEV_INGRESS_DOMAIN not set — skipping GMS ingress."
 fi

@@ -116,11 +116,11 @@ reinstall_airflow() {
   info "Running helm upgrade to recreate Airflow..."
   bash "$SCRIPT_DIR/dataspoke-infra/install.sh"
 
-  # -- 5. Wait for Airflow webserver to become ready --
-  info "Waiting for Airflow webserver to become ready..."
-  kubectl rollout status deployment/dataspoke-airflow-webserver -n "${NS}" --timeout=300s \
-    && info "Airflow webserver is ready." \
-    || warn "Airflow webserver did not become ready in time — check pod logs."
+  # -- 5. Wait for Airflow api-server to become ready (Airflow 3.x renamed webserver → api-server) --
+  info "Waiting for Airflow api-server to become ready..."
+  kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=300s \
+    && info "Airflow api-server is ready." \
+    || warn "Airflow api-server did not become ready in time — check pod logs."
 
   # -- 6. Scale API back up --
   info "Scaling dataspoke-api back up..."

@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 from _internal_headers import internal_headers
 
@@ -40,7 +40,7 @@ Runs a metric computation and publishes the result update.
 2. `publish_metric_update` — POST `/internal/activities/metrics/publish-update` — publishes result (uses XCom from step 1)
 """,
 ) as dag:
-    run_metric = SimpleHttpOperator(
+    run_metric = HttpOperator(
         task_id="run_metric",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/run",
@@ -54,7 +54,7 @@ Runs a metric computation and publishes the result update.
         log_response=True,
     )
 
-    publish_metric_update = SimpleHttpOperator(
+    publish_metric_update = HttpOperator(
         task_id="publish_metric_update",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/metrics/publish-update",

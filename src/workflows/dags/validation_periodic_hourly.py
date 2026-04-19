@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from airflow import DAG
 from airflow.decorators import task
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.operators.http import HttpOperator
 
 from _internal_headers import internal_headers
 
@@ -45,7 +45,7 @@ validation and triggers a parallel validation run for each one.
 3. `run_validation` — POST `/internal/activities/validation/run` — dynamically mapped, one task per URN
 """,
 ) as dag:
-    list_datasets = SimpleHttpOperator(
+    list_datasets = HttpOperator(
         task_id="list_datasets",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/validation/list-periodic",
@@ -63,7 +63,7 @@ validation and triggers a parallel validation run for each one.
 
     payloads = prepare_payloads(list_datasets.output)
 
-    run_validation = SimpleHttpOperator.partial(
+    run_validation = HttpOperator.partial(
         task_id="run_validation",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/validation/run",
