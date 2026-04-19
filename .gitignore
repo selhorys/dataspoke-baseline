@@ -18,6 +18,7 @@ memory/
 .claude/plans/
 .claude/worktrees/
 .claude/todos/
+.claude/scheduled_tasks.lock
 .prauto/*.local.*
 .prauto/state/
 .prauto/worktrees/
