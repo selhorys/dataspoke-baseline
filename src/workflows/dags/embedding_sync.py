@@ -1,6 +1,6 @@
 """Airflow DAG: embedding-sync
 
-Reindexes dataset vectors in Qdrant. Triggered via API (no schedule).
+Reindexes dataset vectors in pgvector. Triggered via API (no schedule).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _DEFAULT_ARGS = {
 
 with DAG(
     dag_id="embedding-sync",
-    description="Reindex dataset vectors in Qdrant",
+    description="Reindex dataset vectors in pgvector",
     schedule=None,
     catchup=False,
     max_active_runs=1,
@@ -33,7 +33,7 @@ with DAG(
     doc_md="""
 ## embedding-sync
 
-Triggered via the DataSpoke API to reindex dataset vectors in Qdrant.
+Triggered via the DataSpoke API to reindex dataset vectors in pgvector.
 
 **Inputs** (via `dag_run.conf`):
 - `callback_base_url`: DataSpoke API base URL (default: env `DATASPOKE_AIRFLOW_CALLBACK_BASE_URL`)

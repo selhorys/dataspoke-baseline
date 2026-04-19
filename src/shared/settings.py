@@ -60,12 +60,6 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_password: str = ""
 
-    # Qdrant
-    qdrant_host: str = "localhost"
-    qdrant_http_port: int = 6333
-    qdrant_grpc_port: int = 6334
-    qdrant_api_key: str = ""
-
     # Airflow
     airflow_url: str = "http://localhost:8080"
     airflow_user: str = ""
@@ -80,7 +74,7 @@ class Settings(BaseSettings):
 
     # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
     # in ``src/workflows/_common.py`` return stub implementations instead of
-    # real clients for LLM, Qdrant, Redis (cache), and Notification.  DataHub
+    # real clients for LLM, pgvector, Redis (cache), and Notification.  DataHub
     # and PostgreSQL always use real connections regardless of this flag.
     # Enable via ``./dev_env/dataspoke-test-mode.sh`` or by exporting
     # ``DATASPOKE_TEST_MODE=true`` before starting the server.

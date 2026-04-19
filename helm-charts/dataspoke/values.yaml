@@ -2,6 +2,18 @@
 # All components enabled with production-grade settings.
 
 # ---------------------------------------------------------------------------
+# Global — Bitnami subchart compatibility
+# ---------------------------------------------------------------------------
+# Bitnami charts (18.x+) refuse to render NOTES.txt when the image reference
+# doesn't match their expected `bitnami/<app>` repository. Our PostgreSQL pod
+# runs a custom image that layers pgvector + AGE on a `bitnamilegacy/*` base,
+# which is still a Bitnami image by construction but trips the heuristic.
+# This flag opts out of the sanity check; it does not change runtime security.
+global:
+  security:
+    allowInsecureImages: true
+
+# ---------------------------------------------------------------------------
 # Application subcharts
 # ---------------------------------------------------------------------------
 frontend:
@@ -94,6 +106,16 @@ workers:
 # ---------------------------------------------------------------------------
 postgresql:
   enabled: true
+  image:
+    # Custom image with pgvector + Apache AGE extensions baked in.
+    # Built from docker-images/postgres/Dockerfile (bitnami/postgresql:17 runtime base).
+    # Override registry/tag for each environment:
+    #   dev  → --set-string postgresql.image.repository=<REGISTRY>/postgres --set-string postgresql.image.tag=dev
+    #   prod → set to your registry's production image tag
+    registry: "docker.io"
+    repository: "dataspoke/postgres"
+    tag: "17-extensions"
+    pullPolicy: IfNotPresent
   auth:
     username: "dataspoke"
     database: "dataspoke"
@@ -104,16 +126,40 @@ postgresql:
   primary:
     resources:
       requests:
-        cpu: 500m
-        memory: 1024Mi
-      limits:
         cpu: "1"
         memory: 2048Mi
+      limits:
+        cpu: "2"
+        memory: 6144Mi
     persistence:
       size: 50Gi
+    # Apache AGE requires shared_preload_libraries so its C hooks load at
+    # server startup; without it CREATE EXTENSION succeeds but graph functions
+    # fail at runtime with "extension 'age' must be loaded via shared_preload_libraries".
+    # Bitnami PG 18.x key: primary.extendedConfiguration (renders as override.conf).
+    extendedConfiguration: |
+      shared_preload_libraries = 'age'
+    initdb:
+      scripts:
+        # Run once at cluster bootstrap. Alembic migrations run `CREATE EXTENSION
+        # IF NOT EXISTS` idempotently on every deploy — both are complementary.
+        # Extensions are created in the `dataspoke` DB (default connection).
+        # AGE and pgvector workloads must therefore connect to the `dataspoke` DB.
+        01-extensions.sql: |
+          CREATE EXTENSION IF NOT EXISTS vector;
+          CREATE EXTENSION IF NOT EXISTS age;
+          -- Allow the dataspoke application role to call AGE graph functions.
+          GRANT USAGE ON SCHEMA ag_catalog TO dataspoke;
+          GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO dataspoke;
 
 redis:
   enabled: true
+  # Bitnami moved unversioned tags behind a paywall (August 2025). Use the
+  # `bitnamilegacy/*` namespace to keep pulling a free, chart-compatible image.
+  # Prod operators may pin this to their own registry mirror.
+  image:
+    repository: bitnamilegacy/redis
+    tag: "8.2.1-debian-12-r0"
   auth:
     enabled: true
     existingSecret: ""
@@ -128,19 +174,6 @@ redis:
         memory: 512Mi
   replica:
     replicaCount: 1
-
-qdrant:
-  enabled: true
-  replicaCount: 1
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1024Mi
-    limits:
-      cpu: "1"
-      memory: 2048Mi
-  persistence:
-    size: 50Gi
 
 airflow:
   enabled: true
@@ -311,10 +344,6 @@ config:
   redis:
     host: "dataspoke-redis-master"
     port: "6379"
-  qdrant:
-    host: "dataspoke-qdrant"
-    httpPort: "6333"
-    grpcPort: "6334"
   airflow:
     url: "http://dataspoke-airflow-api-server:8080"
     callbackBaseUrl: "http://dataspoke-api:8002"
@@ -335,8 +364,6 @@ secrets:
     password: ""
   redis:
     password: ""
-  qdrant:
-    apiKey: ""
   airflow:
     user: ""
     password: ""

@@ -3,7 +3,7 @@
 When ``DATASPOKE_TEST_MODE=true``, the ``make_*`` factories in
 ``_common.py`` return these stubs instead of real clients.  This lets a
 host-mode DataSpoke server handle Airflow activity callbacks without
-requiring real LLM / Qdrant / cache / notification backends.
+requiring real LLM / pgvector / cache / notification backends.
 
 DataHub and PostgreSQL are **never** stubbed — they always use real
 dev-env connections, even in test mode.
@@ -100,20 +100,26 @@ def _default_for_annotation(annotation: Any) -> Any:  # noqa: PLR0911
     return None
 
 
-# ── Qdrant stub ─────────────────────────────────────────────────────────────
+# ── pgvector stub ───────────────────────────────────────────────────────────
 
 
-class StubQdrantManager:
-    """Drop-in replacement for ``QdrantManager`` — searches return nothing."""
+class StubVectorManager:
+    """Drop-in replacement for ``PgVectorManager`` — searches return nothing."""
 
-    async def search(self, **kwargs: Any) -> list:
+    async def ensure_collection(self, name: str = "", vector_size: int = EMBEDDING_DIMENSION) -> None:
+        pass
+
+    async def upsert(self, collection: str, hits: list) -> None:
+        pass
+
+    async def search(self, collection: str = "", vector: list | None = None, **kwargs: Any) -> list:
         return []
 
-    async def upsert(self, **kwargs: Any) -> None:
+    async def delete(self, collection: str = "", ids: list | None = None, **kwargs: Any) -> None:
         pass
 
-    async def delete(self, **kwargs: Any) -> None:
-        pass
+    async def check_connectivity(self) -> bool:
+        return True
 
 
 # ── Redis/cache stub ────────────────────────────────────────────────────────

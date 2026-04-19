@@ -63,8 +63,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan — construct and close shared infrastructure clients."""
     from src.shared.cache.client import RedisClient
     from src.shared.datahub.client import DataHubClient
+    from src.shared.db.session import SessionLocal
     from src.shared.llm.client import LLMClient
-    from src.shared.vector.client import QdrantManager
+    from src.shared.vector.client import PgVectorManager
     from src.workflows.airflow.client import AirflowClient
 
     if settings.enable_stub_auth and settings.admin_password == "admin":
@@ -80,17 +81,12 @@ async def lifespan(app: FastAPI):
     )
     app.state.datahub = DataHubClient(settings.datahub_gms_url, settings.datahub_token)
     app.state.redis = RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
-    app.state.qdrant = QdrantManager(
-        host=settings.qdrant_host,
-        port=settings.qdrant_http_port,
-        api_key=settings.qdrant_api_key,
-        grpc_port=settings.qdrant_grpc_port,
-    )
+    app.state.vector = PgVectorManager(session_factory=SessionLocal)
     app.state.llm = LLMClient(settings.llm_provider, settings.llm_api_key, settings.llm_model)
 
     logger.info(
         "lifespan_startup_complete",
-        extra={"clients": ["airflow", "datahub", "redis", "qdrant", "llm"]},
+        extra={"clients": ["airflow", "datahub", "redis", "vector", "llm"]},
     )
     try:
         yield
@@ -107,7 +103,7 @@ async def lifespan(app: FastAPI):
                     extra={"client": name},
                     exc_info=True,
                 )
-        # DataHubClient, QdrantManager, LLMClient have no close() — rely on GC.
+        # DataHubClient, PgVectorManager, LLMClient have no close() — rely on GC.
         logger.info("lifespan_shutdown_complete")
 
 

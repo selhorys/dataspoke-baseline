@@ -33,11 +33,6 @@ dependencies:
     repository: "https://charts.bitnami.com/bitnami"
     condition: redis.enabled
 
-  - name: qdrant
-    version: "~1.17.0"
-    repository: "https://qdrant.github.io/qdrant-helm"
-    condition: qdrant.enabled
-
   - name: airflow
     version: "~1.20.0"
     repository: "https://airflow.apache.org"

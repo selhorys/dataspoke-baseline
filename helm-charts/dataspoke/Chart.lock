@@ -14,11 +14,8 @@ dependencies:
 - name: redis
   repository: https://charts.bitnami.com/bitnami
   version: 25.3.11
-- name: qdrant
-  repository: https://qdrant.github.io/qdrant-helm
-  version: 1.17.1
 - name: airflow
   repository: https://airflow.apache.org
   version: 1.20.0
-digest: sha256:b342b51500c9e30cfbccf3f206c468d42da590af82d3f30e5756f598296a245c
-generated: "2026-04-19T22:22:58.420285+09:00"
+digest: sha256:84f7690c9493b39456826cb2c81b853b498446b7fef8c2f48814c4a912382bdc
+generated: "2026-04-20T00:59:22.662272+09:00"

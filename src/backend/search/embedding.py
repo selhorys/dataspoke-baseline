@@ -67,7 +67,7 @@ async def generate_embedding(
     """Fetch dataset metadata from DataHub and generate a vector embedding.
 
     Returns (embedding_vector, payload_metadata) where payload_metadata
-    contains fields to store alongside the vector in Qdrant.
+    contains fields to store alongside the vector in pgvector.
     """
     from datahub.metadata.schema_classes import (
         DatasetPropertiesClass,

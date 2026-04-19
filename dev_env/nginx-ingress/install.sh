@@ -138,7 +138,6 @@ update_env "DATASPOKE_AIRFLOW_URL"           "http://airflow.${INGRESS_DOMAIN}"
 # Tier B: TCP endpoints (use IP directly)
 update_env "DATASPOKE_POSTGRES_HOST"         "${EXTERNAL_IP}"
 update_env "DATASPOKE_REDIS_HOST"            "${EXTERNAL_IP}"
-update_env "DATASPOKE_QDRANT_HOST"           "${EXTERNAL_IP}"
 
 # Example data sources
 update_env "DATASPOKE_EXAMPLE_PG_HOST"       "${EXTERNAL_IP}"
@@ -150,7 +149,7 @@ rm -f "${ENV_FILE}.bak"
 info "Written to .env:"
 info "  DATASPOKE_DEV_INGRESS_IP=${EXTERNAL_IP}"
 info "  DATASPOKE_DEV_INGRESS_DOMAIN=${INGRESS_DOMAIN}"
-info "  + 8 derived runtime variables (POSTGRES_HOST, REDIS_HOST, etc.)"
+info "  + 7 derived runtime variables (POSTGRES_HOST, REDIS_HOST, etc.)"
 
 # ---------------------------------------------------------------------------
 # Print access summary
@@ -171,8 +170,6 @@ echo ""
 echo "TCP endpoints (Tier B):"
 echo "  PostgreSQL:      ${EXTERNAL_IP}:9201"
 echo "  Redis:           ${EXTERNAL_IP}:9202"
-echo "  Qdrant HTTP:     ${EXTERNAL_IP}:9203"
-echo "  Qdrant gRPC:     ${EXTERNAL_IP}:9204"
 echo "  DataHub Kafka:   ${EXTERNAL_IP}:9005"
 echo "  Example PG:      ${EXTERNAL_IP}:9102"
 echo "  Example Kafka:   ${EXTERNAL_IP}:9104"

@@ -8,7 +8,7 @@ depending on ``settings.test_mode`` (``DATASPOKE_TEST_MODE`` env var).
 When ``test_mode`` is **True** (set by ``./dev_env/dataspoke-test-mode.sh``):
 
 - ``make_llm()``          → ``StubLLMClient``          (canned responses)
-- ``make_qdrant()``       → ``StubQdrantManager``      (empty searches)
+- ``make_vector()``       → ``StubVectorManager``       (empty searches)
 - ``make_cache()``        → ``StubRedisClient``         (no-op ops)
 - ``make_notification()`` → ``StubNotificationService`` (no-op alerts)
 
@@ -19,6 +19,9 @@ Always real regardless of test mode:
 
 Stubs are defined in ``_stubs.py``.  To add a new stub, see the
 "Adding a new stub" section in that module's docstring.
+
+LLM / pgvector / cache / notification backends are all stubbed via the
+test-mode guard.  DataHub and PostgreSQL are never stubbed.
 
 Workflow ID Convention
 ──────────────────────
@@ -48,7 +51,7 @@ from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
 from src.shared.llm.client import LLMClient
-from src.shared.vector.client import QdrantManager
+from src.shared.vector.client import PgVectorManager
 
 
 def urn_to_workflow_id(urn: str) -> str:
@@ -80,17 +83,12 @@ def make_llm() -> LLMClient:
     )
 
 
-def make_qdrant() -> QdrantManager:
+def make_vector() -> PgVectorManager:
     if settings.test_mode:
-        from src.workflows._stubs import StubQdrantManager
+        from src.workflows._stubs import StubVectorManager
 
-        return StubQdrantManager()  # type: ignore[return-value]
-    return QdrantManager(
-        host=settings.qdrant_host,
-        port=settings.qdrant_http_port,
-        api_key=settings.qdrant_api_key,
-        grpc_port=settings.qdrant_grpc_port,
-    )
+        return StubVectorManager()  # type: ignore[return-value]
+    return PgVectorManager(session_factory=SessionLocal)
 
 
 def make_db_session():

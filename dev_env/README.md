@@ -52,8 +52,6 @@ All HTTP services are accessed via virtual-host routing on the nginx-ingress Loa
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
 | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
 | Redis | `<INGRESS_IP>:9202` | per `.env` |
-| Qdrant HTTP | `<INGRESS_IP>:9203` | -- |
-| Qdrant gRPC | `<INGRESS_IP>:9204` | -- |
 | DataHub Kafka | `<INGRESS_IP>:9005` | -- |
 | Example PostgreSQL | `<INGRESS_IP>:9102` | `postgres` / `ExampleDev2024!` |
 | Example Kafka | `<INGRESS_IP>:9104` | -- |
@@ -93,7 +91,7 @@ Lock state is in-memory (resets on pod restart). The lock is advisory -- it does
 
 ### 7. API-wired integration tests (test mode)
 
-Test mode (`DATASPOKE_TEST_MODE=true`) stubs LLM, Qdrant, cache, and notification while keeping DataHub and PostgreSQL real. See [spec/TESTING.md](../spec/TESTING.md) for the three-group test execution sequence.
+Test mode (`DATASPOKE_TEST_MODE=true`) stubs LLM, cache, and notification while keeping DataHub and PostgreSQL real. See [spec/TESTING.md](../spec/TESTING.md) for the three-group test execution sequence.
 
 ```bash
 ./dataspoke-test-mode.sh                                          # Build + deploy
@@ -111,12 +109,15 @@ uv run python -m tests.integration.util --reset-all   # Idempotent: PG + Kafka +
 
 Seeds 11 schemas, 17 tables (~600 rows), 3 Kafka topics (~45 messages), and 20 DataHub dataset entities with Imazon use-case data. See `spec/feature/DEV_ENV.md §Dummy Data` for details.
 
+> After a fresh reinstall, trigger the `embedding-sync` DAG with `mode=full` to rebuild the `dataspoke.dataset_embeddings` table in PostgreSQL (pgvector backend replaces Qdrant).
+
 ## Selective Reinstall
 
-Reinstall a single component without tearing down the entire environment:
+Reinstall a single component by running its `uninstall.sh` followed by `install.sh` (both are idempotent and tear down PVCs + Helm release within their scope):
 
 ```bash
-./reinstall.sh --airflow    # Full Airflow reset: pods, database state, then redeploy
+# Example: reset dataspoke-infra (PostgreSQL, Redis, Airflow, API)
+bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
 ```
 
 ## Uninstall
@@ -138,7 +139,7 @@ The nginx-ingress controller lives in the `ingress-nginx` namespace and is insta
 
 The controller serves:
 - **HTTP virtual hosts** on port 80 (and 443 for TLS) for DataHub, DataSpoke API, DataSpoke UI, and Airflow
-- **TCP passthrough** on dedicated ports (9201-9204, 9005, 9102, 9104, 9221) for databases, brokers, and the lock service
+- **TCP passthrough** on dedicated ports (9201-9202, 9005, 9102, 9104, 9221) for databases, brokers, and the lock service
 
 ### Namespace architecture
 

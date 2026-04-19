@@ -13,7 +13,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.api.auth.internal import require_internal_token
 from src.shared.exceptions import DataSpokeError
@@ -22,7 +22,7 @@ from src.workflows._common import (
     make_datahub,
     make_db_session,
     make_llm,
-    make_qdrant,
+    make_vector,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,10 +154,10 @@ async def run_generation(body: RunGenerationRequest) -> dict:
 
     datahub = make_datahub()
     llm = make_llm()
-    qdrant = make_qdrant()
+    vector = make_vector()
     try:
         async with make_db_session() as db:
-            service = GenerationService(datahub=datahub, db=db, llm=llm, qdrant=qdrant)
+            service = GenerationService(datahub=datahub, db=db, llm=llm, vector=vector)
             result = await service.generate(body.dataset_urn)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
     except DataSpokeError as exc:
@@ -181,7 +181,7 @@ async def enumerate_datasets(body: EnumerateDatasetsRequest) -> list[str]:
 
 
 class ReindexBatchRequest(BaseModel):
-    dataset_urns: list[str]
+    dataset_urns: list[str] = Field(..., min_length=1, max_length=1000)
 
 
 @router.post("/search/reindex-batch")
@@ -191,8 +191,8 @@ async def reindex_batch(body: ReindexBatchRequest) -> dict:
     datahub = make_datahub()
     cache = make_cache()
     llm = make_llm()
-    qdrant = make_qdrant()
-    service = SearchService(datahub=datahub, cache=cache, llm=llm, qdrant=qdrant)
+    vector = make_vector()
+    service = SearchService(datahub=datahub, cache=cache, llm=llm, vector=vector)
 
     indexed = 0
     errors = []

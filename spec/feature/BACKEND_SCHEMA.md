@@ -2,7 +2,9 @@
 
 > This document specifies the storage contracts shared across all DataSpoke
 > backend processes (API server, Airflow activity endpoints, event consumers):
-> PostgreSQL tables, Qdrant vector collections, and related indexes.
+> PostgreSQL tables (including pgvector embeddings) and related indexes.
+> The same PostgreSQL instance also has the Apache AGE extension installed for
+> future graph workloads; no AGE tables are defined yet.
 >
 > Companion to [BACKEND](BACKEND.md) (service logic, workflows, shared clients).
 > Architecture context in [ARCHITECTURE](../ARCHITECTURE.md).
@@ -12,7 +14,7 @@
 ## Table of Contents
 
 1. [PostgreSQL Schema](#postgresql-schema)
-2. [Qdrant Collections](#qdrant-collections)
+2. [Vector Tables (pgvector)](#vector-tables-pgvector)
 
 ---
 
@@ -257,20 +259,30 @@ Singleton configuration for the multi-perspective overview visualization.
 
 ---
 
-## Qdrant Collections
+## Vector Tables (pgvector)
+
+Vector similarity search is backed by the `vector` extension (pgvector) on the
+same PostgreSQL instance as the operational tables. No separate vector database
+is deployed.
 
 ### `dataset_embeddings`
 
-Primary collection for natural language search and similarity matching.
+Primary table for natural language search and similarity matching. Lives in the
+`dataspoke` schema. Created by Alembic migration `002_add_dataset_embeddings`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| Vector | `float[]` (dimension depends on LLM model) | Embedding of dataset metadata |
-| `dataset_urn` | payload string | Dataset URN |
-| `platform` | payload string | Data platform (oracle, postgres, etc.) |
-| `has_pii` | payload bool | PII classification flag |
-| `tags` | payload string[] | DataHub tag URNs |
-| `updated_at` | payload string | Last sync timestamp |
+| Column | Type | Description |
+|--------|------|-------------|
+| `dataset_urn` | `TEXT` PK | Dataset URN |
+| `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time (provider-determined, e.g. 1536) |
+| `platform` | `TEXT` | Data platform (`oracle`, `postgres`, etc.) |
+| `tags` | `JSONB` | DataHub tag URNs |
+| `owners` | `JSONB` | Owner URNs |
+| `quality_score` | `REAL` NULL | Best-effort cached quality score |
+| `has_pii` | `BOOLEAN` | PII classification flag |
+| `updated_at` | `TIMESTAMPTZ` NOT NULL | Last sync timestamp |
+
+**Index**: `dataset_embeddings_embedding_hnsw_idx` — HNSW over `embedding` with
+`vector_cosine_ops`. Similarity query expression: `GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector))`.
 
 **Embedding input**: Concatenation of dataset name, description, field names +
 descriptions, tags, and lineage context. Processed through the LLM embedding
@@ -279,4 +291,16 @@ endpoint.
 **Sync triggers**:
 - Kafka event: `datasetProperties`, `schemaMetadata`, `globalTags` changes
 - Manual: `POST /spoke/common/search/method/reindex`
-- Scheduled: `EmbeddingSyncWorkflow` (daily full re-sync)
+- Scheduled: `embedding-sync` Airflow DAG (full re-sync, on-demand trigger)
+
+**Access wrapper**: `src/shared/vector/client.py` exposes `PgVectorManager`
+(session-factory backed) returning `VectorHit` dataclasses. Collection name is
+whitelisted against `EMBEDDING_COLLECTION` to prevent arbitrary table access.
+
+### Graph (Apache AGE, reserved)
+
+The `age` extension is installed and preloaded (`shared_preload_libraries = 'age'`),
+and `ag_catalog` usage is granted to the application role. No AGE graphs are
+defined yet — ontology relationships remain in relational tables
+(`concept_relationships`, `dataset_concept_map`). AGE is available for future
+graph-shaped queries without additional infrastructure changes.

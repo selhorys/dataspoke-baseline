@@ -4,13 +4,10 @@ import asyncio
 import hashlib
 import json
 import logging
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-from qdrant_client.models import PointStruct
 
 from src.backend.search.embedding import (
     _extract_name_from_urn,
@@ -26,23 +23,23 @@ from src.shared.config import (
 from src.shared.datahub.client import DataHubClient
 from src.shared.exceptions import EntityNotFoundError
 from src.shared.llm.client import LLMClient
-from src.shared.vector.client import QdrantManager
+from src.shared.vector.client import PgVectorManager, VectorHit
 
 
 class SearchService:
-    """NL search over dataset metadata with Redis caching and Qdrant vector search."""
+    """NL search over dataset metadata with Redis caching and pgvector search."""
 
     def __init__(
         self,
         datahub: DataHubClient,
         cache: RedisClient,
         llm: LLMClient,
-        qdrant: QdrantManager,
+        vector: PgVectorManager,
     ) -> None:
         self._datahub = datahub
         self._cache = cache
         self._llm = llm
-        self._qdrant = qdrant
+        self._vector = vector
 
     # ── Search ─────────────────────────────────────────────────────────
 
@@ -55,9 +52,8 @@ class SearchService:
     ) -> dict[str, Any]:
         """Search datasets by natural language query.
 
-        ``total_count`` reflects the number of Qdrant matches in the current fetch
-        window (≤ ``offset + limit``).  It is not the unbounded match total — Qdrant's
-        ``search()`` does not return one.  Clients should treat ``total_count == limit``
+        ``total_count`` reflects the number of pgvector matches in the current fetch
+        window (≤ ``offset + limit``).  Clients should treat ``total_count == limit``
         as "there may be more".  The value is stable across partial enrichment failures
         so that pagination math stays consistent.
         """
@@ -71,28 +67,28 @@ class SearchService:
         # Generate query embedding
         query_vector = await self._llm.embed(q)
 
-        # Fetch offset + limit from Qdrant, filtering by minimum similarity score
+        # Fetch offset + limit from pgvector, filtering by minimum similarity score
         fetch_limit = offset + limit
-        scored_points = await self._qdrant.search(
+        hits = await self._vector.search(
             collection=EMBEDDING_COLLECTION,
             vector=query_vector,
             limit=fetch_limit,
             score_threshold=SEARCH_SCORE_THRESHOLD,
         )
-        paged_points = scored_points[offset:]
+        paged_hits = hits[offset:]
 
         # Enrich each result with DataHub metadata — failures are isolated per URN
         raw_results = await asyncio.gather(
-            *[self._enrich_result(pt, sql_context) for pt in paged_points],
+            *[self._enrich_result(hit, sql_context) for hit in paged_hits],
             return_exceptions=True,
         )
         datasets: list[dict[str, Any]] = []
-        for pt, item in zip(paged_points, raw_results, strict=True):
+        for hit, item in zip(paged_hits, raw_results, strict=True):
             if isinstance(item, Exception):
                 logger.warning(
                     "search_enrich_failed",
                     exc_info=item,
-                    extra={"dataset_urn": (pt.payload or {}).get("dataset_urn", "")},
+                    extra={"dataset_urn": hit.dataset_urn},
                 )
                 continue
             datasets.append(item)
@@ -101,7 +97,7 @@ class SearchService:
             "datasets": datasets,
             "offset": offset,
             "limit": limit,
-            "total_count": len(scored_points),
+            "total_count": len(hits),
             "resp_time": datetime.now(tz=UTC).isoformat(),
         }
 
@@ -110,17 +106,17 @@ class SearchService:
 
         return result
 
-    async def _enrich_result(self, point: Any, sql_context: bool) -> dict[str, Any]:
-        """Enrich a Qdrant scored point with DataHub metadata."""
+    async def _enrich_result(self, hit: VectorHit, sql_context: bool) -> dict[str, Any]:
+        """Enrich a pgvector hit with DataHub metadata."""
         from datahub.metadata.schema_classes import (
             DatasetPropertiesClass,
             GlobalTagsClass,
             OwnershipClass,
         )
 
-        payload = point.payload or {}
-        dataset_urn = payload.get("dataset_urn", "")
-        score = point.score
+        payload = hit.payload
+        dataset_urn = hit.dataset_urn
+        score = hit.score
 
         # Fetch core metadata
         props = await self._datahub.get_aspect(dataset_urn, DatasetPropertiesClass)
@@ -208,7 +204,7 @@ class SearchService:
     # ── Reindex ────────────────────────────────────────────────────────
 
     async def reindex(self, dataset_urn: str) -> dict[str, Any]:
-        """Regenerate the vector embedding for a dataset and upsert into Qdrant."""
+        """Regenerate the vector embedding for a dataset and upsert into pgvector."""
         from datahub.metadata.schema_classes import DatasetPropertiesClass
 
         props = await self._datahub.get_aspect(dataset_urn, DatasetPropertiesClass)
@@ -232,14 +228,16 @@ class SearchService:
                 extra={"dataset_urn": dataset_urn},
             )
 
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, dataset_urn))
         payload["updated_at"] = datetime.now(tz=UTC).isoformat()
 
-        await self._qdrant.ensure_collection(EMBEDDING_COLLECTION)
-        await self._qdrant.upsert(
-            collection=EMBEDDING_COLLECTION,
-            points=[PointStruct(id=point_id, vector=embedding, payload=payload)],
+        await self._vector.ensure_collection(EMBEDDING_COLLECTION)
+        hit = VectorHit(
+            dataset_urn=dataset_urn,
+            embedding=embedding,
+            payload=payload,
+            score=0.0,
         )
+        await self._vector.upsert(EMBEDDING_COLLECTION, [hit])
 
         return {
             "status": "ok",

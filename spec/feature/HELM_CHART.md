@@ -31,7 +31,6 @@ Production Deployment                    Dev Deployment (dev_env)
 │  api       ✓           │              │  api       ✓           │
 │  event-consumer (opt)  │              │  event-consumer ✗      │
 │  airflow   ✓           │              │  airflow   ✓           │
-│  qdrant    ✓           │              │  qdrant    ✓           │
 │  postgresql ✓          │              │  postgresql ✓          │
 │  redis     ✓           │              │  redis     ✓           │
 └────────────────────────┘              └────────────────────────┘
@@ -59,8 +58,7 @@ Production Deployment                    Dev Deployment (dev_env)
 | event-consumer | `file://subcharts/event-consumer` | 0.1.0 | `event-consumer.enabled` |
 | postgresql | `bitnami/postgresql` | ~18.5.0 | `postgresql.enabled` |
 | redis | `bitnami/redis` | ~25.3.0 | `redis.enabled` |
-| qdrant | `qdrant/qdrant` | ~1.17.0 | `qdrant.enabled` |
-| airflow | `apache-airflow/airflow` | ~1.15.0 | `airflow.enabled` |
+| airflow | `apache-airflow/airflow` | ~1.20.0 | `airflow.enabled` |
 
 Tilde ranges allow patch-level updates. Exact resolved versions are locked in `Chart.lock`.
 
@@ -75,7 +73,6 @@ Tilde ranges allow patch-level updates. Exact resolved versions are locked in `C
 | event-consumer | Deployment | **disabled** | **disabled** | no |
 | postgresql | StatefulSet | enabled | enabled | yes (PV) |
 | redis | Deployment | enabled | enabled | no |
-| qdrant | StatefulSet | enabled | enabled | yes (PV) |
 | airflow | Deployment | enabled | enabled | no (uses PG) |
 
 Each component has a `<component>.enabled` toggle in values.
@@ -98,11 +95,11 @@ Deployment envFrom → container env vars
 
 ### ConfigMap keys
 
-Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`, `DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_QDRANT_HOST/HTTP_PORT/GRPC_PORT`, `DATASPOKE_AIRFLOW_HOST/PORT`, `DATASPOKE_LLM_PROVIDER/MODEL`.
+Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`, `DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_HOST/PORT`, `DATASPOKE_LLM_PROVIDER/MODEL`.
 
 ### Secret keys
 
-Sensitive: `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_POSTGRES_USER/PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_QDRANT_API_KEY`, `DATASPOKE_LLM_API_KEY`.
+Sensitive: `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_POSTGRES_USER/PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_LLM_API_KEY`.
 
 All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/Secret creation is disabled (`createConfigMap: false`, `createSecret: false`) — the host-running app reads env vars directly from `dev_env/.env`.
 
@@ -145,7 +142,6 @@ Secrets come from `dev_env/.env`. The install script creates K8s Secrets before 
 |--------|------|
 | `dataspoke-postgres-secret` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `dataspoke-redis-secret` | `REDIS_PASSWORD` |
-| `dataspoke-qdrant-secret` | `QDRANT_API_KEY` (only if non-empty) |
 
 Infrastructure subcharts reference these via `auth.existingSecret`.
 
@@ -167,11 +163,10 @@ Two approaches:
 | frontend | 2 | 250m / 500m | 256Mi / 512Mi | — |
 | api | 2 | 500m / 1000m | 512Mi / 1024Mi | — |
 | event-consumer† | 1 | 250m / 500m | 512Mi / 1024Mi | — |
-| postgresql | 1 | 500m / 1000m | 1024Mi / 2048Mi | 50Gi |
+| postgresql | 1 | 1000m / 2000m | 2048Mi / 6144Mi | 50Gi |
 | redis | 1+1 | 250m / 500m | 256Mi / 512Mi | — |
-| qdrant | 1 | 500m / 1000m | 1024Mi / 2048Mi | 50Gi |
 | airflow (api-server + scheduler + triggerer) | 1+1+1 | 250m / 500m | 512Mi / 1024Mi | DAGs baked into a custom image |
-| **Total** | | **~5500m / ~11000m** | **~8.5Gi / ~17Gi** | **100Gi** |
+| **Total** | | **~5000m / ~10000m** | **~9.5Gi / ~22Gi** | **50Gi** |
 
 † event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m CPU and ~512Mi/1024Mi memory. Airflow uses LocalExecutor — no separate Celery worker needed.
 
@@ -200,7 +195,7 @@ In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controlle
 | `dev_env/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 
-TCP passthrough (PostgreSQL, Redis, Qdrant, Kafka, Lock) is handled by the nginx-ingress `tcp-services` ConfigMap — no Ingress resource needed for TCP. See [`DEV_ENV.md §Ingress`](DEV_ENV.md#ingress) for the full port map.
+TCP passthrough (PostgreSQL, Redis, Kafka, Lock) is handled by the nginx-ingress `tcp-services` ConfigMap — no Ingress resource needed for TCP. See [`DEV_ENV.md §Ingress`](DEV_ENV.md#ingress) for the full port map.
 
 ### Network Policy
 
@@ -213,8 +208,8 @@ A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namesp
 `dev_env/dataspoke-infra/install.sh` consumes this chart with the dev profile. The install flow:
 
 1. Create K8s Secrets from `.env` variables (idempotent via `--dry-run=client`)
-2. Register Helm repos (`bitnami`, `qdrant`, `apache-airflow`) and build chart dependencies
-3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL auth credentials via `--set`
+2. Register Helm repos (`bitnami`, `apache-airflow`) and build chart dependencies
+3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL image and auth credentials via `--set`/`--set-string`
 
 The dev profile enables the API in-cluster (so Airflow callbacks work via cluster DNS) and enables ingress for the API and Airflow (so developers can access them via the nginx-ingress endpoints). Frontend and workers remain disabled. Airflow runs in the cluster in both dev and production.
 
@@ -249,7 +244,6 @@ The API is already enabled in `values-dev.yaml`. Frontend and workers can be ena
 - [Helm — Chart Dependencies](https://helm.sh/docs/helm/helm_dependency/) — umbrella chart pattern
 - [Bitnami PostgreSQL Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
 - [Bitnami Redis Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
-- [Qdrant Helm Chart](https://github.com/qdrant/qdrant-helm)
 - [Apache Airflow Helm Chart](https://github.com/apache/airflow/tree/main/chart)
 - [External Secrets Operator](https://external-secrets.io/) — production secrets management
 - [DEV_ENV.md](DEV_ENV.md) — Development environment specification

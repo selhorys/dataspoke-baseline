@@ -59,11 +59,10 @@ health-check output:
 $output
 
 Reinstall the failing subsystem (per CLAUDE.md §Integration Test Protocol):
-  airflow                 → cd dev_env && ./reinstall.sh --airflow
-  postgres / redis / qdrant → cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
-  datahub-gms / kafka     → cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh
-  example-postgres/kafka  → cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh
-  lock-service            → cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh
+  airflow / postgres / redis → cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
+  datahub-gms / kafka        → cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh
+  example-postgres/kafka     → cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh
+  lock-service               → cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh
 
 Fix the failing component, then re-run the pytest command.
 EOF

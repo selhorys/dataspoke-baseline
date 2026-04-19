@@ -52,7 +52,7 @@ async def post_search_reindex(
     dataset_urn: str = Query(..., min_length=1),
     service: SearchService = Depends(get_search_service),
 ) -> ReindexResponse:
-    """Reindex a single dataset's vector embedding in Qdrant."""
+    """Reindex a single dataset's vector embedding in pgvector."""
     try:
         result = await service.reindex(dataset_urn=dataset_urn)
     except EntityNotFoundError:

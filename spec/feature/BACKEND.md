@@ -3,7 +3,7 @@
 > This document specifies the backend service layer — feature services, shared
 > libraries, Airflow DAG definitions, and infrastructure integration patterns
 > that sit behind the API layer.
-> Data contracts (PostgreSQL schema, Qdrant collections) in
+> Data contracts (PostgreSQL schema including pgvector tables) in
 > [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
 >
 > Conforms to [MANIFESTO](../MANIFESTO_en.md) (highest authority).
@@ -28,7 +28,7 @@
 10. [Error Handling](#error-handling)
 11. [Configuration](#configuration)
 
-Data contracts (PostgreSQL schema, Qdrant collections) are specified in
+Data contracts (PostgreSQL schema including pgvector tables) are specified in
 [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
 
 ---
@@ -46,7 +46,7 @@ src/api/routers/          <- HTTP routing, Pydantic validation, auth
        v  function calls
 src/backend/              <- Feature service implementations
        |
-       |---> src/shared/   <- DataHub client, DB sessions, LLM client, Qdrant client
+       |---> src/shared/   <- DataHub client, DB sessions, LLM client, pgvector client
        |
        +---> src/workflows/  <- Airflow DAG definitions + internal activity endpoints
 ```
@@ -69,7 +69,7 @@ the current file structure.
 ```
 1. Router         -> Parse HTTP, validate input (Pydantic), enforce auth
 2. Service        -> Orchestrate business logic, call shared clients
-3. Shared Client  -> DataHub SDK, PostgreSQL, Qdrant, Redis, LLM
+3. Shared Client  -> DataHub SDK, PostgreSQL (incl. pgvector), Redis, LLM
 4. Infrastructure -> External systems (DataHub GMS, PostgreSQL, etc.)
 ```
 
@@ -116,7 +116,7 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 |---------|--------|------|---------------------|
 | DataHub Client | `datahub/client.py` | Unified read/write wrapper around `acryl-datahub` SDK | Exponential backoff (3 attempts, 500ms base). Circuit breaker (opens after 5 failures, 60s probe). See [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md). |
 | PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5 |
-| Qdrant | `vector/client.py` | Collection management, typed search/upsert | Wraps `qdrant-client` |
+| Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. AGE extension is installed on the same PG instance but not yet consumed. |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
 | Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2, UC3). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
@@ -237,19 +237,19 @@ CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition
 
 **Covers**: UC4 (Automated Doc Generation)
 
-CRUD for generation configurations (PostgreSQL: `generation_configs`). LLM-powered metadata generation (descriptions, tags, deprecation notes), source code analysis, similar-table diffing (Qdrant + LLM), apply generated results to DataHub with approval gate.
+CRUD for generation configurations (PostgreSQL: `generation_configs`). LLM-powered metadata generation (descriptions, tags, deprecation notes), source code analysis, similar-table diffing (pgvector + LLM), apply generated results to DataHub with approval gate.
 
-**Generation Pipeline** (Airflow DAG): read current DataHub aspects (schema, properties, lineage, tags) → find similar datasets via Qdrant embedding search → LLM analysis to generate field descriptions, table summary, suggested tags → analyze source code if `code_refs` configured → diff against similar tables → produce a `GenerationResult` row in PostgreSQL. `apply` writes approved proposals to DataHub.
+**Generation Pipeline** (Airflow DAG): read current DataHub aspects (schema, properties, lineage, tags) → find similar datasets via pgvector embedding search → LLM analysis to generate field descriptions, table summary, suggested tags → analyze source code if `code_refs` configured → diff against similar tables → produce a `GenerationResult` row in PostgreSQL. `apply` writes approved proposals to DataHub.
 
 ### Search Service (`src/backend/search/`)
 
 **Covers**: UC5 (Natural Language Search), UC7 (Text-to-SQL Metadata)
 
-NL query parsing, embedding generation, hybrid search (Qdrant vectors + DataHub GraphQL filters), SQL context enrichment, reindex trigger.
+NL query parsing, embedding generation, hybrid search (pgvector similarity + DataHub GraphQL filters), SQL context enrichment, reindex trigger.
 
-**Search pipeline**: Parse NL query -> generate embedding -> vector search -> parallel DataHub GraphQL search -> merge and re-rank -> enrich with metadata -> add SQL context if requested.
+**Search pipeline**: Parse NL query -> generate embedding -> vector search via pgvector HNSW index -> parallel DataHub GraphQL search -> merge and re-rank -> enrich with metadata -> add SQL context if requested.
 
-**Embedding Sync** (`embedding.py`): Generates embeddings for dataset metadata and maintains the Qdrant index.
+**Embedding Sync** (`embedding.py`): Generates embeddings for dataset metadata and maintains the `dataset_embeddings` pgvector table.
 
 ### Ontology Service (`src/backend/ontology/`)
 
@@ -508,7 +508,7 @@ Activity endpoints publish JSON progress/result messages to the appropriate Redi
 
 **API route handlers** receive backend services via FastAPI `Depends()` (see `src/api/dependencies.py`).
 
-**Internal activity endpoints** use factory functions from `src/workflows/_common.py` (`make_datahub`, `make_cache`, `make_db_session`, `make_llm`, `make_qdrant`) instead of FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories work in any context (tests, CLI).
+**Internal activity endpoints** use factory functions from `src/workflows/_common.py` (`make_datahub`, `make_cache`, `make_db_session`, `make_llm`, `make_vector`) instead of FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories work in any context (tests, CLI).
 
 Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retryable) JSON responses, letting Airflow distinguish between errors worth retrying and permanent failures.
 
@@ -538,7 +538,7 @@ Non-critical operations execute best-effort -- if they fail, the primary operati
 | Source SQL execution | ValidationService | Rule skipped, marked as ERROR in `assertionRunEvent` |
 | ML validation model fit | ValidationService | Value recorded without validation verdict |
 | Redis pub/sub + cache write | ValidationService | WebSocket unnotified; next read hits DB |
-| Qdrant similarity search | GenerationService | No alternative suggestions |
+| pgvector similarity search | GenerationService | No alternative suggestions |
 | LLM sample query generation | SearchService | SQL context without example query |
 | LLM dataset classification | OntologyRebuild | Dataset excluded from classification |
 

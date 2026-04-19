@@ -27,8 +27,6 @@ tcp:
   # DataSpoke infra (dataspoke-01)
   9201: "dataspoke-01/dataspoke-postgresql:5432"
   9202: "dataspoke-01/dataspoke-redis-master:6379"
-  9203: "dataspoke-01/dataspoke-qdrant:6333"
-  9204: "dataspoke-01/dataspoke-qdrant:6334"
   # DataHub Kafka (datahub-01)
   9005: "datahub-01/datahub-kafka-external:9095"
   # Example data sources (dataspoke-dummy-data-01)

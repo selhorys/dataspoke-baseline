@@ -3,6 +3,13 @@
 # Used by: dev_env/dataspoke-infra/install.sh
 
 # ---------------------------------------------------------------------------
+# Global — Bitnami subchart compatibility (see values.yaml for rationale)
+# ---------------------------------------------------------------------------
+global:
+  security:
+    allowInsecureImages: true
+
+# ---------------------------------------------------------------------------
 # Application components: frontend/workers run on the host; API runs in-cluster
 # so Airflow can reach it via http://dataspoke-api:8000.
 # ---------------------------------------------------------------------------
@@ -42,6 +49,10 @@ workers:
 # ---------------------------------------------------------------------------
 postgresql:
   enabled: true
+  image:
+    # registry + repository + tag passed via --set-string from install.sh.
+    # pullPolicy: Always ensures the :dev tag is always pulled after rebuild.
+    pullPolicy: Always
   auth:
     # username/database: passed via --set from .env
     secretKeys:
@@ -50,20 +61,39 @@ postgresql:
   primary:
     resources:
       limits:
-        memory: 1Gi
-        cpu: 1000m
+        memory: 4096Mi
+        cpu: "2"
       requests:
-        memory: 512Mi
-        cpu: 250m
+        memory: 2048Mi
+        cpu: "1"
     persistence:
       size: 10Gi
+    # Apache AGE requires shared_preload_libraries so its C hooks load at
+    # server startup; without it CREATE EXTENSION succeeds but graph functions
+    # fail at runtime with "extension 'age' must be loaded via shared_preload_libraries".
+    # Bitnami PG 18.x key: primary.extendedConfiguration (renders as override.conf).
+    extendedConfiguration: |
+      shared_preload_libraries = 'age'
     initdb:
       scripts:
+        # Extensions are created in the `dataspoke` DB (the default initdb
+        # connection). AGE and pgvector workloads must connect to `dataspoke`.
+        01-extensions.sql: |
+          CREATE EXTENSION IF NOT EXISTS vector;
+          CREATE EXTENSION IF NOT EXISTS age;
+          -- Allow the dataspoke application role to call AGE graph functions.
+          GRANT USAGE ON SCHEMA ag_catalog TO dataspoke;
+          GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO dataspoke;
         create-airflow-db.sql: |
           CREATE DATABASE airflow;
 
 redis:
   enabled: true
+  # Bitnami moved unversioned tags behind a paywall (August 2025). Use the
+  # `bitnamilegacy/*` namespace to keep pulling a free, chart-compatible image.
+  image:
+    repository: bitnamilegacy/redis
+    tag: "8.2.1-debian-12-r0"
   auth:
     existingSecretPasswordKey: "REDIS_PASSWORD"
   master:
@@ -76,18 +106,6 @@ redis:
         cpu: 250m
   replica:
     replicaCount: 0
-
-qdrant:
-  enabled: true
-  resources:
-    limits:
-      memory: 2Gi
-      cpu: 1000m
-    requests:
-      memory: 1Gi
-      cpu: 250m
-  persistence:
-    size: 10Gi
 
 airflow:
   enabled: true

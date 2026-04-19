@@ -13,9 +13,10 @@ Run every command from the directory it expects (usually project root). Do not `
 ## Dev Environment
 
 ```bash
-cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Airflow)
+cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Airflow)
 cd dev_env && ./uninstall.sh  # Tear down everything
-cd dev_env && ./reinstall.sh --airflow  # Selective component reinstall (pods + DB state)
+# Component reinstall: run the component's uninstall.sh then install.sh
+cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
 ```
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.

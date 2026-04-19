@@ -124,19 +124,14 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 ## Action: reinstall
 
-Selectively reinstall a single component (pods, PVCs, database state) without tearing down the full umbrella release.
-
-### Supported components
-
-| Component flag | What it resets |
-|----------------|----------------|
-| `--airflow` | Airflow deployment, pods, `airflow` PostgreSQL database |
+There is no dedicated `reinstall.sh`. Reinstall a component by running its `uninstall.sh` followed by its `install.sh` — both are idempotent and handle PVC/Helm-release teardown within their scope.
 
 ### Steps
 
-1. Parse `$ARGUMENTS` for the component flag (e.g. `--airflow`). If no component specified, ask the user which component to reinstall.
-2. Run `./dev_env/reinstall.sh <flag>` in the foreground (it deletes targeted resources, resets DB state, runs `helm upgrade`, and waits for rollout).
-3. Monitor output for errors. If the DB reset or rollout fails, report the error and suggest remediation.
+1. Parse `$ARGUMENTS` to identify the target component (see the Component names table above). If no component is specified, ask the user which to reinstall.
+2. Run the component's `uninstall.sh` in the foreground, then its `install.sh`.
+   - Example for `dataspoke-infra`: `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh`
+3. Monitor output for errors. If teardown or rollout fails, report the error and suggest remediation.
 4. On success, confirm the component is running and report access URLs.
 
 ---

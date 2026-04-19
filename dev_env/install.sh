@@ -106,7 +106,6 @@ echo "  Airflow UI:    http://airflow.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}
 echo ""
 echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9201"
 echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9202"
-echo "  Qdrant:        ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9203 (HTTP), :9204 (gRPC)"
 echo "  DataHub Kafka: ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9005"
 echo "  Example PG:    ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9102"
 echo "  Example Kafka: ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9104"

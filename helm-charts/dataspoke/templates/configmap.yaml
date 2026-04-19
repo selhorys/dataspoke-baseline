@@ -13,9 +13,6 @@ data:
   DATASPOKE_POSTGRES_DB: {{ .Values.config.postgres.db | quote }}
   DATASPOKE_REDIS_HOST: {{ .Values.config.redis.host | quote }}
   DATASPOKE_REDIS_PORT: {{ .Values.config.redis.port | quote }}
-  DATASPOKE_QDRANT_HOST: {{ .Values.config.qdrant.host | quote }}
-  DATASPOKE_QDRANT_HTTP_PORT: {{ .Values.config.qdrant.httpPort | quote }}
-  DATASPOKE_QDRANT_GRPC_PORT: {{ .Values.config.qdrant.grpcPort | quote }}
   DATASPOKE_AIRFLOW_URL: {{ .Values.config.airflow.url | quote }}
   DATASPOKE_AIRFLOW_CALLBACK_BASE_URL: {{ .Values.config.airflow.callbackBaseUrl | quote }}
   DATASPOKE_LLM_PROVIDER: {{ .Values.config.llm.provider | quote }}

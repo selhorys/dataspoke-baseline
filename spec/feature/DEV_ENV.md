@@ -24,7 +24,7 @@ The API server is deployed **in-cluster** alongside Airflow so that workflow cal
 
 DataHub is installed in the dev cluster **for convenience**; in production it is an external dependency deployed and managed separately.
 
-**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9204, 9221 — Kafka, PostgreSQL, Redis, Qdrant, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE consumers, Kafka + ZK, Elasticsearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, Qdrant, PostgreSQL, Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
+**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka, PostgreSQL, Redis, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE consumers, Kafka + ZK, Elasticsearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, PostgreSQL, Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 
 ---
 
@@ -57,7 +57,7 @@ DataHub is installed in the dev cluster **for convenience**; in production it is
 |-----------|---------|------------|
 | `ingress-nginx` | nginx-ingress controller (single LoadBalancer for all namespaces) | `nginx-ingress/install.sh` via Helm |
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
-| `dataspoke-01` | DataSpoke infrastructure (API, Airflow, Qdrant, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
+| `dataspoke-01` | DataSpoke infrastructure (API, Airflow, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 > Namespace names are **defaults** from `.env.example`. All scripts read them from environment variables and never hardcode them.
@@ -91,7 +91,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
 | Example data creds | `*_EXAMPLE_PG_HOST`, `*_EXAMPLE_PG_PORT`, `*_EXAMPLE_KAFKA_BROKERS` | Dev-only; host and port resolve via ingress IP |
 | DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `*_TOKEN`, `*_KAFKA_BROKERS` | App runtime — ingress URL in dev |
-| Infrastructure | `DATASPOKE_POSTGRES_HOST/PORT`, `*_REDIS_*`, `*_QDRANT_*`, `*_AIRFLOW_URL` | App runtime — ingress IP (TCP) or URL (HTTP) in dev |
+| Infrastructure | `DATASPOKE_POSTGRES_HOST/PORT`, `*_REDIS_*`, `*_AIRFLOW_URL` | App runtime — ingress IP (TCP) or URL (HTTP) in dev |
 | LLM | `DATASPOKE_LLM_PROVIDER`, `*_API_KEY`, `*_MODEL` | App runtime |
 
 ### Policies
@@ -136,11 +136,12 @@ Service name prefix `datahub-prerequisites-` applies to all prerequisite service
 
 Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with the dev profile (`values-dev.yaml`). See [HELM_CHART.md](HELM_CHART.md) for chart details.
 
+PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE (graph) and pgvector (vector search) extensions compiled in. Vector and graph workloads connect to the `dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic migration deploy.
+
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
 | airflow (api-server + scheduler + triggerer) | Deployment + StatefulSets | 3 Gi | — |
-| qdrant | StatefulSet | 1024 Mi | 10 Gi |
-| postgresql | StatefulSet | 512 Mi | 10 Gi |
+| postgresql | StatefulSet | 4 Gi | 10 Gi |
 | redis | Deployment | 256 Mi | — |
 
 > **Airflow DAGs are baked into a custom image.** The chart pulls
@@ -158,7 +159,6 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 |-------------|------|
 | `dataspoke-postgres-secret` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `dataspoke-redis-secret` | `REDIS_PASSWORD` |
-| `dataspoke-qdrant-secret` | `QDRANT_API_KEY` (only if non-empty) |
 
 > LLM secrets are not deployed into the cluster. The host-running app reads them directly from `.env`.
 
@@ -205,15 +205,9 @@ Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/`
 | `--yes` | Skip "remove all resources?" confirmation |
 | `--delete-namespaces` | Also delete the three namespaces |
 
-### reinstall.sh
+### Component reinstall
 
-Selective component reinstall without tearing down the full umbrella release. Deletes the target component's pods, PVCs, and database state, then runs `helm upgrade` to recreate it.
-
-| Flag | Effect |
-|------|--------|
-| `--airflow` | Full Airflow reinstall: deployment + pods + `airflow` database DROP/CREATE |
-
-Extensible via `case` dispatch — additional component flags (e.g. `--postgresql`) can be added as needed.
+There is no dedicated `reinstall.sh`. To reset a single component cleanly, run its own `uninstall.sh` followed by `install.sh` (each sub-installer is idempotent and tears down PVCs + Helm release for its scope). Example: `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh`.
 
 ### Shell conventions
 
@@ -228,7 +222,7 @@ All services are reached via a single nginx-ingress controller in the `ingress-n
 Two tiers:
 
 - **Tier A — HTTP virtual hosts** on port 80, keyed by hostname (DataHub UI/GMS at `datahub.<IP>.nip.io`, DataSpoke API at `app.<IP>.nip.io/api/v1/`, Airflow UI at `airflow.<IP>.nip.io`). The `nip.io` suffix gives automatic wildcard DNS — no `/etc/hosts` entries required.
-- **Tier B — TCP passthrough** on dedicated ports via the same LoadBalancer IP, mapped by the nginx-ingress `tcp-services` ConfigMap. Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side producers/consumers reach them through the ingress. `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these addresses.
+- **Tier B — TCP passthrough** on dedicated ports (9201 PostgreSQL, 9202 Redis, 9005 DataHub Kafka, 9102 example PostgreSQL, 9104 example Kafka, 9221 lock service) via the same LoadBalancer IP, mapped by the nginx-ingress `tcp-services` ConfigMap. Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side producers/consumers reach them through the ingress. `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these addresses.
 
 Full endpoint table (service ↔ cluster address ↔ ingress URL/port) is the operational reference in [`dev_env/README.md §Ingress Endpoints`](../../dev_env/README.md).
 
@@ -258,15 +252,14 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~53%**
 | datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
 | datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
 | airflow (api-server + scheduler + triggerer) | dataspoke-01 | 3 Gi | Airflow 3.1 LocalExecutor; DAGs baked into a custom image (`${REGISTRY}/airflow:dev`, built from `docker-images/airflow/Dockerfile`) |
-| qdrant | dataspoke-01 | 1024 Mi | |
-| postgresql (dataspoke) | dataspoke-01 | 512 Mi | |
+| postgresql (dataspoke) | dataspoke-01 | 4096 Mi | Custom image with pgvector + AGE; built from `docker-images/postgres/Dockerfile` |
 | redis | dataspoke-01 | 256 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~12.8 Gi** | |
+| **Total** | | **~15.3 Gi** | |
 
-~11.2 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+~8.7 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
 
 ### CPU Budget (limits)
 

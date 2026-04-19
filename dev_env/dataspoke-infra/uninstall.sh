@@ -56,7 +56,7 @@ done
 # ---------------------------------------------------------------------------
 # Clean up secrets
 # ---------------------------------------------------------------------------
-for SECRET in dataspoke-postgres-secret dataspoke-redis-secret dataspoke-qdrant-secret; do
+for SECRET in dataspoke-postgres-secret dataspoke-redis-secret; do
   if kubectl get secret "${SECRET}" -n "${NS}" >/dev/null 2>&1; then
     info "Deleting secret '${SECRET}'..."
     kubectl delete secret "${SECRET}" -n "${NS}"

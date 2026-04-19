@@ -25,7 +25,7 @@ from src.shared.events import (
 )
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from src.shared.llm.client import LLMClient
-from src.shared.vector.client import QdrantManager
+from src.shared.vector.client import PgVectorManager
 
 
 class GenerationProposalSchema(BaseModel):
@@ -106,12 +106,12 @@ class GenerationService:
         datahub: DataHubClient,
         db: AsyncSession,
         llm: LLMClient,
-        qdrant: QdrantManager,
+        vector: PgVectorManager,
     ) -> None:
         self._datahub = datahub
         self._db = db
         self._llm = llm
-        self._qdrant = qdrant
+        self._vector = vector
 
     # ── Config CRUD ──────────────────────────────────────────────────────
 
@@ -316,21 +316,20 @@ class GenerationService:
                 str(u.dataset) for u in upstream_lineage.upstreams if hasattr(u, "dataset")
             ]
 
-        # 3. Similar datasets via Qdrant embedding search
+        # 3. Similar datasets via pgvector embedding search
         similar_schemas: list[dict[str, Any]] = []
         try:
             from src.backend.search.embedding import generate_embedding
 
             embedding, _ = await generate_embedding(self._llm, self._datahub, dataset_urn)
-            scored_points = await self._qdrant.search(
+            hits = await self._vector.search(
                 collection=EMBEDDING_COLLECTION,
                 vector=embedding,
                 limit=6,
                 score_threshold=SEARCH_SCORE_THRESHOLD,
             )
-            for pt in scored_points:
-                payload = pt.payload or {}
-                candidate_urn = payload.get("dataset_urn", "")
+            for hit in hits:
+                candidate_urn = hit.dataset_urn
                 if candidate_urn == dataset_urn:
                     continue
                 sim_schema_meta = await self._datahub.get_aspect(candidate_urn, SchemaMetadataClass)
@@ -394,7 +393,7 @@ class GenerationService:
             prompt, system=system, schema=GenerationProposalSchema
         )
 
-        # 7. Build similar diffs (empty for now — no Qdrant embeddings yet)
+        # 7. Build similar diffs against the similar schemas found via pgvector
         analyzer = SourceCodeAnalyzer(self._llm)
         similar_diffs = await analyzer.diff_similar_tables(schema_fields, similar_schemas)
 

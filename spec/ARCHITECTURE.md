@@ -56,8 +56,9 @@ DataHub is deployed and managed **separately** — DataSpoke connects to it as a
 │   UI                    │◄───────►│   GMS                   │
 │   API                   │  Kafka  │   Kafka                 │
 │   Backend               │  GQL    │   Search (ES)           │
-│   Qdrant / PostgreSQL   │         │   MySQL / Postgres      │
-│   Airflow / Redis       │         │                         │
+│   PostgreSQL (pgvector  │         │   MySQL / Postgres      │
+│   + AGE) / Redis /      │         │                         │
+│   Airflow                │         │                         │
 └─────────────────────────┘         └─────────────────────────┘
 ```
 
@@ -145,7 +146,7 @@ For the complete route catalogue, JWT authentication model, middleware stack, er
 
 **Technology**: Python 3.13, Airflow for orchestration
 
-Core computational layer. For the full backend specification — layered architecture, shared services, Airflow workflows, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL schema, Qdrant collections) in [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
+Core computational layer. For the full backend specification — layered architecture, shared services, Airflow workflows, and infrastructure integration patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL schema including pgvector tables) in [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md). Individual feature designs are specified per feature in `spec/feature/spoke/`.
 
 **Key capabilities by domain**:
 
@@ -154,7 +155,7 @@ Core computational layer. For the full backend specification — layered archite
 | Ingestion (DE) | Periodic (cron) and on-demand metadata ingestion via DataHub standard sources, enrichment sources and custom extractors (TBD) |
 | Validation (DE/DA) | DataHub assertion management, partition-aware rule execution, SQL-based timeseries validation |
 | Documentation (DE) | LLM-powered semantic clustering, source code analysis, ontology proposals |
-| Search (DA) | Embedding generation, vector similarity (Qdrant), NL query parsing |
+| Search (DA) | Embedding generation, vector similarity (PostgreSQL + pgvector), NL query parsing |
 | Text-to-SQL (DA) | Column profiling, join path recommendation, context window optimization |
 | Metrics (DG) | Health score aggregation, department mapping, trend analysis |
 | Visualization (DG) | Graph layout, medallion classification, blind spot detection |
@@ -177,10 +178,9 @@ For SDK entry points, aspect catalog, error handling, and configuration, see [`D
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Vector DB | Qdrant | Semantic search, embedding storage, metadata similarity |
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
 | Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, validation, embedding sync, metrics collection) |
-| Operational DB | PostgreSQL | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences |
+| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector), **graph queries** (Apache AGE, future use) |
 | Cache | Redis | Validation result caching for AI agent loops, API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
 
@@ -198,7 +198,7 @@ Validation runs are triggered by Airflow cron or by `POST /api/v1/spoke/common/d
 
 ### 3. Semantic Search & Text-to-SQL (UC5, UC7)
 
-Queries go to `/api/v1/spoke/common/search` (`?sql_context=true` for Text-to-SQL). The Search/Context Service parses NL intent, generates an embedding via LLM, runs a hybrid search (Qdrant vectors + DataHub GraphQL filters), enriches results with metadata (tags, lineage, usage stats), and — for `sql_context=true` — adds column profiles, join paths, and sample queries.
+Queries go to `/api/v1/spoke/common/search` (`?sql_context=true` for Text-to-SQL). The Search/Context Service parses NL intent, generates an embedding via LLM, runs a hybrid search (pgvector similarity + DataHub GraphQL filters), enriches results with metadata (tags, lineage, usage stats), and — for `sql_context=true` — adds column profiles, join paths, and sample queries.
 
 ### 4. Ontology & Documentation (UC4, UC8)
 
@@ -222,7 +222,7 @@ DE features are served through `/spoke/common/` routes (dataset-centric operatio
 |---------|----|-----------|--------------------|----------------|
 | Deep Technical Spec Ingestion | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Data Validation | UC2, UC3 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Automated Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Ontology Builder (shared), Source Code Analyzer, Consistency Engine | LLM API, Qdrant, PostgreSQL |
+| Automated Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Ontology Builder (shared), Source Code Analyzer, Consistency Engine | LLM API, PostgreSQL (pgvector) |
 
 ### Data Analysis (DA)
 
@@ -230,8 +230,8 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
-| Natural Language Search | UC5 | `/spoke/common/search/` | NL Query Parser, Vector Search, PII Classifier | Qdrant, LLM API |
-| Text-to-SQL Optimized Metadata | UC7 | `/spoke/common/search?sql_context=true` | Column Profiler, Join Path Recommender, Context Optimizer | Qdrant, DataHub GraphQL |
+| Natural Language Search | UC5 | `/spoke/common/search/` | NL Query Parser, Vector Search, PII Classifier | PostgreSQL (pgvector), LLM API |
+| Text-to-SQL Optimized Metadata | UC7 | `/spoke/common/search?sql_context=true` | Column Profiler, Join Path Recommender, Context Optimizer | PostgreSQL (pgvector), DataHub GraphQL |
 | Data Validation | UC2 | `/spoke/common/validation/` | (shared with DE) | (shared with DE) |
 
 ### Data Governance (DG)
@@ -239,13 +239,13 @@ DA features are served through `/spoke/common/` routes. No `/spoke/da/` routes a
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
 | Enterprise Metrics Dashboard | UC6 | `/spoke/dg/metric/` | Health Score Aggregator, Department Mapper, Trend Analysis | PostgreSQL, Airflow |
-| Multi-Perspective Data Overview | UC8 | `/spoke/dg/overview/` | Ontology Builder (shared), Graph Layout Engine, Medallion Detector, Blind Spot Analyzer | Qdrant, LLM API, PostgreSQL |
+| Multi-Perspective Data Overview | UC8 | `/spoke/dg/overview/` | Ontology Builder (shared), Graph Layout Engine, Medallion Detector, Blind Spot Analyzer | PostgreSQL (pgvector), LLM API |
 
 ### Common (cross-group)
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|--------------------|----------------|
-| Ontology/Taxonomy Builder | UC4, UC8 | `/spoke/common/ontology/` | LLM Classification, Hierarchy Builder, Relationship Inference | LLM API, PostgreSQL, Qdrant |
+| Ontology/Taxonomy Builder | UC4, UC8 | `/spoke/common/ontology/` | LLM Classification, Hierarchy Builder, Relationship Inference | LLM API, PostgreSQL (pgvector; AGE reserved for future graph-shaped queries) |
 | Redefined DataHub Functions *(TBD)* | — | `/spoke/common/data` (creation, modification) | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data | DataHub SDK (read + write) |
 
 ### Cross-Cutting Infrastructure
@@ -299,10 +299,9 @@ Shared by all features.
 | Frontend | Next.js + TypeScript | SSR, React ecosystem, type safety |
 | API | FastAPI (Python 3.13) | Async support, auto OpenAPI docs, Pydantic validation |
 | Backend | Python 3.13 | Rich data/ML libraries, DataHub SDK compatibility |
-| Vector DB | Qdrant | Self-hostable, Rust-based performance, simple deployment |
 | Message Broker | Kafka | DataHub integration standard |
 | Orchestration | Airflow | Python DAG definitions, HttpOperator tasks calling internal activity endpoints, built-in scheduling and retry |
-| Operational DB | PostgreSQL | ACID guarantees, JSONB flexibility |
+| Operational DB | PostgreSQL 17 (pgvector + Apache AGE) | ACID guarantees, JSONB flexibility, first-class vector similarity (pgvector), graph queries available (AGE) |
 | Cache | Redis | API caching, rate limiting, session management |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
 | Charts | Highcharts / Recharts | Rich visualization (metrics dashboards, graph views) |
@@ -330,7 +329,7 @@ For full testing conventions, toolchain configuration, mocking rules, and the in
 
 ### Kubernetes Topology
 
-DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed), `dataspoke-event-consumer` (optional Kafka consumer Deployment — co-located in the API by default), `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` + `dataspoke-airflow-triggerer` (Airflow 3.1 LocalExecutor; api-server replaces the former Flask webserver), `qdrant` + `postgresql` (StatefulSets with PV), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST) and `datahub-kafka:9092` (event streaming).
+DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed), `dataspoke-event-consumer` (optional Kafka consumer Deployment — co-located in the API by default), `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` + `dataspoke-airflow-triggerer` (Airflow 3.1 LocalExecutor; api-server replaces the former Flask webserver), `postgresql` (StatefulSet with PV — custom image layering pgvector + Apache AGE on PG 17), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST) and `datahub-kafka:9092` (event streaming).
 
 `dataspoke-event-consumer` is optional — enable the separate pod for independent scaling in production (Kafka consumers scale by partition count).
 
@@ -349,7 +348,7 @@ Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, na
 
 Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values differ. In dev, they point to the nginx-ingress external IP (TCP services) or ingress hostnames (HTTP services). In production, they are injected via Helm values → Kubernetes ConfigMap/Secret.
 
-Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Qdrant, Airflow, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
+Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Airflow, LLM API. Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain. For the full variable listing with defaults, see [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
 
 For production, secrets are stored as Kubernetes Secrets and injected via Helm values → ConfigMap/Secret → container environment. See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
 
@@ -385,9 +384,8 @@ The repository is organized by deployment concern and application layer. Key top
 |----------|--------|-----------|-------------|
 | API framework | FastAPI | Async, auto OpenAPI, Pydantic, high perf | Flask (simpler but no async), Django (too opinionated) |
 | Frontend | Next.js | SSR, file-based routing, React ecosystem | CRA (no SSR), Vue (smaller ecosystem) |
-| Vector DB | Qdrant | Self-hostable, Rust perf, simple binary | Weaviate (if multi-tenancy or GraphQL needed), Pinecone (managed only) |
 | Orchestration | Airflow | Python DAG definitions, HttpOperator tasks, built-in UI, LocalExecutor | Temporal (heavier infra), Kestra (if YAML-first flows preferred) |
-| Operational DB | PostgreSQL | ACID, JSONB, mature ecosystem | MongoDB (no ACID for critical operational data) |
+| Operational DB | PostgreSQL 17 (pgvector + AGE) | Single-engine ACID storage for relational, vector, and graph workloads. Consolidates operational DB + vector DB + graph DB to reduce infra surface | Dedicated Qdrant (Rust perf, separate infra); Weaviate (multi-tenant); Pinecone (managed only); Neo4j (dedicated graph) |
 | API documentation | FastAPI auto-generated OpenAPI + Pydantic schemas as SSOT | Always-in-sync docs; AI agents read route definitions directly | Standalone OpenAPI file (requires manual sync) |
 
 ### Architectural Choices

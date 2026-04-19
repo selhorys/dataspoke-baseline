@@ -70,9 +70,6 @@ DS_REDIS_HOST="${INGRESS_IP}"
 DS_REDIS_PORT=9202
 DS_REDIS_PASSWORD="${DATASPOKE_REDIS_PASSWORD:-}"
 
-DS_QDRANT_HOST="${INGRESS_IP}"
-DS_QDRANT_HTTP_PORT=9203
-
 DH_KAFKA_HOST="${INGRESS_IP}"
 DH_KAFKA_PORT=9005
 
@@ -233,22 +230,6 @@ check_dataspoke_redis() {
   fi
 }
 
-check_dataspoke_qdrant() {
-  local label="dataspoke-qdrant (${DS_QDRANT_HOST}:${DS_QDRANT_HTTP_PORT})"
-  if ! _tcp_check "$DS_QDRANT_HOST" "$DS_QDRANT_HTTP_PORT"; then
-    _fail "$label — port not reachable"
-    ((FAILURES++)); return
-  fi
-  if $QUICK; then _pass "$label (tcp)"; return; fi
-
-  if _http_ok "http://${DS_QDRANT_HOST}:${DS_QDRANT_HTTP_PORT}/healthz"; then
-    _pass "$label"
-  else
-    _fail "$label — /healthz did not return 2xx"
-    ((FAILURES++))
-  fi
-}
-
 check_dataspoke_airflow() {
   local label="dataspoke-airflow (${AIRFLOW_URL})"
   if ! _tcp_check "${INGRESS_IP}" 80; then
@@ -257,21 +238,19 @@ check_dataspoke_airflow() {
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  # Airflow health endpoint returns {"metadatabase":{"status":"healthy"},"scheduler":{"status":"healthy"}}
-  # Basic auth required if configured.
-  local auth_args=()
-  if [[ -n "$DS_AIRFLOW_USER" && -n "$DS_AIRFLOW_PASSWORD" ]]; then
-    auth_args=(-u "${DS_AIRFLOW_USER}:${DS_AIRFLOW_PASSWORD}")
-  fi
+  # Airflow 3.x health endpoint (public, no auth). Returns
+  # {"metadatabase":{"status":"healthy"},"scheduler":{"status":"healthy"},
+  #  "triggerer":{"status":"healthy"},"dag_processor":{"status":"healthy"}}.
+  # Airflow 2.x's /api/v1/health was removed in 3.0.
+  local health_url="${AIRFLOW_URL}/api/v2/monitor/health"
 
   local health_body
   health_body=$(curl -s -o - -w "" --connect-timeout 3 --max-time 5 \
-    "${auth_args[@]+"${auth_args[@]}"}" \
-    "${AIRFLOW_URL}/api/v1/health" 2>/dev/null) || true
+    "${health_url}" 2>/dev/null) || true
 
   if echo "$health_body" | grep -q '"status": *"healthy"'; then
     _pass "$label"
-  elif _http_alive "${AIRFLOW_URL}/api/v1/health" "${auth_args[@]+"${auth_args[@]}"}"; then
+  elif _http_alive "${health_url}"; then
     _fail "$label — HTTP alive but health endpoint reports unhealthy: ${health_body}"
     ((FAILURES++))
   else
@@ -419,7 +398,6 @@ echo ""
 echo "DataSpoke Infra:"
 check_dataspoke_postgresql
 check_dataspoke_redis
-check_dataspoke_qdrant
 check_dataspoke_airflow
 check_dataspoke_api
 

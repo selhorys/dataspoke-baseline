@@ -73,10 +73,6 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_REDIS_HOST` | `localhost` | Redis host |
 | `DATASPOKE_REDIS_PORT` | `6379` | Redis port |
 | `DATASPOKE_REDIS_PASSWORD` | _(empty)_ | Redis password |
-| `DATASPOKE_QDRANT_HOST` | `localhost` | Qdrant host |
-| `DATASPOKE_QDRANT_HTTP_PORT` | `6333` | Qdrant HTTP port |
-| `DATASPOKE_QDRANT_GRPC_PORT` | `6334` | Qdrant gRPC port |
-| `DATASPOKE_QDRANT_API_KEY` | _(empty)_ | Qdrant API key |
 | `DATASPOKE_AIRFLOW_URL` | `http://localhost:8080` | Airflow API base URL |
 | `DATASPOKE_AIRFLOW_USER` | _(empty)_ | Airflow basic auth username |
 | `DATASPOKE_AIRFLOW_PASSWORD` | _(empty)_ | Airflow basic auth password |

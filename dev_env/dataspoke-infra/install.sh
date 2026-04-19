@@ -59,16 +59,6 @@ kubectl create secret generic dataspoke-redis-secret \
   --from-literal=REDIS_PASSWORD="${DATASPOKE_REDIS_PASSWORD}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-if [[ -n "${DATASPOKE_QDRANT_API_KEY:-}" ]]; then
-  info "Creating dataspoke-qdrant-secret..."
-  kubectl create secret generic dataspoke-qdrant-secret \
-    --namespace "${NS}" \
-    --from-literal=QDRANT_API_KEY="${DATASPOKE_QDRANT_API_KEY}" \
-    --dry-run=client -o yaml | kubectl apply -f -
-else
-  info "DATASPOKE_QDRANT_API_KEY not set — skipping qdrant secret."
-fi
-
 # Generate internal-auth token for Airflow→API calls (idempotent: skip if secret exists)
 if kubectl -n "${NS}" get secret dataspoke-internal-auth >/dev/null 2>&1; then
   info "dataspoke-internal-auth already exists — skipping."
@@ -95,7 +85,6 @@ add_repo_if_missing() {
 
 info "Adding/updating Helm repositories..."
 add_repo_if_missing bitnami         "https://charts.bitnami.com/bitnami"
-add_repo_if_missing qdrant          "https://qdrant.github.io/qdrant-helm"
 add_repo_if_missing apache-airflow  "https://airflow.apache.org"
 helm repo update
 
@@ -105,6 +94,18 @@ helm repo update
 if [[ -d "$CHART_DIR" ]]; then
   info "Building Helm chart dependencies..."
   helm dependency build "$CHART_DIR"
+fi
+
+# ---------------------------------------------------------------------------
+# Build + push the custom PostgreSQL image (pgvector + Apache AGE). Idempotent
+# — the existing :dev tag is overwritten. Skip with SKIP_POSTGRES_BUILD=1 when
+# the image is already up-to-date in the registry.
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_POSTGRES_BUILD:-0}" != "1" ]]; then
+  info "Building DataSpoke PostgreSQL image (pgvector + AGE)..."
+  bash "$SCRIPT_DIR/../dataspoke-postgres/build.sh" dev
+else
+  info "SKIP_POSTGRES_BUILD=1 set — skipping PostgreSQL image build."
 fi
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,10 @@ if [[ -d "$CHART_DIR" ]]; then
     --set airflow.data.metadataConnection.user="${DATASPOKE_POSTGRES_USER}" \
     --set airflow.data.metadataConnection.pass="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set-string global.imageRegistry="" \
+    --set-string postgresql.image.registry="" \
+    --set-string postgresql.image.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/postgres" \
+    --set-string postgresql.image.tag=dev \
     --set api.image.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/api" \
     --set api.image.tag=dev \
     --set-string airflow.images.airflow.repository="${DATASPOKE_DEV_IMAGE_REGISTRY}/airflow" \
@@ -160,6 +165,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Create pgvector + AGE extensions as the postgres superuser.
+#
+# The Bitnami chart's initdb scripts run as the application user `dataspoke`,
+# which does not have CREATE EXTENSION privilege. This step is idempotent
+# (CREATE EXTENSION IF NOT EXISTS) and ensures the extensions are available
+# on every reinstall without granting the app user superuser rights.
+# ---------------------------------------------------------------------------
+info "Ensuring pgvector + age extensions in the dataspoke database..."
+kubectl rollout status statefulset/dataspoke-postgresql -n "${NS}" --timeout=120s >/dev/null 2>&1 || true
+kubectl exec -n "${NS}" dataspoke-postgresql-0 -- \
+  env PGPASSWORD="${DATASPOKE_POSTGRES_PASSWORD}" \
+  psql -U postgres -d "${DATASPOKE_POSTGRES_DB}" -c "
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS age;
+    GRANT USAGE ON SCHEMA ag_catalog TO ${DATASPOKE_POSTGRES_USER};
+    GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO ${DATASPOKE_POSTGRES_USER};
+  " >/dev/null 2>&1 \
+  && info "  Extensions ready (vector + age)." \
+  || warn "  Could not create extensions — run manually via kubectl exec."
+
+# ---------------------------------------------------------------------------
 # Wait for Airflow api-server to become ready (Airflow 3.x renamed webserver → api-server)
 # ---------------------------------------------------------------------------
 info "Waiting for Airflow api-server to become ready..."
@@ -181,5 +207,4 @@ if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
 fi
 echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9201"
 echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9202"
-echo "  Qdrant:        ${DATASPOKE_DEV_INGRESS_IP:-<ingress-ip>}:9203 (HTTP), :9204 (gRPC)"
 echo ""
