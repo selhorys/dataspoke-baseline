@@ -52,7 +52,6 @@
       "WebFetch(domain:helm.sh)",
       "WebFetch(domain:docs.docker.com)",
       "WebFetch(domain:datahubproject.io)",
-      "WebFetch(domain:qdrant.tech)",
       "WebFetch(domain:developer.mozilla.org)",
       "WebFetch(domain:docs.anthropic.com)",
       "WebFetch(domain:code.claude.com)"

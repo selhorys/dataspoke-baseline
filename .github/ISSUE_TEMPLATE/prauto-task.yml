@@ -30,7 +30,7 @@ body:
       options:
         - label: Backend - API routes and services
         - label: Backend - Airflow DAGs
-        - label: Backend - DataHub integration, PostgreSQL models, Qdrant vector search
+        - label: Backend - DataHub integration, PostgreSQL models (relational + pgvector)
         - label: Frontend UI
         - label: Helm charts / Kubernetes manifests
         - label: Dev environment

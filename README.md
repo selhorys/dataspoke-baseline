@@ -23,7 +23,7 @@ Fork or copy this repository to create a data catalog for your organization.
 
 ### Deploy to Production
 
-DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables all components: frontend, API, workers, and infrastructure (PostgreSQL, Redis, Qdrant, Airflow).
+DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables all components: frontend, API, workers, and infrastructure (PostgreSQL with pgvector + Apache AGE, Redis, Airflow).
 
 1. **Build and push images**: `docker build -t <registry>/dataspoke/api:latest -f docker-images/api/Dockerfile .` (Workers and Frontend images TBD)
 2. **Configure**: Copy `helm-charts/dataspoke/values.yaml` and customize — container images, ingress hosts/TLS, DataHub connection (`config.datahub.gmsUrl`), and secrets (PostgreSQL, Redis, JWT, LLM API key). For production secrets management, consider [External Secrets Operator](https://external-secrets.io/).
@@ -48,7 +48,7 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 
 ### Dev Environment Setup
 
-The dev environment provisions infrastructure (DataHub, PostgreSQL, Redis, Qdrant, Airflow, example data sources) into a Kubernetes cluster. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
+The dev environment provisions infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, example data sources) into a Kubernetes cluster. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
 
 ```bash
 cp dev_env/.env.example dev_env/.env   # Set your Kubernetes context

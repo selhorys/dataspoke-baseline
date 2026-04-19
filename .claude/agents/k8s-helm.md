@@ -22,7 +22,7 @@ Your job is to write Helm charts, Dockerfiles, and dev environment scripts.
 helm-charts/dataspoke/         # Umbrella chart (values.yaml, values-dev.yaml)
 ├── templates/                 # ConfigMap, Secrets, _helpers.tpl, api-ingress.yaml
 ├── subcharts/                 # api/, frontend/, workers/
-└── charts/                    # Packaged deps (PostgreSQL, Redis, Qdrant, Airflow)
+└── charts/                    # Packaged deps (PostgreSQL, Redis, Airflow)
 
 docker-images/                 # One Dockerfile per service
 dev_env/                       # Install/uninstall scripts, .env

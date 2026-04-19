@@ -110,7 +110,7 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 ### Production (`values.yaml`)
 
 - All components enabled with multiple replicas for frontend/API
-- PV persistence for PostgreSQL (50 Gi) and Qdrant (50 Gi)
+- PV persistence for PostgreSQL (50 Gi — hosts relational tables + pgvector embeddings + AGE graph data)
 - Ingress enabled for frontend and API (nginx class, cert-manager TLS)
 - NetworkPolicy for DataHub cross-namespace egress (disabled by default)
 - Airflow uses parent chart's PostgreSQL for metadata DB
