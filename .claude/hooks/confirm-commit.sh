@@ -21,10 +21,13 @@ if [[ "$tool_name" != "Bash" ]]; then
   exit 0
 fi
 
-# Anchor at start-of-command (after optional leading whitespace).
-# Match only literal `git commit` invocations; commands that merely mention
-# the string (e.g., `echo "git commit"`, `grep "git commit"`) should not trigger.
-commit_re='^[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'
+# Match `git commit` anywhere in the command, but only when preceded by
+# a command separator (start-of-string, `;`, `&`, `|`, `(`) or whitespace
+# immediately after one. This catches chained forms like
+# `git diff && git commit ...` or `git add -A; git commit ...` while still
+# rejecting accidental substring mentions like `echo "git commit"` or
+# `grep "git commit"` where the preceding char is a quote.
+commit_re='(^|[;&|()])[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'
 if ! printf '%s' "$cmd" | grep -qE "$commit_re"; then
   exit 0
 fi
