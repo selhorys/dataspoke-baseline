@@ -97,7 +97,8 @@ async def test_refresh_with_valid_cookie_returns_new_token(client: AsyncClient) 
         assert refresh_cookie is not None
 
         # Use the refresh cookie to get a new access token
-        refresh_resp = await client.post(AUTH_REFRESH, cookies={"refresh_token": refresh_cookie})
+        client.cookies.set("refresh_token", refresh_cookie)
+        refresh_resp = await client.post(AUTH_REFRESH)
         assert refresh_resp.status_code == 200
         body = refresh_resp.json()
         assert "access_token" in body
@@ -117,7 +118,8 @@ async def test_revoke_clears_cookie(client: AsyncClient) -> None:
         refresh_cookie = login_resp.cookies.get("refresh_token")
 
         # Revoke
-        revoke_resp = await client.post(AUTH_REVOKE, cookies={"refresh_token": refresh_cookie})
+        client.cookies.set("refresh_token", refresh_cookie)
+        revoke_resp = await client.post(AUTH_REVOKE)
         assert revoke_resp.status_code == 204
     finally:
         app.dependency_overrides.pop(get_redis, None)
@@ -214,13 +216,12 @@ async def test_revoke_then_refresh_returns_401_revoked(client: AsyncClient) -> N
         assert refresh_cookie is not None
 
         # Revoke the token — Redis should now hold the revocation key
-        revoke_resp = await client.post(AUTH_REVOKE, cookies={"refresh_token": refresh_cookie})
+        client.cookies.set("refresh_token", refresh_cookie)
+        revoke_resp = await client.post(AUTH_REVOKE)
         assert revoke_resp.status_code == 204
 
         # Trying to refresh with the revoked cookie must fail
-        refresh_resp = await client.post(
-            AUTH_REFRESH, cookies={"refresh_token": refresh_cookie}
-        )
+        refresh_resp = await client.post(AUTH_REFRESH)
         assert refresh_resp.status_code == 401
         body = refresh_resp.json()
         assert body["detail"]["error_code"] == "UNAUTHORIZED"
@@ -244,11 +245,14 @@ async def test_token_rotation_rejects_old_cookie(client: AsyncClient) -> None:
         assert old_cookie is not None
 
         # First refresh — rotates the token; old cookie goes into the revocation store
-        refresh1 = await client.post(AUTH_REFRESH, cookies={"refresh_token": old_cookie})
+        client.cookies.set("refresh_token", old_cookie)
+        refresh1 = await client.post(AUTH_REFRESH)
         assert refresh1.status_code == 200
 
-        # Second refresh attempt with the OLD cookie must be rejected
-        refresh2 = await client.post(AUTH_REFRESH, cookies={"refresh_token": old_cookie})
+        # Second refresh attempt with the OLD cookie must be rejected.
+        # Refresh1 mutated client.cookies to the rotated token; restore old.
+        client.cookies.set("refresh_token", old_cookie)
+        refresh2 = await client.post(AUTH_REFRESH)
         assert refresh2.status_code == 401
         body = refresh2.json()
         assert body["detail"]["error_code"] == "UNAUTHORIZED"
@@ -280,9 +284,8 @@ async def test_revoke_with_invalid_cookie_is_noop(client: AsyncClient) -> None:
     fake_redis = _FakeRedis()
     app.dependency_overrides[get_redis] = lambda: fake_redis
     try:
-        revoke_resp = await client.post(
-            AUTH_REVOKE, cookies={"refresh_token": "this.is.not.a.valid.jwt"}
-        )
+        client.cookies.set("refresh_token", "this.is.not.a.valid.jwt")
+        revoke_resp = await client.post(AUTH_REVOKE)
         assert revoke_resp.status_code == 204
         assert fake_redis.is_empty()
     finally:
@@ -323,9 +326,8 @@ async def test_refresh_redis_failure_returns_503(client: AsyncClient) -> None:
     # Now swap in the failing Redis and attempt the refresh.
     app.dependency_overrides[get_redis] = lambda: _FailingRedis()
     try:
-        refresh_resp = await client.post(
-            AUTH_REFRESH, cookies={"refresh_token": refresh_cookie}
-        )
+        client.cookies.set("refresh_token", refresh_cookie)
+        refresh_resp = await client.post(AUTH_REFRESH)
         assert refresh_resp.status_code == 503
         body = refresh_resp.json()
         assert body["detail"]["error_code"] == "SERVICE_UNAVAILABLE"

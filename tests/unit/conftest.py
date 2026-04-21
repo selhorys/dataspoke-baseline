@@ -7,6 +7,7 @@ shared/, and workflows/ test suites.
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.fixture
@@ -17,8 +18,12 @@ def datahub():
 
 @pytest.fixture
 def db():
-    """Mock async DB session — no real PostgreSQL connection."""
-    return AsyncMock()
+    """Mock async DB session — no real PostgreSQL connection.
+
+    `spec=AsyncSession` keeps sync methods (add, delete, merge) as sync
+    MagicMocks so `db.add(x)` doesn't return an un-awaited coroutine.
+    """
+    return AsyncMock(spec=AsyncSession)
 
 
 @pytest.fixture

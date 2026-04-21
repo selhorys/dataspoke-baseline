@@ -93,7 +93,7 @@ async def test_complete_json_returns_dict(mock_create, mock_embed) -> None:
 @patch("src.shared.llm.client._create_chat_model")
 async def test_complete_json_with_schema_validates(mock_create, mock_embed) -> None:
     mock_model = AsyncMock()
-    mock_model.with_structured_output.side_effect = NotImplementedError
+    mock_model.with_structured_output = MagicMock(side_effect=NotImplementedError)
     mock_model.ainvoke.return_value = AIMessage(content=json.dumps({"name": "test", "value": 42}))
     mock_create.return_value = mock_model
     mock_embed.return_value = MagicMock()
@@ -107,7 +107,7 @@ async def test_complete_json_with_schema_validates(mock_create, mock_embed) -> N
 @patch("src.shared.llm.client._create_chat_model")
 async def test_complete_json_invalid_schema_raises(mock_create, mock_embed) -> None:
     mock_model = AsyncMock()
-    mock_model.with_structured_output.side_effect = NotImplementedError
+    mock_model.with_structured_output = MagicMock(side_effect=NotImplementedError)
     mock_model.ainvoke.return_value = AIMessage(
         content=json.dumps({"name": "test", "value": "not_an_int"})
     )
