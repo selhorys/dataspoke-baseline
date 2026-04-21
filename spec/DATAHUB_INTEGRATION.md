@@ -220,7 +220,7 @@ A single `confluent_kafka.Consumer` (group `dataspoke-consumers`, `auto.offset.r
 
 | Event Aspect | Consumer | Action |
 |-------------|---------|--------|
-| `datasetProperties` | NL Search | Re-generate embedding, update Qdrant |
+| `datasetProperties` | NL Search | Re-generate embedding, update pgvector table |
 | `schemaMetadata` | NL Search, Doc Generation | Re-embed schema, detect new clusters |
 | `datasetProfile` | Validator, Predictive SLA | Run anomaly detection on new profile |
 | `operation` | Predictive SLA | Check freshness against SLA targets |

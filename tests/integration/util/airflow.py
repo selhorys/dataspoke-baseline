@@ -120,7 +120,7 @@ def _default_mock_llm() -> AsyncMock:
     return m
 
 
-def _default_mock_qdrant() -> AsyncMock:
+def _default_mock_vector() -> AsyncMock:
     m = AsyncMock()
     m.search = AsyncMock(return_value=[])
     return m
@@ -146,7 +146,7 @@ class ActivityServer:
 
     Starts a uvicorn server on a configurable port and patches the
     ``make_*`` factories in the activities module so that services
-    without real infrastructure (LLM, Qdrant, cache, notification) use
+    without real infrastructure (LLM, vector, cache, notification) use
     test mocks.  DataHub and DB use real dev-env connections.
 
     The ``callback_url`` property returns the URL that Airflow (inside
@@ -157,7 +157,7 @@ class ActivityServer:
 
         async with ActivityServer() as server:
             # server.callback_url → "http://host.docker.internal:8000"
-            # server.mock_llm, server.mock_qdrant, etc. are accessible
+            # server.mock_llm, server.mock_vector, etc. are accessible
             server.mock_llm.complete_json.return_value = {"key": "val"}
             ...
     """
@@ -175,7 +175,7 @@ class ActivityServer:
 
         # Exposed mocks — tests can reconfigure return values
         self.mock_llm = _default_mock_llm()
-        self.mock_qdrant = _default_mock_qdrant()
+        self.mock_vector = _default_mock_vector()
         self.mock_cache = _default_mock_cache()
         self.mock_notification = _default_mock_notification()
 
@@ -222,8 +222,8 @@ class ActivityServer:
                 lambda: self.mock_llm,
             ),
             patch(
-                f"{_ACTIVITIES_MODULE}.make_qdrant",
-                lambda: self.mock_qdrant,
+                f"{_ACTIVITIES_MODULE}.make_vector",
+                lambda: self.mock_vector,
             ),
             patch(
                 f"{_ACTIVITIES_MODULE}.make_cache",

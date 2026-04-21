@@ -20,7 +20,6 @@ from tests.integration.util.kafka import load_seed_messages, reset_topics
 from tests.integration.util.kafka import reset_all as kafka_reset_all
 from tests.integration.util.postgres import reset_all as pg_reset_all
 from tests.integration.util.postgres import reset_schemas, reset_tables
-from tests.integration.util.qdrant import reset_all as qdrant_reset_all
 
 __all__ = [
     "pg_reset_all",
@@ -36,5 +35,4 @@ __all__ = [
     "ActivityServer",
     "ALL_DAG_IDS",
     "kill_running_dag_runs",
-    "qdrant_reset_all",
 ]

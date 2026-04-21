@@ -109,7 +109,7 @@ uv run python -m tests.integration.util --reset-all   # Idempotent: PG + Kafka +
 
 Seeds 11 schemas, 17 tables (~600 rows), 3 Kafka topics (~45 messages), and 20 DataHub dataset entities with Imazon use-case data. See `spec/feature/DEV_ENV.md §Dummy Data` for details.
 
-> After a fresh reinstall, trigger the `embedding-sync` DAG with `mode=full` to rebuild the `dataspoke.dataset_embeddings` table in PostgreSQL (pgvector backend replaces Qdrant).
+> After a fresh reinstall, trigger the `embedding-sync` DAG with `mode=full` to rebuild the `dataspoke.dataset_embeddings` pgvector table in PostgreSQL.
 
 ## Selective Reinstall
 

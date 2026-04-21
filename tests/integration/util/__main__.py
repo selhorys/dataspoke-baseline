@@ -5,7 +5,6 @@ Usage:
     uv run python -m tests.integration.util --pg             # PostgreSQL only
     uv run python -m tests.integration.util --kafka          # Kafka only
     uv run python -m tests.integration.util --datahub        # DataHub only
-    uv run python -m tests.integration.util --qdrant         # Qdrant only (delete all collections)
 """
 
 from __future__ import annotations
@@ -24,9 +23,6 @@ def main() -> None:
         asyncio.run(postgres.reset_all())
         kafka.reset_all()
         asyncio.run(datahub.reset_and_ingest())
-        from tests.integration.util import qdrant
-        qdrant_deleted = asyncio.run(qdrant.reset_all())
-        print(f"  Deleted {qdrant_deleted} Qdrant collections.")
         print("[INFO] Done.")
         return
 
@@ -41,12 +37,6 @@ def main() -> None:
     if "--datahub" in args:
         print("[INFO] Resetting DataHub datasets...")
         asyncio.run(datahub.reset_and_ingest())
-
-    if "--qdrant" in args:
-        print("[INFO] Resetting Qdrant (delete all collections)...")
-        from tests.integration.util import qdrant
-        deleted = asyncio.run(qdrant.reset_all())
-        print(f"  Deleted {deleted} Qdrant collections.")
 
     print("[INFO] Done.")
 

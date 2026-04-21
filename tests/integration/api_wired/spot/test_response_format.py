@@ -4,7 +4,7 @@ Hits each major router via HTTP and verifies response format compliance
 (snake_case fields, pagination envelope, resp_time, error envelope).
 
 Prerequisites:
-- All dev-env port-forwards active (DataHub, PostgreSQL, Redis, Qdrant)
+- All dev-env port-forwards active (DataHub, PostgreSQL, Redis)
 - Dummy data ingested via conftest.py
 """
 

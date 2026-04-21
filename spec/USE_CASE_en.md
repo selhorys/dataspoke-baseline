@@ -226,7 +226,7 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 | **Custom Extractor Framework** | Plugin system for PL/SQL lineage parsing, CHECK constraint extraction | Parsing stored procedure bodies is outside DataHub's scope |
 | **Field Mapping Engine** | Map Confluence labels → tags, Excel columns → custom properties | DataHub accepts structured aspects but doesn't transform unstructured inputs |
 | **Orchestration (Airflow)** | Schedule, per-phase retry, notifications | DataHub runs recipes atomically; multi-source orchestration requires Airflow |
-| **Vector Index Sync** | Generate embeddings → Qdrant on successful ingestion | DataHub has Elasticsearch keyword search, not vector similarity |
+| **Vector Index Sync** | Generate embeddings → PostgreSQL (pgvector) on successful ingestion | DataHub has Elasticsearch keyword search, not vector similarity |
 
 #### Outcome
 
@@ -1012,7 +1012,7 @@ NL Search is a **read** consumer. It queries multiple DataHub aspects to build t
 
 | Search Step | DataHub Aspect | REST API Path | What It Returns |
 |------------|---------------|---------------|----------------|
-| Embedding source | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | Descriptions — vectorized into Qdrant |
+| Embedding source | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | Descriptions — vectorized into pgvector |
 | Column-level PII detection | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | Column names (`email`, `full_name`, etc.) |
 | PII / GDPR tags | `globalTags` | `GET /aspects/{urn}?aspect=globalTags` | `urn:li:tag:PII`, `urn:li:tag:GDPR` |
 | Marketing lineage | `upstreamLineage` | GraphQL: `searchAcrossLineage` | Downstream consumers in marketing domain |
@@ -1061,7 +1061,7 @@ usage = graph.get_timeseries_values(
 | Component | Responsibility | Why DataHub Can't Do This |
 |-----------|---------------|--------------------------|
 | **NL Query Parser** | Parse natural language into structured intent (entity type, filters, compliance context) | DataHub search is keyword-based, no intent parsing |
-| **Vector Search (Qdrant)** | Hybrid search: vector similarity + graph traversal for multi-dimensional queries | DataHub has Elasticsearch keyword search only |
+| **Vector Search (pgvector)** | Hybrid search: vector similarity + graph traversal for multi-dimensional queries | DataHub has Elasticsearch keyword search only |
 | **PII Classification Engine** | Detect PII fields by column name patterns + tag presence, classify into tiers | DataHub stores tags but has no classification logic |
 | **Compliance Report Generator** | Auto-generate GDPR audit reports with lineage diagrams and gap analysis | DataHub provides raw metadata, no report generation |
 | **Conversational Refinement** | Support follow-up queries in context ("Which tables lack...") | DataHub search is stateless, no conversation support |

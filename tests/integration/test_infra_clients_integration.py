@@ -5,13 +5,13 @@ Test-specific data extensions (created and cleaned up by fixtures/tests):
   with StatusClass, DatasetPropertiesClass, and SchemaMetadataClass aspects.
   Unique URN per run; soft-deleted on teardown.
 - Transient Redis keys under ``integration_test:infra_clients:*`` prefix.
-- Transient Qdrant collection ``integration_test_infra_clients`` with 2 points.
+- Pgvector connectivity probe against PostgreSQL (no row writes).
 - LLM tests require DATASPOKE_LLM_API_KEY env var (skipped otherwise).
 
 Prerequisites:
 - DataHub GMS port-forwarded to localhost:9004
 - Redis port-forwarded to localhost:9202
-- Qdrant port-forwarded to localhost:9203 (HTTP) / 9204 (gRPC)
+- PostgreSQL (dataspoke, with pgvector) port-forwarded to localhost:9201
 """
 
 import asyncio
@@ -112,31 +112,11 @@ async def test_redis_pubsub(redis_client) -> None:
     assert "test_message" in received
 
 
-# --- Qdrant (qdrant_manager fixture provided by conftest.py) ---
+# --- pgvector (vector_manager fixture provided by conftest.py) ---
 
 
-async def test_qdrant_connectivity(qdrant_manager) -> None:
-    assert await qdrant_manager.check_connectivity() is True
-
-
-async def test_qdrant_collection_lifecycle(qdrant_manager) -> None:
-    from qdrant_client.models import PointStruct
-
-    col_name = "integration_test_infra_clients"
-
-    await qdrant_manager.ensure_collection(col_name, vector_size=4)
-    await qdrant_manager.upsert(
-        col_name,
-        [
-            PointStruct(id=1, vector=[0.1, 0.2, 0.3, 0.4], payload={"label": "a"}),
-            PointStruct(id=2, vector=[0.5, 0.6, 0.7, 0.8], payload={"label": "b"}),
-        ],
-    )
-
-    results = await qdrant_manager.search(col_name, [0.1, 0.2, 0.3, 0.4], limit=2)
-    assert len(results) > 0
-
-    await qdrant_manager.delete(col_name, [1, 2])
+async def test_pgvector_connectivity(vector_manager) -> None:
+    assert await vector_manager.check_connectivity() is True
 
 
 # --- LLM ---

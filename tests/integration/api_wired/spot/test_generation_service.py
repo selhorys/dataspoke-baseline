@@ -4,7 +4,7 @@ Test-specific data extensions (created and cleaned up within each test):
 - Transient generation_configs rows via PUT API (Imazon-prefixed test URNs).
 - Transient generation_results rows from POST generate runs.
 - Transient dataspoke.events rows for event pagination tests.
-- LLM and Qdrant calls use stubs via DATASPOKE_TEST_MODE on the host-mode server.
+- LLM and vector calls use stubs via DATASPOKE_TEST_MODE on the host-mode server.
 
 Prerequisites:
 - Host-mode DataSpoke server running (DATASPOKE_TEST_MODE=true uv run -m src.cli --backend-only)

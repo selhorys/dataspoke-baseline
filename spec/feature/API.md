@@ -39,7 +39,7 @@ structure that maps directly to the user-group taxonomy defined in the MANIFESTO
 ```
 
 The API is the only **HTTP-facing** component for external clients (the portal UI and
-AI agents). Backend services also access DataHub, PostgreSQL, Redis, and Qdrant directly.
+AI agents). Backend services also access DataHub, PostgreSQL (including pgvector), and Redis directly.
 Airflow orchestrates workflows by calling internal activity endpoints on the API.
 
 In the future, DataSpoke may also expose **redefined DataHub functions** — blended endpoints that proxy DataHub's basic operations (e.g., dataset creation, metadata browsing) while simultaneously handling DataSpoke-specific data in a single call. These would appear under `/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
@@ -54,7 +54,7 @@ Browser / AI Agent
 └──────────────────┘
    │      │      │
    ▼      ▼      ▼
-DataHub  Postgres  Qdrant / Redis / Airflow
+DataHub  Postgres  Redis / Airflow
 ```
 
 ### API-First Design
@@ -486,7 +486,7 @@ All errors follow the standard envelope:
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation) |
 | `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
-| `503 Service Unavailable` | Airflow, PostgreSQL, or Qdrant connection failure |
+| `503 Service Unavailable` | Airflow or PostgreSQL connection failure |
 
 ### Application Error Codes
 
@@ -506,7 +506,7 @@ All errors follow the standard envelope:
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
-| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL, Redis, or Qdrant connection failed |
+| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |
 
 ---

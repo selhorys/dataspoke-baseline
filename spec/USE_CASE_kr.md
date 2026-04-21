@@ -226,7 +226,7 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 | **커스텀 추출기 프레임워크** | PL/SQL 리니지 파싱, CHECK 제약조건 추출 플러그인 | 스토어드 프로시저 본문 파싱은 DataHub 범위 밖 |
 | **필드 매핑 엔진** | Confluence 라벨 → 태그, Excel 컬럼 → 커스텀 속성 변환 | DataHub는 구조화된 aspect를 수용하지만 비정형 입력을 변환하지 않음 |
 | **오케스트레이션 (Airflow)** | 스케줄링, 단계별 재시도, 알림 | DataHub는 레시피를 원자적으로 실행; 다중 소스 오케스트레이션은 Airflow 필요 |
-| **벡터 인덱스 동기화** | 성공적 인제스천 시 임베딩 생성 → Qdrant | DataHub는 Elasticsearch 키워드 검색만 제공, 벡터 유사도 검색 없음 |
+| **벡터 인덱스 동기화** | 성공적 인제스천 시 임베딩 생성 → PostgreSQL (pgvector) | DataHub는 Elasticsearch 키워드 검색만 제공, 벡터 유사도 검색 없음 |
 
 #### 결과
 
@@ -1011,7 +1011,7 @@ NL Search는 **읽기** 소비자이다. 벡터 검색 인덱스를 구축하고
 
 | 검색 단계 | DataHub Aspect | REST API Path | 반환 내용 |
 |----------|---------------|---------------|----------|
-| 임베딩 소스 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 설명 — Qdrant에 벡터화 |
+| 임베딩 소스 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 설명 — pgvector에 벡터화 |
 | 컬럼 수준 PII 탐지 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼명 (`email`, `full_name` 등) |
 | PII / GDPR 태그 | `globalTags` | `GET /aspects/{urn}?aspect=globalTags` | `urn:li:tag:PII`, `urn:li:tag:GDPR` |
 | 마케팅 리니지 | `upstreamLineage` | GraphQL: `searchAcrossLineage` | 마케팅 도메인의 다운스트림 소비자 |
@@ -1060,7 +1060,7 @@ usage = graph.get_timeseries_values(
 | 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
 |---------|------|------------------------|
 | **NL 쿼리 파서** | 자연어를 구조화된 의도(엔티티 타입, 필터, 컴플라이언스 컨텍스트)로 파싱 | DataHub 검색은 키워드 기반, 의도 파싱 없음 |
-| **벡터 검색 (Qdrant)** | 하이브리드 검색: 다차원 쿼리를 위한 벡터 유사도 + 그래프 순회 | DataHub는 Elasticsearch 키워드 검색만 제공 |
+| **벡터 검색 (pgvector)** | 하이브리드 검색: 다차원 쿼리를 위한 벡터 유사도 + 그래프 순회 | DataHub는 Elasticsearch 키워드 검색만 제공 |
 | **PII 분류 엔진** | 컬럼명 패턴 + 태그 존재로 PII 필드 탐지, 등급별 분류 | DataHub는 태그를 저장하지만 분류 로직 없음 |
 | **컴플라이언스 보고서 생성기** | 리니지 다이어그램과 갭 분석이 포함된 GDPR 감사 보고서 자동 생성 | DataHub는 원시 메타데이터를 제공하지만 보고서 생성 없음 |
 | **대화형 정제** | 맥락 내 후속 질문 지원 ("어떤 테이블이 부족한지...") | DataHub 검색은 무상태, 대화 지원 없음 |

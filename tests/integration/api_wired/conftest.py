@@ -14,7 +14,7 @@ The ``require_server`` fixture verifies three things at session start:
 
 1. The server is running and healthy (``GET /health``).
 2. ``DATASPOKE_TEST_MODE`` is set in the environment — without it, Airflow
-   activity endpoints use real LLM/Qdrant/cache/notification clients, which
+   activity endpoints use real LLM/vector/cache/notification clients, which
    will fail or produce non-deterministic results.
 3. Expected Airflow DAGs are loaded (verified via ``GET /api/v2/dags``).
 """
@@ -51,7 +51,7 @@ def require_server():
     if test_mode not in ("true", "1", "yes"):
         pytest.fail(
             "DATASPOKE_TEST_MODE is not set. API-wired tests require test-mode "
-            "stubs (LLM, Qdrant, cache, notification). "
+            "stubs (LLM, vector, cache, notification). "
             "Start with: ./dev_env/dataspoke-test-mode.sh"
         )
 

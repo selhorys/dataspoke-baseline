@@ -5,7 +5,6 @@ All endpoint values are read from dev_env/.env, which is populated by the
 install scripts.  Tier B TCP defaults:
 - PostgreSQL (dataspoke)  : <INGRESS_IP>:9201
 - Redis                   : <INGRESS_IP>:9202
-- Qdrant HTTP/gRPC        : <INGRESS_IP>:9203 / 9204
 - DataHub Kafka           : <INGRESS_IP>:9005
 - Example PostgreSQL      : <INGRESS_IP>:9102
 - Example Kafka           : <INGRESS_IP>:9104
@@ -81,11 +80,6 @@ _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
 _kafka_brokers = os.environ["DATASPOKE_EXAMPLE_KAFKA_BROKERS"]
 _datahub_kafka_brokers = os.environ["DATASPOKE_DATAHUB_KAFKA_BROKERS"]
-
-_qdrant_host = os.environ["DATASPOKE_QDRANT_HOST"]
-_qdrant_http_port = int(os.environ["DATASPOKE_QDRANT_HTTP_PORT"])
-_qdrant_grpc_port = int(os.environ["DATASPOKE_QDRANT_GRPC_PORT"])
-_qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
 
 _airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")
 _airflow_user = os.environ.get("DATASPOKE_AIRFLOW_USER", "")
@@ -393,20 +387,16 @@ async def activity_server():
         yield server
 
 
-# ── Qdrant fixture ───────────────────────────────────────────────────────────
+# ── pgvector fixture ─────────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture
-async def qdrant_manager():
-    """Create a QdrantManager pointing at the dev-env Qdrant instance."""
-    from src.shared.vector.client import QdrantManager
+async def vector_manager(async_engine):
+    """Create a PgVectorManager bound to the dev-env PostgreSQL."""
+    from src.shared.vector.client import PgVectorManager
 
-    return QdrantManager(
-        host=_qdrant_host,
-        port=_qdrant_http_port,
-        api_key=_qdrant_api_key,
-        grpc_port=_qdrant_grpc_port,
-    )
+    factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    return PgVectorManager(session_factory=factory)
 
 
 # ── Shared mock fixtures ─────────────────────────────────────────────────────
@@ -433,7 +423,7 @@ async def override_app(
     db=None,
     redis=None,
     llm=None,
-    qdrant=None,
+    vector=None,
     airflow=None,
 ):
     """Create an AsyncClient with FastAPI DI overrides for integration tests.
@@ -462,10 +452,10 @@ async def override_app(
 
         app.dependency_overrides[get_llm] = lambda: llm
 
-    if qdrant is not None:
-        from src.api.dependencies import get_qdrant
+    if vector is not None:
+        from src.api.dependencies import get_vector
 
-        app.dependency_overrides[get_qdrant] = lambda: qdrant
+        app.dependency_overrides[get_vector] = lambda: vector
 
     if db is not None:
         from src.api.dependencies import get_db

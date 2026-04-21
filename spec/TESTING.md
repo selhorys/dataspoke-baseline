@@ -85,7 +85,7 @@ Unit tests verify business logic in isolation. They **must never** require a run
 
 ## Integration Testing
 
-Integration tests run against the dev environment, exercising real infrastructure: PostgreSQL, DataHub GMS, Qdrant, Airflow, Redis, and dummy-data sources.
+Integration tests run against the dev environment, exercising real infrastructure: PostgreSQL (with pgvector), DataHub GMS, Airflow, Redis, and dummy-data sources.
 
 ### Testing Modes
 
@@ -123,11 +123,11 @@ Before running integration tests, ensure the dev environment is installed and th
 ./dev_env/health-check.sh
 ```
 
-The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis, Qdrant, Airflow, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
+The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis, Airflow, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the failing subsystem:
 
 | Failing service | Subsystem directory |
 |---|---|
-| dataspoke-postgresql, redis, qdrant, airflow | `dev_env/dataspoke-infra/` |
+| dataspoke-postgresql, redis, airflow | `dev_env/dataspoke-infra/` |
 | datahub-gms, datahub-kafka | `dev_env/datahub/` |
 | example-postgres, example-kafka | `dev_env/dataspoke-example/` |
 | lock-service | `dev_env/dataspoke-lock/` |
@@ -147,7 +147,7 @@ When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-de
 | Factory | Stub | Behavior |
 |---------|------|----------|
 | `make_llm()` | `StubLLMClient` | Returns minimal dict matching Pydantic schema; `embed()` returns zero vector |
-| `make_qdrant()` | `StubQdrantManager` | `search()` returns `[]` |
+| `make_vector()` | `StubVectorManager` | `search()` returns `[]` |
 | `make_cache()` | `StubRedisClient` | All ops are no-ops |
 | `make_notification()` | `StubNotificationService` | `send_sla_alert()` is a no-op |
 

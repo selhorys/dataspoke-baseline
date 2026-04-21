@@ -1,8 +1,4 @@
-"""pgvector-backed vector database client for DataSpoke.
-
-Replaces the former QdrantManager with a PostgreSQL + pgvector implementation
-that preserves the same async call shape so that call-site diffs stay minimal.
-"""
+"""pgvector-backed vector database client for DataSpoke."""
 
 import json
 import logging
@@ -39,10 +35,9 @@ class VectorHit:
 class PgVectorManager:
     """PostgreSQL + pgvector collection management, search, and upsert.
 
-    Preserves the async interface shape of the former QdrantManager so that
-    call-site diffs are minimal.  The ``collection`` parameter in each method
-    must equal ``EMBEDDING_COLLECTION`` — any other value raises ``ValueError``
-    to prevent SQL injection via table-name interpolation.
+    The ``collection`` parameter in each method must equal
+    ``EMBEDDING_COLLECTION`` — any other value raises ``ValueError`` to
+    prevent SQL injection via table-name interpolation.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -175,8 +170,7 @@ class PgVectorManager:
         """Return hits sorted by cosine similarity desc; score ∈ [0, 1].
 
         ``score`` is computed as ``GREATEST(0.0, 1.0 - (embedding <=> query_vector))``
-        so that higher values indicate greater similarity (same semantics as the former
-        Qdrant implementation) and the value is clamped to [0, 1].
+        so that higher values indicate greater similarity and the value is clamped to [0, 1].
 
         ``filters`` is AND-applied against dedicated table columns.  Supported
         keys: ``platform`` (TEXT) and ``has_pii`` (BOOLEAN).  Passing an

@@ -4,22 +4,23 @@ Test-specific data extensions (created and cleaned up by fixtures):
 - 1 DataHub dataset entity (imazon.test.search_svc.orders, env=DEV) with
   StatusClass, DatasetPropertiesClass, SchemaMetadataClass (2 fields),
   OwnershipClass, and GlobalTagsClass aspects. Soft-deleted on teardown.
-- Transient Qdrant vectors created via reindex API calls.
+- Transient pgvector rows in ``dataspoke.dataset_embeddings`` created via
+  reindex API calls.
 
 Prerequisites:
 - DataHub GMS port-forwarded to localhost:9004
 - Redis port-forwarded to localhost:9202
-- Qdrant port-forwarded to localhost:9203 (HTTP) / 9204 (gRPC)
+- PostgreSQL (dataspoke, with pgvector) port-forwarded to localhost:9201
 - Dummy data ingested via conftest.py Python utilities
 """
 
-import os
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.shared.vector.client import QdrantManager
+from src.shared.vector.client import PgVectorManager
 from tests.integration.conftest import (
     _auth_headers,
     emit_test_dataset,
@@ -27,22 +28,13 @@ from tests.integration.conftest import (
     soft_delete_test_dataset,
 )
 
-_qdrant_host = os.environ.get("DATASPOKE_QDRANT_HOST", "localhost")
-_qdrant_http_port = int(os.environ.get("DATASPOKE_QDRANT_HTTP_PORT", "9203"))
-_qdrant_grpc_port = int(os.environ.get("DATASPOKE_QDRANT_GRPC_PORT", "9204"))
-_qdrant_api_key = os.environ.get("DATASPOKE_QDRANT_API_KEY", "")
-
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.test.search_svc.orders,DEV)"
 
 
 @pytest_asyncio.fixture
-async def qdrant_client():
-    return QdrantManager(
-        host=_qdrant_host,
-        port=_qdrant_http_port,
-        api_key=_qdrant_api_key,
-        grpc_port=_qdrant_grpc_port,
-    )
+async def vector_client(async_engine):
+    factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    return PgVectorManager(session_factory=factory)
 
 
 @pytest_asyncio.fixture
@@ -83,12 +75,12 @@ async def test_dataset_urn(datahub_client):
 
 
 @pytest_asyncio.fixture
-async def http_client(datahub_client, redis_client, qdrant_client, mock_llm, async_session):
+async def http_client(datahub_client, redis_client, vector_client, mock_llm, async_session):
     """HTTP client with real DI providers pointing to dev-env infra."""
     async with override_app(
         datahub=datahub_client,
         redis=redis_client,
-        qdrant=qdrant_client,
+        vector=vector_client,
         llm=mock_llm,
         db=async_session,
     ) as client:
