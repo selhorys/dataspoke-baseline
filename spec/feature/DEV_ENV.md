@@ -138,13 +138,16 @@ Service name prefix `datahub-prerequisites-` applies to all prerequisite service
 
 Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with the dev profile (`values-dev.yaml`). See [HELM_CHART.md](HELM_CHART.md) for chart details.
 
-PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE (graph) and pgvector (vector search) extensions compiled in. Vector and graph workloads connect to the `dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic migration deploy.
+PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE (graph) and pgvector (vector search) extensions compiled in. Vector and graph workloads connect to the `dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic migration deploy. `dev_env/dataspoke-infra/install.sh` runs `dev_env/dataspoke-postgres/build.sh` automatically unless `SKIP_POSTGRES_BUILD=1`.
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
-| airflow (api-server + scheduler + triggerer) | Deployment + StatefulSets | 3 Gi | — |
+| dataspoke-api | Deployment | 1 Gi | — |
+| airflow (api-server + scheduler + triggerer + dag-processor) | Deployment + StatefulSets | 4 × 1 Gi + 3 × 512 Mi logGroomer sidecars ≈ 5.5 Gi | — |
 | postgresql | StatefulSet | 4 Gi | 10 Gi |
-| redis | Deployment | 256 Mi | — |
+| redis | Deployment | 512 Mi | — |
+
+> **Airflow 3.x note**: `dag-processor` is a standalone Airflow 3.x component (not present in 2.x).
 
 > **Airflow DAGs are baked into a custom image.** The chart pulls
 > `${DATASPOKE_DEV_IMAGE_REGISTRY}/airflow:dev` (built by
@@ -152,8 +155,7 @@ PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-i
 > which does `FROM apache/airflow:3.1.8-python3.13` + `COPY src/workflows/dags/
 > /opt/airflow/dags/`). `dev_env/dataspoke-infra/install.sh` runs the build
 > automatically unless `SKIP_AIRFLOW_BUILD=1`. No PVC, no gitSync. Updating a
-> DAG requires a rebuild + `kubectl rollout restart` of the three Airflow
-> workloads.
+> DAG requires a rebuild + `kubectl rollout restart` of the Airflow workloads.
 
 **Kubernetes Secrets** (created by `dataspoke-infra/install.sh` before Helm install):
 
@@ -161,6 +163,7 @@ PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-i
 |-------------|------|
 | `dataspoke-postgres-secret` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `dataspoke-redis-secret` | `REDIS_PASSWORD` |
+| `dataspoke-internal-auth` | `token` — auto-generated shared secret for Airflow → API internal calls |
 
 > LLM secrets are not deployed into the cluster. The host-running app reads them directly from `.env`.
 
@@ -172,7 +175,7 @@ Plain Kubernetes manifests (no Helm) in the `dataspoke-dummy-data-01` namespace.
 
 | Component | Image | Mem Limit | Storage | Service |
 |-----------|-------|-----------|---------|---------|
-| PostgreSQL | `postgres:15` | 256 Mi | 5 Gi PVC | `example-postgres:5432` |
+| PostgreSQL | `postgres:15` | 512 Mi | 5 Gi PVC | `example-postgres:5432` |
 | Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 1 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
 
 This Kafka instance is **separate** from DataHub's prerequisites Kafka. It simulates an external data source for ingestion testing. Like DataHub Kafka, it exposes an EXTERNAL listener (port 9094) that advertises `<INGRESS_IP>:9104` for host-side access via TCP passthrough on the nginx-ingress controller.
@@ -238,7 +241,7 @@ The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka in
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~53%** → ~12.8 GiB RAM, ~6.25 CPU limits.
+Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits* (~25 GiB) exceeds cluster capacity; sum of *requests* (~13 GiB) does not — pods rarely hit limits simultaneously, so limits are set generously to absorb transient spikes (OpenSearch off-heap, `mysql_upgrade`, JVM GC, etc.).
 
 ### Memory Budget (limits)
 
@@ -252,19 +255,18 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~53%**
 | datahub-mae-consumer | datahub-01 | 1 Gi | |
 | datahub-mce-consumer | datahub-01 | 1 Gi | |
 | datahub-actions | datahub-01 | 512 Mi | |
-| airflow (api-server + scheduler + triggerer) | dataspoke-01 | 3 Gi | Airflow 3.1 LocalExecutor; DAGs baked into a custom image (`${REGISTRY}/airflow:dev`, built from `docker-images/airflow/Dockerfile`) |
+| dataspoke-api | dataspoke-01 | 1 Gi | In-cluster API deployment |
+| airflow (api-server + scheduler + triggerer + dag-processor) | dataspoke-01 | 4 × 1 Gi + 3 × 512 Mi logGroomers ≈ 5.5 Gi | Airflow 3.1 LocalExecutor; DAGs baked into `${REGISTRY}/airflow:dev` (built from `docker-images/airflow/Dockerfile`) |
 | postgresql (dataspoke) | dataspoke-01 | 4096 Mi | Custom image with pgvector + AGE; built from `docker-images/postgres/Dockerfile` |
-| redis | dataspoke-01 | 256 Mi | |
+| redis | dataspoke-01 | 512 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
-| example-postgres | dataspoke-dummy-data-01 | 256 Mi | |
+| example-postgres | dataspoke-dummy-data-01 | 512 Mi | |
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
-| **Total** | | **~15.3 Gi** | |
-
-~8.7 GiB headroom for K8s system components, Helm setup jobs, and host-running app services.
+| **Total (limits)** | | **~25 Gi** | |
 
 ### CPU Budget (limits)
 
-Total: **7750m** across all components. Pods rarely hit limits simultaneously. Explicit limits prevent starvation on constrained dev clusters. See `dev_env/datahub/prerequisites-values.yaml` and `helm-charts/dataspoke/values-dev.yaml` for per-component breakdown.
+~19 CPU total limits across all components. Pods rarely hit limits simultaneously. Explicit limits prevent starvation on constrained dev clusters. See `dev_env/datahub/prerequisites-values.yaml` and `helm-charts/dataspoke/values-dev.yaml` for per-component breakdown.
 
 ---
 
@@ -277,8 +279,8 @@ Total: **7750m** across all components. Pods rarely hit limits simultaneously. E
 
 ### MySQL OOM-killed on restart
 
-**Cause**: With persistence disabled, `mysql_upgrade` runs on every start, briefly doubling memory beyond 512Mi.
-**Fix**: Already applied — MySQL memory limit set to 768Mi.
+**Cause**: `mysql_upgrade` runs on every start, briefly doubling memory beyond the chart default.
+**Fix**: Already applied — MySQL memory limit set to 1536Mi in `prerequisites-values.yaml`.
 
 ### Pod stuck in Pending
 

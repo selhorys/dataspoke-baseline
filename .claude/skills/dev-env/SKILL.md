@@ -57,7 +57,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 1. Verify `kubectl` and `helm` are installed.
 2. Verify the Kubernetes cluster specified in `DATASPOKE_DEV_KUBE_CLUSTER` is reachable (`kubectl cluster-info`).
-3. Report cluster node resources (`kubectl get nodes`) so the user can confirm the cluster meets the minimum requirements from `spec/feature/DEV_ENV.md` § Resource Sizing (8+ CPU / 16 GB RAM).
+3. Report cluster node resources (`kubectl get nodes`) so the user can confirm the cluster meets the minimum requirements from `spec/feature/DEV_ENV.md` § Resource Budget (8+ CPU / 24 GB RAM).
 4. If any check fails, report clearly and stop.
 
 ### Full install (all components)

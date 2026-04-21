@@ -161,7 +161,7 @@ Two-tier naming convention in `.env`:
 
 ### Resource budget
 
-~18.8 GiB total memory limits on 8+ CPU / 24 GB cluster (~78% utilization). See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
+Sum of memory *limits* ≈ 25 GiB (above 24 GB cluster capacity); sum of *requests* ≈ 13 GiB. Pods rarely hit limits simultaneously. See [`spec/feature/DEV_ENV.md §Resource Budget`](../spec/feature/DEV_ENV.md#resource-budget) for per-component breakdown and rationale.
 
 ## Troubleshooting
 
