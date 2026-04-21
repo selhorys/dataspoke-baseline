@@ -355,8 +355,7 @@ async def airflow_client():
         password=_airflow_password,
     )
     try:
-        resp = await client._client.get("/api/v2/dags", params={"limit": 1})
-        resp.raise_for_status()
+        await client.list_dags()
     except Exception:
         pytest.skip(f"Airflow not reachable at {_airflow_url}")
 
