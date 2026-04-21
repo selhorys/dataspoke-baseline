@@ -1,17 +1,32 @@
 # DataHub prerequisites Helm values — dev sizing
-# Chart: datahub/datahub-prerequisites version 0.2.1
-# All components use replicaCount: 1 for minimal resource usage.
-# Total memory limits (prerequisites): ~9 GiB
+# Chart: datahub/datahub-prerequisites version 0.3.0
+# Topology changes from 0.2.x:
+#   - Kafka moves to KRaft; a single `controller` pod serves as broker (no Zookeeper).
+#   - OpenSearch replaces Elasticsearch as the default search engine.
+# Total memory limits (prerequisites): ~6 GiB
 
-# Bitnami Kafka (replaces cp-kafka)
+# ----------------------------------------------------------------------------
+# Bitnami Kafka in KRaft mode
+#   controller.controllerOnly=false → the single controller pod also acts
+#   as broker, so broker.replicaCount=0 (no separate broker StatefulSet).
+#   Listeners: CLIENT (9092) in-cluster, INTERBROKER (9094) self-talk,
+#   EXTERNAL (9095) → nginx-ingress TCP passthrough on DATASPOKE_DEV_INGRESS_IP:9005.
+#   advertisedListeners EXTERNAL is overridden by datahub/install.sh with
+#   the actual ingress IP from .env.
+# ----------------------------------------------------------------------------
 kafka:
   enabled: true
   heapOpts: "-Xms512m -Xmx1536m"
-  broker:
+  kraft:
+    enabled: true
+  zookeeper:
+    enabled: false
+  controller:
     replicaCount: 1
+    controllerOnly: false
     resources:
       requests:
-        cpu: "500m"
+        cpu: "250m"
         memory: "1Gi"
       limits:
         cpu: "2000m"
@@ -29,82 +44,74 @@ kafka:
       log.retention.bytes=268435456
       log.segment.bytes=67108864
       log.cleaner.enable=true
-  kraft:
-    enabled: false
-  # Listeners: CLIENT (9092) for in-cluster DataHub components, INTERNAL (9094)
-  # for inter-broker, EXTERNAL (9095) for external access via nginx-ingress TCP passthrough.
-  # advertisedListeners EXTERNAL is overridden by datahub/install.sh with the
-  # actual ingress IP (from DATASPOKE_DEV_INGRESS_IP in .env).
+  broker:
+    replicaCount: 0
   listeners:
     client:
       protocol: PLAINTEXT
     interbroker:
       protocol: PLAINTEXT
+    # KRaft controller listener is required when controller.controllerOnly=false;
+    # it carries the raft consensus plane between controller pods. Must appear in
+    # overrideListeners + securityProtocolMap below. Not advertised to clients.
+    controller:
+      name: CONTROLLER
+      containerPort: 9093
+      protocol: PLAINTEXT
     external:
       containerPort: 9095
       protocol: PLAINTEXT
       name: EXTERNAL
-    overrideListeners: "CLIENT://:9092,INTERNAL://:9094,EXTERNAL://:9095"
-    securityProtocolMap: "CLIENT:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+    overrideListeners: "CONTROLLER://:9093,CLIENT://:9092,INTERNAL://:9094,EXTERNAL://:9095"
+    securityProtocolMap: "CONTROLLER:PLAINTEXT,CLIENT:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
     # yamllint disable-line rule:line-length
-    advertisedListeners: "CLIENT://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.datahub-01.svc.cluster.local:9092,INTERNAL://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.datahub-01.svc.cluster.local:9094,EXTERNAL://localhost:9005"
-  # Bitnami ZooKeeper (subchart of kafka)
-  zookeeper:
-    enabled: true
-    replicaCount: 1
-    resources:
-      requests:
-        cpu: "250m"
-        memory: "512Mi"
-      limits:
-        cpu: "500m"
-        memory: "1Gi"
+    advertisedListeners: "CLIENT://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.datahub-01.svc.cluster.local:9092,INTERNAL://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.datahub-01.svc.cluster.local:9094,EXTERNAL://localhost:9005"
 
-# Confluent Platform is disabled (bitnami kafka used instead)
+# Confluent Platform disabled (bitnami kafka is used instead)
 cp-helm-charts:
   enabled: false
   cp-schema-registry:
     enabled: false
 
-# Elasticsearch
-# ES needs ~512m JVM heap + ~1.5 GB off-heap (Lucene segment cache, network
-# buffers, plugin loading, index recovery).  2Gi OOM-killed during concurrent
-# startup with Kafka/MySQL; 2.5Gi gives stable headroom.
-elasticsearch:
+# ----------------------------------------------------------------------------
+# OpenSearch (chart default; replaces Elasticsearch from 0.2.x)
+#   singleNode=true skips bootstrap checks (no vm.max_map_count sysctl).
+#   Security plugin disabled to match chart convention; DataHub auth is
+#   handled in GMS/frontend, not the search index.
+# ----------------------------------------------------------------------------
+opensearch:
   enabled: true
-  replicas: 1
-  minimumMasterNodes: 1
-  antiAffinity: "soft"
-  clusterHealthCheckParams: "wait_for_status=yellow&timeout=1s"
-  esJavaOpts: "-Xmx2g -Xms2g"
-  # --- GKE Autopilot compatibility ---
-  # 1. Disable the privileged sysctl init container (Autopilot blocks it).
-  sysctlInitContainer:
-    enabled: false
-  # 2. Use single-node discovery to skip bootstrap checks (vm.max_map_count).
-  esConfig:
-    elasticsearch.yml: |
-      discovery.type: single-node
-  # 3. Set roles.master="false" so the chart template does NOT emit
-  #    cluster.initial_master_nodes (conflicts with single-node mode).
-  #    Restore node.master=true via extraEnvs (appended after the roles
-  #    block in the StatefulSet template, so it wins).
-  roles:
-    master: "false"
-    ingest: "true"
-    data: "true"
-    remote_cluster_client: "true"
-    ml: "true"
+  singleNode: true
+  config:
+    opensearch.yml: |
+      plugins:
+        security:
+          disabled: true
   extraEnvs:
-    - name: node.master
+    - name: DISABLE_INSTALL_DEMO_CONFIG
       value: "true"
+  image:
+    tag: "2.19.5"
+  opensearchJavaOpts: "-Xms1g -Xmx1g"
   resources:
     requests:
       cpu: "500m"
       memory: "2Gi"
     limits:
       cpu: "2000m"
-      memory: "4Gi"
+      memory: "3Gi"
+  # --- GKE Autopilot compatibility ---
+  # Autopilot blocks privileged sysctl init containers that raise
+  # vm.max_map_count. singleNode=true above already skips the mmapfs
+  # bootstrap check so the sysctl init container is unnecessary.
+  sysctl:
+    enabled: false
+  sysctlInit:
+    enabled: false
+
+# Elasticsearch disabled (chart default; we use OpenSearch instead)
+elasticsearch:
+  enabled: false
 
 # Bitnami MySQL
 mysql:
@@ -124,7 +131,6 @@ mysql:
     persistence:
       enabled: true
       size: 10Gi
-    # Relaxed probes for stable dev cluster startup
     startupProbe:
       initialDelaySeconds: 15
       periodSeconds: 10
@@ -141,6 +147,6 @@ mysql:
       timeoutSeconds: 5
       failureThreshold: 5
 
-# Neo4j disabled — using Elasticsearch as graph backend (upstream default)
+# Neo4j disabled — using OpenSearch as graph backend (upstream default)
 neo4j:
   enabled: false

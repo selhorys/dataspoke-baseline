@@ -2,18 +2,23 @@
 # TCP passthrough. The Bitnami Kafka chart only exposes CLIENT (9092) and
 # INTERNAL (9094) on its built-in services. This service is applied by
 # datahub/install.sh after the prerequisites are deployed.
+#
+# Under KRaft single-pod topology (prerequisites chart >= 0.3.0), the
+# controller pod also serves as broker; the bitnami subchart labels it with
+# app.kubernetes.io/component=controller-eligible. If install surfaces a
+# different component label on the controller pod, patch the selector below.
 apiVersion: v1
 kind: Service
 metadata:
   name: datahub-kafka-external
   labels:
     app.kubernetes.io/name: kafka
-    app.kubernetes.io/component: broker
+    app.kubernetes.io/component: controller-eligible
 spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/instance: datahub-prerequisites
-    app.kubernetes.io/component: broker
+    app.kubernetes.io/component: controller-eligible
     app.kubernetes.io/name: kafka
   ports:
     - name: external

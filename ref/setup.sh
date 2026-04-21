@@ -19,10 +19,8 @@ if [[ ! -f "${DEV_ENV_FILE}" ]]; then
     exit 1
 fi
 
-# Parse DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION from .env
-# Chart version 0.8.21 corresponds to DataHub app version v1.4.0.3
 source "${DEV_ENV_FILE}"
-DATAHUB_VERSION="v1.4.0.3"  # Hard-coded mapping from chart 0.8.21
+DATAHUB_VERSION="v1.5.0.2"
 DATAHUB_REPO="https://github.com/datahub-project/datahub.git"
 DATAHUB_DIR="${GITHUB_DIR}/datahub"
 

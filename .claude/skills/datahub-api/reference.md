@@ -198,3 +198,61 @@ graph.report_assertion_result(
 | `metadata-ingestion/src/datahub/ingestion/graph/client.py` | `upsert_custom_assertion()`, `report_assertion_result()` |
 | `smoke-test/tests/assertions/custom_assertions_test.py` | End-to-end usage example |
 | `docs/api/tutorials/custom-assertions.md` | Tutorial |
+
+---
+
+## Known Pattern C — Kafka Event Listener Async Commits (datahub-actions)
+
+**Question**: How do I raise throughput for a high-volume MCL/PE event listener without risking per-event commit overhead?
+
+### Scope
+
+This applies to the **datahub-actions** event listener service (the process that consumes `MetadataChangeLog_v1` / `PlatformEvent_v1` and runs actions), **not** the `metadata-ingestion` SDK emission path. DataSpoke sidecars that run their own actions pods benefit; direct callers of `DataHubRestEmitter.emit_mcps()` do not.
+
+### Config
+
+`datahub-actions` ships a `KafkaEventSource` with two opt-in fields in `KafkaEventSourceConfig` (actions recipe YAML):
+
+```yaml
+source:
+  type: kafka
+  config:
+    async_commit_enabled: true      # default: false
+    async_commit_interval: 10000    # ms; default: 10000 (10s)
+    commit_retry_count: 5
+    commit_retry_backoff: 10.0
+```
+
+When enabled, the confluent-kafka consumer flips to librdkafka's background auto-commit mode:
+- `enable.auto.offset.store = False` → handler calls `consumer.store_offsets()` after processing
+- `enable.auto.commit = True` + `auto.commit.interval.ms = async_commit_interval` → broker commit happens on a background thread
+
+### Tradeoff
+
+| Aspect | Sync (default) | Async (`async_commit_enabled: true`) |
+|---|---|---|
+| Per-event broker round-trip | Yes — `_commit_offsets` with retry | No — `store_offsets` then batched background commit |
+| Throughput | Limited by broker RTT | Much higher for high-volume topics |
+| Failure semantics | At-least-once (commit after process) | At-least-once with a wider replay window (up to `async_commit_interval` of processed events may be redelivered on crash) |
+
+Action handlers must be **idempotent** under async mode — they already should be, but the replay window widens.
+
+### Reference Files
+
+| File | Purpose |
+|---|---|
+| `datahub-actions/src/datahub_actions/plugin/source/kafka/kafka_event_source.py` | `KafkaEventSourceConfig`, `KafkaEventSource`, `ack()`, `_store_offsets()`, `_commit_offsets()` |
+
+---
+
+## Note — "Smart DataHub" / AI Auto-Documentation Is Not in OSS
+
+AI-driven auto-documentation and intelligent SQL-parsing features (sometimes marketed as "Smart DataHub") are **DataHub Cloud / Acryl-hosted** offerings and are **not present in the OSS `ref/github/datahub/` v1.5.0.2 source**. There is no public SDK, GraphQL, or REST surface in OSS for:
+
+- LLM-generated dataset/column descriptions
+- Automatic glossary term suggestions
+- AI-assisted lineage repair
+
+In OSS the `Documents` entity (`metadata-service/.../DocumentService.java`) is a **manual-authoring** wiki/knowledge-base feature and does not produce generated content.
+
+If a DataSpoke task requires these capabilities, route it through DataHub Cloud APIs (outside this skill's scope) or implement the generation client-side and write the resulting text via the regular `description` / `documentation` / structured-property aspects.

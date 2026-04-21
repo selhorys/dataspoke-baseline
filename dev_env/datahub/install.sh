@@ -124,13 +124,13 @@ kubectl create secret generic mysql-secrets \
 # ---------------------------------------------------------------------------
 # Step 1: Install datahub-prerequisites (no --wait, we gate each component)
 # ---------------------------------------------------------------------------
-PREREQS_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION:-0.2.1}"
+PREREQS_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION:-0.3.0}"
 info "Installing datahub-prerequisites (version ${PREREQS_VERSION})..."
 helm upgrade --install datahub-prerequisites datahub/datahub-prerequisites \
   --version "${PREREQS_VERSION}" \
   --namespace "${NS}" \
   --values "$SCRIPT_DIR/prerequisites-values.yaml" \
-  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-broker-0.datahub-prerequisites-kafka-broker-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${DATASPOKE_DEV_INGRESS_IP:-localhost}:9005" \
+  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${DATASPOKE_DEV_INGRESS_IP:-localhost}:9005" \
   --timeout 5m
 
 # ---------------------------------------------------------------------------
@@ -146,17 +146,14 @@ kubectl apply -n "${NS}" -f "$SCRIPT_DIR/kafka-external-svc.yaml"
 # ---------------------------------------------------------------------------
 info "Waiting for prerequisites to become ready (one by one)..."
 
-info "[1/4] MySQL..."
+info "[1/3] MySQL..."
 wait_for_pod "datahub-prerequisites-mysql-0" "$NS" 180
 
-info "[2/4] Elasticsearch..."
-wait_for_pod "elasticsearch-master-0" "$NS" 300
+info "[2/3] OpenSearch..."
+wait_for_pod "opensearch-cluster-master-0" "$NS" 300
 
-info "[3/4] ZooKeeper..."
-wait_for_pod "datahub-prerequisites-zookeeper-0" "$NS" 180
-
-info "[4/4] Kafka..."
-wait_for_pod "datahub-prerequisites-kafka-broker-0" "$NS" 300
+info "[3/3] Kafka (KRaft controller)..."
+wait_for_pod "datahub-prerequisites-kafka-controller-0" "$NS" 300
 
 info "All prerequisites are ready."
 kubectl get pods -n "${NS}"
@@ -167,8 +164,8 @@ kubectl get pods -n "${NS}"
 #   timeouts when datahub-system-update (a heavy JVM) takes 5-10 min.
 #   Instead, we install without --wait and poll for readiness ourselves.
 # ---------------------------------------------------------------------------
-DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.8.21}"
-info "Installing datahub (version ${DATAHUB_VERSION}) — no --wait, polling manually..."
+DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.9.10}"
+info "Installing datahub (chart ${DATAHUB_VERSION}, app v1.5.0.2) — no --wait, polling manually..."
 helm upgrade --install datahub datahub/datahub \
   --version "${DATAHUB_VERSION}" \
   --namespace "${NS}" \
@@ -225,7 +222,7 @@ wait_for_pod_by_label "app.kubernetes.io/name=acryl-datahub-actions" "$NS" 300
 #   timeseries aspects (OperationClass, DatasetProfileClass) unindexed in ES.
 #   Fix: reset offsets to latest so there's no stale backlog, then restart GMS.
 # ---------------------------------------------------------------------------
-KAFKA_POD="datahub-prerequisites-kafka-broker-0"
+KAFKA_POD="datahub-prerequisites-kafka-controller-0"
 MAE_GROUP="generic-mae-consumer-job-client"
 
 # Check if the MAE consumer has active members (healthy) or is stalled
