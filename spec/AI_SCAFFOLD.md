@@ -35,7 +35,7 @@ The scaffold works alongside these structural elements:
 | `CLAUDE.md` | Root-level agent instructions: project context, spec hierarchy, implementation workflow |
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
 | `dev_env/` | Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
-| `ref/` | External source code for AI reference (DataHub v1.4.0.3, downloaded via `/ref-setup`) |
+| `ref/` | External source code for AI reference (DataHub v1.5.0.2, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
 | `helm-charts/` | DataSpoke umbrella Helm chart with subcharts. See `spec/feature/HELM_CHART.md` |
 

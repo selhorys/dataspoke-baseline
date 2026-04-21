@@ -24,7 +24,7 @@ The API server is deployed **in-cluster** alongside Airflow so that workflow cal
 
 DataHub is installed in the dev cluster **for convenience**; in production it is an external dependency deployed and managed separately.
 
-**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka, PostgreSQL, Redis, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE consumers, Kafka + ZK, Elasticsearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, PostgreSQL, Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
+**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka, PostgreSQL, Redis, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE consumers, Kafka KRaft, OpenSearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, PostgreSQL, Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 
 ---
 
@@ -34,7 +34,7 @@ DataHub is installed in the dev cluster **for convenience**; in production it is
 
 - Single command (`./install.sh`) to stand up infrastructure dependencies for development
 - Clean namespace separation matching the production topology
-- DataHub with **Elasticsearch graph backend** for lineage support (Neo4j is not required)
+- DataHub with **OpenSearch graph backend** for lineage support (Neo4j is not required)
 - Example data sources (PostgreSQL + Kafka) in a dedicated namespace for testing ingestion workflows
 - Advisory lock service for coordinating multi-tester access to shared dev state
 - Idempotent installs — re-running `install.sh` is always safe
@@ -87,7 +87,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 |----------|-------------------|-------|
 | Cluster & namespaces | `DATASPOKE_DEV_KUBE_CLUSTER`, `*_NAMESPACE` | Kubernetes context and namespace names (includes `ingress-nginx`) |
 | Ingress | `DATASPOKE_DEV_INGRESS_IP`, `DATASPOKE_DEV_INGRESS_DOMAIN` | Written by `nginx-ingress/install.sh`; domain defaults to `dev.dataspoke.example.com` (use `<IP>.nip.io` for automatic DNS) |
-| Helm chart versions | `*_CHART_VERSION` | DataHub prerequisites 0.2.1, DataHub 0.8.21 |
+| Helm chart versions | `*_CHART_VERSION` | DataHub prerequisites 0.3.0, DataHub 0.9.10 |
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
 | Example data creds | `*_EXAMPLE_PG_HOST`, `*_EXAMPLE_PG_PORT`, `*_EXAMPLE_KAFKA_BROKERS` | Dev-only; host and port resolve via ingress IP |
 | DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `*_TOKEN`, `*_KAFKA_BROKERS` | App runtime — ingress URL in dev |
@@ -107,28 +107,30 @@ See `.env.example` for the complete listing with comments. Key categories:
 
 | Chart | Version | App Version |
 |-------|---------|-------------|
-| `datahub/datahub-prerequisites` | 0.2.1 | — |
-| `datahub/datahub` | 0.8.21 | v1.4.0.3 |
+| `datahub/datahub-prerequisites` | 0.3.0 | — |
+| `datahub/datahub` | 0.9.10 | v1.5.0.2 (pinned via `global.datahub.version` override; chart default is v1.5.0.1) |
 
 **Key decisions**:
 
-- **No Neo4j**: Elasticsearch provides full graph backend support including multi-hop lineage. Saves ~2 Gi RAM + 10 Gi PVC. Aligns with upstream defaults.
-- **No Schema Registry**: DataHub v1.4.0.3 uses an internal schema registry (`type: INTERNAL`).
+- **OpenSearch over Elasticsearch**: Prerequisites chart 0.3.0 ships OpenSearch 2.19.5 as the default search engine. DataHub GMS uses the same ES-client wire protocol, so migration is transparent.
+- **Kafka in KRaft mode (no Zookeeper)**: Prerequisites chart 0.3.0 runs a single controller pod that also serves as broker (`controller.controllerOnly=false`, `broker.replicaCount=0`), eliminating the Zookeeper dependency.
+- **No Neo4j**: OpenSearch provides full graph backend support including multi-hop lineage. Saves ~2 Gi RAM + 10 Gi PVC. Aligns with upstream defaults.
+- **No Schema Registry**: DataHub uses an internal schema registry (`type: INTERNAL`).
 - **No `--wait` on Helm install**: The `datahub-system-update` bootstrap job takes 5-10 minutes. Scripts use custom poll-based readiness checks instead.
-- **Relaxed liveness probes** on GMS and frontend to tolerate transient ES restarts.
+- **Relaxed liveness probes** on GMS and frontend to tolerate transient OpenSearch restarts.
+- **Frontend ingress uses `className: "nginx"`**: The `datahub-frontend` subchart (0.3.4) uses `className`, not `ingressClassName`; wrong key is silently dropped and GKE falls back to provisioning a GCE LoadBalancer.
 
 Prerequisites resource sizing:
 
 | Component | Mem Limit | Notes |
 |-----------|-----------|-------|
-| Elasticsearch | 2560 Mi | Off-heap usage OOM-kills at 2Gi during startup |
-| Kafka | 768 Mi | 512m heap cap + reduced threads/retention |
-| ZooKeeper | 256 Mi | Adequate for single-node dev |
-| MySQL | 768 Mi | `mysql_upgrade` briefly doubles memory when persistence disabled |
+| OpenSearch | 3072 Mi | 1 Gi JVM heap + off-heap cache; `singleNode: true` skips bootstrap checks |
+| Kafka (KRaft controller) | 2048 Mi | 1.5 Gi heap cap; single pod carries both controller and broker roles |
+| MySQL | 1536 Mi | `mysql_upgrade` briefly doubles memory on restart |
 
-DataHub component sizing: GMS 1536 Mi (-25% vs upstream), Frontend 768 Mi (-45%), MAE/MCE consumers 512 Mi each (-67%), Actions 256 Mi (-50%).
+DataHub component sizing (limits): GMS 3 Gi, Frontend 1 Gi, MAE/MCE consumers 1 Gi each, Actions 512 Mi. Total ~6.5 Gi.
 
-Service name prefix `datahub-prerequisites-` applies to all prerequisite services (MySQL, Kafka, ZooKeeper) because the prerequisites chart is installed as its own Helm release.
+Service name prefix `datahub-prerequisites-` applies to all prerequisite services (MySQL, Kafka controller) because the prerequisites chart is installed as its own Helm release. The OpenSearch subchart uses its own release prefix (`opensearch-cluster-master`).
 
 ---
 
@@ -242,15 +244,14 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Target usage: **~53%**
 
 | Component | Namespace | Mem Limit | Notes |
 |-----------|-----------|-----------|-------|
-| Elasticsearch | datahub-01 | 2560 Mi | 512m heap + off-heap |
-| Kafka (bitnami) | datahub-01 | 768 Mi | 512m heap cap + reduced threads/retention |
-| ZooKeeper (bitnami) | datahub-01 | 256 Mi | |
-| MySQL (bitnami) | datahub-01 | 768 Mi | `mysql_upgrade` doubles memory |
-| datahub-gms | datahub-01 | 1536 Mi | -25% vs upstream |
-| datahub-frontend | datahub-01 | 768 Mi | -45% vs upstream |
-| datahub-mae-consumer | datahub-01 | 512 Mi | -67% vs upstream |
-| datahub-mce-consumer | datahub-01 | 512 Mi | -67% vs upstream |
-| datahub-actions | datahub-01 | 256 Mi | -50% vs upstream |
+| OpenSearch | datahub-01 | 3072 Mi | 1 Gi JVM heap + off-heap cache |
+| Kafka (KRaft controller) | datahub-01 | 2048 Mi | 1.5 Gi heap cap; single pod carries both controller and broker roles |
+| MySQL (bitnami) | datahub-01 | 1536 Mi | `mysql_upgrade` doubles memory |
+| datahub-gms | datahub-01 | 3 Gi | |
+| datahub-frontend | datahub-01 | 1 Gi | |
+| datahub-mae-consumer | datahub-01 | 1 Gi | |
+| datahub-mce-consumer | datahub-01 | 1 Gi | |
+| datahub-actions | datahub-01 | 512 Mi | |
 | airflow (api-server + scheduler + triggerer) | dataspoke-01 | 3 Gi | Airflow 3.1 LocalExecutor; DAGs baked into a custom image (`${REGISTRY}/airflow:dev`, built from `docker-images/airflow/Dockerfile`) |
 | postgresql (dataspoke) | dataspoke-01 | 4096 Mi | Custom image with pgvector + AGE; built from `docker-images/postgres/Dockerfile` |
 | redis | dataspoke-01 | 256 Mi | |
@@ -269,10 +270,10 @@ Total: **7750m** across all components. Pods rarely hit limits simultaneously. E
 
 ## Troubleshooting
 
-### Elasticsearch OOM-killed during startup
+### OpenSearch OOM-killed during startup
 
-**Cause**: Off-heap usage (Lucene cache, index recovery) spikes above 2Gi. Upstream default 1024Mi is insufficient.
-**Fix**: Already applied — ES memory limit set to 2560Mi in `prerequisites-values.yaml`.
+**Cause**: Off-heap usage (Lucene cache, index recovery) spikes above the JVM heap. Upstream default 1024Mi is insufficient.
+**Fix**: Already applied — OpenSearch memory limit set to 3Gi in `prerequisites-values.yaml`.
 
 ### MySQL OOM-killed on restart
 
@@ -291,7 +292,7 @@ Total: **7750m** across all components. Pods rarely hit limits simultaneously. E
 
 ### MAE consumer stalled after restart
 
-**Cause**: The embedded MAE consumer in GMS crashes when processing stale MCL messages accumulated from previous runs. The Spring Kafka error handler shuts down the consumer permanently, leaving timeseries aspects unindexed in Elasticsearch.
+**Cause**: The embedded MAE consumer in GMS crashes when processing stale MCL messages accumulated from previous runs. The Spring Kafka error handler shuts down the consumer permanently, leaving timeseries aspects unindexed in OpenSearch.
 **Fix**: Already automated in `datahub/install.sh` — detects stalled consumer group, resets offsets to latest, and restarts GMS. If it recurs outside install, manually reset offsets on `MetadataChangeLog_Timeseries_v1` and `MetadataChangeLog_Versioned_v1` for group `generic-mae-consumer-job-client`, then restart the GMS pod.
 
 ### Service unreachable via ingress
