@@ -1,619 +1,544 @@
 # DataSpoke: Use Case Scenarios
 
 > **Note on Document Purpose**
-> This document presents conceptual scenarios for ideation and vision alignment. Use cases
-> illustrate the intended capabilities of DataSpoke — they are not implementation specifications
-> or technical requirements. Technical architecture and feature prioritization are defined in
-> separate specs (`ARCHITECTURE.md`, `feature/*.md`).
+> This document presents conceptual scenarios for ideation and to seed integration test
+> cases. Scenarios illustrate the intended capabilities of DataSpoke — they are not
+> implementation specifications. Technical architecture and feature prioritization are
+> defined in separate specs (`ARCHITECTURE.md`, `feature/*.md`). Where a scenario
+> introduces concepts not yet reflected in lower-priority specs, a `(Lower-priority specs
+> need follow-up)` note marks the gap.
 
 This document demonstrates how DataSpoke realises the five features defined in
-`MANIFESTO_en.md` §2.1: **Ingestion Control**, **Validation**, **Ontology**, **Doc Generation**,
-and **Governance**. Each use case is written against a single imaginary company — **Imazon**,
-an online bookstore — so scenarios coexist and reinforce each other.
+`MANIFESTO_en.md` §2.1: **Ingestion Control**, **Validation**, **Ontology**,
+**Doc Generation**, and **Governance**. All scenarios share a single imaginary company —
+**Imazon**, an online bookstore — so use cases coexist and reinforce each other.
 
-User-group framing (Data Engineering / Data Analysis / Data Governance) remains as a UI and
-API extensibility surface, but features are no longer partitioned by user group.
+User-group framing (Data Engineering / Data Analysis / Data Governance) remains as a
+UI and API extensibility surface, but features are not partitioned by user group.
 
 ---
 
 ## Imaginary Company Profile: Imazon
 
-Imazon is a 15-year-old online bookstore. Its data landscape reflects years of organic growth:
+Imazon is an online bookstore. Its data estate is small and healthy: it already runs on
+DataHub. Imazon adopts DataSpoke not to recover from a legacy mess, but to gain more
+visibility and one-place manageability over ingestion, quality, documentation, and
+governance.
 
-- **Legacy Oracle data warehouse** — 500+ tables covering book catalog, customers, orders,
-  reviews, publishers, inventory, and shipping
-- **Departments** — Engineering, Data Science, Marketing, Finance, Legal, Operations,
-  Publisher Relations, Customer Support
-- **Key data domains** — `catalog.*` (books, authors, genres), `customers.*`, `orders.*`,
-  `reviews.*`, `recommendations.*`, `publishers.*`, `inventory.*`, `shipping.*`
-- **DataHub adoption** — recently deployed; standard Oracle connector imported schema metadata
-  but missed business context, stored-procedure lineage, and tribal knowledge locked in
-  Confluence and spreadsheets
+**Data sources used throughout this document**
 
----
+- **PostgreSQL OLTP**
+  - `catalog.books` — book catalog (one row per book)
+  - `orders.line_items` — order items (one row per book in an order)
+  - `customers.profiles` — registered customer profiles
+- **Kafka topics**
+  - `orders.shipments` — shipment events emitted by an external fulfillment service
+  - `orders.events` — order state-change events emitted by the order service
 
-## Feature Mapping
+Some datasets are ingested into DataHub by DataSpoke; others are ingested by external
+pipelines that Imazon already operates. DataSpoke covers both modes.
+
+**Feature mapping**
 
 | # | MANIFESTO Feature | Use Case |
-|---|-------------------|----------|
-| UC1 | Ingestion Control | [Legacy Oracle Book Catalog Enrichment](#uc1-ingestion-control--legacy-oracle-book-catalog-enrichment) |
-| UC2 | Validation | [Recommendation Pipeline Quality & Predictive SLA](#uc2-validation--recommendation-pipeline-quality--predictive-sla) |
-| UC3 | Ontology | [Post-Acquisition Ontology Construction & Discovery](#uc3-ontology--post-acquisition-ontology-construction--discovery) |
-| UC4 | Doc Generation | [Doc Proposal & Human-in-the-Loop Review](#uc4-doc-generation--doc-proposal--human-in-the-loop-review) |
-| UC5 | Governance | [Enterprise Metadata Health & Multi-Perspective Overview](#uc5-governance--enterprise-metadata-health--multi-perspective-overview) |
+|---|---|---|
+| UC1 | Ingestion Control | [Passive and Polling Ingestion](#uc1-ingestion-control) |
+| UC2 | Validation | [Rule Registration, Scheduled and Dry-Run](#uc2-validation) |
+| UC3 | Ontology | [Concept Inference Across Imazon Datasets](#uc3-ontology) |
+| UC4 | Doc Generation | [Description and MD Doc Proposals](#uc4-doc-generation) |
+| UC5 | Governance | [Ingestion Freshness and Validation Score](#uc5-governance) |
 
 ---
 
-## UC1: Ingestion Control — Legacy Oracle Book Catalog Enrichment
+## UC1: Ingestion Control
 
 **MANIFESTO §2.1 feature**: *Ingestion Control — convenience functions for configuring,
 controlling, and managing data ingestion in one place.*
 
-### Scenario
+### User Story
 
-Imazon's Oracle data warehouse holds 500+ tables built over 15 years. Standard DataHub
-connectors captured schema metadata — table names, column types, primary keys — but missed
-the rich business context stored outside the database: Confluence pages describing editorial
-taxonomy, Excel feeds from publishers mapping ISBNs to imprints, an internal API for genre
-classification, and lineage hidden inside PL/SQL stored procedures that compute bestseller
-rankings and royalty calculations.
+> *As a* data team member,
+> *I want to* register, run, and observe ingestion for any dataset I care about — whether
+> DataSpoke ingests it directly or an external pipeline ingests it into DataHub —
+> *so that* one DataSpoke surface drives ingestion config, runs, and event history for
+> the whole estate.
 
-### Without DataSpoke
+Two ingestion modes are supported:
 
-Standard Oracle connector output: 500 tables with column types and keys — nothing else. No
-business descriptions (stored in Confluence), no publisher metadata (Excel), no genre taxonomy
-(API), no stored-proc lineage. Data consumers browse DataHub and see bare technical schemas
-with no way to determine what `catalog.title_master` actually tracks or how
-`reports.monthly_royalties` is computed.
+- **Polling** — DataSpoke is the ingestor. An Airflow tier DAG runs the platform
+  extractor on the configured `schedule_tier` (`hourly` / `daily` / `weekly`) and emits
+  results to DataHub. Manual and dry-run runs are also supported.
+- **Passive** — an external system ingests directly into DataHub. DataSpoke does not
+  run the extractor; it only marks the dataset's ingestion config as `mode: passive`. A
+  `datahub-ingestion-status-sync` Airflow DAG runs **hourly**, polls DataHub for
+  ingestion run history of all passive-marked datasets, and writes the resulting status
+  as rows on `event/ingestion`. The DataSpoke API surface therefore looks the same to
+  clients regardless of mode.
 
-### With DataSpoke
+> *(Lower-priority specs need follow-up)* The `mode: passive | polling` field on
+> `attr/ingestion/conf` and the `datahub-ingestion-status-sync` DAG are introduced here.
+> `feature/API.md`, `feature/BACKEND.md`, and `feature/BACKEND_SCHEMA.md` need follow-up
+> edits to model the `mode` field on `ingestion_configs`, register the sync DAG, and
+> describe how DataHub run history is mapped onto `event/ingestion`.
 
-**Register a multi-source enrichment config (one place, one UI/API):**
+### API Mapping
 
-```python
-# PUT /api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf
+| Endpoint | Used for |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | Register, read, update, remove ingestion conf (`mode`, `platform`, `locator`, `identifier`, `auth`, `is_active`, `schedule_tier` for polling) |
+| `POST /spoke/common/data/{urn}/method/ingestion/run` | Manual run (`dry_run: true` for connection check) — polling configs only |
+| `GET /spoke/common/data/{urn}/event/ingestion` | Per-dataset ingestion event history (polling: written by DataSpoke runs; passive: written by the hourly DataHub status sync) |
+| `GET /spoke/common/ingestion` | Cross-dataset list view aggregating per-dataset `attr/ingestion/*` |
+
+### Imazon Example
+
+**Polling — `catalog.books` (Postgres, daily).**
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/ingestion/conf
+```
+```json
 {
-  "name": "oracle_book_catalog_enriched",
-  "platform": "oracle",
-  "schedule": "0 2 * * *",
-
-  "enrichment_sources": [
-    {"type": "confluence", "space": "BOOK_DATA_DICTIONARY",
-     "fields_mapping": {"description": "confluence.content.body",
-                         "business_owner": "confluence.labels.owner",
-                         "pii_classification": "confluence.labels.pii"}},
-    {"type": "excel", "path": "s3://imazon-docs/publisher-feeds/isbn-imprint-mapping.xlsx",
-     "fields_mapping": {"publisher_domain": "Imprint", "genre_taxonomy": "Genre_Path"}},
-    {"type": "custom_api", "endpoint": "https://taxonomy-api.imazon.internal/genres",
-     "fields_mapping": {"genre_hierarchy": "$.genre.path"}}
-  ],
-
-  "custom_extractors": [
-    {"name": "plsql_lineage_parser", "module": "dataspoke.custom.oracle_lineage",
-     "function": "extract_stored_proc_lineage"},
-    {"name": "quality_rule_extractor", "module": "dataspoke.custom.oracle_quality",
-     "function": "extract_check_constraints_as_rules"}
-  ]
+  "mode": "polling",
+  "platform": "postgres",
+  "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "books"},
+  "auth": {"username": "spoke_reader", "secret_ref": "vault://imazon/pg/spoke_reader"},
+  "is_active": true,
+  "schedule_tier": "daily"
 }
 ```
 
-**Operational control surface.** The cross-dataset list view (`GET /spoke/common/ingestion`)
-returns one row per dataset with the full `attr/ingestion/*` aggregate (config, last run,
-failure counts, enrichment coverage). A single screen drives the full lifecycle: register →
-schedule → run (`POST …/method/ingestion/run`, `dry_run` option) → observe events
-(`GET …/event/ingestion`) → disable.
+A coding agent verifies connectivity before turning the schedule on:
 
-**Enriched result — `catalog.title_master`:**
-
-```yaml
-Dataset: catalog.title_master
-Platform: Oracle / DWPROD
-
-# Base (standard connector)
-Columns: 62 | Primary Key: isbn, edition_id
-
-# Enriched — business context (Confluence)
-Description: Master catalog of all book titles...
-Owner: maria.garcia@imazon.com | Team: Catalog Engineering
-
-# Enriched — publisher metadata (Excel)
-Publisher Domain: All imprints | Genre Taxonomy: 4-level hierarchy
-
-# Enriched — lineage (PL/SQL parser)
-Upstream: publishers.feed_raw, editorial.review_queue, pricing.base_rates
-Generated By: PROC_NIGHTLY_CATALOG_REFRESH
-Downstream: recommendations.book_features, reports.catalog_summary
-
-# Enriched — quality rules (CHECK constraints auto-extracted → Validation)
-1. list_price > 0
-2. publication_date <= SYSDATE
-3. isbn IS NOT NULL AND LENGTH(isbn) IN (10, 13)
+```http
+POST .../method/ingestion/run    { "dry_run": true }
 ```
 
-### DataHub Integration Points
+After the daily Airflow tier DAG runs, the team reads the per-dataset event history:
 
-Every enrichment phase maps to a DataHub aspect emitted via `DatahubRestEmitter`:
+```http
+GET .../event/ingestion?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+```
 
-| Phase | Aspect | Purpose |
-|-------|--------|---------|
-| Base schema | `schemaMetadata` | Columns, types, keys |
-| Business descriptions | `datasetProperties` | `description` from Confluence |
-| PII / editorial tags | `globalTags` | `urn:li:tag:PII`, `urn:li:tag:Editorial_Reviewed` |
-| Publisher classification | `datasetProperties.customProperties` | `publisher_domain`, `genre_taxonomy` |
-| Ownership | `ownership` | Owner URN + `BUSINESS_OWNER` type |
-| PL/SQL lineage | `upstreamLineage` | Source → target edges |
-| Quality rules | `assertionInfo` | CHECK constraints as assertions (feeds UC2) |
+**Passive — `orders.shipments` (Kafka, externally ingested).**
 
-DataHub stores what DataSpoke sends; DataSpoke owns the extraction, field mapping, and
-orchestration.
-
-### Outcome
-
-| Aspect | Standard Connector | DataSpoke |
-|--------|--------------------|-----------|
-| Business descriptions | 0% | 89% (445/500) |
-| Ownership | 0% | 74% (370/500) |
-| Stored-proc lineage | Not supported | 210 edges |
-| Quality rules | Manual only | 380 auto-extracted |
-| Update frequency | Manual re-run | Automated daily |
-
----
-
-## UC2: Validation — Recommendation Pipeline Quality & Predictive SLA
-
-**MANIFESTO §2.1 feature**: *Validation — registration, execution, and management of
-validation rules, including time-series rules. Supports dry-run, point-in-time historical
-validation, and real-time APIs.*
-
-### Scenario
-
-Two quality needs coexist:
-- The **recommendation pipeline** consumes `reviews.user_ratings` and
-  `orders.fulfillment_status`. Bad data causes poor recommendations (~30% of production
-  incidents).
-- The **fulfillment SLA** promises "order placed → shipping label within 4 h". Breaches are
-  costly; reactive alerting fires only *after* breach.
-
-Both are validation problems, differing only in whether rules are point-in-time or time-series.
-
-### Without DataSpoke
-
-Data quality lives in ad-hoc SQL checks, DBT tests, and tribal knowledge. No unified rule
-registry, no consolidated result history, no way to dry-run a pipeline against historical
-partitions before promoting it. SLA monitoring is reactive — Ops reads dashboards *after*
-breaches.
-
-### With DataSpoke
-
-**Register validation rules per dataset** (point-in-time + time-series in the same config):
-
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,orders.shipments,PROD)/attr/ingestion/conf
+```
 ```json
-// PUT /api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf
 {
-  "schedule": { "cron": "0 */6 * * *", "manual": true },
-  "rules": [
-    { "rule_id": "auto", "type": "field",
-      "column": "rating", "condition": "between",
-      "min": 1, "max": 5,
-      "partition": "event_date", "order": "desc" },
-
-    { "rule_id": "auto", "type": "volume",
-      "comparison": "ratio", "threshold": 0.8,
-      "window": "7d", "partition": "event_date" },
-
-    { "rule_id": "auto", "type": "custom",
-      "name": "fulfillment_sla_timeseries",
-      "sql": "SELECT AVG(ship_label_minutes) FROM orders.fulfillment_status
-              WHERE event_date = :partition",
-      "timeseries": {
-        "lookback_days": 30,
-        "forecast_model": "prophet",
-        "alert_threshold": "2h_before_sla_breach"
-      }}
-  ]
-}
-```
-
-**Three modes, one API:**
-
-1. **Scheduled runs** — the cron schedule drives rule execution; results are persisted as
-   `assertionRunEvent` timeseries aspects on DataHub.
-2. **Manual / dry-run** — `POST …/method/validation/run` with `{"dry_run": true}` runs rules without
-   writing results. Used by coding agents as an **Online Verifier** before shipping a pipeline.
-3. **Point-in-time historical** — `GET …/result?from=…&to=…&partition=…` returns
-   per-partition results. Used to re-verify a fix against last week's data.
-
-**Predictive SLA.** The `timeseries` extension on `custom` rules fits a forecast model over
-historical assertion results and emits an early-warning event when the forecast crosses the
-SLA threshold — hours before the deterministic breach.
-
-```
-┌────────────────────────────────────────────┐
-│  Fulfillment SLA — predictive window       │
-│                                            │
-│  ship_label_minutes                        │
-│   ┌───── SLA breach (240 min) ──────┐     │
-│   │                                 │     │
-│   │                     ╱───────────┘     │
-│   │                ╱╱╱╱╱  ← forecast      │
-│   │           ╱╱╱                         │
-│   │      ╱╱╱╱                             │
-│   └──────────────────── time ────────────▶│
-│     ▲                                      │
-│     DataSpoke: early-warning event fired   │
-│              ~2 h before projected breach  │
-└────────────────────────────────────────────┘
-```
-
-**Real-time Online Verifier.** Coding agents building new pipelines call the same validation
-API with `dry_run: true` on their output dataset. DataSpoke closes the coding loop: *register
-rule → generate pipeline → validate against rule → iterate*.
-
-### DataHub Integration Points
-
-All rules are written as DataHub assertions; all results are `assertionRunEvent` timeseries
-aspects. DataSpoke adds:
-- **DataSpoke extensions** on top of DataHub's Open Assertions Spec — `rule_id`, `partition`,
-  `order`, `timeseries`.
-- **Cross-dataset list view** — `GET /spoke/common/validation` returns one row per dataset
-  with the full `attr/validation/*` aggregate (config and latest result) for ops dashboards.
-- **WebSocket stream** — `WS /spoke/common/data/{urn}/stream/validation` surfaces live run
-  progress.
-
-### Outcome
-
-| Dimension | Before | After |
-|-----------|--------|-------|
-| Recommendation pipeline incident rate | ~30% | < 5% |
-| Fulfillment SLA breaches | Reactive | Predicted 2+ h early — zero breaches in month 1 |
-| Pipeline iteration | Ship → fix in prod | Dry-run validation before ship |
-
----
-
-## UC3: Ontology — Post-Acquisition Ontology Construction & Discovery
-
-**MANIFESTO §2.1 feature**: *Ontology — beyond baseline data documentation, analyses source
-code (GitHub), SQL logs, external documents, and more to autonomously construct an ontology,
-maintained in a graph DB and a vector DB.*
-
-### Scenario
-
-Imazon acquires **eBookNow**, a digital-only book platform. Post-merger, the combined DataHub
-catalog has 700+ datasets — 200 from eBookNow — with overlapping concepts. Six tables describe
-"a book/product" differently:
-
-```
-Imazon (legacy):                eBookNow (acquired):
- catalog.title_master            products.digital_catalog
- catalog.editions                content.ebook_assets
- inventory.book_stock            storefront.listing_items
-```
-
-Analysts searching "book" get six answers and cannot tell which to use. The governance team
-cannot manually audit 700 datasets.
-
-### Without DataSpoke
-
-Ontology lives in engineers' heads and stale Confluence pages. Each new analyst re-learns which
-of the six "book" tables to query. Cross-company lineage is unmapped. Recommendation engines
-double-count titles available in both print and digital.
-
-### With DataSpoke
-
-#### Construction — autonomous ontology building
-
-DataSpoke reads DataHub metadata, linked source code (`ebooknow/catalog-service`,
-`imazon/pricing-engine`), SQL query logs, and Confluence exports. An LLM (via LangChain)
-reasons across inputs to build an ontology graph, persisted in **PostgreSQL with `age` (graph)
-and `pgvector` (vector) extensions**.
-
-```python
-# Conceptual build pipeline (runs on schedule + incrementally on new ingests)
-
-inputs = load_inputs(
-    datahub_aspects=["schemaMetadata", "datasetProperties", "globalTags",
-                     "ownership", "upstreamLineage"],
-    source_code_refs=github_repos,
-    sql_logs=query_history,
-    external_docs=confluence_exports,
-)
-
-concepts      = llm_classify(inputs)                # dataset → concept(s)
-hierarchy     = llm_build_hierarchy(concepts)       # concept tree
-relationships = llm_infer_relationships(concepts)   # concept-to-concept edges
-embeddings    = embed(concepts + datasets)          # for vector recall
-
-persist_graph(concepts, hierarchy, relationships)   # PostgreSQL age
-persist_vectors(embeddings)                         # PostgreSQL pgvector
-queue_low_confidence(concepts, threshold=0.7)       # → human review
-```
-
-**Output (excerpt):**
-
-```
-Concept: BOOK / PRODUCT (confidence 0.94)
-  ├─ variant: PRINT
-  │     catalog.title_master       (primary, ISBN-keyed)
-  │     catalog.editions           (edition-format view)
-  │     inventory.book_stock       (warehouse instance)
-  └─ variant: DIGITAL
-        products.digital_catalog   (primary, product_id-keyed)
-        content.ebook_assets       (file/DRM view)
-        storefront.listing_items   (marketplace instance)
-
-Cross-concept relationship: PRINT.ISBN ↔ DIGITAL.product_id
-  Evidence: 72% record overlap by ISBN match
-            Shared downstream consumer: recommendations.book_features
-  Status: proposal (awaiting governance approval)
-```
-
-#### Consumption — discovery and navigation
-
-The ontology becomes the navigation substrate for everyone else:
-
-| Consumer | How it uses the ontology |
-|----------|--------------------------|
-| **Doc Generation (UC4)** | Proposes descriptions and merge/deprecate decisions grounded in concept membership |
-| **Governance (UC5)** | Rolls up health metrics along the concept tree — "BOOK coverage 84%" |
-| **Coding agents** | Retrieve the authoritative dataset for a concept before generating SQL |
-| **Analysts browsing the UI** | Start from a concept, drill to member datasets, see confidence and rationale |
-
-**Ontology APIs** (`/spoke/common/ontology/…`) — list concepts, drill to a concept, inspect
-attributes and change history, approve/reject proposals. Low-confidence concepts are queued
-for governance review; the LLM attaches rationale to each proposal to speed human decisions.
-
-### DataHub Integration Points
-
-- **Inputs**: `schemaMetadata`, `datasetProperties`, `globalTags`, `ownership`,
-  `upstreamLineage`, plus `datasetUsageStatistics` for popularity weighting.
-- **Outputs**: concept membership is written back as `globalTags`
-  (e.g. `urn:li:tag:concept:book`) and as `glossaryTerm` attachments so the DataHub UI reflects
-  the ontology. The full graph structure (hierarchy, cross-concept edges, confidence) lives in
-  PostgreSQL — DataHub is not a graph store.
-
-### Outcome
-
-| Dimension | Before | After |
-|-----------|--------|-------|
-| Conceptual overlap detection | Manual, months | Autonomous, hours |
-| Ontology substrate | None / Confluence | PostgreSQL graph + vector |
-| Analyst time to "which table do I query?" | 30–60 min | < 1 min via concept navigation |
-| Re-builds on new ingest | — | Incremental, affected-datasets only |
-
----
-
-## UC4: Doc Generation — Doc Proposal & Human-in-the-Loop Review
-
-**MANIFESTO §2.1 feature**: *Doc Generation — based on the ontology, inspects the state of
-data documentation and proposes documents via generative AI, including APIs and a review
-process.*
-
-### Scenario
-
-The merged Imazon + eBookNow catalog has 700 datasets. Documentation coverage is uneven: 64%
-of datasets have descriptions, 38% of columns do. For overlapping concepts (from UC3), existing
-descriptions contradict each other. The governance team needs descriptions written,
-inconsistencies resolved, and merge/deprecate decisions proposed — at a pace humans cannot
-sustain.
-
-### Without DataSpoke
-
-Documentation is written manually when anyone cares. Contradictions persist because no one runs
-a consistency check. Post-acquisition reconciliation takes 3+ months of governance team time.
-
-### With DataSpoke
-
-**Register a generation config per dataset** (or bulk-apply to a concept):
-
-```json
-// PUT /api/v1/spoke/common/data/{dataset_urn}/attr/gen/conf
-{
-  "targets": ["dataset.description", "column.description",
-              "tag.suggested", "ontology.alignment"],
-  "period": "weekly",
-  "ontology_context": "concept:book",
+  "mode": "passive",
+  "platform": "kafka",
+  "locator": {"bootstrap_servers": "kafka.imazon.internal:9092"},
+  "identifier": {"topic": "orders.shipments", "cluster": "PROD"},
   "is_active": true
 }
 ```
 
-**Grounded generation.** The generator reads the UC3 ontology, the dataset's
-schema/usage/lineage/source-code references, and any existing documentation. It emits
-**proposals** (never direct writes):
+No `schedule_tier`. DataSpoke does not run an extractor. The external fulfillment-service
+pipeline (an Airflow DAG outside DataSpoke) emits the schema and properties to DataHub
+directly.
 
-```
-Proposal: products.digital_catalog
+Every hour, DataSpoke's `datahub-ingestion-status-sync` DAG polls DataHub for ingestion
+runs of all passive-marked datasets and writes one row per run to the events table.
+Imazon reads them through the same API:
 
-dataset.description (proposed, confidence 0.91):
-  "Digital-book catalog acquired from eBookNow. One row per product_id
-   (not ISBN — see ontology note). Authoritative source for digital
-   pricing and DRM metadata; not authoritative for print editions —
-   see catalog.title_master."
-
-column.description proposals: 34 of 41 columns
-  product_id    — "Primary key; opaque identifier minted by eBookNow's
-                   catalog service (not ISBN). Maps to catalog.title_master.isbn
-                   via the PRINT↔DIGITAL bridge; join is lossy (72% match)."
-  creator       — "Free-text author/creator name. Unlike catalog.title_master,
-                   this is not a normalised FK — downstream joins should first
-                   resolve via fuzzy matching."
-
-Ontology alignment (proposed):
-  Concept: BOOK / PRODUCT (variant: DIGITAL)
-  Deprecation recommendation: None — keep as DIGITAL variant.
-  Merge recommendation: None — structural differences preclude table merge.
-  Relationship proposal: FK product_id ↔ catalog.title_master.isbn
-                         (type: conceptual, confidence 0.78, lossy)
+```http
+GET .../event/ingestion?from=…&to=…
 ```
 
-**Review process.** Proposals enter a review queue. The governance lead (or dataset owner)
-approves, edits, or rejects:
+**Cross-dataset overview.**
 
-```
-UI: Pending Doc Proposals                          47 pending | 12 blocked
-───────────────────────────────────────────────────────────────────────
-▸ products.digital_catalog          34 columns   confidence 0.91  [Review]
-▸ content.ebook_assets              22 columns   confidence 0.88  [Review]
-▸ catalog.title_master              12 columns   confidence 0.94  [Review]
-▸ ...
+```http
+GET /api/v1/spoke/common/ingestion?limit=100
 ```
 
-- **Approve** → `PATCH …/attr/gen/result/{result_id}` with `{"verdict": "approve"}` —
-  approving a pending proposal writes it to DataHub in the same call
-  (`datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`,
-  glossary term links). Pass `"fields": [...]` to approve only a subset.
-- **Edit** → reviewer adjusts, then approves.
-- **Reject** → proposal is archived; the model notes the rejection reason to improve future
-  proposals.
-
-**Consistency inspection.** On every run, the generator also reports *existing* documentation
-that contradicts the ontology — e.g. a column described as "ISBN" that is actually a product_id
-per ontology evidence. These are flagged as purification candidates (self-purification from
-MANIFESTO §1).
-
-### DataHub Integration Points
-
-| Direction | Aspect | Purpose |
-|-----------|--------|---------|
-| Read | `datasetProperties`, `schemaMetadata`, `datasetUsageStatistics`, `upstreamLineage` | Context for generation |
-| Write (on approval) | `datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`, `glossaryTerms` | Applied proposal |
-| Timeseries | `datasetProperties` history | Audit of what was generated vs. what was approved |
-
-### Outcome
-
-| Dimension | Manual | DataSpoke + review |
-|-----------|--------|--------------------|
-| Post-acquisition reconciliation | 3 months | Days |
-| Description coverage (dataset) | 64% | 96% |
-| Description coverage (column) | 38% | 87% |
-| Contradictions surfaced | Unknown | 142 flagged, 128 resolved |
+Returns one row per dataset with its full `attr/ingestion/*` aggregate (mode, schedule,
+last event status). Useful for dashboards and bulk audit.
 
 ---
 
-## UC5: Governance — Enterprise Metadata Health & Multi-Perspective Overview
+## UC2: Validation
+
+**MANIFESTO §2.1 feature**: *Validation — registration, execution, and management of
+validation rules. Supports dry-run, point-in-time historical validation, and real-time
+APIs.*
+
+### User Story
+
+> *As a* data team member,
+> *I want to* register rules per dataset, run them on schedule or on demand, dry-run
+> them from a coding agent before shipping a pipeline, and query historical results,
+> *so that* data quality is observable and verifiable without building bespoke checks.
+
+### API Mapping
+
+| Endpoint | Used for |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Register / read / update / remove the rule set (DataHub Open Assertions Spec compatible) |
+| `POST /spoke/common/data/{urn}/method/validation/run` | Manual run; `dry_run: true` for the Online Verifier (no result write) |
+| `GET /spoke/common/data/{urn}/attr/validation/result?from=…&to=…&partition=…` | Historical results (timeseries) |
+| `GET /spoke/common/data/{urn}/event/validation` | Per-dataset validation event history |
+| `WS /spoke/common/data/{urn}/stream/validation` | Real-time progress stream during a run |
+| `GET /spoke/common/validation` | Cross-dataset list with conf + latest result |
+
+### Imazon Example
+
+The orders team registers two rules on `orders.line_items`:
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)/attr/validation/conf
+```
+```json
+{
+  "is_active": true,
+  "schedule_tier": "daily",
+  "rules": [
+    {"rule_id": "qty_positive", "type": "field", "column": "quantity",
+     "condition": "between", "min": 1, "max": 100},
+    {"rule_id": "daily_volume", "type": "volume",
+     "comparison": "ratio", "threshold": 0.8, "window": "7d",
+     "partition": "event_date"}
+  ]
+}
+```
+
+**Scheduled run.** The daily Airflow validation DAG executes both rules and writes
+`assertionRunEvent` aspects to DataHub plus rows to `validation_results`.
+
+**Dry-run from a coding agent.** While a developer ships a new fulfillment pipeline, an
+AI coding agent calls:
+
+```http
+POST .../method/validation/run    { "dry_run": true, "partition": {"event_date": "2026-04-25"} }
+```
+
+to verify the rules pass against yesterday's data before merging.
+
+**Historical query.** A week later, an analyst checks last week's results:
+
+```http
+GET .../attr/validation/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+```
+
+**Live progress.** The portal opens
+
+```
+WS .../stream/validation
+```
+
+and renders rule-by-rule progress as the run proceeds.
+
+**Cross-dataset overview.** Ops teams browse `GET /spoke/common/validation` to see
+per-dataset latest pass/fail.
+
+---
+
+## UC3: Ontology
+
+**MANIFESTO §2.1 feature**: *Ontology — analyses source code, SQL logs, external
+documents, and more to autonomously construct an ontology, maintained in a graph DB and
+a vector DB.*
+
+### User Story
+
+> *As an* analyst or governance member,
+> *I want* DataSpoke to autonomously infer the business concepts that exist across my
+> datasets and the relationships between them,
+> *so that* I can navigate datasets by concept, and review low-confidence proposals
+> before they are accepted.
+
+The baseline ontology is **single-level** — concepts are peers, not nested. Relationships
+are edges between concepts; member datasets are listed under each concept.
+
+### API Mapping
+
+| Endpoint | Used for |
+|---|---|
+| `GET /spoke/common/ontology` | List concepts (with confidence and status) |
+| `GET /spoke/common/ontology/{concept_id}` | Concept detail incl. member datasets and outgoing relationships |
+| `GET /spoke/common/ontology/{concept_id}/attr` | Concept attributes (confidence, source evidence) |
+| `GET /spoke/common/ontology/{concept_id}/event` | Change history (proposed → approved / rejected, member additions) |
+| `POST /spoke/common/ontology/{concept_id}/method/review` | Approve or reject a pending concept proposal |
+
+### Imazon Example
+
+**Inputs.** DataSpoke reads DataHub aspects (`schemaMetadata`, `datasetProperties`,
+`upstreamLineage`) for the three OLTP tables, plus SQL query logs and a few
+`imazon/order-service` GitHub repos.
+
+**Inferred output.** Three peer concepts with two relationships:
+
+```
+Concept: BOOK                       confidence 0.96   status: approved
+  members:
+    catalog.books                   (primary)
+
+Concept: CUSTOMER                   confidence 0.94   status: approved
+  members:
+    customers.profiles              (primary)
+
+Concept: ORDER_LINE                 confidence 0.71   status: pending_review
+  members:
+    orders.line_items               (primary)
+  evidence:
+    - foreign key book_id → catalog.books.book_id (schema)
+    - join with customers.profiles appears in 84% of order-service queries (SQL logs)
+
+Relationships:
+  ORDER_LINE  --references-->  BOOK         (FK book_id,     confidence 0.95)
+  ORDER_LINE  --placed_by-->   CUSTOMER     (FK customer_id, confidence 0.87)
+```
+
+`ORDER_LINE` is below the auto-approval threshold (LLM disambiguating between "order"
+and "line item"), so it lands in the review queue:
+
+```http
+GET /api/v1/spoke/common/ontology
+```
+
+A governance reviewer fetches detail and event history:
+
+```http
+GET /api/v1/spoke/common/ontology/order_line
+GET /api/v1/spoke/common/ontology/order_line/event
+```
+
+…and approves the proposal:
+
+```http
+POST /api/v1/spoke/common/ontology/order_line/method/review
+```
+```json
+{ "verdict": "approve", "reason": "Confirmed FK structure; rename later if needed." }
+```
+
+After approval, concept membership is reflected back to DataHub as a glossary term
+attachment on the member dataset.
+
+---
+
+## UC4: Doc Generation
+
+**MANIFESTO §2.1 feature**: *Doc Generation — based on the ontology, inspects the state
+of data documentation and proposes documents via generative AI, including APIs and a
+review process.*
+
+This feature proposes values for documentation fields that already exist in DataHub
+metadata. It does **not** propose ontology structure (UC3 owns that).
+
+### User Story
+
+> *As a* dataset owner or governance reviewer,
+> *I want* DataSpoke to propose documentation for under-documented datasets, and let me
+> approve, edit, or reject proposals field-by-field,
+> *so that* documentation coverage improves without me writing every description by
+> hand.
+
+**Supported documentation fields in baseline**
+
+DataSpoke writes only to **editable** DataHub aspects. The non-editable counterparts
+(`datasetProperties.description`, `schemaMetadata.fields[].description`) are reserved
+for ingestion connectors; writing to them risks the next connector run overwriting
+human-approved text. DataHub treats both editable description fields as rich text and
+the UI renders Markdown.
+
+| Scope | Field | Format | DataHub target |
+|---|---|---|---|
+| Per-data | Table description | Markdown | `editableDatasetProperties.description` |
+| Per-data | Column description | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (keyed by `fieldPath`) |
+| Cross-data | Cross-data documentation | Markdown | `dataProductProperties.description` on a `dataProduct` entity whose `assets` list the related datasets |
+
+Future scope (mentioned, not modelled here): proposals for `domains` and `globalTags`.
+
+> *(Lower-priority specs need follow-up)* The `targets` enum on `attr/gen/conf` needs
+> three concrete values — `dataset.description`, `column.description`, `cross_data.md`
+> — mapped to the editable aspects above and to a `dataProduct` write on the cross-data
+> case. Propagate to `feature/BACKEND.md` and `DATAHUB_INTEGRATION.md`.
+
+> *(Open design question)* When a `cross_data.md` proposal is approved, how is the
+> target `dataProduct` resolved? Two sub-questions: (a) URN scheme — propose
+> `urn:li:dataProduct:<concept_id>` keyed off UC3 so a concept owns at most one Data
+> Product; (b) create-vs-update — does approval always upsert the Data Product's
+> description, or do we distinguish "create new Data Product" from "edit existing
+> description" as separate proposal types? Resolve before implementing UC4.
+
+### API Mapping
+
+| Endpoint | Used for |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/gen/conf` | Configure target fields, period, status |
+| `POST /spoke/common/data/{urn}/method/gen/run` | Trigger a generation run |
+| `GET /spoke/common/data/{urn}/attr/gen/result?latest=true` | Get the latest proposal for a dataset |
+| `PATCH /spoke/common/data/{urn}/attr/gen/result/{result_id}` | Approve / partial-approve / reject — body `{ "verdict": "approve"\|"reject", "fields": [...], "reason": "…" }`. Approval writes the chosen subset to DataHub. |
+| `GET /spoke/common/data/{urn}/event/gen` | Per-dataset generation event history |
+| `GET /spoke/common/gen` | Cross-dataset list with conf + latest result |
+
+### Imazon Example
+
+The catalog team enables doc generation on `catalog.books`:
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/gen/conf
+```
+```json
+{
+  "targets": ["dataset.description", "column.description", "cross_data.md"],
+  "period": "weekly",
+  "is_active": true
+}
+```
+
+**Run.**
+
+```http
+POST .../method/gen/run
+```
+
+**Latest proposal.**
+
+```http
+GET .../attr/gen/result?latest=true
+```
+
+Returns:
+
+```
+result_id: 7e8b…
+status:    pending_review
+
+dataset.description (markdown, confidence 0.92):
+  "# Books\n\nMaster catalog of every title Imazon offers...\n## Notes\n- Primary key: `book_id`."
+
+column.description proposals (markdown):
+  book_id   — "Stable, opaque identifier for a book."
+  title     — "Display title shown to customers."
+  author    — "Free-text author / creator name."
+  isbn      — "ISBN-13 string; '0000000000000' when unknown."
+  price     — "List price in USD, two decimal places."
+
+cross_data.md (markdown, confidence 0.81, scope: BOOK + ORDER_LINE):
+  "# How orders reference books\n\n`orders.line_items.book_id` joins to `catalog.books.book_id` ..."
+```
+
+**Review.** The reviewer approves the table description and 4 of 5 columns, then issues
+follow-up calls to edit `author` and reject the cross-data MD:
+
+```http
+PATCH .../attr/gen/result/7e8b…
+```
+```json
+{
+  "verdict": "approve",
+  "fields": ["dataset.description",
+             "column.description.book_id",
+             "column.description.title",
+             "column.description.isbn",
+             "column.description.price"],
+  "reason": "Approved as generated."
+}
+```
+
+A second PATCH approves an edited `author` description; a third PATCH rejects
+`cross_data.md` with a reason. DataSpoke writes each approved subset to DataHub on the
+same call.
+
+The team can then watch the proposal lifecycle:
+
+```http
+GET .../event/gen
+```
+
+---
+
+## UC5: Governance
 
 **MANIFESTO §2.1 feature**: *Governance — APIs for configuring and monitoring governance
 metrics such as documentation coverage and data freshness.*
 
-### Scenario
+### User Story
 
-Imazon's Chief Data Officer launches a company-wide initiative to improve data documentation,
-ownership accountability, and ingestion freshness. Six departments manage 700+ datasets.
-Coverage varies wildly. Quarterly manual audits take 2 weeks and go stale immediately. The CDO
-also wants a visual overview of the estate — by concept (from UC3), by ownership, by medallion
-layer — to spot blind spots.
+> *As a* governance lead or CDO,
+> *I want* a small set of always-on signals — ingestion freshness and validation score —
+> and one overview that shows them at a glance,
+> *so that* I can monitor health without curating dashboards by hand.
 
-### Without DataSpoke
+**Baseline metrics (exactly two)**
 
-Governance team runs manual audits: review tables, build spreadsheet, email department leads,
-follow up in 2 weeks. **Problems:** labour-intensive, point-in-time, no trend data, hard to
-measure improvement. Estate visualisation is whiteboard diagrams.
+| Metric ID | Definition |
+|---|---|
+| `ingestion-freshness` | Percentage of active ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for polling; per a fixed window for passive). |
+| `validation-score` | Percentage of validation rules with `assertion_result = SUCCESS` in the latest run, averaged across all datasets that have at least one rule. |
 
-### With DataSpoke
+**Baseline overview (one)**
 
-#### Metrics — named, scheduled, time-series
+A single dashboard returns the latest value of both metrics plus a per-dataset
+breakdown — which datasets are stale, which datasets have failing rules.
 
-A metric is a named measurement — e.g. "undocumented high-usage datasets" — with a definition
-(`attr/conf`) controlling how it's computed, and a time-series of results (`attr/result`).
-Metrics *aggregate* existing DataHub metadata and DataSpoke validation results; they never
-read source databases directly.
+### API Mapping
 
+| Endpoint | Used for |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | Define / update / read a metric (title, theme, query, schedule_tier, active flag) |
+| `POST /spoke/dg/metric/{metric_id}/method/run` | Trigger a measurement run |
+| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | Numeric timeseries of past measurements |
+| `GET /spoke/dg/metric/{metric_id}/event` | Run completion / definition change events |
+| `WS /spoke/dg/metric/stream` | Real-time updates when measurement runs complete |
+| `GET /spoke/dg/metric` | List all metrics |
+| `GET /spoke/dg/overview` | Snapshot — both metric values + per-dataset breakdown |
+| `GET/PATCH /spoke/dg/overview/attr` | Read or update visualization config |
+
+### Imazon Example
+
+The CDO registers both metrics:
+
+```http
+PUT /api/v1/spoke/dg/metric/ingestion-freshness/attr/conf
+```
 ```json
-// PUT /api/v1/spoke/dg/metric/{metric_id}/attr/conf
 {
-  "title": "Documentation coverage — Marketing",
-  "theme": "documentation",
-  "measurement_query": {
-    "dataset_filter": {
-      "tags": ["urn:li:tag:department:marketing"]
-    },
-    "aggregation": "pct_with_description"
-  },
-  "schedule_tier": "daily",
+  "title": "Ingestion freshness",
+  "theme": "freshness",
+  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_fresh"},
+  "schedule_tier": "hourly",
   "is_active": true
 }
 ```
 
-**Enterprise dashboard (week 1):**
-
+```http
+PUT /api/v1/spoke/dg/metric/validation-score/attr/conf
 ```
-DataSpoke Governance — Enterprise Metadata Health   Score: 59/100
-
-Department Breakdown
-┌─────────────────────┬────────┬──────────┬────────┬─────────┐
-│ Department          │ Score  │ Datasets │ Issues │ Trend   │
-├─────────────────────┼────────┼──────────┼────────┼─────────┤
-│ Engineering         │ 76/100 │ 95       │ 23     │ ↑ +3%   │
-│ Data Science        │ 69/100 │ 72       │ 22     │ → 0%    │
-│ Marketing           │ 54/100 │ 80       │ 37     │ ↓ -2%   │
-│ Finance             │ 81/100 │ 38       │  7     │ ↑ +5%   │
-│ Operations          │ 45/100 │ 65       │ 36     │ → 0%    │
-│ Publisher Relations │ 40/100 │ 55       │ 33     │ ↓ -1%   │
-└─────────────────────┴────────┴──────────┴────────┴─────────┘
-
-Critical: 42 | High: 78 | Medium: 118
+```json
+{
+  "title": "Validation score",
+  "theme": "quality",
+  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_rules_passing"},
+  "schedule_tier": "hourly",
+  "is_active": true
+}
 ```
 
-DataSpoke emails owners with specific action items, estimated fix time, and projected score
-impact. Progress tracks over time — **month 3**: enterprise score 77/100, all departments above
-threshold, documentation decay rate -2.1%/month.
+The CDO triggers an immediate first run rather than waiting for the schedule:
 
-#### Multi-perspective overview
+```http
+POST /api/v1/spoke/dg/metric/ingestion-freshness/method/run
+POST /api/v1/spoke/dg/metric/validation-score/method/run
+```
 
-Some governance views cannot be expressed as per-metric time-series. `/spoke/dg/overview` provides:
+A week later, trends are pulled for a board update:
 
-- **Ontology graph view** — datasets coloured/sized by documentation coverage, overlaid on the
-  UC3 concept graph. Clusters of red = concept-wide gaps.
-- **Medallion layer coverage** — bronze/silver/gold classification (from DataHub `globalTags`)
-  with per-layer freshness and ownership heatmaps.
-- **Ownership topology** — datasets grouped by owner; orphans (no owner assigned) are called
-  out.
+```http
+GET /api/v1/spoke/dg/metric/ingestion-freshness/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/dg/metric/validation-score/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+```
 
-These are all **read-only aggregations** of DataHub aspects + DataSpoke validation and ontology
-state. They share the same governance surface (`/spoke/dg/…`) and are scoped to the same
-role-based access control as metrics.
+The dashboard view consumes the overview endpoint:
 
-### DataHub Integration Points
+```http
+GET /api/v1/spoke/dg/overview
+```
 
-| Metric input | DataHub aspect | Purpose |
-|--------------|----------------|---------|
-| Description coverage | `datasetProperties` | Presence of `description` |
-| Owner assignment | `ownership` | Owner URN list — empty = unassigned |
-| Column documentation | `schemaMetadata` | Per-column `description` presence |
-| Tag coverage | `globalTags` | PII / concept tags present |
-| Usage popularity | `datasetUsageStatistics` (timeseries) | Prioritise high-usage gaps |
-| Entity enumeration | GraphQL: `scrollAcrossEntities` | Iterate all datasets per filter |
-
-Freshness metrics additionally read ingestion-event history (UC1) and assertion-result history
-(UC2) — all via the DataSpoke API, not direct DB access.
-
-### Outcome
-
-| Metric | Manual quarterly audit | DataSpoke Governance |
-|--------|------------------------|----------------------|
-| Audit cycle | 2 weeks, quarterly | Real-time, continuous |
-| Issue response time | 12 days avg | 3 days avg |
-| Health score improvement | Unmeasured | 59 → 77 in 3 months |
-| Governance team effort | 100% manual | -80% |
-| Estate visualisation | Whiteboard | Ontology + medallion + ownership views |
-
----
-
-## Summary: Value Delivered
-
-| UC | Feature | Traditional Approach | With DataSpoke | Improvement |
-|----|---------|----------------------|----------------|-------------|
-| UC1 | Ingestion Control | Manual metadata, no lineage | Multi-source enrichment, one control surface | 89% description coverage, 210 lineage edges, 380 auto-extracted rules |
-| UC2 | Validation | Ad-hoc checks, reactive alerts | Unified rule registry, dry-run, predictive time-series | Incidents 30% → <5%; SLA breaches predicted 2+h early |
-| UC3 | Ontology | Tribal knowledge, stale Confluence | Autonomous LLM-built graph + vector ontology | 700-dataset ontology in hours; authoritative concept lookup |
-| UC4 | Doc Generation | 3-month manual reconciliation | Grounded proposals + review workflow | 64% → 96% dataset coverage; 142 contradictions surfaced |
-| UC5 | Governance | Quarterly spreadsheet audits | Real-time metrics + multi-perspective overview | 59 → 77 health score in 3 months; 80% effort reduction |
-
-### Cross-cutting themes
-
-- **Self-Organization (MANIFESTO §1)** — UC3 builds the ontology; UC4 and UC5 consume it.
-- **Self-Purification (MANIFESTO §1)** — UC4 surfaces inconsistencies between documentation
-  and ontology; UC5 rolls them up as governance metrics.
-- **Online Verifier (MANIFESTO §1)** — UC2 dry-run validation closes the loop for coding agents
-  building new pipelines.
-- **Shared substrate** — the ontology graph + vector DB from UC3 is the backbone of UC4 and
-  UC5; the assertion framework from UC2 feeds UC5 freshness metrics.
+…and returns both metric values plus a per-dataset breakdown grouping `catalog.books`,
+`orders.line_items`, `customers.profiles`, `orders.shipments`, and `orders.events` by
+their freshness and validation status.

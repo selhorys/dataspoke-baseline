@@ -1,668 +1,583 @@
 # DataSpoke: 유스케이스 시나리오
 
 > **문서 목적 안내**
-> 이 문서는 아이디어 정립과 비전 정렬을 위한
+> 이 문서는 아이디어 정립과
+> 통합 테스트 케이스의 기반을 마련하기 위한
 > 개념적 시나리오를 제시한다.
-> 각 유스케이스는 DataSpoke의 의도된 기능을 보여주지만,
-> 구현 사양이나 기술 요구사항은 아니다.
+> 각 시나리오는 DataSpoke의 의도된 기능을 보여주지만,
+> 구현 사양은 아니다.
 > 기술 아키텍처와 기능 우선순위는 별도의 기술 사양 문서
 > (`ARCHITECTURE.md`, `feature/*.md`)에서 정의한다.
+> 시나리오가 하위 우선순위 사양에 아직 반영되지 않은 개념을 도입할 때는
+> `(하위 사양 후속 반영 필요)` 메모로 그 갭을 표시한다.
 
 이 문서는 `MANIFESTO_kr.md` §2.1에서 정의한 다섯 기능 —
 **Ingestion Control**, **Validation**, **Ontology**, **Doc Generation**, **Governance** —
 을 DataSpoke가 어떻게 구현하는지를 보여준다.
-각 유스케이스는 가상의 온라인 서점 **Imazon**이라는
-단일 회사 컨텍스트를 공유하므로 시나리오들이 공존하고 상호 보완된다.
+모든 시나리오는 가상의 온라인 서점 **Imazon**이라는
+단일 회사 컨텍스트를 공유하므로, 유스케이스가 공존하고 서로 보완된다.
 
 사용자 그룹 구분(데이터 엔지니어링 / 데이터 분석 / 데이터 거버넌스)은
-UI와 API의 확장 지점으로 남지만, 기능 자체는 더 이상
-사용자 그룹별로 분할되지 않는다.
+UI와 API의 확장 지점으로 남지만,
+기능 자체는 사용자 그룹별로 분할되지 않는다.
 
 ---
 
 ## 가상 회사 프로필: Imazon
 
-Imazon은 설립 15년차 온라인 서점이다.
-데이터 환경은 오랜 유기적 성장을 반영한다:
+Imazon은 온라인 서점이다.
+데이터 자산은 작고 건강하며, 이미 DataHub 위에서 동작한다.
+Imazon이 DataSpoke를 도입하는 이유는
+레거시 정리가 아니라,
+인제스천·품질·문서화·거버넌스에 대해
+한 곳에서의 가시성과 관리성을 더 얻기 위해서다.
 
-- **레거시 Oracle 데이터 웨어하우스** —
-  도서 카탈로그, 고객, 주문, 리뷰, 출판사, 재고, 배송을 다루는
-  500개 이상의 테이블
-- **부서** — 엔지니어링, 데이터 사이언스, 마케팅, 재무,
-  법무, 운영, 출판사 관계, 고객 지원
-- **주요 데이터 도메인** — `catalog.*` (도서, 저자, 장르),
-  `customers.*`, `orders.*`, `reviews.*`,
-  `recommendations.*`, `publishers.*`, `inventory.*`, `shipping.*`
-- **DataHub 도입** — 최근 배포 완료.
-  표준 Oracle 커넥터가 스키마 메타데이터를 가져왔지만,
-  비즈니스 컨텍스트, 스토어드 프로시저 리니지,
-  Confluence와 스프레드시트에 잠긴 조직 내 암묵지는 누락됨
+**이 문서 전체에서 사용하는 데이터 소스**
 
----
+- **PostgreSQL OLTP**
+  - `catalog.books` — 도서 카탈로그 (도서 한 행)
+  - `orders.line_items` — 주문 항목 (주문 내 도서 한 행)
+  - `customers.profiles` — 등록 고객 프로필
+- **Kafka 토픽**
+  - `orders.shipments` — 외부 배송 서비스가 발행하는 배송 이벤트
+  - `orders.events` — 주문 서비스가 발행하는 주문 상태 변경 이벤트
 
-## 기능 매핑
+일부는 DataSpoke가 DataHub로 인제스트하고,
+일부는 Imazon이 이미 운영하는 외부 파이프라인이 인제스트한다.
+DataSpoke는 두 모드를 모두 지원한다.
+
+**기능 매핑**
 
 | # | MANIFESTO 기능 | 유스케이스 |
-|---|----------------|----------|
-| UC1 | Ingestion Control | [레거시 Oracle 도서 카탈로그 보강](#uc1-ingestion-control--레거시-oracle-도서-카탈로그-보강) |
-| UC2 | Validation | [추천 파이프라인 품질과 예측적 SLA](#uc2-validation--추천-파이프라인-품질과-예측적-sla) |
-| UC3 | Ontology | [인수 후 온톨로지 구축과 탐색](#uc3-ontology--인수-후-온톨로지-구축과-탐색) |
-| UC4 | Doc Generation | [문서 제안과 휴먼 인 더 루프 리뷰](#uc4-doc-generation--문서-제안과-휴먼-인-더-루프-리뷰) |
-| UC5 | Governance | [전사 메타데이터 건강도와 다관점 오버뷰](#uc5-governance--전사-메타데이터-건강도와-다관점-오버뷰) |
+|---|---|---|
+| UC1 | Ingestion Control | [Passive와 Polling 인제스천](#uc1-ingestion-control) |
+| UC2 | Validation | [규칙 등록, 스케줄·Dry-Run 실행](#uc2-validation) |
+| UC3 | Ontology | [Imazon 데이터셋 전반의 개념 추론](#uc3-ontology) |
+| UC4 | Doc Generation | [설명·MD 문서 제안](#uc4-doc-generation) |
+| UC5 | Governance | [인제스천 신선도와 검증 점수](#uc5-governance) |
 
 ---
 
-## UC1: Ingestion Control — 레거시 Oracle 도서 카탈로그 보강
+## UC1: Ingestion Control
 
 **MANIFESTO §2.1 기능**:
-*Ingestion Control — 데이터 인제스천의 설정, 제어, 관리를
+*Ingestion Control — 데이터 인제스천의 설정·제어·관리를
 한 곳에서 수행하는 편의 기능.*
 
-### 시나리오
+### User Story
 
-Imazon의 Oracle 데이터 웨어하우스는
-15년 동안 쌓인 500개 이상의 테이블을 보유한다.
-표준 DataHub 커넥터는 테이블명, 컬럼 타입,
-기본 키 같은 스키마 메타데이터는 확보했지만,
-데이터베이스 밖에 흩어져 있는 풍부한 비즈니스 컨텍스트 —
-편집 분류 체계가 적힌 Confluence 페이지,
-ISBN과 임프린트를 매핑하는 출판사 Excel 피드, 장르 분류 내부 API,
-베스트셀러 순위와 인세 계산을 하는 PL/SQL
-스토어드 프로시저에 숨어 있는 리니지 — 는 누락된다.
+> *데이터 팀원으로서*,
+> *DataSpoke가 직접 인제스트하든 외부 파이프라인이 DataHub로 인제스트하든
+> 관계없이 모든 데이터셋을 등록·실행·관찰하고 싶다*,
+> *그래서* 단일 DataSpoke surface가 자산 전체의
+> 인제스천 설정·실행·이벤트 이력을 다루도록 한다.
 
-### DataSpoke 없이
+지원하는 인제스천 모드는 두 가지다:
 
-표준 Oracle 커넥터의 출력:
-컬럼 타입과 키 정보만 있는 500개 테이블.
-비즈니스 설명(Confluence), 출판사 메타데이터(Excel), 장르 분류(API),
-스토어드 프로시저 리니지는 모두 없다.
-데이터 소비자는 DataHub에서 기술 스키마만 보게 되어,
-`catalog.title_master`가 실제로 무엇을 추적하는지,
-`reports.monthly_royalties`가 어떻게 계산되는지 알 방법이 없다.
+- **Polling** — DataSpoke가 인제스터다.
+  Airflow tier DAG이 설정된 `schedule_tier`(`hourly` / `daily` / `weekly`)에 따라
+  플랫폼별 추출기를 실행하고 결과를 DataHub로 emit한다.
+  수동·dry-run 실행도 지원된다.
+- **Passive** — 외부 시스템이 DataHub에 직접 인제스트한다.
+  DataSpoke는 추출기를 실행하지 않고,
+  데이터셋의 인제스천 설정을 `mode: passive`로 표시할 뿐이다.
+  `datahub-ingestion-status-sync` Airflow DAG이 **시간마다** 실행되어,
+  passive로 표시된 모든 데이터셋의 DataHub 인제스천 실행 이력을 폴링하고
+  결과 상태를 `event/ingestion`에 한 행씩 기록한다.
+  덕분에 클라이언트 입장에서는 모드와 무관하게 동일한 API surface로 보인다.
 
-### DataSpoke로
+> *(하위 사양 후속 반영 필요)*
+> 여기서 도입한 `mode: passive | polling` 필드와
+> `datahub-ingestion-status-sync` DAG은
+> `feature/API.md`, `feature/BACKEND.md`, `feature/BACKEND_SCHEMA.md`에
+> 후속 반영이 필요하다 —
+> `ingestion_configs`에 `mode` 필드를 모델링하고,
+> 동기화 DAG을 등록하고,
+> DataHub 실행 이력이 `event/ingestion`에 어떻게 매핑되는지 기술해야 한다.
 
-**한 곳에서 멀티 소스 보강 설정을 등록한다:**
+### API Mapping
 
-```python
-# PUT /api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf
+| 엔드포인트 | 용도 |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | 인제스천 설정 등록·읽기·갱신·삭제 (`mode`, `platform`, `locator`, `identifier`, `auth`, `is_active`, polling용 `schedule_tier`) |
+| `POST /spoke/common/data/{urn}/method/ingestion/run` | 수동 실행 (`dry_run: true`로 연결 점검) — polling 설정에서만 |
+| `GET /spoke/common/data/{urn}/event/ingestion` | 데이터셋별 인제스천 이벤트 이력 (polling: DataSpoke 실행이 기록; passive: 시간별 DataHub 동기화가 기록) |
+| `GET /spoke/common/ingestion` | 데이터셋별 `attr/ingestion/*`을 집계하는 크로스 데이터셋 리스트 뷰 |
+
+### Imazon 예시
+
+**Polling — `catalog.books` (Postgres, daily).**
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/ingestion/conf
+```
+```json
 {
-  "name": "oracle_book_catalog_enriched",
-  "platform": "oracle",
-  "schedule": "0 2 * * *",
-
-  "enrichment_sources": [
-    {"type": "confluence", "space": "BOOK_DATA_DICTIONARY",
-     "fields_mapping": {"description": "confluence.content.body",
-                         "business_owner": "confluence.labels.owner",
-                         "pii_classification": "confluence.labels.pii"}},
-    {"type": "excel", "path": "s3://imazon-docs/publisher-feeds/isbn-imprint-mapping.xlsx",
-     "fields_mapping": {"publisher_domain": "Imprint", "genre_taxonomy": "Genre_Path"}},
-    {"type": "custom_api", "endpoint": "https://taxonomy-api.imazon.internal/genres",
-     "fields_mapping": {"genre_hierarchy": "$.genre.path"}}
-  ],
-
-  "custom_extractors": [
-    {"name": "plsql_lineage_parser", "module": "dataspoke.custom.oracle_lineage",
-     "function": "extract_stored_proc_lineage"},
-    {"name": "quality_rule_extractor", "module": "dataspoke.custom.oracle_quality",
-     "function": "extract_check_constraints_as_rules"}
-  ]
+  "mode": "polling",
+  "platform": "postgres",
+  "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "books"},
+  "auth": {"username": "spoke_reader", "secret_ref": "vault://imazon/pg/spoke_reader"},
+  "is_active": true,
+  "schedule_tier": "daily"
 }
 ```
 
-**운영 제어 화면.**
-크로스 데이터셋 리스트 뷰(`GET /spoke/common/ingestion`)는
-데이터셋별로 한 행을 반환하며,
-각 행은 데이터셋의 `attr/ingestion/*` 집합(설정, 마지막 실행, 실패 횟수, 보강 커버리지)을 담는다.
-한 화면에서 전체 라이프사이클을 다룬다: 등록 → 스케줄 →
-실행(`POST …/method/ingestion/run`, `dry_run` 옵션) →
-이벤트 관찰(`GET …/event/ingestion`) → 비활성화.
+스케줄을 켜기 전에 코딩 에이전트가 연결을 검증한다:
 
-**보강 결과 — `catalog.title_master`:**
-
-```yaml
-Dataset: catalog.title_master
-Platform: Oracle / DWPROD
-
-# 기본(표준 커넥터)
-Columns: 62 | Primary Key: isbn, edition_id
-
-# 보강 — 비즈니스 컨텍스트(Confluence)
-Description: Master catalog of all book titles...
-Owner: maria.garcia@imazon.com | Team: Catalog Engineering
-
-# 보강 — 출판사 메타데이터(Excel)
-Publisher Domain: All imprints | Genre Taxonomy: 4-level hierarchy
-
-# 보강 — 리니지(PL/SQL parser)
-Upstream: publishers.feed_raw, editorial.review_queue, pricing.base_rates
-Generated By: PROC_NIGHTLY_CATALOG_REFRESH
-Downstream: recommendations.book_features, reports.catalog_summary
-
-# 보강 — 품질 규칙(CHECK 제약 자동 추출 → Validation)
-1. list_price > 0
-2. publication_date <= SYSDATE
-3. isbn IS NOT NULL AND LENGTH(isbn) IN (10, 13)
+```http
+POST .../method/ingestion/run    { "dry_run": true }
 ```
 
-### DataHub 연동 지점
+일간 Airflow tier DAG 실행 후, 팀이 데이터셋별 이벤트 이력을 조회한다:
 
-보강 단계 각각은 `DatahubRestEmitter`를 통해 DataHub aspect로 이어진다:
+```http
+GET .../event/ingestion?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+```
 
-| 단계 | Aspect | 목적 |
-|------|--------|------|
-| 기본 스키마 | `schemaMetadata` | 컬럼, 타입, 키 |
-| 비즈니스 설명 | `datasetProperties` | Confluence의 `description` |
-| PII / 편집 태그 | `globalTags` | `urn:li:tag:PII`, `urn:li:tag:Editorial_Reviewed` |
-| 출판사 분류 | `datasetProperties.customProperties` | `publisher_domain`, `genre_taxonomy` |
-| 소유권 | `ownership` | 오너 URN + `BUSINESS_OWNER` 타입 |
-| PL/SQL 리니지 | `upstreamLineage` | source → target 엣지 |
-| 품질 규칙 | `assertionInfo` | CHECK 제약을 assertion으로(UC2에서 사용) |
+**Passive — `orders.shipments` (Kafka, 외부 인제스트).**
 
-DataHub은 DataSpoke가 보낸 것을 저장할 뿐,
-추출·필드 매핑·오케스트레이션은 DataSpoke가 담당한다.
-
-### 성과
-
-| 항목 | 표준 커넥터 | DataSpoke |
-|------|------------|-----------|
-| 비즈니스 설명 | 0% | 89% (445/500) |
-| 소유권 | 0% | 74% (370/500) |
-| 스토어드 프로시저 리니지 | 미지원 | 210개 엣지 |
-| 품질 규칙 | 수동 입력 | 380개 자동 추출 |
-| 갱신 주기 | 수동 재실행 | 일간 자동 |
-
----
-
-## UC2: Validation — 추천 파이프라인 품질과 예측적 SLA
-
-**MANIFESTO §2.1 기능**:
-*Validation — 시계열 규칙을 포함한 검증 규칙의 등록·실행·관리.
-Dry-run 검증, 시점 과거 데이터 검증, 실시간 API를 지원한다.*
-
-### 시나리오
-
-두 가지 품질 요구가 공존한다.
-- **추천 파이프라인**은 `reviews.user_ratings`와
-  `orders.fulfillment_status`를 소비한다.
-  잘못된 데이터가 들어오면 추천 품질이 떨어진다
-  (프로덕션 인시던트의 약 30%가 여기서 발생).
-- **주문 SLA**는 "주문 접수 → 배송 라벨 발급까지 4시간"을 약속한다.
-  위반은 비용이 크지만,
-  반응형 알림은 이미 위반이 발생한 뒤에만 울린다.
-
-둘 다 검증 문제이며, 규칙이 시점형인지 시계열형인지만 다르다.
-
-### DataSpoke 없이
-
-데이터 품질 점검은 임시 SQL, DBT 테스트, 구전 지식에 흩어져 있다.
-통합된 규칙 레지스트리도, 결과 이력도,
-파이프라인을 승격하기 전에 과거 파티션으로 dry-run을 돌릴 방법도 없다.
-SLA 모니터링은 반응형이며, Ops는 위반 이후 대시보드를 본다.
-
-### DataSpoke로
-
-**데이터셋당 검증 규칙 등록**
-(시점형과 시계열형을 하나의 설정에 담는다):
-
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,orders.shipments,PROD)/attr/ingestion/conf
+```
 ```json
-// PUT /api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf
 {
-  "schedule": { "cron": "0 */6 * * *", "manual": true },
-  "rules": [
-    { "rule_id": "auto", "type": "field",
-      "column": "rating", "condition": "between",
-      "min": 1, "max": 5,
-      "partition": "event_date", "order": "desc" },
-
-    { "rule_id": "auto", "type": "volume",
-      "comparison": "ratio", "threshold": 0.8,
-      "window": "7d", "partition": "event_date" },
-
-    { "rule_id": "auto", "type": "custom",
-      "name": "fulfillment_sla_timeseries",
-      "sql": "SELECT AVG(ship_label_minutes) FROM orders.fulfillment_status
-              WHERE event_date = :partition",
-      "timeseries": {
-        "lookback_days": 30,
-        "forecast_model": "prophet",
-        "alert_threshold": "2h_before_sla_breach"
-      }}
-  ]
-}
-```
-
-**한 API, 세 가지 모드:**
-
-1. **스케줄 실행** — cron 스케줄이 규칙 실행을 구동한다.
-   결과는 DataHub의 `assertionRunEvent` 시계열 aspect로 기록된다.
-2. **수동 / dry-run** — `POST …/method/validation/run`에 `{"dry_run": true}`를
-   실어 결과를 기록하지 않고 실행한다.
-   코딩 에이전트가 파이프라인을 배포하기 전에
-   **Online Verifier**로 사용한다.
-3. **시점 과거 데이터** — `GET …/result?from=…&to=…&partition=…`로
-   파티션별 결과를 반환한다.
-   수정 사항을 지난주 데이터에 대해 재검증할 때 쓴다.
-
-**예측적 SLA.** `custom` 규칙의 `timeseries` 확장은
-과거 assertion 결과 위에 예측 모델을 적합시키고,
-예측값이 SLA 임계값을 넘을 것으로 보이면
-조기 경보 이벤트를 발생시킨다 — 결정적 위반보다 몇 시간 앞서서.
-
-```
-┌────────────────────────────────────────────┐
-│  배송 SLA — 예측 윈도우                     │
-│                                            │
-│  ship_label_minutes                        │
-│   ┌───── SLA 위반 (240분) ───────────┐     │
-│   │                                 │     │
-│   │                     ╱───────────┘     │
-│   │                ╱╱╱╱╱  ← 예측           │
-│   │           ╱╱╱                         │
-│   │      ╱╱╱╱                             │
-│   └──────────────────── 시간 ─────────────▶│
-│     ▲                                      │
-│     DataSpoke: 예측된 위반 약 2시간 전      │
-│              조기 경보 이벤트 발생           │
-└────────────────────────────────────────────┘
-```
-
-**실시간 Online Verifier.**
-신규 파이프라인을 만드는 코딩 에이전트는
-같은 검증 API를 출력 데이터셋에 `dry_run: true`로 호출한다.
-DataSpoke가 코딩 루프를 닫는다:
-*규칙 등록 → 파이프라인 생성 → 규칙에 대해 검증 → 반복*.
-
-### DataHub 연동 지점
-
-모든 규칙은 DataHub assertion으로 기록되고,
-모든 결과는 `assertionRunEvent` 시계열 aspect가 된다.
-DataSpoke는 여기에 다음을 덧붙인다:
-- **DataSpoke 확장** — DataHub의 Open Assertions Spec 위에 `rule_id`, `partition`, `order`,
-  `timeseries` 추가.
-- **크로스 데이터셋 리스트 뷰** — `GET /spoke/common/validation`은 데이터셋별로
-  한 행을 반환하며, 각 행은 `attr/validation/*` 집합(설정과 최신 결과)을 담아
-  운영 대시보드에 노출한다.
-- **WebSocket 스트림** — `WS /spoke/common/data/{urn}/stream/validation`로
-  실시간 실행 진행 상태를 전달한다.
-
-### 성과
-
-| 지표 | 이전 | 이후 |
-|------|------|------|
-| 추천 파이프라인 인시던트 비율 | 약 30% | 5% 미만 |
-| 배송 SLA 위반 | 사후 반응 | 2시간 이상 조기 예측 — 도입 첫 달 위반 0건 |
-| 파이프라인 반복 | 운영 투입 후 수정 | 배포 전 dry-run 검증 |
-
----
-
-## UC3: Ontology — 인수 후 온톨로지 구축과 탐색
-
-**MANIFESTO §2.1 기능**:
-*Ontology — 기본 데이터 문서화(테이블 설명 등)를 넘어,
-소스 코드(GitHub), SQL 로그, 외부 문서 등을 분석해 자율적으로
-온톨로지를 구축하고 graph DB와 vector DB에 유지한다.*
-
-### 시나리오
-
-Imazon이 디지털 전용 도서 플랫폼 **eBookNow**를 인수한다.
-합병 후 DataHub 카탈로그는 700개 이상의 데이터셋을 담게 되며 —
-이 중 200개가 eBookNow — 개념이 중복된다.
-"책/상품"을 여섯 개 테이블이 서로 다르게 표현한다:
-
-```
-Imazon (레거시):                eBookNow (인수):
- catalog.title_master            products.digital_catalog
- catalog.editions                content.ebook_assets
- inventory.book_stock            storefront.listing_items
-```
-
-"book"을 검색한 분석가는 여섯 개 답을 받고
-어느 것을 써야 할지 판단하지 못한다.
-거버넌스 팀이 700개 데이터셋을 일일이 감사할 방법이 없다.
-
-### DataSpoke 없이
-
-온톨로지는 엔지니어의 머릿속과
-오래된 Confluence 페이지에만 존재한다.
-신규 분석가는 여섯 개 "책" 테이블 중
-어느 것을 조회할지 매번 다시 배운다.
-회사 간 리니지는 매핑되지 않는다.
-추천 엔진은 인쇄본과 디지털본이 둘 다 있는 타이틀을 이중으로 계산한다.
-
-### DataSpoke로
-
-#### 구축 — 자율 온톨로지 빌드
-
-DataSpoke가 DataHub 메타데이터, 연결된 소스 코드(`ebooknow/catalog-service`,
-`imazon/pricing-engine`), SQL 쿼리 로그, Confluence export를 읽는다.
-LLM(LangChain 경유)이 입력 전반을 추론해 온톨로지 그래프를 구축하고,
-**PostgreSQL에 `age`(graph)와 `pgvector`(vector) 확장**으로 저장한다.
-
-```python
-# 개념적 빌드 파이프라인(스케줄 + 신규 인제스천 시 증분 실행)
-
-inputs = load_inputs(
-    datahub_aspects=["schemaMetadata", "datasetProperties", "globalTags",
-                     "ownership", "upstreamLineage"],
-    source_code_refs=github_repos,
-    sql_logs=query_history,
-    external_docs=confluence_exports,
-)
-
-concepts      = llm_classify(inputs)                # dataset → concept(s)
-hierarchy     = llm_build_hierarchy(concepts)       # concept tree
-relationships = llm_infer_relationships(concepts)   # concept-to-concept edges
-embeddings    = embed(concepts + datasets)          # vector 리콜용
-
-persist_graph(concepts, hierarchy, relationships)   # PostgreSQL age
-persist_vectors(embeddings)                         # PostgreSQL pgvector
-queue_low_confidence(concepts, threshold=0.7)       # → 사람 검토
-```
-
-**출력(발췌):**
-
-```
-Concept: BOOK / PRODUCT (confidence 0.94)
-  ├─ variant: PRINT
-  │     catalog.title_master       (authoritative, ISBN 키)
-  │     catalog.editions           (edition-format 뷰)
-  │     inventory.book_stock       (창고 인스턴스)
-  └─ variant: DIGITAL
-        products.digital_catalog   (authoritative, product_id 키)
-        content.ebook_assets       (파일/DRM 뷰)
-        storefront.listing_items   (마켓플레이스 인스턴스)
-
-Cross-concept relationship: PRINT.ISBN ↔ DIGITAL.product_id
-  Evidence: ISBN 매칭 기준 72% 레코드 중복
-            공통 다운스트림 소비자: recommendations.book_features
-  Status: proposal (거버넌스 승인 대기)
-```
-
-#### 소비 — 탐색과 내비게이션
-
-온톨로지는 모두를 위한 내비게이션 기반이 된다:
-
-| 소비자 | 사용 방식 |
-|--------|-----------|
-| **Doc Generation (UC4)** | 개념 소속을 근거로 설명·병합·폐기 결정을 제안 |
-| **Governance (UC5)** | 개념 트리를 따라 건강도 메트릭 롤업 — "BOOK 커버리지 84%" |
-| **코딩 에이전트** | SQL을 생성하기 전에 개념의 authoritative 데이터셋을 리트리브 |
-| **UI에서 탐색하는 분석가** | 개념에서 출발해 멤버 데이터셋으로 드릴다운, confidence와 근거 확인 |
-
-**온톨로지 API** (`/spoke/common/ontology/…`) —
-개념 리스트, 개념 상세, 속성과 변경 이력, 제안 승인/거부.
-낮은 confidence 개념은 거버넌스 리뷰 큐에 올라가며,
-LLM이 결정 근거를 붙여 사람 판단을 빠르게 한다.
-
-### DataHub 연동 지점
-
-- **입력**: `schemaMetadata`, `datasetProperties`, `globalTags`, `ownership`, `upstreamLineage`,
-  여기에 인기도 가중을 위한 `datasetUsageStatistics`.
-- **출력**: 개념 소속은 `globalTags`(예: `urn:li:tag:concept:book`)와
-  `glossaryTerm` 연결로 DataHub에 다시 기록되어 DataHub UI에도 반영된다.
-  전체 그래프 구조(계층, 개념 간 엣지, confidence)는
-  PostgreSQL에 산다 — DataHub은 그래프 스토어가 아니다.
-
-### 성과
-
-| 지표 | 이전 | 이후 |
-|------|------|------|
-| 개념 중복 탐지 | 수동, 수 개월 | 자율, 수 시간 |
-| 온톨로지 기반 | 없음 / Confluence | PostgreSQL graph + vector |
-| "어떤 테이블을 조회?" 분석가 시간 | 30–60분 | 개념 탐색으로 1분 미만 |
-| 신규 인제스천 시 재빌드 | — | 영향 데이터셋만 증분 |
-
----
-
-## UC4: Doc Generation — 문서 제안과 휴먼 인 더 루프 리뷰
-
-**MANIFESTO §2.1 기능**:
-*Doc Generation — 온톨로지를 바탕으로 데이터 문서의 상태를 점검하고,
-생성 AI로 문서를 제안한다. API와 리뷰 프로세스 포함.*
-
-### 시나리오
-
-합병된 Imazon + eBookNow 카탈로그는 700개 데이터셋을 담는다.
-문서 커버리지는 고르지 않다:
-데이터셋 64%에 설명이, 컬럼 38%에 설명이 있다.
-중복된 개념(UC3에서)에는 기존 설명끼리 모순이 있다.
-거버넌스 팀은 설명을 작성하고, 불일치를 해결하고,
-병합/폐기 결정을 제안해야 한다 — 사람 속도로는 불가능한 페이스로.
-
-### DataSpoke 없이
-
-문서는 필요할 때만 수동으로 작성된다.
-일관성 점검이 없으니 모순이 쌓인다.
-인수 후 정합화에 거버넌스 팀 3개월 이상이 든다.
-
-### DataSpoke로
-
-**데이터셋당 생성 설정 등록**(혹은 개념 단위 일괄 적용):
-
-```json
-// PUT /api/v1/spoke/common/data/{dataset_urn}/attr/gen/conf
-{
-  "targets": ["dataset.description", "column.description",
-              "tag.suggested", "ontology.alignment"],
-  "period": "weekly",
-  "ontology_context": "concept:book",
+  "mode": "passive",
+  "platform": "kafka",
+  "locator": {"bootstrap_servers": "kafka.imazon.internal:9092"},
+  "identifier": {"topic": "orders.shipments", "cluster": "PROD"},
   "is_active": true
 }
 ```
 
-**근거 기반 생성.** 생성기는 UC3 온톨로지,
-데이터셋의 스키마/사용량/리니지/소스 코드 참조,
-기존 문서를 읽고 **제안**을 만든다(직접 쓰지 않는다):
+`schedule_tier`는 없다.
+DataSpoke가 추출기를 돌리지 않기 때문이다.
+외부 배송 서비스 파이프라인(DataSpoke 외부의 Airflow DAG)이
+스키마와 속성을 DataHub로 직접 emit한다.
 
-```
-Proposal: products.digital_catalog
+매시간 DataSpoke의 `datahub-ingestion-status-sync` DAG이
+passive 표시된 데이터셋의 DataHub 실행 이력을 폴링해
+events 테이블에 한 행씩 기록한다.
+Imazon은 동일한 API로 이벤트를 읽는다:
 
-dataset.description (제안, confidence 0.91):
-  "eBookNow 인수로 확보한 디지털 도서 카탈로그. product_id당 한 행 (ISBN 아님 —
-   온톨로지 노트 참조). 디지털 가격과 DRM 메타데이터의 authoritative
-   소스이지만 인쇄본은 아니다 — catalog.title_master 참조."
-
-column.description 제안: 41개 중 34개
-  product_id    — "기본 키. eBookNow 카탈로그 서비스가 발급하는 불투명 식별자
-                  (ISBN 아님). PRINT↔DIGITAL 브릿지를 통해
-                  catalog.title_master.isbn과 매핑되지만 손실 조인(72% 매칭)."
-  creator       — "자유 텍스트 저자명. catalog.title_master과 달리 정규화된
-                  FK가 아님 — 다운스트림 조인은 퍼지 매칭으로 선해결 필요."
-
-Ontology alignment (제안):
-  Concept: BOOK / PRODUCT (variant: DIGITAL)
-  폐기 권고: 없음 — DIGITAL variant로 유지.
-  병합 권고: 없음 — 구조 차이로 테이블 병합 불가.
-  관계 제안: FK product_id ↔ catalog.title_master.isbn
-           (type: conceptual, confidence 0.78, lossy)
+```http
+GET .../event/ingestion?from=…&to=…
 ```
 
-**리뷰 프로세스.** 제안은 리뷰 큐에 들어간다.
-거버넌스 리드(또는 데이터셋 오너)가 승인·편집·거부한다:
+**크로스 데이터셋 오버뷰.**
 
-```
-UI: 대기 중 문서 제안                        47 대기 | 12 차단
-───────────────────────────────────────────────────────────────────────
-▸ products.digital_catalog          34 컬럼   confidence 0.91  [리뷰]
-▸ content.ebook_assets              22 컬럼   confidence 0.88  [리뷰]
-▸ catalog.title_master              12 컬럼   confidence 0.94  [리뷰]
-▸ ...
+```http
+GET /api/v1/spoke/common/ingestion?limit=100
 ```
 
-- **승인** → `PATCH …/attr/gen/result/{result_id}`에 `{"verdict": "approve"}`를 실어
-  보내면, 같은 호출에서 DataSpoke가 DataHub에 기록한다
-  (`datasetProperties.description`,
-  `schemaMetadata.fields[].description`,
-  `globalTags`, glossary 연결).
-  `"fields": [...]`로 일부 필드만 부분 승인할 수 있다.
-- **편집** → 리뷰어가 수정 후 승인.
-- **거부** → 제안은 아카이브.
-  모델은 거부 이유를 기록해 이후 제안 품질을 높인다.
-
-**일관성 점검.** 매 실행마다 생성기는
-온톨로지와 모순되는 *기존* 문서도 보고한다 —
-예: "ISBN"으로 설명되어 있지만
-온톨로지 근거상 실제로는 product_id인 컬럼.
-이들은 정화 후보로 플래그 된다(MANIFESTO §1의 Self-Purification).
-
-### DataHub 연동 지점
-
-| 방향 | Aspect | 목적 |
-|------|--------|------|
-| 읽기 | `datasetProperties`, `schemaMetadata`, `datasetUsageStatistics`, `upstreamLineage` | 생성 근거 |
-| 쓰기(승인 시) | `datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`, `glossaryTerms` | 적용된 제안 |
-| 시계열 | `datasetProperties` 이력 | 생성 대 승인의 감사 기록 |
-
-### 성과
-
-| 지표 | 수동 | DataSpoke + 리뷰 |
-|------|------|-----------------|
-| 인수 후 정합화 | 3개월 | 며칠 |
-| 설명 커버리지 (데이터셋) | 64% | 96% |
-| 설명 커버리지 (컬럼) | 38% | 87% |
-| 드러난 모순 | 불명 | 142개 플래그, 128개 해결 |
+데이터셋별로 한 행을 반환한다.
+각 행은 `attr/ingestion/*` 집합(모드, 스케줄, 마지막 이벤트 상태)을 담는다.
+대시보드와 일괄 감사에 유용하다.
 
 ---
 
-## UC5: Governance — 전사 메타데이터 건강도와 다관점 오버뷰
+## UC2: Validation
+
+**MANIFESTO §2.1 기능**:
+*Validation — 검증 규칙의 등록·실행·관리.
+Dry-run 검증, 시점 과거 데이터 검증, 실시간 API를 지원한다.*
+
+### User Story
+
+> *데이터 팀원으로서*,
+> *데이터셋별로 규칙을 등록하고, 스케줄 또는 온디맨드로 실행하고,
+> 코딩 에이전트가 파이프라인 배포 전에 dry-run으로 검증하고,
+> 과거 결과를 조회하고 싶다*,
+> *그래서* 직접 만든 점검 없이도
+> 데이터 품질이 관찰·검증 가능하도록 한다.
+
+### API Mapping
+
+| 엔드포인트 | 용도 |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 규칙 세트 등록·읽기·갱신·삭제 (DataHub Open Assertions Spec 호환) |
+| `POST /spoke/common/data/{urn}/method/validation/run` | 수동 실행; `dry_run: true`는 Online Verifier(결과 미기록)용 |
+| `GET /spoke/common/data/{urn}/attr/validation/result?from=…&to=…&partition=…` | 과거 결과(시계열) |
+| `GET /spoke/common/data/{urn}/event/validation` | 데이터셋별 검증 이벤트 이력 |
+| `WS /spoke/common/data/{urn}/stream/validation` | 실행 중 실시간 진행 스트림 |
+| `GET /spoke/common/validation` | 설정과 최신 결과를 담은 크로스 데이터셋 리스트 |
+
+### Imazon 예시
+
+주문 팀이 `orders.line_items`에 두 개의 규칙을 등록한다:
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)/attr/validation/conf
+```
+```json
+{
+  "is_active": true,
+  "schedule_tier": "daily",
+  "rules": [
+    {"rule_id": "qty_positive", "type": "field", "column": "quantity",
+     "condition": "between", "min": 1, "max": 100},
+    {"rule_id": "daily_volume", "type": "volume",
+     "comparison": "ratio", "threshold": 0.8, "window": "7d",
+     "partition": "event_date"}
+  ]
+}
+```
+
+**스케줄 실행.**
+일간 Airflow 검증 DAG이 두 규칙을 실행하고
+DataHub에 `assertionRunEvent` aspect를,
+`validation_results`에 행을 기록한다.
+
+**코딩 에이전트의 dry-run.**
+신규 배송 파이프라인을 배포하는 중에 AI 코딩 에이전트가 호출한다:
+
+```http
+POST .../method/validation/run    { "dry_run": true, "partition": {"event_date": "2026-04-25"} }
+```
+
+머지 전에 어제 데이터로 규칙이 통과하는지 확인하는 용도다.
+
+**과거 데이터 조회.**
+1주일 후 분석가가 지난주 결과를 본다:
+
+```http
+GET .../attr/validation/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+```
+
+**실시간 진행.** 포털이 다음을 연다:
+
+```
+WS .../stream/validation
+```
+
+규칙별 진행 상태를 그대로 렌더링한다.
+
+**크로스 데이터셋 오버뷰.**
+운영팀이 `GET /spoke/common/validation`에서
+데이터셋별 최신 통과/실패를 본다.
+
+---
+
+## UC3: Ontology
+
+**MANIFESTO §2.1 기능**:
+*Ontology — 소스 코드, SQL 로그, 외부 문서 등을 분석해
+자율적으로 온톨로지를 구축하고
+graph DB와 vector DB에 유지한다.*
+
+### User Story
+
+> *분석가 또는 거버넌스 멤버로서*,
+> *DataSpoke가 데이터셋 전반에 존재하는 비즈니스 개념과
+> 그 사이의 관계를 자율적으로 추론해 주기를 원한다*,
+> *그래서* 개념 단위로 데이터셋을 탐색하고,
+> 낮은 confidence 제안은 승인 전에 리뷰할 수 있도록 한다.
+
+베이스라인 온톨로지는 **단일 레벨**이다 —
+개념은 동등한 peer이며 중첩되지 않는다.
+관계는 개념 간 엣지로 표현되고,
+멤버 데이터셋은 각 개념 아래에 나열된다.
+
+### API Mapping
+
+| 엔드포인트 | 용도 |
+|---|---|
+| `GET /spoke/common/ontology` | 개념 리스트(confidence·상태 포함) |
+| `GET /spoke/common/ontology/{concept_id}` | 멤버 데이터셋과 발신 관계 포함 개념 상세 |
+| `GET /spoke/common/ontology/{concept_id}/attr` | 개념 속성(confidence, 근거) |
+| `GET /spoke/common/ontology/{concept_id}/event` | 변경 이력(제안 → 승인/거부, 멤버 추가) |
+| `POST /spoke/common/ontology/{concept_id}/method/review` | 대기 중 개념 제안의 승인·거부 |
+
+### Imazon 예시
+
+**입력.** DataSpoke는 세 OLTP 테이블에 대한 DataHub aspect
+(`schemaMetadata`, `datasetProperties`, `upstreamLineage`)와
+SQL 쿼리 로그, 일부 `imazon/order-service` GitHub 저장소를 읽는다.
+
+**추론 출력.** 두 개의 관계를 가진 세 peer 개념:
+
+```
+Concept: BOOK                       confidence 0.96   status: approved
+  members:
+    catalog.books                   (primary)
+
+Concept: CUSTOMER                   confidence 0.94   status: approved
+  members:
+    customers.profiles              (primary)
+
+Concept: ORDER_LINE                 confidence 0.71   status: pending_review
+  members:
+    orders.line_items               (primary)
+  evidence:
+    - 외래 키 book_id → catalog.books.book_id (스키마)
+    - customers.profiles와의 조인이 order-service 쿼리의 84%에 등장 (SQL 로그)
+
+Relationships:
+  ORDER_LINE  --references-->  BOOK         (FK book_id,     confidence 0.95)
+  ORDER_LINE  --placed_by-->   CUSTOMER     (FK customer_id, confidence 0.87)
+```
+
+`ORDER_LINE`은 자동 승인 임계값 미만이다
+(LLM이 "주문"과 "주문 항목"을 구분하는 데 모호함이 있음).
+따라서 리뷰 큐에 들어간다:
+
+```http
+GET /api/v1/spoke/common/ontology
+```
+
+거버넌스 리뷰어가 상세와 이벤트 이력을 조회한다:
+
+```http
+GET /api/v1/spoke/common/ontology/order_line
+GET /api/v1/spoke/common/ontology/order_line/event
+```
+
+…그리고 제안을 승인한다:
+
+```http
+POST /api/v1/spoke/common/ontology/order_line/method/review
+```
+```json
+{ "verdict": "approve", "reason": "FK 구조 확인. 추후 이름 변경 가능." }
+```
+
+승인 후 개념 멤버십은
+멤버 데이터셋의 glossary term 연결로 DataHub에 반영된다.
+
+---
+
+## UC4: Doc Generation
+
+**MANIFESTO §2.1 기능**:
+*Doc Generation — 온톨로지를 바탕으로 데이터 문서의 상태를 점검하고
+생성 AI로 문서를 제안한다. API와 리뷰 프로세스를 포함한다.*
+
+이 기능은 DataHub 메타데이터에 이미 존재하는
+문서 필드의 값을 제안한다.
+온톨로지 구조 자체는 제안하지 않는다 (UC3가 담당).
+
+### User Story
+
+> *데이터셋 오너 또는 거버넌스 리뷰어로서*,
+> *DataSpoke가 문서가 부족한 데이터셋의 문서를 제안하고,
+> 필드 단위로 승인·편집·거부할 수 있기를 원한다*,
+> *그래서* 모든 설명을 일일이 작성하지 않고도
+> 문서 커버리지가 향상되도록 한다.
+
+**베이스라인에서 지원하는 문서 필드**
+
+DataSpoke는 DataHub의 **편집 가능(editable)** aspect에만 기록한다.
+편집 불가능한 짝(`datasetProperties.description`,
+`schemaMetadata.fields[].description`)은 인제스천 커넥터가 사용하므로,
+거기에 기록하면 다음 커넥터 실행이 사람의 승인 결과를 덮어쓸 수 있다.
+DataHub은 두 편집 가능 설명 필드를 모두 리치 텍스트로 취급하며,
+UI는 Markdown으로 렌더링한다.
+
+| 범위 | 필드 | 형식 | DataHub 타깃 |
+|---|---|---|---|
+| Per-data | 테이블 설명 | Markdown | `editableDatasetProperties.description` |
+| Per-data | 컬럼 설명 | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (`fieldPath` 키) |
+| Cross-data | 크로스 데이터 문서 | Markdown | 관련 데이터셋들을 `assets`에 담는 `dataProduct` 엔티티의 `dataProductProperties.description` |
+
+향후 범위(언급만, 여기서는 모델링하지 않음):
+`domains`와 `globalTags` 제안.
+
+> *(하위 사양 후속 반영 필요)*
+> `attr/gen/conf`의 `targets` enum은
+> `dataset.description`, `column.description`, `cross_data.md`의
+> 세 구체 값을 가져야 하며, 각각 위 표의 편집 가능 aspect와
+> 크로스 데이터의 경우 `dataProduct` 쓰기에 매핑된다.
+> `feature/BACKEND.md`와 `DATAHUB_INTEGRATION.md`에 후속 반영한다.
+
+> *(미해결 설계 질문)*
+> `cross_data.md` 제안이 승인될 때 대상 `dataProduct`는 어떻게 결정하는가?
+> 두 하위 질문이 있다:
+> (a) URN 스킴 — UC3 컨셉을 키로 사용하는
+> `urn:li:dataProduct:<concept_id>`를 제안한다(컨셉당 최대 한 개의 Data Product 보유);
+> (b) 생성 vs 갱신 — 승인이 항상 Data Product 설명을 upsert하는가,
+> 아니면 "신규 Data Product 생성"과 "기존 설명 편집"을 별도 제안 타입으로 구분하는가.
+> UC4 구현 전에 결정한다.
+
+### API Mapping
+
+| 엔드포인트 | 용도 |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/gen/conf` | 타깃 필드·주기·상태 설정 |
+| `POST /spoke/common/data/{urn}/method/gen/run` | 생성 실행 트리거 |
+| `GET /spoke/common/data/{urn}/attr/gen/result?latest=true` | 데이터셋의 최신 제안 조회 |
+| `PATCH /spoke/common/data/{urn}/attr/gen/result/{result_id}` | 승인/부분 승인/거부 — body `{ "verdict": "approve"\|"reject", "fields": [...], "reason": "…" }`. 승인 시 선택된 부분이 DataHub에 기록된다. |
+| `GET /spoke/common/data/{urn}/event/gen` | 데이터셋별 생성 이벤트 이력 |
+| `GET /spoke/common/gen` | 설정과 최신 결과를 담은 크로스 데이터셋 리스트 |
+
+### Imazon 예시
+
+카탈로그 팀이 `catalog.books`에 문서 생성을 활성화한다:
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/gen/conf
+```
+```json
+{
+  "targets": ["dataset.description", "column.description", "cross_data.md"],
+  "period": "weekly",
+  "is_active": true
+}
+```
+
+**실행.**
+
+```http
+POST .../method/gen/run
+```
+
+**최신 제안.**
+
+```http
+GET .../attr/gen/result?latest=true
+```
+
+반환:
+
+```
+result_id: 7e8b…
+status:    pending_review
+
+dataset.description (markdown, confidence 0.92):
+  "# Books\n\nImazon이 제공하는 모든 타이틀의 마스터 카탈로그...\n## 메모\n- 기본 키: `book_id`."
+
+column.description 제안(markdown):
+  book_id   — "도서의 안정적이고 불투명한 식별자."
+  title     — "고객에게 노출되는 표시 제목."
+  author    — "자유 텍스트 저자/작성자명."
+  isbn      — "ISBN-13 문자열; 미상이면 '0000000000000'."
+  price     — "USD 정가, 소수점 두 자리."
+
+cross_data.md (markdown, confidence 0.81, scope: BOOK + ORDER_LINE):
+  "# 주문이 도서를 어떻게 참조하는가\n\n`orders.line_items.book_id`는 `catalog.books.book_id`와 조인된다 ..."
+```
+
+**리뷰.** 리뷰어가 테이블 설명과 5개 컬럼 중 4개를 승인하고,
+이어서 `author`를 편집해 승인하고, cross-data MD는 거부한다:
+
+```http
+PATCH .../attr/gen/result/7e8b…
+```
+```json
+{
+  "verdict": "approve",
+  "fields": ["dataset.description",
+             "column.description.book_id",
+             "column.description.title",
+             "column.description.isbn",
+             "column.description.price"],
+  "reason": "생성된 그대로 승인."
+}
+```
+
+두 번째 PATCH는 편집한 `author` 설명을 승인하고,
+세 번째 PATCH는 `cross_data.md`를 사유와 함께 거부한다.
+DataSpoke는 같은 호출 안에서 승인된 부분을 DataHub에 기록한다.
+
+이후 팀은 제안 라이프사이클을 관찰한다:
+
+```http
+GET .../event/gen
+```
+
+---
+
+## UC5: Governance
 
 **MANIFESTO §2.1 기능**:
 *Governance — 문서 커버리지, 데이터 신선도 같은
-거버넌스 메트릭을 설정·관리·모니터링하는 API.*
+거버넌스 메트릭을 설정·모니터링하는 API.*
 
-### 시나리오
+### User Story
 
-Imazon의 CDO가 전사 이니셔티브를 시작한다:
-데이터 문서화, 소유권 책임, 인제스천 신선도 개선.
-6개 부서가 700개 이상의 데이터셋을 관리하고, 커버리지는 천차만별이다.
-분기 수동 감사는 2주가 걸리고 즉시 낡는다.
-CDO는 또 데이터 자산의 시각적 오버뷰를 원한다 —
-개념별(UC3에서), 소유자별, 메달리언 레이어별 —
-사각지대를 잡기 위해.
+> *거버넌스 리드 또는 CDO로서*,
+> *항상 켜져 있는 작은 시그널 세트 —
+> 인제스천 신선도와 검증 점수 — 를 갖고,
+> 한눈에 보여주는 단일 오버뷰를 원한다*,
+> *그래서* 대시보드를 직접 큐레이션하지 않고도
+> 건강도를 모니터링할 수 있도록 한다.
 
-### DataSpoke 없이
+**베이스라인 메트릭(정확히 두 개)**
 
-거버넌스 팀이 수동 감사를 돈다:
-테이블 리뷰 → 스프레드시트 작성 → 부서장 이메일 → 2주 후 팔로업.
-**문제**: 노동 집약, 시점형, 추세 없음, 개선 측정 어려움.
-자산 시각화는 화이트보드 다이어그램.
+| 메트릭 ID | 정의 |
+|---|---|
+| `ingestion-freshness` | 활성 인제스천 설정 중 마지막 성공 `event/ingestion`이 신선도 윈도우 안에 들어오는 비율 (polling은 `schedule_tier` 기준; passive는 고정 윈도우 기준). |
+| `validation-score` | 최신 실행에서 `assertion_result = SUCCESS`인 검증 규칙의 비율. 규칙이 하나라도 있는 데이터셋 전반에 걸쳐 평균. |
 
-### DataSpoke로
+**베이스라인 오버뷰(한 개)**
 
-#### 메트릭 — 이름 있고 스케줄되고 시계열
+단일 대시보드가 두 메트릭의 최신 값과
+데이터셋별 분해 — 어느 데이터셋이 신선하지 않은지,
+어느 데이터셋의 규칙이 실패하는지 — 를 반환한다.
 
-메트릭은 이름이 붙은 측정값이다 — 예: "고사용 미문서 데이터셋".
-정의(`attr/conf`)가 계산 방법을, `attr/result`가 결과 시계열을 갖는다.
-메트릭은 기존 DataHub 메타데이터와 DataSpoke 검증 결과를 *집계*하며,
-소스 DB에 직접 접근하지 않는다.
+### API Mapping
 
+| 엔드포인트 | 용도 |
+|---|---|
+| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | 메트릭 정의·갱신·읽기 (제목, 테마, 쿼리, schedule_tier, 활성 플래그) |
+| `POST /spoke/dg/metric/{metric_id}/method/run` | 측정 실행 트리거 |
+| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 수치 시계열 |
+| `GET /spoke/dg/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
+| `WS /spoke/dg/metric/stream` | 측정 실행 완료 시 실시간 업데이트 |
+| `GET /spoke/dg/metric` | 모든 메트릭 리스트 |
+| `GET /spoke/dg/overview` | 두 메트릭 값 + 데이터셋별 분해 스냅샷 |
+| `GET/PATCH /spoke/dg/overview/attr` | 시각화 설정 읽기·갱신 |
+
+### Imazon 예시
+
+CDO가 두 메트릭을 등록한다:
+
+```http
+PUT /api/v1/spoke/dg/metric/ingestion-freshness/attr/conf
+```
 ```json
-// PUT /api/v1/spoke/dg/metric/{metric_id}/attr/conf
 {
-  "title": "문서 커버리지 — 마케팅",
-  "theme": "documentation",
-  "measurement_query": {
-    "dataset_filter": {
-      "tags": ["urn:li:tag:department:marketing"]
-    },
-    "aggregation": "pct_with_description"
-  },
-  "schedule_tier": "daily",
+  "title": "인제스천 신선도",
+  "theme": "freshness",
+  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_fresh"},
+  "schedule_tier": "hourly",
   "is_active": true
 }
 ```
 
-**전사 대시보드(1주 차):**
-
+```http
+PUT /api/v1/spoke/dg/metric/validation-score/attr/conf
 ```
-DataSpoke Governance — 전사 메타데이터 건강도           점수: 59/100
-
-부서 분해
-┌─────────────────────┬────────┬──────────┬────────┬─────────┐
-│ 부서                │ 점수   │ 데이터셋 │ 이슈   │ 추세    │
-├─────────────────────┼────────┼──────────┼────────┼─────────┤
-│ 엔지니어링          │ 76/100 │ 95       │ 23     │ ↑ +3%   │
-│ 데이터 사이언스     │ 69/100 │ 72       │ 22     │ → 0%    │
-│ 마케팅              │ 54/100 │ 80       │ 37     │ ↓ -2%   │
-│ 재무                │ 81/100 │ 38       │  7     │ ↑ +5%   │
-│ 운영                │ 45/100 │ 65       │ 36     │ → 0%    │
-│ 출판사 관계         │ 40/100 │ 55       │ 33     │ ↓ -1%   │
-└─────────────────────┴────────┴──────────┴────────┴─────────┘
-
-Critical: 42 | High: 78 | Medium: 118
+```json
+{
+  "title": "검증 점수",
+  "theme": "quality",
+  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_rules_passing"},
+  "schedule_tier": "hourly",
+  "is_active": true
+}
 ```
 
-DataSpoke는 오너에게 구체적 액션 아이템, 예상 수정 시간,
-점수 영향 예측을 담은 이메일을 발송한다.
-진행은 시간에 따라 추적된다 — **3개월 차**:
-전사 점수 77/100, 전 부서 임계치 이상, 문서 감쇠율 월 -2.1%.
+스케줄을 기다리지 않고 CDO가 즉시 첫 실행을 트리거한다:
 
-#### 다관점 오버뷰
+```http
+POST /api/v1/spoke/dg/metric/ingestion-freshness/method/run
+POST /api/v1/spoke/dg/metric/validation-score/method/run
+```
 
-일부 거버넌스 뷰는 메트릭별 시계열로 표현할 수 없다.
-`/spoke/dg/overview`는 다음을 제공한다:
+1주일 후, 보드 보고용으로 추세를 가져온다:
 
-- **온톨로지 그래프 뷰** —
-  UC3 개념 그래프에 데이터셋을 문서 커버리지로 색·크기 매핑.
-  빨간 클러스터 = 개념 전체의 공백.
-- **메달리언 레이어 커버리지** —
-  DataHub `globalTags` 기반 bronze/silver/gold 분류,
-  레이어별 신선도·소유권 히트맵.
-- **소유권 토폴로지** —
-  데이터셋을 오너로 묶어 보여주고, 오너 없는 고아를 강조.
+```http
+GET /api/v1/spoke/dg/metric/ingestion-freshness/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/dg/metric/validation-score/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+```
 
-모든 뷰는 DataHub aspect +
-DataSpoke 검증·온톨로지 상태에 대한 **읽기 전용 집계**다.
-메트릭과 같은 거버넌스 surface(`/spoke/dg/…`)와
-동일한 RBAC 스코프를 공유한다.
+대시보드 뷰는 오버뷰 엔드포인트를 소비한다:
 
-### DataHub 연동 지점
+```http
+GET /api/v1/spoke/dg/overview
+```
 
-| 메트릭 입력 | DataHub aspect | 목적 |
-|------------|----------------|------|
-| 설명 커버리지 | `datasetProperties` | `description` 유무 |
-| 오너 할당 | `ownership` | 오너 URN 리스트 — 빈 리스트 = 미할당 |
-| 컬럼 문서화 | `schemaMetadata` | 컬럼별 `description` 유무 |
-| 태그 커버리지 | `globalTags` | PII / 개념 태그 유무 |
-| 사용량 | `datasetUsageStatistics` (시계열) | 고사용 공백에 우선순위 |
-| 엔티티 열거 | GraphQL: `scrollAcrossEntities` | 필터별 전체 데이터셋 순회 |
-
-신선도 메트릭은 추가로 인제스천 이벤트 이력(UC1)과
-assertion 결과 이력(UC2)을 DataSpoke API로 읽는다 —
-DB 직접 접근 없음.
-
-### 성과
-
-| 지표 | 수동 분기 감사 | DataSpoke Governance |
-|------|----------------|--------------------|
-| 감사 주기 | 분기 2주 | 실시간 연속 |
-| 이슈 응답 시간 | 평균 12일 | 평균 3일 |
-| 건강도 개선 | 측정 불가 | 3개월간 59 → 77 |
-| 거버넌스 팀 노력 | 100% 수동 | -80% |
-| 자산 시각화 | 화이트보드 | 온톨로지 + 메달리언 + 소유권 뷰 |
-
----
-
-## 요약: 전달된 가치
-
-| UC | 기능 | 전통적 접근 | DataSpoke | 개선 |
-|----|------|-------------|-----------|------|
-| UC1 | Ingestion Control | 수동 메타데이터, 리니지 없음 | 멀티 소스 보강, 단일 제어 surface | 설명 커버리지 89%, 리니지 엣지 210개, 자동 추출 규칙 380개 |
-| UC2 | Validation | 임시 점검, 사후 알림 | 통합 규칙 레지스트리, dry-run, 예측적 시계열 | 인시던트 30% → 5% 미만; SLA 위반 2시간 이상 조기 예측 |
-| UC3 | Ontology | 구전 지식, 오래된 Confluence | LLM 자율 구축 graph + vector 온톨로지 | 700개 데이터셋 온톨로지를 수 시간에; 개념의 authoritative 데이터셋 즉시 확인 |
-| UC4 | Doc Generation | 수동 3개월 정합화 | 근거 기반 제안 + 리뷰 워크플로 | 데이터셋 커버리지 64% → 96%; 142개 모순 표면화 |
-| UC5 | Governance | 분기 스프레드시트 감사 | 실시간 메트릭 + 다관점 오버뷰 | 3개월간 건강도 59 → 77; 80% 노력 감소 |
-
-### 교차 주제
-
-- **Self-Organization (MANIFESTO §1)** —
-  UC3가 온톨로지를 구축하고, UC4·UC5가 소비한다.
-- **Self-Purification (MANIFESTO §1)** —
-  UC4가 문서와 온톨로지의 불일치를 표면화하고,
-  UC5가 이를 거버넌스 메트릭으로 롤업한다.
-- **Online Verifier (MANIFESTO §1)** — UC2 dry-run 검증이 신규 파이프라인을 만드는
-  코딩 에이전트의 루프를 닫는다.
-- **공유 기반** — UC3의 온톨로지 graph + vector DB가 UC4와 UC5의 척추;
-  UC2의 assertion 프레임워크가 UC5 신선도 메트릭을 공급한다.
+…그리고 두 메트릭 값과 함께,
+`catalog.books`, `orders.line_items`, `customers.profiles`,
+`orders.shipments`, `orders.events`를
+신선도와 검증 상태로 묶은 데이터셋별 분해를 반환한다.
