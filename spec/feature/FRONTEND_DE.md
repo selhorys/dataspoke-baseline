@@ -105,9 +105,9 @@ Shows config, run history (events), and trigger controls.
 
 - **Edit Config** → opens config form modal.
   Submits via `PUT /spoke/common/data/{urn}/attr/ingestion/conf`.
-- **Run Now** → `POST /spoke/common/data/{urn}/attr/ingestion/method/run`
+- **Run Now** → `POST /spoke/common/data/{urn}/method/ingestion/run`
 - **Dry Run** → same endpoint with `dry_run` in request body
-- **Recent Runs** → `GET /spoke/common/data/{urn}/attr/ingestion/event`
+- **Recent Runs** → `GET /spoke/common/data/{urn}/event/ingestion`
 
 ### Config Editor
 
@@ -181,12 +181,12 @@ Shows quality score breakdown, anomaly timeline, SLA status, and alternatives.
 │  └────────────────────────────────────────────────────┘    │
 │                                                            │
 │  ┌─ Recent Events ───────────────────────────────────┐    │
-│  │  (event list from /attr/validation/event)          │    │
+│  │  (event list from /event/validation)               │    │
 │  └────────────────────────────────────────────────────┘    │
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Run Now** → `POST /spoke/common/data/{urn}/attr/validation/method/run`
+- **Run Now** → `POST /spoke/common/data/{urn}/method/validation/run`
 - **Anomaly Timeline** → `GET /spoke/common/data/{urn}/attr/validation/result?from=...&to=...`
   rendered as a Recharts line chart
 - **Real-time progress** → WS `/spoke/common/data/{urn}/stream/validation` shows step-by-step
@@ -220,13 +220,13 @@ Cross-dataset view of doc generation configs and latest results. Uses `GET /spok
 
 ### Generation Detail (`/de/generation/[dataset_urn]`)
 
-Shows generated documentation, ontology proposals, and diff view for review/apply workflow.
+Shows generated documentation, ontology proposals, and diff view for review/approve workflow.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  ← Generation / catalog.title_master                       │
 │                                                            │
-│  [Generate Now]  [Apply to DataHub]                        │
+│  [Generate Now]  [Approve & Write to DataHub]              │
 │                                                            │
 │  ┌─ Generated Description ───────────────────────────┐    │
 │  │  Master catalog of all book titles. One row per    │    │
@@ -258,11 +258,13 @@ Shows generated documentation, ontology proposals, and diff view for review/appl
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Generate Now** → `POST /spoke/common/data/{urn}/attr/gen/method/generate`
-- **Apply to DataHub** → `POST /spoke/common/data/{urn}/attr/gen/method/apply`
-  (confirm dialog: "This will write to DataHub")
-- **Ontology approve/reject** → `POST /spoke/common/ontology/{concept_id}/method/approve`
-  or `reject`
+- **Generate Now** → `POST /spoke/common/data/{urn}/method/gen/run`
+- **Approve & Write to DataHub** → `PATCH /spoke/common/data/{urn}/attr/gen/result/{result_id}`
+  with `{"verdict": "approve", "fields": [...] (optional, omit for full approval)}`
+  (confirm dialog: "This will write the approved proposal to DataHub")
+- **Reject Proposal** → same endpoint with `{"verdict": "reject", "reason": "…"}`
+- **Ontology approve/reject** → `POST /spoke/common/ontology/{concept_id}/method/review`
+  with `{"verdict": "approve"|"reject", "reason": "…"}`
 
 ### Ontology Browser (`/de/generation/ontology`)
 

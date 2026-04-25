@@ -79,9 +79,9 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
 | `is_active` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -114,7 +114,8 @@ Stores per-dataset doc generation configuration.
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `target_fields` | `JSONB` | Fields to generate (description, tags, deprecation) |
 | `code_refs` | `JSONB` NULL | GitHub repo/file references for code analysis |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs (`hourly`, `daily`, `weekly`) |
+| `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `status` | `TEXT` | `draft` |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -133,7 +134,7 @@ Historical generation results, pending approval.
 | `approval_status` | `TEXT` | `pending`, `approved`, `rejected` |
 | `run_id` | `UUID` | Airflow DAG run ID |
 | `generated_at` | `TIMESTAMPTZ` | |
-| `applied_at` | `TIMESTAMPTZ` NULL | When approved and applied |
+| `approved_at` | `TIMESTAMPTZ` NULL | When the proposal was approved (PATCH `attr/gen/result/{id}` with `verdict: "approve"`) and written to DataHub |
 
 #### `concept_categories`
 
@@ -186,8 +187,8 @@ Governance metric definitions.
 | `description` | `TEXT` | What this metric measures |
 | `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
 | `measurement_query` | `JSONB` | `{"type": "poorly_documented"\|"stale_datasets", "dataset_filter": {"tags": [...], "glossary_terms": [...]}}` |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement (`hourly`, `daily`, `weekly`) |
 | `is_active` | `BOOLEAN` | Whether scheduled measurement is active |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -224,7 +225,7 @@ dataset, a metric, a concept). Ingestion, validation, and generation are
 *attributes* of a dataset, so their events use `entity_type=dataset`. The
 dataset-level event endpoint (`GET .../data/{urn}/event`) filters by
 `entity_type=dataset` to return all event types for that dataset. Sub-resource
-event endpoints (e.g., `.../attr/ingestion/event`) additionally filter by
+event endpoints (e.g., `.../event/ingestion`) additionally filter by
 `event_type` prefix (e.g., `ingestion.*`) to return only domain-specific events.
 
 #### `department_mapping`

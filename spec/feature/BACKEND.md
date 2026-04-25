@@ -101,10 +101,10 @@ Route handler function names must mirror the REST path they serve.
 | Route | Function name |
 |-------|---------------|
 | `GET /metric/{id}/attr/conf` | `get_metric_conf` |
-| `POST /metric/{id}/method/deactivate` | `post_metric_deactivate` |
+| `POST /metric/{id}/method/run` | `post_metric_run` |
 | `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
-| `POST /data/{urn}/attr/gen/method/generate` | `post_data_gen_generate` |
-| `POST /ontology/{concept_id}/method/approve` | `post_ontology_approve` |
+| `POST /data/{urn}/method/gen/run` | `post_data_gen_run` |
+| `POST /ontology/{concept_id}/method/review` | `post_ontology_review` |
 
 ### Service Pattern
 
@@ -325,7 +325,7 @@ lineage, tags) → resolve concept membership via the Ontology service → LLM a
 generate field descriptions, table summary, suggested tags grounded in the ontology →
 analyze source code if `code_refs` configured → flag inconsistencies between existing
 documentation and ontology evidence (self-purification) → produce a `GenerationResult` row
-in PostgreSQL. `apply` writes approved proposals to DataHub.
+in PostgreSQL. Approval (`PATCH /attr/gen/result/{result_id}` with `verdict: "approve"`) writes the approved proposal subset to DataHub.
 
 ### Ontology Service (`src/backend/ontology/`)
 
@@ -334,7 +334,7 @@ in PostgreSQL. `apply` writes approved proposals to DataHub.
 Concept category CRUD, concept-to-dataset mapping, cross-concept relationship management
 (PostgreSQL relational tables + Apache AGE graph + pgvector embeddings). LLM-powered
 ontology construction from DataHub metadata, source code (GitHub), SQL logs, and external
-documents. Approve/reject workflow for pending proposals.
+documents. Review workflow (approve/reject) for pending proposals.
 
 **Ontology Build Pipeline** (Airflow DAG, scheduled weekly + incremental on new ingest):
 enumerate all datasets from DataHub → LLM classifies each into business concept categories
@@ -471,8 +471,9 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `GENERATION.CONFIG_CREATE` | PUT config (new) |
 | `GENERATION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
 | `GENERATION.CONFIG_DELETE` | DELETE config |
-| `GENERATION.COMPLETE` | POST generate succeeds |
-| `GENERATION.APPLY` | POST apply succeeds |
+| `GENERATION.COMPLETE` | POST `method/gen/run` succeeds |
+| `GENERATION.APPROVE` | PATCH `attr/gen/result/{id}` with `verdict: "approve"` succeeds (writes to DataHub) |
+| `GENERATION.REJECT` | PATCH `attr/gen/result/{id}` with `verdict: "reject"` succeeds |
 
 #### Metrics (`entity_type=metric`)
 
@@ -482,22 +483,20 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `METRIC.CONFIG_UPDATE` | PUT definition (existing) or PATCH |
 | `METRIC.CONFIG_DELETE` | DELETE definition |
 | `METRIC.RUN_COMPLETE` | POST run measurement succeeds |
-| `METRIC.ACTIVATE` | POST activate |
-| `METRIC.DEACTIVATE` | POST deactivate |
 
 #### Ontology (`entity_type=concept`)
 
 | Event Type | Trigger |
 |---|---|
-| `CONCEPT.APPROVE` | POST approve |
-| `CONCEPT.REJECT` | POST reject |
+| `CONCEPT.APPROVE` | POST `method/review` with `verdict: "approve"` |
+| `CONCEPT.REJECT` | POST `method/review` with `verdict: "reject"` |
 
 ### Querying Events
 
 - **Entity-level endpoint** (`GET .../data/{urn}/event`): returns all events
   for the entity regardless of domain — filters only by `entity_type` +
   `entity_id`.
-- **Domain-level endpoint** (`GET .../attr/ingestion/event`): additionally
+- **Domain-level endpoint** (`GET .../event/ingestion`): additionally
   filters by `event_type` prefix (e.g., `INGESTION.%`) to return only
   domain-specific events.
 
@@ -587,7 +586,7 @@ Ingestion supports two trigger modes per dataset:
 | Mode | Trigger | How |
 |------|---------|-----|
 | **Periodic** | Airflow schedule | Datasets are assigned to a schedule tier (`hourly`, `daily`, `weekly`); the corresponding static DAG runs all configs in that tier |
-| **Manual** | User HTTP request | `POST .../attr/ingestion/method/run` calls `IngestionService.run()` directly |
+| **Manual** | User HTTP request | `POST .../method/ingestion/run` calls `IngestionService.run()` directly |
 
 **Static tier-based DAGs**: DataSpoke uses three static Airflow DAGs per domain (hourly,
 daily, weekly). Each DAG fetches the dataset list for its tier at execution time

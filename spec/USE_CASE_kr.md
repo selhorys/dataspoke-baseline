@@ -112,12 +112,12 @@ ISBN과 임프린트를 매핑하는 출판사 Excel 피드, 장르 분류 내�
 ```
 
 **운영 제어 화면.**
-크로스 데이터셋 뷰(`GET /spoke/common/ingestion`)는
-모든 인제스천 설정, 마지막 실행 시각, 실패 횟수,
-보강 커버리지를 한눈에 보여준다.
+크로스 데이터셋 리스트 뷰(`GET /spoke/common/ingestion`)는
+데이터셋별로 한 행을 반환하며,
+각 행은 데이터셋의 `attr/ingestion/*` 집합(설정, 마지막 실행, 실패 횟수, 보강 커버리지)을 담는다.
 한 화면에서 전체 라이프사이클을 다룬다: 등록 → 스케줄 →
-실행(`POST …/method/run`, `dry_run` 옵션) →
-이벤트 관찰(`…/event`) → 비활성화.
+실행(`POST …/method/ingestion/run`, `dry_run` 옵션) →
+이벤트 관찰(`GET …/event/ingestion`) → 비활성화.
 
 **보강 결과 — `catalog.title_master`:**
 
@@ -237,7 +237,7 @@ SLA 모니터링은 반응형이며, Ops는 위반 이후 대시보드를 본다
 
 1. **스케줄 실행** — cron 스케줄이 규칙 실행을 구동한다.
    결과는 DataHub의 `assertionRunEvent` 시계열 aspect로 기록된다.
-2. **수동 / dry-run** — `POST …/method/run`에 `{"dry_run": true}`를
+2. **수동 / dry-run** — `POST …/method/validation/run`에 `{"dry_run": true}`를
    실어 결과를 기록하지 않고 실행한다.
    코딩 에이전트가 파이프라인을 배포하기 전에
    **Online Verifier**로 사용한다.
@@ -281,7 +281,8 @@ DataSpoke가 코딩 루프를 닫는다:
 DataSpoke는 여기에 다음을 덧붙인다:
 - **DataSpoke 확장** — DataHub의 Open Assertions Spec 위에 `rule_id`, `partition`, `order`,
   `timeseries` 추가.
-- **크로스 데이터셋 리스트 뷰** — `GET /spoke/common/validation`이 설정을 집계해
+- **크로스 데이터셋 리스트 뷰** — `GET /spoke/common/validation`은 데이터셋별로
+  한 행을 반환하며, 각 행은 `attr/validation/*` 집합(설정과 최신 결과)을 담아
   운영 대시보드에 노출한다.
 - **WebSocket 스트림** — `WS /spoke/common/data/{urn}/stream/validation`로
   실시간 실행 진행 상태를 전달한다.
@@ -447,7 +448,7 @@ LLM이 결정 근거를 붙여 사람 판단을 빠르게 한다.
               "tag.suggested", "ontology.alignment"],
   "period": "weekly",
   "ontology_context": "concept:book",
-  "active": true
+  "is_active": true
 }
 ```
 
@@ -490,11 +491,12 @@ UI: 대기 중 문서 제안                        47 대기 | 12 차단
 ▸ ...
 ```
 
-- **승인** → `POST …/attr/gen/method/apply` —
-  DataSpoke가 DataHub에 기록한다
+- **승인** → `PATCH …/attr/gen/result/{result_id}`에 `{"verdict": "approve"}`를 실어
+  보내면, 같은 호출에서 DataSpoke가 DataHub에 기록한다
   (`datasetProperties.description`,
   `schemaMetadata.fields[].description`,
   `globalTags`, glossary 연결).
+  `"fields": [...]`로 일부 필드만 부분 승인할 수 있다.
 - **편집** → 리뷰어가 수정 후 승인.
 - **거부** → 제안은 아카이브.
   모델은 거부 이유를 기록해 이후 제안 품질을 높인다.
@@ -568,7 +570,7 @@ CDO는 또 데이터 자산의 시각적 오버뷰를 원한다 —
     "aggregation": "pct_with_description"
   },
   "schedule_tier": "daily",
-  "active": true
+  "is_active": true
 }
 ```
 

@@ -97,10 +97,11 @@ with no way to determine what `catalog.title_master` actually tracks or how
 }
 ```
 
-**Operational control surface.** Cross-dataset views (`GET /spoke/common/ingestion`) list every
-ingestion config, its last run, failure counts, and enrichment coverage. A single screen drives
-the full lifecycle: register → schedule → run (`POST …/method/run`, `dry_run` option) →
-observe events (`…/event`) → disable.
+**Operational control surface.** The cross-dataset list view (`GET /spoke/common/ingestion`)
+returns one row per dataset with the full `attr/ingestion/*` aggregate (config, last run,
+failure counts, enrichment coverage). A single screen drives the full lifecycle: register →
+schedule → run (`POST …/method/ingestion/run`, `dry_run` option) → observe events
+(`GET …/event/ingestion`) → disable.
 
 **Enriched result — `catalog.title_master`:**
 
@@ -217,7 +218,7 @@ breaches.
 
 1. **Scheduled runs** — the cron schedule drives rule execution; results are persisted as
    `assertionRunEvent` timeseries aspects on DataHub.
-2. **Manual / dry-run** — `POST …/method/run` with `{"dry_run": true}` runs rules without
+2. **Manual / dry-run** — `POST …/method/validation/run` with `{"dry_run": true}` runs rules without
    writing results. Used by coding agents as an **Online Verifier** before shipping a pipeline.
 3. **Point-in-time historical** — `GET …/result?from=…&to=…&partition=…` returns
    per-partition results. Used to re-verify a fix against last week's data.
@@ -254,8 +255,8 @@ All rules are written as DataHub assertions; all results are `assertionRunEvent`
 aspects. DataSpoke adds:
 - **DataSpoke extensions** on top of DataHub's Open Assertions Spec — `rule_id`, `partition`,
   `order`, `timeseries`.
-- **Cross-dataset list view** — `GET /spoke/common/validation` aggregates configs across
-  datasets for ops dashboards.
+- **Cross-dataset list view** — `GET /spoke/common/validation` returns one row per dataset
+  with the full `attr/validation/*` aggregate (config and latest result) for ops dashboards.
 - **WebSocket stream** — `WS /spoke/common/data/{urn}/stream/validation` surfaces live run
   progress.
 
@@ -411,7 +412,7 @@ a consistency check. Post-acquisition reconciliation takes 3+ months of governan
               "tag.suggested", "ontology.alignment"],
   "period": "weekly",
   "ontology_context": "concept:book",
-  "active": true
+  "is_active": true
 }
 ```
 
@@ -456,9 +457,10 @@ UI: Pending Doc Proposals                          47 pending | 12 blocked
 ▸ ...
 ```
 
-- **Approve** → `POST …/attr/gen/method/apply` — DataSpoke writes the proposal to DataHub
+- **Approve** → `PATCH …/attr/gen/result/{result_id}` with `{"verdict": "approve"}` —
+  approving a pending proposal writes it to DataHub in the same call
   (`datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`,
-  glossary term links).
+  glossary term links). Pass `"fields": [...]` to approve only a subset.
 - **Edit** → reviewer adjusts, then approves.
 - **Reject** → proposal is archived; the model notes the rejection reason to improve future
   proposals.
@@ -527,7 +529,7 @@ read source databases directly.
     "aggregation": "pct_with_description"
   },
   "schedule_tier": "daily",
-  "active": true
+  "is_active": true
 }
 ```
 

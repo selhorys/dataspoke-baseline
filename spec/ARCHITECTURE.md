@@ -231,7 +231,7 @@ governance metric updates (UC5).
 ### 2. Validation (UC2)
 
 Validation runs are triggered by Airflow cron or by
-`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run` (with optional
+`POST /api/v1/spoke/common/data/{dataset_urn}/method/validation/run` (with optional
 `dry_run`). The service (1) resolves the target partition (manual → specified; cron → latest),
 (2) computes metrics per rule, (3) executes source SQL for `custom` / `sql_timeseries` rules,
 (4) validates against historical records when `ml_validation` is set, (5) registers
@@ -255,7 +255,7 @@ queued for governance review.
 Per-dataset generation configs (`/api/v1/spoke/common/data/{urn}/attr/gen/…`) drive the Doc
 Generation Service. It reads the UC3 ontology, schema, usage, lineage, and source-code
 references, and emits **proposals** (never direct writes) into a review queue. Governance leads
-or dataset owners approve / edit / reject; on approval, `POST …/method/apply` writes to DataHub
+or dataset owners approve / edit / reject; on approval (`PATCH …/attr/gen/result/{result_id}` with `verdict: "approve"`), DataSpoke writes the approved subset to DataHub
 (`datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`, glossary
 terms). Every run also reports existing documentation that contradicts the ontology
 (self-purification).
@@ -280,10 +280,10 @@ route tiers are reserved for organization-specific extensions and have no baseli
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|------------------|----------------|
-| Ingestion Control | UC1 | `/spoke/common/ingestion/`, `/spoke/common/data/{urn}/attr/ingestion/` | Ingestion Service, Enrichment Source Connectors, Custom Extractor Framework | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Validation | UC2 | `/spoke/common/validation/`, `/spoke/common/data/{urn}/attr/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine, Online Verifier | Airflow (tier-based periodic DAGs), Redis (concurrency guard + dry-run cache), DataHub SDK, PostgreSQL |
+| Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service, Enrichment Source Connectors, Custom Extractor Framework | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
+| Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine, Online Verifier | Airflow (tier-based periodic DAGs), Redis (concurrency guard + dry-run cache), DataHub SDK, PostgreSQL |
 | Ontology | UC3 | `/spoke/common/ontology/` | LLM Classification, Hierarchy Builder, Relationship Inference, Incremental Rebuilder | LLM API, PostgreSQL (pgvector + Apache AGE) |
-| Doc Generation | UC4 | `/spoke/common/gen/`, `/spoke/common/data/{urn}/attr/gen/` | Generation Service, Source-Code Analyzer, Consistency Inspector, Review Queue | LLM API, PostgreSQL, DataHub SDK (read + approved writes) |
+| Doc Generation | UC4 | `/spoke/common/gen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/gen/` | Generation Service, Source-Code Analyzer, Consistency Inspector, Review Queue | LLM API, PostgreSQL, DataHub SDK (read + approved writes) |
 | Governance | UC5 | `/spoke/dg/metric/`, `/spoke/dg/overview/` | Metrics Aggregator, Department Mapper, Trend Analyzer, Overview Composer (ontology / medallion / ownership views) | Airflow (tier-based periodic DAGs), PostgreSQL, DataHub GraphQL |
 
 ### Optional / future routes

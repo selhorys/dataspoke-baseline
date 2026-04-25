@@ -162,7 +162,7 @@ Shows metric definition, timeseries chart, and events.
 
 - **Edit** → opens config form. `PUT/PATCH /spoke/dg/metric/{id}/attr/conf`
 - **Run Now** → `POST /spoke/dg/metric/{id}/method/run`
-- **Activate/Deactivate** → `POST /spoke/dg/metric/{id}/method/activate` or `deactivate`
+- **Activate/Deactivate** → `PATCH /spoke/dg/metric/{id}/attr/conf` with `{"is_active": true|false}`
 - **Timeseries** → `GET /spoke/dg/metric/{id}/attr/result?from=...&to=...` rendered as Recharts
   area chart
 - **Events** → `GET /spoke/dg/metric/{id}/event`
