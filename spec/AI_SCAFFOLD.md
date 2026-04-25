@@ -15,18 +15,31 @@
 
 ## Purpose
 
-The DataSpoke Baseline pursues two goals (from `spec/MANIFESTO_en.md` §2):
+The DataSpoke project develops two core artifacts (from `spec/MANIFESTO_en.md` §2):
 
-1. **Baseline Product** — a pre-built implementation of essential features for an AI-era catalog, organized by user group: Data Engineers (DE), Data Analysts (DA), and Data Governance personnel (DG).
-2. **AI Scaffold** — sufficient conventions, development specs, and Claude Code utilities so that an organization-specific dedicated catalog can be built with AI in a short time.
+1. **Baseline Product** — a foundational data catalog implementation of the five MANIFESTO
+   features (Ingestion Control, Validation, Ontology, Doc Generation, Governance).
+2. **Productized Scaffold** — a framework for custom development, comprising specs, a
+   development environment (`dev_env/`, helm-charts/), and coding-agent utilities (`.claude/`).
 
-This document covers **Goal 2**. The scaffold is the set of Claude Code configurations in `.claude/` that make AI-assisted development immediately productive from the first session. A well-structured scaffold removes the bootstrapping cost of AI coding — the AI agent knows the project layout, naming conventions, spec hierarchy, and operational environment before writing a single line of code.
+This document covers the **AI Scaffold** subsection of the Productized Scaffold — the Claude
+Code configurations in `.claude/` that make AI-assisted development immediately productive from
+the first session. A well-structured scaffold removes the bootstrapping cost of AI coding: the
+agent knows the project layout, naming conventions, spec hierarchy, and operational environment
+before writing a single line of code. The Development Scaffold (Kubernetes-based dev environment
+and Helm charts) is specified separately in `spec/feature/DEV_ENV.md` and
+`spec/feature/HELM_CHART.md`.
 
 ---
 
 ## Scaffold Structure
 
-`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code lifecycle events — integration-test preflight, plan-gate reminder, permission-hygiene warning), `statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full catalogue.
+`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/`
+(subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code
+lifecycle events — integration-test preflight, plan-gate reminder, permission-hygiene warning),
+`statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine),
+and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full
+catalogue.
 
 The scaffold works alongside these structural elements:
 
@@ -43,7 +56,9 @@ The scaffold works alongside these structural elements:
 
 ## Skills
 
-Skills are prompt extensions that give the agent specialized context for a specific domain. They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explicitly (`/skill-name`) or when Claude detects a matching context.
+Skills are prompt extensions that give the agent specialized context for a specific domain.
+They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explicitly
+(`/skill-name`) or when Claude detects a matching context.
 
 | Skill | Purpose |
 |-------|---------|
@@ -59,15 +74,26 @@ Skills are prompt extensions that give the agent specialized context for a speci
 | `spec-reduce` | Audit and trim bloated specs, scaffold docs, and READMEs. Removes implementation details, eliminates cross-tier duplication, enforces abstraction-level discipline |
 | `spec-to-bulk-issue` | Analyze specs to find unimplemented components, write ordered issue tickets in `issues/`, revise existing issues, and optionally register them to GitHub with `prauto:ready` label |
 
-Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and allowed tools.
+Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and
+allowed tools.
 
 ---
 
 ## Subagents
 
-Subagents are specialized Claude instances with focused system prompts. They live in `.claude/agents/` and are organized into two roles following the **generator → evaluator** pattern (see §Design Principles). Planning is handled by Claude's built-in Plan mode before generators are invoked.
+Subagents are specialized Claude instances with focused system prompts. They live in
+`.claude/agents/` and are organized into two roles following the **generator → evaluator**
+pattern (see §Design Principles). Planning is handled by Claude's built-in Plan mode before
+generators are invoked.
 
-**Why subagents**: The primary reason to delegate implementation to subagents is **context confinement**. Each generator operates in a fresh, focused context — it sees only the approved plan, the relevant spec, and the files in its scope. This prevents the main conversation from accumulating implementation noise (hundreds of lines of generated code, test output, linter errors) that degrades the quality of subsequent decisions. The main agent stays clean for orchestration: passing plans, routing reviewer findings, and deciding what to run next. For non-trivial implementation, delegate to the appropriate generator agent rather than writing code directly in the main conversation.
+**Why subagents**: The primary reason to delegate implementation to subagents is **context
+confinement**. Each generator operates in a fresh, focused context — it sees only the approved
+plan, the relevant spec, and the files in its scope. This prevents the main conversation from
+accumulating implementation noise (hundreds of lines of generated code, test output, linter
+errors) that degrades the quality of subsequent decisions. The main agent stays clean for
+orchestration: passing plans, routing reviewer findings, and deciding what to run next. For
+non-trivial implementation, delegate to the appropriate generator agent rather than writing code
+directly in the main conversation.
 
 ### Evaluator (opus model)
 
@@ -90,7 +116,15 @@ Both reviewers use read-only tools — they analyze and report but do not write 
 
 ### Implementation workflow
 
-The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles (backend → workflow → test → frontend, each followed by `reviewer` with a single fix pass) → `k8s-helm` when ready (no review loop). Sequential by default; backend and workflow may run concurrently when workflow does not consume new API contracts, and frontend may run concurrently with the test phase when it does not depend on pending backend changes. The main agent orchestrates by passing the approved plan into generators, generator completion reports into the reviewer, and reviewer findings back to generators for fix passes; issues that persist after one fix pass escalate to the user.
+The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan
+mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles
+(backend → workflow → test → frontend, each followed by `reviewer` with a single fix pass) →
+`k8s-helm` when ready (no review loop). Sequential by default; backend and workflow may run
+concurrently when workflow does not consume new API contracts, and frontend may run concurrently
+with the test phase when it does not depend on pending backend changes. The main agent
+orchestrates by passing the approved plan into generators, generator completion reports into the
+reviewer, and reviewer findings back to generators for fix passes; issues that persist after one
+fix pass escalate to the user.
 
 See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 
@@ -98,17 +132,27 @@ See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 
 A good implementation plan produced during the Plan phase should cover:
 
-1. **Scope and goals** — What the feature does (1-3 sentences), which user groups it serves (DE, DA, DG, common), what success looks like.
-2. **Files to create or modify** — For each file: exact path (following existing conventions), purpose (one line), key contents (classes, functions, endpoints — names only, not implementations).
-3. **Component boundaries** — Which agent owns which files (backend, workflow, frontend). Data flow between components (API contracts, Airflow DAG inputs/outputs). Scope boundaries — what each agent should defer to others.
-4. **Acceptance criteria** — Concrete, testable conditions per component: endpoints that must exist, response shapes, error cases, flows that must be deployable, pages that must render, which test categories are needed.
-5. **Implementation sequence** — Recommended order of agent invocations with dependencies and concurrency opportunities noted.
+1. **Scope and goals** — What the feature does (1-3 sentences), which MANIFESTO feature(s) it
+   belongs to or extends (Ingestion Control, Validation, Ontology, Doc Generation, Governance,
+   or a user-group extension on top of these), what success looks like.
+2. **Files to create or modify** — For each file: exact path (following existing conventions),
+   purpose (one line), key contents (classes, functions, endpoints — names only, not
+   implementations).
+3. **Component boundaries** — Which agent owns which files (backend, workflow, frontend). Data
+   flow between components (API contracts, Airflow DAG inputs/outputs). Scope boundaries — what
+   each agent should defer to others.
+4. **Acceptance criteria** — Concrete, testable conditions per component: endpoints that must
+   exist, response shapes, error cases, flows that must be deployable, pages that must render,
+   which test categories are needed.
+5. **Implementation sequence** — Recommended order of agent invocations with dependencies and
+   concurrency opportunities noted.
 
 ---
 
 ## Permissions
 
-Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate with confirmation, never destroy**.
+Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate with
+confirmation, never destroy**.
 
 | Category | Policy | Examples |
 |----------|--------|----------|
@@ -119,38 +163,48 @@ Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate
 | Mutating | Prompt for confirmation | `kubectl apply`, `helm install`, `helm upgrade` |
 | Destructive | Always blocked | `kubectl delete namespace`, `rm -rf`, `sudo` |
 
-The full allow/deny lists are in `.claude/settings.json`. The settings file is the authoritative reference.
+The full allow/deny lists are in `.claude/settings.json`. The settings file is the authoritative
+reference.
 
 ---
 
 ## Prauto
 
-Prauto is the autonomous PR worker -- a cron-driven system that picks up GitHub issues labeled `prauto:ready`, produces implementation PRs via Claude Code CLI, and manages the full issue-to-PR lifecycle. It lives in `.prauto/` (config, shell libraries, prompt templates, runtime state). See `spec/AI_PRAUTO.md` for the full specification (lifecycle labels, heartbeat cycle, phase state machine, code review, squash-finalize).
+Prauto is the autonomous PR worker -- a cron-driven system that picks up GitHub issues labeled
+`prauto:ready`, produces implementation PRs via Claude Code CLI, and manages the full
+issue-to-PR lifecycle. It lives in `.prauto/` (config, shell libraries, prompt templates,
+runtime state). See `spec/AI_PRAUTO.md` for the full specification (lifecycle labels, heartbeat
+cycle, phase state machine, code review, squash-finalize).
 
 ---
 
 ## Building a Custom Spoke
 
-The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke implementation tailored to an organization's data sources, domain vocabulary, user groups, and operational requirements.
+The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke implementation
+tailored to an organization's data sources, domain vocabulary, user groups, and operational
+requirements.
 
 ### Typical customization points
 
 | What to customize | Where |
 |-------------------|-------|
-| User groups, features, product identity | `spec/MANIFESTO_*.md` |
+| Features, product identity, user-group framing | `spec/MANIFESTO_*.md` |
 | Tech stack, system components | `spec/ARCHITECTURE.md` |
-| Common feature specs | `spec/feature/` |
-| User-group-specific feature specs | `spec/feature/spoke/` |
+| Baseline feature specs | `spec/feature/` |
+| Organization-specific extensions (per user group) | `spec/feature/spoke/` |
 | API routers and backend services | `src/api/`, `src/backend/` |
 | Cluster and namespace config | `dev_env/.env` |
 | Org-specific agent conventions | `.claude/agents/` |
 
 ### Recommended sequence
 
-1. **Revise the manifesto** — redefine user groups and feature scope
-2. **Run `/plan-doc`** — update architectural specs, then common and spoke feature specs
+1. **Revise the manifesto** — adjust or add features; decide which user-group routes
+   (`/spoke/de/`, `/spoke/da/`, `/spoke/dg/`) host organization-specific extensions
+2. **Run `/plan-doc`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/dev-env install`** — bring up the DataHub environment
-4. **Implement features** using the plan → approve → generate → evaluate workflow: Plan mode → approve → `backend` → `reviewer` → `test` → `frontend` → `reviewer` → `k8s-helm`
+4. **Implement features** using the plan → approve → generate → evaluate workflow:
+   Plan mode → approve → `backend` → `reviewer` → `test` → `frontend` → `reviewer` →
+   `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
@@ -158,22 +212,49 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
 ## Design Principles
 
-1. **Context before code** — The agent reads the spec hierarchy (MANIFESTO → ARCHITECTURE → feature specs) before generating implementation. `CLAUDE.md` is the entry point that orients the agent.
+1. **Context before code** — The agent reads the spec hierarchy (MANIFESTO → ARCHITECTURE →
+   feature specs) before generating implementation. `CLAUDE.md` is the entry point that orients
+   the agent.
 
-2. **Spec as the source of truth** — All naming and user-group taxonomy derive from `MANIFESTO_en.md`. The `plan-doc` skill routes new documents to the correct tier automatically.
+2. **Spec as the source of truth** — All naming and feature taxonomy derive from
+   `MANIFESTO_en.md`. The `plan-doc` skill routes new documents to the correct tier
+   automatically.
 
-3. **User-group-driven organization** — Features, API routes, and UI entry points are organized by user group (DE, DA, DG), mirroring the MANIFESTO's structure.
+3. **Capability-driven organization** — Features are organized by MANIFESTO capability
+   (Ingestion Control, Validation, Ontology, Doc Generation, Governance). The user-group route
+   tiers (`/spoke/[de|da|dg]/`) and UI entry points exist as extensibility surfaces — they are
+   where baseline features are surfaced to different audiences and where organization-specific
+   extensions live.
 
-4. **API-first development** — The `backend` subagent implements API routes as the single source of truth for the API contract, following the three-tier URI pattern defined in feature specs. FastAPI auto-generates OpenAPI documentation from the implementation.
+4. **API-first development** — The `backend` subagent implements API routes as the single source
+   of truth for the API contract, following the three-tier URI pattern defined in feature specs.
+   FastAPI auto-generates OpenAPI documentation from the implementation.
 
-5. **Least privilege** — Agents read and inspect freely but cannot change shared state without user confirmation. Destructive cluster operations are blocked.
+5. **Least privilege** — Agents read and inspect freely but cannot change shared state without
+   user confirmation. Destructive cluster operations are blocked.
 
-6. **Self-verifying subagents** — `backend`, `workflow`, `frontend`, and `test` agents have Bash access to run tests and type-checks, catching errors before reporting completion. Self-verification is necessary but not sufficient — it is complemented by independent review (see principle 8).
+6. **Self-verifying subagents** — `backend`, `workflow`, `frontend`, and `test` agents have Bash
+   access to run tests and type-checks, catching errors before reporting completion.
+   Self-verification is necessary but not sufficient — it is complemented by independent review
+   (see principle 8).
 
-7. **Context confinement** — Each subagent operates in a fresh, focused context containing only the approved plan, relevant spec, and files in its scope. This keeps the main conversation clean for orchestration and prevents implementation noise from degrading decision quality. Delegate implementation to generator agents rather than writing code in the main conversation.
+7. **Context confinement** — Each subagent operates in a fresh, focused context containing only
+   the approved plan, relevant spec, and files in its scope. This keeps the main conversation
+   clean for orchestration and prevents implementation noise from degrading decision quality.
+   Delegate implementation to generator agents rather than writing code in the main
+   conversation.
 
-8. **Generator-evaluator separation** — Generators (backend, workflow, frontend) write code and self-test. An independent `reviewer` agent evaluates the output against the spec and approved plan. Self-evaluation is insufficient for quality assurance — models tend to praise their own work. External critique from a separate context is a stronger signal. (Source: [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
+8. **Generator-evaluator separation** — Generators (backend, workflow, frontend) write code and
+   self-test. An independent `reviewer` agent evaluates the output against the spec and approved
+   plan. Self-evaluation is insufficient for quality assurance — models tend to praise their own
+   work. External critique from a separate context is a stronger signal. (Source:
+   [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
 
-9. **Model-appropriate roles** — Use the strongest model (opus) for the `reviewer` role, which requires judgment, reasoning, and resistance to self-praise patterns. Use faster models (sonnet) for volume code generation. Planning uses Claude's built-in Plan mode (which runs on the session's current model) rather than a dedicated subagent.
+9. **Model-appropriate roles** — Use the strongest model (opus) for the `reviewer` role, which
+   requires judgment, reasoning, and resistance to self-praise patterns. Use faster models
+   (sonnet) for volume code generation. Planning uses Claude's built-in Plan mode (which runs on
+   the session's current model) rather than a dedicated subagent.
 
-10. **Bounded iteration** — Review loops are capped at 1 fix iteration per generator to control cost and latency. Unresolved issues after one fix pass are escalated to the user rather than looping indefinitely.
+10. **Bounded iteration** — Review loops are capped at 1 fix iteration per generator to control
+    cost and latency. Unresolved issues after one fix pass are escalated to the user rather than
+    looping indefinitely.

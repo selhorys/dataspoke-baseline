@@ -1,6 +1,7 @@
 # API Design Principle
 
-This document defines the standard principles for RESTful API design. Follow these guidelines as the default, but exceptions are acceptable when justified by specific technical requirements.
+This document defines the standard principles for RESTful API design. Follow these guidelines as
+the default, but exceptions are acceptable when justified by specific technical requirements.
 
 ---
 
@@ -8,31 +9,40 @@ This document defines the standard principles for RESTful API design. Follow the
 
 ### 1. Basic Guide
 
-All requests must follow these standards so the server can accurately identify and process resources.
+All requests must follow these standards so the server can accurately identify and process
+resources.
 
-- **Declare Content-Type:** Include the `Content-Type: application/json` header on all write requests (POST, PUT, PATCH).
+- **Declare Content-Type:** Include the `Content-Type: application/json` header on all write
+  requests (POST, PUT, PATCH).
 - **UTF-8 Encoding:** Always use UTF-8 encoding to prevent data corruption.
-- **Field Naming Convention:** Request body field names must be consistent, just like URIs (e.g., choose either `snake_case` or `camelCase` as the team standard).
-- **Date/Time Format:** Use the ISO 8601 standard (`YYYY-MM-DDTHH:mm:ssZ`) to avoid timezone confusion.
+- **Field Naming Convention:** Request body field names must be consistent, just like URIs
+  (e.g., choose either `snake_case` or `camelCase` as the team standard).
+- **Date/Time Format:** Use the ISO 8601 standard (`YYYY-MM-DDTHH:mm:ssZ`) to avoid timezone
+  confusion.
 
 ### 2. Response Format Guide
 
 Responses must be structured so clients can immediately determine success and easily parse the data.
 
-- **Use HTTP Status Codes:** Convey the response status via appropriate HTTP status codes (200 OK, 201 Created, 400 Bad Request, 404 Not Found, etc.) rather than embedding it only in the JSON body.
+- **Use HTTP Status Codes:** Convey the response status via appropriate HTTP status codes
+  (200 OK, 201 Created, 400 Bad Request, 404 Not Found, etc.) rather than embedding it only
+  in the JSON body.
 - **Standardize Error Responses:** Return a consistent error object when an error occurs.
   - e.g., `{"error_code": "INVALID_PARAMETER", "message": "The 'count' field must be an integer."}`
 
 ### 3. Separation of Content and Metadata
 
-Within the response body, clearly separate the **data the client actually requested (Content)** from the **information used for system processing (Metadata)**. This allows clients to handle the core data model and supplementary information independently.
+Within the response body, clearly separate the **data the client actually requested (Content)**
+from the **information used for system processing (Metadata)**. This allows clients to handle
+the core data model and supplementary information independently.
 
 - **Content (requested data):** The resource data that is central to the business logic.
 - **Metadata:** Includes pagination info, response time, API version, trace ID, etc.
 
 #### Best Practice Example
 
-When requesting a list of fruits, this example separates the `fruits` resource from all other control information.
+When requesting a list of fruits, this example separates the `fruits` resource from all other
+control information.
 
 ```json
 {
@@ -85,7 +95,8 @@ Use a hierarchical structure to clearly distinguish a resource's parent scope fr
 
 ### 3. Collection vs Single Resource
 
-A resource path without an identifier returns a collection (list); a path with an identifier returns a single object.
+A resource path without an identifier returns a collection (list); a path with an identifier
+returns a single object.
 
 - **Example (payment history):**
   - `GET /payment`
@@ -103,28 +114,37 @@ A resource path without an identifier returns a collection (list); a path with a
 
 ### 4. Use Meta-Classifiers (attr, method, event)
 
-The purpose of this principle is to clearly separate plain data fields (Field), business logic (Action), and state changes (History), making the nature of each API self-evident.
+The purpose of this principle is to clearly separate plain data fields (Field), business logic
+(Action), and state changes (History), making the nature of each API self-evident.
 
-This approach is not mandatory, but is useful for organizing when many features or characteristics come after a resource identifier.
+This approach is not mandatory, but is useful for organizing when many features or
+characteristics come after a resource identifier.
 
 #### 1. attr (Attributes): Separating state and configuration
 
-Use this when you want to read or update only a specific group of attributes — such as **metadata, configuration values, or permission states** — rather than fetching the entire resource object. This reduces the overhead of transferring heavy objects in full.
+Use this when you want to read or update only a specific group of attributes — such as
+**metadata, configuration values, or permission states** — rather than fetching the entire
+resource object. This reduces the overhead of transferring heavy objects in full.
 
 - **Example (user settings):**
-  - `GET /member/m_123/attr` : Retrieve only 'attribute' fields such as profile photo, marketing consent, and language preference.
+  - `GET /member/m_123/attr` : Retrieve only 'attribute' fields such as profile photo, marketing
+    consent, and language preference.
   - `PATCH /member/m_123/attr` : Update only a specific attribute (e.g., enabling dark mode).
 
 - **Example (device state):**
-  - `GET /iot-device/dev_88/attr/battery` : Check a specific attribute group — the device's current battery level.
+  - `GET /iot-device/dev_88/attr/battery` : Check a specific attribute group — the device's
+    current battery level.
 
 #### 2. method (Functional Actions): Business logic beyond simple CRUD
 
-REST fundamentally deals with resource state, but real-world services have complex business processes — such as **approval, recovery, or dispatch** — that are hard to express as simple field updates. Placing these after `method` makes the intended action explicit.
+REST fundamentally deals with resource state, but real-world services have complex business
+processes — such as **approval, recovery, or dispatch** — that are hard to express as simple
+field updates. Placing these after `method` makes the intended action explicit.
 
 - **Example (payment and order process):**
   - `POST /payment/pay_abc/method/approve` : Execute payment approval logic.
-  - `POST /order/ord_555/method/calculate-tax` : Invoke tax calculation logic (returns the result only).
+  - `POST /order/ord_555/method/calculate-tax` : Invoke tax calculation logic (returns the
+    result only).
 
 - **Example (account security):**
   - `POST /account/u_789/method/lock` : Force-lock an account due to a security threat.
@@ -132,10 +152,12 @@ REST fundamentally deals with resource state, but real-world services have compl
 
 #### 3. event (Lifecycle & Audit Logs): State changes over time
 
-Resources change over time. Use `event` to track the **history of occurrences** on a specific resource.
+Resources change over time. Use `event` to track the **history of occurrences** on a specific
+resource.
 
 - **Example (delivery tracking):**
-  - `GET /delivery/deliv_99/event` : Retrieve the full timeline log: [Picked up -> Hub arrived -> Out for delivery -> Delivered].
+  - `GET /delivery/deliv_99/event` : Retrieve the full timeline log:
+    [Picked up -> Hub arrived -> Out for delivery -> Delivered].
 
 - **Example (document change history):**
   - `GET /document/doc_001/event` : Audit log of who modified or accessed this document and when.
@@ -144,13 +166,15 @@ Resources change over time. Use `event` to track the **history of occurrences** 
   - `GET /server/srv_10/event` : History of system events and errors that occurred on the server.
 
 - **Example (posting an event):**
-  - `POST /project/proj_42/event/deployment` : Record a deployment occurrence against the project timeline.
+  - `POST /project/proj_42/event/deployment` : Record a deployment occurrence against the
+    project timeline.
 
 ---
 
 ### 5. URL Query Segments are for filtering and sorting
 
-Use query parameters to change how data is presented while keeping the resource's canonical path intact.
+Use query parameters to change how data is presented while keeping the resource's canonical
+path intact.
 
 - **Filtering:**
   - `/ticket?status=open&priority=high` (return only open, high-priority tickets)

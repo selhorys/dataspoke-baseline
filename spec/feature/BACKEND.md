@@ -88,9 +88,13 @@ Route handler function names must mirror the REST path they serve.
 
 **Rules:**
 
-1. **CRUD verb prefix** -- use the HTTP method as the function prefix: `get_`, `post_`, `put_`, `patch_`, `delete_`. Never use domain verbs (`run_`, `activate_`, `apply_`, etc.) as prefix.
-2. **Explicit entity names** -- include all entity names from the URL path so the function name is self-describing.
-3. **Omit meta classifiers** -- path segments `attr` and `method` are structural classifiers; omit them from the function name.
+1. **CRUD verb prefix** -- use the HTTP method as the function prefix: `get_`, `post_`,
+   `put_`, `patch_`, `delete_`. Never use domain verbs (`run_`, `activate_`, `apply_`,
+   etc.) as prefix.
+2. **Explicit entity names** -- include all entity names from the URL path so the function
+   name is self-describing.
+3. **Omit meta classifiers** -- path segments `attr` and `method` are structural
+   classifiers; omit them from the function name.
 
 **Examples:**
 
@@ -100,17 +104,22 @@ Route handler function names must mirror the REST path they serve.
 | `POST /metric/{id}/method/deactivate` | `post_metric_deactivate` |
 | `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
 | `POST /data/{urn}/attr/gen/method/generate` | `post_data_gen_generate` |
-| `POST /search/method/reindex` | `post_search_reindex` |
+| `POST /ontology/{concept_id}/method/approve` | `post_ontology_approve` |
 
 ### Service Pattern
 
-Every feature service is **stateless** -- dependencies are injected via constructor (`DataHubClient`, `AsyncSession`, `RedisClient`, etc.), and all persistent state lives in PostgreSQL, Redis, or DataHub. This allows any API instance or Airflow activity endpoint to instantiate a service and call its methods. See any `src/backend/<feature>/service.py` for the pattern.
+Every feature service is **stateless** -- dependencies are injected via constructor
+(`DataHubClient`, `AsyncSession`, `RedisClient`, etc.), and all persistent state lives in
+PostgreSQL, Redis, or DataHub. This allows any API instance or Airflow activity endpoint to
+instantiate a service and call its methods. See any `src/backend/<feature>/service.py` for
+the pattern.
 
 ---
 
 ## Shared Services (`src/shared/`)
 
-Each shared service is a thin wrapper around an infrastructure client. See the source files for current method signatures.
+Each shared service is a thin wrapper around an infrastructure client. See the source files
+for current method signatures.
 
 | Service | Module | Role | Key design decisions |
 |---------|--------|------|---------------------|
@@ -119,7 +128,7 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. AGE extension is installed on the same PG instance but not yet consumed. |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
-| Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2, UC3). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
+| Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2) and Governance (UC5). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
 | Domain Models | `models/` | Shared Pydantic models (`QualityScore`, `EventRecord`, etc.) -- internal domain objects, not API schemas | API schemas live in `src/api/schemas/` |
 | Exceptions | `exceptions.py` | `DataSpokeError` hierarchy with error codes for HTTP mapping | See [Error Handling](#error-handling) |
 | Settings | `settings.py` | Pydantic `Settings` class reading `DATASPOKE_*` env vars | -- |
@@ -129,7 +138,8 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 | Pattern | TTL | Purpose |
 |---------|-----|---------|
 | `validation:{dataset_urn}:result` | 60s | Latest validation run result cache |
-| `search:{query_hash}` | 120s | Search result cache |
+| `validation:dry_run:{hash}` | 60s | Online Verifier dry-run cache for coding agents |
+| `ontology:concept:{concept_id}` | 300s | Ontology concept lookup cache |
 | `rate_limit:{user_id}` | 60s | Rate limiting counter |
 
 ---
@@ -138,21 +148,33 @@ Each shared service is a thin wrapper around an infrastructure client. See the s
 
 ### Dataset Service (`src/backend/dataset/`)
 
-**Covers**: Base dataset resource endpoints (`GET /data/{urn}`, `GET /data/{urn}/attr`, `GET /data/{urn}/event`)
+**Covers**: Base dataset resource endpoints (`GET /data/{urn}`, `GET /data/{urn}/attr`,
+`GET /data/{urn}/event`)
 
-Thin read-through service. Reads dataset identity/attributes from DataHub, aggregates cross-domain event history from the unified `events` table. Does not own any PostgreSQL configuration tables.
+Thin read-through service. Reads dataset identity/attributes from DataHub, aggregates
+cross-domain event history from the unified `events` table. Does not own any PostgreSQL
+configuration tables.
 
-**DataHub aspects read**: `datasetProperties`, `ownership`, `globalTags`, `schemaMetadata`. Quality score from Redis cache.
+**DataHub aspects read**: `datasetProperties`, `ownership`, `globalTags`, `schemaMetadata`.
+Quality score from Redis cache.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
-**Covers**: UC1 (Deep Technical Spec Ingestion)
+**Covers**: MANIFESTO §2.1 Ingestion Control (UC1)
 
 #### Design Framework — DataHub Entity-Aspect Model & Source-Agnostic Extraction
 
-DataSpoke ingestion implements a **source-agnostic metadata extraction** pattern built on [DataHub's entity-aspect model](https://datahubproject.io/docs/what/aspect). In DataHub, every dataset entity is described by composable _aspects_ — typed metadata facets such as `DatasetPropertiesClass` (human-readable name, description), `SchemaMetadataClass` (column-level schema), and `StatusClass` (entity lifecycle). DataSpoke's ingestion pipeline discovers schema metadata from heterogeneous data sources and expresses the results as standard DataHub aspects via the REST Emitter API.
+DataSpoke ingestion implements a **source-agnostic metadata extraction** pattern built on
+[DataHub's entity-aspect model](https://datahubproject.io/docs/what/aspect). In DataHub,
+every dataset entity is described by composable _aspects_ — typed metadata facets such as
+`DatasetPropertiesClass` (human-readable name, description), `SchemaMetadataClass`
+(column-level schema), and `StatusClass` (entity lifecycle). DataSpoke's ingestion pipeline
+discovers schema metadata from heterogeneous data sources and expresses the results as
+standard DataHub aspects via the REST Emitter API.
 
-This is architecturally similar to DataHub's own ingestion framework (which uses CLI-driven _recipes_ with pluggable _sources_), but DataSpoke provides a simplified, API-driven model optimized for on-demand and scheduled metadata refresh:
+This is architecturally similar to DataHub's own ingestion framework (which uses CLI-driven
+_recipes_ with pluggable _sources_), but DataSpoke provides a simplified, API-driven model
+optimized for on-demand and scheduled metadata refresh:
 
 | Concern | DataHub Native Ingestion | DataSpoke Ingestion |
 |---------|--------------------------|---------------------|
@@ -161,7 +183,11 @@ This is architecturally similar to DataHub's own ingestion framework (which uses
 | Source plugins | 200+ community connectors | Focused extractors (extensible) |
 | Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |
 
-**Source abstraction**: The `platform` / `locator` / `identifier` / `auth` model provides a uniform interface across data platforms. Each `platform` maps to a dedicated extractor that handles connection, schema discovery, and type mapping — mirroring DataHub's source plugin architecture but scoped to DataSpoke's metadata-first requirements rather than full profiling and lineage extraction.
+**Source abstraction**: The `platform` / `locator` / `identifier` / `auth` model provides a
+uniform interface across data platforms. Each `platform` maps to a dedicated extractor that
+handles connection, schema discovery, and type mapping — mirroring DataHub's source plugin
+architecture but scoped to DataSpoke's metadata-first requirements rather than full
+profiling and lineage extraction.
 
 | Platform | Status | Locator | Identifier |
 |----------|--------|---------|------------|
@@ -172,30 +198,57 @@ This is architecturally similar to DataHub's own ingestion framework (which uses
 | **bigquery** | Planned | project_id | dataset, table |
 | **snowflake** | Planned | account_id | database, schema_name, table |
 
-**Aspect emission**: A successful non-dry-run ingestion emits three aspects to DataHub per discovered dataset:
+**Aspect emission**: A successful non-dry-run ingestion emits three aspects to DataHub per
+discovered dataset:
 - `StatusClass(removed=False)` — marks the entity as active
-- `DatasetPropertiesClass` — name, qualified name, description, custom properties (source, database, schema)
-- `SchemaMetadataClass` — field list with native-to-DataHub type mapping (e.g., PostgreSQL `integer` → DataHub `NUMBER`)
+- `DatasetPropertiesClass` — name, qualified name, description, custom properties
+  (source, database, schema)
+- `SchemaMetadataClass` — field list with native-to-DataHub type mapping
+  (e.g., PostgreSQL `integer` → DataHub `NUMBER`)
 
-See [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference) for the full aspect catalogue.
+See [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference) for
+the full aspect catalogue.
 
-**`dry_run` semantics**: Extracts and validates source metadata without calling DataHub's REST Emitter — useful for verifying connection parameters and previewing schema before committing to DataHub.
+**`dry_run` semantics**: Extracts and validates source metadata without calling DataHub's
+REST Emitter — useful for verifying connection parameters and previewing schema before
+committing to DataHub.
 
 #### Implementation
 
-CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic (cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
+CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic
+(cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment
+from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset
+URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
 
-Ingestion config model: see [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields: `dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details), `is_active`/`schedule_tier` (tier-based scheduling), `status` (DAG verification outcome).
+Ingestion config model: see
+[`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields:
+`dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others
+TODO), `locator`/`identifier`/`auth` (JSONB connection details),
+`is_active`/`schedule_tier` (tier-based scheduling), `status` (DAG verification outcome).
 
-**Run pipeline** (`IngestionService.run()`): load config → connect to source via `locator`/`auth` → discover schema via `identifier` → emit `StatusClass` + `DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as failure) → run enrichment sources and custom extractors if configured (TBD) → on success mark `dataset_registry.datahub_registered = true` via `mark_registered()` in `src/shared/db/registry.py` → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (see [Event Catalogue](#event-catalogue)).
+**Run pipeline** (`IngestionService.run()`): load config → connect to source via
+`locator`/`auth` → discover schema via `identifier` → emit `StatusClass` +
+`DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`;
+a non-dry-run that ingests zero entities is treated as failure) → run enrichment sources
+and custom extractors if configured (TBD) → on success mark
+`dataset_registry.datahub_registered = true` via `mark_registered()` in
+`src/shared/db/registry.py` → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event
+(see [Event Catalogue](#event-catalogue)).
 
 ### Validation Service (`src/backend/validation/`)
 
-**Covers**: UC2 (Data Validation), UC3 (Predictive SLA via timeseries validation)
+**Covers**: MANIFESTO §2.1 Validation (UC2). Includes point-in-time, time-series /
+predictive SLA, and dry-run Online Verifier modes.
 
 #### Design Framework — DataHub Assertion Framework & Open Assertions Spec
 
-DataSpoke validation is a **convenience and customization layer** on top of DataHub's native [assertion framework](https://datahubproject.io/docs/managed-datahub/observe/assertions) — it does not implement its own quality scoring engine. DataHub models data quality through _assertions_: named checks that evaluate a specific quality dimension of a dataset and report pass/fail results. The [Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec) defines six assertion types that cover the primary data quality dimensions:
+DataSpoke validation is a **convenience and customization layer** on top of DataHub's native
+[assertion framework](https://datahubproject.io/docs/managed-datahub/observe/assertions) —
+it does not implement its own quality scoring engine. DataHub models data quality through
+_assertions_: named checks that evaluate a specific quality dimension of a dataset and
+report pass/fail results. The
+[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)
+defines six assertion types that cover the primary data quality dimensions:
 
 | DataHub Assertion Type | Quality Dimension | Example |
 |----------------------|------------------|---------|
@@ -206,7 +259,11 @@ DataSpoke validation is a **convenience and customization layer** on top of Data
 | [SQL](https://datahubproject.io/docs/managed-datahub/observe/custom-sql-assertions) | Custom | "No orphaned foreign keys in `orders`" |
 | CUSTOM | Any | DataSpoke-extended assertions (not in DataHub native) |
 
-DataSpoke wraps all six types and adds a **DataSpoke-original extension**: `custom` type with `subtype: "sql_timeseries"`, which enables partition-aware SQL validation with optional ML-based anomaly detection. This is designed for SQL-runnable datasets (PostgreSQL, Trino, Snowflake) where traditional threshold-based assertions are insufficient — e.g., detecting whether today's row count deviates from the day-of-week historical pattern.
+DataSpoke wraps all six types and adds a **DataSpoke-original extension**: `custom` type
+with `subtype: "sql_timeseries"`, which enables partition-aware SQL validation with optional
+ML-based anomaly detection. This is designed for SQL-runnable datasets (PostgreSQL, Trino,
+Snowflake) where traditional threshold-based assertions are insufficient — e.g., detecting
+whether today's row count deviates from the day-of-week historical pattern.
 
 **How DataSpoke extends DataHub assertions**:
 
@@ -217,51 +274,79 @@ DataSpoke wraps all six types and adds a **DataSpoke-original extension**: `cust
 | Result storage | `assertionRunEvent` timeseries aspect | DataHub aspect + PostgreSQL `validation_results` (for ML training data) |
 | ML validation | Not supported | `ml_validation` extension (range model, day-of-week baseline) |
 
-DataSpoke registers assertion definitions (`assertionInfo` aspect) and reports results (`assertionRunEvent` aspect) back to DataHub, making DataSpoke-managed validations visible in DataHub's native assertion UI. See [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects) for the assertion entity model.
+DataSpoke registers assertion definitions (`assertionInfo` aspect) and reports results
+(`assertionRunEvent` aspect) back to DataHub, making DataSpoke-managed validations visible
+in DataHub's native assertion UI. See
+[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects) for
+the assertion entity model.
 
 #### Implementation
 
-CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule execution, assertion registration in DataHub, and result reporting. Config upsert registers the dataset URN in `dataset_registry` (requires the dataset to already exist in DataHub).
+CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule
+execution, assertion registration in DataHub, and result reporting. Config upsert registers
+the dataset URN in `dataset_registry` (requires the dataset to already exist in DataHub).
 
-**Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema, SQL, custom. Each rule can specify partition and order variables (like SQL window functions) for determining the target partition.
+**Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema,
+SQL, custom. Each rule can specify partition and order variables (like SQL window
+functions) for determining the target partition.
 
 **Configuration model**: Per-dataset config stored in `validation_configs` with:
-- `schedule_tier` (TEXT): Schedule tier for periodic execution — `hourly`, `daily`, or `weekly` (required when `is_active=true`).
-- `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec, extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
+- `schedule_tier` (TEXT): Schedule tier for periodic execution — `hourly`, `daily`, or
+  `weekly` (required when `is_active=true`).
+- `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec,
+  extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
 
-**SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value variables, and optional ML-based validation settings (model type, lookback window, validation range).
+**SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with
+`subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets
+(PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value
+variables, and optional ML-based validation settings (model type, lookback window,
+validation range).
 
-**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated via tier-based Airflow DAGs): resolve target partition (manual → specified; cron → latest via partition/order variables) → compute metrics per rule for that partition (executing source SQL for `custom/sql_timeseries`, running `ml_validation` against historical records when configured) → register `assertionInfo` in DataHub if absent → report each rule's `assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` and publish progress to the `ws:validation:{dataset_urn}` Redis pub/sub channel → record `VALIDATION.COMPLETE` event.
+**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated
+via tier-based Airflow DAGs): resolve target partition (manual → specified; cron → latest
+via partition/order variables) → compute metrics per rule for that partition (executing
+source SQL for `custom/sql_timeseries`, running `ml_validation` against historical records
+when configured) → register `assertionInfo` in DataHub if absent → report each rule's
+`assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` and publish
+progress to the `ws:validation:{dataset_urn}` Redis pub/sub channel → record
+`VALIDATION.COMPLETE` event.
 
 ### Generation Service (`src/backend/generation/`)
 
-**Covers**: UC4 (Automated Doc Generation)
+**Covers**: MANIFESTO §2.1 Doc Generation (UC4)
 
-CRUD for generation configurations (PostgreSQL: `generation_configs`). LLM-powered metadata generation (descriptions, tags, deprecation notes), source code analysis, similar-table diffing (pgvector + LLM), apply generated results to DataHub with approval gate.
+CRUD for generation configurations (PostgreSQL: `generation_configs`). Ontology-grounded
+metadata generation (descriptions, tags, deprecation notes), source code analysis,
+consistency inspection against the ontology, apply generated results to DataHub with
+approval gate.
 
-**Generation Pipeline** (Airflow DAG): read current DataHub aspects (schema, properties, lineage, tags) → find similar datasets via pgvector embedding search → LLM analysis to generate field descriptions, table summary, suggested tags → analyze source code if `code_refs` configured → diff against similar tables → produce a `GenerationResult` row in PostgreSQL. `apply` writes approved proposals to DataHub.
-
-### Search Service (`src/backend/search/`)
-
-**Covers**: UC5 (Natural Language Search), UC7 (Text-to-SQL Metadata)
-
-NL query parsing, embedding generation, hybrid search (pgvector similarity + DataHub GraphQL filters), SQL context enrichment, reindex trigger.
-
-**Search pipeline**: Parse NL query -> generate embedding -> vector search via pgvector HNSW index -> parallel DataHub GraphQL search -> merge and re-rank -> enrich with metadata -> add SQL context if requested.
-
-**Embedding Sync** (`embedding.py`): Generates embeddings for dataset metadata and maintains the `dataset_embeddings` pgvector table.
+**Generation Pipeline** (Airflow DAG): read current DataHub aspects (schema, properties,
+lineage, tags) → resolve concept membership via the Ontology service → LLM analysis to
+generate field descriptions, table summary, suggested tags grounded in the ontology →
+analyze source code if `code_refs` configured → flag inconsistencies between existing
+documentation and ontology evidence (self-purification) → produce a `GenerationResult` row
+in PostgreSQL. `apply` writes approved proposals to DataHub.
 
 ### Ontology Service (`src/backend/ontology/`)
 
-**Covers**: UC4 (Doc Generation), UC8 (Multi-Perspective Overview)
+**Covers**: MANIFESTO §2.1 Ontology (UC3). Consumed by Doc Generation (UC4) and Governance (UC5).
 
-Concept category CRUD, concept-to-dataset mapping, cross-concept relationship management (all PostgreSQL). LLM-powered taxonomy construction and drift detection. Approve/reject workflow for pending proposals.
+Concept category CRUD, concept-to-dataset mapping, cross-concept relationship management
+(PostgreSQL relational tables + Apache AGE graph + pgvector embeddings). LLM-powered
+ontology construction from DataHub metadata, source code (GitHub), SQL logs, and external
+documents. Approve/reject workflow for pending proposals.
 
-**Taxonomy Build Pipeline** (Airflow DAG, scheduled weekly): enumerate all datasets from DataHub → LLM classifies each into business concept categories → synthesize categories into a hierarchy and infer cross-concept relationships → score confidence per mapping (mappings below 0.7 queued for human review) → persist to PostgreSQL and detect drift against the existing approved taxonomy.
+**Ontology Build Pipeline** (Airflow DAG, scheduled weekly + incremental on new ingest):
+enumerate all datasets from DataHub → LLM classifies each into business concept categories
+(using schema, descriptions, lineage, source-code references, SQL logs) → synthesize
+categories into a hierarchy and infer cross-concept relationships → score confidence per
+mapping (mappings below 0.7 queued for human review) → persist to PostgreSQL (relational +
+AGE + pgvector) and reflect concept membership back to DataHub as `globalTags` /
+`glossaryTerms`.
 
 ### Metrics Service (`src/backend/metrics/`)
 
-**Covers**: UC6 (Enterprise Metrics Dashboard)
+**Covers**: MANIFESTO §2.1 Governance (UC5) — metric definition and aggregation.
 
 #### Design Framework — Observatory Pattern & Data Governance Dimensions
 
@@ -269,7 +354,11 @@ Concept category CRUD, concept-to-dataset mapping, cross-concept relationship ma
 > not observe the data estate directly — it aggregates results that already exist in
 > DataHub metadata or DataSpoke validation results.
 
-DataSpoke metrics implement what governance frameworks call the **observatory pattern**: metrics aggregate pre-existing metadata rather than directly probing source data. This architectural separation means the metrics layer has no data source credentials, no SQL execution against production databases, and no network access to external systems beyond DataHub's API. This makes metrics lightweight, fast, and free of credential management.
+DataSpoke metrics implement what governance frameworks call the **observatory pattern**:
+metrics aggregate pre-existing metadata rather than directly probing source data. This
+architectural separation means the metrics layer has no data source credentials, no SQL
+execution against production databases, and no network access to external systems beyond
+DataHub's API. This makes metrics lightweight, fast, and free of credential management.
 
 Built-in metric types are categorized by the data governance quality dimension they measure:
 
@@ -279,33 +368,59 @@ Built-in metric types are categorized by the data governance quality dimension t
 | **Freshness** (timeliness) | `stale_datasets` | DataSpoke `validation_results` — counts datasets with no active freshness rule or failing freshness validation |
 | *(extensible)* | Custom types | Any DataHub aspect or DataSpoke result table |
 
-New metric types are added by implementing a measurement function that reads from DataHub aspects or DataSpoke tables — never by adding direct source connections. This constraint preserves the observatory pattern.
+New metric types are added by implementing a measurement function that reads from DataHub
+aspects or DataSpoke tables — never by adding direct source connections. This constraint
+preserves the observatory pattern.
 
-**DataHub relationship**: Metrics are **read-only consumers** of DataHub metadata. They read aspects (`DatasetPropertiesClass`, `OwnershipClass`, `globalTags`, `glossaryTerms`) via the DataHub SDK but never write aspects. Metric results are stored exclusively in DataSpoke's PostgreSQL `metric_results` table. See [DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature) for the full read/write matrix.
+**DataHub relationship**: Metrics are **read-only consumers** of DataHub metadata. They
+read aspects (`DatasetPropertiesClass`, `OwnershipClass`, `globalTags`, `glossaryTerms`)
+via the DataHub SDK but never write aspects. Metric results are stored exclusively in
+DataSpoke's PostgreSQL `metric_results` table. See
+[DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature)
+for the full read/write matrix.
 
-**`measurement_query` model**: Each metric definition carries a `measurement_query` JSONB with a `type` field that selects the aggregation function. The query vocabulary is currently fixed (`poorly_documented`, `stale_datasets`); unsupported types return `422 UNSUPPORTED_METRIC_TYPE`. The vocabulary is extensible by adding new measurement functions to the metrics service without schema changes.
+**`measurement_query` model**: Each metric definition carries a `measurement_query` JSONB
+with a `type` field that selects the aggregation function. The query vocabulary is
+currently fixed (`poorly_documented`, `stale_datasets`); unsupported types return
+`422 UNSUPPORTED_METRIC_TYPE`. The vocabulary is extensible by adding new measurement
+functions to the metrics service without schema changes.
 
 #### Implementation
 
-Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-demand measurement execution. Activate/deactivate metric scheduling. No alarm evaluation, no issue tracking, no notification dispatch.
+Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-demand
+measurement execution. Activate/deactivate metric scheduling. No alarm evaluation, no issue
+tracking, no notification dispatch.
 
-**`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only datasets matching ANY of the listed tags or glossary terms are included in the measurement. Filters are OR-ed across all dimensions.
+**`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub
+tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only
+datasets matching ANY of the listed tags or glossary terms are included in the measurement.
+Filters are OR-ed across all dimensions.
 
-**Breakdown format**: Every measurement result includes a `breakdown` JSONB with a unified per-dataset entry shape:
+**Breakdown format**: Every measurement result includes a `breakdown` JSONB with a unified
+per-dataset entry shape:
 
 ```
 {"dataset_count": <total scanned>, "datasets": [{"urn": "...", "category": "<classification>", "detail": {...}}]}
 ```
 
-`category` is a machine-readable classification (e.g. `short_description`, `no_freshness_rule`, `freshness_failure`). `detail` is optional, type-specific metadata (e.g. `{"length": 5, "value": "short"}` for poorly_documented, `{"rule_id": "fresh-1"}` for stale_datasets).
+`category` is a machine-readable classification (e.g. `short_description`,
+`no_freshness_rule`, `freshness_failure`). `detail` is optional, type-specific metadata
+(e.g. `{"length": 5, "value": "short"}` for poorly_documented, `{"rule_id": "fresh-1"}`
+for stale_datasets).
 
-**Health Score Aggregation** (`aggregator.py`): Enumerates datasets, computes quality scores, aggregates by department. Department mapping: dataset ownership URN -> department via HR API or static mapping table.
+**Health Score Aggregation** (`aggregator.py`): Enumerates datasets, computes quality
+scores, aggregates by department. Department mapping: dataset ownership URN -> department
+via HR API or static mapping table.
 
 ### Overview Service (`src/backend/overview/`)
 
-**Covers**: UC8 (Multi-Perspective Data Overview)
+**Covers**: MANIFESTO §2.1 Governance (UC5) — multi-perspective visualization views
+(ontology graph, medallion coverage, ownership topology). Read-only aggregation over
+DataHub aspects, validation results, and the ontology.
 
-Assembles graph topology from ontology + lineage data, medallion layer classification (bronze = 0 upstreams, silver = 1-2, gold = 3+, based on `upstreamLineage` aspect), graph layout computation, blind spot detection (datasets not covered by any concept).
+Assembles graph topology from ontology + lineage data, medallion layer classification
+(bronze = 0 upstreams, silver = 1-2, gold = 3+, based on `upstreamLineage` aspect),
+graph layout computation, blind spot detection (datasets not covered by any concept).
 
 ---
 
@@ -396,11 +511,15 @@ for the response contract.
 
 ### Architecture
 
-Apache Airflow serves as the workflow orchestration engine with LocalExecutor. Workflows are defined as Python DAG files in `src/workflows/dags/`. Each DAG uses Airflow's `HttpOperator` to call internal activity endpoints on the DataSpoke API at `/internal/activities/{domain}/*`. Airflow handles scheduling, retry, and execution.
+Apache Airflow serves as the workflow orchestration engine with LocalExecutor. Workflows
+are defined as Python DAG files in `src/workflows/dags/`. Each DAG uses Airflow's
+`HttpOperator` to call internal activity endpoints on the DataSpoke API at
+`/internal/activities/{domain}/*`. Airflow handles scheduling, retry, and execution.
 
 ### Airflow Client Subpackage (`src/workflows/airflow/`)
 
-Wraps Airflow's REST API via `httpx`: DAG verification, DAG run lifecycle (trigger, poll, wait), conf-based dedup, and cleanup. See the source files for current API.
+Wraps Airflow's REST API via `httpx`: DAG verification, DAG run lifecycle (trigger, poll,
+wait), conf-based dedup, and cleanup. See the source files for current API.
 
 ### DAG Catalogue
 
@@ -426,11 +545,17 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 
 ### DataHub Sync
 
-`POST /internal/admin/datahub/sync` reconciles `dataset_registry.datahub_registered` against the live DataHub URN set. Accepts an optional `dataset_urns` list in the body (null/omitted = full sweep). Flips the flag bidirectionally: sets it true when a URN is found in DataHub, false when it has disappeared. Returns counts `{checked, flipped_true, flipped_false, unchanged, not_found}`. The `datahub-sync-daily` DAG calls this endpoint daily (unparameterized, full sweep).
+`POST /internal/admin/datahub/sync` reconciles `dataset_registry.datahub_registered` against
+the live DataHub URN set. Accepts an optional `dataset_urns` list in the body
+(null/omitted = full sweep). Flips the flag bidirectionally: sets it true when a URN is
+found in DataHub, false when it has disappeared. Returns counts
+`{checked, flipped_true, flipped_false, unchanged, not_found}`. The `datahub-sync-daily`
+DAG calls this endpoint daily (unparameterized, full sweep).
 
 ### Workflow Design Conventions
 
-1. **DAGs are Python-defined orchestration** -- each task is a HttpOperator call to an internal activity endpoint
+1. **DAGs are Python-defined orchestration** -- each task is a HttpOperator call to an
+   internal activity endpoint
 2. **Activity endpoints are idempotent** -- safe to retry on transient failures
 3. **Timeouts**: Per-task = 5 minutes (default); DAG-level = 1 hour
 4. **Retry policy**: Max 3 attempts, 10s initial interval
@@ -452,7 +577,8 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `generation` | `generation-{md5(urn)[:12]}` |
 | `metrics` | `metrics-{metric_id}` |
 
-If a duplicate is detected, the API returns `409 Conflict` with the appropriate `*_RUNNING` error code.
+If a duplicate is detected, the API returns `409 Conflict` with the appropriate `*_RUNNING`
+error code.
 
 ### Ingestion Workflow
 
@@ -463,35 +589,46 @@ Ingestion supports two trigger modes per dataset:
 | **Periodic** | Airflow schedule | Datasets are assigned to a schedule tier (`hourly`, `daily`, `weekly`); the corresponding static DAG runs all configs in that tier |
 | **Manual** | User HTTP request | `POST .../attr/ingestion/method/run` calls `IngestionService.run()` directly |
 
-**Static tier-based DAGs**: DataSpoke uses three static Airflow DAGs per domain (hourly, daily, weekly). Each DAG fetches the dataset list for its tier at execution time (`POST /internal/activities/ingestion/list-periodic`), then uses dynamic task mapping (`expand()`) to run ingestion for each dataset in parallel (`max_active_runs`: 5).
+**Static tier-based DAGs**: DataSpoke uses three static Airflow DAGs per domain (hourly,
+daily, weekly). Each DAG fetches the dataset list for its tier at execution time
+(`POST /internal/activities/ingestion/list-periodic`), then uses dynamic task mapping
+(`expand()`) to run ingestion for each dataset in parallel (`max_active_runs`: 5).
 
 ---
 
 ## Kafka Consumers
 
-DataSpoke runs a single consumer group (`dataspoke-consumers`) that routes events by aspect name. Consumer implementation: `src/shared/datahub/events.py` (EventRouter) and `src/shared/datahub/consumer.py`.
+DataSpoke runs a single consumer group (`dataspoke-consumers`) that routes events by aspect
+name. Consumer implementation: `src/shared/datahub/events.py` (EventRouter) and
+`src/shared/datahub/consumer.py`.
 
 ### Event Routing Table
 
 | Kafka Topic | Aspect | Handler | Feature |
 |-------------|--------|---------|---------|
-| `MetadataChangeLog_Versioned_v1` | `datasetProperties` | `sync_vector_index` | Search (UC5) |
-| `MetadataChangeLog_Versioned_v1` | `schemaMetadata` | `sync_vector_index`, `detect_new_clusters` | Search (UC5), Generation (UC4) |
-| `MetadataChangeLog_Versioned_v1` | `ownership` | `update_health_score` | Metrics (UC6) |
-| `MetadataChangeLog_Versioned_v1` | `globalTags` | `sync_vector_index`, `update_health_score` | Search (UC5), Metrics (UC6) |
-| `MetadataChangeLog_Timeseries_v1` | `datasetProfile` | `update_health_score` | Metrics (UC6) |
+| `MetadataChangeLog_Versioned_v1` | `datasetProperties` | `sync_ontology_embeddings` | Ontology (UC3) |
+| `MetadataChangeLog_Versioned_v1` | `schemaMetadata` | `sync_ontology_embeddings`, `detect_new_clusters` | Ontology (UC3), Doc Generation (UC4) |
+| `MetadataChangeLog_Versioned_v1` | `ownership` | `update_health_score` | Governance (UC5) |
+| `MetadataChangeLog_Versioned_v1` | `globalTags` | `sync_ontology_embeddings`, `update_health_score` | Ontology (UC3), Governance (UC5) |
+| `MetadataChangeLog_Timeseries_v1` | `datasetProfile` | `update_health_score` | Governance (UC5) |
 
 ### Consumer Process
 
-Runs as `python -m src.shared.datahub.consumer`, separate from the API server. By default co-located in `dataspoke-api` deployment; can be deployed independently as `dataspoke-event-consumer` for partition-based scaling. See [HELM_CHART](HELM_CHART.md#component-matrix) for the `event-consumer.enabled` toggle.
+Runs as `python -m src.shared.datahub.consumer`, separate from the API server. By default
+co-located in `dataspoke-api` deployment; can be deployed independently as
+`dataspoke-event-consumer` for partition-based scaling. See
+[HELM_CHART](HELM_CHART.md#component-matrix) for the `event-consumer.enabled` toggle.
 
-Uses `confluent-kafka` with manual offset commit (commit only after successful handler dispatch). Deserialization failures are logged and skipped; handler failures leave offset uncommitted for redelivery.
+Uses `confluent-kafka` with manual offset commit (commit only after successful handler
+dispatch). Deserialization failures are logged and skipped; handler failures leave offset
+uncommitted for redelivery.
 
 ---
 
 ## WebSocket Feed Mechanism
 
-The API exposes WebSocket channels fed via **Redis pub/sub**, decoupling activity endpoints (producers) from FastAPI WebSocket handlers (consumers).
+The API exposes WebSocket channels fed via **Redis pub/sub**, decoupling activity endpoints
+(producers) from FastAPI WebSocket handlers (consumers).
 
 ### Pub/Sub Channels
 
@@ -500,17 +637,25 @@ The API exposes WebSocket channels fed via **Redis pub/sub**, decoupling activit
 | `ws:validation:{dataset_urn}` | Validation activities | `/spoke/common/data/{dataset_urn}/stream/validation` |
 | `ws:metric:updates` | Metrics activities | `/spoke/dg/metric/stream` |
 
-Activity endpoints publish JSON progress/result messages to the appropriate Redis channel. The WebSocket handler subscribes and forwards messages to clients. Message schemas are defined in [API](API.md#websocket-channels).
+Activity endpoints publish JSON progress/result messages to the appropriate Redis channel.
+The WebSocket handler subscribes and forwards messages to clients. Message schemas are
+defined in [API](API.md#websocket-channels).
 
 ---
 
 ## Dependency Injection
 
-**API route handlers** receive backend services via FastAPI `Depends()` (see `src/api/dependencies.py`).
+**API route handlers** receive backend services via FastAPI `Depends()` (see
+`src/api/dependencies.py`).
 
-**Internal activity endpoints** use factory functions from `src/workflows/_common.py` (`make_datahub`, `make_cache`, `make_db_session`, `make_llm`, `make_vector`) instead of FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories work in any context (tests, CLI).
+**Internal activity endpoints** use factory functions from `src/workflows/_common.py`
+(`make_datahub`, `make_cache`, `make_db_session`, `make_llm`, `make_vector`) instead of
+FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories
+work in any context (tests, CLI).
 
-Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retryable) JSON responses, letting Airflow distinguish between errors worth retrying and permanent failures.
+Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retryable) JSON
+responses, letting Airflow distinguish between errors worth retrying and permanent
+failures.
 
 ---
 
@@ -526,11 +671,13 @@ Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retry
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER` |
 
-Error response format matches [API](API.md#error-catalogue). Exception hierarchy is defined in `src/shared/exceptions.py`.
+Error response format matches [API](API.md#error-catalogue). Exception hierarchy is
+defined in `src/shared/exceptions.py`.
 
 ### Best-Effort Operations
 
-Non-critical operations execute best-effort -- if they fail, the primary operation completes with reduced enrichment. All failures are logged at WARNING with `exc_info=True`.
+Non-critical operations execute best-effort -- if they fail, the primary operation
+completes with reduced enrichment. All failures are logged at WARNING with `exc_info=True`.
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|

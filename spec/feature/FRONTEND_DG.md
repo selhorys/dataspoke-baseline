@@ -10,14 +10,19 @@
 
 1. [Overview](#overview)
 2. [Navigation](#navigation)
-3. [Metrics Dashboard (UC6)](#metrics-dashboard-uc6)
-4. [Multi-Perspective Overview (UC8)](#multi-perspective-overview-uc8)
+3. [Metrics Dashboard (UC5)](#metrics-dashboard-uc5)
+4. [Multi-Perspective Overview (UC5)](#multi-perspective-overview-uc5)
 
 ---
 
 ## Overview
 
-The DG workspace focuses on **enterprise-wide observability**: health metrics across departments, visual exploration of the data estate, and governance blind spot detection. DG features consume `/api/v1/spoke/dg/` routes (metric, overview) and `/api/v1/spoke/common/` for shared resources.
+The DG workspace is the primary surface for **Governance** (MANIFESTO §2.1, UC5): enterprise-wide
+health metrics across departments, visual exploration of the data estate, and governance blind
+spot detection. It consumes `/api/v1/spoke/dg/` routes (metric, overview) and
+`/api/v1/spoke/common/` for shared resources. Unlike `/spoke/de/` and `/spoke/da/`, the
+`/spoke/dg/` tier hosts baseline routes (metric and overview are Governance surfaces in
+MANIFESTO §2.1).
 
 ---
 
@@ -30,7 +35,7 @@ The DG workspace focuses on **enterprise-wide observability**: health metrics ac
 │  Home     │
 │  Metrics  │
 │  Overview │
-│  Search   │
+│  Ontology │
 │  ───────  │
 │  [DE][DA] │
 └───────────┘
@@ -41,11 +46,14 @@ The DG workspace focuses on **enterprise-wide observability**: health metrics ac
 | Home | `/dg` | — |
 | Metrics | `/dg/metrics` | `/spoke/dg/metric/` |
 | Overview | `/dg/overview` | `/spoke/dg/overview/` |
-| Search | `/dg/search` | `/spoke/common/search` |
+| Ontology | `/dg/ontology` | `/spoke/common/ontology/` |
+
+The Ontology link lets governance leads review and approve pending concept proposals (UC3) whose
+low confidence queued them for human review.
 
 ---
 
-## Metrics Dashboard (UC6)
+## Metrics Dashboard (UC5)
 
 ### Dashboard Home (`/dg/metrics`)
 
@@ -155,7 +163,8 @@ Shows metric definition, timeseries chart, and events.
 - **Edit** → opens config form. `PUT/PATCH /spoke/dg/metric/{id}/attr/conf`
 - **Run Now** → `POST /spoke/dg/metric/{id}/method/run`
 - **Activate/Deactivate** → `POST /spoke/dg/metric/{id}/method/activate` or `deactivate`
-- **Timeseries** → `GET /spoke/dg/metric/{id}/attr/result?from=...&to=...` rendered as Recharts area chart
+- **Timeseries** → `GET /spoke/dg/metric/{id}/attr/result?from=...&to=...` rendered as Recharts
+  area chart
 - **Events** → `GET /spoke/dg/metric/{id}/event`
 - **Time range shortcuts** (1W, 1M, etc.) set `from`/`to` query params
 
@@ -182,11 +191,12 @@ Modal for creating or editing a metric definition.
 
 ---
 
-## Multi-Perspective Overview (UC8)
+## Multi-Perspective Overview (UC5)
 
 ### Overview Page (`/dg/overview`)
 
-Two visualization modes: **Taxonomy Graph** and **Medallion Classification**. Uses `GET /spoke/dg/overview` and `GET/PATCH /spoke/dg/overview/attr`.
+Two visualization modes: **Taxonomy Graph** and **Medallion Classification**.
+Uses `GET /spoke/dg/overview` and `GET/PATCH /spoke/dg/overview/attr`.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -202,7 +212,8 @@ Two visualization modes: **Taxonomy Graph** and **Medallion Classification**. Us
 
 ### Taxonomy Graph View
 
-Interactive force-directed graph rendered with a graph library (e.g., `react-force-graph` or Highcharts network graph).
+Interactive force-directed graph rendered with a graph library (e.g., `react-force-graph` or
+Highcharts network graph).
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -298,7 +309,7 @@ Tabular + visual view of Bronze/Silver/Gold layer distribution.
 │                                                            │
 │  ┌─ Unclassified Triage ─────────────────────────────┐    │
 │  │  345 datasets need review                          │    │
-│  │  Recommendation: Run Deep Ingestion on top 50      │    │
+│  │  Recommendation: Run Ingestion Control on top 50   │    │
 │  │  → Estimated auto-classify: 180 of 345 (52%)      │    │
 │  └────────────────────────────────────────────────────┘    │
 └────────────────────────────────────────────────────────────┘
@@ -311,4 +322,4 @@ Tabular + visual view of Bronze/Silver/Gold layer distribution.
 | Layer detection | Auto-classified by backend (upstream count + naming + schema; see [BACKEND §OverviewService](BACKEND.md#overviewservice)) | Manual tagging doesn't scale to 700+ datasets |
 | Conversion funnel | Visual flow diagram | CDO wants to see data refinement pipeline health |
 | Cleanup candidates | Sorted by staleness × zero-dependency | Highest-impact cleanup targets first |
-| Unknown triage | Link to Deep Ingestion (UC1) | Cross-feature integration drives adoption |
+| Unknown triage | Link to Ingestion Control (UC1) | Cross-feature integration drives adoption |

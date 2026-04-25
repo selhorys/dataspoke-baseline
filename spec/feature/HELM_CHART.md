@@ -17,10 +17,16 @@
 
 ## Overview
 
-`helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components — application services and infrastructure dependencies — into a single installable unit. The same chart serves both production and development — only the values file differs:
+`helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components —
+application services and infrastructure dependencies — into a single installable unit. The same
+chart serves both production and development — only the values file differs:
 
-- **Production** (`values.yaml`): All components enabled — frontend, API, plus infrastructure (including Airflow). Deploy with `helm upgrade --install` and a customized values file for your environment.
-- **Dev** (`values-dev.yaml`): Infrastructure + API server, reduced resources. Used by `dev_env/dataspoke-infra/install.sh`. The API runs in-cluster so Airflow can reach it directly. Frontend and workers are disabled.
+- **Production** (`values.yaml`): All components enabled — frontend, API, plus infrastructure
+  (including Airflow). Deploy with `helm upgrade --install` and a customized values file for your
+  environment.
+- **Dev** (`values-dev.yaml`): Infrastructure + API server, reduced resources. Used by
+  `dev_env/dataspoke-infra/install.sh`. The API runs in-cluster so Airflow can reach it directly.
+  Frontend and workers are disabled.
 
 ```
 Production Deployment                    Dev Deployment (dev_env)
@@ -47,7 +53,10 @@ Production Deployment                    Dev Deployment (dev_env)
 
 ## Chart Structure
 
-`helm-charts/dataspoke/` is a standard Helm umbrella chart with `Chart.yaml` (apiVersion v2), `values.yaml` (production), `values-dev.yaml` (dev overlay), `templates/` (configmap, secrets, networkpolicy, helpers), three application `subcharts/` (frontend, api, event-consumer), and `charts/` (fetched dependency archives).
+`helm-charts/dataspoke/` is a standard Helm umbrella chart with `Chart.yaml` (apiVersion v2),
+`values.yaml` (production), `values-dev.yaml` (dev overlay), `templates/` (configmap, secrets,
+networkpolicy, helpers), three application `subcharts/` (frontend, api, event-consumer), and
+`charts/` (fetched dependency archives).
 
 ### Dependencies
 
@@ -81,7 +90,8 @@ Each component has a `<component>.enabled` toggle in values.
 
 ## Configuration Flow
 
-Application runtime configuration (`DATASPOKE_*` variables) flows through Helm values into containers:
+Application runtime configuration (`DATASPOKE_*` variables) flows through Helm values into
+containers:
 
 ```
 .Values.config / .Values.secrets
@@ -95,13 +105,18 @@ Deployment envFrom → container env vars
 
 ### ConfigMap keys
 
-Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`, `DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_HOST/PORT`, `DATASPOKE_LLM_PROVIDER/MODEL`.
+Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`,
+`DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_HOST/PORT`,
+`DATASPOKE_LLM_PROVIDER/MODEL`.
 
 ### Secret keys
 
-Sensitive: `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_POSTGRES_USER/PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_LLM_API_KEY`.
+Sensitive: `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_POSTGRES_USER/PASSWORD`,
+`DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_LLM_API_KEY`.
 
-All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/Secret creation is disabled (`createConfigMap: false`, `createSecret: false`) — the host-running app reads env vars directly from `dev_env/.env`.
+All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/Secret creation is
+disabled (`createConfigMap: false`, `createSecret: false`) — the host-running app reads env vars
+directly from `dev_env/.env`.
 
 ---
 
@@ -110,7 +125,8 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 ### Production (`values.yaml`)
 
 - All components enabled with multiple replicas for frontend/API
-- PV persistence for PostgreSQL (50 Gi — hosts relational tables + pgvector embeddings + AGE graph data)
+- PV persistence for PostgreSQL (50 Gi — hosts relational tables + pgvector embeddings + AGE
+  graph data)
 - Ingress enabled for frontend and API (nginx class, cert-manager TLS)
 - NetworkPolicy for DataHub cross-namespace egress (disabled by default)
 - Airflow uses parent chart's PostgreSQL for metadata DB
@@ -120,15 +136,25 @@ All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/
 
 - API enabled in-cluster (1 replica, `testMode: true`); frontend/workers disabled
 - Single replicas, reduced resource limits
-- Airflow 3.1.8 minimized for dev: reduced resources, LocalExecutor, single api-server instance, DAGs baked into a custom image built from `docker-images/airflow/Dockerfile` (`FROM apache/airflow:3.1.8-python3.13` + `COPY src/workflows/dags/`)
+- Airflow 3.1.8 minimized for dev: reduced resources, LocalExecutor, single api-server instance,
+  DAGs baked into a custom image built from `docker-images/airflow/Dockerfile`
+  (`FROM apache/airflow:3.1.8-python3.13` + `COPY src/workflows/dags/`)
 - Redis replicas set to 0
 - ConfigMap/Secret created for in-cluster API env vars
 
 ### Key design decisions
 
-- **Airflow metadata DB**: Airflow reuses the parent chart's PostgreSQL instance for its metadata database rather than deploying its own datastore.
-- **Profile switching**: Dev and production use the same chart — only the values file differs. `dev_env/dataspoke-infra/install.sh` is a thin wrapper that creates K8s secrets from `.env` and runs `helm upgrade --install` with `values-dev.yaml`.
-- **Event consumer separation**: The Kafka event consumer can optionally be deployed as a standalone pod (`event-consumer.enabled`), separate from the API deployment. By default, both processes are co-located in the `api` deployment. Enable the event-consumer subchart for independent scaling and fault isolation in production — Kafka consumers scale by partition count. When `event-consumer.enabled=true`, the API deployment should disable its embedded consumer via `DATASPOKE_KAFKA_CONSUMER_ENABLED=false`.
+- **Airflow metadata DB**: Airflow reuses the parent chart's PostgreSQL instance for its metadata
+  database rather than deploying its own datastore.
+- **Profile switching**: Dev and production use the same chart — only the values file differs.
+  `dev_env/dataspoke-infra/install.sh` is a thin wrapper that creates K8s secrets from `.env` and
+  runs `helm upgrade --install` with `values-dev.yaml`.
+- **Event consumer separation**: The Kafka event consumer can optionally be deployed as a
+  standalone pod (`event-consumer.enabled`), separate from the API deployment. By default, both
+  processes are co-located in the `api` deployment. Enable the event-consumer subchart for
+  independent scaling and fault isolation in production — Kafka consumers scale by partition
+  count. When `event-consumer.enabled=true`, the API deployment should disable its embedded
+  consumer via `DATASPOKE_KAFKA_CONSUMER_ENABLED=false`.
 
 ---
 
@@ -150,7 +176,9 @@ Infrastructure subcharts reference these via `auth.existingSecret`.
 Two approaches:
 
 - **Option A**: Inject via `helm upgrade --set secrets.*` or a sealed values file.
-- **Option B** (recommended): Use [External Secrets Operator](https://external-secrets.io/) to sync from AWS Secrets Manager, Vault, or GCP Secret Manager. Set `secrets.createSecret: false` and reference the externally-managed secret.
+- **Option B** (recommended): Use [External Secrets Operator](https://external-secrets.io/) to
+  sync from AWS Secrets Manager, Vault, or GCP Secret Manager. Set `secrets.createSecret: false`
+  and reference the externally-managed secret.
 
 ---
 
@@ -168,11 +196,13 @@ Two approaches:
 | airflow (api-server + scheduler + triggerer) | 1+1+1 | 250m / 500m | 512Mi / 1024Mi | DAGs baked into a custom image |
 | **Total** | | **~5000m / ~10000m** | **~9.5Gi / ~22Gi** | **50Gi** |
 
-† event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m CPU and ~512Mi/1024Mi memory. Airflow uses LocalExecutor — no separate Celery worker needed.
+† event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m
+CPU and ~512Mi/1024Mi memory. Airflow uses LocalExecutor — no separate Celery worker needed.
 
 ### Dev Minimums
 
-See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget). The dev profile uses ~7.9 Gi memory limits / ~3.5 CPU limits for DataSpoke infrastructure alone.
+See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget). The dev profile uses ~7.9 Gi memory
+limits / ~3.5 CPU limits for DataSpoke infrastructure alone.
 
 ---
 
@@ -185,7 +215,8 @@ Frontend, API, and Airflow each have an `ingress` section in their values suppor
 - TLS via cert-manager annotations
 - Customizable host and path rules
 
-In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controller (installed separately in `ingress-nginx` namespace) routes traffic to all services. Key ingress resources:
+In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controller (installed
+separately in `ingress-nginx` namespace) routes traffic to all services. Key ingress resources:
 
 | Resource | Location | Routes |
 |----------|----------|--------|
@@ -195,11 +226,15 @@ In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controlle
 | `dev_env/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 
-TCP passthrough (PostgreSQL, Redis, Kafka, Lock) is handled by the nginx-ingress `tcp-services` ConfigMap — no Ingress resource needed for TCP. See [`DEV_ENV.md §Ingress`](DEV_ENV.md#ingress) for the full port map.
+TCP passthrough (PostgreSQL, Redis, Kafka, Lock) is handled by the nginx-ingress `tcp-services`
+ConfigMap — no Ingress resource needed for TCP. See [`DEV_ENV.md §Ingress`](DEV_ENV.md#ingress)
+for the full port map.
 
 ### Network Policy
 
-A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namespace (GMS :8080, Kafka :9092). Controlled by `networkPolicy.enabled` (default: `false`) and `networkPolicy.datahubNamespace`. Enable in production clusters with default-deny policies.
+A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namespace (GMS :8080,
+Kafka :9092). Controlled by `networkPolicy.enabled` (default: `false`) and
+`networkPolicy.datahubNamespace`. Enable in production clusters with default-deny policies.
 
 ---
 
@@ -209,12 +244,17 @@ A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namesp
 
 1. Create K8s Secrets from `.env` variables (idempotent via `--dry-run=client`)
 2. Register Helm repos (`bitnami`, `apache-airflow`) and build chart dependencies
-3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL image and auth credentials via `--set`/`--set-string`
+3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL image and auth
+   credentials via `--set`/`--set-string`
 
-The dev profile enables the API in-cluster (so Airflow callbacks work via cluster DNS) and enables ingress for the API and Airflow (so developers can access them via the nginx-ingress endpoints). Frontend and workers remain disabled. Airflow runs in the cluster in both dev and production.
+The dev profile enables the API in-cluster (so Airflow callbacks work via cluster DNS) and
+enables ingress for the API and Airflow (so developers can access them via the nginx-ingress
+endpoints). Frontend and workers remain disabled. Airflow runs in the cluster in both dev and
+production.
 
 This means:
-1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments — both production and dev
+1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments —
+   both production and dev
 2. `dev_env/dataspoke-infra/` is a thin wrapper — no duplicate values files or templates
 3. Switching from dev to production is changing the values file, not the chart
 
@@ -222,7 +262,9 @@ This means:
 
 ## In-Cluster Testing
 
-For on-demand integration testing where all components run inside Kubernetes (e.g., verifying health probes, ingress routing, network policies, or resource behavior), enable application subcharts on top of the dev profile:
+For on-demand integration testing where all components run inside Kubernetes (e.g., verifying
+health probes, ingress routing, network policies, or resource behavior), enable application
+subcharts on top of the dev profile:
 
 ```bash
 helm upgrade --install dataspoke ./helm-charts/dataspoke \
@@ -235,13 +277,17 @@ helm upgrade --install dataspoke ./helm-charts/dataspoke \
   # Optionally add: --set event-consumer.enabled=true
 ```
 
-The API is already enabled in `values-dev.yaml`. Frontend and workers can be enabled on-demand for full in-cluster testing. Every code change requires a container rebuild and `helm upgrade` — this is automated by `dev_env/dataspoke-test-mode.sh`. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+The API is already enabled in `values-dev.yaml`. Frontend and workers can be enabled on-demand
+for full in-cluster testing. Every code change requires a container rebuild and `helm upgrade` —
+this is automated by `dev_env/dataspoke-test-mode.sh`. See
+[TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 ---
 
 ## References
 
-- [Helm — Chart Dependencies](https://helm.sh/docs/helm/helm_dependency/) — umbrella chart pattern
+- [Helm — Chart Dependencies](https://helm.sh/docs/helm/helm_dependency/) — umbrella chart
+  pattern
 - [Bitnami PostgreSQL Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
 - [Bitnami Redis Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
 - [Apache Airflow Helm Chart](https://github.com/apache/airflow/tree/main/chart)

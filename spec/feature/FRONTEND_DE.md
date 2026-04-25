@@ -19,7 +19,9 @@
 
 ## Overview
 
-The DE workspace focuses on dataset operational management: ingestion pipelines, quality validation, SLA monitoring, and documentation generation. All features consume `/api/v1/spoke/common/` routes — no DE-exclusive routes exist currently.
+The DE workspace focuses on dataset operational management: ingestion pipelines, quality
+validation, SLA monitoring, and documentation generation. All features consume
+`/api/v1/spoke/common/` routes — no DE-exclusive routes exist currently.
 
 ---
 
@@ -35,7 +37,7 @@ Sidebar items for the DE workspace:
 │  Ingest.  │
 │  Valid.   │
 │  Docs     │
-│  Search   │
+│  Ontology │
 │  ───────  │
 │  [DA][DG] │
 └───────────┘
@@ -47,7 +49,7 @@ Sidebar items for the DE workspace:
 | Ingestion | `/de/ingestion` | `/spoke/common/ingestion/` |
 | Validation | `/de/validation` | `/spoke/common/validation/` |
 | Docs | `/de/generation` | `/spoke/common/gen/` |
-| Search | `/de/search` | `/spoke/common/search` |
+| Ontology | `/de/ontology` | `/spoke/common/ontology/` |
 
 ---
 
@@ -101,14 +103,16 @@ Shows config, run history (events), and trigger controls.
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Edit Config** → opens config form modal. Submits via `PUT /spoke/common/data/{urn}/attr/ingestion/conf`.
+- **Edit Config** → opens config form modal.
+  Submits via `PUT /spoke/common/data/{urn}/attr/ingestion/conf`.
 - **Run Now** → `POST /spoke/common/data/{urn}/attr/ingestion/method/run`
 - **Dry Run** → same endpoint with `dry_run` in request body
 - **Recent Runs** → `GET /spoke/common/data/{urn}/attr/ingestion/event`
 
 ### Config Editor
 
-Modal form for ingestion configuration. Fields driven by the ingestion config schema. Enrichment sources and custom extractors are managed as dynamic form arrays.
+Modal form for ingestion configuration. Fields driven by the ingestion config schema. Enrichment
+sources and custom extractors are managed as dynamic form arrays.
 
 ---
 
@@ -116,7 +120,8 @@ Modal form for ingestion configuration. Fields driven by the ingestion config sc
 
 ### Validation List (`/de/validation`)
 
-Cross-dataset view of validation configurations and latest results. Uses `GET /spoke/common/validation`.
+Cross-dataset view of validation configurations and latest results.
+Uses `GET /spoke/common/validation`.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -182,9 +187,12 @@ Shows quality score breakdown, anomaly timeline, SLA status, and alternatives.
 ```
 
 - **Run Now** → `POST /spoke/common/data/{urn}/attr/validation/method/run`
-- **Anomaly Timeline** → `GET /spoke/common/data/{urn}/attr/validation/result?from=...&to=...` rendered as a Recharts line chart
-- **Real-time progress** → WS `/spoke/common/data/{urn}/stream/validation` shows step-by-step progress bar during a run
-- **Config** tab → `GET/PUT /spoke/common/data/{urn}/attr/validation/conf` for editing rules, schedules, SLA targets
+- **Anomaly Timeline** → `GET /spoke/common/data/{urn}/attr/validation/result?from=...&to=...`
+  rendered as a Recharts line chart
+- **Real-time progress** → WS `/spoke/common/data/{urn}/stream/validation` shows step-by-step
+  progress bar during a run
+- **Config** tab → `GET/PUT /spoke/common/data/{urn}/attr/validation/conf` for editing rules,
+  schedules, SLA targets
 
 ---
 
@@ -251,8 +259,10 @@ Shows generated documentation, ontology proposals, and diff view for review/appl
 ```
 
 - **Generate Now** → `POST /spoke/common/data/{urn}/attr/gen/method/generate`
-- **Apply to DataHub** → `POST /spoke/common/data/{urn}/attr/gen/method/apply` (confirm dialog: "This will write to DataHub")
-- **Ontology approve/reject** → `POST /spoke/common/ontology/{concept_id}/method/approve` or `reject`
+- **Apply to DataHub** → `POST /spoke/common/data/{urn}/attr/gen/method/apply`
+  (confirm dialog: "This will write to DataHub")
+- **Ontology approve/reject** → `POST /spoke/common/ontology/{concept_id}/method/approve`
+  or `reject`
 
 ### Ontology Browser (`/de/generation/ontology`)
 
@@ -282,7 +292,8 @@ Browse the full concept taxonomy. Uses `GET /spoke/common/ontology`.
 
 ## Dataset Detail Page
 
-Shared entry point for any dataset: `/de/dataset/[dataset_urn]`. Aggregates ingestion, validation, and generation views as tabs.
+Shared entry point for any dataset: `/de/dataset/[dataset_urn]`. Aggregates ingestion, validation,
+and generation views as tabs.
 
 ```
 ┌────────────────────────────────────────────────────────────┐

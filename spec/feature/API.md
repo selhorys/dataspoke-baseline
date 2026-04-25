@@ -28,21 +28,28 @@
 
 The DataSpoke API is a FastAPI (Python 3.13) service that acts as the single ingress for
 all DataSpoke clients — the portal UI and external AI agents. It exposes a three-tier URI
-structure that maps directly to the user-group taxonomy defined in the MANIFESTO:
+structure: baseline features defined in MANIFESTO §2.1 live under `/spoke/common/` and
+`/spoke/dg/`; the `/spoke/de/` and `/spoke/da/` tiers are extensibility surfaces for
+organization-specific routes.
 
 ```
-/api/v1/spoke/common/…     — Cross-cutting features shared across DE, DA, and DG
-/api/v1/spoke/de/…         — Data Engineering features
-/api/v1/spoke/da/…         — Data Analysis features
-/api/v1/spoke/dg/…         — Data Governance features
+/api/v1/spoke/common/…     — Baseline features: ingestion, validation, ontology, generation
+/api/v1/spoke/de/…         — Reserved for Data Engineering extensions (no baseline routes)
+/api/v1/spoke/da/…         — Reserved for Data Analysis extensions (no baseline routes)
+/api/v1/spoke/dg/…         — Governance (metric, overview)
 /api/v1/hub/…              — DataHub pass-through (optional ingress for clients)
 ```
 
 The API is the only **HTTP-facing** component for external clients (the portal UI and
-AI agents). Backend services also access DataHub, PostgreSQL (including pgvector), and Redis directly.
+AI agents). Backend services also access DataHub, PostgreSQL (including pgvector),
+and Redis directly.
 Airflow orchestrates workflows by calling internal activity endpoints on the API.
 
-In the future, DataSpoke may also expose **redefined DataHub functions** — blended endpoints that proxy DataHub's basic operations (e.g., dataset creation, metadata browsing) while simultaneously handling DataSpoke-specific data in a single call. These would appear under `/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
+In the future, DataSpoke may also expose **redefined DataHub functions** — blended endpoints that 
+proxy DataHub's basic operations (e.g., dataset creation, metadata browsing, searching) while 
+simultaneously handling DataSpoke-specific data in a single call. These would appear under 
+`/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). 
+See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
 
 ```
 Browser / AI Agent
@@ -86,7 +93,9 @@ Token issuance and refresh are handled at:
 
 ### JWT Claims
 
-Access-token payload: `sub` (user uuid), `email`, `groups` (array of user-group identifiers — `de`, `da`, `dg`; a user may belong to multiple), `exp`, `iat`. The middleware enforces that a request targeting `/spoke/de/…` must have `"de"` in the `groups` claim.
+Access-token payload: `sub` (user uuid), `email`, `groups` (array of user-group identifiers
+— `de`, `da`, `dg`; a user may belong to multiple), `exp`, `iat`. The middleware enforces
+that a request targeting `/spoke/de/…` must have `"de"` in the `groups` claim.
 
 ### Group-to-Route Access Control
 
@@ -110,16 +119,30 @@ require the `"admin"` claim exclusively.
 
 The current authentication implementation uses a stub identity store:
 
-- **Single admin account**: Only one user (configured via `DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`) can authenticate. All other credentials are rejected.
-- **Redis-backed token revocation**: Revoked refresh tokens are stored in Redis under `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime. Refresh and revoke are fail-closed on the Redis path — if the store is unreachable, `POST /auth/token/refresh` returns `503 SERVICE_UNAVAILABLE`.
-- **No group resolution**: The admin account receives all groups (`admin`, `de`, `da`, `dg`); non-admin users receive an empty group list.
-- **HTTP-only cookies**: The refresh token cookie uses `secure=False`. Production deployments must set `secure=True`.
+- **Single admin account**: Only one user
+  (configured via `DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`) can authenticate.
+  All other credentials are rejected.
+- **Redis-backed token revocation**: Revoked refresh tokens are stored in Redis under
+  `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime.
+  Refresh and revoke are fail-closed on the Redis path — if the store is unreachable,
+  `POST /auth/token/refresh` returns `503 SERVICE_UNAVAILABLE`.
+- **No group resolution**: The admin account receives all groups (`admin`, `de`, `da`, `dg`);
+  non-admin users receive an empty group list.
+- **HTTP-only cookies**: The refresh token cookie uses `secure=False`.
+  Production deployments must set `secure=True`.
 
-All stub code is marked with `TBD(user-accounts)` comments. See [BACKEND §User Account Management](BACKEND.md#user-account-management-tbd) for the planned migration path.
+All stub code is marked with `TBD(user-accounts)` comments. See
+[BACKEND §User Account Management](BACKEND.md#user-account-management-tbd)
+for the planned migration path.
 
 ### Auth Flow
 
-Login: client `POST /auth/token` with `{email, password}` → API verifies credentials against the identity store, receives the user record + groups, and returns `{access_token}` in the body plus the refresh token as an HttpOnly cookie. Subsequent protected calls (e.g. `GET /spoke/common/data/{urn}/attr/ingestion/conf`) carry `Authorization: Bearer <access_token>`; the API validates the JWT signature/expiry and enforces the `groups` claim against the URI tier before dispatching.
+Login: client `POST /auth/token` with `{email, password}` → API verifies credentials against
+the identity store, receives the user record + groups, and returns `{access_token}` in the
+body plus the refresh token as an HttpOnly cookie. Subsequent protected calls
+(e.g. `GET /spoke/common/data/{urn}/attr/ingestion/conf`) carry
+`Authorization: Bearer <access_token>`; the API validates the JWT signature/expiry and
+enforces the `groups` claim against the URI tier before dispatching.
 
 ---
 
@@ -127,15 +150,15 @@ Login: client `POST /auth/token` with `{email, password}` → API verifies crede
 
 All routes are prefixed with `/api/v1`. Routes marked **WS** are WebSocket endpoints.
 
-> **User-group routing principle**: User-group-specific paths (`/spoke/de/…`,
-> `/spoke/da/…`, `/spoke/dg/…`) should be defined **only when a feature is exclusively
-> used by that user group**. For dataset-centric operations — ingestion, validation,
-> generation, search — the `/spoke/common/data/{dataset_urn}/…` structure is the
-> **canonical surface** for per-dataset operations; the dedicated routers
-> `/spoke/common/{ingestion,validation,gen}` expose list and detail views only. Any
-> team that owns a dataset can access per-dataset features regardless of group
-> membership. As a result, the current catalogue has no `/spoke/de` or `/spoke/da`
-> sections; all shared dataset operations live under `/spoke/common`.
+> **Routing principle**: Baseline features live under `/spoke/common/` (shared
+> dataset-centric operations: ingestion, validation, ontology, generation) and
+> `/spoke/dg/` (governance metrics and overviews). The `/spoke/de/` and
+> `/spoke/da/` tiers exist as extensibility surfaces for organization-specific
+> routes and contain no baseline endpoints. For dataset-centric operations, the
+> `/spoke/common/data/{dataset_urn}/…` structure is the **canonical surface**;
+> the dedicated routers `/spoke/common/{ingestion,validation,gen}` expose list
+> and detail views only. Any team that owns a dataset can access per-dataset
+> features regardless of group membership.
 
 ### Auth
 
@@ -147,18 +170,18 @@ All routes are prefixed with `/api/v1`. Routes marked **WS** are WebSocket endpo
 
 ### Common (`/spoke/common`)
 
-Cross-cutting features consumed by multiple user groups.
+Baseline features consumed by all user groups.
 
 #### Ontology
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ontology` | List concept categories | Ontology Builder | UC4, UC8 |
-| `GET` | `/spoke/common/ontology/{concept_id}` | Get concept detail + relationships | Ontology Builder | UC4, UC8 |
-| `GET` | `/spoke/common/ontology/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology Builder | UC4 |
-| `GET` | `/spoke/common/ontology/{concept_id}/event` | Change history for a concept | Ontology Builder | UC4 |
-| `POST` | `/spoke/common/ontology/{concept_id}/method/approve` | Approve a pending concept proposal | Ontology Builder | UC4 |
-| `POST` | `/spoke/common/ontology/{concept_id}/method/reject` | Reject a pending concept proposal | Ontology Builder | UC4 |
+| `GET` | `/spoke/common/ontology` | List concept categories | Ontology | UC3 |
+| `GET` | `/spoke/common/ontology/{concept_id}` | Get concept detail + relationships | Ontology | UC3 |
+| `GET` | `/spoke/common/ontology/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology | UC3 |
+| `GET` | `/spoke/common/ontology/{concept_id}/event` | Change history for a concept | Ontology | UC3 |
+| `POST` | `/spoke/common/ontology/{concept_id}/method/approve` | Approve a pending concept proposal | Ontology | UC3 |
+| `POST` | `/spoke/common/ontology/{concept_id}/method/reject` | Reject a pending concept proposal | Ontology | UC3 |
 
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
 
@@ -175,29 +198,29 @@ while DA or other teams may register simpler configurations.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/data/{dataset_urn}` | Get dataset summary (identity, owner, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr` | Get dataset attributes (schema summary, ownership, tags) | Data Resource | — |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Get ingestion configuration for dataset | Ingestion Config | UC1 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Config | UC1 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Config | UC1 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Config | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Execution | UC1 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/event` | Ingestion event reports (success/failure notices) | Ingestion Execution | UC1 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation Config | UC2, UC3, UC6 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation Config | UC2, UC3, UC6 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation Config | UC2, UC3, UC6 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger manual validation run (optional `partition` in body; defaults to latest partition) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | DataHub Assertion Management | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Automated Doc Generation | UC4 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Automated Doc Generation | UC4 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Partially update generation configuration | Automated Doc Generation | UC4 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Remove generation configuration | Automated Doc Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/result` | Get generation results (historical; `?latest=true` for most recent only) | Automated Doc Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/gen/method/generate` | Trigger metadata generation run | Automated Doc Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/gen/method/apply` | Apply approved generation results to DataHub | Automated Doc Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/event` | Generation event reports (success/failure notices) | Automated Doc Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Get ingestion configuration for dataset | Ingestion Control | UC1 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Control | UC1 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Control | UC1 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Control | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/ingestion/method/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/event` | Ingestion event reports (success/failure notices) | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation | UC2, UC5 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation | UC2, UC5 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | Validation | UC2, UC5 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/method/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents) | Validation | UC2 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/event` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Doc Generation | UC4 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Doc Generation | UC4 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Partially update generation configuration | Doc Generation | UC4 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Remove generation configuration | Doc Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/result` | Get generation proposals (historical; `?latest=true` for most recent only) | Doc Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/gen/method/generate` | Trigger metadata generation run | Doc Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/gen/method/apply` | Apply approved generation results to DataHub | Doc Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/event` | Generation event reports (success/failure notices) | Doc Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types) | Data Resource | — |
-| **WS** | `/spoke/common/data/{dataset_urn}/stream/validation` | Real-time validation progress stream | DataHub Assertion Management | UC2, UC3 |
+| **WS** | `/spoke/common/data/{dataset_urn}/stream/validation` | Real-time validation progress stream | Validation | UC2 |
 
 #### Redefined DataHub Functions *(TBD)*
 
@@ -208,7 +231,8 @@ Future routes for blended dataset creation and modification. Example candidates:
 | `POST` | `/spoke/common/data` | Create a dataset — write core metadata to DataHub and initialize DataSpoke-side records in a single call |
 | `PATCH` | `/spoke/common/data/{dataset_urn}` | Update dataset metadata — blend DataHub aspect writes with DataSpoke-specific updates |
 
-These routes are **not yet defined**; scope and design will be specified when the feature is planned. See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview).
+These routes are **not yet defined**; scope and design will be specified when the feature is
+planned. See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview).
 
 #### Ingestion (`/spoke/common/ingestion`)
 
@@ -228,8 +252,8 @@ Per-dataset operations (attr CRUD, method/run, event) live under the canonical
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Config | UC1 |
-| `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Config | UC1 |
+| `GET` | `/spoke/common/ingestion` | List all ingestion configs across datasets (paginated, filterable) | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/ingestion/{dataset_urn}` | Get ingestion config detail (dataset identity + config body) | Ingestion Control | UC1 |
 
 #### Validation (`/spoke/common/validation`)
 
@@ -250,8 +274,8 @@ Per-dataset operations (attr CRUD, result, method/run, event) live under the can
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/validation` | List all validation configs across datasets (paginated, filterable) | Validation Config | UC2, UC3, UC6 |
-| `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation Config | UC2, UC3, UC6 |
+| `GET` | `/spoke/common/validation` | List all validation configs across datasets (paginated, filterable) | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/validation/{dataset_urn}` | Get validation config detail (dataset identity + config body) | Validation | UC2, UC5 |
 
 #### Generation (`/spoke/common/gen`)
 
@@ -265,20 +289,8 @@ under the canonical `/spoke/common/data/{dataset_urn}/attr/gen/…` surface.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/gen` | List all generation configs across datasets (paginated, filterable) | Automated Doc Generation | UC4 |
-| `GET` | `/spoke/common/gen/{dataset_urn}` | Get generation detail (dataset identity + config + latest result) | Automated Doc Generation | UC4 |
-
-#### Search (`/spoke/common/search`)
-
-Natural language search over dataset metadata using vector similarity. Available to all
-user groups. Accepts `?sql_context=true` to include text-to-SQL optimized column detail,
-sample values, and inferred join paths in the response — superseding the former dedicated
-text-to-SQL and join-paths paths.
-
-| Method | Path | Purpose | Feature | UC |
-|--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/search` | Natural language search (`?q=…`; add `?sql_context=true` for SQL context + join paths) | Natural Language Search, Text-to-SQL Metadata | UC5, UC7 |
-| `POST` | `/spoke/common/search/method/reindex` | Trigger reindex for a dataset (`?dataset_urn=…`) | Natural Language Search | UC5 |
+| `GET` | `/spoke/common/gen` | List all generation configs across datasets (paginated, filterable) | Doc Generation | UC4 |
+| `GET` | `/spoke/common/gen/{dataset_urn}` | Get generation detail (dataset identity + config + latest result) | Doc Generation | UC4 |
 
 ### Data Governance (`/spoke/dg`)
 
@@ -306,32 +318,33 @@ are included in the measurement. Filters are OR-ed across all dimensions.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, active status) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, active status) | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, active status) | Enterprise Metrics Dashboard | UC6 |
-| `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Enterprise Metrics Dashboard | UC6 |
-| `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Enterprise Metrics Dashboard | UC6 |
-| `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Enterprise Metrics Dashboard | UC6 |
-| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run | Enterprise Metrics Dashboard | UC6 |
-| `POST` | `/spoke/dg/metric/{metric_id}/method/activate` | Activate metric (enable scheduled measurement) | Enterprise Metrics Dashboard | UC6 |
-| `POST` | `/spoke/dg/metric/{metric_id}/method/deactivate` | Deactivate metric | Enterprise Metrics Dashboard | UC6 |
-| `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, activation/deactivation) | Enterprise Metrics Dashboard | UC6 |
-| **WS** | `/spoke/dg/metric/stream` | Real-time metric update stream | Enterprise Metrics Dashboard | UC6 |
+| `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, active status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, active status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, active status) | Governance | UC5 |
+| `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Governance | UC5 |
+| `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
+| `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Governance | UC5 |
+| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run | Governance | UC5 |
+| `POST` | `/spoke/dg/metric/{metric_id}/method/activate` | Activate metric (enable scheduled measurement) | Governance | UC5 |
+| `POST` | `/spoke/dg/metric/{metric_id}/method/deactivate` | Deactivate metric | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, activation/deactivation) | Governance | UC5 |
+| **WS** | `/spoke/dg/metric/stream` | Real-time metric update stream | Governance | UC5 |
 
 #### Overview (`/spoke/dg/overview`)
 
-Additional perspectives on the data estate that cannot be expressed as per-metric
-timeseries: graph-based topology views, medallion layer coverage maps, and similar
-structural views. Use these paths only when the `/spoke/dg/metric` routes are
-insufficient to represent the data needed.
+Governance views of the data estate that cannot be expressed as per-metric timeseries:
+ontology-based topology views (consuming the UC3 concept graph), medallion layer
+coverage maps, and ownership topology. Use these paths only when the `/spoke/dg/metric`
+routes are insufficient. All views are read-only aggregations over DataHub aspects,
+DataSpoke validation results, and the ontology.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/dg/overview` | Get multi-perspective overview snapshot (graph + medallion coverage) | Multi-Perspective Data Overview | UC8 |
-| `GET` | `/spoke/dg/overview/attr` | Get visualization config (layout, coloring, filters) | Multi-Perspective Data Overview | UC8 |
-| `PATCH` | `/spoke/dg/overview/attr` | Update visualization config | Multi-Perspective Data Overview | UC8 |
+| `GET` | `/spoke/dg/overview` | Get multi-perspective overview snapshot (ontology graph + medallion coverage + ownership topology) | Governance | UC5 |
+| `GET` | `/spoke/dg/overview/attr` | Get visualization config (layout, coloring, filters) | Governance | UC5 |
+| `PATCH` | `/spoke/dg/overview/attr` | Update visualization config | Governance | UC5 |
 
 ### DataHub Pass-Through (`/hub`)
 
@@ -346,11 +359,14 @@ after JWT validation.
 
 ### Admin (`/admin`)
 
-Routes for user management and system configuration. Accessible only to users with `"admin"` in the `groups` claim. Specific routes are defined in dedicated admin feature specs and are not catalogued here.
+Routes for user management and system configuration. Accessible only to users with `"admin"`
+in the `groups` claim. Specific routes are defined in dedicated admin feature specs and are
+not catalogued here.
 
 ### Internal Admin (`/internal/admin`)
 
-Internal-only routes gated by the `X-Internal-Token` shared-secret header. Used by scripts, Airflow DAGs, and automation.
+Internal-only routes gated by the `X-Internal-Token` shared-secret header. Used by scripts,
+Airflow DAGs, and automation.
 
 | Method | Path | Body | Response | Auth |
 |--------|------|------|----------|------|
@@ -447,9 +463,20 @@ All timestamps use ISO 8601 with UTC: `2026-02-27T10:00:00.000Z`.
 
 ## Middleware Stack
 
-Requests pass through, in order: (1) **CORS** — allow configured origins, reject others with 403; (2) **request logging** — method, path, trace ID, client IP before the handler; (3) **rate limiting** — SlowAPI fixed-window per user (Redis with in-memory fallback, default 120 req/min); (4) **JWT validation** — verify signature/expiry and extract claims; (5) **group enforcement** — check the `groups` claim against the URI tier; (6) **route handler** — FastAPI DI + business logic; (7) **response logging** — status, latency, trace ID.
+Requests pass through, in order: (1) **CORS** — allow configured origins, reject others with
+403; (2) **request logging** — method, path, trace ID, client IP before the handler;
+(3) **rate limiting** — SlowAPI fixed-window per user (Redis with in-memory fallback,
+default 120 req/min); (4) **JWT validation** — verify signature/expiry and extract claims;
+(5) **group enforcement** — check the `groups` claim against the URI tier;
+(6) **route handler** — FastAPI DI + business logic;
+(7) **response logging** — status, latency, trace ID.
 
-> Rate limiting runs as Starlette middleware before any route handler so unauthenticated clients are rate-limited too. The per-user key is the JWT `sub` claim when present, falling back to client IP. Auth/group checks (layers 4–5) are route-level dependencies (`Depends(require_common)`, `Depends(require_dg)`, etc.) rather than blanket middleware, so unauthenticated routes (`/health`, `/auth/*`) coexist without exclusion lists and each router controls its required group membership.
+> Rate limiting runs as Starlette middleware before any route handler so unauthenticated
+> clients are rate-limited too. The per-user key is the JWT `sub` claim when present,
+> falling back to client IP. Auth/group checks (layers 4–5) are route-level dependencies
+> (`Depends(require_common)`, `Depends(require_dg)`, etc.) rather than blanket middleware,
+> so unauthenticated routes (`/health`, `/auth/*`) coexist without exclusion lists and
+> each router controls its required group membership.
 
 ### Trace ID
 
@@ -518,16 +545,22 @@ a valid JWT in the first message after opening the connection.
 
 ### Connection Handshake
 
-After the WebSocket upgrade, the client's first message must be `{"type":"auth","token":"<access_token>"}`. The server validates the JWT and replies with `{"type":"auth_ok"}`, then streams `progress` / `result` messages and closes on completion. If auth fails the server sends `{"type":"auth_error","error_code":"UNAUTHORIZED"}` and closes.
+After the WebSocket upgrade, the client's first message must be
+`{"type":"auth","token":"<access_token>"}`. The server validates the JWT and replies with
+`{"type":"auth_ok"}`, then streams `progress` / `result` messages and closes on completion.
+If auth fails the server sends `{"type":"auth_error","error_code":"UNAUTHORIZED"}` and closes.
 
 ### Validation Progress Stream (`/spoke/common/data/{dataset_urn}/stream/validation`)
 
 Messages sent during a validation run use three `type` values:
 
 - `progress` — `{rule_id, pct, msg}` per rule as it evaluates.
-- `rule_result` — `{rule_id, assertion_result (SUCCESS|FAILURE|ERROR), partition, values, validation?}` when a rule completes (`validation` carries ML verdicts when present).
+- `rule_result` — `{rule_id, assertion_result (SUCCESS|FAILURE|ERROR), partition, values,
+  validation?}` when a rule completes (`validation` carries ML verdicts when present).
 - `summary` — `{status, total, passed, failed}` when the run finishes.
 
 ### Metric Update Stream (`/spoke/dg/metric/stream`)
 
-Pushed when the Airflow metrics DAG completes a measurement run. Fields: `run_id` (Airflow DAG run ID or null), `status` (execution outcome), `detail` (run metadata including `metric_id` and measured `value`).
+Pushed when the Airflow metrics DAG completes a measurement run. Fields: `run_id` (Airflow
+DAG run ID or null), `status` (execution outcome), `detail` (run metadata including
+`metric_id` and measured `value`).

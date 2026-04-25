@@ -23,9 +23,13 @@
 
 ## Overview
 
-The DataSpoke UI is a **portal-style** Next.js application. Users enter through a landing page that routes them to their user-group workspace (DE, DA, DG). Common features — authentication, settings, help, notifications — are shared across all workspaces.
+The DataSpoke UI is a **portal-style** Next.js application. Users enter through a landing page
+that routes them to their user-group workspace (DE, DA, DG). Common features — authentication,
+settings, help, notifications — are shared across all workspaces.
 
-Source layout in `src/frontend/`: `app/` (Next.js pages — auth, portal, de, da, dg, settings), `components/` (layout shell, common widgets, chart wrappers), `lib/` (API client, hooks, Zustand store, WebSocket manager), `styles/` (Tailwind config, theme tokens).
+Source layout in `src/frontend/`: `app/` (Next.js pages — auth, portal, de, da, dg, settings),
+`components/` (layout shell, common widgets, chart wrappers), `lib/` (API client, hooks, Zustand
+store, WebSocket manager), `styles/` (Tailwind config, theme tokens).
 
 ---
 
@@ -134,7 +138,8 @@ Users with a single group are auto-redirected to that workspace.
 
 ## Authentication
 
-Uses JWT tokens issued by `POST /auth/token`. See [API.md §Authentication](API.md#authentication--authorization) for the full auth model.
+Uses JWT tokens issued by `POST /auth/token`.
+See [API.md §Authentication](API.md#authentication--authorization) for the full auth model.
 
 ### Login Page
 
@@ -168,13 +173,16 @@ Uses JWT tokens issued by `POST /auth/token`. See [API.md §Authentication](API.
 
 ### Route Guards
 
-Next.js middleware checks JWT validity before rendering protected routes. If `groups` claim lacks the required group for the route prefix (`/de`, `/da`, `/dg`), redirect to portal landing with a toast message.
+Next.js middleware checks JWT validity before rendering protected routes. If `groups` claim lacks
+the required group for the route prefix (`/de`, `/da`, `/dg`), redirect to portal landing with a
+toast message.
 
 ---
 
 ## Settings
 
-Accessible from user menu → "Settings" or `/settings`. Persisted in `localStorage` (client-only prefs) and optionally in PostgreSQL via a future user preferences API.
+Accessible from user menu → "Settings" or `/settings`. Persisted in `localStorage` (client-only
+prefs) and optionally in PostgreSQL via a future user preferences API.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -214,7 +222,8 @@ Accessible from user menu → "Settings" or `/settings`. Persisted in `localStor
 | Sidebar collapsed | Boolean | `localStorage` |
 | Table page size | 10 / 20 / 50 / 100 | `localStorage` |
 
-Dark mode is implemented via Tailwind's `dark:` variant. Theme toggle switches `class="dark"` on `<html>`.
+Dark mode is implemented via Tailwind's `dark:` variant. Theme toggle switches `class="dark"` on
+`<html>`.
 
 ---
 
@@ -222,7 +231,8 @@ Dark mode is implemented via Tailwind's `dark:` variant. Theme toggle switches `
 
 ### Contextual Help Panel
 
-The `[?]` button opens a slide-over panel on the right. Content is context-aware — it shows help relevant to the current page.
+The `[?]` button opens a slide-over panel on the right. Content is context-aware — it shows help
+relevant to the current page.
 
 ```
 ┌─────────────────────────────────────────┬──────────┐
@@ -252,7 +262,8 @@ Reusable across all workspaces. Located in `src/frontend/components/common/`.
 
 ### DataTable
 
-Paginated, sortable, filterable table component. Used for listing datasets, configs, events, metrics.
+Paginated, sortable, filterable table component. Used for listing datasets, configs, events,
+metrics.
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -284,13 +295,15 @@ Color-coded status indicator used throughout.
 | Running / In Progress | Blue | ◌ (spinner) |
 | Unknown | Grey | ? |
 
-### SearchBar
+### ConceptNavigator
 
-Natural language search input with type-ahead suggestions. Submits to `GET /spoke/common/search?q=...`.
+Ontology-driven navigation component. Lets users browse by concept (from UC3) and jump to member
+datasets. Surfaces data through `GET /spoke/common/ontology`.
 
 ### NotificationCenter
 
-Popover from the bell icon. Lists recent events (validation alerts, metric run completions, ingestion completions). Events arrive via WebSocket or are polled.
+Popover from the bell icon. Lists recent events (validation alerts, metric run completions,
+ingestion completions). Events arrive via WebSocket or are polled.
 
 ### ConfirmDialog
 

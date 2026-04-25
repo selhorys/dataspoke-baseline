@@ -18,13 +18,27 @@
 
 ## Overview
 
-`dev_env/` provides a fully scripted Kubernetes-based environment for developing and testing DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the DataSpoke application connects to.
+`dev_env/` provides a fully scripted Kubernetes-based environment for developing and testing
+DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the
+DataSpoke application connects to.
 
-The API server is deployed **in-cluster** alongside Airflow so that workflow callbacks work directly via cluster DNS (`http://dataspoke-api:8002`). Developers access the API via the nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Frontend and workers are not installed in the dev cluster. See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+The API server is deployed **in-cluster** alongside Airflow so that workflow callbacks work
+directly via cluster DNS (`http://dataspoke-api:8002`). Developers access the API via the
+nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Frontend and
+workers are not installed in the dev cluster.
+See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
-DataHub is installed in the dev cluster **for convenience**; in production it is an external dependency deployed and managed separately.
+DataHub is installed in the dev cluster **for convenience**; in production it is an external
+dependency deployed and managed separately.
 
-**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka, PostgreSQL, Redis, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE consumers, Kafka KRaft, OpenSearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, PostgreSQL, Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
+**Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the
+cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke
+API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka, PostgreSQL,
+Redis, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE
+consumers, Kafka KRaft, OpenSearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, PostgreSQL,
+Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on
+the host (`npm run dev`, :3000); all other components are reached through the ingress. Full
+route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 
 ---
 
@@ -43,7 +57,9 @@ DataHub is installed in the dev cluster **for convenience**; in production it is
 ### Non-Goals
 
 - Production deployment (use `helm-charts/dataspoke` for production)
-- Running DataSpoke application services in-cluster as the default workflow (for on-demand in-cluster testing, use the umbrella Helm chart with application subcharts enabled — see [TESTING.md §Testing Modes](../TESTING.md#testing-modes))
+- Running DataSpoke application services in-cluster as the default workflow (for on-demand
+  in-cluster testing, use the umbrella Helm chart with application subcharts enabled — see
+  [TESTING.md §Testing Modes](../TESTING.md#testing-modes))
 - External data source connectivity (example sources are in-cluster only)
 - High availability or data persistence between dev environment resets
 
@@ -60,17 +76,22 @@ DataHub is installed in the dev cluster **for convenience**; in production it is
 | `dataspoke-01` | DataSpoke infrastructure (API, Airflow, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
-> Namespace names are **defaults** from `.env.example`. All scripts read them from environment variables and never hardcode them.
+> Namespace names are **defaults** from `.env.example`. All scripts read them from environment
+> variables and never hardcode them.
 
 ### Directory Layout
 
-`dev_env/` contains: top-level orchestrators (`install.sh`, `uninstall.sh`), shared helpers (`lib/helpers.sh`), and five sub-installers: `nginx-ingress/` (ingress controller), `datahub/` (Helm), `dataspoke-infra/` (umbrella chart), `dataspoke-lock/` (plain K8s manifests), `dataspoke-example/` (plain K8s manifests). Configuration in `.env` (copied from `.env.example`).
+`dev_env/` contains: top-level orchestrators (`install.sh`, `uninstall.sh`), shared helpers
+(`lib/helpers.sh`), and five sub-installers: `nginx-ingress/` (ingress controller), `datahub/`
+(Helm), `dataspoke-infra/` (umbrella chart), `dataspoke-lock/` (plain K8s manifests),
+`dataspoke-example/` (plain K8s manifests). Configuration in `.env` (copied from `.env.example`).
 
 ---
 
 ## Configuration
 
-All scripts source `dev_env/.env`. Copy `.env.example` to `.env` and edit before first use. The `.env` file is gitignored.
+All scripts source `dev_env/.env`. Copy `.env.example` to `.env` and edit before first use.
+The `.env` file is gitignored.
 
 ### Two-tier naming convention
 
@@ -96,8 +117,10 @@ See `.env.example` for the complete listing with comments. Key categories:
 
 ### Policies
 
-- **Password policy**: All passwords must be 15+ characters, mixed case, at least one special character.
-- **API key policy**: LLM and service API keys must never be committed. The `.env` file is gitignored; for CI/CD, inject via Kubernetes Secrets or a secrets manager.
+- **Password policy**: All passwords must be 15+ characters, mixed case, at least one special
+  character.
+- **API key policy**: LLM and service API keys must never be committed. The `.env` file is
+  gitignored; for CI/CD, inject via Kubernetes Secrets or a secrets manager.
 
 ---
 
@@ -112,13 +135,21 @@ See `.env.example` for the complete listing with comments. Key categories:
 
 **Key decisions**:
 
-- **OpenSearch over Elasticsearch**: Prerequisites chart 0.3.0 ships OpenSearch 2.19.5 as the default search engine. DataHub GMS uses the same ES-client wire protocol, so migration is transparent.
-- **Kafka in KRaft mode (no Zookeeper)**: Prerequisites chart 0.3.0 runs a single controller pod that also serves as broker (`controller.controllerOnly=false`, `broker.replicaCount=0`), eliminating the Zookeeper dependency.
-- **No Neo4j**: OpenSearch provides full graph backend support including multi-hop lineage. Saves ~2 Gi RAM + 10 Gi PVC. Aligns with upstream defaults.
+- **OpenSearch over Elasticsearch**: Prerequisites chart 0.3.0 ships OpenSearch 2.19.5 as the
+  default search engine. DataHub GMS uses the same ES-client wire protocol, so migration is
+  transparent.
+- **Kafka in KRaft mode (no Zookeeper)**: Prerequisites chart 0.3.0 runs a single controller pod
+  that also serves as broker (`controller.controllerOnly=false`, `broker.replicaCount=0`),
+  eliminating the Zookeeper dependency.
+- **No Neo4j**: OpenSearch provides full graph backend support including multi-hop lineage.
+  Saves ~2 Gi RAM + 10 Gi PVC. Aligns with upstream defaults.
 - **No Schema Registry**: DataHub uses an internal schema registry (`type: INTERNAL`).
-- **No `--wait` on Helm install**: The `datahub-system-update` bootstrap job takes 5-10 minutes. Scripts use custom poll-based readiness checks instead.
+- **No `--wait` on Helm install**: The `datahub-system-update` bootstrap job takes 5-10 minutes.
+  Scripts use custom poll-based readiness checks instead.
 - **Relaxed liveness probes** on GMS and frontend to tolerate transient OpenSearch restarts.
-- **Frontend ingress uses `className: "nginx"`**: The `datahub-frontend` subchart (0.3.4) uses `className`, not `ingressClassName`; wrong key is silently dropped and GKE falls back to provisioning a GCE LoadBalancer.
+- **Frontend ingress uses `className: "nginx"`**: The `datahub-frontend` subchart (0.3.4) uses
+  `className`, not `ingressClassName`; wrong key is silently dropped and GKE falls back to
+  provisioning a GCE LoadBalancer.
 
 Prerequisites resource sizing:
 
@@ -128,17 +159,26 @@ Prerequisites resource sizing:
 | Kafka (KRaft controller) | 2048 Mi | 1.5 Gi heap cap; single pod carries both controller and broker roles |
 | MySQL | 1536 Mi | `mysql_upgrade` briefly doubles memory on restart |
 
-DataHub component sizing (limits): GMS 3 Gi, Frontend 1 Gi, MAE/MCE consumers 1 Gi each, Actions 512 Mi. Total ~6.5 Gi.
+DataHub component sizing (limits): GMS 3 Gi, Frontend 1 Gi, MAE/MCE consumers 1 Gi each, Actions
+512 Mi. Total ~6.5 Gi.
 
-Service name prefix `datahub-prerequisites-` applies to all prerequisite services (MySQL, Kafka controller) because the prerequisites chart is installed as its own Helm release. The OpenSearch subchart uses its own release prefix (`opensearch-cluster-master`).
+Service name prefix `datahub-prerequisites-` applies to all prerequisite services (MySQL, Kafka
+controller) because the prerequisites chart is installed as its own Helm release. The OpenSearch
+subchart uses its own release prefix (`opensearch-cluster-master`).
 
 ---
 
 ### DataSpoke Infrastructure
 
-Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with the dev profile (`values-dev.yaml`). See [HELM_CHART.md](HELM_CHART.md) for chart details.
+Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with the dev profile
+(`values-dev.yaml`). See [HELM_CHART.md](HELM_CHART.md) for chart details.
 
-PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE (graph) and pgvector (vector search) extensions compiled in. Vector and graph workloads connect to the `dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic migration deploy. `dev_env/dataspoke-infra/install.sh` runs `dev_env/dataspoke-postgres/build.sh` automatically unless `SKIP_POSTGRES_BUILD=1`.
+PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from
+`docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE (graph)
+and pgvector (vector search) extensions compiled in. Vector and graph workloads connect to the
+`dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic
+migration deploy. `dev_env/dataspoke-infra/install.sh` runs `dev_env/dataspoke-postgres/build.sh`
+automatically unless `SKIP_POSTGRES_BUILD=1`.
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
@@ -165,7 +205,8 @@ PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from `docker-i
 | `dataspoke-redis-secret` | `REDIS_PASSWORD` |
 | `dataspoke-internal-auth` | `token` — auto-generated shared secret for Airflow → API internal calls |
 
-> LLM secrets are not deployed into the cluster. The host-running app reads them directly from `.env`.
+> LLM secrets are not deployed into the cluster. The host-running app reads them directly from
+> `.env`.
 
 ---
 
@@ -178,20 +219,27 @@ Plain Kubernetes manifests (no Helm) in the `dataspoke-dummy-data-01` namespace.
 | PostgreSQL | `postgres:15` | 512 Mi | 5 Gi PVC | `example-postgres:5432` |
 | Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 1 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
 
-This Kafka instance is **separate** from DataHub's prerequisites Kafka. It simulates an external data source for ingestion testing. Like DataHub Kafka, it exposes an EXTERNAL listener (port 9094) that advertises `<INGRESS_IP>:9104` for host-side access via TCP passthrough on the nginx-ingress controller.
+This Kafka instance is **separate** from DataHub's prerequisites Kafka. It simulates an external
+data source for ingestion testing. Like DataHub Kafka, it exposes an EXTERNAL listener (port 9094)
+that advertises `<INGRESS_IP>:9104` for host-side access via TCP passthrough on the nginx-ingress
+controller.
 
 ---
 
 ### Lock Service
 
-Advisory mutex for coordinating multi-tester access. Lightweight Python HTTP server in the `dataspoke-01` namespace (pure stdlib, no external dependencies).
+Advisory mutex for coordinating multi-tester access. Lightweight Python HTTP server in the
+`dataspoke-01` namespace (pure stdlib, no external dependencies).
 
 | Resource | Details |
 |----------|---------|
 | Deployment | `dev-lock` — 1 replica, `python:3.12-slim`, 64 Mi / 100m CPU |
 | Service | `dev-lock` — ClusterIP, port 8080 |
 
-Lock state is **in-memory only** — resets on pod restart. Full protocol in [TESTING.md §Integration Testing](../TESTING.md#integration-testing); HTTP API surface (GET/POST acquire/release + DELETE force-release) documented in [`dev_env/README.md §Lock service`](../../dev_env/README.md).
+Lock state is **in-memory only** — resets on pod restart. Full protocol in
+[TESTING.md §Integration Testing](../TESTING.md#integration-testing); HTTP API surface (GET/POST
+acquire/release + DELETE force-release) documented in
+[`dev_env/README.md §Lock service`](../../dev_env/README.md).
 
 ---
 
@@ -199,11 +247,15 @@ Lock state is **in-memory only** — resets on pod restart. Full protocol in [TE
 
 ### install.sh
 
-Top-level orchestrator: sources `.env`, verifies `kubectl`/`helm`, switches kube context, creates namespaces, then calls sub-installers in order: `nginx-ingress/` → `datahub/` → `dataspoke-infra/` → `dataspoke-example/` → `dataspoke-lock/`. Prints ingress endpoint summary on completion.
+Top-level orchestrator: sources `.env`, verifies `kubectl`/`helm`, switches kube context, creates
+namespaces, then calls sub-installers in order: `nginx-ingress/` → `datahub/` →
+`dataspoke-infra/` → `dataspoke-example/` → `dataspoke-lock/`.
+Prints ingress endpoint summary on completion.
 
 ### uninstall.sh
 
-Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/` → `datahub/` → `nginx-ingress/`. Prompts before destructive operations.
+Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/` → `datahub/` →
+`nginx-ingress/`. Prompts before destructive operations.
 
 | Flag | Effect |
 |------|--------|
@@ -212,36 +264,59 @@ Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/`
 
 ### Component reinstall
 
-There is no dedicated `reinstall.sh`. To reset a single component cleanly, run its own `uninstall.sh` followed by `install.sh` (each sub-installer is idempotent and tears down PVCs + Helm release for its scope). Example: `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh`.
+There is no dedicated `reinstall.sh`. To reset a single component cleanly, run its own
+`uninstall.sh` followed by `install.sh` (each sub-installer is idempotent and tears down PVCs +
+Helm release for its scope). Example:
+`cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh`.
 
 ### Shell conventions
 
-All scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, and source shared helpers from `lib/helpers.sh`. All mutating kubectl/helm operations are idempotent.
+All scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, and source shared helpers from
+`lib/helpers.sh`. All mutating kubectl/helm operations are idempotent.
 
 ---
 
 ## Ingress
 
-All services are reached via a single nginx-ingress controller in the `ingress-nginx` namespace. The controller acquires one external LoadBalancer IP (`DATASPOKE_DEV_INGRESS_IP`) written to `dev_env/.env` by `nginx-ingress/install.sh`.
+All services are reached via a single nginx-ingress controller in the `ingress-nginx` namespace.
+The controller acquires one external LoadBalancer IP (`DATASPOKE_DEV_INGRESS_IP`) written to
+`dev_env/.env` by `nginx-ingress/install.sh`.
 
 Two tiers:
 
-- **Tier A — HTTP virtual hosts** on port 80, keyed by hostname (DataHub UI/GMS at `datahub.<IP>.nip.io`, DataSpoke API at `app.<IP>.nip.io/api/v1/`, Airflow UI at `airflow.<IP>.nip.io`). The `nip.io` suffix gives automatic wildcard DNS — no `/etc/hosts` entries required.
-- **Tier B — TCP passthrough** on dedicated ports (9201 PostgreSQL, 9202 Redis, 9005 DataHub Kafka, 9102 example PostgreSQL, 9104 example Kafka, 9221 lock service) via the same LoadBalancer IP, mapped by the nginx-ingress `tcp-services` ConfigMap. Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side producers/consumers reach them through the ingress. `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these addresses.
+- **Tier A — HTTP virtual hosts** on port 80, keyed by hostname (DataHub UI/GMS at
+  `datahub.<IP>.nip.io`, DataSpoke API at `app.<IP>.nip.io/api/v1/`, Airflow UI at
+  `airflow.<IP>.nip.io`). The `nip.io` suffix gives automatic wildcard DNS — no `/etc/hosts`
+  entries required.
+- **Tier B — TCP passthrough** on dedicated ports (9201 PostgreSQL, 9202 Redis, 9005 DataHub
+  Kafka, 9102 example PostgreSQL, 9104 example Kafka, 9221 lock service) via the same
+  LoadBalancer IP, mapped by the nginx-ingress `tcp-services` ConfigMap. Kafka services advertise
+  `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side producers/consumers reach them
+  through the ingress. `DATASPOKE_*_HOST/PORT` app runtime variables in `.env` point to these
+  addresses.
 
-Full endpoint table (service ↔ cluster address ↔ ingress URL/port) is the operational reference in [`dev_env/README.md §Ingress Endpoints`](../../dev_env/README.md).
+Full endpoint table (service ↔ cluster address ↔ ingress URL/port) is the operational reference
+in [`dev_env/README.md §Ingress Endpoints`](../../dev_env/README.md).
 
 ---
 
 ## Dummy Data
 
-The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka instances populated with Imazon use-case data (11 schemas, 17 tables, ~600 rows; 3 Kafka topics, ~45 messages). Both PG tables and Kafka topics are registered as DataHub dataset entities (20 total) with `DatasetProperties` and `SchemaMetadata` aspects. Seed files, ingestion logic, and data design details live in `tests/integration/util/` — see [`TESTING.md §Test Data Design`](../TESTING.md#test-data-design) for the full reference.
+The `dataspoke-dummy-data-01` namespace provides example PostgreSQL and Kafka instances populated
+with Imazon use-case data (11 schemas, 17 tables, ~600 rows; 3 Kafka topics, ~45 messages). Both
+PG tables and Kafka topics are registered as DataHub dataset entities (20 total) with
+`DatasetProperties` and `SchemaMetadata` aspects. Seed files, ingestion logic, and data design
+details live in `tests/integration/util/` — see
+[`TESTING.md §Test Data Design`](../TESTING.md#test-data-design) for the full reference.
 
 ---
 
 ## Resource Budget
 
-Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits* (~25 GiB) exceeds cluster capacity; sum of *requests* (~13 GiB) does not — pods rarely hit limits simultaneously, so limits are set generously to absorb transient spikes (OpenSearch off-heap, `mysql_upgrade`, JVM GC, etc.).
+Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits* (~25 GiB) exceeds
+cluster capacity; sum of *requests* (~13 GiB) does not — pods rarely hit limits simultaneously, so
+limits are set generously to absorb transient spikes (OpenSearch off-heap, `mysql_upgrade`, JVM
+GC, etc.).
 
 ### Memory Budget (limits)
 
@@ -266,7 +341,10 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits*
 
 ### CPU Budget (limits)
 
-~19 CPU total limits across all components. Pods rarely hit limits simultaneously. Explicit limits prevent starvation on constrained dev clusters. See `dev_env/datahub/prerequisites-values.yaml` and `helm-charts/dataspoke/values-dev.yaml` for per-component breakdown.
+~19 CPU total limits across all components. Pods rarely hit limits simultaneously. Explicit
+limits prevent starvation on constrained dev clusters. See
+`dev_env/datahub/prerequisites-values.yaml` and `helm-charts/dataspoke/values-dev.yaml` for
+per-component breakdown.
 
 ---
 
@@ -274,7 +352,8 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits*
 
 ### OpenSearch OOM-killed during startup
 
-**Cause**: Off-heap usage (Lucene cache, index recovery) spikes above the JVM heap. Upstream default 1024Mi is insufficient.
+**Cause**: Off-heap usage (Lucene cache, index recovery) spikes above the JVM heap. Upstream
+default 1024Mi is insufficient.
 **Fix**: Already applied — OpenSearch memory limit set to 3Gi in `prerequisites-values.yaml`.
 
 ### MySQL OOM-killed on restart
@@ -285,7 +364,8 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits*
 ### Pod stuck in Pending
 
 **Cause**: Insufficient cluster resources.
-**Fix**: Check `kubectl describe node`. The full environment requires ~16.8 GiB / ~7.75 CPU — 24 GB / 8+ CPU recommended.
+**Fix**: Check `kubectl describe node`. The full environment requires ~16.8 GiB / ~7.75 CPU — 24
+GB / 8+ CPU recommended.
 
 ### datahub-system-update takes 5-10 minutes
 
@@ -294,25 +374,37 @@ Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory *limits*
 
 ### MAE consumer stalled after restart
 
-**Cause**: The embedded MAE consumer in GMS crashes when processing stale MCL messages accumulated from previous runs. The Spring Kafka error handler shuts down the consumer permanently, leaving timeseries aspects unindexed in OpenSearch.
-**Fix**: Already automated in `datahub/install.sh` — detects stalled consumer group, resets offsets to latest, and restarts GMS. If it recurs outside install, manually reset offsets on `MetadataChangeLog_Timeseries_v1` and `MetadataChangeLog_Versioned_v1` for group `generic-mae-consumer-job-client`, then restart the GMS pod.
+**Cause**: The embedded MAE consumer in GMS crashes when processing stale MCL messages accumulated
+from previous runs. The Spring Kafka error handler shuts down the consumer permanently, leaving
+timeseries aspects unindexed in OpenSearch.
+**Fix**: Already automated in `datahub/install.sh` — detects stalled consumer group, resets
+offsets to latest, and restarts GMS. If it recurs outside install, manually reset offsets on
+`MetadataChangeLog_Timeseries_v1` and `MetadataChangeLog_Versioned_v1` for group
+`generic-mae-consumer-job-client`, then restart the GMS pod.
 
 ### Service unreachable via ingress
 
-**Cause**: Target pod not yet Ready, or the nginx-ingress controller has not yet received an external IP.
-**Fix**: Verify the ingress controller is running (`kubectl get pods -n ingress-nginx`) and has an external IP (`kubectl get svc -n ingress-nginx`). Then verify the target pod is `1/1 Running` in its namespace. Re-run `./dev_env/health-check.sh` once pods are ready.
+**Cause**: Target pod not yet Ready, or the nginx-ingress controller has not yet received an
+external IP.
+**Fix**: Verify the ingress controller is running (`kubectl get pods -n ingress-nginx`) and has an
+external IP (`kubectl get svc -n ingress-nginx`). Then verify the target pod is `1/1 Running` in
+its namespace. Re-run `./dev_env/health-check.sh` once pods are ready.
 
 ---
 
 ## Open Questions
 
-- [ ] When DataSpoke exposes a redefined dataset registration API (blended API/UI), `tests/integration/util/datahub.py` could be replaced by calls to that API for integration test setup. This would simplify the test workflow and exercise the redefined API as part of every test run.
+- [ ] When DataSpoke exposes a redefined dataset registration API (blended API/UI),
+  `tests/integration/util/datahub.py` could be replaced by calls to that API for integration test
+  setup. This would simplify the test workflow and exercise the redefined API as part of every
+  test run.
 
 ---
 
 ## References
 
-- [DataHub — Deploying with Kubernetes](https://docs.datahub.com/docs/deploy/kubernetes) — minimum: 2 CPUs, 8 GB RAM
+- [DataHub — Deploying with Kubernetes](https://docs.datahub.com/docs/deploy/kubernetes) —
+  minimum: 2 CPUs, 8 GB RAM
 - [DataHub Helm chart defaults](https://github.com/acryldata/datahub-helm/blob/master/charts/datahub/values.yaml)
 - [DataHub prerequisites defaults](https://github.com/acryldata/datahub-helm/blob/master/charts/prerequisites/values.yaml)
 - [Migrating Graph Service Implementation](https://docs.datahub.com/docs/how/migrating-graph-service-implementation)

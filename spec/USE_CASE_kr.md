@@ -1,1656 +1,666 @@
-# DataSpoke: 상세 유스케이스 시나리오
+# DataSpoke: 유스케이스 시나리오
 
 > **문서 목적 안내**
-> 이 문서는 아이디어 정립과 비전 정렬을 위한 개념적 시나리오를 제시한다. 각 유스케이스는 DataSpoke의 의도된 기능과 가치를 보여주지만, 구현 사양이나 기술 요구사항은 아니다. 실제 구현 세부사항, 기술 아키텍처, 기능 우선순위는 별도의 기술 사양 문서에서 정의한다.
+> 이 문서는 아이디어 정립과 비전 정렬을 위한
+> 개념적 시나리오를 제시한다.
+> 각 유스케이스는 DataSpoke의 의도된 기능을 보여주지만,
+> 구현 사양이나 기술 요구사항은 아니다.
+> 기술 아키텍처와 기능 우선순위는 별도의 기술 사양 문서
+> (`ARCHITECTURE.md`, `feature/*.md`)에서 정의한다.
 
-이 문서는 DataSpoke가 세 가지 사용자 그룹 — **데이터 엔지니어링(DE)**, **데이터 분석(DA)**, **데이터 거버넌스(DG)** — 에 걸쳐 DataHub 기능을 어떻게 강화하는지 실제적 시나리오로 설명한다.
+이 문서는 `MANIFESTO_kr.md` §2.1에서 정의한 다섯 기능 —
+**Ingestion Control**, **Validation**, **Ontology**, **Doc Generation**, **Governance** —
+을 DataSpoke가 어떻게 구현하는지를 보여준다.
+각 유스케이스는 가상의 온라인 서점 **Imazon**이라는
+단일 회사 컨텍스트를 공유하므로 시나리오들이 공존하고 상호 보완된다.
 
-모든 시나리오는 가상의 온라인 서점 **Imazon**이라는 단일 회사 컨텍스트를 공유하며, 유스케이스들이 공존하고 상호 보완된다.
+사용자 그룹 구분(데이터 엔지니어링 / 데이터 분석 / 데이터 거버넌스)은
+UI와 API의 확장 지점으로 남지만, 기능 자체는 더 이상
+사용자 그룹별로 분할되지 않는다.
 
 ---
 
 ## 가상 회사 프로필: Imazon
 
-Imazon은 설립 15년차 온라인 서점이다. 데이터 환경은 오랜 유기적 성장을 반영한다:
+Imazon은 설립 15년차 온라인 서점이다.
+데이터 환경은 오랜 유기적 성장을 반영한다:
 
-- **레거시 Oracle 데이터 웨어하우스** — 도서 카탈로그, 고객, 주문, 리뷰, 출판사, 재고, 배송을 다루는 500개 이상의 테이블
-- **부서** — 엔지니어링, 데이터 사이언스, 마케팅, 재무, 법무, 운영, 출판사 관계, 고객 지원
-- **주요 데이터 도메인** — `catalog.*` (도서, 저자, 장르), `customers.*`, `orders.*`, `reviews.*`, `recommendations.*`, `publishers.*`, `inventory.*`, `shipping.*`
-- **DataHub 도입** — 최근 배포 완료. 표준 Oracle 커넥터가 스키마 메타데이터를 가져왔지만, 비즈니스 컨텍스트, 스토어드 프로시저 리니지, Confluence와 스프레드시트에 잠긴 조직 내 암묵지는 누락됨
+- **레거시 Oracle 데이터 웨어하우스** —
+  도서 카탈로그, 고객, 주문, 리뷰, 출판사, 재고, 배송을 다루는
+  500개 이상의 테이블
+- **부서** — 엔지니어링, 데이터 사이언스, 마케팅, 재무,
+  법무, 운영, 출판사 관계, 고객 지원
+- **주요 데이터 도메인** — `catalog.*` (도서, 저자, 장르),
+  `customers.*`, `orders.*`, `reviews.*`,
+  `recommendations.*`, `publishers.*`, `inventory.*`, `shipping.*`
+- **DataHub 도입** — 최근 배포 완료.
+  표준 Oracle 커넥터가 스키마 메타데이터를 가져왔지만,
+  비즈니스 컨텍스트, 스토어드 프로시저 리니지,
+  Confluence와 스프레드시트에 잠긴 조직 내 암묵지는 누락됨
 
 ---
 
 ## 기능 매핑
 
-| 유스케이스 | 사용자 그룹 | 기능 |
-|-----------|-----------|------|
-| [유스케이스 1: Deep Ingestion — 레거시 도서 카탈로그 보강](#유스케이스-1-deep-ingestion--레거시-도서-카탈로그-보강) | DE | 심층 기술 사양 인제스천 |
-| [유스케이스 2: Data Validation — Assertion 기반 데이터 품질 모니터링](#유스케이스-2-data-validation--assertion-기반-데이터-품질-모니터링) | DE / DA | DataHub Assertion 관리 |
-| [유스케이스 3: Predictive SLA — 시계열 검증 기반 조기 경보](#유스케이스-3-predictive-sla--시계열-검증-기반-조기-경보) | DE | DataHub Assertion 관리 |
-| [유스케이스 4: Doc Generation — 인수 후 온톨로지 통합](#유스케이스-4-doc-suggestions--인수-후-온톨로지-통합) | DE | 자동 문서화 생성 |
-| [유스케이스 5: NL Search — GDPR 컴플라이언스 감사](#유스케이스-5-nl-search--gdpr-컴플라이언스-감사) | DA | 자연어 검색 |
-| [유스케이스 6: Metrics Dashboard — 전사 메타데이터 건강도](#유스케이스-6-metrics-dashboard--전사-메타데이터-건강도) | DG | 전사 메트릭 시계열 모니터링 |
-| [유스케이스 7: Text-to-SQL Metadata — AI 기반 장르 분석](#유스케이스-7-text-to-sql-metadata--ai-기반-장르-분석) | DA | Text-to-SQL 최적화 메타데이터 |
-| [유스케이스 8: Multi-Perspective Overview — 전사 데이터 시각화](#유스케이스-8-multi-perspective-overview--전사-데이터-시각화) | DG | 다관점 데이터 오버뷰 |
+| # | MANIFESTO 기능 | 유스케이스 |
+|---|----------------|----------|
+| UC1 | Ingestion Control | [레거시 Oracle 도서 카탈로그 보강](#uc1-ingestion-control--레거시-oracle-도서-카탈로그-보강) |
+| UC2 | Validation | [추천 파이프라인 품질과 예측적 SLA](#uc2-validation--추천-파이프라인-품질과-예측적-sla) |
+| UC3 | Ontology | [인수 후 온톨로지 구축과 탐색](#uc3-ontology--인수-후-온톨로지-구축과-탐색) |
+| UC4 | Doc Generation | [문서 제안과 휴먼 인 더 루프 리뷰](#uc4-doc-generation--문서-제안과-휴먼-인-더-루프-리뷰) |
+| UC5 | Governance | [전사 메타데이터 건강도와 다관점 오버뷰](#uc5-governance--전사-메타데이터-건강도와-다관점-오버뷰) |
 
 ---
 
-## 데이터 엔지니어링(DE) 그룹
+## UC1: Ingestion Control — 레거시 Oracle 도서 카탈로그 보강
 
-### 유스케이스 1: Deep Ingestion — 레거시 도서 카탈로그 보강
+**MANIFESTO §2.1 기능**:
+*Ingestion Control — 데이터 인제스천의 설정, 제어, 관리를
+한 곳에서 수행하는 편의 기능.*
 
-**기능**: 심층 기술 사양 인제스천
+### 시나리오
 
-#### 시나리오: 레거시 Oracle 도서 카탈로그 메타데이터 보강
+Imazon의 Oracle 데이터 웨어하우스는
+15년 동안 쌓인 500개 이상의 테이블을 보유한다.
+표준 DataHub 커넥터는 테이블명, 컬럼 타입,
+기본 키 같은 스키마 메타데이터는 확보했지만,
+데이터베이스 밖에 흩어져 있는 풍부한 비즈니스 컨텍스트 —
+편집 분류 체계가 적힌 Confluence 페이지,
+ISBN과 임프린트를 매핑하는 출판사 Excel 피드, 장르 분류 내부 API,
+베스트셀러 순위와 인세 계산을 하는 PL/SQL
+스토어드 프로시저에 숨어 있는 리니지 — 는 누락된다.
 
-**배경:**
-Imazon의 Oracle 데이터 웨어하우스는 15년에 걸쳐 구축된 500개 이상의 테이블을 보유하고 있다. 표준 DataHub 커넥터는 스키마 메타데이터(테이블명, 컬럼 타입, 기본키)만 수집했으며, 데이터베이스 외부에 저장된 풍부한 비즈니스 컨텍스트를 놓쳤다: 편집 분류 체계를 기술하는 Confluence 페이지, ISBN-출판사 매핑 Excel 피드, 장르 분류 내부 API, 그리고 베스트셀러 순위와 로열티 계산을 수행하는 PL/SQL 스토어드 프로시저에 숨겨진 리니지 등이 그것이다.
+### DataSpoke 없이
 
-#### DataSpoke 없이
+표준 Oracle 커넥터의 출력:
+컬럼 타입과 키 정보만 있는 500개 테이블.
+비즈니스 설명(Confluence), 출판사 메타데이터(Excel), 장르 분류(API),
+스토어드 프로시저 리니지는 모두 없다.
+데이터 소비자는 DataHub에서 기술 스키마만 보게 되어,
+`catalog.title_master`가 실제로 무엇을 추적하는지,
+`reports.monthly_royalties`가 어떻게 계산되는지 알 방법이 없다.
 
-표준 Oracle 커넥터 결과: 컬럼 타입과 키만 있는 500개 테이블. 비즈니스 설명(Confluence에 저장), 출판사 메타데이터(Excel), 장르 분류 체계(API), 스토어드 프로시저 리니지 모두 없음. 데이터 소비자가 DataHub를 탐색해도 `catalog.title_master`가 실제로 무엇을 추적하는지, `reports.monthly_royalties`가 어떻게 계산되는지 알 수 없는 맨 기술 스키마만 보게 된다.
+### DataSpoke로
 
-#### DataSpoke와 함께
-
-**다중 소스 보강 설정 등록:**
+**한 곳에서 멀티 소스 보강 설정을 등록한다:**
 
 ```python
-# POST /api/v1/spoke/de/ingestion/configs
-dataspoke.ingestion.register_config({
+# PUT /api/v1/spoke/common/data/{dataset_urn}/attr/ingestion/conf
+{
   "name": "oracle_book_catalog_enriched",
   "platform": "oracle",
-  "schedule": "0 2 * * *",  # 매일 오전 2시
+  "schedule": "0 2 * * *",
 
   "enrichment_sources": [
-    {
-      "type": "confluence",
-      "space": "BOOK_DATA_DICTIONARY",
-      "page_prefix": "Table: ",
-      "fields_mapping": {
-        "description": "confluence.content.body",
-        "business_owner": "confluence.labels.owner",
-        "pii_classification": "confluence.labels.pii"
-      }
-    },
-    {
-      "type": "excel",
-      "path": "s3://imazon-docs/publisher-feeds/isbn-imprint-mapping.xlsx",
-      "sheet": "ISBN_Classifications",
-      "key_column": "table_name",
-      "fields_mapping": {
-        "publisher_domain": "Imprint",
-        "content_rating": "Rating",
-        "genre_taxonomy": "Genre_Path"
-      }
-    },
-    {
-      "type": "custom_api",
-      "endpoint": "https://taxonomy-api.imazon.internal/genres",
-      "auth": "bearer_token",
-      "fields_mapping": {
-        "genre_hierarchy": "$.genre.path",
-        "editorial_tags": "$.genre.editorial_tags"
-      }
-    }
+    {"type": "confluence", "space": "BOOK_DATA_DICTIONARY",
+     "fields_mapping": {"description": "confluence.content.body",
+                         "business_owner": "confluence.labels.owner",
+                         "pii_classification": "confluence.labels.pii"}},
+    {"type": "excel", "path": "s3://imazon-docs/publisher-feeds/isbn-imprint-mapping.xlsx",
+     "fields_mapping": {"publisher_domain": "Imprint", "genre_taxonomy": "Genre_Path"}},
+    {"type": "custom_api", "endpoint": "https://taxonomy-api.imazon.internal/genres",
+     "fields_mapping": {"genre_hierarchy": "$.genre.path"}}
   ],
 
   "custom_extractors": [
-    {
-      "name": "plsql_lineage_parser",
-      "type": "python_function",
-      "module": "dataspoke.custom.oracle_lineage",
-      "function": "extract_stored_proc_lineage",
-      "params": { "parse_insert_select": true, "parse_merge_statements": true }
-    },
-    {
-      "name": "quality_rule_extractor",
-      "type": "python_function",
-      "module": "dataspoke.custom.oracle_quality",
-      "function": "extract_check_constraints_as_rules"
-    }
+    {"name": "plsql_lineage_parser", "module": "dataspoke.custom.oracle_lineage",
+     "function": "extract_stored_proc_lineage"},
+    {"name": "quality_rule_extractor", "module": "dataspoke.custom.oracle_quality",
+     "function": "extract_check_constraints_as_rules"}
   ]
-})
+}
 ```
 
-**커스텀 PL/SQL 리니지 추출기** (발췌):
+**운영 제어 화면.**
+크로스 데이터셋 뷰(`GET /spoke/common/ingestion`)는
+모든 인제스천 설정, 마지막 실행 시각, 실패 횟수,
+보강 커버리지를 한눈에 보여준다.
+한 화면에서 전체 라이프사이클을 다룬다: 등록 → 스케줄 →
+실행(`POST …/method/run`, `dry_run` 옵션) →
+이벤트 관찰(`…/event`) → 비활성화.
 
-```python
-# dataspoke/custom/oracle_lineage.py
-class OraclePLSQLLineageExtractor(CustomExtractor):
-    def extract_stored_proc_lineage(self, procedure_name, procedure_body, params):
-        lineage_edges = []
-        for stmt in sqlparse.parse(procedure_body):
-            if self._is_insert_select(stmt):
-                for source in self._extract_source_tables(stmt):
-                    lineage_edges.append(LineageEdge(
-                        source_urn=f"urn:li:dataset:(urn:li:dataPlatform:oracle,{source},PROD)",
-                        target_urn=f"urn:li:dataset:(urn:li:dataPlatform:oracle,{self._extract_target_table(stmt)},PROD)",
-                        transformation_type="stored_procedure",
-                        transformation_logic=procedure_name,
-                        confidence_score=0.95
-                    ))
-        return lineage_edges
-```
-
-**보강된 메타데이터 예시 — `catalog.title_master`:**
+**보강 결과 — `catalog.title_master`:**
 
 ```yaml
 Dataset: catalog.title_master
 Platform: Oracle / DWPROD
 
-# 기본 스키마 (표준 커넥터)
+# 기본(표준 커넥터)
 Columns: 62 | Primary Key: isbn, edition_id
 
-# 보강 — 비즈니스 컨텍스트 (Confluence)
-Description: |
-  모든 도서 타이틀의 마스터 카탈로그. ISBN+에디션 당 1행.
-  가격, 재고 현황, 편집 분류의 원천(Source of Truth).
-  출판사 피드와 편집 검토 큐에서 매일 야간 업데이트.
+# 보강 — 비즈니스 컨텍스트(Confluence)
+Description: Master catalog of all book titles...
+Owner: maria.garcia@imazon.com | Team: Catalog Engineering
 
-# 보강 — 소유권 (Confluence + HR API)
-Owner: maria.garcia@imazon.com | Team: 카탈로그 엔지니어링
+# 보강 — 출판사 메타데이터(Excel)
+Publisher Domain: All imprints | Genre Taxonomy: 4-level hierarchy
 
-# 보강 — 출판사 메타데이터 (Excel)
-Publisher Domain: 전체 임프린트 | Genre Taxonomy: 4단계 계층
-
-# 보강 — 리니지 (PL/SQL 파서)
+# 보강 — 리니지(PL/SQL parser)
 Upstream: publishers.feed_raw, editorial.review_queue, pricing.base_rates
-Generated By: PROC_NIGHTLY_CATALOG_REFRESH (스토어드 프로시저)
+Generated By: PROC_NIGHTLY_CATALOG_REFRESH
 Downstream: recommendations.book_features, reports.catalog_summary
 
-# 보강 — 품질 규칙 (CHECK 제약조건)
+# 보강 — 품질 규칙(CHECK 제약 자동 추출 → Validation)
 1. list_price > 0
 2. publication_date <= SYSDATE
 3. isbn IS NOT NULL AND LENGTH(isbn) IN (10, 13)
 ```
 
-#### DataHub 연동 포인트
+### DataHub 연동 지점
 
-모든 보강된 메타데이터는 `DatahubRestEmitter`를 통해 DataHub에 저장되며, 내부적으로 OpenAPI 엔드포인트 `POST /openapi/v3/entity/dataset`을 호출한다. 각 카테고리는 MCP로 발행되는 DataHub aspect에 매핑된다:
+보강 단계 각각은 `DatahubRestEmitter`를 통해 DataHub aspect로 이어진다:
 
-| 인제스천 단계 | DataHub Aspect | REST API Path | 저장 내용 |
-|-------------|---------------|---------------|----------|
-| 기본 스키마 | `schemaMetadata` | `POST /openapi/v3/entity/dataset` | 컬럼명, 타입, 키 |
-| 비즈니스 설명 | `datasetProperties` | `POST /openapi/v3/entity/dataset` | Confluence에서 가져온 `description` |
-| PII / 편집 태그 | `globalTags` | `POST /openapi/v3/entity/dataset` | `urn:li:tag:PII`, `urn:li:tag:Editorial_Reviewed` |
-| 출판사 분류 | `datasetProperties.customProperties` | `POST /openapi/v3/entity/dataset` | `publisher_domain`, `genre_taxonomy`, `content_rating` |
-| 소유권 | `ownership` | `POST /openapi/v3/entity/dataset` | Owner URN + `BUSINESS_OWNER` 타입 |
-| PL/SQL 리니지 | `upstreamLineage` | `POST /openapi/v3/entity/dataset` | 소스 → 타겟 데이터셋 URN 엣지 |
-| 품질 규칙 | `assertionInfo` + `assertionRunEvent` | `POST /openapi/v3/entity/assertion` | CHECK 제약조건을 assertion으로 변환 |
+| 단계 | Aspect | 목적 |
+|------|--------|------|
+| 기본 스키마 | `schemaMetadata` | 컬럼, 타입, 키 |
+| 비즈니스 설명 | `datasetProperties` | Confluence의 `description` |
+| PII / 편집 태그 | `globalTags` | `urn:li:tag:PII`, `urn:li:tag:Editorial_Reviewed` |
+| 출판사 분류 | `datasetProperties.customProperties` | `publisher_domain`, `genre_taxonomy` |
+| 소유권 | `ownership` | 오너 URN + `BUSINESS_OWNER` 타입 |
+| PL/SQL 리니지 | `upstreamLineage` | source → target 엣지 |
+| 품질 규칙 | `assertionInfo` | CHECK 제약을 assertion으로(UC2에서 사용) |
 
-```python
-from datahub.emitter.rest_emitter import DatahubRestEmitter
-from datahub.emitter.mcp import MetadataChangeProposalWrapper
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetLineageTypeClass,
-    DatasetPropertiesClass,
-    UpstreamClass,
-    UpstreamLineageClass,
-)
+DataHub은 DataSpoke가 보낸 것을 저장할 뿐,
+추출·필드 매핑·오케스트레이션은 DataSpoke가 담당한다.
 
-emitter = DatahubRestEmitter(gms_server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN)
-dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
+### 성과
 
-# 설명 + 커스텀 속성 — Confluence에서 가져온 비즈니스 컨텍스트
-# REST: POST /openapi/v3/entity/dataset  (aspect: datasetProperties)
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=dataset_urn,
-    aspect=DatasetPropertiesClass(
-        description="모든 도서 타이틀의 마스터 카탈로그...",
-        customProperties={"genre_taxonomy": "4-level", "publisher_domain": "All imprints"},
-    ),
-))
-
-# 리니지 — PL/SQL 스토어드 프로시저에서 추출한 업스트림 테이블
-# REST: POST /openapi/v3/entity/dataset  (aspect: upstreamLineage)
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=dataset_urn,
-    aspect=UpstreamLineageClass(
-        upstreams=[UpstreamClass(
-            dataset=make_dataset_urn(platform="oracle", name="publishers.feed_raw", env="PROD"),
-            type=DatasetLineageTypeClass.TRANSFORMED,
-        )],
-    ),
-))
-```
-
-> **핵심 포인트**: DataHub는 보강 로직을 제공하지 않는다 — DataSpoke가 보낸 것만 저장한다.
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **인제스천 설정 레지스트리** | 보강 설정(연결, 필드 매핑, 추출기) 저장 | DataHub 레시피는 표준 커넥터만 처리 |
-| **보강 소스 커넥터** | Confluence, Excel/S3, 분류 체계 API에서 가져오기 | DataHub 커넥터는 데이터베이스/플랫폼 중심 |
-| **커스텀 추출기 프레임워크** | PL/SQL 리니지 파싱, CHECK 제약조건 추출 플러그인 | 스토어드 프로시저 본문 파싱은 DataHub 범위 밖 |
-| **필드 매핑 엔진** | Confluence 라벨 → 태그, Excel 컬럼 → 커스텀 속성 변환 | DataHub는 구조화된 aspect를 수용하지만 비정형 입력을 변환하지 않음 |
-| **오케스트레이션 (Airflow)** | 스케줄링, 단계별 재시도, 알림 | DataHub는 레시피를 원자적으로 실행; 다중 소스 오케스트레이션은 Airflow 필요 |
-| **벡터 인덱스 동기화** | 성공적 인제스천 시 임베딩 생성 → PostgreSQL (pgvector) | DataHub는 Elasticsearch 키워드 검색만 제공, 벡터 유사도 검색 없음 |
-
-#### 결과
-
-| 항목 | 표준 커넥터 | DataSpoke Deep Ingestion |
-|-----|-----------|--------------------------|
-| 스키마 커버리지 | 500 테이블 | 500 테이블 |
+| 항목 | 표준 커넥터 | DataSpoke |
+|------|------------|-----------|
 | 비즈니스 설명 | 0% | 89% (445/500) |
 | 소유권 | 0% | 74% (370/500) |
-| 장르 / 출판사 태그 | 0% | 100% |
-| 스토어드 프로시저 리니지 | 미지원 | 210개 엣지 추출 |
-| 품질 규칙 | 수동 입력만 가능 | 380개 자동 추출 |
-| 갱신 주기 | 수동 재실행 | 자동 일일 실행 |
+| 스토어드 프로시저 리니지 | 미지원 | 210개 엣지 |
+| 품질 규칙 | 수동 입력 | 380개 자동 추출 |
+| 갱신 주기 | 수동 재실행 | 일간 자동 |
 
 ---
 
-### 유스케이스 2: Data Validation — Assertion 기반 데이터 품질 모니터링
+## UC2: Validation — 추천 파이프라인 품질과 예측적 SLA
 
-**기능**: DataHub Assertion 관리 (DA 그룹과 공유)
+**MANIFESTO §2.1 기능**:
+*Validation — 시계열 규칙을 포함한 검증 규칙의 등록·실행·관리.
+Dry-run 검증, 시점 과거 데이터 검증, 실시간 API를 지원한다.*
 
-#### 설계 철학
+### 시나리오
 
-DataSpoke는 자체 데이터 품질 점수 엔진을 구축하지 **않는다**. DataHub의 네이티브 assertion 프레임워크 위에 **편의성/커스터마이징 레이어**를 제공한다:
+두 가지 품질 요구가 공존한다.
+- **추천 파이프라인**은 `reviews.user_ratings`와
+  `orders.fulfillment_status`를 소비한다.
+  잘못된 데이터가 들어오면 추천 품질이 떨어진다
+  (프로덕션 인시던트의 약 30%가 여기서 발생).
+- **주문 SLA**는 "주문 접수 → 배송 라벨 발급까지 4시간"을 약속한다.
+  위반은 비용이 크지만,
+  반응형 알림은 이미 위반이 발생한 뒤에만 울린다.
 
-- 데이터셋별로 DataHub assertion 규칙 6가지 유형 모두 등록 가능: freshness, volume, field, schema, SQL, custom
-- DataSpoke API를 통한 통합 설정 및 결과 조회
-- DataHub Open Assertions Spec과 호환되는 JSON 형식 + DataSpoke 확장
-- 파티션 인식 실행 (cron + manual 스케줄링)
-- `custom` 유형을 통한 DataSpoke 고유 검증 로직 (예: SQL 기반 시계열 규칙)
-- 모든 assertion 결과는 DataHub에 `assertionRunEvent` 시계열 aspect로 저장
+둘 다 검증 문제이며, 규칙이 시점형인지 시계열형인지만 다르다.
 
-#### 검증 설정 모델
+### DataSpoke 없이
 
-**설정 API**: `PUT /api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf`
+데이터 품질 점검은 임시 SQL, DBT 테스트, 구전 지식에 흩어져 있다.
+통합된 규칙 레지스트리도, 결과 이력도,
+파이프라인을 승격하기 전에 과거 파티션으로 dry-run을 돌릴 방법도 없다.
+SLA 모니터링은 반응형이며, Ops는 위반 이후 대시보드를 본다.
 
-데이터셋의 검증 설정은 두 부분으로 구성된 JSON 객체이다:
+### DataSpoke로
 
-1. **Schedule** — 데이터셋당 하나. `cron`과 `manual`만 지원하며, 두 모드를 동시에 활성화할 수 있다. cron이 스케줄대로 검사를 실행하는 동안에도 사용자가 수동으로 검증을 트리거할 수 있다.
-
-2. **Rules** — JSON 리스트. 각 항목은 DataHub Open Assertions Spec과 호환되는 딕셔너리이며, 다음 DataSpoke 확장을 포함한다:
-   - `rule_id` — 각 규칙의 자동 생성 고유 식별자
-   - `partition`과 `order` 변수 (SQL 윈도우 함수와 유사) — cron 트리거 시 기본(최신) 대상 파티션을 결정한다. 6가지 규칙 유형 모두 지원한다.
-
-**예시 — `reviews.user_ratings` 검증 설정:**
+**데이터셋당 검증 규칙 등록**
+(시점형과 시계열형을 하나의 설정에 담는다):
 
 ```json
+// PUT /api/v1/spoke/common/data/{dataset_urn}/attr/validation/conf
 {
-  "schedule": {
-    "cron": "0 */6 * * *",
-    "manual": true
-  },
+  "schedule": { "cron": "0 */6 * * *", "manual": true },
   "rules": [
-    {
-      "rule_id": "r-fresh-001",
-      "type": "freshness",
-      "lookback_interval": "6 hours",
-      "last_modified_field": "updated_at",
-      "partition": {"field": "load_date", "order": "desc"}
-    },
-    {
-      "rule_id": "r-vol-001",
-      "type": "volume",
-      "metric": "row_count",
-      "condition": {"type": "between", "min": 10000, "max": 5000000},
-      "partition": {"field": "load_date", "order": "desc"}
-    },
-    {
-      "rule_id": "r-field-001",
-      "type": "field",
-      "field": "rating_score",
-      "metric": "null_count",
-      "condition": {"type": "less_than_or_equal_to", "value": 100},
-      "partition": {"field": "load_date", "order": "desc"}
-    },
-    {
-      "rule_id": "r-schema-001",
-      "type": "schema",
-      "fields": [
-        {"field": "user_id", "type": "VARCHAR"},
-        {"field": "isbn", "type": "VARCHAR"},
-        {"field": "rating_score", "type": "NUMBER"}
-      ],
-      "compatibility": "superset"
-    },
-    {
-      "rule_id": "r-sql-001",
-      "type": "sql",
-      "statement": "SELECT COUNT(*) FROM reviews.user_ratings WHERE rating_score < 1 OR rating_score > 5",
-      "condition": {"type": "equal_to", "value": 0},
-      "partition": {"field": "load_date", "order": "desc"}
-    },
-    {
-      "rule_id": "r-custom-ts-001",
-      "type": "custom",
-      "subtype": "sql_timeseries",
-      "description": "일별 볼륨 및 null 비율 추이 이상 탐지",
-      "sql": "SELECT load_date, COUNT(*) AS row_count, SUM(CASE WHEN rating_score IS NULL THEN 1 ELSE 0 END)::float / COUNT(*) AS null_rate FROM reviews.user_ratings GROUP BY load_date",
-      "partition": ["load_date"],
-      "order": ["load_date"],
-      "values": ["row_count", "null_rate"],
-      "ml_validation": {
-        "targets": ["null_rate"],
-        "model": "range",
-        "lookback_partitions": 30
-      }
-    }
+    { "rule_id": "auto", "type": "field",
+      "column": "rating", "condition": "between",
+      "min": 1, "max": 5,
+      "partition": "event_date", "order": "desc" },
+
+    { "rule_id": "auto", "type": "volume",
+      "comparison": "ratio", "threshold": 0.8,
+      "window": "7d", "partition": "event_date" },
+
+    { "rule_id": "auto", "type": "custom",
+      "name": "fulfillment_sla_timeseries",
+      "sql": "SELECT AVG(ship_label_minutes) FROM orders.fulfillment_status
+              WHERE event_date = :partition",
+      "timeseries": {
+        "lookback_days": 30,
+        "forecast_model": "prophet",
+        "alert_threshold": "2h_before_sla_breach"
+      }}
   ]
 }
 ```
 
-#### 커스텀 유형: SQL 기반 시계열 규칙
+**한 API, 세 가지 모드:**
 
-`custom` 유형에서 `subtype: "sql_timeseries"`를 사용하면 DataSpoke 고유 검증이 가능하다:
+1. **스케줄 실행** — cron 스케줄이 규칙 실행을 구동한다.
+   결과는 DataHub의 `assertionRunEvent` 시계열 aspect로 기록된다.
+2. **수동 / dry-run** — `POST …/method/run`에 `{"dry_run": true}`를
+   실어 결과를 기록하지 않고 실행한다.
+   코딩 에이전트가 파이프라인을 배포하기 전에
+   **Online Verifier**로 사용한다.
+3. **시점 과거 데이터** — `GET …/result?from=…&to=…&partition=…`로
+   파티션별 결과를 반환한다.
+   수정 사항을 지난주 데이터에 대해 재검증할 때 쓴다.
 
-- **적용 대상**: SQL 실행 가능한 데이터셋 (예: PostgreSQL, Trino, Snowflake)
-- **데이터 조작 SQL**: 검증이 수행되는 뷰를 정의한다
-- **파티션, 순서, 값 변수**: SQL 윈도우 함수와 유사 — 추적할 세분도와 메트릭을 정의한다
-- **ML 기반 검증** (선택): 선택된 값 컬럼에 대해 모델 유형, 검증 범위, lookback 윈도우 등을 설정한다
+**예측적 SLA.** `custom` 규칙의 `timeseries` 확장은
+과거 assertion 결과 위에 예측 모델을 적합시키고,
+예측값이 SLA 임계값을 넘을 것으로 보이면
+조기 경보 이벤트를 발생시킨다 — 결정적 위반보다 몇 시간 앞서서.
 
-#### 실행 흐름
+```
+┌────────────────────────────────────────────┐
+│  배송 SLA — 예측 윈도우                     │
+│                                            │
+│  ship_label_minutes                        │
+│   ┌───── SLA 위반 (240분) ───────────┐     │
+│   │                                 │     │
+│   │                     ╱───────────┘     │
+│   │                ╱╱╱╱╱  ← 예측           │
+│   │           ╱╱╱                         │
+│   │      ╱╱╱╱                             │
+│   └──────────────────── 시간 ─────────────▶│
+│     ▲                                      │
+│     DataSpoke: 예측된 위반 약 2시간 전      │
+│              조기 경보 이벤트 발생           │
+└────────────────────────────────────────────┘
+```
 
-데이터셋의 검증 규칙에 대해 cron 또는 수동 호출이 트리거되면:
+**실시간 Online Verifier.**
+신규 파이프라인을 만드는 코딩 에이전트는
+같은 검증 API를 출력 데이터셋에 `dry_run: true`로 호출한다.
+DataSpoke가 코딩 루프를 닫는다:
+*규칙 등록 → 파이프라인 생성 → 규칙에 대해 검증 → 반복*.
 
-- **수동 호출** (`POST /api/v1/spoke/common/data/{dataset_urn}/attr/validation/method/run`): 요청 본문에 파티션이 지정되면 해당 파티션을 대상으로 하고, 그렇지 않으면 최신 파티션을 대상으로 한다.
-- **Cron 호출**: 항상 최신 파티션을 대상으로 한다 (파티션/순서 변수로 결정).
+### DataHub 연동 지점
 
-대상 파티션에 대해 각 규칙이 정의한 메트릭이 계산되고 검증된다. 예를 들어, cron 트리거 시 위의 SQL 기반 시계열 규칙 `r-custom-ts-001`:
+모든 규칙은 DataHub assertion으로 기록되고,
+모든 결과는 `assertionRunEvent` 시계열 aspect가 된다.
+DataSpoke는 여기에 다음을 덧붙인다:
+- **DataSpoke 확장** — DataHub의 Open Assertions Spec 위에 `rule_id`, `partition`, `order`,
+  `timeseries` 추가.
+- **크로스 데이터셋 리스트 뷰** — `GET /spoke/common/validation`이 설정을 집계해
+  운영 대시보드에 노출한다.
+- **WebSocket 스트림** — `WS /spoke/common/data/{urn}/stream/validation`로
+  실시간 실행 진행 상태를 전달한다.
 
-**1단계** — 최신 파티션의 값이 계산된다:
+### 성과
+
+| 지표 | 이전 | 이후 |
+|------|------|------|
+| 추천 파이프라인 인시던트 비율 | 약 30% | 5% 미만 |
+| 배송 SLA 위반 | 사후 반응 | 2시간 이상 조기 예측 — 도입 첫 달 위반 0건 |
+| 파이프라인 반복 | 운영 투입 후 수정 | 배포 전 dry-run 검증 |
+
+---
+
+## UC3: Ontology — 인수 후 온톨로지 구축과 탐색
+
+**MANIFESTO §2.1 기능**:
+*Ontology — 기본 데이터 문서화(테이블 설명 등)를 넘어,
+소스 코드(GitHub), SQL 로그, 외부 문서 등을 분석해 자율적으로
+온톨로지를 구축하고 graph DB와 vector DB에 유지한다.*
+
+### 시나리오
+
+Imazon이 디지털 전용 도서 플랫폼 **eBookNow**를 인수한다.
+합병 후 DataHub 카탈로그는 700개 이상의 데이터셋을 담게 되며 —
+이 중 200개가 eBookNow — 개념이 중복된다.
+"책/상품"을 여섯 개 테이블이 서로 다르게 표현한다:
+
+```
+Imazon (레거시):                eBookNow (인수):
+ catalog.title_master            products.digital_catalog
+ catalog.editions                content.ebook_assets
+ inventory.book_stock            storefront.listing_items
+```
+
+"book"을 검색한 분석가는 여섯 개 답을 받고
+어느 것을 써야 할지 판단하지 못한다.
+거버넌스 팀이 700개 데이터셋을 일일이 감사할 방법이 없다.
+
+### DataSpoke 없이
+
+온톨로지는 엔지니어의 머릿속과
+오래된 Confluence 페이지에만 존재한다.
+신규 분석가는 여섯 개 "책" 테이블 중
+어느 것을 조회할지 매번 다시 배운다.
+회사 간 리니지는 매핑되지 않는다.
+추천 엔진은 인쇄본과 디지털본이 둘 다 있는 타이틀을 이중으로 계산한다.
+
+### DataSpoke로
+
+#### 구축 — 자율 온톨로지 빌드
+
+DataSpoke가 DataHub 메타데이터, 연결된 소스 코드(`ebooknow/catalog-service`,
+`imazon/pricing-engine`), SQL 쿼리 로그, Confluence export를 읽는다.
+LLM(LangChain 경유)이 입력 전반을 추론해 온톨로지 그래프를 구축하고,
+**PostgreSQL에 `age`(graph)와 `pgvector`(vector) 확장**으로 저장한다.
+
+```python
+# 개념적 빌드 파이프라인(스케줄 + 신규 인제스천 시 증분 실행)
+
+inputs = load_inputs(
+    datahub_aspects=["schemaMetadata", "datasetProperties", "globalTags",
+                     "ownership", "upstreamLineage"],
+    source_code_refs=github_repos,
+    sql_logs=query_history,
+    external_docs=confluence_exports,
+)
+
+concepts      = llm_classify(inputs)                # dataset → concept(s)
+hierarchy     = llm_build_hierarchy(concepts)       # concept tree
+relationships = llm_infer_relationships(concepts)   # concept-to-concept edges
+embeddings    = embed(concepts + datasets)          # vector 리콜용
+
+persist_graph(concepts, hierarchy, relationships)   # PostgreSQL age
+persist_vectors(embeddings)                         # PostgreSQL pgvector
+queue_low_confidence(concepts, threshold=0.7)       # → 사람 검토
+```
+
+**출력(발췌):**
+
+```
+Concept: BOOK / PRODUCT (confidence 0.94)
+  ├─ variant: PRINT
+  │     catalog.title_master       (authoritative, ISBN 키)
+  │     catalog.editions           (edition-format 뷰)
+  │     inventory.book_stock       (창고 인스턴스)
+  └─ variant: DIGITAL
+        products.digital_catalog   (authoritative, product_id 키)
+        content.ebook_assets       (파일/DRM 뷰)
+        storefront.listing_items   (마켓플레이스 인스턴스)
+
+Cross-concept relationship: PRINT.ISBN ↔ DIGITAL.product_id
+  Evidence: ISBN 매칭 기준 72% 레코드 중복
+            공통 다운스트림 소비자: recommendations.book_features
+  Status: proposal (거버넌스 승인 대기)
+```
+
+#### 소비 — 탐색과 내비게이션
+
+온톨로지는 모두를 위한 내비게이션 기반이 된다:
+
+| 소비자 | 사용 방식 |
+|--------|-----------|
+| **Doc Generation (UC4)** | 개념 소속을 근거로 설명·병합·폐기 결정을 제안 |
+| **Governance (UC5)** | 개념 트리를 따라 건강도 메트릭 롤업 — "BOOK 커버리지 84%" |
+| **코딩 에이전트** | SQL을 생성하기 전에 개념의 authoritative 데이터셋을 리트리브 |
+| **UI에서 탐색하는 분석가** | 개념에서 출발해 멤버 데이터셋으로 드릴다운, confidence와 근거 확인 |
+
+**온톨로지 API** (`/spoke/common/ontology/…`) —
+개념 리스트, 개념 상세, 속성과 변경 이력, 제안 승인/거부.
+낮은 confidence 개념은 거버넌스 리뷰 큐에 올라가며,
+LLM이 결정 근거를 붙여 사람 판단을 빠르게 한다.
+
+### DataHub 연동 지점
+
+- **입력**: `schemaMetadata`, `datasetProperties`, `globalTags`, `ownership`, `upstreamLineage`,
+  여기에 인기도 가중을 위한 `datasetUsageStatistics`.
+- **출력**: 개념 소속은 `globalTags`(예: `urn:li:tag:concept:book`)와
+  `glossaryTerm` 연결로 DataHub에 다시 기록되어 DataHub UI에도 반영된다.
+  전체 그래프 구조(계층, 개념 간 엣지, confidence)는
+  PostgreSQL에 산다 — DataHub은 그래프 스토어가 아니다.
+
+### 성과
+
+| 지표 | 이전 | 이후 |
+|------|------|------|
+| 개념 중복 탐지 | 수동, 수 개월 | 자율, 수 시간 |
+| 온톨로지 기반 | 없음 / Confluence | PostgreSQL graph + vector |
+| "어떤 테이블을 조회?" 분석가 시간 | 30–60분 | 개념 탐색으로 1분 미만 |
+| 신규 인제스천 시 재빌드 | — | 영향 데이터셋만 증분 |
+
+---
+
+## UC4: Doc Generation — 문서 제안과 휴먼 인 더 루프 리뷰
+
+**MANIFESTO §2.1 기능**:
+*Doc Generation — 온톨로지를 바탕으로 데이터 문서의 상태를 점검하고,
+생성 AI로 문서를 제안한다. API와 리뷰 프로세스 포함.*
+
+### 시나리오
+
+합병된 Imazon + eBookNow 카탈로그는 700개 데이터셋을 담는다.
+문서 커버리지는 고르지 않다:
+데이터셋 64%에 설명이, 컬럼 38%에 설명이 있다.
+중복된 개념(UC3에서)에는 기존 설명끼리 모순이 있다.
+거버넌스 팀은 설명을 작성하고, 불일치를 해결하고,
+병합/폐기 결정을 제안해야 한다 — 사람 속도로는 불가능한 페이스로.
+
+### DataSpoke 없이
+
+문서는 필요할 때만 수동으로 작성된다.
+일관성 점검이 없으니 모순이 쌓인다.
+인수 후 정합화에 거버넌스 팀 3개월 이상이 든다.
+
+### DataSpoke로
+
+**데이터셋당 생성 설정 등록**(혹은 개념 단위 일괄 적용):
+
 ```json
-{"partitions": {"load_date": "2025-03-10"}, "values": {"row_count": 48230, "null_rate": 0.003}}
-```
-
-**2단계** — 이력 데이터를 기반으로 현재 파티션의 선택된 값이 검증된다 (`ml_validation` 설정에 따라):
-```json
-{"partitions": {"load_date": "2025-03-10"}, "values": {"row_count": 48230, "null_rate": 0.003}, "validation": {"null_rate": true}}
-```
-
-**3단계** — 현재 파티션의 결과가 DataHub에 `assertionRunEvent`로 저장된다 (대상별 합격/실패, 실제 값, 파티션 컨텍스트 포함).
-
-**결과 이력 API**: `GET /api/v1/spoke/common/data/{dataset_urn}/attr/validation/result` — DataHub의 `assertionRunEvent` 시계열에서 데이터셋의 검증 결과 이력을 조회한다.
-
-#### 시나리오: AI 에이전트가 도서 추천 파이프라인을 구축
-
-**배경:**
-데이터 사이언티스트가 AI 에이전트에게 요청한다: "`reviews.user_ratings`와 `orders.purchase_history`를 사용해서 일일 도서 추천 파이프라인을 만들어줘." 구축 전에 에이전트는 기존 검증 결과를 확인하여 건강한 데이터 소스를 선택한다.
-
-##### DataSpoke 없이
-
-AI 에이전트가 DataHub에서 "reviews"와 "orders" 테이블을 검색하고, 네이밍 규칙으로 후보를 선택하고, 데이터 품질을 확인하지 않은 채 코드를 생성한다. 지난주 마이그레이션 버그로 `rating_score`에 30% null 비율이 발생한 `reviews.user_ratings_legacy`를 사용하는 파이프라인이 배포된다. 이 테이블에는 DataHub에 등록된 assertion이 없어 품질 신호가 존재하지 않는다.
-
-##### DataSpoke와 함께
-
-**1단계: 기존 검증 결과 확인**
-
-DE 팀이 이미 주요 테이블에 검증 규칙을 설정해 둔 상태이다. AI 에이전트가 최근 결과를 조회한다:
-
-```
-GET /api/v1/spoke/common/data/urn:li:dataset:...reviews.user_ratings/attr/validation/result
-
-응답 — 최근 5회 cron 실행 모두 통과:
-  r-field-001 (rating_score null_count): ✓ 파티션당 0건
-  r-custom-ts-001 (null_rate 시계열): ✓ null_rate=0.003 범위 내
-  r-vol-001 (row_count): ✓ 48,230행 (10K–5M 범위 내)
-
-GET /api/v1/spoke/common/data/urn:li:dataset:...reviews.user_ratings_legacy/attr/validation/result
-
-응답 — 마지막 실행 실패:
-  r-custom-ts-001 (null_rate 시계열): ✗ null_rate=0.30 — 이상 탐지됨
-    이력 기준선: 0.003 ±0.002 (30일 range 모델)
-    현재: 0.30 — 기준선 대비 150배
-```
-
-에이전트가 `reviews.user_ratings` (모든 assertion 통과)를 선택하고 레거시 테이블을 회피한다.
-
-**2단계: 새 파이프라인 출력에 검증 규칙 등록**
-
-```
-PUT /api/v1/spoke/common/data/urn:li:dataset:...book_recommendation_features/attr/validation/conf
-
+// PUT /api/v1/spoke/common/data/{dataset_urn}/attr/gen/conf
 {
-  "schedule": {"cron": "30 9 * * *", "manual": true},
-  "rules": [
-    {"type": "freshness", "lookback_interval": "24 hours", "last_modified_field": "created_at",
-     "partition": {"field": "run_date", "order": "desc"}},
-    {"type": "volume", "metric": "row_count",
-     "condition": {"type": "greater_than", "value": 0},
-     "partition": {"field": "run_date", "order": "desc"}},
-    {"type": "field", "field": "user_id", "metric": "null_count",
-     "condition": {"type": "equal_to", "value": 0},
-     "partition": {"field": "run_date", "order": "desc"}}
-  ]
+  "targets": ["dataset.description", "column.description",
+              "tag.suggested", "ontology.alignment"],
+  "period": "weekly",
+  "ontology_context": "concept:book",
+  "active": true
 }
 ```
 
-**3단계: DA가 사용 적합성을 검증**
-
-마케팅 분석가가 Tableau에 연결하기 전에 `orders.purchase_history`를 확인한다:
+**근거 기반 생성.** 생성기는 UC3 온톨로지,
+데이터셋의 스키마/사용량/리니지/소스 코드 참조,
+기존 문서를 읽고 **제안**을 만든다(직접 쓰지 않는다):
 
 ```
-GET /api/v1/spoke/common/data/urn:li:dataset:...orders.purchase_history/attr/validation/result
+Proposal: products.digital_catalog
 
-응답 — 최근 결과:
-  r-fresh-001 (freshness): ✓ 45분 전 갱신 (lookback: 1시간)
-  r-schema-001 (schema): ✓ 필수 필드 모두 존재
-  r-vol-001 (row_count): ✓ 1.2M행 (예상 범위 내)
-→ 모든 assertion 통과 — 연결 안전.
+dataset.description (제안, confidence 0.91):
+  "eBookNow 인수로 확보한 디지털 도서 카탈로그. product_id당 한 행 (ISBN 아님 —
+   온톨로지 노트 참조). 디지털 가격과 DRM 메타데이터의 authoritative
+   소스이지만 인쇄본은 아니다 — catalog.title_master 참조."
+
+column.description 제안: 41개 중 34개
+  product_id    — "기본 키. eBookNow 카탈로그 서비스가 발급하는 불투명 식별자
+                  (ISBN 아님). PRINT↔DIGITAL 브릿지를 통해
+                  catalog.title_master.isbn과 매핑되지만 손실 조인(72% 매칭)."
+  creator       — "자유 텍스트 저자명. catalog.title_master과 달리 정규화된
+                  FK가 아님 — 다운스트림 조인은 퍼지 매칭으로 선해결 필요."
+
+Ontology alignment (제안):
+  Concept: BOOK / PRODUCT (variant: DIGITAL)
+  폐기 권고: 없음 — DIGITAL variant로 유지.
+  병합 권고: 없음 — 구조 차이로 테이블 병합 불가.
+  관계 제안: FK product_id ↔ catalog.title_master.isbn
+           (type: conceptual, confidence 0.78, lossy)
 ```
 
-#### DataHub 연동 포인트
+**리뷰 프로세스.** 제안은 리뷰 큐에 들어간다.
+거버넌스 리드(또는 데이터셋 오너)가 승인·편집·거부한다:
 
-DataSpoke는 DataHub assertion 프레임워크 위의 **읽기/쓰기** 레이어이다:
+```
+UI: 대기 중 문서 제안                        47 대기 | 12 차단
+───────────────────────────────────────────────────────────────────────
+▸ products.digital_catalog          34 컬럼   confidence 0.91  [리뷰]
+▸ content.ebook_assets              22 컬럼   confidence 0.88  [리뷰]
+▸ catalog.title_master              12 컬럼   confidence 0.94  [리뷰]
+▸ ...
+```
 
-| 작업 | DataHub Aspect | REST API Path | 방향 |
-|-----|---------------|---------------|------|
-| Assertion 규칙 등록 | `assertionInfo` | `POST /openapi/v3/entity/assertion` | **쓰기** |
-| Assertion 결과 보고 | `assertionRunEvent` | `POST /openapi/v3/entity/assertion` | **쓰기** |
-| 결과 이력 조회 | `assertionRunEvent` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | 읽기 |
-| 스키마 assertion용 스키마 조회 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 읽기 |
+- **승인** → `POST …/attr/gen/method/apply` —
+  DataSpoke가 DataHub에 기록한다
+  (`datasetProperties.description`,
+  `schemaMetadata.fields[].description`,
+  `globalTags`, glossary 연결).
+- **편집** → 리뷰어가 수정 후 승인.
+- **거부** → 제안은 아카이브.
+  모델은 거부 이유를 기록해 이후 제안 품질을 높인다.
 
-> **핵심 포인트**: DataHub는 assertion 정의와 실행 결과를 저장한다. 오픈소스 DataHub는 assertion을 실행하지 않는다 — DataSpoke가 규칙을 평가하고, 소스 시스템에 SQL을 실행하고, ML 기반 검증을 수행하고, 결과를 DataHub에 보고하는 실행 엔진이다.
+**일관성 점검.** 매 실행마다 생성기는
+온톨로지와 모순되는 *기존* 문서도 보고한다 —
+예: "ISBN"으로 설명되어 있지만
+온톨로지 근거상 실제로는 product_id인 컬럼.
+이들은 정화 후보로 플래그 된다(MANIFESTO §1의 Self-Purification).
 
-#### DataSpoke 커스텀 구현
+### DataHub 연동 지점
 
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **Assertion 설정 API** | 데이터셋별 6가지 규칙 유형 통합 CRUD, 파티션 지원 | DataHub에는 데이터셋별 설정 관리 레이어 없음 |
-| **파티션 인식 실행기** | 대상 파티션 결정, 규칙 실행, 결과 저장 | 오픈소스 DataHub는 assertion을 실행하지 않음 |
-| **SQL 기반 시계열 엔진** | 데이터 조작 SQL 실행, 파티션 값 계산, 이력 추적 | DataHub는 프로필을 저장하지만 소스 시스템에 쿼리할 수 없음 |
-| **ML 기반 이상 검증** | 이력 파티션 값 대비 range/모델 기반 검증 | DataHub에는 통계 분석 없음 |
-| **Cron/Manual 스케줄러** | Airflow 기반 cron + 온디맨드 수동 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
+| 방향 | Aspect | 목적 |
+|------|--------|------|
+| 읽기 | `datasetProperties`, `schemaMetadata`, `datasetUsageStatistics`, `upstreamLineage` | 생성 근거 |
+| 쓰기(승인 시) | `datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`, `glossaryTerms` | 적용된 제안 |
+| 시계열 | `datasetProperties` 이력 | 생성 대 승인의 감사 기록 |
 
-#### 결과
+### 성과
 
-| 지표 | DataSpoke 없이 | DataSpoke와 함께 |
-|-----|---------------|----------------|
-| Assertion 설정 노력 | DataHub에 assertion별 수동 API 호출 | 데이터셋별 통합 설정 |
-| 실행 | 없음 (오픈소스 DataHub) | cron + manual로 자동화 |
-| 파티션 인식 | 없음 | 내장 — 최신 파티션 자동 선택 |
-| 커스텀 시계열 검사 | 불가 | SQL 기반 규칙 + ML 검증 |
+| 지표 | 수동 | DataSpoke + 리뷰 |
+|------|------|-----------------|
+| 인수 후 정합화 | 3개월 | 며칠 |
+| 설명 커버리지 (데이터셋) | 64% | 96% |
+| 설명 커버리지 (컬럼) | 38% | 87% |
+| 드러난 모순 | 불명 | 142개 플래그, 128개 해결 |
 
 ---
 
-### 유스케이스 3: Predictive SLA — 시계열 검증 기반 조기 경보
+## UC5: Governance — 전사 메타데이터 건강도와 다관점 오버뷰
 
-**기능**: DataHub Assertion 관리 (시계열 모니터링)
+**MANIFESTO §2.1 기능**:
+*Governance — 문서 커버리지, 데이터 신선도 같은
+거버넌스 메트릭을 설정·관리·모니터링하는 API.*
 
-이 유스케이스는 UC2의 SQL 기반 시계열 규칙(`custom` 유형)을 SLA 모니터링과 위반 전 알림에 적용하는 방법을 보여준다.
+### 시나리오
 
-#### 시나리오: 배송 파트너 API 속도 제한이 주문 이행 대시보드를 위협
+Imazon의 CDO가 전사 이니셔티브를 시작한다:
+데이터 문서화, 소유권 책임, 인제스천 신선도 개선.
+6개 부서가 700개 이상의 데이터셋을 관리하고, 커버리지는 천차만별이다.
+분기 수동 감사는 2주가 걸리고 즉시 낡는다.
+CDO는 또 데이터 자산의 시각적 오버뷰를 원한다 —
+개념별(UC3에서), 소유자별, 메달리언 레이어별 —
+사각지대를 잡기 위해.
 
-**배경:**
-Imazon의 `orders.daily_fulfillment_summary` 테이블은 운영, 재무, 고객 지원 부서가 사용하는 물류 대시보드를 구동한다. 이 테이블은 `orders.raw_events`, `shipping.carrier_status`, 그리고 외부 배송 파트너 API의 데이터를 집계하여 매일 오전 9시까지 150만 행을 처리한다.
+### DataSpoke 없이
 
-##### 검증 설정
+거버넌스 팀이 수동 감사를 돈다:
+테이블 리뷰 → 스프레드시트 작성 → 부서장 이메일 → 2주 후 팔로업.
+**문제**: 노동 집약, 시점형, 추세 없음, 개선 측정 어려움.
+자산 시각화는 화이트보드 다이어그램.
 
-DE 팀이 다음 검증 설정을 등록한 상태이다:
+### DataSpoke로
+
+#### 메트릭 — 이름 있고 스케줄되고 시계열
+
+메트릭은 이름이 붙은 측정값이다 — 예: "고사용 미문서 데이터셋".
+정의(`attr/conf`)가 계산 방법을, `attr/result`가 결과 시계열을 갖는다.
+메트릭은 기존 DataHub 메타데이터와 DataSpoke 검증 결과를 *집계*하며,
+소스 DB에 직접 접근하지 않는다.
 
 ```json
+// PUT /api/v1/spoke/dg/metric/{metric_id}/attr/conf
 {
-  "schedule": {
-    "cron": "0 7,8 * * *",
-    "manual": true
+  "title": "문서 커버리지 — 마케팅",
+  "theme": "documentation",
+  "measurement_query": {
+    "dataset_filter": {
+      "tags": ["urn:li:tag:department:marketing"]
+    },
+    "aggregation": "pct_with_description"
   },
-  "rules": [
-    {
-      "rule_id": "r-fresh-ffs-001",
-      "type": "freshness",
-      "lookback_interval": "24 hours",
-      "last_modified_field": "summary_date",
-      "partition": {"field": "summary_date", "order": "desc"}
-    },
-    {
-      "rule_id": "r-vol-ffs-001",
-      "type": "volume",
-      "metric": "row_count",
-      "condition": {"type": "greater_than_or_equal_to", "value": 1000000},
-      "partition": {"field": "summary_date", "order": "desc"}
-    },
-    {
-      "rule_id": "r-custom-ffs-001",
-      "type": "custom",
-      "subtype": "sql_timeseries",
-      "description": "SLA 예측을 위한 시간별 볼륨 누적 추이",
-      "sql": "SELECT summary_date, hour_bucket, SUM(order_count) AS cumulative_orders, COUNT(DISTINCT carrier_id) AS active_carriers FROM orders.daily_fulfillment_summary GROUP BY summary_date, hour_bucket",
-      "partition": ["summary_date"],
-      "order": ["hour_bucket"],
-      "values": ["cumulative_orders", "active_carriers"],
-      "ml_validation": {
-        "targets": ["cumulative_orders"],
-        "model": "range",
-        "lookback_partitions": 28,
-        "validation_range": "day_of_week"
-      }
-    }
-  ]
+  "schedule_tier": "daily",
+  "active": true
 }
 ```
 
-##### DataSpoke 없이
+**전사 대시보드(1주 차):**
 
 ```
-오전 9:00 — 알림: orders.daily_fulfillment_summary가 비어 있음
-상태: SLA 위반 — 물류 대시보드 다운
-대응: 수동 조사 시작. 오전 10:30에 근본 원인 발견 (배송 API 쓰로틀링).
-총 다운타임: 2.5시간.
-```
+DataSpoke Governance — 전사 메타데이터 건강도           점수: 59/100
 
-##### DataSpoke와 함께
-
-**오전 7:00 — Cron 트리거 검증 실행:**
-
-```
-Cron 실행: orders.daily_fulfillment_summary (schedule: "0 7,8 * * *")
-대상: 최신 파티션 (summary_date=2025-03-10, hour_bucket=07)
-
-규칙 r-fresh-ffs-001 (freshness): ✓ 20분 전 갱신
-규칙 r-vol-ffs-001 (volume): ✗ 320K행 — 예상 ≥1,000,000
-규칙 r-custom-ffs-001 (시계열):
-  1단계 — 값 계산:
-    {"partitions": {"summary_date": "2025-03-10", "hour_bucket": "07"},
-     "values": {"cumulative_orders": 320000, "active_carriers": 3}}
-  2단계 — 28일 평일 기준선 대비 ML 검증:
-    cumulative_orders: 320K vs 예상 900K ±5% (평일 오전 7시) → ✗ 실패
-    {"validation": {"cumulative_orders": false}}
-  3단계 — DataHub에 assertionRunEvent로 저장 (FAILURE)
-```
-
-**실패한 assertion 결과로부터 알림 생성:**
-
-```
-⚠ 검증 실패: orders.daily_fulfillment_summary
-
-r-vol-ffs-001: row_count 320,000 < 1,000,000 (최소 임계값)
-r-custom-ffs-001: cumulative_orders 320K — 평일 오전 7시 기준선(900K ±5%) 대비 64% 미달
-  28일 모델: 월=790K, 화–금=900K (시간 07 기준)
-  현재: 320K — 이상 탐지됨
-```
-
-**오전 7:15** — 운영 엔지니어가 결과를 검토하고 업스트림 시스템을 조사하여 배송 API 쓰로틀링을 발견한다. 할당량 증가를 요청한다. 파이프라인은 오전 8시에 복구된다.
-
-**오전 8:00 — 두 번째 cron 실행:**
-
-```
-규칙 r-custom-ffs-001 (시계열):
-  {"partitions": {"summary_date": "2025-03-10", "hour_bucket": "08"},
-   "values": {"cumulative_orders": 1120000, "active_carriers": 8}}
-  ML 검증: cumulative_orders 1.12M이 예상 범위 내 → ✓ 통과
-```
-
-SLA를 1시간 여유로 충족한다. 전체 결과 이력은 다음으로 조회할 수 있다:
-
-```
-GET /api/v1/spoke/common/data/urn:li:dataset:...orders.daily_fulfillment_summary/attr/validation/result
-
-→ assertionRunEvent 시계열 반환: 파티션별 합격/실패 이력
-  실제 값, 기준선 비교, 검증 판정 포함.
-```
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **SQL 기반 시계열 엔진** | 누적 SQL 실행, 시간별 파티션 값 계산 | 오픈소스 DataHub는 소스 시스템에 쿼리하지 않음 |
-| **요일별 기준선 모델** | 28일 이력에서 평일 패턴 학습, 요일별 임계값 조정 | DataHub는 원시 데이터를 저장하지만 패턴 학습 없음 |
-| **Assertion 기반 알림** | `assertionRunEvent`에 FAILURE가 기록되면 알림 생성 | 오픈소스 DataHub에는 알림 엔진 없음 |
-| **Cron 스케줄러** | Airflow DAG가 매일 오전 7시, 8시에 검증 트리거 | DataHub에는 스케줄러 없음 (오픈소스) |
-
-#### 결과
-
-| 지표 | 기존 모니터링 | DataSpoke 시계열 검증 |
-|-----|-------------|---------------------|
-| 탐지 시점 | 오전 9:00 (SLA 위반 후) | 오전 7:00 (위반 전) |
-| 대응 시간 | 0분 (이미 늦음) | 120분 (선제적) |
-| 비즈니스 영향 | 2.5시간 대시보드 다운 | 다운타임 제로 |
-| 설정 노력 | 커스텀 모니터링 코드 | API를 통한 선언적 설정 |
-
----
-
-### 유스케이스 4: Doc Generation — 인수 후 온톨로지 통합
-
-**기능**: 자동 문서화 생성 (분류 체계/온톨로지 제안)
-
-#### 시나리오: Imazon이 디지털 스타트업 "eBookNow"를 인수
-
-**배경:**
-Imazon이 디지털 전용 도서 플랫폼 eBookNow를 인수한다. 합병 후 통합 DataHub 카탈로그에는 700개 이상의 데이터셋(eBookNow 200개 포함)이 있으며 개념이 중복된다. 6개 테이블이 "도서/상품"이라는 개념을 두 회사에 걸쳐 서로 다르게 표현한다. 데이터 거버넌스 팀은 700개 데이터셋을 수동으로 감사할 수 없다.
-
-#### DataSpoke 없이
-
-```
-개념: "도서 / 상품"
-
-Imazon (레거시):
-  - catalog.title_master          → isbn, title, author_id, list_price
-  - catalog.editions              → edition_id, isbn, format, pub_date
-  - inventory.book_stock          → isbn, warehouse_id, qty_on_hand
-
-eBookNow (인수):
-  - products.digital_catalog      → product_id, title, creator, price_usd
-  - content.ebook_assets          → asset_id, product_ref, file_format
-  - storefront.listing_items      → listing_id, item_name, seller_price
-
-문제점:
-  ✗ 6개 테이블이 서로 다른 스키마와 네이밍으로 "도서/상품"을 표현
-  ✗ isbn과 product_id 간의 관계가 문서화되지 않음
-  ✗ 다운스트림 파이프라인이 비일관적으로 조인
-  ✗ 추천 엔진이 인쇄본과 디지털 모두 제공되는 타이틀을 이중 집계
-```
-
-#### DataSpoke와 함께
-
-**1단계: LLM 기반 시맨틱 클러스터링**
-
-DataSpoke는 외부 LLM API를 사용하여 700개 데이터셋 전체에 대한 심층 시맨틱 분석을 수행한다. 단순 임베딩 코사인 유사도에 의존하지 않고, LLM이 스키마 메타데이터, 컬럼명, 설명, 샘플 값을 종합적으로 추론하여 표면적 유사도 지표로는 발견할 수 없는 개념적 중복을 식별한다.
-
-```python
-# LLM 기반 클러스터링 간략 예시 (LangChain 사용)
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from langchain.prompts import ChatPromptTemplate
-
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
-
-# 1a단계: LLM이 각 데이터셋을 비즈니스 개념 카테고리로 분류
-classify_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a data catalog analyst. Given a table's schema and metadata, "
-               "classify it into one or more business concept categories."),
-    ("human", "Table: {table_name}\nColumns: {columns}\nDescription: {description}\n"
-              "Sample values: {samples}\n\nClassify into business concepts.")
-])
-classify_chain = LLMChain(llm=llm, prompt=classify_prompt)
-
-# 1b단계: 동일 개념 카테고리 내 테이블에 대해 LLM이 쌍별 분석 수행
-compare_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a data governance expert. Compare two tables that appear to "
-               "represent the same business concept. Identify overlaps, key differences, "
-               "and recommend merge/keep/deprecate."),
-    ("human", "Table A: {table_a_schema}\nTable B: {table_b_schema}\n"
-              "Lineage overlap: {shared_consumers}\nSample record overlap: {overlap_pct}")
-])
-compare_chain = LLMChain(llm=llm, prompt=compare_prompt)
-```
-
-```
-DataSpoke Doc Generation — LLM 기반 시맨틱 클러스터링:
-
-분석 대상: 700 데이터셋 (스키마 + 설명 + 샘플 값을 LLM에 전송)
-감지된 시맨틱 클러스터: 38
-충돌이 있는 클러스터: 9
-
-클러스터: 도서 / 상품 (Critical)
-동일 개념을 나타내는 6개 테이블 감지
-
-LLM 시맨틱 분석:
-  catalog.title_master   ←→ products.digital_catalog
-    LLM 판정: "양쪽 모두 도서/상품 엔티티를 나타낸다. title_master는 인쇄 중심
-               (ISBN 필수), digital_catalog는 디지털 전용 (product_id 기반).
-               author_id(FK) vs creator(자유 텍스트)가 핵심 구조적 차이."
-    신뢰도: 0.95
-
-  catalog.editions       ←→ content.ebook_assets
-    LLM 판정: "동일 개념의 상호 보완적 뷰 — editions는 물리적 포맷 변형을 추적하고,
-               ebook_assets는 디지털 파일 포맷과 DRM을 추적한다."
-    신뢰도: 0.91
-
-  inventory.book_stock   ←→ storefront.listing_items
-    LLM 판정: "개념적 중복 낮음 — book_stock은 창고 재고,
-               listing_items는 마켓플레이스 가격 책정. 상품 참조만 공유."
-    신뢰도: 0.78
-
-근거 (LLM 보강):
-  - 6개 모두 타이틀 유사 필드 포함 (LLM 추론을 통한 100% 의미 매칭)
-  - 6개 모두 가격 필드 포함 (95% 매칭 — LLM이 통화 차이 감지)
-  - 중복 다운스트림 리니지: 18개 공유 소비자
-  - 샘플 레코드 중복 (추정): ISBN/타이틀 매칭 기준 72%
-  - LLM 인사이트: eBookNow의 "creator" 필드는 자유 텍스트이며 정규화된 FK가 아님 —
-    단순 컬럼명 매칭으로는 이 차이를 발견할 수 없었을 것
-```
-
-**1b단계: LLM 지원 소스 코드 참조 분석**
-
-DataSpoke가 eBookNow의 연결된 GitHub 저장소(`ebooknow/catalog-service`, `ebooknow/storefront-api`)를 스캔하여 클러스터링된 테이블을 참조하는 인라인 SQL, DBT 모델, 애플리케이션 코드를 탐색한다. LLM API가 코드 컨텍스트를 해석하여 정확한 컬럼 설명을 생성하고 애플리케이션 코드에 내재된 비즈니스 로직을 식별한다:
-
-```python
-# LLM이 소스 코드 참조에서 비즈니스 컨텍스트 추출
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from langchain.prompts import ChatPromptTemplate
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
-
-code_analysis_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a code analyst. Given source code that references a database column, "
-               "generate a business-level column description. Include: purpose, constraints, "
-               "relationships to other tables, and any business logic applied to this column."),
-    ("human", "Column: {table}.{column}\nCode references:\n{code_snippets}\n"
-              "Existing schema context: {schema_context}")
-])
-code_chain = LLMChain(llm=llm, prompt=code_analysis_prompt)
-```
-
-```
-소스 코드 참조 분석 — 도서 / 상품 클러스터:
-
-스캔된 저장소: 3 (catalog-service, storefront-api, data-pipelines)
-발견된 코드 참조: 147
-LLM 분석된 참조: 147 (LangChain을 통한 배치 처리)
-
-샘플 발견 — products.digital_catalog.creator:
-  파일: catalog-service/src/models/product.py:42
-  사용: creator = db.Column(String(255))  # Free-text author name
-  LLM 인사이트: "creator는 자유 텍스트 필드 (author_id와 같은 정규화된 FK가 아님).
-                 authors 테이블에 대한 검증 없음. 출판사가 입력하며, 쉼표로 구분된
-                 복수 저자를 포함할 수 있음."
-  → catalog.title_master.author_id와 차별화된 설명 제안
-
-LLM 생성 컬럼 설명 (코드 + 스키마 컨텍스트 기반):
-  products.digital_catalog.creator    → "출판사가 입력한 자유 텍스트 저자/크리에이터명.
-                                         catalog.title_master.author_id와 달리 authors
-                                         테이블에 대한 외래키가 아님. 복수 이름 포함 가능
-                                         (쉼표 구분). 정규화 미적용."
-  products.digital_catalog.price_usd  → "출판사가 설정한 USD 소매 가격.
-                                         storefront-api/pricing 엔드포인트를 통해 업데이트.
-                                         통화 변환 없음 (USD 전용). > 0 검증은
-                                         체크아웃 플로우에서 수행 (storefront-api/cart.py:88)."
-  content.ebook_assets.file_format    → "디지털 파일 포맷 enum: EPUB, PDF, MOBI.
-                                         catalog-service 업로드 핸들러에서 검증.
-                                         MOBI는 2023년부터 폐기 — LLM이 upload_handler.py:156에서
-                                         경고 로그 감지."
-```
-
-**1c단계: LLM 기반 유사 테이블 차별화 보고서**
-
-DataSpoke가 각 테이블 쌍의 전체 스키마, 샘플 데이터, 리니지, 코드 참조를 LLM에 전송하고, LLM이 병합/유지/폐기 권장사항이 포함된 구조화된 차별화 보고서를 생성한다:
-
-```python
-# LLM이 각 테이블 쌍에 대한 차별화 보고서 생성
-diff_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a data governance advisor. Given two similar tables, produce a "
-               "differentiation report. For each pair, state: key structural difference, "
-               "overlap percentage rationale, and a clear recommendation (MERGE / KEEP / DEPRECATE)."),
-    ("human", "Table A: {table_a}\nSchema: {schema_a}\nDescription: {desc_a}\n"
-              "Table B: {table_b}\nSchema: {schema_b}\nDescription: {desc_b}\n"
-              "Shared consumers: {shared_consumers}\nRecord overlap: {overlap_pct}%")
-])
-diff_chain = LLMChain(llm=llm, prompt=diff_prompt)
-```
-
-```
-LLM 생성 차별화 보고서 — 도서 / 상품 클러스터:
-
-┌─────────────────────────┬──────────────────────────┬────────────┐
-│ 테이블 쌍                 │ 핵심 차이점                 │ 중복률      │
-├─────────────────────────┼──────────────────────────┼────────────┤
-│ catalog.title_master    │ 인쇄 중심 SSOT            │            │
-│ vs                      │ ISBN 필수 (NOT NULL)     │ 72%        │
-│ products.digital_catalog│ 디지털 전용, ISBN 불필요    │            │
-│                         │ (30%가 ISBN 없음)        │            │
-│ LLM 권장: MERGE — catalog.product_master 생성                   │
-│ LLM 근거: "핵심 엔티티는 동일 (도서 상품). ISBN 선택성이 유일한           │
-│   구조적 장벽. 대체키 product_id로 해결. creator→author_id            │
-│   매핑에 정규화 파이프라인 필요."                                      │
-├─────────────────────────┼──────────────────────────┼────────────┤
-│ catalog.editions        │ 에디션 수준 상세             │            │
-│ vs                      │ (format, pub_date)       │ 65%        │
-│ content.ebook_assets    │ 디지털 자산 저장소            │            │
-│                         │ (file_format, DRM)       │            │
-│ LLM 권장: 양쪽 유지 (상호 보완적 뷰)                                   │
-│ LLM 근거: "editions는 출판 변형을 추적하고, assets는 파일 전달을          │
-│   추적한다. 병합 시 물리적/디지털 관심사가 혼합된다.                        │
-│   edition_id FK로 연결하는 것이 적절."                               │
-├─────────────────────────┼──────────────────────────┼────────────┤
-│ inventory.book_stock    │ 물리적 창고 수량             │            │
-│ vs                      │ (warehouse_id, qty)      │ 41%        │
-│ storefront.listing_items│ 마켓플레이스 리스팅           │            │
-│                         │ (seller_price, listing)  │            │
-│ LLM 권장: book_stock 유지, listing_items 폐기                      │
-│ LLM 근거: "listing_items는 재고와 가격 관심사를 혼합한다.                │
-│   가격 정보를 정규 가격 테이블로 이전하고                                 │
-│   listing_items를 폐기하는 것이 적절."                               │
-└─────────────────────────┴──────────────────────────┴────────────┘
-```
-
-**2단계: LLM 생성 온톨로지 제안**
-
-LLM이 이전 분석(클러스터, 코드 참조, 차별화 보고서)을 종합하여 병합 스키마, 테이블 역할 할당, 일관성 규칙이 포함된 포괄적 온톨로지 제안을 생성한다:
-
-```python
-# LLM이 축적된 컨텍스트에서 전체 온톨로지 제안 생성
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from langchain.prompts import ChatPromptTemplate
-
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
-
-ontology_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are an enterprise data architect. Given a set of semantically similar "
-               "tables with their schemas, code references, differentiation analysis, and "
-               "lineage, propose a canonical ontology. Include: canonical entity schema, "
-               "table role assignments (keep/deprecate/merge), and consistency rules."),
-    ("human", "Cluster: {cluster_name}\n"
-              "Tables: {tables_with_schemas}\n"
-              "Differentiation report: {diff_report}\n"
-              "Code analysis: {code_analysis}\n"
-              "Downstream consumers: {consumers}")
-])
-ontology_chain = LLMChain(llm=llm, prompt=ontology_prompt)
-```
-
-```
-LLM 제안 정규 엔티티: catalog.product_master
-
-필드 (병합 스키마 — LLM 설계):
-  - product_id          (대체키, 신규 — LLM: "ISBN 선택성 문제를 해결")
-  - isbn                (nullable — 디지털 전용 타이틀은 ISBN 없음)
-  - title               (정규화)
-  - format              (enum: print | ebook | audiobook)
-  - source_system       ("imazon" | "ebooknow")
-  - legacy_isbn         (catalog.title_master.isbn에 매핑)
-  - legacy_product_id   (products.digital_catalog.product_id에 매핑)
-  - list_price          (USD로 정규화)
-  - publication_date
-
-LLM 제안 테이블 역할:
-  catalog.product_master        → 신규 정규 SSOT
-  catalog.title_master          → 인쇄본 뷰 (유지, 정규 테이블에 별칭)
-  catalog.editions              → 에디션 상세 뷰 (유지)
-  products.digital_catalog      → 폐기 → 정규 테이블로 마이그레이션
-  content.ebook_assets          → 디지털 자산 뷰 (유지)
-  inventory.book_stock          → 재고 뷰 (유지)
-  storefront.listing_items      → 폐기 → 정규 테이블로 마이그레이션
-
-LLM 생성 일관성 규칙:
-  R1. 새 파이프라인은 반드시 catalog.product_master로 조인
-  R2. title 정규화: TRIM + title-case
-  R3. product_id는 할당 후 불변
-  R4. 도서 기원 이벤트에 source_system 태그 필수
-  R5. creator→author_id 매핑은 정규화 파이프라인을 거쳐야 함 (LLM 추가)
-
-영향: 18개 파이프라인 업데이트 필요 | 난이도: 중간 (스키마 추가 방식)
-LLM 마이그레이션 계획: 폐기 대상 테이블별 단계별 SQL 마이그레이션 스크립트 자동 생성,
-  롤백 절차 및 데이터 검증 체크 포함.
-```
-
-**3단계: LLM 기반 주간 일관성 검사** — DataSpoke가 LLM을 사용하여 신규 및 수정된 파이프라인의 온톨로지 규칙 위반을 스캔한다. LLM이 SQL 조인 패턴, 컬럼 참조, 데이터 흐름을 분석하여 정규식 기반 규칙으로는 감지할 수 없는 의미적 위반을 탐지한다. 예시: 새 파이프라인이 `catalog.product_master` 대신 `products.digital_catalog`로 조인하여 인쇄 전용 타이틀의 60%가 추천에서 제외됨. LLM이 생성한 자동 수정 제안(92% 신뢰도)에 필요한 정확한 SQL 변경 사항 포함.
-
-#### DataHub 연동 포인트
-
-Doc Generation는 **읽기 + 쓰기** 소비자이다. 클러스터링 분석을 위해 스키마와 속성을 읽고, 폐기 마커와 태그를 DataHub에 다시 기록한다:
-
-| 분석 단계 | DataHub Aspect | REST API Path | 반환/저장 내용 |
-|----------|---------------|---------------|--------------|
-| 스키마 유사도 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼명, 타입 — 임베딩 유사도 입력 |
-| 설명 분석 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 시맨틱 매칭을 위한 설명 |
-| 공유 소비자 | `upstreamLineage` | GraphQL: `searchAcrossLineage` | 후보 테이블 간 다운스트림 중복 |
-| 폐기 표시 | `deprecation` | `POST /openapi/v3/entity/dataset` | `deprecated=true`, `note`, `replacement` URN |
-| 소스 시스템 태깅 | `globalTags` | `POST /openapi/v3/entity/dataset` | `urn:li:tag:source_imazon`, `urn:li:tag:source_ebooknow` |
-| 소스 코드 참조 | `datasetProperties.customProperties` | `POST /openapi/v3/entity/dataset` | 소스 분석에서 추출한 `code_references`, `auto_generated_descriptions` |
-
-```python
-from datahub.emitter.rest_emitter import DatahubRestEmitter
-from datahub.emitter.mcp import MetadataChangeProposalWrapper
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.metadata.schema_classes import (
-    DeprecationClass,
-    SchemaMetadataClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-emitter = DatahubRestEmitter(gms_server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN)
-
-# 스키마 읽기 — 임베딩 기반 유사도를 위한 컬럼명과 타입
-# REST: GET /aspects/{urn}?aspect=schemaMetadata
-imazon_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
-schema = graph.get_aspect(imazon_urn, SchemaMetadataClass)
-
-# 폐기 표시 — 정규 엔티티로 대체된 eBookNow 테이블
-# REST: POST /openapi/v3/entity/dataset  (aspect: deprecation)
-ebooknow_urn = make_dataset_urn(platform="oracle", name="products.digital_catalog", env="PROD")
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=ebooknow_urn,
-    aspect=DeprecationClass(
-        deprecated=True,
-        note="온톨로지 통합에 따라 catalog.product_master로 마이그레이션됨",
-        replacement=make_dataset_urn(platform="oracle", name="catalog.product_master", env="PROD"),
-    ),
-))
-```
-
-> **핵심 포인트**: DataHub는 스키마 메타데이터와 폐기 마커를 저장한다. DataSpoke가 LLM API를 활용한 시맨틱 클러스터링, 온톨로지 제안 로직, 일관성 규칙 강제를 추가한다.
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **LLM 기반 시맨틱 클러스터링** | 스키마 + 설명 + 샘플 값을 LLM API에 전송하여 심층 개념 분석; 데이터셋을 비즈니스 개념 카테고리로 분류; 표면적 임베딩 유사도를 넘어서는 쌍별 의미 비교. LangChain `LLMChain`으로 구조화된 프롬프트 오케스트레이션. | DataHub는 키워드 검색만 제공, 의미 추론 없음 |
-| **LLM 온톨로지 제안 엔진** | LLM이 클러스터 분석, 코드 참조, 차별화 보고서를 종합하여 병합 스키마, 테이블 역할, 일관성 규칙이 포함된 정규 엔티티 제안. LangChain `ChatPromptTemplate`으로 다단계 추론. | DataHub는 메타데이터를 저장하지만 스키마 병합이나 추론 로직 없음 |
-| **LLM 일관성 규칙 엔진** | LLM이 신규/수정 파이프라인의 SQL 패턴을 온톨로지 규칙(R1–R5) 대비 분석; 정규식 규칙이 놓치는 의미적 위반 탐지; 자동 수정 SQL 생성 | DataHub에는 규칙 정의, 위반 스캔, 코드 분석 없음 |
-| **LLM 소스 코드 분석기** | 연결된 저장소 스캔; 코드 스니펫 + 스키마 컨텍스트를 LLM에 전송하여 비즈니스 수준 컬럼 설명 생성. 대규모 코드베이스에 LangChain `RecursiveCharacterTextSplitter` 사용. | DataHub에는 소스 코드 스캔이나 해석 기능 없음 |
-| **LLM 차별화 보고서 생성기** | LLM이 테이블 쌍을 전체적으로 비교(스키마, 리니지, 코드 사용, 샘플 데이터)하고 근거가 포함된 구조화된 병합/유지/폐기 권장 생성 | DataHub는 개별 스키마를 저장하지만 비교나 조치 추론 불가 |
-| **온톨로지/분류 체계 빌더** *(UC8과 공유)* | 메타데이터에서 비즈니스 개념 분류 체계를 구축·유지하는 재사용 가능한 LLM 기반 서비스. 개념 카테고리, 계층적 관계, 데이터셋-개념 매핑을 Doc Generation(UC4)와 다관점 오버뷰(UC8) 양쪽에 제공. 아래 공통 컴포넌트 참조. | DataHub에는 분류 체계 구축이나 LLM 연동 없음 |
-
-#### 결과
-
-| 지표 | 수동 통합 | DataSpoke Doc Generation |
-|-----|---------|---------------------------|
-| 제안까지 소요 시간 | ~3개월 (수동 감사) | 수 시간 (자동 클러스터링) |
-| 카탈로그 AI 준비도 | 58% | 91% |
-| 월간 위반 건수 | 미추적 | 2–3건 (자동 감지) |
-
----
-
-## 데이터 분석(DA) 그룹
-
-### 유스케이스 5: NL Search — GDPR 컴플라이언스 감사
-
-**기능**: 자연어 검색
-
-#### 시나리오: 법무팀이 마케팅에서 사용하는 유럽 고객 PII를 검색
-
-**배경:**
-Imazon 법무팀이 GDPR 감사를 준비하며 다음을 요청한다: "마케팅 분석 파이프라인에서 접근하는 유럽 고객 PII가 포함된 모든 테이블을 찾아주세요." 이는 PII 분류, 지리적 범위, 리니지를 교차 참조해야 하며 — 키워드 검색으로는 처리할 수 없는 다차원 쿼리이다.
-
-#### DataSpoke 없이
-
-수동 프로세스: DataHub에서 "customer" 테이블 검색, 각 설명에서 "EU"/"Europe" 확인, 컬럼명에서 `email`/`name`/`address` 검색, 마케팅 소비자까지 수동으로 리니지 추적, 50개 이상 테이블 검토. **소요 시간: 4–6시간. 정확도: ~70%** (문서화 품질에 따라 다름).
-
-#### DataSpoke와 함께
-
-**쿼리:**
-
-```
-자연어 입력 (via /api/v1/spoke/da/search):
-"마케팅 분석에서 사용하는 유럽 고객 PII가 있는 테이블 찾기"
-```
-
-**응답 (2.3초):**
-
-```
-7개 테이블 매칭 결과
-
-높은 우선순위 (직접 PII + 마케팅 사용)
-
-1. customers.eu_profiles (관련도: 98%)
-   PII 필드: email, full_name, shipping_address, date_of_birth
-   지역 태그: EU/GDPR
-   마케팅 리니지:
-     └─ marketing.eu_email_campaigns (활성)
-        └─ dashboards.eu_campaign_performance
-   컴플라이언스: ✓ 보존: 2년 | ✓ 암호화: at-rest + transit
-               ⚠ 삭제권: 수동 프로세스
-
-2. orders.eu_purchase_history (관련도: 94%)
-   PII 필드: customer_id (연결 가능), shipping_address, payment_last4
-   마케팅 리니지:
-     └─ marketing.eu_buyer_segmentation
-        └─ recommendations.eu_personalized_picks
-   컴플라이언스: ✓ 90일 후 익명화 | ✓ GDPR 보존 준수
-
-중간 우선순위 (파생 / 가명화)
-
-3. marketing.eu_reader_segments (관련도: 87%)
-   PII 필드: hashed_email, aggregate_reading_score
-   업스트림 PII: customers.eu_profiles (1 홉)
-   활성 캠페인: 8 | 대시보드 의존: 4
-
-[... 4개 테이블 추가 ...]
-
-요약:
-  직접 PII 테이블: 2 | 파생 PII 테이블: 5
-  활성 마케팅 파이프라인: 11
-  GDPR 컴플라이언스 격차: 1 (삭제권 자동화)
-```
-
-**후속 질문:** "자동 삭제권이 없는 테이블은?" → DataSpoke가 `customers.eu_profiles` (수동 SQL 필요)와 `reviews.eu_book_reviews_archive` (콜드 스토리지, 48시간 복원)를 식별한다. 자동 삭제 작업을 권장한다.
-
-#### DataHub 연동 포인트
-
-NL Search는 **읽기** 소비자이다. 벡터 검색 인덱스를 구축하고 쿼리 결과를 보강하기 위해 여러 DataHub aspect를 조회한다:
-
-| 검색 단계 | DataHub Aspect | REST API Path | 반환 내용 |
-|----------|---------------|---------------|----------|
-| 임베딩 소스 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 설명 — pgvector에 벡터화 |
-| 컬럼 수준 PII 탐지 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼명 (`email`, `full_name` 등) |
-| PII / GDPR 태그 | `globalTags` | `GET /aspects/{urn}?aspect=globalTags` | `urn:li:tag:PII`, `urn:li:tag:GDPR` |
-| 마케팅 리니지 | `upstreamLineage` | GraphQL: `searchAcrossLineage` | 마케팅 도메인의 다운스트림 소비자 |
-| 소유권 | `ownership` | `GET /aspects/{urn}?aspect=ownership` | 컴플라이언스 담당자를 위한 데이터 스튜어드 |
-| 사용 빈도 | `datasetUsageStatistics` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | `uniqueUserCount`, `totalSqlQueries` |
-
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetUsageStatisticsClass,
-    GlobalTagsClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-dataset_urn = make_dataset_urn(platform="oracle", name="customers.eu_profiles", env="PROD")
-
-# PII 태그 — GDPR 관련 분류 태그 확인
-# REST: GET /aspects/{urn}?aspect=globalTags
-tags = graph.get_aspect(dataset_urn, GlobalTagsClass)
-
-# 다운스트림 리니지 — GraphQL을 통한 마케팅 소비자 탐색
-# GraphQL: searchAcrossLineage(input: {urn, direction: DOWNSTREAM, types: [DATASET]})
-downstream = graph.execute_graphql("""
-    query {
-        searchAcrossLineage(input: {
-            urn: "%s",
-            direction: DOWNSTREAM,
-            types: [DATASET],
-            query: "*marketing*"
-        }) { searchResults { entity { urn } } }
-    }
-""" % dataset_urn)
-
-# 사용 통계 — 검색 결과에서 고트래픽 테이블 우선 표시
-# REST: POST /aspects?action=getTimeseriesAspectValues
-usage = graph.get_timeseries_values(
-    dataset_urn, DatasetUsageStatisticsClass, filter={}, limit=30,
-)
-```
-
-> **핵심 포인트**: DataHub는 키워드 검색과 원시 메타데이터를 제공한다. DataSpoke가 자연어 파싱, 벡터 유사도, PII 분류 로직, 대화형 정제를 추가한다.
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **NL 쿼리 파서** | 자연어를 구조화된 의도(엔티티 타입, 필터, 컴플라이언스 컨텍스트)로 파싱 | DataHub 검색은 키워드 기반, 의도 파싱 없음 |
-| **벡터 검색 (pgvector)** | 하이브리드 검색: 다차원 쿼리를 위한 벡터 유사도 + 그래프 순회 | DataHub는 Elasticsearch 키워드 검색만 제공 |
-| **PII 분류 엔진** | 컬럼명 패턴 + 태그 존재로 PII 필드 탐지, 등급별 분류 | DataHub는 태그를 저장하지만 분류 로직 없음 |
-| **컴플라이언스 보고서 생성기** | 리니지 다이어그램과 갭 분석이 포함된 GDPR 감사 보고서 자동 생성 | DataHub는 원시 메타데이터를 제공하지만 보고서 생성 없음 |
-| **대화형 정제** | 맥락 내 후속 질문 지원 ("어떤 테이블이 부족한지...") | DataHub 검색은 무상태, 대화 지원 없음 |
-
-#### 결과
-
-| 지표 | 기존 검색 | DataSpoke NL Search |
-|-----|---------|---------------------|
-| 시간 | 4–6시간 | 2–5분 |
-| 정확도 | ~70% | ~98% |
-| 후속 질문 | 처음부터 다시 | 대화형 정제 |
-| 감사 보고서 | 수동 작성 | 자동 생성 |
-
----
-
-### 유스케이스 7: Text-to-SQL Metadata — AI 기반 장르 분석
-
-**기능**: Text-to-SQL 최적화 메타데이터
-
-#### 시나리오: 비즈니스 분석가가 AI에게 베스트셀러 장르를 질문
-
-**배경:**
-Imazon의 비즈니스 분석가가 AI 어시스턴트에게 묻습니다: "Imazon의 Q4 베스트셀러 장르 Top 10은?" AI가 SQL을 생성해야 하지만, DataHub의 표준 메타데이터는 컬럼명과 타입만 제공한다 — 값 프로필, 비즈니스 용어집 매핑, 조인 경로 힌트가 없다. 보강된 컨텍스트 없이 AI는 잘못된 결과를 반환하는 부정확한 SQL을 생성한다.
-
-#### DataSpoke 없이
-
-AI가 DataHub의 컬럼명과 타입만으로 SQL을 생성한다:
-
-```sql
--- AI 생성 SQL (오류)
-SELECT genre, COUNT(*) as sales
-FROM orders.purchase_history
-JOIN catalog.title_master ON orders.purchase_history.isbn = catalog.title_master.isbn
-WHERE purchase_date >= '2024-10-01'
-  AND genre = 'Fiction'  -- 오류: 실제 값은 'FIC-001' 같은 코드
-GROUP BY genre
-ORDER BY sales DESC
-LIMIT 10;
-
--- 문제점:
--- 1. "genre" 컬럼(표시명) 사용 — "genre_code"(실제 컬럼)가 아님
--- 2. isbn으로 직접 조인 — edition_id 중간 조인 누락
--- 3. WHERE genre = 'Fiction' — 실제 값은 코드 (FIC-001, NF-002)
--- 4. 사람이 읽을 수 있는 이름에 필요한 genre_hierarchy 테이블 누락
-```
-
-결과: 0행 반환. 분석가가 15–30분간 디버깅하고, 데이터 엔지니어에게 문의하며, 수동으로 반복한다.
-
-#### DataSpoke와 함께
-
-**1단계: 메타데이터 컨텍스트 조회**
-
-```python
-# POST /api/v1/spoke/da/text-to-sql/context
-dataspoke.text_to_sql.get_context({
-  "question": "Imazon의 Q4 베스트셀러 장르 Top 10은?",
-  "candidate_tables": ["orders.purchase_history", "catalog.title_master", "catalog.genre_hierarchy"]
-})
-
-# 응답:
-{
-  "column_profiles": {
-    "catalog.title_master.genre_code": {
-      "sample_values": ["FIC-001", "NF-002", "SCI-003", "MYS-004", "ROM-005"],
-      "cardinality": 48,
-      "distribution": "상위 5개가 전체 타이틀의 62% 차지",
-      "business_glossary": "장르 분류 코드 — 표시명은 genre_hierarchy.code로 매핑"
-    },
-    "catalog.genre_hierarchy.display_name": {
-      "sample_values": ["Fiction", "Non-Fiction", "Science Fiction", "Mystery", "Romance"],
-      "note": "사람이 읽을 수 있는 장르명 — 출력 표시에 사용"
-    }
-  },
-  "join_paths": {
-    "recommended": {
-      "path": "orders.purchase_history → orders.order_items → catalog.editions → catalog.title_master → catalog.genre_hierarchy",
-      "join_keys": [
-        "purchase_history.order_id = order_items.order_id",
-        "order_items.edition_id = editions.edition_id",
-        "editions.isbn = title_master.isbn",
-        "title_master.genre_code = genre_hierarchy.code"
-      ],
-      "confidence": 0.95,
-      "source": "리니지 + 과거 쿼리 분석"
-    }
-  },
-  "sample_queries": [
-    {
-      "description": "월별 장르 판매 리포트 (topSqlQueries에서)",
-      "sql": "SELECT gh.display_name, COUNT(*) FROM orders.order_items oi JOIN catalog.editions e ON oi.edition_id = e.edition_id JOIN catalog.title_master tm ON e.isbn = tm.isbn JOIN catalog.genre_hierarchy gh ON tm.genre_code = gh.code GROUP BY gh.display_name"
-    }
-  ],
-  "date_conventions": {
-    "orders.purchase_history.purchase_date": "DATE 타입, Q4 = WHERE purchase_date BETWEEN '2024-10-01' AND '2024-12-31'"
-  }
-}
-```
-
-**2단계: AI가 올바른 SQL 생성**
-
-DataSpoke의 보강된 컨텍스트로 AI가 작동하는 쿼리를 생성한다:
-
-```sql
--- AI 생성 SQL (정확 — DataSpoke 컨텍스트 활용)
-SELECT gh.display_name AS genre,
-       COUNT(DISTINCT oi.order_item_id) AS total_sales
-FROM orders.purchase_history ph
-JOIN orders.order_items oi ON ph.order_id = oi.order_id
-JOIN catalog.editions e ON oi.edition_id = e.edition_id
-JOIN catalog.title_master tm ON e.isbn = tm.isbn
-JOIN catalog.genre_hierarchy gh ON tm.genre_code = gh.code
-WHERE ph.purchase_date BETWEEN '2024-10-01' AND '2024-12-31'
-GROUP BY gh.display_name
-ORDER BY total_sales DESC
-LIMIT 10;
-
--- 결과:
--- Fiction          42,381
--- Mystery          38,912
--- Romance          31,205
--- Science Fiction  28,744
--- Non-Fiction      25,891
--- ...
-```
-
-**3단계: 피드백 루프**
-
-성공한 쿼리가 기록된다. DataSpoke가 비즈니스 용어집 매핑(`genre_code` → `genre_hierarchy.display_name`)과 장르 관련 주제에 대한 4홉 조인 경로를 강화한다.
-
-#### DataHub 연동 포인트
-
-Text-to-SQL 컨텍스트는 **읽기** 중심 소비자이다. AI SQL 생성을 위한 보강 컨텍스트를 구축하기 위해 메타데이터 aspect를 조회한다:
-
-| 컨텍스트 단계 | DataHub Aspect | REST API Path | 반환 내용 |
-|-------------|---------------|---------------|----------|
-| 컬럼명/타입 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼 정의 — SQL 생성의 기본 스키마 |
-| 테이블 설명 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 테이블 식별을 위한 비즈니스 설명 |
-| 과거 쿼리 | `datasetUsageStatistics` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | `topSqlQueries` — 패턴 추출을 위한 샘플 쿼리 |
-| 조인 경로 추론 | `upstreamLineage` | `GET /aspects/{urn}?aspect=upstreamLineage` | 리니지 엣지 — 다홉 조인 권장의 기초 |
-
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetUsageStatisticsClass,
-    SchemaMetadataClass,
-    UpstreamLineageClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", env="PROD")
-
-# 스키마 — SQL 생성을 위한 컬럼명과 타입
-# REST: GET /aspects/{urn}?aspect=schemaMetadata
-schema = graph.get_aspect(dataset_urn, SchemaMetadataClass)
-
-# 사용 통계 — 샘플 쿼리 패턴을 위한 topSqlQueries
-# REST: POST /aspects?action=getTimeseriesAspectValues
-usage = graph.get_timeseries_values(
-    dataset_urn, DatasetUsageStatisticsClass, filter={}, limit=30,
-)
-
-# 업스트림 리니지 — 리니지 엣지에서 조인 경로 추론
-# REST: GET /aspects/{urn}?aspect=upstreamLineage
-lineage = graph.get_aspect(dataset_urn, UpstreamLineageClass)
-```
-
-> **핵심 포인트**: DataHub는 스키마, 사용 통계, 리니지를 저장한다. DataSpoke가 컬럼 값 프로파일링, 비즈니스 용어집 매핑, 조인 경로 추천, LLM 컨텍스트 최적화를 추가한다.
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **컬럼 값 프로파일러** | DataHub의 rowCount/nullCount를 넘어서는 샘플 값, 카디널리티, 분포 분석 | DataHub 프로필은 집계 통계를 저장하며 값 수준 분포는 없음 |
-| **비즈니스 용어집 매퍼** | 기술 컬럼을 비즈니스 용어에 값 변환과 함께 매핑 (예: `FIC-001` → `Fiction`) | DataHub는 용어집을 저장하지만 자동 컬럼-용어 매핑 없음 |
-| **조인 경로 추천기** | 리니지 + 사용 패턴을 결합하여 최적의 다홉 조인 경로 추천 | DataHub는 리니지 엣지를 저장하지만 조인 경로 계산 없음 |
-| **SQL 템플릿 생성기** | 메타데이터 + 과거 쿼리에서 SQL 스캐폴드 생성 | DataHub는 원시 메타데이터를 제공하며 SQL 생성 기능 없음 |
-| **컨텍스트 윈도우 최적화기** | 정확한 SQL 생성을 위해 LLM 토큰 한도에 맞는 가장 관련 높은 메타데이터 선택 | DataHub에는 LLM 컨텍스트 제약 인식 없음 |
-
-#### 결과
-
-| 지표 | DataSpoke 없이 | DataSpoke와 함께 |
-|-----|---------------|----------------|
-| SQL 첫 시도 정확도 | ~30% | ~90% |
-| 작동하는 쿼리까지 시간 | 15–30분 (수동 반복) | 1–2분 (AI 지원) |
-| 조인 경로 정확성 | 빈번한 오류 (잘못된 키) | 95% 정확 (리니지 기반) |
-| 비즈니스 용어 해석 | 수동 조회 | 자동 용어집 매핑 |
-
----
-
-## 데이터 거버넌스(DG) 그룹
-
-### 유스케이스 6: Metrics Dashboard — 전사 메타데이터 건강도
-
-**기능**: 전사 메트릭 시계열 모니터링
-
-#### 시나리오: CDO가 6개 부서에 걸쳐 메타데이터 건강도 이니셔티브 시작
-
-**배경:**
-Imazon의 CDO(Chief Data Officer)가 데이터 문서화와 소유권 책임을 개선하기 위한 전사 이니셔티브를 시작한다. 6개 부서가 400개 이상의 데이터셋을 관리하지만, 문서화 커버리지와 소유권 할당은 부서마다 크게 다르다. 거버넌스 팀은 현재 2주가 걸리는 분기별 수동 감사를 수행하며, 작성 즉시 낡아버리는 시점별 스프레드시트를 생성한다.
-
-#### DataSpoke 없이
-
-수동 감사 사이클: 거버넌스 팀이 테이블을 검토하고, 추적 스프레드시트를 만들고, 부서 리드에게 이메일을 보내고, 2주 후 후속 조치하고, 분기별로 반복한다. **문제점:** 노동 집약적 (감사당 2주), 시점별 스냅샷, 자동 추적 없음, 개선 측정 어려움.
-
-#### DataSpoke와 함께
-
-**1주차 — 초기 평가:**
-
-```
-DataSpoke 메트릭 대시보드:
-전사 메타데이터 건강도 점수: 59/100
-
-부서별 현황:
+부서 분해
 ┌─────────────────────┬────────┬──────────┬────────┬─────────┐
 │ 부서                │ 점수   │ 데이터셋 │ 이슈   │ 추세    │
 ├─────────────────────┼────────┼──────────┼────────┼─────────┤
 │ 엔지니어링          │ 76/100 │ 95       │ 23     │ ↑ +3%   │
-│ 데이터 사이언스      │ 69/100 │ 72       │ 22     │ → 0%    │
+│ 데이터 사이언스     │ 69/100 │ 72       │ 22     │ → 0%    │
 │ 마케팅              │ 54/100 │ 80       │ 37     │ ↓ -2%   │
-│ 재무                │ 81/100 │ 38       │ 7      │ ↑ +5%   │
+│ 재무                │ 81/100 │ 38       │  7     │ ↑ +5%   │
 │ 운영                │ 45/100 │ 65       │ 36     │ → 0%    │
-│ 출판사 관계          │ 40/100 │ 55       │ 33     │ ↓ -1%   │
+│ 출판사 관계         │ 40/100 │ 55       │ 33     │ ↓ -1%   │
 └─────────────────────┴────────┴──────────┴────────┴─────────┘
 
-Critical 이슈: 42 | High: 78 | Medium: 118
+Critical: 42 | High: 78 | Medium: 118
 ```
 
-**상세 뷰 — 마케팅:**
+DataSpoke는 오너에게 구체적 액션 아이템, 예상 수정 시간,
+점수 영향 예측을 담은 이메일을 발송한다.
+진행은 시간에 따라 추적된다 — **3개월 차**:
+전사 점수 77/100, 전 부서 임계치 이상, 문서 감쇠율 월 -2.1%.
 
-```
-마케팅 부서 — 점수: 54/100 (목표: 70)
+#### 다관점 오버뷰
 
-Critical (12 데이터셋):
-  - 사용량 높은 테이블에 소유자 누락
-  - marketing.campaign_metrics_daily에 설명 없음 (38명의 다운스트림 사용자!)
+일부 거버넌스 뷰는 메트릭별 시계열로 표현할 수 없다.
+`/spoke/dg/overview`는 다음을 제공한다:
 
-자동 생성 조치 항목 → marketing-data-lead@imazon.com:
-  우선순위 1 (기한: 1주):
-  [ ] marketing.campaign_metrics_daily에 소유자 할당
-  [ ] 사용량 상위 5개 미문서화 테이블에 설명 추가
-  우선순위 2 (기한: 2주):
-  [ ] 고객 대면 테이블에 PII 분류 추가
-  [ ] 모든 메트릭 테이블의 갱신 주기 문서화
-```
+- **온톨로지 그래프 뷰** —
+  UC3 개념 그래프에 데이터셋을 문서 커버리지로 색·크기 매핑.
+  빨간 클러스터 = 개념 전체의 공백.
+- **메달리언 레이어 커버리지** —
+  DataHub `globalTags` 기반 bronze/silver/gold 분류,
+  레이어별 신선도·소유권 히트맵.
+- **소유권 토폴로지** —
+  데이터셋을 오너로 묶어 보여주고, 오너 없는 고아를 강조.
 
-**2주차 — 자동 알림** — DataSpoke가 데이터셋 소유자에게 구체적인 조치 항목, 예상 수정 시간 (~5–10분), 예상 점수 영향을 이메일로 발송한다.
+모든 뷰는 DataHub aspect +
+DataSpoke 검증·온톨로지 상태에 대한 **읽기 전용 집계**다.
+메트릭과 같은 거버넌스 surface(`/spoke/dg/…`)와
+동일한 RBAC 스코프를 공유한다.
 
-**1개월차 — 진행 상황:**
+### DataHub 연동 지점
 
-```
-전사 건강도 점수: 59 → 70 (+11포인트)
+| 메트릭 입력 | DataHub aspect | 목적 |
+|------------|----------------|------|
+| 설명 커버리지 | `datasetProperties` | `description` 유무 |
+| 오너 할당 | `ownership` | 오너 URN 리스트 — 빈 리스트 = 미할당 |
+| 컬럼 문서화 | `schemaMetadata` | 컬럼별 `description` 유무 |
+| 태그 커버리지 | `globalTags` | PII / 개념 태그 유무 |
+| 사용량 | `datasetUsageStatistics` (시계열) | 고사용 공백에 우선순위 |
+| 엔티티 열거 | GraphQL: `scrollAcrossEntities` | 필터별 전체 데이터셋 순회 |
 
-최다 개선: 마케팅 54 → 71 (+17) — 이달의 부서
-  35/37 critical 이슈 해결 | 평균 대응: 3일 (기존 12일)
+신선도 메트릭은 추가로 인제스천 이벤트 이력(UC1)과
+assertion 결과 이력(UC2)을 DataSpoke API로 읽는다 —
+DB 직접 접근 없음.
 
-주의 필요: 출판사 관계 40 → 44 (+4) — 목표 속도 미달
-  권장: 팀 리드와 1:1 미팅 예약
+### 성과
 
-지표:
-  문서화 커버리지: 64% → 78% (+14%)
-  소유자 할당률: 79% → 93% (+14%)
-  평균 이슈 해결: 4.1일 (목표: 5일) ✓
-```
-
-**3개월차 — 마일스톤:** 전사 점수 77/100 도달 (목표: 70). 모든 부서가 최소 임계값 초과. 문서화 감쇠율 -2.1%/월 추적 (새 테이블 생성이 문서화보다 빠름). DataSpoke가 새 테이블 생성 시 필수 문서화 체크리스트를 권장한다.
-
-#### DataHub 연동 포인트
-
-> **순수 집계 원칙**: 메트릭 대시보드는 데이터 소스를 직접 관찰하지 않는다 — DataHub aspect와 DataSpoke 검증 결과에 이미 존재하는 메타데이터를 집계한다.
-
-메트릭 대시보드는 **읽기** 소비자이다. 모든 데이터셋을 조회하여 집계 건강도 점수를 계산한다:
-
-| 건강도 지표 | DataHub Aspect | REST API Path | 반환 내용 |
-|-----------|---------------|---------------|----------|
-| 설명 커버리지 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | `description` 필드 존재/부재 |
-| 소유자 할당 | `ownership` | `GET /aspects/{urn}?aspect=ownership` | Owner URN 목록 — 비어있으면 미할당 |
-| 컬럼 문서화 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼별 `description` — 비어있으면 미문서화 |
-| 태그 커버리지 | `globalTags` | `GET /aspects/{urn}?aspect=globalTags` | PII 분류 태그 존재 또는 누락 |
-| 사용 인기도 | `datasetUsageStatistics` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | `uniqueUserCount` — 사용량 높은 격차 우선 처리 |
-| 엔티티 열거 | — | GraphQL: `scrollAcrossEntities` | 도메인/부서별 모든 데이터셋 목록 |
-
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetPropertiesClass,
-    OwnershipClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-
-# 모든 데이터셋 열거 — 건강도 점수 계산을 위한 반복
-# GraphQL: scrollAcrossEntities 또는 REST 필터
-dataset_urns = list(graph.get_urns_by_filter(entity_types=["dataset"]))
-
-for dataset_urn in dataset_urns:
-    # 소유권 — 소유자 할당 여부 확인
-    # REST: GET /aspects/{urn}?aspect=ownership
-    ownership = graph.get_aspect(dataset_urn, OwnershipClass)
-
-    # 설명 — 문서화 커버리지 확인
-    # REST: GET /aspects/{urn}?aspect=datasetProperties
-    properties = graph.get_aspect(dataset_urn, DatasetPropertiesClass)
-```
-
-> **핵심 포인트**: DataHub는 데이터셋별 메타데이터 aspect를 저장한다. DataSpoke가 이를 데이터셋 간 건강도 점수, 부서 순위, 추세 분석으로 집계한다.
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **건강도 점수 집계기** | 기존 메타데이터(설명, 소유권)와 검증 결과를 집계하여 0–100 점수 계산 | DataHub에는 aspect 간 교차 점수 체계 없음 |
-| **부서 매퍼** | 소유권 → HR API 조회를 통한 데이터셋-부서 매핑 | DataHub는 소유권 URN을 저장하지만 조직 구조 인식 없음 |
-| **추세 분석** | 시간별 건강도 점수 추적, 감쇠율 계산, 개선 예측 | DataHub는 시점별 aspect를 저장하지만 메타데이터 품질의 시계열 집계 없음 |
-
-#### 결과
-
-| 지표 | 분기별 수동 감사 | DataSpoke 메트릭 대시보드 |
-|-----|---------------|------------------------|
-| 감사 주기 | 2주, 분기별 | 실시간, 상시 |
-| 이슈 대응 시간 | 평균 12일 | 평균 3일 |
-| 건강도 점수 개선 | 미측정 | 3개월 만에 59 → 77 |
-| 거버넌스 팀 노력 | 100% 수동 | 80% 절감 |
+| 지표 | 수동 분기 감사 | DataSpoke Governance |
+|------|----------------|--------------------|
+| 감사 주기 | 분기 2주 | 실시간 연속 |
+| 이슈 응답 시간 | 평균 12일 | 평균 3일 |
+| 건강도 개선 | 측정 불가 | 3개월간 59 → 77 |
+| 거버넌스 팀 노력 | 100% 수동 | -80% |
+| 자산 시각화 | 화이트보드 | 온톨로지 + 메달리언 + 소유권 뷰 |
 
 ---
 
-### 유스케이스 8: Multi-Perspective Overview — 전사 데이터 시각화
+## 요약: 전달된 가치
 
-**기능**: 다관점 데이터 오버뷰
+| UC | 기능 | 전통적 접근 | DataSpoke | 개선 |
+|----|------|-------------|-----------|------|
+| UC1 | Ingestion Control | 수동 메타데이터, 리니지 없음 | 멀티 소스 보강, 단일 제어 surface | 설명 커버리지 89%, 리니지 엣지 210개, 자동 추출 규칙 380개 |
+| UC2 | Validation | 임시 점검, 사후 알림 | 통합 규칙 레지스트리, dry-run, 예측적 시계열 | 인시던트 30% → 5% 미만; SLA 위반 2시간 이상 조기 예측 |
+| UC3 | Ontology | 구전 지식, 오래된 Confluence | LLM 자율 구축 graph + vector 온톨로지 | 700개 데이터셋 온톨로지를 수 시간에; 개념의 authoritative 데이터셋 즉시 확인 |
+| UC4 | Doc Generation | 수동 3개월 정합화 | 근거 기반 제안 + 리뷰 워크플로 | 데이터셋 커버리지 64% → 96%; 142개 모순 표면화 |
+| UC5 | Governance | 분기 스프레드시트 감사 | 실시간 메트릭 + 다관점 오버뷰 | 3개월간 건강도 59 → 77; 80% 노력 감소 |
 
-#### 시나리오: CDO가 전체 데이터 자산을 시각화하고자 함
+### 교차 주제
 
-**배경:**
-UC6의 메타데이터 건강도 이니셔티브가 전사 점수를 59에서 77로 올린 후, Imazon의 CDO가 다음 질문을 던집니다: "우리 전체 데이터 환경을 보여주세요 — 스프레드시트가 아니라 탐색할 수 있는 것으로." 8개 도메인에 걸친 700개 이상의 데이터셋으로, 표 형태의 건강도 점수만으로는 부족한다. 거버넌스 팀은 평면 테이블에서 보이지 않는 패턴, 사각지대, 구조적 문제를 발견하기 위한 시각적 탐색이 필요하다.
-
-#### DataSpoke 없이
-
-수동 프로세스: 거버넌스 분석가가 3일간 Lucidchart 다이어그램을 작성한다. 노드는 수동으로 배치하고, 데이터 품질에 대한 암묵지를 기반으로 색상을 수동으로 지정한다. 메달리온 레이어 분류(Bronze/Silver/Gold)는 팀별로 엔지니어에게 물어보며 수행한다. 다이어그램은 즉시 구식이 된다 — 다음 주에 추가된 새 데이터셋은 나타나지 않는다. **소요 시간: 3–5일. 커버리지: 데이터셋의 ~60% (나머지는 "알 수 없음").**
-
-#### DataSpoke와 함께
-
-**뷰 1: 분류 체계/온톨로지 그래프**
-
-그래프를 렌더링하기 전에, DataSpoke는 공유 **온톨로지/분류 체계 빌더**(UC4에서 사용하는 것과 동일한 LLM 기반 서비스)를 사용하여 모든 데이터셋을 온톨로지 카테고리에 매핑한다. LLM이 각 테이블의 스키마, 설명, 컬럼명, 샘플 값, 리니지 컨텍스트를 분석하여 비즈니스 개념 카테고리를 할당한다 — 이 의미적 그룹핑이 그래프 레이아웃을 구동한다.
-
-```python
-# LLM 기반 온톨로지 카테고리 매핑 (공유 온톨로지/분류 체계 빌더 사용)
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from langchain.prompts import ChatPromptTemplate
-
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
-
-# 1단계: LLM이 테이블 메타데이터를 사용하여 각 데이터셋을 온톨로지 카테고리에 매핑
-taxonomy_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are an enterprise data taxonomist. Given a dataset's schema metadata "
-               "(table name, columns, types, description, tags, lineage), assign it to one "
-               "or more business ontology categories. Return a structured classification with "
-               "primary category, secondary categories, and confidence score.\n"
-               "Standard categories: Product/Catalog, Customer, Order/Transaction, "
-               "Shipping/Logistics, Marketing, Finance, Review/Rating, Recommendation, "
-               "Inventory, Publishing, Analytics/Report, Infrastructure."),
-    ("human", "Table: {table_name}\nColumns: {columns}\nDescription: {description}\n"
-              "Tags: {tags}\nUpstream: {upstream}\nDownstream: {downstream}")
-])
-taxonomy_chain = LLMChain(llm=llm, prompt=taxonomy_prompt)
-
-# 2단계: LLM이 그래프 엣지를 위한 카테고리 간 관계 정제
-relationship_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Given two ontology categories and the datasets within each, determine "
-               "the semantic relationship type: dependency, derivation, complementary, "
-               "or overlap. This drives edge rendering in the taxonomy graph."),
-    ("human", "Category A: {cat_a} ({datasets_a})\nCategory B: {cat_b} ({datasets_b})\n"
-              "Shared lineage edges: {shared_edges}")
-])
-relationship_chain = LLMChain(llm=llm, prompt=relationship_prompt)
-```
-
-```
-DataSpoke 다관점 오버뷰 — 분류 체계 그래프:
-
-사전 처리: LLM 온톨로지 카테고리 매핑
-  700개 데이터셋을 LLM API로 분석 (배치 처리)
-  할당된 온톨로지 카테고리: 주 12개, 부 34개
-  매핑 신뢰도: 평균 94% (설명이 있는 데이터셋)
-               평균 78% (설명이 없는 데이터셋 — LLM이 스키마에서 추론)
-
-  샘플 매핑:
-    catalog.title_master        → Product/Catalog (0.98)
-    orders.purchase_history     → Order/Transaction (0.97)
-    recommendations.book_features → Recommendation (0.92), Product/Catalog (0.71)
-    marketing.eu_email_campaigns → Marketing (0.96), Customer (0.68)
-
-노드: 700 데이터셋 (온톨로지 카테고리 + 건강도 점수로 색상 지정)
-엣지: 1,842 (1,204 리니지 + 638 LLM 추론 의미적 관계)
-자동 감지 도메인: 12개 비즈니스 클러스터 (LLM 할당 온톨로지 카테고리)
-
-시각화:
-  노드 색상: 건강도 점수 (🔴 <50 | 🟡 50-70 | 🟢 >70)
-  노드 크기: 사용량 (클수록 소비자 많음)
-  노드 그룹: LLM 할당 온톨로지 카테고리 (포스 다이렉티드 클러스터링)
-  엣지 유형: 실선 = 리니지 | 점선 = LLM 추론 의미적 관계
-
-핵심 발견 — 거버넌스 사각지대:
-  클러스터: recommendations.* (12개 데이터셋)
-  LLM 카테고리: "Recommendation" — 높은 비즈니스 중요도 추론
-  상태: 전부 빨간색 (건강도 점수 12–38)
-  문제:
-    - 문서화된 리니지 제로 (업스트림/다운스트림 기록 없음)
-    - 높은 사용량: 클러스터 전체에 주당 45명의 고유 사용자
-    - 12개 중 8개 테이블에 소유자 미할당
-    - LLM 추론 업스트림 (스키마 + 네이밍 분석 기반): catalog.title_master,
-      reviews.user_ratings, orders.purchase_history
-  리스크: 핵심 비즈니스 기능(도서 추천)이 완전히 미문서화되고
-          소유자 없는 데이터 인프라에서 구동 중
-
-  상세 드릴다운:
-    recommendations.book_features       → 건강도: 38 | 사용자: 22 | 소유자: 없음
-    recommendations.collaborative_scores → 건강도: 25 | 사용자: 18 | 소유자: 없음
-    recommendations.content_embeddings   → 건강도: 12 | 사용자: 8  | 소유자: 없음
-    [... 9개 더 ...]
-
-  조치: 엔지니어링 VP에게 에스컬레이션 — 필수 소유권 + 문서화 스프린트
-```
-
-**뷰 2: 메달리온 아키텍처**
-
-```
-DataSpoke 다관점 오버뷰 — 메달리온 분류:
-
-자동 분류 (리니지 깊이 + 네이밍 패턴 + 스키마 분석 기반):
-
-┌──────────────┬────────┬──────────────────────────────────────────────┐
-│ 레이어       │ 수량   │ 특성                                             │
-├──────────────┼────────┼──────────────────────────────────────────────┤
-│ 🥉 Bronze    │ 180    │ 원시 인제스천, 외부 소스, _raw 접미사               │
-│ 🥈 Silver    │ 120    │ 정제/조인, _cleaned/_enriched 접미사             │
-│ 🥇 Gold      │ 55     │ 비즈니스 준비 집계, reports.* 도메인               │
-│ ❓ 미분류     │ 345    │ 가용 메타데이터로 레이어 추론 불가                    │
-└──────────────┴────────┴──────────────────────────────────────────────┘
-
-격차 분석:
-  Bronze → Silver 전환율: 60% (180개 중 108개가 Silver 대응 테이블 보유)
-  Bronze 테이블의 40% (72개)가 Silver 대응 테이블 없음
-    → 인제스천되었지만 정제되지 않음 — 정리 후보
-
-  상위 정리 후보 (다운스트림 없고 사용량 낮은 Bronze):
-    publishers.feed_raw_legacy      — 마지막 접근: 8개월 전 | 0 다운스트림
-    shipping.carrier_raw_v1         — 마지막 접근: 6개월 전 | 0 다운스트림
-    marketing.campaign_import_2022  — 마지막 접근: 11개월 전 | 0 다운스트림
-    [... 12개 더 식별 ...]
-
-  스토리지 영향: 부실 Bronze 테이블에서 ~2.3 TB 복구 가능
-
-  미분류 분류 작업:
-    345개 데이터셋이 수동 검토 또는 보강된 메타데이터를 통한 자동 분류 필요
-    DataSpoke 권장: 사용량 상위 50개에 Deep Ingestion (UC1) 실행
-      → 345개 중 180개 (52%) 자동 분류 예상
-```
-
-#### DataHub 연동 포인트
-
-다관점 오버뷰는 **읽기** 중심 소비자이다. 그래프와 분류 뷰를 구축하기 위해 모든 데이터셋을 광범위하게 조회한다:
-
-| 시각화 단계 | DataHub Aspect | REST API Path | 반환 내용 |
-|-----------|---------------|---------------|----------|
-| 도메인 힌트 | `datasetProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | 설명, `customProperties` — 도메인 분류 입력 |
-| 리니지 엣지 | `upstreamLineage` | `GET /aspects/{urn}?aspect=upstreamLineage` | 업스트림 데이터셋 URN — 그래프 구축 |
-| 메달리온 / 도메인 태그 | `globalTags` | `GET /aspects/{urn}?aspect=globalTags` | `urn:li:tag:bronze`, `urn:li:tag:gold`, 도메인 태그 |
-| 부서 그룹핑 | `ownership` | `GET /aspects/{urn}?aspect=ownership` | Owner URN → 클러스터 색상을 위한 부서 매핑 |
-| 노드 크기를 위한 사용량 | `datasetUsageStatistics` (시계열) | `POST /aspects?action=getTimeseriesAspectValues` | `uniqueUserCount`, `totalSqlQueries` — 노드 크기 입력 |
-| 스키마 유사도 | `schemaMetadata` | `GET /aspects/{urn}?aspect=schemaMetadata` | 컬럼명/타입 — 유사도 엣지를 위한 중복 계산 |
-
-```python
-from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
-from datahub.emitter.mce_builder import make_dataset_urn
-from datahub.metadata.schema_classes import (
-    DatasetPropertiesClass,
-    GlobalTagsClass,
-    OwnershipClass,
-    SchemaMetadataClass,
-    UpstreamLineageClass,
-)
-
-graph = DataHubGraph(DatahubClientConfig(server=DATASPOKE_DATAHUB_GMS_URL, token=DATASPOKE_DATAHUB_TOKEN))
-
-# 그래프 구축을 위한 모든 데이터셋 열거
-# GraphQL: scrollAcrossEntities 또는 REST 필터
-dataset_urns = list(graph.get_urns_by_filter(entity_types=["dataset"]))
-
-for dataset_urn in dataset_urns:
-    # 리니지 — 그래프 구축을 위한 엣지
-    # REST: GET /aspects/{urn}?aspect=upstreamLineage
-    lineage = graph.get_aspect(dataset_urn, UpstreamLineageClass)
-
-    # 스키마 — 유사도 엣지를 위한 컬럼 중복
-    # REST: GET /aspects/{urn}?aspect=schemaMetadata
-    schema = graph.get_aspect(dataset_urn, SchemaMetadataClass)
-
-    # 태그 — 메달리온 레이어 및 도메인 분류
-    # REST: GET /aspects/{urn}?aspect=globalTags
-    tags = graph.get_aspect(dataset_urn, GlobalTagsClass)
-
-    # 속성 — 도메인 클러스터링을 위한 설명
-    # REST: GET /aspects/{urn}?aspect=datasetProperties
-    properties = graph.get_aspect(dataset_urn, DatasetPropertiesClass)
-```
-
-> **핵심 포인트**: DataHub는 데이터셋별 메타데이터(리니지, 스키마, 태그, 사용량)를 제공한다. DataSpoke가 LLM 기반 온톨로지 카테고리 매핑을 선행한 후, 인터랙티브 그래프 시각화, 자동 분류, 사각지대 탐지로 집계한다.
-
-#### DataSpoke 커스텀 구현
-
-| 컴포넌트 | 책임 | DataHub가 할 수 없는 이유 |
-|---------|------|------------------------|
-| **온톨로지/분류 체계 빌더** *(UC4와 공유)* | 그래프 렌더링 전 모든 데이터셋을 비즈니스 온톨로지 카테고리에 매핑하는 LLM 기반 서비스. LLM API로 스키마, 설명, 태그, 리니지를 분석하여 주/부 카테고리 할당. UC4의 시맨틱 클러스터링과 동일한 서비스 사용. 아래 공통 컴포넌트 참조. | DataHub에는 LLM 기반 분류 체계 구축 없음 |
-| **그래프 레이아웃 엔진** | 리니지 + LLM 추론 의미적 관계 엣지에서 포스 다이렉티드 그래프 생성; LLM 할당 온톨로지 카테고리로 노드 그룹핑; 인터랙티브 줌/필터 | DataHub는 기본 리니지 뷰어가 있지만 의미적 그룹핑을 포함한 전체 자산 그래프 없음 |
-| **LLM 도메인 분류기** | LLM이 스키마 + 설명 + 리니지를 분석하여 데이터셋의 비즈니스 도메인 자동 분류; 임베딩 전용 접근 방식을 LangChain을 통한 풍부한 의미 추론으로 대체 | DataHub는 수동 도메인 할당만 지원 |
-| **메달리온 레이어 탐지기** | 리니지 깊이, 네이밍 패턴, 변환 복잡도에서 Bronze/Silver/Gold 추론 | DataHub는 태그를 저장하지만 메달리온 분류를 위한 추론 로직 없음 |
-| **건강도 색상화기** | 복합 건강도 점수를 그래프 노드의 시각적 지표(색상, 크기, 투명도)로 매핑 | DataHub에는 시각적 건강도 오버레이 기능 없음 |
-| **사각지대 분석기** | 고아 데이터셋, 누락된 리니지, 막다른 Bronze 테이블, 소유자 없는 고사용량 클러스터 탐지 | DataHub는 원시 메타데이터를 제공하지만 데이터셋 간 이상 탐지 없음 |
-
-#### 결과
-
-| 지표 | 수동 다이어그래밍 | DataSpoke 다관점 |
-|-----|----------------|-----------------|
-| 전체 자산 뷰까지 시간 | 3–5일 | 수 분 (자동 생성) |
-| 데이터셋 커버리지 | ~60% (알려진 테이블) | 100% (등록된 모든 데이터셋) |
-| 사각지대 탐지 | 임기응변, 암묵지 | 체계적, 자동화 |
-| 메달리온 분류 | 수동, 팀별 설문 | 자동 추론, 상시 업데이트 |
-| 구식 여부 | 즉시 구식 | 실시간, 자동 갱신 |
-
----
-
-## 공통 컴포넌트: 공유 온톨로지/분류 체계 빌더
-
-UC4(Doc Generation)와 UC8(Multi-Perspective Overview)는 모두 데이터셋을 비즈니스 개념 카테고리에 매핑해야 한다 — UC4는 시맨틱 클러스터링과 온톨로지 통합을 위해, UC8은 그래프 노드 그룹핑과 도메인 분류를 위해. 이 로직을 중복하지 않고, DataSpoke는 재사용 가능한 백엔드 서비스로 **공유 온톨로지/분류 체계 빌더**를 제공한다.
-
-**아키텍처:**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│              온톨로지/분류 체계 빌더 서비스                        │
-│                                                             │
-│  입력: DataHub 메타데이터 (스키마, 설명, 태그,                      │
-│        리니지, 샘플 값) — 전체 데이터셋 대상                        │
-│                                                             │
-│  처리 (LangChain을 통한 LLM 기반):                              │
-│    1. 데이터셋 → 개념 분류 (데이터셋별 LLM 호출)                     │
-│    2. 개념 계층 구조 생성 (LLM 종합)                              │
-│    3. 개념 간 관계 추론 (LLM 쌍별 분석)                           │
-│    4. 신뢰도 점수 산정 및 휴먼 리뷰 큐                             │
-│                                                             │
-│  출력: PostgreSQL에 저장된 영속 온톨로지 그래프                     │
-│    - concept_categories (id, name, parent_id, description)  │
-│    - dataset_concept_map (dataset_urn, concept_id, score)   │
-│    - concept_relationships (concept_a, concept_b, type)     │
-│                                                             │
-│  소비자:                                                     │
-│    UC4: 시맨틱 클러스터링, 온톨로지 통합                           │
-│    UC8: 그래프 노드 그룹핑, 도메인 분류                            │
-│    향후: NL Search (UC5) 개념 인식 쿼리 확장                      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**핵심 설계 포인트:**
-- **LLM API가 중심**: 모든 분류, 계층 추론, 관계 탐지 단계에서 LangChain을 통해 외부 LLM API를 사용한다. LLM은 스키마 구조, 네이밍 관례, 설명, 리니지를 종합적으로 추론한다 — 단순 임베딩 유사도가 아님.
-- **증분 업데이트**: 새 데이터셋이 인제스천(UC1)되거나 스키마가 변경되면, 빌더가 영향받는 데이터셋만 재분류하고 다운스트림 소비자(UC4, UC8)에 변경 사항을 전파한다.
-- **휴먼 인 더 루프**: 낮은 신뢰도 분류(< 0.7)는 거버넌스 팀 리뷰 큐에 추가된다. LLM이 근거를 제공하여 사람의 의사결정을 가속한다.
-- **버전 관리된 분류 체계**: 각 분류 체계 빌드는 버전이 지정된다. UC4의 온톨로지 제안은 특정 분류 체계 버전을 참조하여 재현성을 보장한다.
-
----
-
-## 요약: 전달 가치
-
-| 유스케이스 | 사용자 그룹 | 기능 | 기존 방식 | DataSpoke와 함께 | 개선 효과 |
-|-----------|-----------|------|---------|----------------|----------|
-| **레거시 도서 카탈로그 보강** | DE | Deep Ingestion | 수동 메타데이터 입력, 리니지 없음 | 자동 다중 소스 보강 | 89% 보강, 210개 리니지 엣지 |
-| **추천 파이프라인 검증** | DE / DA | Online Validator | ~30% 실패율 (불량 데이터) | <5% 실패 (사전 검증) | 사고 83% 감소 |
-| **배송 SLA 조기 경보** | DE | Online Validator | 위반 후 사후 알림 | 2시간 이상 사전 예측 경보 | SLA 위반 제로 |
-| **인수 후 온톨로지** | DE | Doc Generation | 3개월 수동 통합 | 수 시간 내 자동 제안 | 수십 배 빠름 |
-| **GDPR 컴플라이언스 감사** | DA | NL Search | 4–6시간 수동 검색 | 2–5분 자동 검색 | 98% 시간 절약 |
-| **전사 메타데이터 건강도** | DG | Metrics Dashboard | 분기별 수동 감사 | 실시간 상시 모니터링 | 80% 효율 향상 |
-| **AI 기반 장르 분석** | DA | Text-to-SQL Metadata | 수동 SQL, 잘못된 조인/값 | 90% 첫 시도 정확도 | ~60% SQL 정확도 향상 |
-| **전사 데이터 시각화** | DG | Multi-Perspective Overview | 수동 다이어그래밍, 수일 | 실시간 자동 생성 그래프 | 체계적 사각지대 탐지 |
-
-**공통 이점:**
-- **AI 준비 완료:** 자율 에이전트가 Imazon의 프로덕션 데이터와 안전하게 작업 가능
-- **실시간 인텔리전스:** 사후 대응에서 선제적 데이터 관리로 전환
-- **컨텍스트 인식:** 모든 부서에 걸쳐 데이터 관계와 비즈니스 의미를 이해
-- **측정 가능한 영향:** 품질, 컴플라이언스, 효율성의 정량적 개선
-- **온톨로지 건강:** 인수와 유기적 성장을 통해서도 카탈로그의 의미적 일관성 유지
-- **LLM 네이티브:** UC4와 UC8 전반에서 시맨틱 분석, 온톨로지 구축, 코드 해석, 일관성 강제를 위해 외부 LLM API(LangChain 경유)를 광범위하게 활용
+- **Self-Organization (MANIFESTO §1)** —
+  UC3가 온톨로지를 구축하고, UC4·UC5가 소비한다.
+- **Self-Purification (MANIFESTO §1)** —
+  UC4가 문서와 온톨로지의 불일치를 표면화하고,
+  UC5가 이를 거버넌스 메트릭으로 롤업한다.
+- **Online Verifier (MANIFESTO §1)** — UC2 dry-run 검증이 신규 파이프라인을 만드는
+  코딩 에이전트의 루프를 닫는다.
+- **공유 기반** — UC3의 온톨로지 graph + vector DB가 UC4와 UC5의 척추;
+  UC2의 assertion 프레임워크가 UC5 신선도 메트릭을 공급한다.

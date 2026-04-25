@@ -64,9 +64,12 @@ Tracks dataset URNs referenced by DataSpoke configs and whether they exist in Da
 | `updated_at` | `TIMESTAMPTZ` | |
 
 - **Creation**: lazy, via `ensure_dataset_registered()` on ingestion/validation config upsert.
-- **Updates**: `mark_registered()` called from `IngestionService.run()` on successful non-dry-run; `mark_unregistered()` reserved for DataHub sync.
-- **DataHub sync**: bidirectional reconciliation against DataHub via `POST /internal/admin/datahub/sync` (manual/scripted) and the `datahub-sync-daily` Airflow DAG.
-- **SSOT**: DataHub is authoritative for dataset existence; the registry caches state for the validation precondition gate.
+- **Updates**: `mark_registered()` called from `IngestionService.run()` on successful non-dry-run;
+  `mark_unregistered()` reserved for DataHub sync.
+- **DataHub sync**: bidirectional reconciliation against DataHub via
+  `POST /internal/admin/datahub/sync` (manual/scripted) and the `datahub-sync-daily` Airflow DAG.
+- **SSOT**: DataHub is authoritative for dataset existence;
+  the registry caches state for the validation precondition gate.
 
 #### `validation_configs`
 
@@ -85,7 +88,8 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 
 #### `validation_results`
 
-Per-rule, per-partition results from validation runs. Also reported to DataHub as `assertionRunEvent`.
+Per-rule, per-partition results from validation runs.
+Also reported to DataHub as `assertionRunEvent`.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -282,7 +286,8 @@ Primary table for natural language search and similarity matching. Lives in the
 | `updated_at` | `TIMESTAMPTZ` NOT NULL | Last sync timestamp |
 
 **Index**: `dataset_embeddings_embedding_hnsw_idx` — HNSW over `embedding` with
-`vector_cosine_ops`. Similarity query expression: `GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector))`.
+`vector_cosine_ops`. Similarity query expression:
+`GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector))`.
 
 **Embedding input**: Concatenation of dataset name, description, field names +
 descriptions, tags, and lineage context. Processed through the LLM embedding
@@ -290,8 +295,8 @@ endpoint.
 
 **Sync triggers**:
 - Kafka event: `datasetProperties`, `schemaMetadata`, `globalTags` changes
-- Manual: `POST /spoke/common/search/method/reindex`
-- Scheduled: `embedding-sync` Airflow DAG (full re-sync, on-demand trigger)
+- Ontology rebuild: Kafka-driven incremental re-embedding when a concept changes (UC3)
+- Scheduled: `ontology-sync` Airflow DAG (full re-sync, on-demand trigger)
 
 **Access wrapper**: `src/shared/vector/client.py` exposes `PgVectorManager`
 (session-factory backed) returning `VectorHit` dataclasses. Collection name is
