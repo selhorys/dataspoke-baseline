@@ -113,8 +113,8 @@ DataSpoke는 네 가지 컴포넌트로 구성된다.
   /api/v1/spoke/[de|da|dg]/…   # 사용자 그룹별 전용 기능
   /api/v1/hub/…                # DataHub 패스스루 (클라이언트용 선택적 인그레스)
   ```
-- **DataSpoke Backend/Pipeline**: 인제스션, 품질 검증, 문서화,
-  온톨로지 생성 등 핵심 로직 처리.
+- **DataSpoke Backend/Pipeline**: 인제스션, 검증, 온톨로지 생성,
+  메타데이터 생성, 거버넌스(§2.1의 다섯 가지 기능) 등 핵심 로직 처리.
 - **DataHub**: 메타데이터 SSOT.
 
 ### 2.2 Productized Scaffold

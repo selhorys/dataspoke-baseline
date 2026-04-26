@@ -112,8 +112,8 @@ DataSpoke consists of four components.
   /api/v1/spoke/[de|da|dg]/…   # User-group-specific features
   /api/v1/hub/…                # DataHub pass-through (optional ingress for clients)
   ```
-- **DataSpoke Backend/Pipeline**: Core logic — ingestion, quality validation, documentation,
-  ontology generation, and more.
+- **DataSpoke Backend/Pipeline**: Core logic — ingestion, validation, ontology generation,
+  metadata generation, and governance (the five §2.1 features).
 - **DataHub**: Metadata SSOT.
 
 ### 2.2 Productized Scaffold

@@ -157,7 +157,7 @@ All routes are prefixed with `/api/v1`.
 > `/spoke/common/data/{dataset_urn}/…` structure is the **canonical surface** for
 > per-dataset state (`attr/<feat>/`), actions (`method/<feat>/`), and events
 > (`event/<feat>` or `event`). The dedicated routers
-> `/spoke/common/{ingestion,validation,gen}` expose only cross-dataset list views
+> `/spoke/common/{ingestion,validation,metagen}` expose only cross-dataset list views
 > that aggregate the per-dataset `attr/<feat>/*` data — they do not expose
 > per-dataset detail (use the canonical `data/{dataset_urn}` surface for that).
 > Any team that owns a dataset can access per-dataset features regardless of
@@ -200,7 +200,7 @@ dataset URN. Per-concept routes use `/spoke/common/ontogen/{concept_id}/...`.
 The canonical resource for a dataset. All teams (DE, DA, DG) access dataset attributes,
 ingestion, validation, and generation through this shared path. The three meta-classifiers
 group sub-resources by feature: state and configuration live under `attr/<feature>/`
-(`conf`, plus `result` for validation and gen as periodic timeseries), action triggers
+(`conf`, plus `result` for validation and metagen as periodic timeseries), action triggers
 under `method/<feature>/<action>`, and lifecycle events under `event/<feature>` (or
 `event` alone for the unified per-dataset timeline). In a data-mesh organization any team
 that owns a dataset can register and manage ingestion, validation, and generation — DE
@@ -215,14 +215,14 @@ configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Control | UC1 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Control | UC1 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Control | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode) | Ingestion Control | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports (success/failure notices) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | Validation | UC2, UC5 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents) | Validation | UC2 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents); concurrent runs return `409 VALIDATION_RUNNING` | Validation | UC2 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, period, status) | Metadata Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace metadata generation configuration | Metadata Generation | UC4 |
@@ -230,9 +230,9 @@ configurations.
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove metadata generation configuration | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/result` | Get metadata proposals (historical; `?latest=true` for most recent only; `?approved=true` to filter to approved proposals) | Metadata Generation | UC4 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/result/{result_id}` | Approve (or reject, or partially approve specific fields of) a pending metadata proposal — body: `{"verdict": "approve"\|"reject", "fields": [...] (optional, omit for full approval), "reason": "…"}`. On approval, DataSpoke writes the approved subset to DataHub. | Metadata Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/metagen/run` | Trigger metadata generation run | Metadata Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/metagen/run` | Trigger metadata generation run; concurrent runs return `409 GENERATION_RUNNING` | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Metadata generation event reports (success/failure notices) | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation and gen) | Data Resource | — |
+| `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation, and metagen) | Data Resource | — |
 
 #### Redefined DataHub Functions *(TBD)*
 
@@ -260,6 +260,12 @@ and [DATAHUB_INTEGRATION §Aspect Reference](DATAHUB_INTEGRATION.md#aspect-refer
 
 Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
 surface: `attr/ingestion/conf` (CRUD), `method/ingestion/run`, `event/ingestion`.
+
+`attr/ingestion/conf` carries a `mode` flag (`active` | `passive`) — active configs are
+run by DataSpoke on the configured `schedule_tier`; passive configs are populated by
+external pipelines and have their run history mirrored into `event/ingestion` by a
+hourly DataHub status-sync job. Both modes share the same API surface; see
+[BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -333,7 +339,7 @@ are included in the measurement. Filters are OR-ed across all dimensions.
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Governance | UC5 |
-| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run | Governance | UC5 |
+| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING` | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
 
 #### Overview (`/spoke/dg/overview`)
@@ -521,7 +527,7 @@ All errors follow the standard envelope:
 | `403 Forbidden` | Valid token but insufficient group claim |
 | `404 Not Found` | Resource does not exist |
 | `409 Conflict` | Duplicate resource or concurrent run attempt |
-| `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation) |
+| `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation), or a request that is well-formed but cannot be processed because a referenced precondition is not met (e.g. dataset not yet present in DataHub) |
 | `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
 | `503 Service Unavailable` | Airflow or PostgreSQL connection failure |
@@ -534,7 +540,8 @@ All errors follow the standard envelope:
 | `MISSING_REQUIRED_FIELD` | 400 | Required body field not provided |
 | `UNAUTHORIZED` | 401 | Token missing, expired, or malformed |
 | `FORBIDDEN` | 403 | Valid token; groups claim does not satisfy route requirement |
-| `DATASET_NOT_FOUND` | 404 | Dataset URN does not exist in DataHub |
+| `DATASET_NOT_FOUND` | 404 | Dataset URN does not exist in DataHub (read paths, e.g. `GET /spoke/common/data/{urn}`) |
+| `DATASET_NOT_IN_DATAHUB` | 422 | The targeted dataset URN is not yet tracked by DataHub, so a feature with a "dataset must exist in SSOT first" precondition cannot proceed (e.g. `PUT /spoke/common/data/{urn}/attr/validation/conf`) |
 | `CONCEPT_NOT_FOUND` | 404 | Ontology concept ID not found |
 | `CONFIG_NOT_FOUND` | 404 | Ingestion config or validation config not found |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
