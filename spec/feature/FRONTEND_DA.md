@@ -10,7 +10,7 @@
 
 1. [Overview](#overview)
 2. [Navigation](#navigation)
-3. [Ontology Navigation (UC3)](#ontology-navigation-uc3)
+3. [Ontology Generation Navigation (UC3)](#ontology-generation-navigation-uc3)
 4. [Validation — Fitness for Use (UC2)](#validation--fitness-for-use-uc2)
 
 ---
@@ -18,10 +18,10 @@
 ## Overview
 
 The DA workspace is a **discovery-first** surface for analysts. The primary entry is the
-**Ontology** — an LLM-built concept graph that lets analysts navigate from a business concept
-(e.g. "BOOK / PRODUCT") down to the authoritative dataset. Validation appears with a
-**fitness-for-use** framing so analysts can judge whether a candidate dataset is reliable enough
-for a report or model.
+**Ontology Generation** browser — a single-level peer-concept set built by UC3 that lets
+analysts navigate from a business concept (e.g. `BOOK`) down to the authoritative dataset.
+Validation appears with a **fitness-for-use** framing so analysts can judge whether a
+candidate dataset is reliable enough for a report or model.
 
 The DA tier (`/spoke/da/` routes, `/da` UI pages) is an extensibility surface — the baseline
 DataSpoke product ships no DA-exclusive features, and this workspace consumes baseline features
@@ -37,7 +37,7 @@ add DA-exclusive routes and pages here.
 │  DA       │
 │  ───────  │
 │  Home     │
-│  Ontology │
+│  Ontogen  │
 │  Valid.   │
 │  ───────  │
 │  [DE][DG] │
@@ -47,65 +47,62 @@ add DA-exclusive routes and pages here.
 | Item | Route | API Base |
 |------|-------|----------|
 | Home | `/da` | — |
-| Ontology | `/da/ontology` | `/spoke/common/ontology` |
+| Ontology Generation | `/da/ontogen` | `/spoke/common/ontogen/` |
 | Validation | `/da/validation` | `/spoke/common/validation/` |
 
 The DA home page features concept navigation prominently — discovery-first UX.
 
 ---
 
-## Ontology Navigation (UC3)
+## Ontology Generation Navigation (UC3)
 
-### Concept Browser (`/da/ontology`)
+### Concept Browser (`/da/ontogen`)
 
-Browse the ontology graph from a concept-centric perspective. Each concept card shows member
-datasets, confidence, and a short LLM-generated rationale. Clicking a concept drills into its
-member datasets and related concepts.
+Browse the **single-level** peer-concept set. Each concept card shows member datasets,
+confidence, and a short LLM-generated rationale. Clicking a concept drills into its
+member datasets and outgoing relationships to other peer concepts.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  DataSpoke — Concepts                                      │
 │                                                            │
-│  BOOK / PRODUCT                                conf 0.94   │
-│    ├─ variant: PRINT                                       │
-│    │    • catalog.title_master       (authoritative)       │
-│    │    • catalog.editions                                 │
-│    │    • inventory.book_stock                             │
-│    └─ variant: DIGITAL                                     │
-│         • products.digital_catalog   (authoritative)       │
-│         • content.ebook_assets                             │
-│         • storefront.listing_items                         │
+│  BOOK                                          conf 0.96   │
+│    members:                                                │
+│      catalog.books              (primary)                  │
 │                                                            │
-│  CUSTOMER                                       conf 0.91  │
-│    • customers.accounts              (authoritative)       │
-│    • customers.profile_attributes                          │
-│    • marketing.audience_segments                           │
+│  CUSTOMER                                      conf 0.94   │
+│    members:                                                │
+│      customers.profiles         (primary)                  │
 │                                                            │
-│  ORDER                                          conf 0.96  │
-│    …                                                       │
+│  ORDER_LINE                                    conf 0.71   │
+│    members:                                                │
+│      orders.line_items          (primary)                  │
+│    relationships:                                          │
+│      → BOOK     (references, conf 0.95)                    │
+│      → CUSTOMER (placed_by,  conf 0.87)                    │
 └────────────────────────────────────────────────────────────┘
 ```
 
-### Concept Detail (`/da/ontology/[concept_id]`)
+### Concept Detail (`/da/ontogen/[concept_id]`)
 
-Shows member datasets, attributes, cross-concept relationships, and change history. For proposals
-awaiting review, displays the LLM rationale and approve/reject actions (approve/reject gated to
-users with governance permissions — DA users see but cannot approve).
+Shows member datasets, attributes, cross-concept relationships, and change history. For
+proposals awaiting review, displays the LLM rationale; approve/reject actions are gated to
+users with governance permissions — DA users see but cannot approve.
 
 | Element | Source | Behaviour |
 |---------|--------|-----------|
-| Concept card header | `GET /spoke/common/ontology/{concept_id}` | Name, parent, confidence, description |
-| Attributes panel | `GET /spoke/common/ontology/{concept_id}/attr` | Confidence, parent concept |
-| Member datasets | Ontology service | Link each dataset to `/da/dataset/{urn}` |
-| Cross-concept edges | `GET /spoke/common/ontology/{concept_id}` (relationships array) | Rendered as arrows to related concepts |
-| Change history | `GET /spoke/common/ontology/{concept_id}/event` | Timestamped feed |
+| Concept card header | `GET /spoke/common/ontogen/{concept_id}` | Name, confidence, description, status |
+| Attributes panel | `GET /spoke/common/ontogen/{concept_id}/attr` | Confidence, source evidence |
+| Member datasets | Ontology Generation service | Link each dataset to `/da/dataset/{urn}` |
+| Cross-concept edges | `GET /spoke/common/ontogen/{concept_id}` (relationships array) | Rendered as arrows to peer concepts |
+| Change history | `GET /spoke/common/ontogen/{concept_id}/event` | Timestamped feed |
 
 ---
 
 ## Validation — Fitness for Use (UC2)
 
 DA validation reuses the same validation infrastructure as DE
-(see [FRONTEND_DE §Validation](FRONTEND_DE.md#validation--sla-uc2-uc3)) but with a
+(see [FRONTEND_DE §Validation](FRONTEND_DE.md#validation--sla-uc2)) but with a
 **fitness-for-use** framing: an analyst looking at `orders.purchase_history` wants to know
 "is this trustworthy enough to power my report?" — not "what's broken in the upstream pipeline?".
 

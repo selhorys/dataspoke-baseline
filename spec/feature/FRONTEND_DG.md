@@ -35,7 +35,7 @@ MANIFESTO §2.1).
 │  Home     │
 │  Metrics  │
 │  Overview │
-│  Ontology │
+│  Ontogen  │
 │  ───────  │
 │  [DE][DA] │
 └───────────┘
@@ -46,10 +46,11 @@ MANIFESTO §2.1).
 | Home | `/dg` | — |
 | Metrics | `/dg/metrics` | `/spoke/dg/metric/` |
 | Overview | `/dg/overview` | `/spoke/dg/overview/` |
-| Ontology | `/dg/ontology` | `/spoke/common/ontology/` |
+| Ontology Generation | `/dg/ontogen` | `/spoke/common/ontogen/` |
 
-The Ontology link lets governance leads review and approve pending concept proposals (UC3) whose
-low confidence queued them for human review.
+The Ontology Generation link lets governance leads review and approve pending concept proposals
+(UC3) — both per-concept proposals and the singleton inference conf at
+`/spoke/common/ontogen/attr/conf`.
 
 ---
 
@@ -119,10 +120,10 @@ Browse all defined metrics. Uses `GET /spoke/dg/metric`.
 ├───────────────────────────┬────────┬────────────┤
 │  Metric                   │ Value  │  Trend     │
 ├───────────────────────────┼────────┼────────────┤
-│  Poorly documented        │  42    │  ↓ -8/wk   │
-│  Stale datasets           │  15    │  ↓ -3/wk   │
+│  Ingestion freshness      │  92%   │  ↑ +2pp/wk │
+│  Validation score         │  87%   │  ↑ +1pp/wk │
 ├───────────────────────────┴────────┴────────────┤
-│  1-20 of 12                                                │
+│  1-2 of 2 (baseline)                                       │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -134,8 +135,8 @@ Shows metric definition, timeseries chart, and events.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  ← Metrics / Poorly Documented Datasets                    │
-│  Theme: Documentation  │  Period: Weekly  │  ● Active      │
+│  ← Metrics / Ingestion Freshness                           │
+│  Theme: Freshness  │  Tier: Hourly  │  ● Active            │
 │                                                            │
 │  [Edit] [Run Now] [Deactivate]                             │
 │                                                            │
@@ -176,13 +177,13 @@ Modal for creating or editing a metric definition.
 ┌──────────────────────────────────────────────┐
 │  Metric Definition                           │
 │                                              │
-│  Title:  [Poorly Documented Datasets    ]    │
-│  Type:   [poorly_documented          v]      │
-│  Theme:  [Documentation             v]       │
-│  Schedule: [0 8 * * 1 (Weekly Mon 8am) ]     │
+│  Title:       [Ingestion freshness       ]   │
+│  Aggregation: [pct_fresh             v]      │
+│  Theme:       [Freshness            v]       │
+│  Schedule:    [hourly | daily | weekly v]    │
 │                                              │
 │  Dataset Filter (optional)                   │
-│  Tags:           [urn:li:tag:pii, ...   ]    │
+│  Tags:           [urn:li:tag:env:PROD, ]     │
 │  Glossary Terms: [urn:li:glossaryTerm:… ]    │
 │                                              │
 │  [Cancel]                    [Save]          │
@@ -195,14 +196,15 @@ Modal for creating or editing a metric definition.
 
 ### Overview Page (`/dg/overview`)
 
-Two visualization modes: **Taxonomy Graph** and **Medallion Classification**.
-Uses `GET /spoke/dg/overview` and `GET/PATCH /spoke/dg/overview/attr`.
+A single overview page that consumes `GET /spoke/dg/overview` and renders five aggregations
+side-by-side. Visualization config is read/written through `GET/PATCH /spoke/dg/overview/attr`.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  Data Estate Overview                                      │
 │                                                            │
-│  [Taxonomy Graph]  [Medallion]           [Config ⚙]       │
+│  [Metric Values]  [Blind Spots]  [Ontology Graph]          │
+│  [Medallion]      [Ownership]                  [Config ⚙]  │
 │  ───────────────────────────────────────────────────────   │
 │                                                            │
 │  (active view content below)                               │
@@ -210,14 +212,42 @@ Uses `GET /spoke/dg/overview` and `GET/PATCH /spoke/dg/overview/attr`.
 └────────────────────────────────────────────────────────────┘
 ```
 
-### Taxonomy Graph View
+| View | Source | What it shows |
+|------|--------|---------------|
+| Metric Values | `overview.metrics[]` | Latest value per enabled metric (`ingestion-freshness`, `validation-score`, …) |
+| Blind Spots | `overview.blind_spots[]` | Datasets present in DataHub but not mapped to any UC3 concept |
+| Ontology Graph | `overview.ontology` | Single-level peer concepts + relationship edges (UC3) |
+| Medallion | `overview.medallion` | Bronze / Silver / Gold layer distribution from `upstreamLineage` |
+| Ownership | `overview.ownership` | Owner / team topology from DataHub `ownership` aspect |
+
+### Blind Spots View
+
+Lists datasets that exist in DataHub but have no row in `dataset_concept_map` with status
+`approved`. Acts as a governance early-warning surface — these datasets are invisible to UC3
+classification and downstream governance signals.
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  Blind Spots  (12 datasets unmapped to any concept)        │
+│                                                            │
+│  publishers.feed_raw       Last seen: 2 hours ago          │
+│  shipping.carrier_raw_v1   Last seen: 6 days ago           │
+│  …                                                         │
+│  [Trigger ontogen run]                                     │
+└────────────────────────────────────────────────────────────┘
+```
+
+The `[Trigger ontogen run]` button calls
+`POST /spoke/common/ontogen/method/run` to re-run inference on these datasets.
+
+### Ontology Graph View
 
 Interactive force-directed graph rendered with a graph library (e.g., `react-force-graph` or
 Highcharts network graph).
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Taxonomy Graph       700 nodes │ 1,842 edges              │
+│  Ontology Graph       700 nodes │ 1,842 edges              │
 │                                                            │
 │  Filters: Domain [All v]  Score [All v]  Usage [All v]     │
 │                                                            │
@@ -255,7 +285,7 @@ Highcharts network graph).
 | Zoom | Mouse wheel / pinch — zoom in/out |
 | Pan | Click + drag on canvas |
 | Click node | Select dataset — show detail panel below |
-| Click cluster | Select all datasets in ontology category |
+| Click cluster | Select all member datasets of a peer concept |
 | Hover node | Tooltip: name, score, owner, top connections |
 | Hover edge | Tooltip: relationship type, direction |
 | Filters | Domain, score range, usage range — re-render graph |

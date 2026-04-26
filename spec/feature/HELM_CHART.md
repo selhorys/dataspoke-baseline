@@ -149,12 +149,14 @@ directly from `dev_env/.env`.
 - **Profile switching**: Dev and production use the same chart — only the values file differs.
   `dev_env/dataspoke-infra/install.sh` is a thin wrapper that creates K8s secrets from `.env` and
   runs `helm upgrade --install` with `values-dev.yaml`.
-- **Event consumer separation**: The Kafka event consumer can optionally be deployed as a
-  standalone pod (`event-consumer.enabled`), separate from the API deployment. By default, both
-  processes are co-located in the `api` deployment. Enable the event-consumer subchart for
-  independent scaling and fault isolation in production — Kafka consumers scale by partition
-  count. When `event-consumer.enabled=true`, the API deployment should disable its embedded
-  consumer via `DATASPOKE_KAFKA_CONSUMER_ENABLED=false`.
+- **Event consumer is opt-in**: The Kafka event consumer is **disabled by default** in both
+  prod and dev — baseline UC1–UC5 are schedule-driven via Airflow tier DAGs and do not
+  subscribe to DataHub MCL events (see
+  [BACKEND.md §Kafka Consumers](BACKEND.md#kafka-consumers-optional-not-enabled-in-baseline)
+  and
+  [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)).
+  Set `event-consumer.enabled=true` only when extending DataSpoke with custom event-driven
+  reactions; the consumer then runs as the `dataspoke-event-consumer` Deployment.
 
 ---
 

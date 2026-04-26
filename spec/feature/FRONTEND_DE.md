@@ -11,17 +11,22 @@
 1. [Overview](#overview)
 2. [Navigation](#navigation)
 3. [Ingestion Management (UC1)](#ingestion-management-uc1)
-4. [Validation & SLA (UC2, UC3)](#validation--sla-uc2-uc3)
-5. [Documentation & Ontology (UC4)](#documentation--ontology-uc4)
-6. [Dataset Detail Page](#dataset-detail-page)
+4. [Validation & SLA (UC2)](#validation--sla-uc2)
+5. [Metadata Generation (UC4)](#metadata-generation-uc4)
+6. [Ontology Generation (UC3)](#ontology-generation-uc3)
+7. [Dataset Detail Page](#dataset-detail-page)
 
 ---
 
 ## Overview
 
 The DE workspace focuses on dataset operational management: ingestion pipelines, quality
-validation, SLA monitoring, and documentation generation. All features consume
-`/api/v1/spoke/common/` routes — no DE-exclusive routes exist currently.
+validation, metadata generation, and ontology review.
+
+The DE tier (`/spoke/de/` routes, `/de` UI pages) is an **extensibility surface** — the
+baseline DataSpoke product ships no DE-exclusive routes, and this workspace consumes
+baseline features under `/spoke/common/…` with DE-flavoured presentation. Organizations
+customising DataSpoke can add DE-exclusive routes and pages here.
 
 ---
 
@@ -36,8 +41,8 @@ Sidebar items for the DE workspace:
 │  Home     │
 │  Ingest.  │
 │  Valid.   │
-│  Docs     │
-│  Ontology │
+│  Metagen  │
+│  Ontogen  │
 │  ───────  │
 │  [DA][DG] │
 └───────────┘
@@ -48,8 +53,8 @@ Sidebar items for the DE workspace:
 | Home | `/de` | — |
 | Ingestion | `/de/ingestion` | `/spoke/common/ingestion/` |
 | Validation | `/de/validation` | `/spoke/common/validation/` |
-| Docs | `/de/generation` | `/spoke/common/gen/` |
-| Ontology | `/de/ontology` | `/spoke/common/ontology/` |
+| Metadata Generation | `/de/metagen` | `/spoke/common/metagen/` |
+| Ontology Generation | `/de/ontogen` | `/spoke/common/ontogen/` |
 
 ---
 
@@ -103,11 +108,15 @@ Shows config, run history (events), and trigger controls.
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Edit Config** → opens config form modal.
-  Submits via `PUT /spoke/common/data/{urn}/attr/ingestion/conf`.
-- **Run Now** → `POST /spoke/common/data/{urn}/method/ingestion/run`
-- **Dry Run** → same endpoint with `dry_run` in request body
-- **Recent Runs** → `GET /spoke/common/data/{urn}/event/ingestion`
+- **Edit Config** → opens config form modal. Submits via
+  `PUT /spoke/common/data/{urn}/attr/ingestion/conf`. The mode toggle (`active` /
+  `passive`) is the first field; the schedule + auth panels are hidden when `passive` is
+  selected.
+- **Run Now** / **Dry Run** → `POST /spoke/common/data/{urn}/method/ingestion/run`
+  (with `dry_run: true` for dry-run). Disabled in the UI when `mode: passive`.
+- **Recent Runs** → `GET /spoke/common/data/{urn}/event/ingestion`. For active configs the
+  events come from DataSpoke runs; for passive configs they are mirrored hourly from
+  DataHub by the `datahub-ingestion-status-sync` DAG, but the API surface is identical.
 
 ### Config Editor
 
@@ -116,7 +125,7 @@ sources and custom extractors are managed as dynamic form arrays.
 
 ---
 
-## Validation & SLA (UC2, UC3)
+## Validation & SLA (UC2)
 
 ### Validation List (`/de/validation`)
 
@@ -196,99 +205,118 @@ Shows quality score breakdown, anomaly timeline, SLA status, and alternatives.
 
 ---
 
-## Documentation & Ontology (UC4)
+## Metadata Generation (UC4)
 
-### Generation List (`/de/generation`)
+### Metagen List (`/de/metagen`)
 
-Cross-dataset view of doc generation configs and latest results. Uses `GET /spoke/common/gen`.
+Cross-dataset view of metadata generation configs and latest results.
+Uses `GET /spoke/common/metagen`.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Documentation Generation                                  │
+│  Metadata Generation                                       │
 │                                                            │
 │  [Search...          ]  Status: [All v]                    │
 ├────────────────────────┬───────────┬──────────┬────────────┤
 │  Dataset               │ Coverage  │  Status  │  Last Gen  │
 ├────────────────────────┼───────────┼──────────┼────────────┤
-│  catalog.title_master  │  89%      │  ● Done  │  1d ago    │
-│  products.digital_cat  │  72%      │  ◌ Run.  │  now       │
-│  orders.purchase_hist  │  95%      │  ● Done  │  2d ago    │
+│  catalog.books         │  89%      │  ● Done  │  1d ago    │
+│  orders.line_items     │  72%      │  ◌ Run.  │  now       │
+│  customers.profiles    │  95%      │  ● Done  │  2d ago    │
 ├────────────────────────┴───────────┴──────────┴────────────┤
 │  1-20 of 38                          [< 1 2 >]            │
 └────────────────────────────────────────────────────────────┘
 ```
 
-### Generation Detail (`/de/generation/[dataset_urn]`)
+### Metagen Detail (`/de/metagen/[dataset_urn]`)
 
-Shows generated documentation, ontology proposals, and diff view for review/approve workflow.
+Shows the latest proposal grouped by `target` (table description, column descriptions,
+cross-data MD actions). Each field row exposes individual approve / edit / reject actions
+— the reviewer can approve a subset in one PATCH.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  ← Generation / catalog.title_master                       │
+│  ← Metagen / catalog.books                                 │
 │                                                            │
-│  [Generate Now]  [Approve & Write to DataHub]              │
+│  [Generate Now]                                            │
 │                                                            │
-│  ┌─ Generated Description ───────────────────────────┐    │
-│  │  Master catalog of all book titles. One row per    │    │
-│  │  ISBN+edition. Source of truth for pricing...      │    │
-│  │                                                    │    │
-│  │  Source: Confluence + Source Code Analysis          │    │
-│  │  Confidence: 0.95                                  │    │
+│  ┌─ Table Description (editableDatasetProperties) ───┐    │
+│  │  # Books                                          │    │
+│  │  Master catalog of every title Imazon offers...    │    │
+│  │  Confidence: 0.92                                  │    │
+│  │  [Approve] [Edit] [Reject]                         │    │
 │  └────────────────────────────────────────────────────┘    │
 │                                                            │
-│  ┌─ Column Descriptions (12 of 62 generated) ────────┐   │
-│  │  isbn          │ International Standard Book...    │    │
-│  │  list_price    │ Publisher-set retail price in...  │    │
-│  │  genre_code    │ Genre classification code — ...   │    │
+│  ┌─ Column Descriptions (5 fields) ───────────────────┐   │
+│  │  book_id    Stable, opaque identifier ...   [✓][✏][✕]│  │
+│  │  title      Display title shown to ...      [✓][✏][✕]│  │
+│  │  author     Free-text author / creator ...  [✓][✏][✕]│  │
+│  │  isbn       ISBN-13 string; '0000…' when …  [✓][✏][✕]│  │
+│  │  price      List price in USD, two decimals [✓][✏][✕]│  │
 │  └────────────────────────────────────────────────────┘    │
 │                                                            │
-│  ┌─ Ontology Proposal ───────────────────────────────┐    │
-│  │  Cluster: BOOK / PRODUCT (6 tables)                │    │
-│  │  Canonical: catalog.product_master (proposed)      │    │
+│  ┌─ Cross-Data MD (dataProductProperties) ───────────┐    │
+│  │  + create  "How orders reference books"   conf 0.81│    │
+│  │     `orders.line_items.book_id` joins to ...       │    │
+│  │     [Approve] [Edit] [Reject]                       │    │
 │  │                                                    │    │
-│  │  ┌────────────────┐  MERGE  ┌──────────────────┐  │    │
-│  │  │ title_master   │ ──────► │ product_master   │  │    │
-│  │  └────────────────┘         │ (canonical)      │  │    │
-│  │  ┌────────────────┐  MERGE  │                  │  │    │
-│  │  │ digital_catalog│ ──────► │                  │  │    │
-│  │  └────────────────┘         └──────────────────┘  │    │
-│  │                                                    │    │
-│  │  [Approve] [Reject] [View Full Proposal]           │    │
+│  │  ~ modify  "Catalog onboarding"  (existing)        │    │
+│  │     [Approve] [Edit] [Reject]                       │    │
 │  └────────────────────────────────────────────────────┘    │
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Generate Now** → `POST /spoke/common/data/{urn}/method/gen/run`
-- **Approve & Write to DataHub** → `PATCH /spoke/common/data/{urn}/attr/gen/result/{result_id}`
-  with `{"verdict": "approve", "fields": [...] (optional, omit for full approval)}`
-  (confirm dialog: "This will write the approved proposal to DataHub")
-- **Reject Proposal** → same endpoint with `{"verdict": "reject", "reason": "…"}`
-- **Ontology approve/reject** → `POST /spoke/common/ontology/{concept_id}/method/review`
-  with `{"verdict": "approve"|"reject", "reason": "…"}`
+- **Generate Now** → `POST /spoke/common/data/{urn}/method/metagen/run`
+- **Per-field Approve / Edit / Reject** →
+  `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` with
+  `{"verdict": "approve"|"reject", "fields": ["dataset.description", "column.description.book_id", "cross_data.md[0]", ...], "reason": "…"}`.
+  Approval writes the listed subset to **editable** DataHub aspects only
+  (`editableDatasetProperties`, `editableSchemaMetadata.editableSchemaFieldInfo`,
+  `dataProductProperties`).
+- The confirm dialog labels the destination aspect, e.g. "This will write to
+  editableDatasetProperties on DataHub."
 
-### Ontology Browser (`/de/generation/ontology`)
+## Ontology Generation (UC3)
 
-Browse the full concept taxonomy. Uses `GET /spoke/common/ontology`.
+### Ontogen Conf (`/de/ontogen/conf`)
+
+Singleton conf editor (UC3 has no per-dataset config). Edits via
+`PUT/PATCH /spoke/common/ontogen/attr/conf` with fields `is_enabled`, `schedule_tier`,
+`sources`, `dataset_filter`. A `[Run Now]` button calls
+`POST /spoke/common/ontogen/method/run` (with optional `dry_run`).
+
+### Ontogen Concept Browser (`/de/ontogen`)
+
+Browse the **single-level** peer-concept set. Uses `GET /spoke/common/ontogen`.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Ontology Browser                                          │
+│  Ontology Concepts                                         │
 │                                                            │
-│  ├─ Product/Catalog                                        │
-│  │  ├─ Book (6 datasets)                                   │
-│  │  │  ├─ catalog.title_master  [0.98]                     │
-│  │  │  ├─ catalog.editions      [0.91]                     │
-│  │  │  └─ products.digital_cat  [0.95]                     │
-│  │  └─ Inventory (3 datasets)                              │
-│  ├─ Customer                                               │
-│  │  ├─ Profile (4 datasets)                                │
-│  │  └─ Transaction (5 datasets)                            │
-│  └─ ...                                                    │
+│  BOOK                          conf 0.96   ✓ approved      │
+│    members:                                                │
+│      catalog.books             (primary)                   │
+│                                                            │
+│  CUSTOMER                      conf 0.94   ✓ approved      │
+│    members:                                                │
+│      customers.profiles        (primary)                   │
+│                                                            │
+│  ORDER_LINE                    conf 0.71   ⏳ pending      │
+│    members:                                                │
+│      orders.line_items         (primary)                   │
+│    relationships:                                          │
+│      → BOOK (references, conf 0.95)                        │
+│      → CUSTOMER (placed_by, conf 0.87)                     │
+│    [Approve] [Reject]                                      │
 │                                                            │
 │  [numbers] = confidence score                              │
-│  Click node → detail panel with relationships              │
+│  Click concept → detail panel with relationships + events  │
 └────────────────────────────────────────────────────────────┘
 ```
+
+- **Approve / Reject** → `POST /spoke/common/ontogen/{concept_id}/method/review` with
+  `{"verdict": "approve"|"reject", "reason": "…"}`. Approval attaches a glossary term
+  to each member dataset (`glossaryTerms` aspect) — the confirm dialog states this.
 
 ---
 
@@ -303,7 +331,7 @@ and generation views as tabs.
 │  Platform: Oracle / DWPROD  │  Owner: maria.garcia         │
 │  Quality: 96/100  │  Tags: PII, Editorial_Reviewed         │
 │                                                            │
-│  [ Overview | Ingestion | Validation | Docs | Events ]     │
+│  [ Overview | Ingestion | Validation | Metagen | Events ]  │
 │  ─────────────────────────────────────────────────────     │
 │                                                            │
 │  (tab-specific content from sections above)                │
@@ -314,5 +342,5 @@ and generation views as tabs.
 - **Overview** → `GET /spoke/common/data/{urn}` + `/attr`
 - **Ingestion** tab → same as ingestion detail
 - **Validation** tab → same as validation detail
-- **Docs** tab → same as generation detail
+- **Metagen** tab → same as metagen detail
 - **Events** tab → `GET /spoke/common/data/{urn}/event` (all event types, unified timeline)

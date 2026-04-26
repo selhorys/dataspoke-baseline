@@ -297,8 +297,10 @@ Color-coded status indicator used throughout.
 
 ### ConceptNavigator
 
-Ontology-driven navigation component. Lets users browse by concept (from UC3) and jump to member
-datasets. Surfaces data through `GET /spoke/common/ontology`.
+Ontology-driven navigation component. Lets users browse by peer concept (from UC3) and jump to
+member datasets. Surfaces data through `GET /spoke/common/ontogen`. Concepts are single-level
+peers — the navigator renders a flat list of concepts with member datasets, not a parent/child
+tree.
 
 ### NotificationCenter
 

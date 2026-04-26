@@ -39,15 +39,14 @@ Stores per-dataset ingestion configuration.
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `platform` | `TEXT` | DataHub platform name (`postgres`, `mysql`, `bigquery`, etc.) |
+| `mode` | `TEXT` | `active` (DataSpoke runs the extractor) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `datahub-ingestion-status-sync` DAG) |
+| `platform` | `TEXT` | DataHub platform name (`postgres`, `kafka`, `mysql`, `bigquery`, etc.) |
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
-| `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth |
-| `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow |
-| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
-| `enrichment_sources` | `JSONB` NULL | External enrichment source configs (TBD) |
-| `custom_extractors` | `JSONB` NULL | Custom extractor plugin configs (TBD) |
-| `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG |
+| `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth or passive mode |
+| `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow (active mode) or scheduled status sync (passive mode) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for active mode — `hourly`, `daily`, or `weekly` (required when `mode='active'` and `is_active=true`); null for passive mode |
+| `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG (active mode only) |
 | `status` | `TEXT` | `OK` (DAG verification succeeded), `ERROR` (verification failed) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
@@ -104,15 +103,15 @@ Also reported to DataHub as `assertionRunEvent`.
 | `run_id` | `UUID` | Airflow DAG run ID |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
-#### `generation_configs`
+#### `metagen_configs`
 
-Stores per-dataset doc generation configuration.
+Stores per-dataset metadata generation configuration (UC4).
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `target_fields` | `JSONB` | Fields to generate (description, tags, deprecation) |
+| `targets` | `JSONB` | List of target documentation fields. Baseline values: `dataset.description`, `column.description`, `cross_data.md` |
 | `code_refs` | `JSONB` NULL | GitHub repo/file references for code analysis |
 | `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
@@ -121,59 +120,78 @@ Stores per-dataset doc generation configuration.
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-#### `generation_results`
+#### `metagen_results`
 
-Historical generation results, pending approval.
+Historical metadata generation proposals, pending review. Each row represents one
+generation run for one dataset.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Result identifier |
 | `dataset_urn` | `TEXT` | Target dataset |
-| `proposals` | `JSONB` | Proposed changes (field → value mappings) |
-| `similar_diffs` | `JSONB` | Diff summaries against similar tables |
-| `approval_status` | `TEXT` | `pending`, `approved`, `rejected` |
+| `proposals` | `JSONB` | Per-field proposals keyed by target — `dataset.description`, `column.description.{fieldPath}`, `cross_data.md` (the latter holds an ordered list of `{action: create\|modify\|split\|retitle, ...}` items) |
+| `field_status` | `JSONB` | Per-field review status — keyed identically to `proposals`, value is `pending` / `approved` / `rejected` / `edited`. Field-level review (a single PATCH may approve a subset) updates only the listed entries. |
 | `run_id` | `UUID` | Airflow DAG run ID |
 | `generated_at` | `TIMESTAMPTZ` | |
-| `approved_at` | `TIMESTAMPTZ` NULL | When the proposal was approved (PATCH `attr/gen/result/{id}` with `verdict: "approve"`) and written to DataHub |
+| `last_reviewed_at` | `TIMESTAMPTZ` NULL | Last PATCH timestamp |
 
-#### `concept_categories`
+#### `ontogen_config`
 
-Ontology/taxonomy concept hierarchy.
+Singleton row holding the Ontology Generation conf (UC3).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Concept identifier |
-| `name` | `TEXT` UNIQUE | Concept name |
-| `parent_id` | `UUID` FK NULL | Parent concept (self-referencing) |
-| `description` | `TEXT` | Concept description |
-| `status` | `TEXT` | `approved`, `pending`, `rejected` |
-| `version` | `INTEGER` | Taxonomy version number |
+| `id` | `INTEGER` PK (=1) | Singleton row |
+| `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
+| `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence (required when `is_enabled=true`) |
+| `sources` | `JSONB` | Input sources — at minimum `["datahub_aspects"]`; optional `sql_logs`, `github_repos`, `external_docs` |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...]}`; same shape as `metric_definitions.measurement_query.dataset_filter` |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+#### `concepts`
+
+Single-level peer concepts. Concepts are not nested — there is no parent/child
+hierarchy in the baseline ontology.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `TEXT` PK | Concept identifier (slug, e.g. `book`, `customer`, `order_line`) |
+| `name` | `TEXT` UNIQUE | Concept display name |
+| `description` | `TEXT` | LLM-generated concept description |
+| `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
+| `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
+| `glossary_term_urn` | `TEXT` NULL | DataHub glossary term URN attached on approval; `null` while pending |
+| `evidence` | `JSONB` NULL | Snapshot of LLM evidence (signals from each input source) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 #### `dataset_concept_map`
 
-Maps datasets to concept categories with confidence scores.
+Maps datasets to peer concepts with confidence scores.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Dataset URN |
-| `concept_id` | `UUID` PK, FK | Concept category |
+| `concept_id` | `TEXT` PK, FK | Concept |
 | `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
-| `status` | `TEXT` | `approved`, `pending` (pending if confidence < 0.7) |
+| `status` | `TEXT` | `approved`, `pending` (pending if confidence < `ONTOLOGY_CONFIDENCE_THRESHOLD`) |
+| `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the concept |
 | `created_at` | `TIMESTAMPTZ` | |
 
 #### `concept_relationships`
 
-Cross-concept relationships (edges in the ontology graph).
+Cross-concept relationships (edges in the ontology graph). Relationships are also
+materialised in Apache AGE for graph queries; this relational table is the source of
+truth for review status.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Relationship identifier |
-| `concept_a` | `UUID` FK | Source concept |
-| `concept_b` | `UUID` FK | Target concept |
-| `relationship_type` | `TEXT` | `related_to`, `part_of`, `depends_on`, `overlaps_with` |
+| `concept_a` | `TEXT` FK | Source concept |
+| `concept_b` | `TEXT` FK | Target concept |
+| `relationship_type` | `TEXT` | LLM-inferred edge label (e.g. `references`, `placed_by`) |
 | `confidence_score` | `REAL` | LLM inference confidence |
+| `status` | `TEXT` | `approved`, `pending`, `rejected` |
 | `created_at` | `TIMESTAMPTZ` | |
 
 #### `metric_definitions`
@@ -182,11 +200,11 @@ Governance metric definitions.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `TEXT` PK | Metric identifier (slug, e.g. `poorly-documented-datasets`) |
+| `id` | `TEXT` PK | Metric identifier (slug, e.g. `ingestion-freshness`, `validation-score`) |
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
 | `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
-| `measurement_query` | `JSONB` | `{"type": "poorly_documented"\|"stale_datasets", "dataset_filter": {"tags": [...], "glossary_terms": [...]}}` |
+| `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_rules_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...]}}` |
 | `is_active` | `BOOLEAN` | Whether scheduled measurement is active |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -213,20 +231,24 @@ structure so clients can process them generically (see
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Event identifier |
-| `entity_type` | `TEXT` | `dataset`, `metric`, `concept` — classifies the entity, not the feature domain |
-| `entity_id` | `TEXT` | URN or metric/concept ID |
-| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `CONCEPT.APPROVE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
+| `entity_type` | `TEXT` | `dataset`, `metric`, `concept`, `ontogen` (singleton conf) — classifies the entity, not the feature domain |
+| `entity_id` | `TEXT` | URN or metric/concept ID; for `entity_type='ontogen'` the literal string `singleton` |
+| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `CONCEPT.APPROVE`, `METAGEN.APPROVE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |
 
 **Filtering convention**: `entity_type` identifies what the entity *is* (a
-dataset, a metric, a concept). Ingestion, validation, and generation are
-*attributes* of a dataset, so their events use `entity_type=dataset`. The
-dataset-level event endpoint (`GET .../data/{urn}/event`) filters by
-`entity_type=dataset` to return all event types for that dataset. Sub-resource
-event endpoints (e.g., `.../event/ingestion`) additionally filter by
-`event_type` prefix (e.g., `ingestion.*`) to return only domain-specific events.
+dataset, a metric, a concept, the ontogen singleton). Ingestion, validation,
+and metadata generation are *attributes* of a dataset, so their events use
+`entity_type=dataset`. The dataset-level event endpoint
+(`GET .../data/{urn}/event`) filters by `entity_type=dataset` to return all
+event types for that dataset. Sub-resource event endpoints (e.g.,
+`.../event/ingestion`, `.../event/metagen`) additionally filter by `event_type`
+prefix (e.g., `INGESTION.%`, `METAGEN.%`) to return only domain-specific events.
+The Ontology Generation singleton uses `entity_type=ontogen` and `entity_id='singleton'`
+for run-level events surfaced at `/spoke/common/ontogen/event`; per-concept events use
+`entity_type=concept` and the concept ID.
 
 #### `department_mapping`
 
@@ -256,11 +278,11 @@ Singleton configuration for the multi-perspective overview visualization.
 | Table | Index | Purpose |
 |-------|-------|---------|
 | `validation_results` | `(dataset_urn, measured_at DESC)` | Time-range queries on results |
-| `generation_results` | `(dataset_urn, generated_at DESC)` | Time-range queries on results |
+| `metagen_results` | `(dataset_urn, generated_at DESC)` | Time-range queries on results |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
 | `dataset_concept_map` | `(concept_id)` | Concept-to-datasets lookup |
-| `concept_categories` | `(parent_id)` | Hierarchy traversal |
+| `concept_relationships` | `(concept_a)`, `(concept_b)` | Edge lookup in either direction |
 
 ---
 
@@ -295,9 +317,12 @@ descriptions, tags, and lineage context. Processed through the LLM embedding
 endpoint.
 
 **Sync triggers**:
-- Kafka event: `datasetProperties`, `schemaMetadata`, `globalTags` changes
-- Ontology rebuild: Kafka-driven incremental re-embedding when a concept changes (UC3)
-- Scheduled: `ontology-sync` Airflow DAG (full re-sync, on-demand trigger)
+- Scheduled: refreshed by the `ontogen-periodic-*` tier DAG when it re-runs UC3 inference
+  on the configured `schedule_tier`
+- On-demand: rebuilt as part of an `ontogen` manual run
+- Optional event-driven extension (not enabled in baseline): Kafka MCL events for
+  `datasetProperties` / `schemaMetadata` / `globalTags` changes — see
+  [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)
 
 **Access wrapper**: `src/shared/vector/client.py` exposes `PgVectorManager`
 (session-factory backed) returning `VectorHit` dataclasses. Collection name is
@@ -306,7 +331,8 @@ whitelisted against `EMBEDDING_COLLECTION` to prevent arbitrary table access.
 ### Graph (Apache AGE, reserved)
 
 The `age` extension is installed and preloaded (`shared_preload_libraries = 'age'`),
-and `ag_catalog` usage is granted to the application role. No AGE graphs are
-defined yet — ontology relationships remain in relational tables
-(`concept_relationships`, `dataset_concept_map`). AGE is available for future
-graph-shaped queries without additional infrastructure changes.
+and `ag_catalog` usage is granted to the application role. The Ontology Generation
+service materialises `concept_relationships` as edges in an AGE graph for cross-concept
+graph traversal queries (used by the governance overview's ontology-graph view). The
+relational `concept_relationships` table remains the source of truth for review status;
+AGE is the read-side replica for graph-shaped queries.

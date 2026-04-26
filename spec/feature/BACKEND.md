@@ -22,7 +22,7 @@
 4. [Feature Services (`src/backend/`)](#feature-services-srcbackend)
 5. [Event Emission](#event-emission)
 6. [Airflow Workflows (`src/workflows/`)](#airflow-workflows-srcworkflows)
-7. [Kafka Consumers](#kafka-consumers)
+7. [Kafka Consumers *(optional, not enabled in baseline)*](#kafka-consumers-optional-not-enabled-in-baseline)
 8. [WebSocket Feed Mechanism](#websocket-feed-mechanism)
 9. [Dependency Injection](#dependency-injection)
 10. [Error Handling](#error-handling)
@@ -103,8 +103,8 @@ Route handler function names must mirror the REST path they serve.
 | `GET /metric/{id}/attr/conf` | `get_metric_conf` |
 | `POST /metric/{id}/method/run` | `post_metric_run` |
 | `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
-| `POST /data/{urn}/method/gen/run` | `post_data_gen_run` |
-| `POST /ontology/{concept_id}/method/review` | `post_ontology_review` |
+| `POST /data/{urn}/method/metagen/run` | `post_data_metagen_run` |
+| `POST /ontogen/{concept_id}/method/review` | `post_ontogen_review` |
 
 ### Service Pattern
 
@@ -139,7 +139,7 @@ for current method signatures.
 |---------|-----|---------|
 | `validation:{dataset_urn}:result` | 60s | Latest validation run result cache |
 | `validation:dry_run:{hash}` | 60s | Online Verifier dry-run cache for coding agents |
-| `ontology:concept:{concept_id}` | 300s | Ontology concept lookup cache |
+| `ontogen:concept:{concept_id}` | 300s | Ontology Generation concept lookup cache |
 | `rate_limit:{user_id}` | 60s | Rate limiting counter |
 
 ---
@@ -155,8 +155,9 @@ Thin read-through service. Reads dataset identity/attributes from DataHub, aggre
 cross-domain event history from the unified `events` table. Does not own any PostgreSQL
 configuration tables.
 
-**DataHub aspects read**: `datasetProperties`, `ownership`, `globalTags`, `schemaMetadata`.
-Quality score from Redis cache.
+**DataHub aspects read**: `datasetProperties`, `editableDatasetProperties`, `ownership`,
+`globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`. Quality score
+from Redis cache.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
@@ -213,27 +214,47 @@ the full aspect catalogue.
 REST Emitter — useful for verifying connection parameters and previewing schema before
 committing to DataHub.
 
+#### Active vs Passive Modes
+
+Every ingestion config carries a `mode` flag (see
+[USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control)):
+
+| Mode | Trigger | Aspect emission | `event/ingestion` source |
+|------|---------|-----------------|--------------------------|
+| **active** | DataSpoke runs the extractor on the configured `schedule_tier` (or on manual / dry-run). | DataSpoke emits aspects via the SDK. | Per-run records written by `IngestionService.run()`. |
+| **passive** | An external pipeline ingests directly into DataHub. DataSpoke does not run the extractor. | None — DataSpoke does not write aspects. | The hourly `datahub-ingestion-status-sync` DAG polls DataHub run history for all `mode: passive` configs and writes one row per run. |
+
+Both modes share the same API surface (`PUT/PATCH/GET/DELETE attr/ingestion/conf`,
+`GET event/ingestion`, `GET /spoke/common/ingestion`). `POST method/ingestion/run` is
+permitted on active configs only (passive configs reject the call with `422`).
+
 #### Implementation
 
-CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Supports periodic
-(cron) and manual ingestion. Metadata ingestion via source-specific extractors, enrichment
-from external sources (TBD), custom extractors (TBD). Config upsert registers the dataset
-URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
+CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Config upsert registers
+the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
 
 Ingestion config model: see
 [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields:
-`dataset_urn` (unique per dataset), `platform` (`postgres`, `kafka` implemented; others
-TODO), `locator`/`identifier`/`auth` (JSONB connection details),
-`is_active`/`schedule_tier` (tier-based scheduling), `status` (DAG verification outcome).
+`dataset_urn` (unique per dataset), `mode` (`active` | `passive`), `platform` (`postgres`,
+`kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details),
+`is_active`/`schedule_tier` (tier-based scheduling for active mode),
+`status` (DAG verification outcome).
 
-**Run pipeline** (`IngestionService.run()`): load config → connect to source via
+**Active run pipeline** (`IngestionService.run()`): load config → connect to source via
 `locator`/`auth` → discover schema via `identifier` → emit `StatusClass` +
 `DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`;
-a non-dry-run that ingests zero entities is treated as failure) → run enrichment sources
-and custom extractors if configured (TBD) → on success mark
+a non-dry-run that ingests zero entities is treated as failure) → on success mark
 `dataset_registry.datahub_registered = true` via `mark_registered()` in
 `src/shared/db/registry.py` → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event
 (see [Event Catalogue](#event-catalogue)).
+
+**Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
+called hourly by the `datahub-ingestion-status-sync` DAG): enumerate all configs with
+`mode = passive` → for each, query DataHub for ingestion run history of the dataset URN
+→ insert any new runs as rows in the unified `events` table with
+`event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the active path's event
+shape so clients see a uniform stream). No aspects are emitted; the registry's
+`datahub_registered` flag is reconciled by the existing `datahub-sync-daily` DAG.
 
 ### Validation Service (`src/backend/validation/`)
 
@@ -311,38 +332,102 @@ when configured) → register `assertionInfo` in DataHub if absent → report ea
 progress to the `ws:validation:{dataset_urn}` Redis pub/sub channel → record
 `VALIDATION.COMPLETE` event.
 
-### Generation Service (`src/backend/generation/`)
+### Metadata Generation Service (`src/backend/metagen/`)
 
-**Covers**: MANIFESTO §2.1 Doc Generation (UC4)
+**Covers**: MANIFESTO §2.1 Metadata Generation (UC4)
 
-CRUD for generation configurations (PostgreSQL: `generation_configs`). Ontology-grounded
-metadata generation (descriptions, tags, deprecation notes), source code analysis,
-consistency inspection against the ontology, apply generated results to DataHub with
-approval gate.
+CRUD for per-dataset metadata generation configs (PostgreSQL: `metagen_configs`).
+LLM-powered proposals for documentation fields that already exist in DataHub. **Writes
+only to editable DataHub aspects** (see
+[DATAHUB_INTEGRATION §Editable vs Non-Editable Description Aspects](../DATAHUB_INTEGRATION.md#editable-vs-non-editable-description-aspects)).
+Approval is field-level — reviewers may approve a subset of proposed fields in a single
+PATCH.
 
-**Generation Pipeline** (Airflow DAG): read current DataHub aspects (schema, properties,
-lineage, tags) → resolve concept membership via the Ontology service → LLM analysis to
-generate field descriptions, table summary, suggested tags grounded in the ontology →
-analyze source code if `code_refs` configured → flag inconsistencies between existing
-documentation and ontology evidence (self-purification) → produce a `GenerationResult` row
-in PostgreSQL. Approval (`PATCH /attr/gen/result/{result_id}` with `verdict: "approve"`) writes the approved proposal subset to DataHub.
+**`targets` enum** on `attr/metagen/conf`. Three values are supported in baseline:
 
-### Ontology Service (`src/backend/ontology/`)
+| Value | Scope | DataHub write target |
+|-------|-------|----------------------|
+| `dataset.description` | Per-data | `editableDatasetProperties.description` |
+| `column.description` | Per-data, one entry per column | `editableSchemaMetadata.editableSchemaFieldInfo[].description` keyed by `fieldPath` |
+| `cross_data.md` | Cross-data | `dataProductProperties.description` on `dataProduct` entities — the proposal carries a list of actions (see below) |
 
-**Covers**: MANIFESTO §2.1 Ontology (UC3). Consumed by Doc Generation (UC4) and Governance (UC5).
+Future scope: proposals for `domains` and `globalTags`.
 
-Concept category CRUD, concept-to-dataset mapping, cross-concept relationship management
-(PostgreSQL relational tables + Apache AGE graph + pgvector embeddings). LLM-powered
-ontology construction from DataHub metadata, source code (GitHub), SQL logs, and external
-documents. Review workflow (approve/reject) for pending proposals.
+**Generation Pipeline** (Airflow DAG): read non-editable description aspects + schema +
+lineage as context → resolve concept membership via the Ontology Generation service → LLM
+analysis to draft per-field proposals for the configured `targets` → for `cross_data.md`,
+read existing `dataProduct` entities (titles + bodies) and decide what to propose →
+produce a `metagen_results` row in PostgreSQL with status `pending_review`.
 
-**Ontology Build Pipeline** (Airflow DAG, scheduled weekly + incremental on new ingest):
-enumerate all datasets from DataHub → LLM classifies each into business concept categories
-(using schema, descriptions, lineage, source-code references, SQL logs) → synthesize
-categories into a hierarchy and infer cross-concept relationships → score confidence per
-mapping (mappings below 0.7 queued for human review) → persist to PostgreSQL (relational +
-AGE + pgvector) and reflect concept membership back to DataHub as `globalTags` /
-`glossaryTerms`.
+**Cross-data MD action types**. A single `cross_data.md` proposal carries an ordered list
+of actions, each independently approvable:
+
+| Action | Effect on DataHub |
+|--------|-------------------|
+| `create` | New `dataProduct` with a generator-chosen descriptive title (topic phrase) and Markdown body. |
+| `modify` | Replace the body of an existing `dataProduct`; URN and title preserved. |
+| `split` | Delete one existing `dataProduct` and create two or more replacements. |
+| `retitle` | Change the title (and URN) of an existing `dataProduct`, optionally alongside new creations. |
+
+**Approval flow**. `PATCH /attr/metagen/result/{result_id}` with
+`{verdict, fields, reason}`:
+
+- `verdict: "approve"` + `fields` omitted → approve all proposed fields and actions.
+- `verdict: "approve"` + `fields: [...]` → approve only the listed field paths and / or
+  cross-data action indices.
+- `verdict: "reject"` → reject the whole proposal (or the listed `fields` only).
+
+On approval, the service writes the approved subset to the editable DataHub aspects in a
+single `emit_mcp` per affected entity. Each successful write emits a `METAGEN.APPROVE`
+event; rejections emit `METAGEN.REJECT` (see [Event Catalogue](#event-catalogue)).
+
+### Ontology Generation Service (`src/backend/ontogen/`)
+
+**Covers**: MANIFESTO §2.1 Ontology Generation (UC3). Consumed by Metadata Generation
+(UC4) and Governance (UC5 — blind-spot detection).
+
+Singleton-config LLM pipeline that classifies datasets into peer business concepts and
+infers cross-concept relationships. Storage backed by PostgreSQL relational tables +
+Apache AGE graph + pgvector embeddings. Review workflow (approve / reject) for pending
+proposals.
+
+**Singleton conf** at `/spoke/common/ontogen/attr/conf` — there is no per-dataset ontology
+config. Fields:
+
+| Field | Purpose |
+|-------|---------|
+| `is_enabled` | Master switch for the inference DAG. |
+| `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
+| `sources` | Input sources to consider — at minimum `datahub_aspects`; optionally `sql_logs`, `github_repos`, `external_docs`. |
+| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs) and `glossary_terms` (DataHub glossary term URNs); same shape as UC5's `measurement_query.dataset_filter`. |
+
+The conf is a single row in `ontogen_config` (singleton table; see
+[BACKEND_SCHEMA §ontogen_config](BACKEND_SCHEMA.md#ontogen_config)).
+
+**Single-level peer concepts**. The baseline ontology is single-level — concepts are peers,
+not nested. There is no parent/child hierarchy. Cross-concept relationships are edges in
+the graph (`concept_relationships`).
+
+**Inference Pipeline** (Airflow tier DAG, schedule from `ontogen_config.schedule_tier`):
+enumerate datasets matching `dataset_filter` from DataHub → for each input source listed
+in `sources`, fetch evidence (DataHub aspects, SQL logs, GitHub repos, external docs) →
+LLM classifies datasets into peer concepts (using the gathered evidence) → pairwise LLM
+inference for cross-concept relationship edges → score confidence per concept and
+relationship (below `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review) → persist to
+PostgreSQL (relational + AGE + pgvector). Concurrent inference runs return
+`409 ONTOGEN_RUNNING`; `dry_run: true` evaluates without persisting.
+
+**Approval flow**. `POST /spoke/common/ontogen/{concept_id}/method/review` with
+`{verdict, reason}`:
+
+- `verdict: "approve"` → mark the concept and its dataset memberships as approved; for
+  every member dataset, attach a glossary term to the dataset's `glossaryTerms` aspect.
+  The glossary term URN is derived from the concept ID. **Concept membership is reflected
+  to DataHub via `glossaryTerms` only — DataSpoke does not write `globalTags` for
+  ontology purposes.**
+- `verdict: "reject"` → mark the concept as rejected; no DataHub write.
+
+Each verdict emits a `CONCEPT.APPROVE` or `CONCEPT.REJECT` event.
 
 ### Metrics Service (`src/backend/metrics/`)
 
@@ -360,12 +445,13 @@ architectural separation means the metrics layer has no data source credentials,
 execution against production databases, and no network access to external systems beyond
 DataHub's API. This makes metrics lightweight, fast, and free of credential management.
 
-Built-in metric types are categorized by the data governance quality dimension they measure:
+Baseline metric types (from
+[USE_CASE §UC5](../USE_CASE_en.md#uc5-governance)):
 
-| Governance Dimension | Metric Type | Data Source |
-|---------------------|-------------|-------------|
-| **Completeness** (metadata) | `poorly_documented` | DataHub `DatasetPropertiesClass.description` — counts datasets where description < 20 chars |
-| **Freshness** (timeliness) | `stale_datasets` | DataSpoke `validation_results` — counts datasets with no active freshness rule or failing freshness validation |
+| Metric ID | Definition | Data Source |
+|-----------|------------|-------------|
+| `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active mode; per a fixed window for passive). | DataSpoke `events` table + `ingestion_configs` |
+| `validation-score` | Percentage of validation rules with `assertion_result = SUCCESS` in the latest run, averaged across all datasets that have at least one rule. | DataSpoke `validation_results` |
 | *(extensible)* | Custom types | Any DataHub aspect or DataSpoke result table |
 
 New metric types are added by implementing a measurement function that reads from DataHub
@@ -380,8 +466,8 @@ DataSpoke's PostgreSQL `metric_results` table. See
 for the full read/write matrix.
 
 **`measurement_query` model**: Each metric definition carries a `measurement_query` JSONB
-with a `type` field that selects the aggregation function. The query vocabulary is
-currently fixed (`poorly_documented`, `stale_datasets`); unsupported types return
+with an `aggregation` field that selects the aggregation function. Baseline aggregations
+(`pct_fresh`, `pct_rules_passing`); unsupported aggregations return
 `422 UNSUPPORTED_METRIC_TYPE`. The vocabulary is extensible by adding new measurement
 functions to the metrics service without schema changes.
 
@@ -403,24 +489,32 @@ per-dataset entry shape:
 {"dataset_count": <total scanned>, "datasets": [{"urn": "...", "category": "<classification>", "detail": {...}}]}
 ```
 
-`category` is a machine-readable classification (e.g. `short_description`,
-`no_freshness_rule`, `freshness_failure`). `detail` is optional, type-specific metadata
-(e.g. `{"length": 5, "value": "short"}` for poorly_documented, `{"rule_id": "fresh-1"}`
-for stale_datasets).
-
-**Health Score Aggregation** (`aggregator.py`): Enumerates datasets, computes quality
-scores, aggregates by department. Department mapping: dataset ownership URN -> department
-via HR API or static mapping table.
+`category` is a machine-readable classification (e.g. `fresh`, `stale`,
+`rules_passing`, `rules_failing`). `detail` is optional, type-specific metadata
+(e.g. `{"last_event_at": "..."}` for ingestion-freshness, `{"rule_id": "fresh_daily",
+"failed": 1, "total": 4}` for validation-score). Time-range queries on `attr/result` use
+the breakdown to answer per-dataset historical questions without re-running the metric.
 
 ### Overview Service (`src/backend/overview/`)
 
-**Covers**: MANIFESTO §2.1 Governance (UC5) — multi-perspective visualization views
-(ontology graph, medallion coverage, ownership topology). Read-only aggregation over
-DataHub aspects, validation results, and the ontology.
+**Covers**: MANIFESTO §2.1 Governance (UC5) — single multi-perspective overview that
+returns the latest value of every enabled metric, a per-dataset breakdown, and **blind
+spots** (datasets present in DataHub that are not mapped to any UC3 ontology concept).
+Read-only aggregation over DataHub aspects, validation results, and the ontology.
 
-Assembles graph topology from ontology + lineage data, medallion layer classification
-(bronze = 0 upstreams, silver = 1-2, gold = 3+, based on `upstreamLineage` aspect),
-graph layout computation, blind spot detection (datasets not covered by any concept).
+`GET /spoke/dg/overview` composes:
+
+| Section | Source |
+|---------|--------|
+| Metric values | Latest `metric_results.value` per enabled metric |
+| Per-dataset breakdown | Aggregation of latest `metric_results.breakdown` rows |
+| Blind spots | Datasets in DataHub with no row in `dataset_concept_map` (or `status != approved`) |
+| Ontology graph | `concepts` + `concept_relationships` |
+| Medallion layers | Bronze = 0 upstreams, Silver = 1–2, Gold = 3+, derived from `upstreamLineage` |
+| Ownership topology | DataHub `ownership` aspect grouped by owner / team |
+
+`GET / PATCH /spoke/dg/overview/attr` reads / updates the visualization config singleton
+(`overview_config`).
 
 ---
 
@@ -435,8 +529,8 @@ do not emit events. If a request is rejected before reaching the service layer
 
 Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 
-- **Domain** identifies the feature: `INGESTION`, `VALIDATION`, `GENERATION`,
-  `METRIC`, `CONCEPT`.
+- **Domain** identifies the feature: `INGESTION`, `VALIDATION`, `METAGEN`,
+  `METRIC`, `CONCEPT`, `ONTOGEN`.
 - **Action** describes what happened. Two categories:
   - *Config lifecycle*: `CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE` —
     emitted by PUT, PATCH, DELETE on a configuration resource.
@@ -464,16 +558,16 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `VALIDATION.CONFIG_DELETE` | DELETE config |
 | `VALIDATION.COMPLETE` | POST run succeeds |
 
-#### Generation (`entity_type=dataset`)
+#### Metadata Generation (`entity_type=dataset`)
 
 | Event Type | Trigger |
 |---|---|
-| `GENERATION.CONFIG_CREATE` | PUT config (new) |
-| `GENERATION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
-| `GENERATION.CONFIG_DELETE` | DELETE config |
-| `GENERATION.COMPLETE` | POST `method/gen/run` succeeds |
-| `GENERATION.APPROVE` | PATCH `attr/gen/result/{id}` with `verdict: "approve"` succeeds (writes to DataHub) |
-| `GENERATION.REJECT` | PATCH `attr/gen/result/{id}` with `verdict: "reject"` succeeds |
+| `METAGEN.CONFIG_CREATE` | PUT config (new) |
+| `METAGEN.CONFIG_UPDATE` | PUT config (existing) or PATCH |
+| `METAGEN.CONFIG_DELETE` | DELETE config |
+| `METAGEN.COMPLETE` | POST `method/metagen/run` succeeds |
+| `METAGEN.APPROVE` | PATCH `attr/metagen/result/{id}` with `verdict: "approve"` succeeds (writes to editable DataHub aspects) |
+| `METAGEN.REJECT` | PATCH `attr/metagen/result/{id}` with `verdict: "reject"` succeeds |
 
 #### Metrics (`entity_type=metric`)
 
@@ -484,12 +578,22 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `METRIC.CONFIG_DELETE` | DELETE definition |
 | `METRIC.RUN_COMPLETE` | POST run measurement succeeds |
 
-#### Ontology (`entity_type=concept`)
+#### Ontology Generation — singleton conf (`entity_type=ontogen`)
 
 | Event Type | Trigger |
 |---|---|
-| `CONCEPT.APPROVE` | POST `method/review` with `verdict: "approve"` |
-| `CONCEPT.REJECT` | POST `method/review` with `verdict: "reject"` |
+| `ONTOGEN.CONFIG_CREATE` | PUT singleton conf (first time) |
+| `ONTOGEN.CONFIG_UPDATE` | PUT or PATCH singleton conf |
+| `ONTOGEN.CONFIG_DELETE` | DELETE singleton conf |
+| `ONTOGEN.RUN_COMPLETE` | A re-inference run succeeds |
+| `ONTOGEN.SOURCE_FAILED` | A configured input source (sql_logs, github_repos, …) failed during a run |
+
+#### Ontology Generation — concept (`entity_type=concept`)
+
+| Event Type | Trigger |
+|---|---|
+| `CONCEPT.APPROVE` | POST `ontogen/{concept_id}/method/review` with `verdict: "approve"` |
+| `CONCEPT.REJECT` | POST `ontogen/{concept_id}/method/review` with `verdict: "reject"` |
 
 ### Querying Events
 
@@ -530,17 +634,29 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ingestion-periodic-hourly` | `ingestion_periodic_hourly.py` | Airflow schedule | `@hourly` |
 | `ingestion-periodic-daily` | `ingestion_periodic_daily.py` | Airflow schedule | `@daily` |
 | `ingestion-periodic-weekly` | `ingestion_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `datahub-ingestion-status-sync` | `datahub_ingestion_status_sync.py` | Airflow schedule | `@hourly` |
 | `validation-periodic-hourly` | `validation_periodic_hourly.py` | Airflow schedule | `@hourly` |
 | `validation-periodic-daily` | `validation_periodic_daily.py` | Airflow schedule | `@daily` |
 | `validation-periodic-weekly` | `validation_periodic_weekly.py` | Airflow schedule | `@weekly` |
 | `metrics-periodic-hourly` | `metrics_periodic_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-periodic-daily` | `metrics_periodic_daily.py` | Airflow schedule | `@daily` |
 | `metrics-periodic-weekly` | `metrics_periodic_weekly.py` | Airflow schedule | `@weekly` |
-| `generation` | `generation.py` | API | On-demand |
+| `metagen-periodic-hourly` | `metagen_periodic_hourly.py` | Airflow schedule | `@hourly` |
+| `metagen-periodic-daily` | `metagen_periodic_daily.py` | Airflow schedule | `@daily` |
+| `metagen-periodic-weekly` | `metagen_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `metagen` | `metagen.py` | API | On-demand |
 | `metrics` | `metrics.py` | API | On-demand |
-| `embedding-sync` | `embedding_sync.py` | Kafka event + API | Event-driven + on-demand |
-| `ontology-rebuild` | `ontology_rebuild.py` | Airflow schedule | Weekly (configurable) |
+| `ontogen-periodic-hourly` | `ontogen_periodic_hourly.py` | Airflow schedule | `@hourly` |
+| `ontogen-periodic-daily` | `ontogen_periodic_daily.py` | Airflow schedule | `@daily` |
+| `ontogen-periodic-weekly` | `ontogen_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `ontogen` | `ontogen.py` | API | On-demand |
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
+
+> **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
+> (`ingestion`, `validation`, `metrics`, `metagen`), the periodic DAG that runs at
+> a given tier fetches only the configs whose `schedule_tier` matches the DAG's
+> tier. For `ontogen`, only the tier listed on the singleton conf runs at that
+> tier (the other two tier DAGs short-circuit when triggered).
 
 ### DataHub Sync
 
@@ -573,11 +689,12 @@ DAG calls this endpoint daily (unparameterized, full sweep).
 
 | DAG | Conf Key |
 |-----|----------|
-| `generation` | `generation-{md5(urn)[:12]}` |
+| `metagen` | `metagen-{md5(urn)[:12]}` |
 | `metrics` | `metrics-{metric_id}` |
+| `ontogen` | `ontogen-singleton` |
 
 If a duplicate is detected, the API returns `409 Conflict` with the appropriate `*_RUNNING`
-error code.
+error code (`GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …).
 
 ### Ingestion Workflow
 
@@ -595,31 +712,25 @@ daily, weekly). Each DAG fetches the dataset list for its tier at execution time
 
 ---
 
-## Kafka Consumers
+## Kafka Consumers *(optional, not enabled in baseline)*
 
-DataSpoke runs a single consumer group (`dataspoke-consumers`) that routes events by aspect
-name. Consumer implementation: `src/shared/datahub/events.py` (EventRouter) and
-`src/shared/datahub/consumer.py`.
+> **Baseline UC1–UC5 do not subscribe to Kafka events.** Cross-feature cadence in the
+> baseline is schedule-driven via the Airflow tier DAGs above. The Kafka consumer is
+> retained as an extensibility surface for organisations that want to add event-driven
+> reactions on top of the baseline; it is shipped disabled and gated by the
+> `event-consumer.enabled` Helm toggle (see
+> [HELM_CHART §Component Matrix](HELM_CHART.md#component-matrix)).
 
-### Event Routing Table
+If enabled, DataSpoke runs a single consumer group (`dataspoke-consumers`) that routes
+events by aspect name. Reference implementation: `src/shared/datahub/events.py`
+(EventRouter) and `src/shared/datahub/consumer.py`. The reference handler set is
+documented in
+[DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)
+— extensions can register their own handlers without modifying baseline code.
 
-| Kafka Topic | Aspect | Handler | Feature |
-|-------------|--------|---------|---------|
-| `MetadataChangeLog_Versioned_v1` | `datasetProperties` | `sync_ontology_embeddings` | Ontology (UC3) |
-| `MetadataChangeLog_Versioned_v1` | `schemaMetadata` | `sync_ontology_embeddings`, `detect_new_clusters` | Ontology (UC3), Doc Generation (UC4) |
-| `MetadataChangeLog_Versioned_v1` | `ownership` | `update_health_score` | Governance (UC5) |
-| `MetadataChangeLog_Versioned_v1` | `globalTags` | `sync_ontology_embeddings`, `update_health_score` | Ontology (UC3), Governance (UC5) |
-| `MetadataChangeLog_Timeseries_v1` | `datasetProfile` | `update_health_score` | Governance (UC5) |
-
-### Consumer Process
-
-Runs as `python -m src.shared.datahub.consumer`, separate from the API server. By default
-co-located in `dataspoke-api` deployment; can be deployed independently as
-`dataspoke-event-consumer` for partition-based scaling. See
-[HELM_CHART](HELM_CHART.md#component-matrix) for the `event-consumer.enabled` toggle.
-
-Uses `confluent-kafka` with manual offset commit (commit only after successful handler
-dispatch). Deserialization failures are logged and skipped; handler failures leave offset
+The consumer runs as `python -m src.shared.datahub.consumer` in a separate Deployment
+(`dataspoke-event-consumer`) when enabled. Uses `confluent-kafka` with manual offset
+commit; deserialization failures are logged and skipped, handler failures leave the offset
 uncommitted for redelivery.
 
 ---
@@ -665,7 +776,7 @@ failures.
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `CONCEPT_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER` |
@@ -680,13 +791,14 @@ completes with reduced enrichment. All failures are logged at WARNING with `exc_
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|
-| LLM description enrichment | IngestionService | Ingested without enriched description |
+| LLM description enrichment | IngestionService (active mode) | Ingested without enriched description |
 | Source SQL execution | ValidationService | Rule skipped, marked as ERROR in `assertionRunEvent` |
 | ML validation model fit | ValidationService | Value recorded without validation verdict |
 | Redis pub/sub + cache write | ValidationService | WebSocket unnotified; next read hits DB |
-| pgvector similarity search | GenerationService | No alternative suggestions |
-| LLM sample query generation | SearchService | SQL context without example query |
-| LLM dataset classification | OntologyRebuild | Dataset excluded from classification |
+| pgvector similarity search | MetagenService | No alternative suggestions |
+| LLM dataset classification | OntogenService | Dataset excluded from classification |
+| LLM cross-data MD synthesis | MetagenService | `cross_data.md` action list empty for the run |
+| DataHub run-history poll | IngestionService (passive sync) | Skip the affected dataset for this hourly tick; retry next tick |
 
 ---
 

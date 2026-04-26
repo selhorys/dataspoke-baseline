@@ -14,7 +14,7 @@ spec/
 ├── ARCHITECTURE.md            ← System-wide architecture: components, tech stack,
 │                                 data flows, feature-to-architecture mapping,
 │                                 shared services, deployment. Conforms to MANIFESTO.
-├── USE_CASE_en.md / _kr.md    ← Conceptual scenarios (UC1–UC8) by user group.
+├── USE_CASE_en.md / _kr.md    ← Conceptual scenarios (UC1–UC5) by user group.
 ├── AI_SCAFFOLD.md             ← Goal 2: Claude Code scaffold conventions.
 ├── TESTING.md                 ← Testing conventions: toolchain, unit/integration/E2E
 │                                 workflows, Imazon test data.
@@ -52,13 +52,13 @@ Implementation plans and decision records are tracked via GitHub Issues and PRs,
 ## Step 1 — Read context
 
 Always read these before writing:
-- `spec/MANIFESTO_en.md` — canonical user-group taxonomy and naming (highest authority)
-- `spec/ARCHITECTURE.md` — components, tech stack, data flows, feature-to-architecture mapping, shared services (Ontology Builder, Quality Score Engine), deployment
+- `spec/MANIFESTO_en.md` — canonical baseline-feature taxonomy and naming (highest authority)
+- `spec/ARCHITECTURE.md` — components, tech stack, data flows, feature-to-architecture mapping, shared services (Ontology Generator, DataHub Client Wrapper), deployment
 
 Additionally, read these when relevant to the topic:
 - `spec/DATAHUB_INTEGRATION.md` — when the feature involves DataHub read/write/event patterns
 - `spec/API_DESIGN_PRINCIPLE_en.md` — when designing API endpoints
-- `spec/USE_CASE_en.md` — for use case context (UC1–UC8)
+- `spec/USE_CASE_en.md` — for use case context (UC1–UC5)
 
 If writing about a specific feature, also check for an existing `spec/feature/<FEATURE>.md` or `spec/feature/spoke/<FEATURE>.md` to extend rather than create a duplicate.
 
@@ -68,8 +68,8 @@ If writing about a specific feature, also check for an existing `spec/feature/<F
 
 | Destination | When to use | Document type |
 |-------------|-------------|---------------|
-| `spec/feature/spoke/<FEATURE>.md` | User-group-specific feature from the MANIFESTO: DE (Ingestion, Online Validator, Doc Generation), DA (NL Search, Text-to-SQL Metadata, Validator), DG (Metrics Dashboard, Multi-Perspective Overview) | Spoke Feature Spec (see template A) |
-| `spec/feature/<FEATURE>.md` | Common/cross-cutting feature not specific to one user group (API design, dev environment, shared services) | Common Feature Spec (see template A, without user-group context) |
+| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) or a common cross-cutting topic (API, dev environment, shared services). The five baseline features all live here, regardless of which user-group workspace surfaces them. | Common Feature Spec (see template A) |
+| `spec/feature/spoke/<FEATURE>.md` | An organization-specific extension exclusive to one user-group workspace (DE / DA), filed under the workspace it belongs to. The baseline product ships nothing here. | Spoke Feature Spec (see template A, with user-group tag) |
 | `spec/<DOC>.md` (top-level) | Only for project-wide topics that belong alongside MANIFESTO and ARCHITECTURE | Top-level spec (use template A without feature context) |
 
 ---
@@ -82,8 +82,8 @@ Use the template for the chosen destination. Follow these style rules for both:
 - ASCII diagrams for component/flow illustrations
 - Tables for comparisons and field definitions
 - Code blocks for schemas, interfaces, API examples
-- User group names must match the MANIFESTO exactly: **DE** (Data Engineering), **DA** (Data Analysis), **DG** (Data Governance)
-- Feature names must match the MANIFESTO: **Deep Technical Spec Ingestion**, **Online Data Validator**, **Automated Documentation Generation**, **Natural Language Search**, **Text-to-SQL Optimized Metadata**, **Enterprise Metrics Time-Series Monitoring**, **Multi-Perspective Data Overview**
+- User group names must match the MANIFESTO exactly: **DE** (Data Engineering), **DA** (Data Analysis), **DG** (Data Governance) — these are UI / API extensibility surfaces, not feature partitions
+- Baseline feature names must match the MANIFESTO §2.1 exactly: **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, **Governance**
 - Product name is always `DataSpoke` (no space)
 - API URIs follow the three-tier pattern: `/api/v1/spoke/common/…` (shared), `/api/v1/spoke/[de|da|dg]/…` (user-group), `/api/v1/hub/…` (DataHub pass-through)
 - For DataHub integration details, reference `DATAHUB_INTEGRATION.md` rather than duplicating SDK patterns or aspect catalogs

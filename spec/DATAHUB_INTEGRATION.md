@@ -71,8 +71,11 @@ DataSpoke ───────────────────────�
     │  2. Python SDK (write)                       │
     │     DatahubRestEmitter.emit_mcp()            │
     │                                              │
-    │  3. Kafka (events)                           │
+    │  3. Kafka (events) — optional                │
     │     MetadataChangeEvent / MetadataAuditEvent │
+    │     Reserved for future event-driven         │
+    │     extensions; baseline UC1–UC5 are         │
+    │     schedule-driven via Airflow.             │
     │                                              │
     └──────────────────────────────────────────────┘
 ```
@@ -106,8 +109,8 @@ Each MANIFESTO feature has a clear integration direction:
 | Ingestion Control (active) | UC1 | **Write** | Emit enriched metadata (properties, lineage, tags, ownership). Applies to `mode: active` configs only. |
 | Ingestion Control (passive) | UC1 | **Read** | The hourly `datahub-ingestion-status-sync` DAG polls DataHub ingestion run history for `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes. |
 | Validation | UC2 | **Read + Write** | Query profiles, operations, lineage; register `assertionInfo`, emit `assertionRunEvent` |
-| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; write concept membership back as `globalTags` / `glossaryTerms` |
-| Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities |
+| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; on review approval, attach a glossary term to the member dataset (`glossaryTerms` only — not `globalTags`) to reflect concept membership |
+| Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities. Tag / glossary-term proposals are future scope and not part of the baseline. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
@@ -250,15 +253,15 @@ the `datahub-ingestion-status-sync` DAG and writes no aspects.*
 | `schemaMetadata` | W | R | R | R (context only) | R |
 | `editableSchemaMetadata` | — | — | — | W (on approval) | R |
 | `ownership` | W | — | R | — | R |
-| `globalTags` | W | — | R + W (concept tags) | W (approved tags) | R |
-| `glossaryTerms` | — | — | R + W (concept links) | W (approved links) | R |
+| `globalTags` | W | — | R | — *(future scope)* | R |
+| `glossaryTerms` | — | — | R + W (concept attachment on approval) | — *(future scope)* | R |
 | `upstreamLineage` | W | R | R | R | R |
-| `deprecation` | — | R | — | W (approved) | — |
+| `deprecation` | — | R | — | — | — |
 | `datasetProfile` | — | R | — | — | R |
 | `operation` | — | R | — | — | R |
 | `datasetUsageStatistics` | — | — | R | R | R |
 | `assertionInfo` | — | W | — | — | — |
-| `assertionRunEvent` | W (auto-extracted rules) | W | — | — | R |
+| `assertionRunEvent` | — | W | — | — | R |
 | `dataProductProperties` | — | — | — | W (create / modify / split / retitle on approval) | R |
 
 ## SDK Patterns
@@ -314,9 +317,14 @@ For cross-entity enumeration (e.g., listing all datasets for health scoring), ca
 | Cross-entity search/scroll | GraphQL (`scrollAcrossEntities`) | Pagination across entity types |
 | Complex multi-hop queries | GraphQL | Single request for nested data |
 
-## Event Subscription
+## Event Subscription *(optional, not used by baseline)*
 
-DataSpoke consumes Kafka events from DataHub to react to metadata changes in real time.
+> **Baseline UC1–UC5 do not subscribe to Kafka events.** Cross-feature triggers in the
+> baseline are schedule-driven via Airflow tier DAGs (see
+> [`ARCHITECTURE.md §Cross-Cutting Backend Concerns`](ARCHITECTURE.md#cross-cutting-backend-concerns)
+> and [`BACKEND.md §Airflow Workflows`](feature/BACKEND.md#airflow-workflows-srcworkflows)).
+> The pattern below is preserved as a reference for organisations that want to add
+> event-driven extensions on top of DataSpoke; it is **not enabled in the baseline build**.
 
 ### Kafka Topics
 
@@ -325,23 +333,22 @@ DataSpoke consumes Kafka events from DataHub to react to metadata changes in rea
 | `MetadataChangeLog_Versioned_v1` | Metadata change log | Any regular aspect changes |
 | `MetadataChangeLog_Timeseries_v1` | Timeseries change log | New profile/operation/usage data arrives |
 
-### Consumer Pattern
+### Consumer Pattern *(reference)*
 
-A single `confluent_kafka.Consumer` (group `dataspoke-consumers`, `auto.offset.reset=latest`)
-subscribes to both topics. Messages are deserialized via `deserialize_mcl()` and routed by
-`event.aspectName` to feature-specific handlers. Implementation: `src/shared/datahub/events.py`
-(EventRouter) and `src/shared/datahub/consumer.py`.
+If enabled, a single `confluent_kafka.Consumer` (group `dataspoke-consumers`,
+`auto.offset.reset=latest`) subscribes to both topics. Messages are deserialized via
+`deserialize_mcl()` and routed by `event.aspectName` to feature-specific handlers.
 
-### Event-Driven Feature Triggers
+### Example Event-Driven Triggers *(reference, not part of baseline)*
 
-| Event Aspect | Consumer | Action |
-|-------------|---------|--------|
-| `datasetProperties` | Ontology Generation | Re-generate embedding, update pgvector table; re-classify if description changed |
-| `schemaMetadata` | Ontology Generation, Metadata Generation | Re-embed schema, detect new concept clusters, flag metadata-generation candidates |
-| `datasetProfile` | Validation | Run anomaly detection on new profile (time-series validation) |
-| `operation` | Validation, Governance | Check freshness against SLA targets; update freshness metrics |
-| `ownership` | Governance | Re-compute department health score |
-| `globalTags` | Ontology Generation, Governance | Re-sync concept membership; update tag-coverage metrics |
+| Event Aspect | Possible Consumer | Possible Action |
+|-------------|-------------------|-----------------|
+| `datasetProperties` | Ontology Generation extension | Re-generate embedding; re-classify if description changed |
+| `schemaMetadata` | Ontology / Metadata Generation extensions | Re-embed schema; flag metadata-generation candidates |
+| `datasetProfile` | Validation extension | Anomaly detection on new profile |
+| `operation` | Validation / Governance extension | Freshness check against SLA |
+| `ownership` | Governance extension | Re-compute owner-keyed metrics |
+| `globalTags` | Ontology / Governance extension | Re-sync coverage metrics |
 
 ## Error Handling & Resilience
 
@@ -362,8 +369,9 @@ subscribes to both topics. Messages are deserialized via `deserialize_mcl()` and
 3. **Write operations are idempotent** — `emit_mcp` is safe to retry on transient failures
 4. **Bulk operations must be batched** — when scanning all datasets (Governance), process in
    batches of 100 with 100ms delays to avoid overwhelming GMS
-5. **Kafka consumer must commit offsets after processing** — use `enable.auto.commit=false` and
-   commit after successful handling
+5. **Kafka consumer must commit offsets after processing** *(only if event-driven extensions
+   are enabled — see [Event Subscription](#event-subscription-optional-not-used-by-baseline))* —
+   use `enable.auto.commit=false` and commit after successful handling
 
 ### Circuit Breaker
 
@@ -399,8 +407,9 @@ deployment.
 
 - [ ] Should DataSpoke define custom aspects in DataHub (e.g., `dataSpokeHealthScore`) or keep
   all computed data in PostgreSQL?
-- [ ] What is the optimal Kafka consumer group topology — one group per feature, or a single
-  shared group with internal routing?
+- [ ] If event-driven extensions are added on top of the baseline, what is the optimal Kafka
+  consumer group topology — one group per feature, or a single shared group with internal
+  routing?
 - [ ] Should write operations go through a centralized DataHub client wrapper in `src/shared/`,
   or can features instantiate their own emitters?
 - [ ] How to handle DataHub version upgrades that change aspect schemas — do we pin to a

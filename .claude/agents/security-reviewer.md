@@ -28,7 +28,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `src/api/routers/**` — when the diff touches `Depends(get_current_user)`, `require_*`, `require_internal_token`, or other auth guards
 - `src/shared/settings.py` — secret env vars (JWT, DataHub token, Postgres, LLM, Airflow, internal-token)
 - `src/shared/datahub/**` — DataHub client and emission (`client.py`, `consumer.py`, `events.py`)
-- `src/backend/ingestion/**`, `src/backend/generation/**`, `src/api/routers/internal/activities.py` — DataHub write paths
+- `src/backend/ingestion/**`, `src/backend/metagen/**`, `src/backend/ontogen/**`, `src/api/routers/internal/activities.py` — DataHub write paths
 - `migrations/**` — any DB migration (data-loss or privilege risk)
 - `helm-charts/**/templates/secrets.yaml`, `helm-charts/**/values*.yaml` — credentials / config
 - `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/package-lock.json` — new/bumped dependencies
