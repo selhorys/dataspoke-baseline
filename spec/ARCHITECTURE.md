@@ -72,8 +72,8 @@ existing DataHub installations; loose coupling enables independent deployment an
 
 1. **DataHub-backed SSOT** — DataHub stores metadata; DataSpoke extends without modifying core.
 2. **Five-feature baseline** — The Baseline Product implements five MANIFESTO features (Ingestion
-   Control, Validation, Ontology, Doc Generation, Governance). All backend services, API routes,
-   and UI surfaces map to one of these five.
+   Control, Validation, Ontology Generation, Metadata Generation, Governance). All backend
+   services, API routes, and UI surfaces map to one of these five.
 3. **Three-Tier API Routing** — Common features under `/spoke/common/`, group-specific extension
    routes under `/spoke/[de|da|dg]/`, DataHub pass-through under `/hub/`. The group tier is an
    extensibility affordance: baseline features live under `/spoke/common/` and `/spoke/dg/`;
@@ -158,7 +158,7 @@ For layout, shared components, routing, and auth, see
 Three-tier URI structure:
 
 ```
-/api/v1/spoke/common/...   → Baseline features: ingestion, validation, ontology, generation
+/api/v1/spoke/common/...   → Baseline features: ingestion, validation, ontogen, metagen
 /api/v1/spoke/de/...       → Reserved for DE-exclusive extensions (no baseline routes)
 /api/v1/spoke/da/...       → Reserved for DA-exclusive extensions (no baseline routes)
 /api/v1/spoke/dg/...       → Governance (metric, overview)
@@ -184,11 +184,11 @@ feature designs are specified per feature in `spec/feature/spoke/`.
 
 | Feature | Capabilities |
 |---------|-------------|
-| Ingestion Control | Periodic (cron) and on-demand metadata ingestion via DataHub standard sources, enrichment sources, and custom extractors; single control surface for lifecycle management |
+| Ingestion Control | Active and passive ingestion modes — DataSpoke either runs the extractor on a tier schedule or mirrors run history from externally-ingested datasets; single control surface for lifecycle management |
 | Validation | DataHub assertion management (Open Assertions Spec + DataSpoke extensions), partition-aware rule execution, SQL-based timeseries validation, real-time Online Verifier for coding agents |
-| Ontology | LLM-powered concept classification, hierarchy construction, and cross-concept relationship inference; persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontology API |
-| Doc Generation | Ontology-grounded description and tag proposals from schema, usage, lineage, and source-code references; review queue with approve/edit/reject |
-| Governance | Metric aggregation (health scores, documentation coverage, freshness), trend analysis, and multi-perspective overviews (ontology graph, medallion layers, ownership topology) |
+| Ontology Generation | Singleton-config LLM pipeline that classifies datasets into peer concepts and infers cross-concept relationships from DataHub aspects, SQL logs, source code, and external docs; persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontogen API with a review queue |
+| Metadata Generation | Per-dataset proposals for documentation fields — table description, column descriptions, and dataProduct cross-data MDs (create/modify/split/retitle actions); review queue with field-level approve/edit/reject; approved writes go to editable DataHub aspects |
+| Governance | Metric aggregation (pure aggregation over DataHub metadata + DataSpoke results), per-dataset breakdown, trend analysis, and a multi-perspective overview (metric values, blind spots, ontology graph, medallion layers, ownership topology) |
 
 Source layout: `src/backend/` (feature services), `src/workflows/` (Airflow DAGs + helpers),
 `src/shared/` (DataHub client, shared models, LLM integration).
@@ -199,9 +199,9 @@ DataHub is deployed and managed separately. DataSpoke interacts through three ch
 
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
-| Python SDK (read) | DataHub → DataSpoke | Query metadata aspects, timeseries profiles |
-| Python SDK (write) | DataSpoke → DataHub | Persist enriched metadata, deprecation markers |
-| Kafka events | DataHub → DataSpoke | React to metadata changes in real time |
+| Python SDK (read) | DataHub → DataSpoke | Query metadata aspects, ingestion run history, assertion results, dataProduct entities |
+| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, assertion definitions and `assertionRunEvent`, glossary term attachments (concept membership), editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `dataProductProperties` |
+| Kafka events *(optional)* | DataHub → DataSpoke | Available for future event-driven extensions; not consumed by baseline UC1–UC5 flows |
 
 For SDK entry points, aspect catalog, error handling, and configuration, see
 [`DATAHUB_INTEGRATION.md`](DATAHUB_INTEGRATION.md).
@@ -222,11 +222,19 @@ For SDK entry points, aspect catalog, error handling, and configuration, see
 
 ### 1. Ingestion Control (UC1)
 
-Source systems (PostgreSQL, MySQL, BigQuery, …) and enrichment sources (Confluence, Excel/S3,
-custom APIs, PL/SQL parsers) feed the Ingestion Service, which uses the DataHub SDK to persist
-aspects in GMS. GMS emits MCE/MAE events through Kafka, which DataSpoke event consumers pick up
-and fan out to: ontology re-indexing (UC3), validator triggers (UC2), vector DB sync, and
-governance metric updates (UC5).
+`attr/ingestion/conf` carries a `mode` flag:
+
+- **Active** — DataSpoke is the ingestor. The configured Airflow tier DAG (`hourly` / `daily`
+  / `weekly`) runs the platform extractor and emits aspects to DataHub via the SDK; manual and
+  dry-run runs are also supported. Per-run records are written to `event/ingestion`.
+- **Passive** — an external pipeline ingests directly into DataHub. DataSpoke does not run the
+  extractor; the dataset's conf is marked `mode: passive`. An hourly
+  `datahub-ingestion-status-sync` DAG polls DataHub for ingestion run history of all
+  passive-marked datasets and writes one row per run to `event/ingestion`, so the API surface is
+  uniform across modes.
+
+Other features (UC2, UC3, UC5) do not subscribe to ingestion events — each runs on its own
+Airflow tier DAG schedule (or on demand) per the configs in their respective `attr/conf`.
 
 ### 2. Validation (UC2)
 
@@ -240,25 +248,33 @@ Validation runs are triggered by Airflow cron or by
 timeseries rule with ML validation to detect anomalies before breach. The same API serves
 coding-agent loops as an **Online Verifier**.
 
-### 3. Ontology (UC3)
+### 3. Ontology Generation (UC3)
 
-The Ontology Builder reads all datasets (schema, descriptions, tags, lineage, source-code
-references, SQL logs, external docs) and runs an LLM-powered pipeline that classifies datasets
-into business concepts, builds a hierarchy, and infers cross-concept relationships. Outputs are
-persisted in PostgreSQL with Apache AGE (graph) and pgvector (vector) extensions; concept
-membership is reflected back to DataHub as `globalTags` / `glossaryTerms`. The builder runs
-incrementally when datasets are ingested or schemas change; low-confidence results (< 0.7) are
-queued for governance review.
+The Ontology Generator is governed by a singleton conf at `/api/v1/spoke/common/ontogen/attr/conf`
+(`is_enabled`, `schedule_tier`, `sources`, `dataset_filter`). The configured Airflow tier DAG
+reads the selected input sources — DataHub aspects (schema, descriptions, tags, lineage) at
+minimum, optionally SQL logs, GitHub repos, external docs — and runs an LLM-powered pipeline that
+classifies datasets into peer business concepts and infers cross-concept relationships. The
+baseline ontology is **single-level**: concepts are peers, not nested. Outputs are persisted in
+PostgreSQL with Apache AGE (graph) and pgvector (vector) extensions; on review approval, concept
+membership is reflected back to DataHub as a glossary term attachment on the member dataset.
+Low-confidence proposals are queued for governance review via
+`POST /api/v1/spoke/common/ontogen/{concept_id}/method/review`. Concurrent inference runs return
+`409 ONTOGEN_RUNNING`.
 
-### 4. Doc Generation (UC4)
+### 4. Metadata Generation (UC4)
 
-Per-dataset generation configs (`/api/v1/spoke/common/data/{urn}/attr/gen/…`) drive the Doc
+Per-dataset configs (`/api/v1/spoke/common/data/{urn}/attr/metagen/…`) drive the Metadata
 Generation Service. It reads the UC3 ontology, schema, usage, lineage, and source-code
-references, and emits **proposals** (never direct writes) into a review queue. Governance leads
-or dataset owners approve / edit / reject; on approval (`PATCH …/attr/gen/result/{result_id}` with `verdict: "approve"`), DataSpoke writes the approved subset to DataHub
-(`datasetProperties.description`, `schemaMetadata.fields[].description`, `globalTags`, glossary
-terms). Every run also reports existing documentation that contradicts the ontology
-(self-purification).
+references and emits **proposals** (never direct writes) into a review queue. Reviewers approve,
+partially approve (field subset), or reject via `PATCH …/attr/metagen/result/{result_id}` with
+`{verdict, fields, reason}`; on approval, DataSpoke writes the approved subset to **editable**
+DataHub aspects only — `editableDatasetProperties.description` for table descriptions and
+`editableSchemaMetadata.editableSchemaFieldInfo[].description` for column descriptions. The
+non-editable counterparts are reserved for ingestion connectors and are never overwritten by
+DataSpoke. Cross-data MD proposals target `dataProduct` entities (`dataProductProperties`); a
+single `cross_data.md` proposal carries a list of create / modify / split / retitle actions
+that the reviewer approves individually. Future scope: proposals for `domains` and `globalTags`.
 
 ### 5. Governance (UC5)
 
@@ -280,11 +296,11 @@ route tiers are reserved for organization-specific extensions and have no baseli
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|------------------|----------------|
-| Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service, Enrichment Source Connectors, Custom Extractor Framework | Airflow (tier-based periodic DAGs), Redis (concurrency guard), DataHub SDK, PostgreSQL |
+| Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `datahub-ingestion-status-sync`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine, Online Verifier | Airflow (tier-based periodic DAGs), Redis (concurrency guard + dry-run cache), DataHub SDK, PostgreSQL |
-| Ontology | UC3 | `/spoke/common/ontology/` | LLM Classification, Hierarchy Builder, Relationship Inference, Incremental Rebuilder | LLM API, PostgreSQL (pgvector + Apache AGE) |
-| Doc Generation | UC4 | `/spoke/common/gen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/gen/` | Generation Service, Source-Code Analyzer, Consistency Inspector, Review Queue | LLM API, PostgreSQL, DataHub SDK (read + approved writes) |
-| Governance | UC5 | `/spoke/dg/metric/`, `/spoke/dg/overview/` | Metrics Aggregator, Department Mapper, Trend Analyzer, Overview Composer (ontology / medallion / ownership views) | Airflow (tier-based periodic DAGs), PostgreSQL, DataHub GraphQL |
+| Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + concept browse + review) | LLM Classification, Relationship Inference, Review Queue | LLM API, PostgreSQL (pgvector + Apache AGE), Airflow (tier-based periodic DAG) |
+| Metadata Generation | UC4 | `/spoke/common/metagen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/metagen/` | Generation Service, Source-Code Analyzer, dataProduct Composer, Review Queue (field-level + action-level) | LLM API, PostgreSQL, DataHub SDK (read + approved writes to editable aspects only) |
+| Governance | UC5 | `/spoke/dg/metric/`, `/spoke/dg/overview/` | Metrics Aggregator (pure aggregation, no source-DB reads), Per-Dataset Breakdown, Overview Composer (metric values, blind spots, ontology graph, medallion layers, ownership topology) | Airflow (tier-based periodic DAGs), PostgreSQL, DataHub GraphQL |
 
 ### Optional / future routes
 
@@ -296,10 +312,10 @@ route tiers are reserved for organization-specific extensions and have no baseli
 
 | Concern | Infrastructure | Consumers |
 |---------|----------------|-----------|
-| Kafka Event Consumers | Kafka (shared with DataHub) | Ontology re-index (UC3), validator triggers (UC2), governance metric updates (UC5) |
-| Airflow DAGs | Airflow | Periodic ingestion (UC1), validation (UC2), ontology rebuild (UC3), doc-generation proposals (UC4), governance metrics (UC5) |
-| PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE) | Ingestion configs/runs, validation rules/results, ontology graph + vectors, generation proposals + review state, governance metric results |
-| Redis Caching | Redis | Validation dry-run cache (Online Verifier for AI coding loops), API response cache, rate limiting |
+| Airflow DAGs | Airflow | Periodic active ingestion (UC1), passive ingestion status sync (UC1, hourly), validation (UC2), ontology re-inference (UC3), metadata generation (UC4), governance metrics (UC5) |
+| PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE) | Ingestion configs/runs, validation rules/results, ontology concepts + relationships + embeddings, metadata generation proposals + review state, governance metric results |
+| Redis Caching | Redis | Validation dry-run cache (Online Verifier for AI coding loops), API response cache, rate limiting, JWT refresh-token revocation list |
+| Kafka Event Consumers *(optional)* | Kafka (shared with DataHub) | Reserved for future event-driven cross-feature triggers; not used by baseline UC1–UC5 flows, which are schedule-driven via Airflow |
 
 ---
 
@@ -307,29 +323,30 @@ route tiers are reserved for organization-specific extensions and have no baseli
 
 Reusable backend services consumed by multiple features. These live in `src/shared/`.
 
-### Ontology Builder
+### Ontology Generator
 
-Own feature (UC3) that also serves UC4 (Doc Generation) and UC5 (Governance) as consumers.
+Own feature (UC3) that also serves UC4 (Metadata Generation) and UC5 (Governance) as consumers.
 
-**Purpose**: LLM-powered service that builds and maintains business concept ontologies from
-DataHub metadata, source code, SQL logs, and external docs.
+**Purpose**: LLM-powered service that builds and maintains a single-level business concept
+ontology from DataHub metadata, source code, SQL logs, and external docs.
 
 **Processing pipeline**:
 1. **Dataset → Concept Classification** — LLM analyses schema, descriptions, tags, lineage, and
    code references per dataset
-2. **Concept Hierarchy Construction** — LLM synthesises categories into a hierarchy
-3. **Cross-Concept Relationship Inference** — pairwise semantic analysis for graph edges
-4. **Confidence Scoring & Human Review Queue** — low-confidence results queued for governance
+2. **Cross-Concept Relationship Inference** — pairwise semantic analysis for graph edges
+   between peer concepts
+3. **Confidence Scoring & Human Review Queue** — low-confidence results queued for review via
+   `POST /spoke/common/ontogen/{concept_id}/method/review`
 
 **Storage** (PostgreSQL with pgvector + Apache AGE):
-- `concept_categories` — id, name, parent_id, description (relational)
+- `concepts` — id, name, description, confidence, status (relational)
 - `dataset_concept_map` — dataset_urn, concept_id, confidence_score (relational)
 - `concept_relationships` — concept_a, concept_b, relationship_type (AGE graph)
 - `concept_embeddings`, `dataset_embeddings` — pgvector tables for similarity recall
 
-**Properties**: Incremental updates on new ingestion; versioned ontology; human-in-the-loop for
-low-confidence (< 0.7) classifications; concept membership reflected back to DataHub as
-`globalTags` / `glossaryTerms`.
+**Properties**: Re-inference on the configured `schedule_tier`; dry-run mode evaluates without
+persisting; human-in-the-loop review for pending proposals; on approval, concept membership is
+reflected back to DataHub as a glossary term attachment on the member dataset.
 
 ### DataHub Client Wrapper
 
@@ -472,7 +489,7 @@ The repository is organized by deployment concern and application layer. Key top
 |----------|-----------|
 | DataHub as external dependency | Enterprises have existing installations; sidecar pattern enables independent lifecycle |
 | Three-tier URI segmentation | `/spoke/common/` for baseline shared features, `/spoke/dg/` for governance, `/spoke/[de\|da]/` reserved for organization-specific extensions, `/hub/` for DataHub pass-through — extensibility without forking the baseline |
-| Ontology as a first-class feature | Doc Generation (UC4) and Governance (UC5) both consume the concept graph; making Ontology (UC3) a standalone feature avoids duplication and ensures consistency across consumers |
+| Ontology Generation as a first-class feature | Metadata Generation (UC4) and Governance (UC5) both consume the concept graph; making Ontology Generation (UC3) a standalone feature avoids duplication and ensures consistency across consumers |
 | Validation as DataHub assertion layer | UC2 uses DataHub's native assertion framework; DataSpoke adds partition-aware execution, SQL-based timeseries rules, and a dry-run Online Verifier for coding agents rather than a bespoke scoring engine |
 | LLM as external service | Model-agnostic; swap providers without code changes; no GPU infrastructure required |
 | Redis for validation caching | AI agents in tight coding loops need sub-second validation responses |

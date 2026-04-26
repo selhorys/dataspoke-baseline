@@ -18,7 +18,8 @@
 The DataSpoke project develops two core artifacts (from `spec/MANIFESTO_en.md` §2):
 
 1. **Baseline Product** — a foundational data catalog implementation of the five MANIFESTO
-   features (Ingestion Control, Validation, Ontology, Doc Generation, Governance).
+   features (Ingestion Control, Validation, Ontology Generation, Metadata Generation,
+   Governance).
 2. **Productized Scaffold** — a framework for custom development, comprising specs, a
    development environment (`dev_env/`, helm-charts/), and coding-agent utilities (`.claude/`).
 
@@ -133,8 +134,8 @@ See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 A good implementation plan produced during the Plan phase should cover:
 
 1. **Scope and goals** — What the feature does (1-3 sentences), which MANIFESTO feature(s) it
-   belongs to or extends (Ingestion Control, Validation, Ontology, Doc Generation, Governance,
-   or a user-group extension on top of these), what success looks like.
+   belongs to or extends (Ingestion Control, Validation, Ontology Generation, Metadata
+   Generation, Governance, or a user-group extension on top of these), what success looks like.
 2. **Files to create or modify** — For each file: exact path (following existing conventions),
    purpose (one line), key contents (classes, functions, endpoints — names only, not
    implementations).
@@ -221,10 +222,10 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    automatically.
 
 3. **Capability-driven organization** — Features are organized by MANIFESTO capability
-   (Ingestion Control, Validation, Ontology, Doc Generation, Governance). The user-group route
-   tiers (`/spoke/[de|da|dg]/`) and UI entry points exist as extensibility surfaces — they are
-   where baseline features are surfaced to different audiences and where organization-specific
-   extensions live.
+   (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance). The
+   user-group route tiers (`/spoke/[de|da|dg]/`) and UI entry points exist as extensibility
+   surfaces — `/spoke/dg/` hosts baseline governance routes, while `/spoke/de/` and `/spoke/da/`
+   are reserved for organization-specific extensions and contain no baseline endpoints.
 
 4. **API-first development** — The `backend` subagent implements API routes as the single source
    of truth for the API contract, following the three-tier URI pattern defined in feature specs.

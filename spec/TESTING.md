@@ -340,7 +340,14 @@ invent alternative test companies.
 ### Imazon Dummy-Data Reference
 
 UC numbers below follow `USE_CASE_en.md` §Feature Mapping: UC1 Ingestion Control, UC2
-Validation, UC3 Ontology, UC4 Doc Generation, UC5 Governance.
+Validation, UC3 Ontology Generation, UC4 Metadata Generation, UC5 Governance.
+
+> **Note**: The fixture below extends the minimal Imazon profile sketched in
+> [`USE_CASE_en.md`](USE_CASE_en.md#imaginary-company-profile-imazon) (5 OLTP tables and 2
+> Kafka topics) with additional schemas needed to exercise PII auto-classification, multi-hop
+> lineage, ontology variants, and time-series anomaly detection. The narrative scenarios in
+> `USE_CASE_en.md` remain authoritative for feature behavior; this fixture is the test data
+> that backs them and may be revised when integration tests are rewritten.
 
 | Schema.Table | Rows | Primary UC | Key Characteristic |
 |---|---|---|---|
