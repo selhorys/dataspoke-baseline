@@ -8,7 +8,7 @@
 >
 > Conforms to [MANIFESTO](../MANIFESTO_en.md) (highest authority).
 > Architecture context in [ARCHITECTURE](../ARCHITECTURE.md).
-> API routes that delegate to these services in [API](API.md).
+> API routes that delegate to these services in [API](../API.md).
 > DataHub SDK patterns in [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md).
 > Testing conventions in [TESTING](../TESTING.md).
 
@@ -501,7 +501,7 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
   domain-specific events.
 
 See [BACKEND_SCHEMA §events](BACKEND_SCHEMA.md#events) for the filtering
-convention and [API §Meta-Classifier Conventions](API.md#meta-classifier-conventions)
+convention and [API §Meta-Classifier Conventions](../API.md#meta-classifier-conventions)
 for the response contract.
 
 ---
@@ -638,7 +638,7 @@ The API exposes WebSocket channels fed via **Redis pub/sub**, decoupling activit
 
 Activity endpoints publish JSON progress/result messages to the appropriate Redis channel.
 The WebSocket handler subscribes and forwards messages to clients. Message schemas are
-defined in [API](API.md#websocket-channels).
+defined in [API](../API.md#websocket-channels).
 
 ---
 
@@ -670,7 +670,7 @@ failures.
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER` |
 
-Error response format matches [API](API.md#error-catalogue). Exception hierarchy is
+Error response format matches [API](../API.md#error-catalogue). Exception hierarchy is
 defined in `src/shared/exceptions.py`.
 
 ### Best-Effort Operations

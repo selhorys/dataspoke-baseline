@@ -208,7 +208,7 @@ Timeseries of metric measurements.
 
 Unified event log for all feature domains. All events share the same top-level
 structure so clients can process them generically (see
-[API §Meta-Classifier Conventions](API.md#meta-classifier-conventions)).
+[API §Meta-Classifier Conventions](../API.md#meta-classifier-conventions)).
 
 | Column | Type | Description |
 |--------|------|-------------|

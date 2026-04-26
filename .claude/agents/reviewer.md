@@ -40,7 +40,7 @@ Does the implementation match the feature spec?
 - Nothing was added that contradicts the spec
 
 ### 2. Architecture adherence (weight: high)
-Does it follow DataSpoke conventions per `spec/feature/API.md` (three-tier routing), `spec/feature/BACKEND.md` (service layer, Airflow DAG conventions), and `spec/DATAHUB_INTEGRATION.md` (SDK patterns)? Also check existing naming conventions and file organization for consistency.
+Does it follow DataSpoke conventions per `spec/API.md` (three-tier routing), `spec/feature/BACKEND.md` (service layer, Airflow DAG conventions), and `spec/DATAHUB_INTEGRATION.md` (SDK patterns)? Also check existing naming conventions and file organization for consistency.
 
 ### 3. Code quality (weight: medium)
 - Type hints on every function signature (Python 3.13)

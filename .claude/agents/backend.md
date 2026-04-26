@@ -12,7 +12,7 @@ Your job is to write production-quality Python code in `src/api/`, `src/backend/
 ## Before writing anything
 
 1. Read the **feature spec** for the area you're working on:
-   - `spec/feature/API.md` — route catalogue, middleware stack, error codes, WebSocket channels
+   - `spec/API.md` — route catalogue, middleware stack, error codes
    - `spec/feature/BACKEND.md` — service layer architecture, handler naming conventions, shared service patterns
    - `spec/feature/BACKEND_SCHEMA.md` — PostgreSQL schema (relational + pgvector tables), indexes
 2. Read `spec/DATAHUB_INTEGRATION.md` if the task involves DataHub reads or writes.

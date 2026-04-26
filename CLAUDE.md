@@ -33,7 +33,7 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 - **Airflow** for workflow orchestration (HTTP-triggered DAGs, LocalExecutor, fixed schedule tiers); **PostgreSQL 17** (with `pgvector` for vector search and `age` for future graph workloads) for operational DB
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
 - **DataHub debugging protocol**: For any DataHub integration or infrastructure issue, consult `ref/github/datahub/` source code and use the `/datahub-api` skill before guessing configs or iterating through Helm upgrades.
-- **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/feature/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows; `spec/feature/BACKEND_SCHEMA.md` for DB schema (relational + pgvector tables); `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
+- **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows; `spec/feature/BACKEND_SCHEMA.md` for DB schema (relational + pgvector tables); `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
 
 ## Spec Convention
 
@@ -43,7 +43,7 @@ Specs must not contradict each other — propagate changes up and down. Priority
 |----------|-----------|------|
 | 1 | `MANIFESTO_en/kr.md` | Product identity. Never modify unless explicitly requested. |
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Binding conventions. |
-| 3 | `ARCHITECTURE.md`, `TESTING.md`, `USE_CASE_en/kr.md` | System architecture, testing conventions, and scenarios. |
+| 3 | `ARCHITECTURE.md`, `API.md`, `TESTING.md`, `USE_CASE_en/kr.md` | System architecture, API contract, testing conventions, and scenarios. |
 | 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md` | Claude Code scaffold conventions; autonomous PR worker. |
 | 5 | `feature/<FEATURE>.md` | Common feature specs. |
 | 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |

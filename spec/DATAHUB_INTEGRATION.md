@@ -22,12 +22,27 @@ follow.
 
 **Key principles**:
 
-1. **DataHub is the Hub** — DataHub stores metadata; DataSpoke computes on top of it. DataSpoke
-   tries not to duplicate metadata that DataHub already persists.
-2. **DataSpoke features primarily fill the gaps** — DataSpoke features are designed for use
+1. **DataHub is the SSOT (Single Source of Truth) — the most important principle in this
+   project.** All metadata that *can* live in DataHub *must* live in DataHub; DataSpoke
+   computes on top without duplicating what DataHub already persists. DataSpoke's PostgreSQL
+   storage is reserved for state DataHub does not model natively (validation result timeseries
+   for ML training data, the ontology graph, metadata-generation proposal history,
+   dataset/metric registries) and always references DataHub URNs as the canonical identifier.
+2. **Write to editable aspects, never to connector-owned aspects** — DataHub maintains paired
+   aspects for descriptions: a non-editable one populated by ingestion connectors and an
+   editable counterpart for human/agent edits. DataSpoke writes only to the editable aspect.
+   See [Editable vs Non-Editable Description Aspects](#editable-vs-non-editable-description-aspects).
+3. **Use DataHub's standard taxonomy when one exists** — when DataHub already defines a
+   vocabulary for a domain (assertion types via the
+   [Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec),
+   ownership types, tag/glossary semantics, lineage edge types), DataSpoke adopts it directly
+   rather than inventing a parallel taxonomy. DataSpoke extensions are added as additional
+   values (e.g., `assertionInfo.type=CUSTOM` with a DataSpoke `subtype`) rather than
+   replacements.
+4. **DataSpoke features primarily fill the gaps** — DataSpoke features are designed for use
    cases that cannot be fulfilled by DataHub alone (e.g., deep ingestion, predictive SLA, NL
    search).
-3. **DataSpoke API can redefine DataHub functions for convenience** — in some cases DataSpoke
+5. **DataSpoke API can redefine DataHub functions for convenience** — in some cases DataSpoke
    may re-expose DataHub's basic functions (e.g., dataset registration, metadata browsing)
    through its own API and UI layer. It is a **blended API/UI** that combines DataHub-native
    metadata with DataSpoke-specific metadata in a single call for user convenience. For example,
@@ -88,10 +103,11 @@ Each MANIFESTO feature has a clear integration direction:
 
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
-| Ingestion Control | UC1 | **Write** | Emit enriched metadata (properties, lineage, tags, ownership) |
+| Ingestion Control (active) | UC1 | **Write** | Emit enriched metadata (properties, lineage, tags, ownership). Applies to `mode: active` configs only. |
+| Ingestion Control (passive) | UC1 | **Read** | The hourly `datahub-ingestion-status-sync` DAG polls DataHub ingestion run history for `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes. |
 | Validation | UC2 | **Read + Write** | Query profiles, operations, lineage; register `assertionInfo`, emit `assertionRunEvent` |
-| Ontology | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; write concept membership back as `globalTags` / `glossaryTerms` |
-| Doc Generation | UC4 | **Read + Write** | Read schemas for ontology-grounded generation; write approved descriptions, tags, deprecation |
+| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; write concept membership back as `globalTags` / `glossaryTerms` |
+| Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
@@ -117,9 +133,9 @@ emitter = DatahubRestEmitter(
 ```
 
 Read-only features (Governance) use `DataHubGraph` only. Features that write back (Ingestion
-Control, Validation, Ontology, Doc Generation) additionally use `DatahubRestEmitter`. Redefined
-DataHub functions would use both clients to blend DataHub and DataSpoke data in a single API
-call.
+Control active mode, Validation, Ontology Generation, Metadata Generation) additionally use
+`DatahubRestEmitter`. Redefined DataHub functions would use both clients to blend DataHub and
+DataSpoke data in a single API call.
 
 ### URN Construction
 
@@ -145,11 +161,30 @@ Regular aspects represent the current state of an entity. Read via `get_aspect()
 | Aspect | SDK Class | Key Fields | REST Read Path | REST Write Path |
 |--------|----------|------------|---------------|----------------|
 | `datasetProperties` | `DatasetPropertiesClass` | `description`, `customProperties` | `GET /aspects/{urn}?aspect=datasetProperties` | `POST /openapi/v3/entity/dataset` |
+| `editableDatasetProperties` | `EditableDatasetPropertiesClass` | `description` | `GET /aspects/{urn}?aspect=editableDatasetProperties` | `POST /openapi/v3/entity/dataset` |
 | `schemaMetadata` | `SchemaMetadataClass` | `fields[].fieldPath`, `fields[].nativeDataType`, `fields[].description` | `GET /aspects/{urn}?aspect=schemaMetadata` | `POST /openapi/v3/entity/dataset` |
+| `editableSchemaMetadata` | `EditableSchemaMetadataClass` | `editableSchemaFieldInfo[].fieldPath`, `editableSchemaFieldInfo[].description` | `GET /aspects/{urn}?aspect=editableSchemaMetadata` | `POST /openapi/v3/entity/dataset` |
 | `ownership` | `OwnershipClass` | `owners[].owner` (URN), `owners[].type` | `GET /aspects/{urn}?aspect=ownership` | `POST /openapi/v3/entity/dataset` |
 | `globalTags` | `GlobalTagsClass` | `tags[].tag` (URN) | `GET /aspects/{urn}?aspect=globalTags` | `POST /openapi/v3/entity/dataset` |
+| `glossaryTerms` | `GlossaryTermsClass` | `terms[].urn`, `terms[].context` | `GET /aspects/{urn}?aspect=glossaryTerms` | `POST /openapi/v3/entity/dataset` |
 | `upstreamLineage` | `UpstreamLineageClass` | `upstreams[].dataset` (URN), `upstreams[].type` | `GET /aspects/{urn}?aspect=upstreamLineage` | `POST /openapi/v3/entity/dataset` |
 | `deprecation` | `DeprecationClass` | `deprecated` (bool), `note`, `replacement` (URN), `decommissionTime` | `GET /aspects/{urn}?aspect=deprecation` | `POST /openapi/v3/entity/dataset` |
+
+#### Editable vs Non-Editable Description Aspects
+
+DataHub maintains *paired* aspects for descriptions: a non-editable variant populated by
+ingestion connectors, and an editable counterpart for human or agent edits. **DataSpoke
+writes only to the editable aspect.** Writing to the non-editable variant risks the next
+connector run silently overwriting reviewer-approved text.
+
+| Scope | Non-editable (connector-owned, DataSpoke read-only) | Editable (DataSpoke-writable on approval) |
+|---|---|---|
+| Table description | `datasetProperties.description` | `editableDatasetProperties.description` |
+| Column description | `schemaMetadata.fields[].description` | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (keyed by `fieldPath`) |
+
+DataHub renders both editable description fields as Markdown in the UI. Metadata Generation
+(UC4) reads the non-editable variants as context for generation but writes proposals only
+to the editable variants on reviewer approval.
 
 ### Timeseries Aspects
 
@@ -165,21 +200,55 @@ are append-only — DataHub retains history.
 
 ### Assertion Aspects
 
-Assertions are stored on `assertion` entities (not `dataset` entities):
+Assertions are stored on `assertion` entities (not `dataset` entities). DataSpoke's
+Validation feature (UC2) builds on DataHub's
+[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec),
+which defines six `assertionInfo.type` values covering the primary data quality
+dimensions:
+
+| `assertionInfo.type` | Quality dimension | DataSpoke `rules[].type` | Notes |
+|---|---|---|---|
+| `FRESHNESS` | Timeliness | `freshness` | Native |
+| `VOLUME` | Completeness | `volume` | Native |
+| `FIELD` | Accuracy / validity | `field` | Native |
+| `SCHEMA` | Conformance | `schema` | Native |
+| `SQL` | Custom SQL | `sql` | Native |
+| `CUSTOM` | Anything else | `custom` | DataSpoke uses `subtype: "sql_timeseries"` for partition-aware SQL with optional ML-based anomaly detection |
+
+DataSpoke registers each rule's `assertionInfo` once at config upsert and reports
+execution outcomes via `assertionRunEvent` (`SUCCESS` / `FAILURE` / `ERROR`), so
+DataSpoke-managed checks appear in DataHub's native assertion UI alongside DataHub-native
+assertions.
 
 | Aspect | SDK Class | Entity Type | REST Write Path |
 |--------|----------|-------------|----------------|
 | `assertionInfo` | `AssertionInfoClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 | `assertionRunEvent` | `AssertionRunEventClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 
+### Data Product Aspects
+
+Data products group related datasets under a topic-level concept. UC4 (Metadata
+Generation) `cross_data.md` proposals may create, modify, split, or retitle
+`dataProduct` entities to organize cross-dataset documentation. The generator chooses
+a descriptive title (a topic phrase) for new data products — the URN is **not** keyed
+off any UC3 concept ID.
+
+| Aspect | SDK Class | Entity Type | Key Fields | REST Write Path |
+|--------|----------|-------------|------------|----------------|
+| `dataProductProperties` | `DataProductPropertiesClass` | `dataProduct` | `name`, `description` (Markdown), `assets[]` (dataset URNs) | `POST /openapi/v3/entity/dataproduct` |
+
 ### Aspect Usage by Feature
 
-Which features read (R) or write (W) each aspect:
+Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
+`mode: active` configs only; passive mode reads ingestion run history out-of-band via
+the `datahub-ingestion-status-sync` DAG and writes no aspects.*
 
-| Aspect | Ingestion Control | Validation | Ontology | Doc Generation | Governance |
+| Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
-| `datasetProperties` | W | R | R | R + W (on approval) | R |
-| `schemaMetadata` | W | R | R | R + W (on approval) | R |
+| `datasetProperties` | W | R | R | R (context only) | R |
+| `editableDatasetProperties` | — | — | — | W (on approval) | R |
+| `schemaMetadata` | W | R | R | R (context only) | R |
+| `editableSchemaMetadata` | — | — | — | W (on approval) | R |
 | `ownership` | W | — | R | — | R |
 | `globalTags` | W | — | R + W (concept tags) | W (approved tags) | R |
 | `glossaryTerms` | — | — | R + W (concept links) | W (approved links) | R |
@@ -190,6 +259,7 @@ Which features read (R) or write (W) each aspect:
 | `datasetUsageStatistics` | — | — | R | R | R |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | W (auto-extracted rules) | W | — | — | R |
+| `dataProductProperties` | — | — | — | W (create / modify / split / retitle on approval) | R |
 
 ## SDK Patterns
 
@@ -224,8 +294,8 @@ The REST API only exposes `upstreamLineage` (what this dataset reads from). To f
 **downstream consumers** (what depends on this dataset), call `graph.execute_graphql(...)` with
 a `searchAcrossLineage` query (`direction: DOWNSTREAM`, `types: [DATASET]`) and read
 `searchResults[].entity.urn` + `degree`. Used by Validation (downstream impact of failing
-rules), Doc Generation (shared consumers informing descriptions), Ontology (cross-concept
-relationship inference), Governance (ownership topology).
+rules), Metadata Generation (shared consumers informing descriptions), Ontology Generation
+(cross-concept relationship inference), Governance (ownership topology).
 
 ### Entity Enumeration by Domain
 
@@ -266,12 +336,12 @@ subscribes to both topics. Messages are deserialized via `deserialize_mcl()` and
 
 | Event Aspect | Consumer | Action |
 |-------------|---------|--------|
-| `datasetProperties` | Ontology | Re-generate embedding, update pgvector table; re-classify if description changed |
-| `schemaMetadata` | Ontology, Doc Generation | Re-embed schema, detect new concept clusters, flag doc-generation candidates |
+| `datasetProperties` | Ontology Generation | Re-generate embedding, update pgvector table; re-classify if description changed |
+| `schemaMetadata` | Ontology Generation, Metadata Generation | Re-embed schema, detect new concept clusters, flag metadata-generation candidates |
 | `datasetProfile` | Validation | Run anomaly detection on new profile (time-series validation) |
 | `operation` | Validation, Governance | Check freshness against SLA targets; update freshness metrics |
 | `ownership` | Governance | Re-compute department health score |
-| `globalTags` | Ontology, Governance | Re-sync concept membership; update tag-coverage metrics |
+| `globalTags` | Ontology Generation, Governance | Re-sync concept membership; update tag-coverage metrics |
 
 ## Error Handling & Resilience
 
@@ -297,7 +367,7 @@ subscribes to both topics. Messages are deserialized via `deserialize_mcl()` and
 
 ### Circuit Breaker
 
-For features that scan many datasets (Governance, Doc Generation clustering):
+For features that scan many datasets (Governance, Metadata Generation clustering):
 
 ```
 If 5 consecutive DataHub API calls fail:

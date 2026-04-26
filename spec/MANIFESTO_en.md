@@ -61,11 +61,11 @@ organization's specialized extension as a spoke on a wheel.
 - **Validation**: Registration, execution, and management of validation rules, including
   time-series rules. Supports dry-run validation, point-in-time historical validation, and
   real-time APIs.
-- **Ontology**: Beyond baseline data documentation (e.g. table descriptions), analyzes source code
-  (GitHub), SQL logs, external documents, and more to autonomously construct an ontology,
-  maintained in a graph DB and a vector DB.
-- **Doc Generation**: Based on the ontology, inspects the state of data documentation and proposes
-  documents via generative AI, including APIs and a review process.
+- **Ontology Generation**: Beyond baseline data documentation (e.g. table descriptions), analyzes
+  source code (GitHub), SQL logs, external documents, and more to autonomously construct an
+  ontology, maintained in a graph DB and a vector DB.
+- **Metadata Generation**: Based on the ontology, inspects the state of data documentation and
+  proposes metadata via generative AI, including APIs and a review process.
 - **Governance**: APIs for configuring and monitoring governance metrics such as documentation
   coverage and data freshness.
 

@@ -35,7 +35,7 @@ If none provided, ask the user which specs to analyze.
 
 Also read related specs for cross-reference context:
 - `spec/ARCHITECTURE.md` — system components, feature-to-architecture mapping
-- `spec/feature/API.md` — route catalogue (to know which API routes exist in spec)
+- `spec/API.md` — route catalogue (to know which API routes exist in spec)
 - Any other specs explicitly referenced by the target specs
 
 ### Step 2 — Inventory what exists
@@ -121,7 +121,7 @@ Collect the union of all spec files referenced across the issue set. Read each s
 
 Also read cross-reference context:
 - `spec/ARCHITECTURE.md`
-- `spec/feature/API.md`
+- `spec/API.md`
 - Any other specs explicitly referenced by the target specs
 
 ### Step 3 — Re-inventory implementation

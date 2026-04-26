@@ -1,14 +1,14 @@
 # DataSpoke API
 
 > This document is the master reference for the DataSpoke API — its route catalogue,
-> authentication model, request/response conventions, middleware stack, error catalogue,
-> and real-time channels.
+> authentication model, request/response conventions, middleware stack, and error
+> catalogue.
 >
-> Conforms to [MANIFESTO](../MANIFESTO_en.md) (highest authority).
-> Routing model defined in [ARCHITECTURE](../ARCHITECTURE.md).
-> Request/response conventions derive from [API_DESIGN_PRINCIPLE](../API_DESIGN_PRINCIPLE_en.md).
-> DataHub integration patterns are in [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md).
-> Backend services that implement these routes are in [BACKEND](BACKEND.md).
+> Conforms to [MANIFESTO](MANIFESTO_en.md) (highest authority).
+> Routing model defined in [ARCHITECTURE](ARCHITECTURE.md).
+> Request/response conventions derive from [API_DESIGN_PRINCIPLE](API_DESIGN_PRINCIPLE_en.md).
+> DataHub integration patterns are in [DATAHUB_INTEGRATION](DATAHUB_INTEGRATION.md).
+> Backend services that implement these routes are in [BACKEND](feature/BACKEND.md).
 
 ---
 
@@ -20,7 +20,6 @@
 4. [Request & Response Conventions](#request--response-conventions)
 5. [Middleware Stack](#middleware-stack)
 6. [Error Catalogue](#error-catalogue)
-7. [WebSocket Channels](#websocket-channels)
 
 ---
 
@@ -33,7 +32,7 @@ structure: baseline features defined in MANIFESTO §2.1 live under `/spoke/commo
 organization-specific routes.
 
 ```
-/api/v1/spoke/common/…     — Baseline features: ingestion, validation, ontology, generation
+/api/v1/spoke/common/…     — Baseline features: ingestion, validation, ontology generation, metadata generation
 /api/v1/spoke/de/…         — Reserved for Data Engineering extensions (no baseline routes)
 /api/v1/spoke/da/…         — Reserved for Data Analysis extensions (no baseline routes)
 /api/v1/spoke/dg/…         — Governance (metric, overview)
@@ -49,7 +48,7 @@ In the future, DataSpoke may also expose **redefined DataHub functions** — ble
 proxy DataHub's basic operations (e.g., dataset creation, metadata browsing, searching) while 
 simultaneously handling DataSpoke-specific data in a single call. These would appear under 
 `/spoke/common/data` as creation and modification routes (e.g., `POST /spoke/common/data`). 
-See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview) for details.
+See [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overview) for details.
 
 ```
 Browser / AI Agent
@@ -132,7 +131,7 @@ The current authentication implementation uses a stub identity store:
   Production deployments must set `secure=True`.
 
 All stub code is marked with `TBD(user-accounts)` comments. See
-[BACKEND §User Account Management](BACKEND.md#user-account-management-tbd)
+[BACKEND §User Account Management](feature/BACKEND.md#user-account-management-tbd)
 for the planned migration path.
 
 ### Auth Flow
@@ -148,10 +147,10 @@ enforces the `groups` claim against the URI tier before dispatching.
 
 ## Route Catalogue
 
-All routes are prefixed with `/api/v1`. Routes marked **WS** are WebSocket endpoints.
+All routes are prefixed with `/api/v1`.
 
 > **Routing principle**: Baseline features live under `/spoke/common/` (shared
-> dataset-centric operations: ingestion, validation, ontology, generation) and
+> dataset-centric operations: ingestion, validation, ontology generation, metadata generation) and
 > `/spoke/dg/` (governance metrics and overviews). The `/spoke/de/` and
 > `/spoke/da/` tiers exist as extensibility surfaces for organization-specific
 > routes and contain no baseline endpoints. For dataset-centric operations, the
@@ -176,15 +175,25 @@ All routes are prefixed with `/api/v1`. Routes marked **WS** are WebSocket endpo
 
 Baseline features consumed by all user groups.
 
-#### Ontology
+#### Ontology Generation
+
+The ontology is a global artifact, so its conf, manual run trigger, and inference-run
+event log are singletons rooted at `/spoke/common/ontogen` rather than under any
+dataset URN. Per-concept routes use `/spoke/common/ontogen/{concept_id}/...`.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ontology` | List concept categories | Ontology | UC3 |
-| `GET` | `/spoke/common/ontology/{concept_id}` | Get concept detail + relationships | Ontology | UC3 |
-| `GET` | `/spoke/common/ontology/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology | UC3 |
-| `GET` | `/spoke/common/ontology/{concept_id}/event` | Change history for a concept | Ontology | UC3 |
-| `POST` | `/spoke/common/ontology/{concept_id}/method/review` | Review a pending concept proposal — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology | UC3 |
+| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton inference conf (`is_enabled`, `schedule_tier`, `sources`, `dataset_filter`) | Ontology Generation | UC3 |
+| `PUT` | `/spoke/common/ontogen/attr/conf` | Create or replace inference conf | Ontology Generation | UC3 |
+| `PATCH` | `/spoke/common/ontogen/attr/conf` | Partially update inference conf | Ontology Generation | UC3 |
+| `DELETE` | `/spoke/common/ontogen/attr/conf` | Remove inference conf (effectively disables) | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference (`dry_run` in body for no-write mode); concurrent runs return `409 ONTOGEN_RUNNING` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen` | List concept categories | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/{concept_id}` | Get concept detail + relationships | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/{concept_id}/event` | Concept-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/{concept_id}/method/review` | Review a pending concept proposal — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
 
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
 
@@ -215,16 +224,15 @@ configurations.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | Validation | UC2, UC5 |
 | `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents) | Validation | UC2 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Get generation configuration (target fields, period, status) | Doc Generation | UC4 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Create or replace generation configuration | Doc Generation | UC4 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Partially update generation configuration | Doc Generation | UC4 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/gen/conf` | Remove generation configuration | Doc Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/gen/result` | Get generation proposals (historical; `?latest=true` for most recent only; `?approved=true` to filter to approved proposals) | Doc Generation | UC4 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/gen/result/{result_id}` | Approve (or reject, or partially approve specific fields of) a pending generation proposal — body: `{"verdict": "approve"\|"reject", "fields": [...] (optional, omit for full approval), "reason": "…"}`. On approval, DataSpoke writes the approved subset to DataHub. | Doc Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/gen/run` | Trigger metadata generation run | Doc Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/event/gen` | Generation event reports (success/failure notices) | Doc Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, period, status) | Metadata Generation | UC4 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace metadata generation configuration | Metadata Generation | UC4 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Partially update metadata generation configuration | Metadata Generation | UC4 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove metadata generation configuration | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/result` | Get metadata proposals (historical; `?latest=true` for most recent only; `?approved=true` to filter to approved proposals) | Metadata Generation | UC4 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/result/{result_id}` | Approve (or reject, or partially approve specific fields of) a pending metadata proposal — body: `{"verdict": "approve"\|"reject", "fields": [...] (optional, omit for full approval), "reason": "…"}`. On approval, DataSpoke writes the approved subset to DataHub. | Metadata Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/metagen/run` | Trigger metadata generation run | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Metadata generation event reports (success/failure notices) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation and gen) | Data Resource | — |
-| **WS** | `/spoke/common/data/{dataset_urn}/stream/validation` | Real-time validation progress stream | Validation | UC2 |
 
 #### Redefined DataHub Functions *(TBD)*
 
@@ -236,7 +244,7 @@ Future routes for blended dataset creation and modification. Example candidates:
 | `PATCH` | `/spoke/common/data/{dataset_urn}` | Update dataset metadata — blend DataHub aspect writes with DataSpoke-specific updates |
 
 These routes are **not yet defined**; scope and design will be specified when the feature is
-planned. See [DATAHUB_INTEGRATION §Key principles](../DATAHUB_INTEGRATION.md#overview).
+planned. See [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overview).
 
 #### Ingestion (`/spoke/common/ingestion`)
 
@@ -247,8 +255,8 @@ with the ingestion attributes stored under `common/data/{dataset_urn}/attr/inges
 DataSpoke ingestion implements source-agnostic metadata extraction built on DataHub's
 entity-aspect model — connecting to heterogeneous data sources and emitting results as
 standard DataHub aspects. Design framework, source abstraction model, and aspect emission
-details: see [BACKEND §Ingestion Service](BACKEND.md#ingestion-service-srcbackendingestion)
-and [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
+details: see [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)
+and [DATAHUB_INTEGRATION §Aspect Reference](DATAHUB_INTEGRATION.md#aspect-reference).
 
 Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
 surface: `attr/ingestion/conf` (CRUD), `method/ingestion/run`, `event/ingestion`.
@@ -267,8 +275,8 @@ DataSpoke validation is a convenience and customization layer on top of DataHub'
 assertion framework and the Open Assertions Spec — wrapping all six assertion types and
 adding DataSpoke-original extensions (partition awareness, ML-based anomaly detection).
 Design framework, assertion type catalogue, and comparison with DataHub native assertions:
-see [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)
-and [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
+see [BACKEND §Validation Service](feature/BACKEND.md#validation-service-srcbackendvalidation)
+and [DATAHUB_INTEGRATION §Assertion Aspects](DATAHUB_INTEGRATION.md#assertion-aspects).
 
 Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
 surface: `attr/validation/{conf,result}`, `method/validation/run`, `event/validation`.
@@ -277,19 +285,19 @@ surface: `attr/validation/{conf,result}`, `method/validation/run`, `event/valida
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf and latest result) (paginated, filterable) | Validation | UC2, UC5 |
 
-#### Generation (`/spoke/common/gen`)
+#### Metadata Generation (`/spoke/common/metagen`)
 
-A cross-dataset list view of generation attributes. Each row combines dataset identity
-with the generation attributes stored under `common/data/{dataset_urn}/attr/gen/*`
-(`conf` and latest `result`). Useful for monitoring generation status across all datasets
-and bulk management.
+A cross-dataset list view of metadata generation attributes. Each row combines dataset
+identity with the metadata generation attributes stored under
+`common/data/{dataset_urn}/attr/metagen/*` (`conf` and latest `result`). Useful for
+monitoring generation status across all datasets and bulk management.
 
 Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
-surface: `attr/gen/{conf,result}` (PATCH on `result/{result_id}` performs review), `method/gen/run`, `event/gen`.
+surface: `attr/metagen/{conf,result}` (PATCH on `result/{result_id}` performs review), `method/metagen/run`, `event/metagen`.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/gen` | List generation attributes across datasets — each row aggregates the per-dataset `attr/gen/*` (conf and latest result) (paginated, filterable) | Doc Generation | UC4 |
+| `GET` | `/spoke/common/metagen` | List metadata generation attributes across datasets — each row aggregates the per-dataset `attr/metagen/*` (conf and latest result) (paginated, filterable) | Metadata Generation | UC4 |
 
 ### Data Governance (`/spoke/dg`)
 
@@ -307,8 +315,8 @@ department-wide signals rather than per-dataset observations.
 Metrics are read-only consumers of DataHub metadata — they never write aspects or connect
 to source databases. Design framework (observatory pattern, governance
 dimensions), built-in metric types, and extensibility model: see
-[BACKEND §Metrics Service](BACKEND.md#metrics-service-srcbackendmetrics) and
-[DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
+[BACKEND §Metrics Service](feature/BACKEND.md#metrics-service-srcbackendmetrics) and
+[DATAHUB_INTEGRATION §Aspect Usage by Feature](DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
 **`measurement_query.dataset_filter`**: Optional filter object in the metric definition.
 Fields: `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary
@@ -318,16 +326,15 @@ are included in the measurement. Filters are OR-ed across all dimensions.
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, active status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, active status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, active status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, enabled status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, enabled status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, enabled status) | Governance | UC5 |
 | `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Governance | UC5 |
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Governance | UC5 |
 | `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
-| **WS** | `/spoke/dg/metric/stream` | Real-time metric update stream | Governance | UC5 |
 
 #### Overview (`/spoke/dg/overview`)
 
@@ -536,35 +543,7 @@ All errors follow the standard envelope:
 | `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
+| `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |
-
----
-
-## WebSocket Channels
-
-WebSocket connections follow the same authentication model as REST: the client must send
-a valid JWT in the first message after opening the connection.
-
-### Connection Handshake
-
-After the WebSocket upgrade, the client's first message must be
-`{"type":"auth","token":"<access_token>"}`. The server validates the JWT and replies with
-`{"type":"auth_ok"}`, then streams `progress` / `result` messages and closes on completion.
-If auth fails the server sends `{"type":"auth_error","error_code":"UNAUTHORIZED"}` and closes.
-
-### Validation Progress Stream (`/spoke/common/data/{dataset_urn}/stream/validation`)
-
-Messages sent during a validation run use three `type` values:
-
-- `progress` — `{rule_id, pct, msg}` per rule as it evaluates.
-- `rule_result` — `{rule_id, assertion_result (SUCCESS|FAILURE|ERROR), partition, values,
-  validation?}` when a rule completes (`validation` carries ML verdicts when present).
-- `summary` — `{status, total, passed, failed}` when the run finishes.
-
-### Metric Update Stream (`/spoke/dg/metric/stream`)
-
-Pushed when the Airflow metrics DAG completes a measurement run. Fields: `run_id` (Airflow
-DAG run ID or null), `status` (execution outcome), `detail` (run metadata including
-`metric_id` and measured `value`).

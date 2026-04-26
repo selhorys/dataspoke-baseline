@@ -2,7 +2,7 @@
 
 > Conforms to [MANIFESTO](../MANIFESTO_en.md) (highest authority).
 > Architecture context in [ARCHITECTURE](../ARCHITECTURE.md).
-> API routes in [API](API.md). Backend services in [BACKEND](BACKEND.md).
+> API routes in [API](../API.md). Backend services in [BACKEND](BACKEND.md).
 
 ---
 
@@ -139,7 +139,7 @@ Users with a single group are auto-redirected to that workspace.
 ## Authentication
 
 Uses JWT tokens issued by `POST /auth/token`.
-See [API.md §Authentication](API.md#authentication--authorization) for the full auth model.
+See [API.md §Authentication](../API.md#authentication--authorization) for the full auth model.
 
 ### Login Page
 

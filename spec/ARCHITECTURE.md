@@ -120,7 +120,7 @@ FastAPI auto-generates OpenAPI 3.0 documentation from Pydantic models and route 
   always-in-sync API knowledge.
 - Frontend development references the live ReDoc UI (`/redoc`) or reads `src/api/routers/` for
   the current contract.
-- Feature specs in `spec/feature/API.md` define the architectural route catalogue; the
+- The API spec at `spec/API.md` defines the architectural route catalogue; the
   implementation must conform to it.
 
 ### 4. Layer Separation
@@ -167,8 +167,8 @@ Three-tier URI structure:
 
 Supports RESTful CRUD and WebSocket channels for real-time streaming (alerts, validation progress).
 
-For the complete route catalogue, JWT authentication model, middleware stack, error catalogue,
-and WebSocket channel specs, see [`spec/feature/API.md`](feature/API.md).
+For the complete route catalogue, JWT authentication model, middleware stack, and error
+catalogue, see [`spec/API.md`](API.md).
 
 ### 3. DataSpoke Backend / Pipeline
 

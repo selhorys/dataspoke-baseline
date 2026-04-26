@@ -78,7 +78,7 @@ The directories below are **starting points** — always glob the actual tree to
 | `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `CLAUDE.md`, all skill declarations across `.claude/skills/` | `.claude/` settings/hooks/agents, all skill logic bodies |
 | `dev-env` | `spec/feature/DEV_ENV.md`, dev-env skill declaration, `dev_env/README.md` | `dev_env/` scripts and helpers, dev-env skill logic body |
 | `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/` charts, values, and templates |
-| `api` | `spec/feature/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
+| `api` | `spec/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
 | `ref` | `spec/AI_SCAFFOLD.md` (ref section), ref-setup skill declaration, `ref/README.md` | `ref/` setup scripts and reference materials, ref-setup skill logic body |
 | `backend` | TBD | TBD |
 | `frontend` | TBD | TBD |
@@ -178,7 +178,7 @@ Present a structured summary before making changes:
 | ... | ... | ... | ... | ... |
 
 #### Spec Gaps in Implementation (not auto-fixed)
-- spec/feature/API.md requires endpoint X, but src/api/routers/ doesn't implement it
+- spec/API.md requires endpoint X, but src/api/routers/ doesn't implement it
 
 ### High-Level Spec Impact
 - CLAUDE.md: <no change needed | brief update proposed>

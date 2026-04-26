@@ -140,7 +140,7 @@ When the same content appears in multiple places, use this priority to decide wh
 | Content type | Primary owner | Others get |
 |---|---|---|
 | Architecture diagrams | `spec/ARCHITECTURE.md` | One-line pointer |
-| API route catalogue | `spec/feature/API.md` | One-line pointer |
+| API route catalogue | `spec/API.md` | One-line pointer |
 | Service responsibilities | `spec/feature/BACKEND.md` | Brief summary (1-2 lines) |
 | Directory trees | Nowhere (read the filesystem) | Remove entirely |
 | Test execution groups | `spec/TESTING.md` + `CLAUDE.md` summary | Pointer to TESTING.md |

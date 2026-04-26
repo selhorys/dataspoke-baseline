@@ -307,7 +307,7 @@ group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).
 ### References
 
 - Valid URNs and request payloads: existing spot tests in `tests/integration/api_wired/spot/`
-- Full route catalogue: `spec/feature/API.md`
+- Full route catalogue: `spec/API.md`
 - Imazon test data: [Test Data Design](#test-data-design) below
 
 ### Teardown

@@ -2,7 +2,7 @@
 
 > Conforms to [MANIFESTO](../MANIFESTO_en.md) (highest authority).
 > Layout and shared components in [FRONTEND_BASIC](FRONTEND_BASIC.md).
-> API routes in [API](API.md). Backend services in [BACKEND](BACKEND.md).
+> API routes in [API](../API.md). Backend services in [BACKEND](BACKEND.md).
 
 ---
 
