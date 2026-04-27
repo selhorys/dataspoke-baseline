@@ -467,7 +467,9 @@ UI는 Markdown으로 렌더링한다.
 > - **제목 변경(retitle)** — 기존 `dataProduct`의 제목(과 URN) 변경을 제안한다.
 >   신규 생성과 함께 제안할 수도 있다.
 >
-> 리뷰어는 각 액션을 동일한 PATCH 메커니즘으로 개별 승인·편집·거부한다.
+> 각 액션은 result 페이로드 안에 안정적인 `action_id`를 가진다. 리뷰어는 각 액션을
+> 필드별 제안과 동일한 PATCH 메커니즘으로 개별 승인·편집·거부하며, `fields` 배열은
+> 액션을 `cross_data.md.<action_id>` 형식으로 참조한다.
 
 ### API Mapping
 
@@ -526,9 +528,10 @@ column.description 제안(markdown):
 cross_data.md actions:
   검토한 기존 dataProduct: (없음)
   제안:
-    - action: create
-      title:  "주문이 도서를 어떻게 참조하는가"
-      body:   "`orders.line_items.book_id`는 `catalog.books.book_id`와 조인된다 ..."
+    - action_id: a1
+      action:    create
+      title:     "주문이 도서를 어떻게 참조하는가"
+      body:      "`orders.line_items.book_id`는 `catalog.books.book_id`와 조인된다 ..."
       confidence: 0.81
 ```
 
@@ -551,7 +554,8 @@ PATCH .../attr/metagen/result/7e8b…
 ```
 
 두 번째 PATCH는 편집한 `author` 설명을 승인하고,
-세 번째 PATCH는 제안된 `cross_data.md` create 액션을 사유와 함께 거부한다.
+세 번째 PATCH는 제안된 `cross_data.md` create 액션을
+`{"verdict": "reject", "fields": ["cross_data.md.a1"], "reason": "..."}`로 거부한다.
 DataSpoke는 같은 호출 안에서 승인된 액션을 DataHub에 기록한다.
 
 이후 팀은 제안 라이프사이클을 관찰한다:

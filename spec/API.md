@@ -324,6 +324,10 @@ dimensions), built-in metric types, and extensibility model: see
 [BACKEND §Metrics Service](feature/BACKEND.md#metrics-service-srcbackendmetrics) and
 [DATAHUB_INTEGRATION §Aspect Usage by Feature](DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
+**`metric_id`**: Kebab-case slug, system-generated or user-supplied (e.g.
+`ingestion-freshness`, `validation-score`). Used in route paths and as the DAG-name
+suffix `metrics-{metric_id}`.
+
 **`measurement_query.dataset_filter`**: Optional filter object in the metric definition.
 Fields: `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary
 term URNs). When specified, only datasets matching ANY of the listed tags or glossary terms

@@ -435,8 +435,10 @@ Future scope (mentioned, not modelled here): proposals for `domains` and `global
 > - **retitle** — change the title (and URN) of an existing `dataProduct`, optionally
 >   alongside new creations.
 >
-> The reviewer approves, edits, or rejects each action individually via the same PATCH
-> mechanism used for per-field proposals.
+> Each action carries a stable `action_id` in the result payload. The reviewer
+> approves, edits, or rejects each action individually via the same PATCH mechanism
+> used for per-field proposals — the `fields` array references actions as
+> `cross_data.md.<action_id>`.
 
 ### API Mapping
 
@@ -495,9 +497,10 @@ column.description proposals (markdown):
 cross_data.md actions:
   Existing dataProducts considered: (none)
   Proposed:
-    - action: create
-      title:  "How orders reference books"
-      body:   "`orders.line_items.book_id` joins to `catalog.books.book_id` ..."
+    - action_id: a1
+      action:    create
+      title:     "How orders reference books"
+      body:      "`orders.line_items.book_id` joins to `catalog.books.book_id` ..."
       confidence: 0.81
 ```
 
@@ -520,8 +523,9 @@ PATCH .../attr/metagen/result/7e8b…
 ```
 
 A second PATCH approves an edited `author` description; a third PATCH rejects the
-proposed `cross_data.md` create action with a reason. DataSpoke writes each approved
-action to DataHub on the same call.
+proposed `cross_data.md` create action with `{"verdict": "reject", "fields":
+["cross_data.md.a1"], "reason": "..."}`. DataSpoke writes each approved action to
+DataHub on the same call.
 
 The team can then watch the proposal lifecycle:
 
