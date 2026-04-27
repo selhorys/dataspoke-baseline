@@ -3,8 +3,9 @@
 > This document specifies the storage contracts shared across all DataSpoke
 > backend processes (API server, Airflow activity endpoints, event consumers):
 > PostgreSQL tables (including pgvector embeddings) and related indexes.
-> The same PostgreSQL instance also has the Apache AGE extension installed for
-> future graph workloads; no AGE tables are defined yet.
+> The same PostgreSQL instance also has the Apache AGE extension installed.
+> The Ontology Generation service materialises `ontogen_triples` as graph edges in
+> AGE for traversal queries; the relational tables remain the source of truth.
 >
 > Companion to [BACKEND](BACKEND.md) (service logic, workflows, shared clients).
 > Architecture context in [ARCHITECTURE](../ARCHITECTURE.md).
@@ -39,7 +40,7 @@ Stores per-dataset ingestion configuration.
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `mode` | `TEXT` | `active` (DataSpoke runs the extractor) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `datahub-ingestion-status-sync` DAG) |
+| `mode` | `TEXT` | `active` (DataSpoke runs the extractor) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `ingestion-passive-sync-hourly` DAG) |
 | `platform` | `TEXT` | DataHub platform name (`postgres`, `kafka`, `mysql`, `bigquery`, etc.) |
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
@@ -146,53 +147,87 @@ Singleton row holding the Ontology Generation conf (UC3).
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence (required when `is_enabled=true`) |
 | `sources` | `JSONB` | Input sources — at minimum `["datahub_aspects"]`; optional `sql_logs`, `github_repos`, `external_docs` |
 | `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...]}`; same shape as `metric_definitions.measurement_query.dataset_filter` |
+| `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-#### `concepts`
+#### `ontogen_seeds`
 
-Single-level peer concepts. Concepts are not nested — there is no parent/child
-hierarchy in the baseline ontology.
+Human-authored Markdown documents that steer the inference pipeline. The endpoint
+accepts and returns raw Markdown (`Content-Type: text/markdown`); only metadata is
+managed out-of-band.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `TEXT` PK | Concept identifier (slug, e.g. `book`, `customer`, `order_line`) |
-| `name` | `TEXT` UNIQUE | Concept display name |
-| `description` | `TEXT` | LLM-generated concept description |
-| `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
+| `id` | `UUID` PK | Server-assigned `seed_id` |
+| `body_md` | `TEXT` | Raw Markdown body |
+| `status` | `TEXT` | `active` or `retired` |
+| `created_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+#### `ontogen_nodes`
+
+Subjects / objects of the ontology — business concepts rooted in one or more datasets.
+There is no parent/child hierarchy.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `TEXT` PK | Node identifier (slug, e.g. `book`, `customer`, `order_line`) |
+| `name` | `TEXT` UNIQUE | Node display name |
+| `description` | `TEXT` | LLM-generated description |
+| `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
 | `glossary_term_urn` | `TEXT` NULL | DataHub glossary term URN attached on approval; `null` while pending |
 | `evidence` | `JSONB` NULL | Snapshot of LLM evidence (signals from each input source) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-#### `dataset_concept_map`
+#### `dataset_node_map`
 
-Maps datasets to peer concepts with confidence scores.
+Maps datasets to nodes with confidence scores.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Dataset URN |
-| `concept_id` | `TEXT` PK, FK | Concept |
+| `node_id` | `TEXT` PK, FK → `ontogen_nodes(id)` | Node |
 | `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
 | `status` | `TEXT` | `approved`, `pending` (pending if confidence < `ONTOLOGY_CONFIDENCE_THRESHOLD`) |
-| `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the concept |
+| `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node |
 | `created_at` | `TIMESTAMPTZ` | |
 
-#### `concept_relationships`
+#### `ontogen_edges`
 
-Cross-concept relationships (edges in the ontology graph). Relationships are also
-materialised in Apache AGE for graph queries; this relational table is the source of
-truth for review status.
+Predicates / relationship types — the verb vocabulary used by triples. An edge stands
+on its own and is reused across many triples.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Relationship identifier |
-| `concept_a` | `TEXT` FK | Source concept |
-| `concept_b` | `TEXT` FK | Target concept |
-| `relationship_type` | `TEXT` | LLM-inferred edge label (e.g. `references`, `placed_by`) |
-| `confidence_score` | `REAL` | LLM inference confidence |
-| `status` | `TEXT` | `approved`, `pending`, `rejected` |
+| `id` | `TEXT` PK | Edge identifier (slug, e.g. `references`, `placed_by`) |
+| `label` | `TEXT` UNIQUE | Edge display label |
+| `semantics` | `TEXT` NULL | LLM-generated short semantics description |
+| `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
+| `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
+| `evidence` | `JSONB` NULL | Snapshot of LLM evidence |
 | `created_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+#### `ontogen_triples`
+
+`(subject_node, edge, object_node)` facts. Triples are also materialised in Apache AGE
+for graph queries; this relational table is the source of truth for review status. A
+triple may only be approved when both endpoint nodes (FK to `ontogen_nodes`) and the
+edge (FK to `ontogen_edges`) are themselves `approved`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `UUID` PK | Triple identifier |
+| `subject_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Subject node |
+| `edge_id` | `TEXT` FK → `ontogen_edges(id)` | Predicate edge |
+| `object_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Object node |
+| `confidence_score` | `REAL` | LLM inference confidence |
+| `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
+| `evidence` | `JSONB` NULL | Snapshot of LLM evidence |
+| `created_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
 
 #### `metric_definitions`
 
@@ -231,24 +266,25 @@ structure so clients can process them generically (see
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Event identifier |
-| `entity_type` | `TEXT` | `dataset`, `metric`, `concept`, `ontogen` (singleton conf) — classifies the entity, not the feature domain |
-| `entity_id` | `TEXT` | URN or metric/concept ID; for `entity_type='ontogen'` the literal string `singleton` |
-| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `CONCEPT.APPROVE`, `METAGEN.APPROVE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
+| `entity_type` | `TEXT` | `dataset`, `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds) — classifies the entity, not the feature domain |
+| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events) |
+| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `NODE.APPROVE`, `TRIPLE.APPROVE`, `METAGEN.APPROVE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |
 
 **Filtering convention**: `entity_type` identifies what the entity *is* (a
-dataset, a metric, a concept, the ontogen singleton). Ingestion, validation,
-and metadata generation are *attributes* of a dataset, so their events use
-`entity_type=dataset`. The dataset-level event endpoint
+dataset, a metric, an ontology node / edge / triple, the ontogen singleton).
+Ingestion, validation, and metadata generation are *attributes* of a dataset, so
+their events use `entity_type=dataset`. The dataset-level event endpoint
 (`GET .../data/{urn}/event`) filters by `entity_type=dataset` to return all
 event types for that dataset. Sub-resource event endpoints (e.g.,
 `.../event/ingestion`, `.../event/metagen`) additionally filter by `event_type`
 prefix (e.g., `INGESTION.%`, `METAGEN.%`) to return only domain-specific events.
 The Ontology Generation singleton uses `entity_type=ontogen` and `entity_id='singleton'`
-for run-level events surfaced at `/spoke/common/ontogen/event`; per-concept events use
-`entity_type=concept` and the concept ID.
+(conf) or `entity_id='seed:{seed_id}'` (seed events) for the global event log surfaced
+at `/spoke/common/ontogen/event`; per-result events use `entity_type=node|edge|triple`
+and the corresponding ID.
 
 #### `department_mapping`
 
@@ -281,8 +317,8 @@ Singleton configuration for the multi-perspective overview visualization.
 | `metagen_results` | `(dataset_urn, generated_at DESC)` | Time-range queries on results |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
-| `dataset_concept_map` | `(concept_id)` | Concept-to-datasets lookup |
-| `concept_relationships` | `(concept_a)`, `(concept_b)` | Edge lookup in either direction |
+| `dataset_node_map` | `(node_id)` | Node-to-datasets lookup |
+| `ontogen_triples` | `(subject_node_id)`, `(object_node_id)`, `(edge_id)` | Triple lookup by any participant |
 
 ---
 
@@ -328,11 +364,42 @@ endpoint.
 (session-factory backed) returning `VectorHit` dataclasses. Collection name is
 whitelisted against `EMBEDDING_COLLECTION` to prevent arbitrary table access.
 
+### `node_embeddings`
+
+Embeddings over ontology nodes for similarity recall. Used by Ontology Generation
+inference to detect when a candidate node duplicates an already-approved node so the
+existing node ID can be reused (incremental inference; see
+[BACKEND §Inference Pipeline](BACKEND.md#ontology-generation-service-srcbackendontogen)).
+Lives in the `dataspoke` schema.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `node_id` | `TEXT` PK FK → `ontogen_nodes(id)` | Node identifier |
+| `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time (provider-determined, e.g. 1536) |
+| `name` | `TEXT` | Cached node name (denormalised for query convenience) |
+| `status` | `TEXT` | Cached node status (`approved`, `pending_review`, `rejected`) — reuse lookups filter to `approved` |
+| `updated_at` | `TIMESTAMPTZ` NOT NULL | Last embedding refresh |
+
+**Index**: `node_embeddings_embedding_hnsw_idx` — HNSW over `embedding` with
+`vector_cosine_ops`. Similarity query expression:
+`GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector))`.
+
+**Embedding input**: Concatenation of node name, description, and the
+schemas / descriptions of its member datasets. Processed through the LLM embedding
+endpoint.
+
+**Sync triggers**:
+- Refreshed by the `ontogen-periodic-*` tier DAG: every approved node whose
+  `node_embeddings.updated_at` precedes `ontogen_nodes.updated_at` is re-embedded
+- On-demand: rebuilt as part of an `ontogen` manual run when name or description
+  changed for an approved node
+
 ### Graph (Apache AGE, reserved)
 
 The `age` extension is installed and preloaded (`shared_preload_libraries = 'age'`),
 and `ag_catalog` usage is granted to the application role. The Ontology Generation
-service materialises `concept_relationships` as edges in an AGE graph for cross-concept
-graph traversal queries (used by the governance overview's ontology-graph view). The
-relational `concept_relationships` table remains the source of truth for review status;
-AGE is the read-side replica for graph-shaped queries.
+service materialises `ontogen_triples` as `(subject_node)-[edge]->(object_node)` edges
+in an AGE graph for cross-node graph traversal queries (used by the governance
+overview's ontology-graph view). The relational `ontogen_triples` table remains the
+source of truth for review status; AGE is the read-side replica for graph-shaped
+queries.

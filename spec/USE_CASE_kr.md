@@ -81,19 +81,10 @@ DataSpoke는 두 모드를 모두 지원한다.
 - **Passive** — 외부 시스템이 DataHub에 직접 인제스트한다.
   DataSpoke는 추출기를 실행하지 않고,
   데이터셋의 인제스천 설정을 `mode: passive`로 표시할 뿐이다.
-  `datahub-ingestion-status-sync` Airflow DAG이 **시간마다** 실행되어,
+  `ingestion-passive-sync-hourly` Airflow DAG이 **시간마다** 실행되어,
   passive로 표시된 모든 데이터셋의 DataHub 인제스천 실행 이력을 폴링하고
   결과 상태를 `event/ingestion`에 한 행씩 기록한다.
   덕분에 클라이언트 입장에서는 모드와 무관하게 동일한 API surface로 보인다.
-
-> *(하위 사양 후속 반영 필요)*
-> 여기서 도입한 `mode: active | passive` 필드와
-> `datahub-ingestion-status-sync` DAG은
-> `API.md`, `feature/BACKEND.md`, `feature/BACKEND_SCHEMA.md`에
-> 후속 반영이 필요하다 —
-> `ingestion_configs`에 `mode` 필드를 모델링하고,
-> 동기화 DAG을 등록하고,
-> DataHub 실행 이력이 `event/ingestion`에 어떻게 매핑되는지 기술해야 한다.
 
 ### API Mapping
 
@@ -155,7 +146,7 @@ DataSpoke가 추출기를 돌리지 않기 때문이다.
 외부 데이터 파이프라인(DataSpoke 외부의 Airflow DAG)이
 스키마와 속성을 DataHub로 직접 emit한다.
 
-매시간 DataSpoke의 `datahub-ingestion-status-sync` DAG이
+매시간 DataSpoke의 `ingestion-passive-sync-hourly` DAG이
 passive 표시된 데이터셋의 DataHub 실행 이력을 폴링해
 events 테이블에 한 행씩 기록한다.
 Imazon은 동일한 API로 이벤트를 읽는다:
@@ -298,20 +289,27 @@ graph DB와 vector DB에 유지한다.*
 ### User Story
 
 > *분석가 또는 거버넌스 멤버로서*,
-> *DataSpoke가 데이터셋 전반에 존재하는 비즈니스 개념과
-> 그 사이의 관계를 자율적으로 추론해 주기를 원한다*,
+> *DataSpoke가 데이터셋 전반에 존재하는 비즈니스 개념(주어·목적어),
+> 관계 유형(술어), 그리고 그것들을 잇는 구체적인 사실(트리플)을
+> 자율적으로 추론해 주기를 원한다*,
 > *그래서* 개념 단위로 데이터셋을 탐색하고,
-> 제안을 승인 전에 리뷰할 수 있도록 한다.
+> 의미 있는 관계를 둘러보고,
+> 각 레이어를 승인 전에 리뷰할 수 있도록 한다.
 
-베이스라인 온톨로지는 **단일 레벨**이다 —
-개념은 동등한 peer이며 중첩되지 않는다.
-관계는 개념 간 엣지로 표현되고,
-멤버 데이터셋은 각 개념 아래에 나열된다.
+베이스라인 온톨로지는 **주어 / 술어 / 목적어 트리플 모델**을 따르며,
+서로 독립적으로 리뷰되는 세 결과 유형을 가진다.
+
+- **Node** — *주어* 또는 *목적어*: 한 개 이상의 데이터셋에 뿌리를 둔
+  비즈니스 개념(예: `BOOK`, `CUSTOMER`).
+- **Edge** — *술어*: 관계 유형(예: `references`, `placed_by`).
+- **Triple** — `(subject_node, edge, object_node)` 사실. 트리플은 사전에 승인된
+  노드와 엣지로만 구성되므로, 개념 어휘를 한 번 승인해 여러 사실에서 재사용한다.
+
+노드와 엣지 ID는 slug(`book`, `placed_by`)이며, 트리플 ID는 UUID이다.
 
 **Conf는 싱글톤.** UC1 / UC2 / UC4의 데이터셋별 conf와 달리, 온톨로지는 글로벌
-아티팩트이므로 conf는 데이터셋 URN 아래가 아니라
-`/spoke/common/ontogen/attr/conf`에 위치한다. conf는 추론 DAG 실행 시점, 사용 입력
-소스, 스코프 데이터셋을 제어한다.
+아티팩트이다. `/spoke/common/ontogen/attr/conf`의 운영 conf는 추론 DAG 실행 시점,
+사용 입력 소스, 스코프 데이터셋을 제어한다.
 
 | `attr/conf` 필드 | 용도 |
 |---|---|
@@ -319,24 +317,65 @@ graph DB와 vector DB에 유지한다.*
 | `schedule_tier` | `hourly` / `daily` / `weekly` 재추론 주기 |
 | `sources` | 사용할 입력 소스 — 최소 `datahub_aspects`; 선택적으로 `sql_logs`, `github_repos`, `external_docs` |
 | `dataset_filter` | 선택적 스코프 필터 — `tags`(DataHub 태그 URN 리스트)와 `glossary_terms`(glossary term URN 리스트); UC5의 `measurement_query.dataset_filter`와 동일 형태 |
+| `default_run_prompt` | 본문 없이 호출되는 실행(주기적 Airflow 실행, 본문 없는 수동 `POST /method/run`)의 일회성 프롬프트로 사용되는 선택적 Markdown 문자열. null이면 기본값 비활성 |
+
+**Seed가 추론을 안내한다.** seed는 데이터 소스와 함께 추론 실행이 소비하는
+사람이 작성한 **Markdown 문서**(프롬프트, 도메인 힌트, 명명 규칙)이다.
+seed 본문(요청·응답 모두)은 원시 Markdown(`Content-Type: text/markdown`)이며,
+`seed_id`와 타임스탬프만 별도로 관리된다.
+여러 seed가 공존할 수 있다. POST는 생성(서버가 `seed_id` 부여),
+PATCH는 문서 교체, DELETE는 폐기한다.
 
 **실행 시맨틱.** 추론 실행은 직렬화된다: 실행 중에 `method/run`을 다시 부르면
-`409 ONTOGEN_RUNNING`을 반환한다. `dry_run: true`는 추론을 평가하고 변경 사항을
-기록하지 않으므로, `sources`나 `dataset_filter` 변경의 효과를 적용 전에 미리 보는
-데 유용하다.
+`409 ONTOGEN_RUNNING`을 반환한다. `?dry_run=true`는 추론을 평가하고 노드 / 엣지 /
+트리플 결과를 기록 없이 반환하므로, `sources`·`seed`·`dataset_filter` 변경의
+효과를 적용 전에 미리 보는 데 유용하다.
+
+**증분 추론.** 각 실행은 기존의 **승인된** 노드·엣지·트리플을 기반으로 시작한다 —
+LLM이 매번 온톨로지를 처음부터 다시 도출하지 않는다.
+새 제안은 그 위에 쌓인다: 후보가 이름 또는 임베딩 유사도(`node_embeddings`)로
+승인된 노드와 일치하면 기존 노드 ID를 재사용하고, 그렇지 않으면 새 pending 노드로
+제안한다. 엣지와 트리플도 동일한 재사용 규칙을 따른다.
+거부·대기 상태의 결과는 입력으로 이월되지 않는다.
+
+**일회성 실행 프롬프트.** `POST /method/run`은 Markdown 본문(`Content-Type: text/markdown`)을
+실을 수 있으며, 영속 seed 위에 해당 실행에만 적용되는 일회성 프롬프트로 작동한다.
+저장되지 않는다. seed로 굳히지 않은 채 "이번 한 번만 조정해 본다"는 실험에 쓴다.
+
+**기본 일회성 프롬프트.** 본문을 직접 싣지 않는 실행 — 주기적 Airflow 실행과 본문이
+빈 수동 `POST /method/run` — 은 `attr/conf.default_run_prompt`(Markdown)로 폴백한다.
+"매 스케줄 실행을 어떻게 조정할지"의 지침은 여기에 적는다.
+수동 실행에서 본문을 명시하면 기본값을 덮어쓰며, 빈 본문은 항상 기본값을 사용한다.
+
+**리뷰 의존성.** 트리플은 양쪽 끝 노드와 엣지가 모두 승인되기 전에는 승인할 수 없다.
+선행 승인 없이 시도하면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`을 반환한다.
+따라서 리뷰어는 일반적으로 **노드 → 엣지 → 트리플** 순서로 처리한다.
 
 ### API Mapping
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/ontogen/attr/conf` | 싱글톤 conf — 위 필드 표 참조 |
-| `POST /spoke/common/ontogen/method/run` | 수동 재추론 트리거; `dry_run: true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
+| `PUT/PATCH/GET/DELETE /spoke/common/ontogen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
+| `GET /spoke/common/ontogen/attr/seed` | seed 리스트 — `[{seed_id, updated_at, preview}]` (Markdown 본문은 아래 항목으로 개별 조회) |
+| `POST /spoke/common/ontogen/attr/seed` | 추론 seed 생성 — 본문은 원시 Markdown(`Content-Type: text/markdown`); 서버가 `seed_id` 부여 |
+| `GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` | seed 조회·보강·폐기 |
+| `POST /spoke/common/ontogen/method/run` | 수동 재추론 트리거. 선택적 `Content-Type: text/markdown` 본문은 해당 실행에만 적용되는 일회성 프롬프트로 작동; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
 | `GET /spoke/common/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) |
-| `GET /spoke/common/ontogen` | 개념 리스트(confidence·상태 포함) |
-| `GET /spoke/common/ontogen/result/{concept_id}` | 멤버 데이터셋과 발신 관계 포함 개념 상세 |
-| `GET /spoke/common/ontogen/result/{concept_id}/attr` | 개념 속성(confidence, 근거) |
-| `GET /spoke/common/ontogen/result/{concept_id}/event` | 개념 변경 이력(제안 → 승인/거부, 멤버 추가) |
-| `POST /spoke/common/ontogen/result/{concept_id}/method/review` | 대기 중 개념 제안의 승인·거부 |
+| `GET /spoke/common/ontogen/result/node` | 노드(주어 / 목적어) 리스트(confidence·상태 포함) |
+| `GET /spoke/common/ontogen/result/node/{node_id}` | 멤버 데이터셋 포함 노드 상세 |
+| `GET /spoke/common/ontogen/result/node/{node_id}/attr` | 노드 속성(confidence, 근거) |
+| `GET /spoke/common/ontogen/result/node/{node_id}/event` | 노드 변경 이력(제안 → 승인/거부, 멤버 추가) |
+| `POST /spoke/common/ontogen/result/node/{node_id}/method/review` | 대기 중 노드 제안의 승인·거부 |
+| `GET /spoke/common/ontogen/result/edge` | 엣지(술어) 리스트(confidence·상태 포함) |
+| `GET /spoke/common/ontogen/result/edge/{edge_id}` | 엣지 상세 |
+| `GET /spoke/common/ontogen/result/edge/{edge_id}/attr` | 엣지 속성(confidence, 근거) |
+| `GET /spoke/common/ontogen/result/edge/{edge_id}/event` | 엣지 변경 이력 |
+| `POST /spoke/common/ontogen/result/edge/{edge_id}/method/review` | 대기 중 엣지 제안의 승인·거부 |
+| `GET /spoke/common/ontogen/result/triple` | 트리플 — `(subject_node_id, edge_id, object_node_id)` 사실 — 리스트(confidence·상태 포함) |
+| `GET /spoke/common/ontogen/result/triple/{triple_id}` | 해석된 주어 노드·엣지·목적어 노드 포함 트리플 상세 |
+| `GET /spoke/common/ontogen/result/triple/{triple_id}/attr` | 트리플 속성(confidence, 근거) |
+| `GET /spoke/common/ontogen/result/triple/{triple_id}/event` | 트리플 변경 이력 |
+| `POST /spoke/common/ontogen/result/triple/{triple_id}/method/review` | 대기 중 트리플 승인·거부 — 주어 노드·엣지·목적어 노드 중 하나라도 미승인이면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
 
 ### Imazon 예시
 
@@ -354,59 +393,76 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 }
 ```
 
+**Seed.** LLM이 서점 도메인 친화적인 이름을 쓰도록 도메인 seed(Markdown)를 등록한다:
+
+```http
+POST /api/v1/spoke/common/ontogen/attr/seed
+Content-Type: text/markdown
+```
+```markdown
+# Imazon 서점 도메인
+
+Imazon은 온라인 서점이다. *order*를 헤더 개념으로, *order line*을 권당 행으로 다룬다.
+테이블명보다 비즈니스 친화적인 명명을 선호한다.
+```
+
 **입력.** 위 conf에 따라 DataSpoke는 세 OLTP 테이블에 대한 DataHub aspect
 (`schemaMetadata`, `datasetProperties`, `upstreamLineage`)와
 SQL 쿼리 로그, 일부 `imazon/order-service` GitHub 저장소를 읽는다.
+seed가 명명 선택을 안내한다.
 
-**추론 출력.** 두 개의 관계를 가진 세 peer 개념:
+**추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 모두 `pending_review`:
 
 ```
-Concept: BOOK                       confidence 0.96   status: pending_review
-  members:
-    catalog.books                   (primary)
+Nodes (subjects / objects):
+  BOOK         confidence 0.96   member: catalog.books         (primary)
+  CUSTOMER     confidence 0.94   member: customers.profiles    (primary)
+  ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
+    evidence:
+      - 외래 키 book_id → catalog.books.book_id (스키마)
+      - customers.profiles와의 조인이 order-service 쿼리의 84%에 등장 (SQL 로그)
 
-Concept: CUSTOMER                   confidence 0.94   status: pending_review
-  members:
-    customers.profiles              (primary)
+Edges (predicates):
+  references   confidence 0.95   semantics: foreign-key reference
+  placed_by    confidence 0.87   semantics: agent / actor
 
-Concept: ORDER_LINE                 confidence 0.71   status: pending_review
-  members:
-    orders.line_items               (primary)
-  evidence:
-    - 외래 키 book_id → catalog.books.book_id (스키마)
-    - customers.profiles와의 조인이 order-service 쿼리의 84%에 등장 (SQL 로그)
-
-Relationships:
-  ORDER_LINE  --references-->  BOOK         (FK book_id,     confidence 0.95)
-  ORDER_LINE  --placed_by-->   CUSTOMER     (FK customer_id, confidence 0.87)
+Triples (subject — predicate — object):
+  ORDER_LINE  --references--> BOOK       confidence 0.95
+  ORDER_LINE  --placed_by --> CUSTOMER   confidence 0.87
 ```
 
-세 개념 모두 리뷰 큐에 들어간다.
-`ORDER_LINE`은 confidence가 가장 낮아(0.71, LLM이 "주문"과 "주문 항목"을 구분하는 데
-모호함이 있음) 리뷰어가 우선 검토한다:
+**리뷰 흐름 — 노드 먼저.** `ORDER_LINE`은 노드 confidence가 가장 낮아(0.71, LLM이
+"주문"과 "주문 항목"을 구분하는 데 모호함이 있음) 리뷰어가 노드부터 시작한다:
 
 ```http
-GET /api/v1/spoke/common/ontogen
-```
-
-거버넌스 리뷰어가 상세와 이벤트 이력을 조회한다:
-
-```http
-GET /api/v1/spoke/common/ontogen/result/order_line
-GET /api/v1/spoke/common/ontogen/result/order_line/event
-```
-
-…그리고 제안을 승인한다:
-
-```http
-POST /api/v1/spoke/common/ontogen/result/order_line/method/review
+GET /api/v1/spoke/common/ontogen/result/node
+GET /api/v1/spoke/common/ontogen/result/node/order_line
+GET /api/v1/spoke/common/ontogen/result/node/order_line/event
+POST /api/v1/spoke/common/ontogen/result/node/order_line/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "FK 구조 확인. 추후 이름 변경 가능." }
 ```
 
-승인 후 개념 멤버십은
-멤버 데이터셋의 glossary term 연결로 DataHub에 반영된다.
+**다음은 엣지.** 노드가 승인되면 엣지로 이동한다:
+
+```http
+GET /api/v1/spoke/common/ontogen/result/edge
+POST /api/v1/spoke/common/ontogen/result/edge/references/method/review
+POST /api/v1/spoke/common/ontogen/result/edge/placed_by/method/review
+```
+
+**마지막으로 트리플.** 트리플의 양쪽 노드와 엣지가 모두 승인되면 해당 트리플이
+리뷰 가능 상태가 된다:
+
+```http
+GET /api/v1/spoke/common/ontogen/result/triple
+POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
+```
+
+승인 후 각 노드는 멤버 데이터셋의 glossary term으로 DataHub에 반영되고,
+승인된 트리플은 주어와 목적어 term 사이의 glossary-term 관계가 된다 —
+DataHub가 결과 어휘의 SSOT를 유지한다.
 
 ---
 
@@ -446,15 +502,7 @@ UI는 Markdown으로 렌더링한다.
 향후 범위(언급만, 여기서는 모델링하지 않음):
 `domains`와 `globalTags` 제안.
 
-> *(하위 사양 후속 반영 필요)*
-> `attr/metagen/conf`의 `targets` enum은
-> `dataset.description`, `column.description`, `cross_data.md`의
-> 세 구체 값을 가져야 하며, 각각 위 표의 편집 가능 aspect에 매핑된다.
-> `cross_data.md`의 경우 result 페이로드는 단일 aspect 쓰기가 아니라
-> `dataProduct`의 생성·수정·분리·제목 변경 액션 묶음을 담는다.
-> `feature/BACKEND.md`와 `DATAHUB_INTEGRATION.md`에 후속 반영한다.
-
-> *(설계 결정)* `cross_data.md` 제안은 UC3 컨셉을 키로 삼지 않는다.
+> *(설계 결정)* `cross_data.md` 제안은 UC3 노드를 키로 삼지 않는다.
 > 문서 생성기는 기존 `dataProduct` 엔티티(제목과 본문)를 입력 컨텍스트로 읽고,
 > 무엇을 제안할지 스스로 결정한다.
 > 하나의 `cross_data.md` 제안은 **액션 묶음**이며, 각 액션은 다음 중 하나다:
@@ -618,7 +666,7 @@ GET .../event/metagen
 | `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 집계 `value`와 데이터셋별 `breakdown`을 함께 담음) |
 | `GET /spoke/dg/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
 | `GET /spoke/dg/metric` | 모든 메트릭 리스트 |
-| `GET /spoke/dg/overview` | 모든 활성화된 메트릭 값 + 데이터셋별 분해 + 블라인드 스팟(어떤 온톨로지 컨셉에도 매핑되지 않은 데이터셋) |
+| `GET /spoke/dg/overview` | 모든 활성화된 메트릭 값 + 데이터셋별 분해 + 블라인드 스팟(어떤 온톨로지 노드에도 매핑되지 않은 데이터셋) |
 | `GET/PATCH /spoke/dg/overview/attr` | 시각화 설정 읽기·갱신 |
 
 ### Imazon 예시
@@ -675,5 +723,5 @@ GET /api/v1/spoke/dg/overview
 `catalog.books`, `orders.line_items`, `customers.profiles`,
 `orders.shipments`, `orders.events`를
 신선도와 검증 상태로 묶은 데이터셋별 분해를 반환한다.
-또한 DataHub에는 보이지만 UC3 컨셉에 아직 매핑되지 않은 데이터셋이 있다면
+또한 DataHub에는 보이지만 UC3 노드에 아직 매핑되지 않은 데이터셋이 있다면
 블라인드 스팟으로 함께 반환한다.

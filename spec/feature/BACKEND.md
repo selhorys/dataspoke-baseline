@@ -104,7 +104,9 @@ Route handler function names must mirror the REST path they serve.
 | `POST /metric/{id}/method/run` | `post_metric_run` |
 | `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
 | `POST /data/{urn}/method/metagen/run` | `post_data_metagen_run` |
-| `POST /ontogen/{concept_id}/method/review` | `post_ontogen_review` |
+| `POST /ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
+| `POST /ontogen/result/edge/{edge_id}/method/review` | `post_ontogen_edge_review` |
+| `POST /ontogen/result/triple/{triple_id}/method/review` | `post_ontogen_triple_review` |
 
 ### Service Pattern
 
@@ -139,7 +141,9 @@ for current method signatures.
 |---------|-----|---------|
 | `validation:{dataset_urn}:result` | 60s | Latest validation run result cache |
 | `validation:dry_run:{hash}` | 60s | Online Verifier dry-run cache for coding agents |
-| `ontogen:concept:{concept_id}` | 300s | Ontology Generation concept lookup cache |
+| `ontogen:node:{node_id}` | 300s | Ontology Generation node lookup cache |
+| `ontogen:edge:{edge_id}` | 300s | Ontology Generation edge lookup cache |
+| `ontogen:triple:{triple_id}` | 300s | Ontology Generation triple lookup cache |
 | `rate_limit:{user_id}` | 60s | Rate limiting counter |
 
 ---
@@ -222,7 +226,7 @@ Every ingestion config carries a `mode` flag (see
 | Mode | Trigger | Aspect emission | `event/ingestion` source |
 |------|---------|-----------------|--------------------------|
 | **active** | DataSpoke runs the extractor on the configured `schedule_tier` (or on manual / dry-run). | DataSpoke emits aspects via the SDK. | Per-run records written by `IngestionService.run()`. |
-| **passive** | An external pipeline ingests directly into DataHub. DataSpoke does not run the extractor. | None — DataSpoke does not write aspects. | The hourly `datahub-ingestion-status-sync` DAG polls DataHub run history for all `mode: passive` configs and writes one row per run. |
+| **passive** | An external pipeline ingests directly into DataHub. DataSpoke does not run the extractor. | None — DataSpoke does not write aspects. | The hourly `ingestion-passive-sync-hourly` DAG polls DataHub run history for all `mode: passive` configs and writes one row per run. |
 
 Both modes share the same API surface (`PUT/PATCH/GET/DELETE attr/ingestion/conf`,
 `GET event/ingestion`, `GET /spoke/common/ingestion`). `POST method/ingestion/run` is
@@ -249,7 +253,7 @@ a non-dry-run that ingests zero entities is treated as failure) → on success m
 (see [Event Catalogue](#event-catalogue)).
 
 **Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
-called hourly by the `datahub-ingestion-status-sync` DAG): enumerate all configs with
+called hourly by the `ingestion-passive-sync-hourly` DAG): enumerate all configs with
 `mode = passive` → for each, query DataHub for ingestion run history of the dataset URN
 → insert any new runs as rows in the unified `events` table with
 `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the active path's event
@@ -354,7 +358,7 @@ PATCH.
 Future scope: proposals for `domains` and `globalTags`.
 
 **Generation Pipeline** (Airflow DAG): read non-editable description aspects + schema +
-lineage as context → resolve concept membership via the Ontology Generation service → LLM
+lineage as context → resolve node membership via the Ontology Generation service → LLM
 analysis to draft per-field proposals for the configured `targets` → for `cross_data.md`,
 read existing `dataProduct` entities (titles + bodies) and decide what to propose →
 produce a `metagen_results` row in PostgreSQL with status `pending_review`.
@@ -386,10 +390,12 @@ event; rejections emit `METAGEN.REJECT` (see [Event Catalogue](#event-catalogue)
 **Covers**: MANIFESTO §2.1 Ontology Generation (UC3). Consumed by Metadata Generation
 (UC4) and Governance (UC5 — blind-spot detection).
 
-Singleton-config LLM pipeline that classifies datasets into peer business concepts and
-infers cross-concept relationships. Storage backed by PostgreSQL relational tables +
-Apache AGE graph + pgvector embeddings. Review workflow (approve / reject) for pending
-proposals.
+Singleton-config LLM pipeline that emits a **subject / predicate / object triple
+ontology** — nodes (subjects / objects), edges (predicates), and triples
+(`(subject_node, edge, object_node)` facts). Storage backed by PostgreSQL relational
+tables + Apache AGE graph + pgvector embeddings. Independent review workflow (approve /
+reject) per result type, with triple review gated on its endpoint nodes and edge being
+approved.
 
 **Singleton conf** at `/spoke/common/ontogen/attr/conf` — there is no per-dataset ontology
 config. Fields:
@@ -400,34 +406,75 @@ config. Fields:
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
 | `sources` | Input sources to consider — at minimum `datahub_aspects`; optionally `sql_logs`, `github_repos`, `external_docs`. |
 | `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs) and `glossary_terms` (DataHub glossary term URNs); same shape as UC5's `measurement_query.dataset_filter`. |
+| `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
 The conf is a single row in `ontogen_config` (singleton table; see
 [BACKEND_SCHEMA §ontogen_config](BACKEND_SCHEMA.md#ontogen_config)).
 
-**Single-level peer concepts**. The baseline ontology is single-level — concepts are peers,
-not nested. There is no parent/child hierarchy. Cross-concept relationships are edges in
-the graph (`concept_relationships`).
+**Seeds** at `/spoke/common/ontogen/attr/seed/{seed_id}` are human-authored Markdown
+documents (prompts, domain hints, naming conventions) that the inference run consumes
+alongside the data sources. The endpoint accepts and returns raw Markdown
+(`Content-Type: text/markdown`); only `seed_id` and timestamps are managed out-of-band.
+Stored in `ontogen_seeds` (see
+[BACKEND_SCHEMA §ontogen_seeds](BACKEND_SCHEMA.md#ontogen_seeds)).
 
-**Inference Pipeline** (Airflow tier DAG, schedule from `ontogen_config.schedule_tier`):
-enumerate datasets matching `dataset_filter` from DataHub → for each input source listed
-in `sources`, fetch evidence (DataHub aspects, SQL logs, GitHub repos, external docs) →
-LLM classifies datasets into peer concepts (using the gathered evidence) → pairwise LLM
-inference for cross-concept relationship edges → score confidence per concept and
-relationship (below `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review) → persist to
-PostgreSQL (relational + AGE + pgvector). Concurrent inference runs return
-`409 ONTOGEN_RUNNING`; `dry_run: true` evaluates without persisting.
+**Triple model**. The baseline ontology is built around three independently reviewable
+result types — *node* (subject / object), *edge* (predicate), *triple*
+(`(subject_node, edge, object_node)`). A triple references nodes and edges by ID and
+inherits their lifecycle: a triple may only be approved once both endpoint nodes and
+the edge are approved. There is no parent/child hierarchy among nodes.
 
-**Approval flow**. `POST /spoke/common/ontogen/result/{concept_id}/method/review` with
-`{verdict, reason}`:
+**Inference Pipeline** (Airflow tier DAG, schedule from `ontogen_config.schedule_tier`,
+or manual `POST /method/run`):
 
-- `verdict: "approve"` → mark the concept and its dataset memberships as approved; for
-  every member dataset, attach a glossary term to the dataset's `glossaryTerms` aspect.
-  The glossary term URN is derived from the concept ID. **Concept membership is reflected
-  to DataHub via `glossaryTerms` only — DataSpoke does not write `globalTags` for
-  ontology purposes.**
-- `verdict: "reject"` → mark the concept as rejected; no DataHub write.
+1. Load the working ontology — all `status='approved'` rows from `ontogen_nodes`,
+   `ontogen_edges`, `ontogen_triples` (incremental inference; pending and rejected
+   rows are not carried forward).
+2. Enumerate datasets matching `dataset_filter` from DataHub.
+3. For each input source listed in `sources`, fetch evidence (DataHub aspects, SQL
+   logs, GitHub repos, external docs).
+4. Load active seeds (`ontogen_seeds.status='active'`). Resolve the one-shot prompt:
+   if the `POST /method/run` request carries a non-empty `text/markdown` body, use
+   that body; otherwise fall back to `ontogen_config.default_run_prompt` (used by both
+   the periodic Airflow DAG and bodyless manual calls). The one-shot prompt is
+   appended after the seeds and is not stored.
+5. LLM proposes nodes per dataset. For each candidate, look up the closest approved
+   node via `node_embeddings` (cosine similarity, threshold
+   `ONTOLOGY_NODE_REUSE_THRESHOLD`); if a match exists, reuse the approved node ID,
+   otherwise emit a new pending node.
+6. LLM proposes the edge (predicate) vocabulary, again preferring reuse of approved
+   `ontogen_edges` rows.
+7. LLM composes triples referencing already-proposed nodes and edges (mix of approved
+   and pending). Reuse existing approved triples when subject / edge / object match.
+8. Score confidence per node, edge, and triple (below
+   `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review).
+9. Persist new / updated rows to PostgreSQL (relational + AGE + pgvector); refresh
+   `node_embeddings` for any node whose name or description changed.
 
-Each verdict emits a `CONCEPT.APPROVE` or `CONCEPT.REJECT` event.
+Concurrent inference runs return `409 ONTOGEN_RUNNING`; `?dry_run=true` evaluates
+steps 2–8 without persisting.
+
+**Approval flow**. Each result type uses `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
+with `{verdict, reason}`:
+
+- **Node** `verdict: "approve"` → mark the node and its dataset memberships as approved;
+  for every member dataset, attach a glossary term derived from the node ID to the
+  dataset's `glossaryTerms` aspect.
+- **Edge** `verdict: "approve"` → mark the edge (predicate vocabulary entry) as
+  approved; no DataHub write on its own.
+- **Triple** `verdict: "approve"` → requires both endpoint nodes and the edge to be
+  already approved (otherwise `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`); on success,
+  emit a glossary-term relationship between the subject and object glossary terms
+  using the edge label.
+- `verdict: "reject"` → mark the result as rejected; no DataHub write. Rejecting a
+  node or edge does not auto-reject dependent triples — those simply remain stuck on
+  `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` until reinference produces a different proposal.
+
+**Ontology membership is reflected to DataHub via `glossaryTerms` and glossary-term
+relationships only — DataSpoke does not write `globalTags` for ontology purposes.**
+
+Each verdict emits a `NODE.APPROVE` / `NODE.REJECT` / `EDGE.APPROVE` / `EDGE.REJECT` /
+`TRIPLE.APPROVE` / `TRIPLE.REJECT` event.
 
 ### Metrics Service (`src/backend/metrics/`)
 
@@ -499,7 +546,7 @@ the breakdown to answer per-dataset historical questions without re-running the 
 
 **Covers**: MANIFESTO §2.1 Governance (UC5) — single multi-perspective overview that
 returns the latest value of every enabled metric, a per-dataset breakdown, and **blind
-spots** (datasets present in DataHub that are not mapped to any UC3 ontology concept).
+spots** (datasets present in DataHub that are not mapped to any UC3 ontology node).
 Read-only aggregation over DataHub aspects, validation results, and the ontology.
 
 `GET /spoke/dg/overview` composes:
@@ -508,8 +555,8 @@ Read-only aggregation over DataHub aspects, validation results, and the ontology
 |---------|--------|
 | Metric values | Latest `metric_results.value` per enabled metric |
 | Per-dataset breakdown | Aggregation of latest `metric_results.breakdown` rows |
-| Blind spots | Datasets in DataHub with no row in `dataset_concept_map` (or `status != approved`) |
-| Ontology graph | `concepts` + `concept_relationships` |
+| Blind spots | Datasets in DataHub with no row in `dataset_node_map` (or `status != approved`) |
+| Ontology graph | `ontogen_nodes` + `ontogen_triples` (with `ontogen_edges` resolving the predicate label) |
 | Medallion layers | Bronze = 0 upstreams, Silver = 1–2, Gold = 3+, derived from `upstreamLineage` |
 | Ownership topology | DataHub `ownership` aspect grouped by owner / team |
 
@@ -578,22 +625,29 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `METRIC.CONFIG_DELETE` | DELETE definition |
 | `METRIC.RUN_COMPLETE` | POST run measurement succeeds |
 
-#### Ontology Generation — singleton conf (`entity_type=ontogen`)
+#### Ontology Generation — singleton conf and seeds (`entity_type=ontogen`)
 
 | Event Type | Trigger |
 |---|---|
 | `ONTOGEN.CONFIG_CREATE` | PUT singleton conf (first time) |
 | `ONTOGEN.CONFIG_UPDATE` | PUT or PATCH singleton conf |
 | `ONTOGEN.CONFIG_DELETE` | DELETE singleton conf |
+| `ONTOGEN.SEED_CREATE` | POST a seed |
+| `ONTOGEN.SEED_UPDATE` | PATCH a seed |
+| `ONTOGEN.SEED_DELETE` | DELETE a seed |
 | `ONTOGEN.RUN_COMPLETE` | A re-inference run succeeds |
 | `ONTOGEN.SOURCE_FAILED` | A configured input source (sql_logs, github_repos, …) failed during a run |
 
-#### Ontology Generation — concept (`entity_type=concept`)
+#### Ontology Generation — node / edge / triple (`entity_type=node|edge|triple`)
 
 | Event Type | Trigger |
 |---|---|
-| `CONCEPT.APPROVE` | POST `ontogen/{concept_id}/method/review` with `verdict: "approve"` |
-| `CONCEPT.REJECT` | POST `ontogen/{concept_id}/method/review` with `verdict: "reject"` |
+| `NODE.APPROVE` | POST `ontogen/result/node/{node_id}/method/review` with `verdict: "approve"` |
+| `NODE.REJECT` | POST `ontogen/result/node/{node_id}/method/review` with `verdict: "reject"` |
+| `EDGE.APPROVE` | POST `ontogen/result/edge/{edge_id}/method/review` with `verdict: "approve"` |
+| `EDGE.REJECT` | POST `ontogen/result/edge/{edge_id}/method/review` with `verdict: "reject"` |
+| `TRIPLE.APPROVE` | POST `ontogen/result/triple/{triple_id}/method/review` with `verdict: "approve"` |
+| `TRIPLE.REJECT` | POST `ontogen/result/triple/{triple_id}/method/review` with `verdict: "reject"` |
 
 ### Querying Events
 
@@ -634,7 +688,7 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ingestion-periodic-hourly` | `ingestion_periodic_hourly.py` | Airflow schedule | `@hourly` |
 | `ingestion-periodic-daily` | `ingestion_periodic_daily.py` | Airflow schedule | `@daily` |
 | `ingestion-periodic-weekly` | `ingestion_periodic_weekly.py` | Airflow schedule | `@weekly` |
-| `datahub-ingestion-status-sync` | `datahub_ingestion_status_sync.py` | Airflow schedule | `@hourly` |
+| `ingestion-passive-sync-hourly` | `ingestion_passive_sync_hourly.py` | Airflow schedule | `@hourly` |
 | `validation-periodic-hourly` | `validation_periodic_hourly.py` | Airflow schedule | `@hourly` |
 | `validation-periodic-daily` | `validation_periodic_daily.py` | Airflow schedule | `@daily` |
 | `validation-periodic-weekly` | `validation_periodic_weekly.py` | Airflow schedule | `@weekly` |

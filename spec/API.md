@@ -177,23 +177,42 @@ Baseline features consumed by all user groups.
 
 #### Ontology Generation
 
-The ontology is a global artifact, so its conf, manual run trigger, and inference-run
-event log are singletons rooted at `/spoke/common/ontogen` rather than under any
-dataset URN. Per-concept routes use `/spoke/common/ontogen/result/{concept_id}/...`.
+The ontology is a global artifact, so its conf, seeds, manual run trigger, and
+inference-run event log are singletons rooted at `/spoke/common/ontogen` rather than
+under any dataset URN. Inference output follows a **subject / predicate / object
+triple model** with three independently reviewable result types — `node` (subject /
+object), `edge` (predicate), and `triple` (`(subject_node, edge, object_node)` fact).
+A triple may only be composed of pre-approved nodes and edges; review proceeds
+nodes → edges → triples.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton inference conf (`is_enabled`, `schedule_tier`, `sources`, `dataset_filter`) | Ontology Generation | UC3 |
-| `PUT` | `/spoke/common/ontogen/attr/conf` | Create or replace inference conf | Ontology Generation | UC3 |
-| `PATCH` | `/spoke/common/ontogen/attr/conf` | Partially update inference conf | Ontology Generation | UC3 |
-| `DELETE` | `/spoke/common/ontogen/attr/conf` | Remove inference conf (effectively disables) | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference (`dry_run` in body for no-write mode); concurrent runs return `409 ONTOGEN_RUNNING` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `sources`, `dataset_filter`, `default_run_prompt`) | Ontology Generation | UC3 |
+| `PUT` | `/spoke/common/ontogen/attr/conf` | Create or replace operational conf | Ontology Generation | UC3 |
+| `PATCH` | `/spoke/common/ontogen/attr/conf` | Partially update operational conf | Ontology Generation | UC3 |
+| `DELETE` | `/spoke/common/ontogen/attr/conf` | Remove operational conf (effectively disables) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/attr/seed` | List seeds — returns `[{seed_id, updated_at, preview}]` (preview is a short Markdown snippet); the seed body is fetched per-seed below | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Get seed Markdown document (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
+| `PATCH` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Replace seed Markdown body (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
+| `DELETE` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Retire a seed | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen` | List concept categories | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/{concept_id}` | Get concept detail + relationships | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/{concept_id}/event` | Concept-level change history | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/result/{concept_id}/method/review` | Review a pending concept proposal — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/node/{node_id}` | Get node detail (incl. member datasets) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/node/{node_id}/attr` | Get node attributes (confidence, source evidence) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/node/{node_id}/event` | Node-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/result/node/{node_id}/method/review` | Review a pending node — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/edge` | List edges (predicates) with confidence and status | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/edge/{edge_id}` | Get edge detail | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/edge/{edge_id}/attr` | Get edge attributes (confidence, source evidence) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/edge/{edge_id}/event` | Edge-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/result/edge/{edge_id}/method/review` | Review a pending edge — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/triple/{triple_id}` | Get triple detail (resolved subject node, edge, object node) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/attr` | Get triple attributes (confidence, source evidence) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/event` | Triple-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/result/triple/{triple_id}/method/review` | Review a pending triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved | Ontology Generation | UC3 |
 
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
 
@@ -349,7 +368,7 @@ are included in the measurement. Filters are OR-ed across all dimensions.
 #### Overview (`/spoke/dg/overview`)
 
 Governance views of the data estate that cannot be expressed as per-metric timeseries:
-ontology-based topology views (consuming the UC3 concept graph), medallion layer
+ontology-based topology views (consuming the UC3 node / triple graph), medallion layer
 coverage maps, and ownership topology. Use these paths only when the `/spoke/dg/metric`
 routes are insufficient. All views are read-only aggregations over DataHub aspects,
 DataSpoke validation results, and the ontology.
@@ -555,6 +574,7 @@ All errors follow the standard envelope:
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
+| `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |

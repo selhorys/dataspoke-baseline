@@ -48,9 +48,11 @@ MANIFESTO §2.1).
 | Overview | `/dg/overview` | `/spoke/dg/overview/` |
 | Ontology Generation | `/dg/ontogen` | `/spoke/common/ontogen/` |
 
-The Ontology Generation link lets governance leads review and approve pending concept proposals
-(UC3) — both per-concept proposals and the singleton inference conf at
-`/spoke/common/ontogen/attr/conf`.
+The Ontology Generation link lets governance leads review and approve pending node /
+edge / triple proposals (UC3) — review proceeds nodes → edges → triples, since a triple
+cannot be approved until its subject node, edge, and object node are all approved.
+Governance also owns the singleton inference conf at `/spoke/common/ontogen/attr/conf`
+and the Markdown seeds at `/spoke/common/ontogen/attr/seed/{seed_id}`.
 
 ---
 
@@ -215,20 +217,20 @@ side-by-side. Visualization config is read/written through `GET/PATCH /spoke/dg/
 | View | Source | What it shows |
 |------|--------|---------------|
 | Metric Values | `overview.metrics[]` | Latest value per enabled metric (`ingestion-freshness`, `validation-score`, …) |
-| Blind Spots | `overview.blind_spots[]` | Datasets present in DataHub but not mapped to any UC3 concept |
-| Ontology Graph | `overview.ontology` | Single-level peer concepts + relationship edges (UC3) |
+| Blind Spots | `overview.blind_spots[]` | Datasets present in DataHub but not mapped to any UC3 node |
+| Ontology Graph | `overview.ontology` | UC3 nodes + approved triples (`(subject_node, edge, object_node)`) rendered as a labelled graph |
 | Medallion | `overview.medallion` | Bronze / Silver / Gold layer distribution from `upstreamLineage` |
 | Ownership | `overview.ownership` | Owner / team topology from DataHub `ownership` aspect |
 
 ### Blind Spots View
 
-Lists datasets that exist in DataHub but have no row in `dataset_concept_map` with status
+Lists datasets that exist in DataHub but have no row in `dataset_node_map` with status
 `approved`. Acts as a governance early-warning surface — these datasets are invisible to UC3
 classification and downstream governance signals.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Blind Spots  (12 datasets unmapped to any concept)        │
+│  Blind Spots  (12 datasets unmapped to any node)           │
 │                                                            │
 │  publishers.feed_raw       Last seen: 2 hours ago          │
 │  shipping.carrier_raw_v1   Last seen: 6 days ago           │
@@ -285,7 +287,7 @@ Highcharts network graph).
 | Zoom | Mouse wheel / pinch — zoom in/out |
 | Pan | Click + drag on canvas |
 | Click node | Select dataset — show detail panel below |
-| Click cluster | Select all member datasets of a peer concept |
+| Click cluster | Select all member datasets of an ontology node |
 | Hover node | Tooltip: name, score, owner, top connections |
 | Hover edge | Tooltip: relationship type, direction |
 | Filters | Domain, score range, usage range — re-render graph |

@@ -107,9 +107,9 @@ Each MANIFESTO feature has a clear integration direction:
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
 | Ingestion Control (active) | UC1 | **Write** | Emit enriched metadata (properties, lineage, tags, ownership). Applies to `mode: active` configs only. |
-| Ingestion Control (passive) | UC1 | **Read** | The hourly `datahub-ingestion-status-sync` DAG polls DataHub ingestion run history for `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes. |
+| Ingestion Control (passive) | UC1 | **Read** | The hourly `ingestion-passive-sync-hourly` DAG polls DataHub ingestion run history for `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes. |
 | Validation | UC2 | **Read + Write** | Query profiles, operations, lineage; register `assertionInfo`, emit `assertionRunEvent` |
-| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; on review approval, attach a glossary term to the member dataset (`glossaryTerms` only — not `globalTags`) to reflect concept membership |
+| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
 | Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities. Tag / glossary-term proposals are future scope and not part of the baseline. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
@@ -234,7 +234,7 @@ Data products group related datasets under a topic-level concept. UC4 (Metadata
 Generation) `cross_data.md` proposals may create, modify, split, or retitle
 `dataProduct` entities to organize cross-dataset documentation. The generator chooses
 a descriptive title (a topic phrase) for new data products — the URN is **not** keyed
-off any UC3 concept ID.
+off any UC3 node, edge, or triple ID.
 
 | Aspect | SDK Class | Entity Type | Key Fields | REST Write Path |
 |--------|----------|-------------|------------|----------------|
@@ -244,7 +244,7 @@ off any UC3 concept ID.
 
 Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
 `mode: active` configs only; passive mode reads ingestion run history out-of-band via
-the `datahub-ingestion-status-sync` DAG and writes no aspects.*
+the `ingestion-passive-sync-hourly` DAG and writes no aspects.*
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
@@ -254,7 +254,7 @@ the `datahub-ingestion-status-sync` DAG and writes no aspects.*
 | `editableSchemaMetadata` | — | — | — | W (on approval) | R |
 | `ownership` | W | — | R | — | R |
 | `globalTags` | W | — | R | — *(future scope)* | R |
-| `glossaryTerms` | — | — | R + W (concept attachment on approval) | — *(future scope)* | R |
+| `glossaryTerms` | — | — | R + W (term per approved node, attached to member datasets; glossary-term relationships per approved triple) | — *(future scope)* | R |
 | `upstreamLineage` | W | R | R | R | R |
 | `deprecation` | — | R | — | — | — |
 | `datasetProfile` | — | R | — | — | R |
@@ -298,7 +298,7 @@ The REST API only exposes `upstreamLineage` (what this dataset reads from). To f
 a `searchAcrossLineage` query (`direction: DOWNSTREAM`, `types: [DATASET]`) and read
 `searchResults[].entity.urn` + `degree`. Used by Validation (downstream impact of failing
 rules), Metadata Generation (shared consumers informing descriptions), Ontology Generation
-(cross-concept relationship inference), Governance (ownership topology).
+(node and triple inference), Governance (ownership topology).
 
 ### Entity Enumeration by Domain
 

@@ -116,7 +116,7 @@ Shows config, run history (events), and trigger controls.
   (with `dry_run: true` for dry-run). Disabled in the UI when `mode: passive`.
 - **Recent Runs** → `GET /spoke/common/data/{urn}/event/ingestion`. For active configs the
   events come from DataSpoke runs; for passive configs they are mirrored hourly from
-  DataHub by the `datahub-ingestion-status-sync` DAG, but the API surface is identical.
+  DataHub by the `ingestion-passive-sync-hourly` DAG, but the API surface is identical.
 
 ### Config Editor
 
@@ -283,40 +283,54 @@ cross-data MD actions). Each field row exposes individual approve / edit / rejec
 Singleton conf editor (UC3 has no per-dataset config). Edits via
 `PUT/PATCH /spoke/common/ontogen/attr/conf` with fields `is_enabled`, `schedule_tier`,
 `sources`, `dataset_filter`. A `[Run Now]` button calls
-`POST /spoke/common/ontogen/method/run` (with optional `dry_run`).
+`POST /spoke/common/ontogen/method/run` (optional `?dry_run=true`; optional
+`Content-Type: text/markdown` body acts as a one-shot prompt for this single run).
 
-### Ontogen Concept Browser (`/de/ontogen`)
+### Ontogen Seeds (`/de/ontogen/seed`)
 
-Browse the **single-level** peer-concept set. Uses `GET /spoke/common/ontogen`.
+Markdown-document editor for inference seeds. List shows existing seeds with previews;
+clicking a seed opens a Markdown editor backed by
+`GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` (`Content-Type: text/markdown`).
+A `[New Seed]` action POSTs the editor body to `/spoke/common/ontogen/attr/seed`.
+
+### Ontogen Triple Browser (`/de/ontogen`)
+
+Three-tab browser over the triple ontology — **Nodes**, **Edges**, **Triples**. Uses
+`GET /spoke/common/ontogen/result/{node|edge|triple}`. Triple review is gated: if a
+triple's subject node, edge, or object node is still pending, the `[Approve]` button is
+disabled with an inline hint, and a forced approve attempt surfaces the
+`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` error.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Ontology Concepts                                         │
+│  Ontology   [ Nodes | Edges | Triples ]                    │
 │                                                            │
-│  BOOK                          conf 0.96   ✓ approved      │
-│    members:                                                │
-│      catalog.books             (primary)                   │
+│  Nodes                                                     │
+│    BOOK            conf 0.96   ✓ approved                  │
+│      member: catalog.books                                 │
+│    CUSTOMER        conf 0.94   ✓ approved                  │
+│      member: customers.profiles                            │
+│    ORDER_LINE      conf 0.71   ⏳ pending                  │
+│      member: orders.line_items                             │
+│      [Approve] [Reject]                                    │
 │                                                            │
-│  CUSTOMER                      conf 0.94   ✓ approved      │
-│    members:                                                │
-│      customers.profiles        (primary)                   │
+│  Edges                                                     │
+│    references      conf 0.95   ✓ approved                  │
+│    placed_by       conf 0.87   ✓ approved                  │
 │                                                            │
-│  ORDER_LINE                    conf 0.71   ⏳ pending      │
-│    members:                                                │
-│      orders.line_items         (primary)                   │
-│    relationships:                                          │
-│      → BOOK (references, conf 0.95)                        │
-│      → CUSTOMER (placed_by, conf 0.87)                     │
-│    [Approve] [Reject]                                      │
-│                                                            │
-│  [numbers] = confidence score                              │
-│  Click concept → detail panel with relationships + events  │
+│  Triples                                                   │
+│    ORDER_LINE  --references--> BOOK       conf 0.95   ⏳   │
+│      [Approve] (blocked: ORDER_LINE pending)               │
+│    ORDER_LINE  --placed_by --> CUSTOMER   conf 0.87   ⏳   │
+│      [Approve] (blocked: ORDER_LINE pending)               │
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Approve / Reject** → `POST /spoke/common/ontogen/result/{concept_id}/method/review` with
-  `{"verdict": "approve"|"reject", "reason": "…"}`. Approval attaches a glossary term
-  to each member dataset (`glossaryTerms` aspect) — the confirm dialog states this.
+- **Approve / Reject** → `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
+  with `{"verdict": "approve"|"reject", "reason": "…"}`. On node approval, a glossary
+  term is attached to each member dataset (`glossaryTerms` aspect); on triple approval,
+  a glossary-term relationship is created between subject and object terms — the confirm
+  dialog states this.
 
 ---
 

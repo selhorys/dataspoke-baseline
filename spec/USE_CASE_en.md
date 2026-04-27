@@ -70,16 +70,10 @@ Two ingestion modes are supported:
   results to DataHub. Manual and dry-run runs are also supported.
 - **Passive** — an external system ingests directly into DataHub. DataSpoke does not
   run the extractor; it only marks the dataset's ingestion config as `mode: passive`. A
-  `datahub-ingestion-status-sync` Airflow DAG runs **hourly**, polls DataHub for
+  `ingestion-passive-sync-hourly` Airflow DAG runs **hourly**, polls DataHub for
   ingestion run history of all passive-marked datasets, and writes the resulting status
   as rows on `event/ingestion`. The DataSpoke API surface therefore looks the same to
   clients regardless of mode.
-
-> *(Lower-priority specs need follow-up)* The `mode: active | passive` field on
-> `attr/ingestion/conf` and the `datahub-ingestion-status-sync` DAG are introduced here.
-> `API.md`, `feature/BACKEND.md`, and `feature/BACKEND_SCHEMA.md` need follow-up
-> edits to model the `mode` field on `ingestion_configs`, register the sync DAG, and
-> describe how DataHub run history is mapped onto `event/ingestion`.
 
 ### API Mapping
 
@@ -139,7 +133,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,orders.s
 No `schedule_tier`. DataSpoke does not run an extractor. The external data pipeline (an
 Airflow DAG outside DataSpoke) emits the schema and properties to DataHub directly.
 
-Every hour, DataSpoke's `datahub-ingestion-status-sync` DAG polls DataHub for ingestion
+Every hour, DataSpoke's `ingestion-passive-sync-hourly` DAG polls DataHub for ingestion
 runs of all passive-marked datasets and writes one row per run to the events table.
 Imazon reads them through the same API:
 
@@ -272,18 +266,28 @@ graph DB and a vector DB.*
 ### User Story
 
 > *As an* analyst or governance member,
-> *I want* DataSpoke to autonomously infer the business concepts that exist across my
-> datasets and the relationships between them,
-> *so that* I can navigate datasets by concept, and review proposals before they are
-> accepted.
+> *I want* DataSpoke to autonomously infer the business concepts (subjects and objects),
+> the relationship types (predicates), and the specific facts (triples) that connect them
+> across my datasets,
+> *so that* I can navigate datasets by concept, browse meaningful relationships, and
+> review each layer before it is accepted.
 
-The baseline ontology is **single-level** — concepts are peers, not nested. Relationships
-are edges between concepts; member datasets are listed under each concept.
+The baseline ontology follows the **subject / predicate / object triple model**, with
+three independently reviewable result types:
 
-**Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2 / UC4, the ontology
-is a global artifact, so its conf lives at `/spoke/common/ontogen/attr/conf` rather than
-under any dataset URN. The conf controls when the inference DAG runs, which input sources
-it considers, and which datasets are in scope.
+- **Node** — a *subject* or *object*: a business concept rooted in one or more datasets
+  (e.g., `BOOK`, `CUSTOMER`).
+- **Edge** — a *predicate*: a relationship type (e.g., `references`, `placed_by`).
+- **Triple** — a `(subject_node, edge, object_node)` fact. A triple may only be
+  composed of pre-approved nodes and edges, so the conceptual vocabulary is approved
+  once and reused across many specific facts.
+
+Node and edge IDs are slugs (`book`, `placed_by`); triple IDs are UUIDs.
+
+**Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2 / UC4, the
+ontology is a global artifact. The operational conf at `/spoke/common/ontogen/attr/conf`
+controls when the inference DAG runs, which input sources it reads, and which datasets
+are in scope.
 
 | `attr/conf` field | Purpose |
 |---|---|
@@ -291,24 +295,69 @@ it considers, and which datasets are in scope.
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence |
 | `sources` | Input sources to consider — at minimum `datahub_aspects`; optionally `sql_logs`, `github_repos`, `external_docs` |
 | `dataset_filter` | Optional scope filter — `tags` (list of DataHub tag URNs) and `glossary_terms` (list of glossary term URNs); same shape as UC5's `measurement_query.dataset_filter` |
+| `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs that do not supply their own — i.e., periodic Airflow runs, and manual `POST /method/run` calls with no body. Null disables the default |
 
-**Run semantics.** Inference runs are serialised: a duplicate `method/run` while one is
-in flight returns `409 ONTOGEN_RUNNING`. `dry_run: true` evaluates the inference and
-returns the would-be concept set without persisting changes — useful for previewing the
-effect of a `sources` or `dataset_filter` change before committing.
+**Seeds steer inference.** A seed is a human-authored **Markdown document** (prompt,
+domain hint, naming convention) that the inference run consumes alongside the data
+sources. The seed body — request and response — is raw Markdown
+(`Content-Type: text/markdown`); only `seed_id` and timestamps are managed
+out-of-band. Multiple seeds coexist. POST creates (server assigns `seed_id`), PATCH
+replaces the document, DELETE retires.
+
+**Run semantics.** Inference runs are serialised: a duplicate `method/run` while one
+is in flight returns `409 ONTOGEN_RUNNING`. `?dry_run=true` evaluates the inference and
+returns the would-be node / edge / triple set without persisting changes — useful for
+previewing the effect of a `sources`, `seed`, or `dataset_filter` change before
+committing.
+
+**Incremental inference.** Each run starts from the existing **approved** nodes,
+edges, and triples — the LLM does not re-derive the ontology from scratch. New
+proposals are layered on top: when a candidate matches an approved node by name or
+embedding similarity (via `node_embeddings`), the existing node ID is reused;
+otherwise a new pending node is proposed. Edges and triples follow the same reuse
+rule. Rejected and pending results are not carried forward as inputs.
+
+**One-shot run prompt.** A `POST /method/run` may carry a Markdown body
+(`Content-Type: text/markdown`) that acts as a transient prompt for that single run,
+on top of the persistent seeds. It is not stored. Use this for "steer this one run"
+experiments without committing to a seed.
+
+**Default one-shot prompt.** Runs that do not supply their own body — periodic
+Airflow runs and manual `POST /method/run` calls with an empty body — fall back to
+`attr/conf.default_run_prompt` (Markdown). This is the place to encode the
+"how every scheduled run should be steered" guidance. An explicit body on a manual run
+overrides the default; sending an empty body always uses the default.
+
+**Review dependency.** A pending triple cannot be approved until both its endpoint
+nodes and its edge are approved; attempting to do so returns
+`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`. The reviewer therefore typically processes
+**nodes → edges → triples**.
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/ontogen/attr/conf` | Singleton conf — see field table above |
-| `POST /spoke/common/ontogen/method/run` | Trigger a manual re-inference; `dry_run: true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
+| `PUT/PATCH/GET/DELETE /spoke/common/ontogen/attr/conf` | Singleton operational conf — see field table above |
+| `GET /spoke/common/ontogen/attr/seed` | List seeds — `[{seed_id, updated_at, preview}]` (Markdown bodies fetched per-seed below) |
+| `POST /spoke/common/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` |
+| `GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` | Read, refine, or retire a seed |
+| `POST /spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
 | `GET /spoke/common/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) |
-| `GET /spoke/common/ontogen` | List concepts (with confidence and status) |
-| `GET /spoke/common/ontogen/result/{concept_id}` | Concept detail incl. member datasets and outgoing relationships |
-| `GET /spoke/common/ontogen/result/{concept_id}/attr` | Concept attributes (confidence, source evidence) |
-| `GET /spoke/common/ontogen/result/{concept_id}/event` | Concept-level change history (proposed → approved / rejected, member additions) |
-| `POST /spoke/common/ontogen/result/{concept_id}/method/review` | Approve or reject a pending concept proposal |
+| `GET /spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status |
+| `GET /spoke/common/ontogen/result/node/{node_id}` | Node detail incl. member datasets |
+| `GET /spoke/common/ontogen/result/node/{node_id}/attr` | Node attributes (confidence, source evidence) |
+| `GET /spoke/common/ontogen/result/node/{node_id}/event` | Node-level change history (proposed → approved / rejected, member additions) |
+| `POST /spoke/common/ontogen/result/node/{node_id}/method/review` | Approve or reject a pending node |
+| `GET /spoke/common/ontogen/result/edge` | List edges (predicates) with confidence and status |
+| `GET /spoke/common/ontogen/result/edge/{edge_id}` | Edge detail |
+| `GET /spoke/common/ontogen/result/edge/{edge_id}/attr` | Edge attributes (confidence, source evidence) |
+| `GET /spoke/common/ontogen/result/edge/{edge_id}/event` | Edge-level change history |
+| `POST /spoke/common/ontogen/result/edge/{edge_id}/method/review` | Approve or reject a pending edge |
+| `GET /spoke/common/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status |
+| `GET /spoke/common/ontogen/result/triple/{triple_id}` | Triple detail (resolved subject node, edge, object node) |
+| `GET /spoke/common/ontogen/result/triple/{triple_id}/attr` | Triple attributes (confidence, source evidence) |
+| `GET /spoke/common/ontogen/result/triple/{triple_id}/event` | Triple-level change history |
+| `POST /spoke/common/ontogen/result/triple/{triple_id}/method/review` | Approve or reject a pending triple — returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved |
 
 ### Imazon Example
 
@@ -326,59 +375,75 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 }
 ```
 
+**Seed.** They post a domain seed (Markdown) to steer the LLM toward bookstore-friendly names:
+
+```http
+POST /api/v1/spoke/common/ontogen/attr/seed
+Content-Type: text/markdown
+```
+```markdown
+# Imazon Bookstore Domain
+
+Imazon is an online bookstore. Treat *order* as a header concept and *order line* as
+the per-book row. Prefer business-friendly names over table names.
+```
+
 **Inputs.** Per the conf, DataSpoke reads DataHub aspects (`schemaMetadata`,
 `datasetProperties`, `upstreamLineage`) for the three OLTP tables, plus SQL query logs
-and a few `imazon/order-service` GitHub repos.
+and a few `imazon/order-service` GitHub repos. The seed shapes naming choices.
 
-**Inferred output.** Three peer concepts with two relationships:
+**Inferred output.** Three nodes, two edges, two triples — all `pending_review`:
 
 ```
-Concept: BOOK                       confidence 0.96   status: pending_review
-  members:
-    catalog.books                   (primary)
+Nodes (subjects / objects):
+  BOOK         confidence 0.96   member: catalog.books         (primary)
+  CUSTOMER     confidence 0.94   member: customers.profiles    (primary)
+  ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
+    evidence:
+      - foreign key book_id → catalog.books.book_id (schema)
+      - join with customers.profiles appears in 84% of order-service queries (SQL logs)
 
-Concept: CUSTOMER                   confidence 0.94   status: pending_review
-  members:
-    customers.profiles              (primary)
+Edges (predicates):
+  references   confidence 0.95   semantics: foreign-key reference
+  placed_by    confidence 0.87   semantics: agent / actor
 
-Concept: ORDER_LINE                 confidence 0.71   status: pending_review
-  members:
-    orders.line_items               (primary)
-  evidence:
-    - foreign key book_id → catalog.books.book_id (schema)
-    - join with customers.profiles appears in 84% of order-service queries (SQL logs)
-
-Relationships:
-  ORDER_LINE  --references-->  BOOK         (FK book_id,     confidence 0.95)
-  ORDER_LINE  --placed_by-->   CUSTOMER     (FK customer_id, confidence 0.87)
+Triples (subject — predicate — object):
+  ORDER_LINE  --references--> BOOK       confidence 0.95
+  ORDER_LINE  --placed_by --> CUSTOMER   confidence 0.87
 ```
 
-All three concepts land in the review queue. `ORDER_LINE` has the lowest confidence
-(0.71, due to LLM ambiguity between "order" and "line item"), so the reviewer focuses
-on it first:
+**Review flow — nodes first.** `ORDER_LINE` has the lowest node confidence (0.71, due
+to LLM ambiguity between "order" and "line item"), so the reviewer starts with nodes:
 
 ```http
-GET /api/v1/spoke/common/ontogen
-```
-
-A governance reviewer fetches detail and event history:
-
-```http
-GET /api/v1/spoke/common/ontogen/result/order_line
-GET /api/v1/spoke/common/ontogen/result/order_line/event
-```
-
-…and approves the proposal:
-
-```http
-POST /api/v1/spoke/common/ontogen/result/order_line/method/review
+GET /api/v1/spoke/common/ontogen/result/node
+GET /api/v1/spoke/common/ontogen/result/node/order_line
+GET /api/v1/spoke/common/ontogen/result/node/order_line/event
+POST /api/v1/spoke/common/ontogen/result/node/order_line/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "Confirmed FK structure; rename later if needed." }
 ```
 
-After approval, concept membership is reflected back to DataHub as a glossary term
-attachment on the member dataset.
+**Edges next.** With the nodes approved, the reviewer moves to edges:
+
+```http
+GET /api/v1/spoke/common/ontogen/result/edge
+POST /api/v1/spoke/common/ontogen/result/edge/references/method/review
+POST /api/v1/spoke/common/ontogen/result/edge/placed_by/method/review
+```
+
+**Triples last.** Once both endpoint nodes and the edge of a triple are approved, the
+triple becomes eligible for review:
+
+```http
+GET /api/v1/spoke/common/ontogen/result/triple
+POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
+```
+
+After approval, each node lands in DataHub as a glossary term attached to its member
+datasets, and each approved triple becomes a glossary-term relationship between the
+subject and object terms — DataHub remains the SSOT for the resulting vocabulary.
 
 ---
 
@@ -415,13 +480,7 @@ the UI renders Markdown.
 
 Future scope (mentioned, not modelled here): proposals for `domains` and `globalTags`.
 
-> *(Lower-priority specs need follow-up)* The `targets` enum on `attr/metagen/conf` needs
-> three concrete values — `dataset.description`, `column.description`, `cross_data.md`
-> — mapped to the editable aspects above. For `cross_data.md`, the result payload
-> carries a list of `dataProduct` create / modify / split / retitle actions rather than
-> a single aspect write. Propagate to `feature/BACKEND.md` and `DATAHUB_INTEGRATION.md`.
-
-> *(Design decision)* `cross_data.md` proposals are not keyed off a UC3 concept. The
+> *(Design decision)* `cross_data.md` proposals are not keyed off a UC3 node. The
 > doc generator reads existing `dataProduct` entities (their titles and bodies) as
 > input context and decides itself what to propose. A single `cross_data.md` proposal
 > is a **list of actions**, each one of:
@@ -571,7 +630,7 @@ useful for testing a new `measurement_query` before letting the schedule fire.
 
 A single dashboard returns the latest value of every enabled metric, a per-dataset
 breakdown (which datasets are stale, which have failing rules), and **blind spots** —
-datasets present in DataHub but not mapped to any UC3 ontology concept. Blind spots
+datasets present in DataHub but not mapped to any UC3 ontology node. Blind spots
 are governance signals in their own right: they surface coverage gaps where the
 ontology has not yet caught up with the data estate.
 
@@ -584,7 +643,7 @@ ontology has not yet caught up with the data estate.
 | `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries both aggregate `value` and per-dataset `breakdown`) |
 | `GET /spoke/dg/metric/{metric_id}/event` | Run completion / definition change events |
 | `GET /spoke/dg/metric` | List all metrics |
-| `GET /spoke/dg/overview` | Snapshot — every enabled metric value + per-dataset breakdown + blind spots (datasets unmapped to any ontology concept) |
+| `GET /spoke/dg/overview` | Snapshot — every enabled metric value + per-dataset breakdown + blind spots (datasets unmapped to any ontology node) |
 | `GET/PATCH /spoke/dg/overview/attr` | Read or update visualization config |
 
 ### Imazon Example
@@ -640,4 +699,4 @@ GET /api/v1/spoke/dg/overview
 …and returns both metric values plus a per-dataset breakdown grouping `catalog.books`,
 `orders.line_items`, `customers.profiles`, `orders.shipments`, and `orders.events` by
 their freshness and validation status, alongside any blind spots — datasets visible in
-DataHub that have not yet been mapped to a UC3 concept.
+DataHub that have not yet been mapped to a UC3 node.

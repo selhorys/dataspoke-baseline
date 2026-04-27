@@ -295,12 +295,13 @@ Color-coded status indicator used throughout.
 | Running / In Progress | Blue | ◌ (spinner) |
 | Unknown | Grey | ? |
 
-### ConceptNavigator
+### OntologyNavigator
 
-Ontology-driven navigation component. Lets users browse by peer concept (from UC3) and jump to
-member datasets. Surfaces data through `GET /spoke/common/ontogen`. Concepts are single-level
-peers — the navigator renders a flat list of concepts with member datasets, not a parent/child
-tree.
+Ontology-driven navigation component. Lets users browse by node (from UC3) and follow
+approved triples to peer nodes, jumping to member datasets. Surfaces data through
+`GET /spoke/common/ontogen/result/node` and `GET /spoke/common/ontogen/result/triple`.
+The ontology has no parent/child hierarchy — the navigator renders a flat node list and
+overlays approved `(subject_node, edge, object_node)` triples as labelled arrows.
 
 ### NotificationCenter
 
