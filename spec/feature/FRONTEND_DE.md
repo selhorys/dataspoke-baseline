@@ -314,7 +314,7 @@ Browse the **single-level** peer-concept set. Uses `GET /spoke/common/ontogen`.
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Approve / Reject** → `POST /spoke/common/ontogen/{concept_id}/method/review` with
+- **Approve / Reject** → `POST /spoke/common/ontogen/result/{concept_id}/method/review` with
   `{"verdict": "approve"|"reject", "reason": "…"}`. Approval attaches a glossary term
   to each member dataset (`glossaryTerms` aspect) — the confirm dialog states this.
 

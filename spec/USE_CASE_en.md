@@ -305,10 +305,10 @@ effect of a `sources` or `dataset_filter` change before committing.
 | `POST /spoke/common/ontogen/method/run` | Trigger a manual re-inference; `dry_run: true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
 | `GET /spoke/common/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) |
 | `GET /spoke/common/ontogen` | List concepts (with confidence and status) |
-| `GET /spoke/common/ontogen/{concept_id}` | Concept detail incl. member datasets and outgoing relationships |
-| `GET /spoke/common/ontogen/{concept_id}/attr` | Concept attributes (confidence, source evidence) |
-| `GET /spoke/common/ontogen/{concept_id}/event` | Concept-level change history (proposed → approved / rejected, member additions) |
-| `POST /spoke/common/ontogen/{concept_id}/method/review` | Approve or reject a pending concept proposal |
+| `GET /spoke/common/ontogen/result/{concept_id}` | Concept detail incl. member datasets and outgoing relationships |
+| `GET /spoke/common/ontogen/result/{concept_id}/attr` | Concept attributes (confidence, source evidence) |
+| `GET /spoke/common/ontogen/result/{concept_id}/event` | Concept-level change history (proposed → approved / rejected, member additions) |
+| `POST /spoke/common/ontogen/result/{concept_id}/method/review` | Approve or reject a pending concept proposal |
 
 ### Imazon Example
 
@@ -364,14 +364,14 @@ GET /api/v1/spoke/common/ontogen
 A governance reviewer fetches detail and event history:
 
 ```http
-GET /api/v1/spoke/common/ontogen/order_line
-GET /api/v1/spoke/common/ontogen/order_line/event
+GET /api/v1/spoke/common/ontogen/result/order_line
+GET /api/v1/spoke/common/ontogen/result/order_line/event
 ```
 
 …and approves the proposal:
 
 ```http
-POST /api/v1/spoke/common/ontogen/order_line/method/review
+POST /api/v1/spoke/common/ontogen/result/order_line/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "Confirmed FK structure; rename later if needed." }

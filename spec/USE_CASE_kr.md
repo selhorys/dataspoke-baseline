@@ -333,10 +333,10 @@ graph DB와 vector DB에 유지한다.*
 | `POST /spoke/common/ontogen/method/run` | 수동 재추론 트리거; `dry_run: true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
 | `GET /spoke/common/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) |
 | `GET /spoke/common/ontogen` | 개념 리스트(confidence·상태 포함) |
-| `GET /spoke/common/ontogen/{concept_id}` | 멤버 데이터셋과 발신 관계 포함 개념 상세 |
-| `GET /spoke/common/ontogen/{concept_id}/attr` | 개념 속성(confidence, 근거) |
-| `GET /spoke/common/ontogen/{concept_id}/event` | 개념 변경 이력(제안 → 승인/거부, 멤버 추가) |
-| `POST /spoke/common/ontogen/{concept_id}/method/review` | 대기 중 개념 제안의 승인·거부 |
+| `GET /spoke/common/ontogen/result/{concept_id}` | 멤버 데이터셋과 발신 관계 포함 개념 상세 |
+| `GET /spoke/common/ontogen/result/{concept_id}/attr` | 개념 속성(confidence, 근거) |
+| `GET /spoke/common/ontogen/result/{concept_id}/event` | 개념 변경 이력(제안 → 승인/거부, 멤버 추가) |
+| `POST /spoke/common/ontogen/result/{concept_id}/method/review` | 대기 중 개념 제안의 승인·거부 |
 
 ### Imazon 예시
 
@@ -392,14 +392,14 @@ GET /api/v1/spoke/common/ontogen
 거버넌스 리뷰어가 상세와 이벤트 이력을 조회한다:
 
 ```http
-GET /api/v1/spoke/common/ontogen/order_line
-GET /api/v1/spoke/common/ontogen/order_line/event
+GET /api/v1/spoke/common/ontogen/result/order_line
+GET /api/v1/spoke/common/ontogen/result/order_line/event
 ```
 
 …그리고 제안을 승인한다:
 
 ```http
-POST /api/v1/spoke/common/ontogen/order_line/method/review
+POST /api/v1/spoke/common/ontogen/result/order_line/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "FK 구조 확인. 추후 이름 변경 가능." }

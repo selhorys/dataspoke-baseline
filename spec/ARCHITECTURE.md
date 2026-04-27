@@ -259,7 +259,7 @@ baseline ontology is **single-level**: concepts are peers, not nested. Outputs a
 PostgreSQL with Apache AGE (graph) and pgvector (vector) extensions; on review approval, concept
 membership is reflected back to DataHub as a glossary term attachment on the member dataset.
 Low-confidence proposals are queued for governance review via
-`POST /api/v1/spoke/common/ontogen/{concept_id}/method/review`. Concurrent inference runs return
+`POST /api/v1/spoke/common/ontogen/result/{concept_id}/method/review`. Concurrent inference runs return
 `409 ONTOGEN_RUNNING`.
 
 ### 4. Metadata Generation (UC4)
@@ -336,7 +336,7 @@ ontology from DataHub metadata, source code, SQL logs, and external docs.
 2. **Cross-Concept Relationship Inference** — pairwise semantic analysis for graph edges
    between peer concepts
 3. **Confidence Scoring & Human Review Queue** — low-confidence results queued for review via
-   `POST /spoke/common/ontogen/{concept_id}/method/review`
+   `POST /spoke/common/ontogen/result/{concept_id}/method/review`
 
 **Storage** (PostgreSQL with pgvector + Apache AGE):
 - `concepts` — id, name, description, confidence, status (relational)

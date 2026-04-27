@@ -179,7 +179,7 @@ Baseline features consumed by all user groups.
 
 The ontology is a global artifact, so its conf, manual run trigger, and inference-run
 event log are singletons rooted at `/spoke/common/ontogen` rather than under any
-dataset URN. Per-concept routes use `/spoke/common/ontogen/{concept_id}/...`.
+dataset URN. Per-concept routes use `/spoke/common/ontogen/result/{concept_id}/...`.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -190,10 +190,10 @@ dataset URN. Per-concept routes use `/spoke/common/ontogen/{concept_id}/...`.
 | `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference (`dry_run` in body for no-write mode); concurrent runs return `409 ONTOGEN_RUNNING` | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen` | List concept categories | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/{concept_id}` | Get concept detail + relationships | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/{concept_id}/event` | Concept-level change history | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/{concept_id}/method/review` | Review a pending concept proposal — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/{concept_id}` | Get concept detail + relationships | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/{concept_id}/attr` | Get concept attributes (confidence, parent) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/result/{concept_id}/event` | Concept-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/result/{concept_id}/method/review` | Review a pending concept proposal — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
 
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
 

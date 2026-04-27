@@ -417,7 +417,7 @@ relationship (below `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review) →
 PostgreSQL (relational + AGE + pgvector). Concurrent inference runs return
 `409 ONTOGEN_RUNNING`; `dry_run: true` evaluates without persisting.
 
-**Approval flow**. `POST /spoke/common/ontogen/{concept_id}/method/review` with
+**Approval flow**. `POST /spoke/common/ontogen/result/{concept_id}/method/review` with
 `{verdict, reason}`:
 
 - `verdict: "approve"` → mark the concept and its dataset memberships as approved; for

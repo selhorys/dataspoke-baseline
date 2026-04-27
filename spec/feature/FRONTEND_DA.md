@@ -91,11 +91,11 @@ users with governance permissions — DA users see but cannot approve.
 
 | Element | Source | Behaviour |
 |---------|--------|-----------|
-| Concept card header | `GET /spoke/common/ontogen/{concept_id}` | Name, confidence, description, status |
-| Attributes panel | `GET /spoke/common/ontogen/{concept_id}/attr` | Confidence, source evidence |
+| Concept card header | `GET /spoke/common/ontogen/result/{concept_id}` | Name, confidence, description, status |
+| Attributes panel | `GET /spoke/common/ontogen/result/{concept_id}/attr` | Confidence, source evidence |
 | Member datasets | Ontology Generation service | Link each dataset to `/da/dataset/{urn}` |
-| Cross-concept edges | `GET /spoke/common/ontogen/{concept_id}` (relationships array) | Rendered as arrows to peer concepts |
-| Change history | `GET /spoke/common/ontogen/{concept_id}/event` | Timestamped feed |
+| Cross-concept edges | `GET /spoke/common/ontogen/result/{concept_id}` (relationships array) | Rendered as arrows to peer concepts |
+| Change history | `GET /spoke/common/ontogen/result/{concept_id}/event` | Timestamped feed |
 
 ---
 
