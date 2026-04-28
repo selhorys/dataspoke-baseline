@@ -212,7 +212,7 @@ For SDK entry points, aspect catalog, error handling, and configuration, see
 |-----------|-----------|---------|
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
 | Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, validation, embedding sync, metrics collection) |
-| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector), **graph queries** (Apache AGE, future use) |
+| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector), **graph queries** (Apache AGE) |
 | Cache | Redis | Validation result caching for AI agent loops, API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
 

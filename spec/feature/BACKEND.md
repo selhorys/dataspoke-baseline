@@ -127,7 +127,8 @@ for current method signatures.
 |---------|--------|------|---------------------|
 | DataHub Client | `datahub/client.py` | Unified read/write wrapper around `acryl-datahub` SDK | Exponential backoff (3 attempts, 500ms base). Circuit breaker (opens after 5 failures, 60s probe). See [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md). |
 | PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5 |
-| Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. AGE extension is installed on the same PG instance but not yet consumed. |
+| Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
+| Graph (Apache AGE) | `graph/client.py` | AGE extension on the same PG instance materializes `ontogen_triples` as graph edges for cross-node traversal queries (used by the governance overview's ontology-graph view). | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph). |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
 | Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2) and Governance (UC5). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
@@ -548,7 +549,7 @@ for the full read/write matrix.
 **`measurement_query` model**: Each metric definition carries a `measurement_query` JSONB
 with an `aggregation` field that selects the aggregation function. Baseline aggregations
 (`pct_fresh`, `pct_rules_passing`); unsupported aggregations return
-`422 UNSUPPORTED_METRIC_TYPE`. The vocabulary is extensible by adding new measurement
+`422 INVALID_PARAMETER`. The vocabulary is extensible by adding new measurement
 functions to the metrics service without schema changes.
 
 #### Implementation
@@ -758,6 +759,14 @@ found in DataHub, false when it has disappeared. Returns counts
 `{checked, flipped_true, flipped_false, unchanged, not_found}`. The `datahub-sync-daily`
 DAG calls this endpoint daily (unparameterized, full sweep).
 
+### DAG Verification
+
+`POST /internal/admin/dags/verify` checks that every DAG ID in `ALL_DAG_IDS`
+(see [DAG Catalogue](#dag-catalogue)) is registered with the in-cluster Airflow
+deployment. Returns `{found, missing, total_expected}`. Used as a post-deploy
+smoke check by `dataspoke-test-mode.sh` and by the test fixture
+`tests/integration/conftest.py::airflow_client`.
+
 ### Workflow Design Conventions
 
 1. **DAGs are Python-defined orchestration** -- each task is a HttpOperator call to an
@@ -870,7 +879,8 @@ failures.
 | `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
-| `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN`, `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
+| `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |
+| `PreconditionFailedError` | 422 | `DATASET_NOT_IN_DATAHUB`, `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
 
 Error response format matches [API](../API.md#error-catalogue). Exception hierarchy is
 defined in `src/shared/exceptions.py`.
@@ -917,11 +927,32 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 
 ---
 
-## User Account Management (TBD)
+## Authentication & User Account Management
 
-> This section outlines the planned user identity and account features that will
-> replace the current stub admin authentication. All stub code is marked with
-> `TBD(user-accounts)` comments.
+### Current (stub)
+
+DataSpoke uses JWT for stateless authentication; the route surface, claim
+shape, and group-to-route enforcement are defined in
+[API §Authentication & Authorization](../API.md#authentication--authorization).
+
+**Auth service** (`src/backend/auth/`):
+
+- `POST /auth/token` — verify credentials against the stub identity store and
+  issue an access token (15 min) plus a refresh token (7 d). The access token is
+  returned in the response body; the refresh token is set as an HttpOnly cookie.
+- `POST /auth/token/refresh` — verify the refresh-cookie JWT, check it is **not**
+  in the Redis revocation list, and issue a new access token. Fails closed with
+  `503 STORAGE_UNAVAILABLE` when Redis is unreachable.
+- `POST /auth/token/revoke` — record the refresh token in Redis under
+  `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime.
+
+**Stub identity store**: a single admin account configured via
+`DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`. All other credentials are
+rejected. The admin record carries every group claim (`admin`, `de`, `da`, `dg`).
+Cookie `secure` flag is gated by `DATASPOKE_COOKIE_SECURE` (default `false` for
+dev; production deployments must set it to `true`).
+
+All stub code is marked with `TBD(user-accounts)` comments.
 
 ### Planned Components
 
