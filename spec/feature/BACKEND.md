@@ -165,72 +165,23 @@ from Redis cache.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
-**Covers**: MANIFESTO §2.1 Ingestion Control (UC1)
+**Covers**: MANIFESTO §2.1 Ingestion Control (UC1). Behavioural narrative — including the
+active / passive split — lives in [USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control);
+DataHub aspect reads/writes are catalogued in
+[DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference). This
+section describes the implementation only.
 
-#### Design Framework — DataHub Entity-Aspect Model & Source-Agnostic Extraction
-
-DataSpoke ingestion implements a **source-agnostic metadata extraction** pattern built on
-[DataHub's entity-aspect model](https://datahubproject.io/docs/what/aspect). In DataHub,
-every dataset entity is described by composable _aspects_ — typed metadata facets such as
-`DatasetPropertiesClass` (human-readable name, description), `SchemaMetadataClass`
-(column-level schema), and `StatusClass` (entity lifecycle). DataSpoke's ingestion pipeline
-discovers schema metadata from heterogeneous data sources and expresses the results as
-standard DataHub aspects via the REST Emitter API.
-
-This is architecturally similar to DataHub's own ingestion framework (which uses CLI-driven
-_recipes_ with pluggable _sources_), but DataSpoke provides a simplified, API-driven model
-optimized for on-demand and scheduled metadata refresh:
-
-| Concern | DataHub Native Ingestion | DataSpoke Ingestion |
-|---------|--------------------------|---------------------|
-| Trigger | CLI batch (`datahub ingest`) | HTTP API + Airflow cron |
-| Configuration | YAML recipes | JSONB config in PostgreSQL |
-| Source plugins | 200+ community connectors | Focused extractors (extensible) |
-| Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |
-
-**Source abstraction**: The `platform` / `locator` / `identifier` / `auth` model provides a
-uniform interface across data platforms. Each `platform` maps to a dedicated extractor that
-handles connection, schema discovery, and type mapping — mirroring DataHub's source plugin
-architecture but scoped to DataSpoke's metadata-first requirements rather than full
-profiling and lineage extraction.
+**Supported platforms** (extractor module per platform):
 
 | Platform | Status | Locator | Identifier |
 |----------|--------|---------|------------|
-| **postgres** | Implemented | host, port | database, schema_name, table |
-| **kafka** | Implemented | bootstrap_servers | topic, cluster |
-| **mysql** | Planned | host, port | database, schema_name, table |
-| **oracle** | Planned | host, port | database, schema_name, table |
-| **bigquery** | Planned | project_id | dataset, table |
-| **snowflake** | Planned | account_id | database, schema_name, table |
+| `postgres` | Implemented | `host`, `port` | `database`, `schema_name`, `table` |
+| `kafka` | Implemented | `bootstrap_servers` | `topic`, `cluster` |
+| `mysql`, `oracle`, `bigquery`, `snowflake` | Planned | platform-specific | platform-specific |
 
-**Aspect emission**: A successful non-dry-run ingestion emits three aspects to DataHub per
-discovered dataset:
-- `StatusClass(removed=False)` — marks the entity as active
-- `DatasetPropertiesClass` — name, qualified name, description, custom properties
-  (source, database, schema)
-- `SchemaMetadataClass` — field list with native-to-DataHub type mapping
-  (e.g., PostgreSQL `integer` → DataHub `NUMBER`)
-
-See [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference) for
-the full aspect catalogue.
-
-**`dry_run` semantics**: Extracts and validates source metadata without calling DataHub's
-REST Emitter — useful for verifying connection parameters and previewing schema before
-committing to DataHub.
-
-#### Active vs Passive Modes
-
-Every ingestion config carries a `mode` flag (see
-[USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control)):
-
-| Mode | Trigger | Aspect emission | `event/ingestion` source |
-|------|---------|-----------------|--------------------------|
-| **active** | DataSpoke runs the extractor on the configured `schedule_tier` (or on manual / dry-run). | DataSpoke emits aspects via the SDK. | Per-run records written by `IngestionService.run()`. |
-| **passive** | An external pipeline ingests directly into DataHub. DataSpoke does not run the extractor. | None — DataSpoke does not write aspects. | The hourly `ingestion-passive-sync-hourly` DAG polls DataHub run history for all `mode: passive` configs and writes one row per run. |
-
-Both modes share the same API surface (`PUT/PATCH/GET/DELETE attr/ingestion/conf`,
-`GET event/ingestion`, `GET /spoke/common/ingestion`). `POST method/ingestion/run` is
-permitted on active configs only (passive configs reject the call with `422`).
+**Aspects emitted** (non-dry-run, per discovered dataset): `StatusClass(removed=False)`,
+`DatasetPropertiesClass`, `SchemaMetadataClass`. `dry_run: true` runs the extractor and
+returns the schema preview without calling DataHub's REST Emitter.
 
 #### Implementation
 
@@ -262,48 +213,11 @@ shape so clients see a uniform stream). No aspects are emitted; the registry's
 
 ### Validation Service (`src/backend/validation/`)
 
-**Covers**: MANIFESTO §2.1 Validation (UC2). Includes point-in-time, time-series /
-predictive SLA, and dry-run Online Verifier modes.
-
-#### Design Framework — DataHub Assertion Framework & Open Assertions Spec
-
-DataSpoke validation is a **convenience and customization layer** on top of DataHub's native
-[assertion framework](https://datahubproject.io/docs/managed-datahub/observe/assertions) —
-it does not implement its own quality scoring engine. DataHub models data quality through
-_assertions_: named checks that evaluate a specific quality dimension of a dataset and
-report pass/fail results. The
-[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)
-defines six assertion types that cover the primary data quality dimensions:
-
-| DataHub Assertion Type | Quality Dimension | Example |
-|----------------------|------------------|---------|
-| [FRESHNESS](https://datahubproject.io/docs/managed-datahub/observe/freshness-assertions) | Timeliness | "Table updated within last 24 hours" |
-| [VOLUME](https://datahubproject.io/docs/managed-datahub/observe/volume-assertions) | Completeness | "Row count between 1,000 and 100,000" |
-| [FIELD](https://datahubproject.io/docs/managed-datahub/observe/column-assertions) | Accuracy / Validity | "Column `email` matches regex pattern" |
-| [SCHEMA](https://datahubproject.io/docs/managed-datahub/observe/schema-assertions) | Conformance | "Required columns exist with expected types" |
-| [SQL](https://datahubproject.io/docs/managed-datahub/observe/custom-sql-assertions) | Custom | "No orphaned foreign keys in `orders`" |
-| CUSTOM | Any | DataSpoke-extended assertions (not in DataHub native) |
-
-DataSpoke wraps all six types and adds a **DataSpoke-original extension**: `custom` type
-with `subtype: "sql_timeseries"`, which enables partition-aware SQL validation with optional
-ML-based anomaly detection. This is designed for SQL-runnable datasets (PostgreSQL, Trino,
-Snowflake) where traditional threshold-based assertions are insufficient — e.g., detecting
-whether today's row count deviates from the day-of-week historical pattern.
-
-**How DataSpoke extends DataHub assertions**:
-
-| Concern | DataHub Native Assertions | DataSpoke Validation |
-|---------|--------------------------|---------------------|
-| Configuration | Per-assertion definition | Per-dataset bundled config (multiple rules in one `validation_config`) |
-| Partition targeting | Manual | Automatic via `partition`/`order` variables (SQL window-function semantics) |
-| Result storage | `assertionRunEvent` timeseries aspect | DataHub aspect + PostgreSQL `validation_results` (for ML training data) |
-| ML validation | Not supported | `ml_validation` extension (range model, day-of-week baseline) |
-
-DataSpoke registers assertion definitions (`assertionInfo` aspect) and reports results
-(`assertionRunEvent` aspect) back to DataHub, making DataSpoke-managed validations visible
-in DataHub's native assertion UI. See
-[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects) for
-the assertion entity model.
+**Covers**: MANIFESTO §2.1 Validation (UC2). The six rule types and their semantics live
+in [USE_CASE §UC2](../USE_CASE_en.md#uc2-validation); the DataHub assertion-aspect mapping
+is in [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
+DataSpoke wraps DataHub's Open Assertions Spec and adds a DataSpoke-original extension
+`custom` type with `subtype: "sql_timeseries"` for partition-aware ML-validated checks.
 
 #### Implementation
 
@@ -332,8 +246,7 @@ via tier-based Airflow DAGs): resolve target partition (manual → specified; cr
 via partition/order variables) → compute metrics per rule for that partition (executing
 source SQL for `custom/sql_timeseries`, running `ml_validation` against historical records
 when configured) → register `assertionInfo` in DataHub if absent → report each rule's
-`assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` and publish
-progress to the `ws:validation:{dataset_urn}` Redis pub/sub channel → record
+`assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` → record
 `VALIDATION.COMPLETE` event.
 
 ### Metadata Generation Service (`src/backend/metagen/`)
@@ -511,45 +424,17 @@ Each verdict emits a `NODE.APPROVE` / `NODE.REJECT` / `EDGE.APPROVE` / `EDGE.REJ
 
 ### Metrics Service (`src/backend/metrics/`)
 
-**Covers**: MANIFESTO §2.1 Governance (UC5) — metric definition and aggregation.
+**Covers**: MANIFESTO §2.1 Governance (UC5) — metric definition and aggregation. Baseline
+metrics (`ingestion-freshness`, `validation-score`), `dataset_filter` semantics, and
+`unresolved_urns` reporting live in [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance);
+DataHub aspect reads in
+[DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
-#### Design Framework — Observatory Pattern & Data Governance Dimensions
-
-> **Core principle**: Metrics are pure aggregation over pre-existing data. A metric does
-> not observe the data estate directly — it aggregates results that already exist in
-> DataHub metadata or DataSpoke validation results.
-
-DataSpoke metrics implement what governance frameworks call the **observatory pattern**:
-metrics aggregate pre-existing metadata rather than directly probing source data. This
-architectural separation means the metrics layer has no data source credentials, no SQL
-execution against production databases, and no network access to external systems beyond
-DataHub's API. This makes metrics lightweight, fast, and free of credential management.
-
-Baseline metric types (from
-[USE_CASE §UC5](../USE_CASE_en.md#uc5-governance)):
-
-| Metric ID | Definition | Data Source |
-|-----------|------------|-------------|
-| `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active mode; per a fixed window for passive). | DataSpoke `events` table + `ingestion_configs` |
-| `validation-score` | Percentage of validation rules with `assertion_result = SUCCESS` in the latest run, averaged across all datasets that have at least one rule. | DataSpoke `validation_results` |
-| *(extensible)* | Custom types | Any DataHub aspect or DataSpoke result table |
-
-New metric types are added by implementing a measurement function that reads from DataHub
-aspects or DataSpoke tables — never by adding direct source connections. This constraint
-preserves the observatory pattern.
-
-**DataHub relationship**: Metrics are **read-only consumers** of DataHub metadata. They
-read aspects (`DatasetPropertiesClass`, `OwnershipClass`, `globalTags`, `glossaryTerms`)
-via the DataHub SDK but never write aspects. Metric results are stored exclusively in
-DataSpoke's PostgreSQL `metric_results` table. See
-[DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature)
-for the full read/write matrix.
-
-**`measurement_query` model**: Each metric definition carries a `measurement_query` JSONB
-with an `aggregation` field that selects the aggregation function. Baseline aggregations
-(`pct_fresh`, `pct_rules_passing`); unsupported aggregations return
-`422 INVALID_PARAMETER`. The vocabulary is extensible by adding new measurement
-functions to the metrics service without schema changes.
+**Pure aggregation**: metrics never probe source data — they aggregate pre-existing
+DataHub aspects and DataSpoke result tables. The metrics layer therefore has no source
+credentials and no SQL access to production databases. New metric types are added by
+implementing a measurement function on top of those existing surfaces; unsupported
+aggregations return `422 INVALID_PARAMETER`.
 
 #### Implementation
 
@@ -623,68 +508,20 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 
 ### Event Catalogue
 
-#### Ingestion (`entity_type=dataset`)
+Config-lifecycle actions (`CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE`) are emitted
+by every domain that owns a config — `INGESTION`, `VALIDATION`, `METAGEN`, `METRIC`,
+`ONTOGEN` (singleton). Domain-specific actions:
 
-| Event Type | Trigger |
-|---|---|
-| `INGESTION.CONFIG_CREATE` | PUT config (new) |
-| `INGESTION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
-| `INGESTION.CONFIG_DELETE` | DELETE config |
-| `INGESTION.COMPLETE` | POST run succeeds |
-| `INGESTION.FAIL` | POST run encounters errors |
-
-#### Validation (`entity_type=dataset`)
-
-| Event Type | Trigger |
-|---|---|
-| `VALIDATION.CONFIG_CREATE` | PUT config (new) |
-| `VALIDATION.CONFIG_UPDATE` | PUT config (existing) or PATCH |
-| `VALIDATION.CONFIG_DELETE` | DELETE config |
-| `VALIDATION.COMPLETE` | POST run succeeds |
-
-#### Metadata Generation (`entity_type=dataset`)
-
-| Event Type | Trigger |
-|---|---|
-| `METAGEN.CONFIG_CREATE` | PUT config (new) |
-| `METAGEN.CONFIG_UPDATE` | PUT config (existing) or PATCH |
-| `METAGEN.CONFIG_DELETE` | DELETE config |
-| `METAGEN.COMPLETE` | POST `method/metagen/run` succeeds |
-| `METAGEN.APPROVE` | PATCH `attr/metagen/result/{id}` with `verdict: "approve"` succeeds (writes to editable DataHub aspects) |
-| `METAGEN.REJECT` | PATCH `attr/metagen/result/{id}` with `verdict: "reject"` succeeds |
-
-#### Metrics (`entity_type=metric`)
-
-| Event Type | Trigger |
-|---|---|
-| `METRIC.CONFIG_CREATE` | PUT definition (new) |
-| `METRIC.CONFIG_UPDATE` | PUT definition (existing) or PATCH |
-| `METRIC.CONFIG_DELETE` | DELETE definition |
-| `METRIC.RUN_COMPLETE` | POST run measurement succeeds. Payload includes `unresolved_urns: [string]` listing any `dataset_filter.dataset_urns` entries that did not resolve in DataHub at run time (skipped, not failed) |
-
-#### Ontology Generation — singleton conf and seeds (`entity_type=ontogen`)
-
-| Event Type | Trigger |
-|---|---|
-| `ONTOGEN.CONFIG_CREATE` | PUT singleton conf (first time) |
-| `ONTOGEN.CONFIG_UPDATE` | PUT or PATCH singleton conf |
-| `ONTOGEN.CONFIG_DELETE` | DELETE singleton conf |
-| `ONTOGEN.SEED_CREATE` | POST a seed |
-| `ONTOGEN.SEED_UPDATE` | PATCH a seed |
-| `ONTOGEN.SEED_DELETE` | DELETE a seed |
-| `ONTOGEN.RUN_COMPLETE` | A re-inference run succeeds. Payload includes `unresolved_urns: [string]` listing any `dataset_filter.dataset_urns` entries that did not resolve in DataHub at run time (skipped, not failed) |
-| `ONTOGEN.RUN_FAILED` | A re-inference run failed (DataHub fetch error, LLM error, persistence error, …) |
-
-#### Ontology Generation — node / edge / triple (`entity_type=node|edge|triple`)
-
-| Event Type | Trigger |
-|---|---|
-| `NODE.APPROVE` | POST `ontogen/result/node/{node_id}/method/review` with `verdict: "approve"` |
-| `NODE.REJECT` | POST `ontogen/result/node/{node_id}/method/review` with `verdict: "reject"` |
-| `EDGE.APPROVE` | POST `ontogen/result/edge/{edge_id}/method/review` with `verdict: "approve"` |
-| `EDGE.REJECT` | POST `ontogen/result/edge/{edge_id}/method/review` with `verdict: "reject"` |
-| `TRIPLE.APPROVE` | POST `ontogen/result/triple/{triple_id}/method/review` with `verdict: "approve"` |
-| `TRIPLE.REJECT` | POST `ontogen/result/triple/{triple_id}/method/review` with `verdict: "reject"` |
+| Domain (`entity_type`) | Action | Trigger |
+|---|---|---|
+| `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | `POST method/ingestion/run` succeeds / errors |
+| `VALIDATION` (`dataset`) | `COMPLETE` | `POST method/validation/run` succeeds |
+| `METAGEN` (`dataset`) | `COMPLETE` | `POST method/metagen/run` succeeds |
+| `METAGEN` (`dataset`) | `APPROVE` / `REJECT` | `PATCH attr/metagen/result/{id}` with `verdict: "approve"\|"reject"` |
+| `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds; payload carries `unresolved_urns` for any `dataset_filter.dataset_urns` entries that didn't resolve in DataHub |
+| `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
+| `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` payload carries `unresolved_urns` (same shape as METRIC) |
+| `NODE` / `EDGE` / `TRIPLE` (`node` / `edge` / `triple`) | `APPROVE` / `REJECT` | `POST ontogen/result/{type}/{id}/method/review` |
 
 ### Querying Events
 

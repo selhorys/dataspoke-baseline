@@ -221,91 +221,28 @@ For SDK entry points, aspect catalog, error handling, and configuration, see
 
 ## Data Flow
 
-### 1. Ingestion Control (UC1)
+Per-feature behaviour is defined in [USE_CASE](USE_CASE_en.md). This section captures only
+the cross-cutting flow that ties the features together.
 
-`attr/ingestion/conf` carries a `mode` flag:
+| UC | Trigger surface | Implementation entry | DataHub side-effect |
+|---|---|---|---|
+| UC1 Ingestion Control | Airflow tier DAG (active mode) or hourly `ingestion-passive-sync-hourly` DAG (passive mode); manual `POST .../method/ingestion/run` | `IngestionService` | Active: emits `Status` + `DatasetProperties` + `SchemaMetadata` aspects. Passive: no aspect writes; mirrors run history into `event/ingestion`. |
+| UC2 Validation | Airflow tier DAG; manual `POST .../method/validation/run` (`dry_run` powers the Online Verifier) | `ValidationService` | Registers `assertionInfo`; reports `assertionRunEvent` per rule per run. |
+| UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | On node approval: glossary term attached to member datasets. On triple approval: glossary-term relationship between subject and object terms. |
+| UC4 Metadata Generation | Airflow tier DAG; manual `POST .../method/metagen/run` | `MetagenService` | On reviewer approval only: writes to editable aspects (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`) — never to non-editable counterparts. |
+| UC5 Governance | Airflow tier DAG; manual `POST /spoke/dg/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
 
-- **Active** — DataSpoke is the ingestor. The configured Airflow tier DAG (`hourly` / `daily`
-  / `weekly`) runs the platform extractor and emits aspects to DataHub via the SDK; manual and
-  dry-run runs are also supported. Per-run records are written to `event/ingestion`.
-- **Passive** — an external pipeline ingests directly into DataHub. DataSpoke does not run the
-  extractor; the dataset's conf is marked `mode: passive`. An hourly
-  `ingestion-passive-sync-hourly` DAG polls DataHub for ingestion run history of all
-  passive-marked datasets and writes one row per run to `event/ingestion`, so the API surface is
-  uniform across modes.
+Cross-cutting invariants:
 
-Other features (UC2, UC3, UC5) do not subscribe to ingestion events — each runs on its own
-Airflow tier DAG schedule (or on demand) per the configs in their respective `attr/conf`.
-
-### 2. Validation (UC2)
-
-Validation runs are triggered by Airflow cron or by
-`POST /api/v1/spoke/common/data/{dataset_urn}/method/validation/run` (with optional
-`dry_run`). The service (1) resolves the target partition (manual → specified; cron → latest),
-(2) computes metrics per rule, (3) executes source SQL for `custom` / `sql_timeseries` rules,
-(4) validates against historical records when `ml_validation` is set, (5) registers
-`assertionInfo` in DataHub, (6) reports results as `assertionRunEvent`. Output: per-rule results
-`(partition, values, verdict, SUCCESS/FAILURE/ERROR)`. **Predictive SLA** uses a SQL-based
-timeseries rule with ML validation to detect anomalies before breach. The same API serves
-coding-agent loops as an **Online Verifier**.
-
-### 3. Ontology Generation (UC3)
-
-The Ontology Generator is governed by a singleton conf at `/api/v1/spoke/common/ontogen/attr/conf`
-(`is_enabled`, `schedule_tier`, `dataset_filter`, `max_manual_queries_per_dataset`,
-`max_system_queries_per_dataset`, `default_run_prompt`). The `dataset_filter` shape
-(tags / glossary_terms / dataset_urns, OR-ed) matches UC5's `measurement_query.dataset_filter`;
-unresolved `dataset_urns` at run time are skipped and reported in the
-`ONTOGEN.RUN_COMPLETE` event's `unresolved_urns` field. The conf is paired with
-zero-or-more **seeds** (human-authored Markdown documents at
-`/api/v1/spoke/common/ontogen/attr/seed/{seed_id}`) that steer LLM naming and scoping. A
-manual `POST /method/run` may also carry a transient Markdown body that acts as a
-**one-shot prompt** for that single run on top of the persistent seeds (not stored);
-runs without a body — periodic Airflow invocations and manual calls with an empty
-body — fall back to `attr/conf.default_run_prompt`. The configured Airflow tier DAG reads
-DataHub aspects (schema, descriptions, tags, lineage, usage) and DataHub Query
-entities (highlighted MANUAL + auto-discovered SYSTEM joins, capped per dataset by
-the conf) — the only input sources in the first implementation — together with the
-active seeds (plus the one-shot prompt, if any), then runs an LLM-powered pipeline
-that emits a
-**subject / predicate / object triple ontology**: **nodes** (subjects / objects),
-**edges** (predicates / relationship types), and **triples**
-(`(subject_node, edge, object_node)` facts). Inference is **incremental**: each run
-loads the existing approved nodes / edges / triples (with embedding-based reuse via
-`node_embeddings`) as the working ontology and only proposes additions or refinements
-on top — pending and rejected results are not carried forward. Outputs are persisted
-in PostgreSQL with Apache AGE (graph) and pgvector (vector) extensions. Each result
-type is reviewed independently —
-`POST /api/v1/spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review` — and a
-triple may only be approved once its subject node, edge, and object node are all
-approved (otherwise `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`). On approval, each node
-becomes a glossary term attached to its member datasets, and each triple becomes a
-glossary-term relationship between subject and object terms. Concurrent inference runs
-return `409 ONTOGEN_RUNNING`.
-
-### 4. Metadata Generation (UC4)
-
-Per-dataset configs (`/api/v1/spoke/common/data/{urn}/attr/metagen/…`) drive the Metadata
-Generation Service. It reads the UC3 ontology, schema, usage, lineage, and source-code
-references and emits **proposals** (never direct writes) into a review queue. Reviewers approve,
-partially approve (field subset), or reject via `PATCH …/attr/metagen/result/{result_id}` with
-`{verdict, fields, reason}`; on approval, DataSpoke writes the approved subset to **editable**
-DataHub aspects only — `editableDatasetProperties.description` for table descriptions and
-`editableSchemaMetadata.editableSchemaFieldInfo[].description` for column descriptions. The
-non-editable counterparts are reserved for ingestion connectors and are never overwritten by
-DataSpoke. Cross-data MD proposals target `dataProduct` entities (`dataProductProperties`); a
-single `cross_data.md` proposal carries a list of create / modify / split / retitle actions
-that the reviewer approves individually. Future scope: proposals for `domains` and `globalTags`.
-
-### 5. Governance (UC5)
-
-Airflow per-tier periodic DAGs invoke the Metrics Aggregator — pure aggregation with no direct
-data observation. It reads pre-existing DataHub metadata (e.g. `datasetProperties.description`,
-`ownership`), DataSpoke validation results, and ingestion event history; applies the optional
-`dataset_filter` (tags / glossary_terms / dataset_urns, OR-ed; unresolved URNs reported in `METRIC.RUN_COMPLETE.unresolved_urns`); and writes a single measured value +
-per-dataset breakdown to `metric_results`. Surfaced via `/api/v1/spoke/dg/metric` (metric
-dashboard) and `/api/v1/spoke/dg/overview` (ontology graph, medallion coverage, ownership
-topology — all read-only aggregations).
+- All five use cases are schedule-driven via Airflow tier DAGs (`hourly` / `daily` /
+  `weekly`) plus on-demand `POST .../method/run`. None subscribe to Kafka events in the
+  baseline (the Kafka consumer pattern is reserved for organisation-specific extensions).
+- All `dataset_filter`-bearing features (UC3 ontogen conf, UC5 metric definitions) share
+  the same `tags` / `glossary_terms` / `dataset_urns` shape; unresolved `dataset_urns`
+  surface on the corresponding `RUN_COMPLETE` event's `unresolved_urns` field.
+- All `method/run` actions are guarded by per-resource concurrency locks
+  (`409 *_RUNNING`), and reviewer triples gate on dependency status
+  (`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`).
 
 ---
 

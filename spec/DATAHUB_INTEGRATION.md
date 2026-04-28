@@ -344,38 +344,13 @@ For cross-entity enumeration (e.g., listing all datasets for health scoring), ca
 | Cross-entity search/scroll | GraphQL (`scrollAcrossEntities`) | Pagination across entity types |
 | Complex multi-hop queries | GraphQL | Single request for nested data |
 
-## Event Subscription *(optional, not used by baseline)*
+## Event Subscription *(not used by baseline)*
 
-> **Baseline UC1–UC5 do not subscribe to Kafka events.** Cross-feature triggers in the
-> baseline are schedule-driven via Airflow tier DAGs (see
-> [`ARCHITECTURE.md §Cross-Cutting Infrastructure`](ARCHITECTURE.md#cross-cutting-infrastructure)
-> and [`BACKEND.md §Airflow Workflows`](feature/BACKEND.md#airflow-workflows-srcworkflows)).
-> The pattern below is preserved as a reference for organisations that want to add
-> event-driven extensions on top of DataSpoke; it is **not enabled in the baseline build**.
-
-### Kafka Topics
-
-| Topic | Event Type | When Emitted |
-|-------|-----------|-------------|
-| `MetadataChangeLog_Versioned_v1` | Metadata change log | Any regular aspect changes |
-| `MetadataChangeLog_Timeseries_v1` | Timeseries change log | New profile/operation/usage data arrives |
-
-### Consumer Pattern *(reference)*
-
-If enabled, a single `confluent_kafka.Consumer` (group `dataspoke-consumers`,
-`auto.offset.reset=latest`) subscribes to both topics. Messages are deserialized via
-`deserialize_mcl()` and routed by `event.aspectName` to feature-specific handlers.
-
-### Example Event-Driven Triggers *(reference, not part of baseline)*
-
-| Event Aspect | Possible Consumer | Possible Action |
-|-------------|-------------------|-----------------|
-| `datasetProperties` | Ontology Generation extension | Re-generate embedding; re-classify if description changed |
-| `schemaMetadata` | Ontology / Metadata Generation extensions | Re-embed schema; flag metadata-generation candidates |
-| `datasetProfile` | Validation extension | Anomaly detection on new profile |
-| `operation` | Validation / Governance extension | Freshness check against SLA |
-| `ownership` | Governance extension | Re-compute owner-keyed metrics |
-| `globalTags` | Ontology / Governance extension | Re-sync coverage metrics |
+The baseline UC1–UC5 flows are schedule-driven via Airflow tier DAGs and do not subscribe
+to DataHub's Kafka topics (`MetadataChangeLog_Versioned_v1`,
+`MetadataChangeLog_Timeseries_v1`). Organisations adding event-driven extensions can
+consume those topics via `confluent_kafka.Consumer` and route by `event.aspectName`; no
+spec is provided for this in the baseline contract.
 
 ## Error Handling & Resilience
 
