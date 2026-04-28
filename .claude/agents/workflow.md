@@ -11,7 +11,7 @@ Your job is to write Airflow DAG definitions in `src/workflows/dags/` and workfl
 
 ## Before writing anything
 
-1. Read `spec/feature/BACKEND.md` §Airflow Workflows — defines DAG patterns, activity endpoint boundaries, retry policies, and the WebSocket feed mechanism.
+1. Read `spec/feature/BACKEND.md` §Airflow Workflows — defines DAG patterns, activity endpoint boundaries, and retry policies.
 2. Scan `src/workflows/dags/` to understand existing DAG conventions.
 3. Scan `src/workflows/airflow/` for the AirflowClient wrapper and models.
 4. Scan `src/backend/` for the service classes your activity endpoints will call — DAGs orchestrate service methods via HttpOperator tasks, not raw infrastructure.
@@ -39,7 +39,7 @@ src/workflows/
 - **Dynamic fan-out**: use `@task` decorator + `HttpOperator.partial(...).expand(data=payloads)` for dynamic task mapping (Airflow 2.3+)
 - **Periodic scheduling**: static DAGs per tier (`@hourly`, `@daily`, `@weekly`), paused on creation. Activity endpoints list entities for the tier
 - **AirflowClient**: use `src/workflows/airflow/client.py` to trigger DAG runs and poll status from the API layer
-- **Progress reporting**: long-running DAGs publish progress to Redis pub/sub for WebSocket feeds (see `spec/feature/BACKEND.md` §WebSocket Feed)
+- **Progress reporting**: long-running DAGs persist intermediate state via the activity endpoints; clients poll `event/...` and `attr/.../result` (no streaming surface in the baseline API)
 - **Idempotency**: activity endpoints must be safe to retry — use idempotency keys where needed
 
 ## Invocation modes

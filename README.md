@@ -2,14 +2,14 @@
 
 > **Note:** This project is currently under active development and has not been officially released. APIs, features, and documentation are subject to change without notice.
 
-AI-powered sidecar extension for [DataHub](https://datahubproject.io/) — organized by user group for Data Engineers (DE), Data Analysts (DA), and Data Governance personnel (DG).
+AI-powered sidecar extension for [DataHub](https://datahubproject.io/), built API-first.
 
-DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (the Hub); DataSpoke extends it with quality scoring, semantic search, ontology construction, and metrics dashboards (the Spokes).
+DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (the Hub); DataSpoke extends it with five baseline features (the Spokes): **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, and **Governance**. The user-group framing (Data Engineering / Data Analysis / Data Governance) is a UI and API extensibility surface only — `/spoke/dg/` carries baseline governance routes; `/spoke/de/` and `/spoke/da/` are reserved for organization-specific extensions.
 
 This repository delivers two artifacts:
 
-- **Baseline Product** — A pre-built implementation of essential features for an AI-era catalog, targeting DE, DA, and DG user groups.
-- **AI Scaffold** — Claude Code conventions, development specs, and utilities — including the PRauto autonomous PR system — that enable rapid construction of custom data catalogs with AI coding agents.
+- **Baseline Product** — A foundational data catalog implementation of the five MANIFESTO features. The API contract in [`spec/API.md`](spec/API.md) is the canonical surface; the frontend is a thin reference UI that consumes those routes verbatim.
+- **Productized Scaffold** — An **AI Scaffold** (Claude Code conventions, generator/evaluator subagents, PRauto) plus a **Development Scaffold** (scripted Kubernetes dev environment) that together let teams fork this repo and build custom Spokes with AI coding agents.
 
 Fork or copy this repository to create a data catalog for your organization.
 
@@ -131,13 +131,15 @@ Fork this repository and adapt:
 
 | Document | Purpose |
 |----------|---------|
-| [spec/MANIFESTO_en.md](spec/MANIFESTO_en.md) | Product identity, user-group taxonomy |
+| [spec/MANIFESTO_en.md](spec/MANIFESTO_en.md) | **Golden** — product identity, five baseline features |
+| [spec/API.md](spec/API.md) | **Golden** — route catalogue, auth, middleware, error catalogue |
+| [spec/USE_CASE_en.md](spec/USE_CASE_en.md) | **Golden** — five UC scenarios on the Imazon test estate |
 | [spec/ARCHITECTURE.md](spec/ARCHITECTURE.md) | System architecture, tech stack, deployment |
-| [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, PRauto |
-| [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |
 | [spec/DATAHUB_INTEGRATION.md](spec/DATAHUB_INTEGRATION.md) | DataHub SDK/API patterns |
 | [spec/API_DESIGN_PRINCIPLE_en.md](spec/API_DESIGN_PRINCIPLE_en.md) | REST API conventions |
-| [spec/feature/](spec/feature/) | Feature specs (API, BACKEND, FRONTEND, DEV_ENV, HELM_CHART) |
+| [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, PRauto |
+| [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |
+| [spec/feature/](spec/feature/) | Feature specs (BACKEND, BACKEND_SCHEMA, FRONTEND_*, DEV_ENV, HELM_CHART) |
 
 ## License
 

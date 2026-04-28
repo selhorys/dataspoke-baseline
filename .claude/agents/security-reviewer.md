@@ -62,7 +62,6 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 - Role/user-group checks enforced at the service layer, not just the router
 - No IDOR — resource access checks ownership, not just authentication
 - Token handling: no tokens in URLs, query strings, or logs
-- WebSocket auth: token validated on connect, not just on first message
 
 ### 3. Secrets
 

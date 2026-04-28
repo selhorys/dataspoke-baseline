@@ -30,7 +30,8 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core
 - **API-first**: FastAPI implementation in `src/api/` is the SSOT for the API contract; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
-- **Airflow** for workflow orchestration (HTTP-triggered DAGs, LocalExecutor, fixed schedule tiers); **PostgreSQL 17** (with `pgvector` for vector search and `age` for future graph workloads) for operational DB
+- **Airflow 3.1.8** for workflow orchestration (HTTP-triggered DAGs, LocalExecutor, fixed schedule tiers); **PostgreSQL 17** (with `pgvector` for vector search and Apache `age` for ontogen triple graph materialization) for operational DB
+- **Headless / API-first**: backend's primary task is to support `spec/API.md`; frontend is a thin reference UI that consumes API routes verbatim (no invented endpoints); per `spec/feature/FRONTEND_BASIC.md` no streaming surface exists in the baseline — clients poll `event/...` and `attr/.../result`
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
 - **DataHub debugging protocol**: For any DataHub integration or infrastructure issue, consult `ref/github/datahub/` source code and use the `/datahub-api` skill before guessing configs or iterating through Helm upgrades.
 - **Reference when implementing**: `spec/DATAHUB_INTEGRATION.md` for DataHub interactions; `spec/API.md` for routes, auth, middleware, error codes; `spec/feature/BACKEND.md` for backend services, workflows; `spec/feature/BACKEND_SCHEMA.md` for DB schema (relational + pgvector tables); `spec/feature/FRONTEND_*.md` for UI layout, workspace pages, shared components
@@ -41,9 +42,9 @@ Specs must not contradict each other — propagate changes up and down. Priority
 
 | Priority | Documents | Role |
 |----------|-----------|------|
-| 1 | `MANIFESTO_en/kr.md` | Product identity. Never modify unless explicitly requested. |
+| 1 | `MANIFESTO_en/kr.md`, `API.md`, `USE_CASE_en/kr.md` | Golden product identity, API contract, and scenario set. Never modify unless explicitly requested; everything else syncs to these. |
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Binding conventions. |
-| 3 | `ARCHITECTURE.md`, `API.md`, `TESTING.md`, `USE_CASE_en/kr.md` | System architecture, API contract, testing conventions, and scenarios. |
+| 3 | `ARCHITECTURE.md`, `TESTING.md` | System architecture and testing conventions. |
 | 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md` | Claude Code scaffold conventions; autonomous PR worker. |
 | 5 | `feature/<FEATURE>.md` | Common feature specs. |
 | 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |

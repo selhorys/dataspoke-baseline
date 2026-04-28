@@ -3,7 +3,13 @@
 FastAPI service that acts as the single HTTP ingress for all DataSpoke clients — the portal UI and external AI agents.
 
 API prefix: `/api/v1`
-Route tiers: `/api/v1/spoke/common/…`, `/api/v1/spoke/dg/…`, `/api/v1/hub/…`, `/api/v1/auth/…`, `/internal/…`
+Route tiers (per [`spec/API.md`](../../spec/API.md)):
+- `/api/v1/spoke/common/…` — baseline ingestion, validation, ontology generation, metadata generation
+- `/api/v1/spoke/de/…`, `/api/v1/spoke/da/…` — reserved for org-specific extensions (no baseline routes)
+- `/api/v1/spoke/dg/…` — baseline governance (metric, overview)
+- `/api/v1/hub/…` — DataHub pass-through
+- `/api/v1/auth/…` — JWT issue / refresh / revoke
+- `/api/v1/admin/…`, `/internal/…` — admin and internal-token-gated routes
 
 ---
 
