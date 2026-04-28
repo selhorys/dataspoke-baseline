@@ -1,357 +1,177 @@
 # DataSpoke Frontend — Data Governance (DG) Workspace
 
-> Conforms to [MANIFESTO](../MANIFESTO_en.md) (highest authority).
-> Layout and shared components in [FRONTEND_BASIC](FRONTEND_BASIC.md).
-> API routes in [API](../API.md). Backend services in [BACKEND](BACKEND.md).
+> Conforms to [MANIFESTO](../MANIFESTO_en.md). Shared layer in
+> [FRONTEND_BASIC](FRONTEND_BASIC.md). API in [API.md](../API.md).
 
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Navigation](#navigation)
-3. [Metrics Dashboard (UC5)](#metrics-dashboard-uc5)
-4. [Multi-Perspective Overview (UC5)](#multi-perspective-overview-uc5)
-
----
-
-## Overview
-
-The DG workspace is the primary surface for **Governance** (MANIFESTO §2.1, UC5): enterprise-wide
-health metrics across departments, visual exploration of the data estate, and governance blind
-spot detection. It consumes `/api/v1/spoke/dg/` routes (metric, overview) and
-`/api/v1/spoke/common/` for shared resources. Unlike `/spoke/de/` and `/spoke/da/`, the
-`/spoke/dg/` tier hosts baseline routes (metric and overview are Governance surfaces in
-MANIFESTO §2.1).
+DG is the only workspace that hosts baseline routes (`/spoke/dg/metric` and
+`/spoke/dg/overview`) and the only one that exposes ontogen approval actions
+(`POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`).
 
 ---
 
 ## Navigation
 
-```
-┌───────────┐
-│  DG       │
-│  ───────  │
-│  Home     │
-│  Metrics  │
-│  Overview │
-│  Ontogen  │
-│  ───────  │
-│  [DE][DA] │
-└───────────┘
-```
-
-| Item | Route | API Base |
-|------|-------|----------|
-| Home | `/dg` | — |
-| Metrics | `/dg/metrics` | `/spoke/dg/metric/` |
-| Overview | `/dg/overview` | `/spoke/dg/overview/` |
-| Ontology Generation | `/dg/ontogen` | `/spoke/common/ontogen/` |
-
-The Ontology Generation link lets governance leads review and approve pending node /
-edge / triple proposals (UC3) — review proceeds nodes → edges → triples, since a triple
-cannot be approved until its subject node, edge, and object node are all approved.
-Governance also owns the singleton inference conf at `/spoke/common/ontogen/attr/conf`
-and the Markdown seeds at `/spoke/common/ontogen/attr/seed/{seed_id}`.
+| UI route | Title | API base |
+|---|---|---|
+| `/dg/metrics` | Metrics dashboard | `/spoke/dg/metric`, `/spoke/dg/overview` |
+| `/dg/metrics/list` | Metric list | `/spoke/dg/metric` |
+| `/dg/metrics/[id]` | Metric detail | `/spoke/dg/metric/{id}` |
+| `/dg/overview` | Multi-perspective overview | `/spoke/dg/overview` |
+| `/dg/ontogen` | Ontogen review | `/spoke/common/ontogen/...` |
+| `/dg/ontogen/conf` | Ontogen conf editor | `/spoke/common/ontogen/attr/conf` |
+| `/dg/ontogen/seed` | Ontogen seeds editor | `/spoke/common/ontogen/attr/seed/...` |
 
 ---
 
-## Metrics Dashboard (UC5)
+## Page contracts
 
-### Dashboard Home (`/dg/metrics`)
+### Metrics (UC5)
 
-Enterprise-wide health dashboard with department breakdown. Uses `GET /spoke/dg/metric`.
+| Page | Read | Write |
+|---|---|---|
+| `/dg/metrics` (dashboard) | `GET /spoke/dg/metric`, `GET /spoke/dg/overview` (per-dataset breakdown + blind spots from the same call) | — |
+| `/dg/metrics/list` | `GET /spoke/dg/metric` (paginated, filter by `theme`, `status`) | — |
+| `/dg/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `title`, `theme`, `measurement_query`, `schedule_tier`, `is_enabled`); `POST .../method/run` (`{dry_run?}`) |
 
-```
-┌────────────────────────────────────────────────────────────┐
-│  Enterprise Metadata Health                                │
-│                                                            │
-│  ┌─ Score Card ──────────────────────────────────────┐    │
-│  │                                                    │    │
-│  │   Enterprise Score         Trend (90 days)         │    │
-│  │   ┌─────────┐            ┌───────────────────┐    │    │
-│  │   │         │            │  100 ┤             │    │    │
-│  │   │   77    │            │   80 ┤    ╱──────  │    │    │
-│  │   │  /100   │            │   60 ┤───╱         │    │    │
-│  │   │         │            │   40 ┤             │    │    │
-│  │   └─────────┘            │      └──┬──┬──┬──  │    │    │
-│  │   Target: 70 ✓           │       Jan Feb Mar  │    │    │
-│  │                          └───────────────────┘    │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
-│  ┌─ Department Breakdown ────────────────────────────┐    │
-│  │                                                    │    │
-│  │  Engineering      ████████████████░░░░  76  ↑ +3%  │    │
-│  │  Data Science     ██████████████░░░░░░  69  → 0%   │    │
-│  │  Marketing        ██████████████████░░  71  ↑ +17% │    │
-│  │  Finance          ████████████████████  81  ↑ +5%  │    │
-│  │  Operations       █████████░░░░░░░░░░░  45  → 0%   │    │
-│  │  Publisher Rel.   ████████░░░░░░░░░░░░  44  ↑ +4%  │    │
-│  │                                                    │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
-│  ┌─ Critical Issues ─────────────────────────────────┐    │
-│  │  42 critical │ 78 high │ 118 medium               │    │
-│  │                                                    │    │
-│  │  1. marketing.campaign_metrics — no owner (38 usr) │    │
-│  │  2. ops.daily_summary — no description (22 usr)    │    │
-│  │  3. ...                                            │    │
-│  └────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────┘
-```
+`measurement_query.dataset_filter` carries three OR-ed dimensions:
+`tags[]` (DataHub tag URNs), `glossary_terms[]` (glossary term URNs), and
+`dataset_urns[]` (explicit dataset URNs for pinning). The metric config form
+exposes all three. URN format is validated at `PUT/PATCH` time
+(`422 INVALID_DATASET_URN`); URNs that fail to resolve at run time are listed
+in the `METRIC.RUN_COMPLETE` event's `unresolved_urns` field.
 
-### Dashboard Design Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Score visualization | Large number + bar chart per department | CDO needs instant grasp of enterprise state |
-| Trend chart | 90-day line chart (Recharts) | Shows improvement trajectory, matches initiative timeline |
-| Breakdown list | Per-dataset detail from measurement result | Actionable; click → dataset detail |
-| Real-time updates | WS `/spoke/dg/metric/stream` | Dashboard stays current without manual refresh |
-| Department click | Drill into department detail view | CDO → department lead handoff |
-
-### Metric List (`/dg/metrics/list`)
-
-Browse all defined metrics. Uses `GET /spoke/dg/metric`.
+Baseline metrics: `ingestion-freshness`, `validation-score`. Aggregations
+ship with `pct_fresh` and `pct_rules_passing`; unsupported aggregations
+return `422 INVALID_PARAMETER`.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Metrics                                    [+ New Metric] │
-│                                                            │
-│  [Search...          ]  Theme: [All v]  Status: [All v]    │
-├───────────────────────────┬────────┬────────────┤
-│  Metric                   │ Value  │  Trend     │
-├───────────────────────────┼────────┼────────────┤
-│  Ingestion freshness      │  92%   │  ↑ +2pp/wk │
-│  Validation score         │  87%   │  ↑ +1pp/wk │
-├───────────────────────────┴────────┴────────────┤
-│  1-2 of 2 (baseline)                                       │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Metrics                                             │
+├──────────────────────────────────────────────────────┤
+│  ingestion-freshness:  92%  ↑     validation: 87% ↑  │
+│                                                      │
+│  Per-dataset breakdown (overview.metrics[*].breakdown)│
+│    catalog.books         fresh ✓   validation 96%    │
+│    orders.line_items     fresh ✓   validation 72%    │
+│    customers.profiles    fresh ✓   validation 91%    │
+│    orders.shipments      fresh ✗   validation —      │
+│                                                      │
+│  Blind spots (overview.blind_spots[])                │
+│    publishers.feed_raw                               │
+│    shipping.carrier_raw_v1                           │
+└──────────────────────────────────────────────────────┘
+      Dashboard (`/dg/metrics`) ← `/spoke/dg/{metric,overview}`
 ```
 
-Row click → metric detail.
-
-### Metric Detail (`/dg/metrics/[metric_id]`)
-
-Shows metric definition, timeseries chart, and events.
-
 ```
-┌────────────────────────────────────────────────────────────┐
-│  ← Metrics / Ingestion Freshness                           │
-│  Theme: Freshness  │  Tier: Hourly  │  ● Active            │
-│                                                            │
-│  [Edit] [Run Now] [Deactivate]                             │
-│                                                            │
-│  ┌─ Timeseries ──────────────────────────────────────┐    │
-│  │  Count                                             │    │
-│  │  80 ┤                                              │    │
-│  │  60 ┤──╲                                           │    │
-│  │  40 ┤    ╲───────╲                                 │    │
-│  │  20 ┤              ╲─────                          │    │
-│  │   0 ┤                                              │    │
-│  │     └──┬──┬──┬──┬──┬──┬──┬──                      │    │
-│  │       W1  W2  W3  W4  W5  W6  W7                  │    │
-│  │                                                    │    │
-│  │  [1W] [1M] [3M] [6M] [1Y]  Range: [from] [to]    │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
-│  ┌─ Events ──────────────────────────────────────────┐    │
-│  │  2026-03-05 ✓ Measured: 42                          │    │
-│  │  2026-02-26 ✓ Measured: 48                          │    │
-│  │  2026-02-19 ✓ Measured: 52                          │    │
-│  └────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  ← ingestion-freshness    [Edit] [Run] [Disable]     │
+├──────────────────────────────────────────────────────┤
+│  attr/conf                                           │
+│    theme: freshness  schedule_tier: hourly  ✓ enabled│
+│                                                      │
+│  attr/result?from&to                                 │
+│    [Recharts area chart of measurement value]        │
+│                                                      │
+│  event  (METRIC.RUN_COMPLETE …)                      │
+│    2026-04-25 measured: 92                           │
+│    2026-04-24 measured: 88                           │
+└──────────────────────────────────────────────────────┘
+        Detail (`/dg/metrics/[id]`)
 ```
 
-- **Edit** → opens config form. `PUT/PATCH /spoke/dg/metric/{id}/attr/conf`
-- **Run Now** → `POST /spoke/dg/metric/{id}/method/run`
-- **Enable/Disable** → `PATCH /spoke/dg/metric/{id}/attr/conf` with `{"is_enabled": true|false}`
-- **Timeseries** → `GET /spoke/dg/metric/{id}/attr/result?from=...&to=...` rendered as Recharts
-  area chart
-- **Events** → `GET /spoke/dg/metric/{id}/event`
-- **Time range shortcuts** (1W, 1M, etc.) set `from`/`to` query params
-
-### Metric Config Form
-
-Modal for creating or editing a metric definition.
-
 ```
-┌──────────────────────────────────────────────┐
-│  Metric Definition                           │
-│                                              │
-│  Title:       [Ingestion freshness       ]   │
-│  Aggregation: [pct_fresh             v]      │
-│  Theme:       [Freshness            v]       │
-│  Schedule:    [hourly | daily | weekly v]    │
-│                                              │
-│  Dataset Filter (optional)                   │
-│  Tags:           [urn:li:tag:env:PROD, ]     │
-│  Glossary Terms: [urn:li:glossaryTerm:… ]    │
-│                                              │
-│  [Cancel]                    [Save]          │
-└──────────────────────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│  Metric definition                             │
+├────────────────────────────────────────────────┤
+│  title:          [ingestion-freshness       ]  │
+│  theme:          [freshness               v]   │
+│  measurement_query.aggregation:                │
+│                  [pct_fresh               v]   │
+│  schedule_tier:  [ hourly | daily | weekly v]  │
+│  is_enabled:     [x]                           │
+│                                                │
+│  measurement_query.dataset_filter (OR-ed)      │
+│    tags[]:           [urn:li:tag:env:PROD,]    │
+│    glossary_terms[]: [urn:li:glossaryTerm:…,]  │
+│    dataset_urns[]:   [urn:li:dataset:(…),]     │
+│                                                │
+│  [Cancel]                            [Save]    │
+└────────────────────────────────────────────────┘
+        Config form (PUT/PATCH .../attr/conf)
 ```
 
----
+### Multi-Perspective Overview (UC5)
 
-## Multi-Perspective Overview (UC5)
+Single page consuming `GET /spoke/dg/overview`. Five views render the
+response sub-fields verbatim — no derived analysis on top:
 
-### Overview Page (`/dg/overview`)
+| View | Source field | Display |
+|---|---|---|
+| Metric Values | `overview.metrics[]` | Per-metric latest value + 90-day trend |
+| Blind Spots | `overview.blind_spots[]` | Datasets present in DataHub but not mapped to any approved UC3 ontology node |
+| Ontology Graph | `overview.ontology` | UC3 nodes + approved triples — labelled directed graph (nodes are subjects/objects, edges are predicates) |
+| Medallion | `overview.medallion` | Bronze / Silver / Gold / Unknown layer counts |
+| Ownership | `overview.ownership` | Owner / team coverage from DataHub `ownership` aspect |
 
-A single overview page that consumes `GET /spoke/dg/overview` and renders five aggregations
-side-by-side. Visualization config is read/written through `GET/PATCH /spoke/dg/overview/attr`.
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  Data Estate Overview                                      │
-│                                                            │
-│  [Metric Values]  [Blind Spots]  [Ontology Graph]          │
-│  [Medallion]      [Ownership]                  [Config ⚙]  │
-│  ───────────────────────────────────────────────────────   │
-│                                                            │
-│  (active view content below)                               │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
-```
-
-| View | Source | What it shows |
-|------|--------|---------------|
-| Metric Values | `overview.metrics[]` | Latest value per enabled metric (`ingestion-freshness`, `validation-score`, …) |
-| Blind Spots | `overview.blind_spots[]` | Datasets present in DataHub but not mapped to any UC3 node |
-| Ontology Graph | `overview.ontology` | UC3 nodes + approved triples (`(subject_node, edge, object_node)`) rendered as a labelled graph |
-| Medallion | `overview.medallion` | Bronze / Silver / Gold layer distribution from `upstreamLineage` |
-| Ownership | `overview.ownership` | Owner / team topology from DataHub `ownership` aspect |
-
-### Blind Spots View
-
-Lists datasets that exist in DataHub but have no row in `dataset_node_map` with status
-`approved`. Acts as a governance early-warning surface — these datasets are invisible to UC3
-classification and downstream governance signals.
+Visualization config persists via `GET/PATCH /spoke/dg/overview/attr`.
+Settings are limited to layout / status / size / confidence-threshold filters
+that the overview response can answer locally — no fields beyond what
+`overview.attr` returns.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Blind Spots  (12 datasets unmapped to any node)           │
-│                                                            │
-│  publishers.feed_raw       Last seen: 2 hours ago          │
-│  shipping.carrier_raw_v1   Last seen: 6 days ago           │
-│  …                                                         │
-│  [Trigger ontogen run]                                     │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Data Estate Overview                                │
+│  [Metrics] [Blind Spots] [Ontology] [Medallion] […]  │
+├──────────────────────────────────────────────────────┤
+│  Ontology view (overview.ontology)                   │
+│                                                      │
+│      ┌──────┐  references   ┌───────────┐            │
+│      │ BOOK │ ◀──────────── │ ORDER_LINE│            │
+│      └──────┘               └─────┬─────┘            │
+│                                   │ placed_by        │
+│                                   ▼                  │
+│                             ┌──────────┐             │
+│                             │ CUSTOMER │             │
+│                             └──────────┘             │
+│                                                      │
+│  ● = ontology node   →  = approved triple (predicate)│
+└──────────────────────────────────────────────────────┘
+        Overview (`/dg/overview`) — five views, switched by tab
 ```
 
-The `[Trigger ontogen run]` button calls
-`POST /spoke/common/ontogen/method/run` to re-run inference on these datasets.
+### Ontogen Review (UC3)
 
-### Ontology Graph View
+DG holds the singleton conf, the seed library, and the **approval actions**
+for the triple ontology — DE and DA browse but cannot approve.
 
-Interactive force-directed graph rendered with a graph library (e.g., `react-force-graph` or
-Highcharts network graph).
+| Page | Read | Write |
+|---|---|---|
+| `/dg/ontogen/conf` | `GET /spoke/common/ontogen/attr/conf` | `PUT/PATCH/DELETE .../attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `max_manual_queries_per_dataset`, `max_system_queries_per_dataset`, `default_run_prompt`) |
+| `/dg/ontogen/seed` | `GET .../attr/seed`, `GET .../{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../{seed_id}` |
+| `/dg/ontogen` | `GET .../result/{node\|edge\|triple}` (+ `/{id}`, `/attr`, `/event`) | `POST .../method/run`; `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-```
-┌────────────────────────────────────────────────────────────┐
-│  Ontology Graph       700 nodes │ 1,842 edges              │
-│                                                            │
-│  Filters: Domain [All v]  Score [All v]  Usage [All v]     │
-│                                                            │
-│  ┌────────────────────────────────────────────────────┐   │
-│  │                                                    │   │
-│  │         ┌──────┐                                   │   │
-│  │    ┌──●─┤Catlog├──●──┐                             │   │
-│  │    │    └──────┘     │                             │   │
-│  │  ┌─┴────┐       ┌───┴───┐     ┌────────┐         │   │
-│  │  │Orders│───●───│Review │─────│Recomm. │         │   │
-│  │  └──────┘       └───────┘     │ (ALL   │         │   │
-│  │    │                          │  RED!) │         │   │
-│  │  ┌─┴──────┐                   └────────┘         │   │
-│  │  │Shipping│                                       │   │
-│  │  └────────┘                                       │   │
-│  │                                                    │   │
-│  │  ● = dataset node                                  │   │
-│  │  Node color: 🔴 <50  🟡 50-70  🟢 >70             │   │
-│  │  Node size:  usage volume                          │   │
-│  │  Solid edge: lineage │ Dashed: semantic            │   │
-│  └────────────────────────────────────────────────────┘   │
-│                                                            │
-│  ┌─ Selected: recommendations.* cluster ─────────────┐    │
-│  │  12 datasets │ Avg score: 25 │ No ownership        │    │
-│  │  Risk: CRITICAL — undocumented, unowned, high use  │    │
-│  │  [View Details] [Export]                            │    │
-│  └────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────┘
-```
-
-### Graph Interaction
-
-| Action | Behavior |
-|--------|----------|
-| Zoom | Mouse wheel / pinch — zoom in/out |
-| Pan | Click + drag on canvas |
-| Click node | Select dataset — show detail panel below |
-| Click cluster | Select all member datasets of an ontology node |
-| Hover node | Tooltip: name, score, owner, top connections |
-| Hover edge | Tooltip: relationship type, direction |
-| Filters | Domain, score range, usage range — re-render graph |
-| Search | Highlight matching nodes, dim others |
-
-### Graph Config
-
-Accessible via `[Config ⚙]`. Persists via `PATCH /spoke/dg/overview/attr`.
-
-| Setting | Options |
-|---------|---------|
-| Layout algorithm | Force-directed (default), hierarchical, circular |
-| Color by | Health score (default), domain, medallion layer, owner |
-| Size by | Usage volume (default), downstream count, column count |
-| Edge visibility | Lineage only, semantic only, both (default) |
-| Min score filter | Slider 0–100 |
-
-### Medallion Classification View
-
-Tabular + visual view of Bronze/Silver/Gold layer distribution.
+Review proceeds **nodes → edges → triples**. A triple cannot be approved
+while any of its subject node, edge, or object node is still pending; the
+API returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` and the UI disables the
+approve button with an inline hint naming the missing dependency.
+Approved nodes/edges/triples are written to DataHub as glossary terms and
+glossary-term relationships — the confirm dialog states this.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Medallion Classification                                  │
-│                                                            │
-│  ┌─ Layer Summary ───────────────────────────────────┐    │
-│  │                                                    │    │
-│  │  🥉 Bronze   ██████████████████░░░░░░░░  180       │    │
-│  │  🥈 Silver   ████████████░░░░░░░░░░░░░░  120       │    │
-│  │  🥇 Gold     █████░░░░░░░░░░░░░░░░░░░░░   55       │    │
-│  │  ❓ Unknown  ██████████████████████████░  345       │    │
-│  │                                                    │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
-│  ┌─ Conversion Funnel ───────────────────────────────┐    │
-│  │                                                    │    │
-│  │  Bronze(180) ──60%──► Silver(120) ──46%──► Gold(55)│    │
-│  │                                                    │    │
-│  │  40% of Bronze (72) have NO Silver counterpart     │    │
-│  │  → Candidates for cleanup                          │    │
-│  │                                                    │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
-│  ┌─ Cleanup Candidates ──────────────────────────────┐    │
-│  │  publishers.feed_raw_legacy  │ 8mo stale │ 0 dep  │    │
-│  │  shipping.carrier_raw_v1     │ 6mo stale │ 0 dep  │    │
-│  │  marketing.campaign_2022     │ 11mo stale│ 0 dep  │    │
-│  │  ...                                               │    │
-│  │  Estimated recoverable storage: ~2.3 TB            │    │
-│  └────────────────────────────────────────────────────┘    │
-│                                                            │
-│  ┌─ Unclassified Triage ─────────────────────────────┐    │
-│  │  345 datasets need review                          │    │
-│  │  Recommendation: Run Ingestion Control on top 50   │    │
-│  │  → Estimated auto-classify: 180 of 345 (52%)      │    │
-│  └────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Ontogen Review   [ Nodes | Edges | Triples ] [Run]  │
+├──────────────────────────────────────────────────────┤
+│  Nodes  (result/node)                                │
+│    BOOK         conf 0.96   ✓ approved               │
+│    ORDER_LINE   conf 0.71   ⏳ pending               │
+│       reason: [_______________]  [Approve] [Reject]  │
+│                                                      │
+│  Triples  (result/triple)                            │
+│    ORDER_LINE --references--> BOOK   ⏳              │
+│       [Approve] (blocked: ORDER_LINE node pending)   │
+│    ORDER_LINE --placed_by --> CUSTOMER ⏳            │
+│       [Approve] (blocked: ORDER_LINE node pending)   │
+└──────────────────────────────────────────────────────┘
+        Review (`/dg/ontogen`) — DG-only POST .../method/review
 ```
-
-### Medallion Design Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Layer detection | Auto-classified by backend (upstream count + naming + schema; see [BACKEND §OverviewService](BACKEND.md#overviewservice)) | Manual tagging doesn't scale to 700+ datasets |
-| Conversion funnel | Visual flow diagram | CDO wants to see data refinement pipeline health |
-| Cleanup candidates | Sorted by staleness × zero-dependency | Highest-impact cleanup targets first |
-| Unknown triage | Link to Ingestion Control (UC1) | Cross-feature integration drives adoption |
