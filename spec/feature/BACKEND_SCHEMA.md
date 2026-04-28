@@ -40,7 +40,7 @@ Stores per-dataset ingestion configuration.
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `mode` | `TEXT` | `active` (DataSpoke runs the extractor) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `ingestion-passive-sync-hourly` DAG) |
+| `mode` | `TEXT` | `active` (DataSpoke runs the extractor) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `ingestion-passive-hourly` DAG) |
 | `platform` | `TEXT` | DataHub platform name (`postgres`, `kafka`, `mysql`, `bigquery`, etc.) |
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
@@ -354,8 +354,8 @@ descriptions, tags, and lineage context. Processed through the LLM embedding
 endpoint.
 
 **Sync triggers**:
-- Scheduled: refreshed by the `ontogen-periodic-*` tier DAG when it re-runs UC3 inference
-  on the configured `schedule_tier`
+- Scheduled: refreshed by the matching `ontogen-{hourly,daily,weekly}` tier DAG when it
+  re-runs UC3 inference on the configured `schedule_tier`
 - On-demand: rebuilt as part of an `ontogen` manual run
 - Optional event-driven extension (not enabled in baseline): Kafka MCL events for
   `datasetProperties` / `schemaMetadata` / `globalTags` changes — see
@@ -390,7 +390,7 @@ schemas / descriptions of its member datasets. Processed through the LLM embeddi
 endpoint.
 
 **Sync triggers**:
-- Refreshed by the `ontogen-periodic-*` tier DAG: every approved node whose
+- Refreshed by the matching `ontogen-{hourly,daily,weekly}` tier DAG: every approved node whose
   `node_embeddings.updated_at` precedes `ontogen_nodes.updated_at` is re-embedded
 - On-demand: rebuilt as part of an `ontogen` manual run when name or description
   changed for an approved node

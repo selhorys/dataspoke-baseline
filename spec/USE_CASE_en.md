@@ -70,7 +70,7 @@ Two ingestion modes are supported:
   results to DataHub. Manual and dry-run runs are also supported.
 - **Passive** — an external system ingests directly into DataHub. DataSpoke does not
   run the extractor; it only marks the dataset's ingestion config as `mode: passive`. A
-  `ingestion-passive-sync-hourly` Airflow DAG runs **hourly**, polls DataHub for
+  `ingestion-passive-hourly` Airflow DAG runs **hourly**, polls DataHub for
   ingestion run history of all passive-marked datasets, and writes the resulting status
   as rows on `event/ingestion`. The DataSpoke API surface therefore looks the same to
   clients regardless of mode.
@@ -133,7 +133,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,orders.s
 No `schedule_tier`. DataSpoke does not run an extractor. The external data pipeline (an
 Airflow DAG outside DataSpoke) emits the schema and properties to DataHub directly.
 
-Every hour, DataSpoke's `ingestion-passive-sync-hourly` DAG polls DataHub for ingestion
+Every hour, DataSpoke's `ingestion-passive-hourly` DAG polls DataHub for ingestion
 runs of all passive-marked datasets and writes one row per run to the events table.
 Imazon reads them through the same API:
 

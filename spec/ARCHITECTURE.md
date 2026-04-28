@@ -226,7 +226,7 @@ the cross-cutting flow that ties the features together.
 
 | UC | Trigger surface | Implementation entry | DataHub side-effect |
 |---|---|---|---|
-| UC1 Ingestion Control | Airflow tier DAG (active mode) or hourly `ingestion-passive-sync-hourly` DAG (passive mode); manual `POST .../method/ingestion/run` | `IngestionService` | Active: emits `Status` + `DatasetProperties` + `SchemaMetadata` aspects. Passive: no aspect writes; mirrors run history into `event/ingestion`. |
+| UC1 Ingestion Control | Airflow tier DAG (active mode) or hourly `ingestion-passive-hourly` DAG (passive mode); manual `POST .../method/ingestion/run` | `IngestionService` | Active: emits `Status` + `DatasetProperties` + `SchemaMetadata` aspects. Passive: no aspect writes; mirrors run history into `event/ingestion`. |
 | UC2 Validation | Airflow tier DAG; manual `POST .../method/validation/run` (`dry_run` powers the Online Verifier) | `ValidationService` | Registers `assertionInfo`; reports `assertionRunEvent` per rule per run. |
 | UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | On node approval: glossary term attached to member datasets. On triple approval: glossary-term relationship between subject and object terms. |
 | UC4 Metadata Generation | Airflow tier DAG; manual `POST .../method/metagen/run` | `MetagenService` | On reviewer approval only: writes to editable aspects (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`) — never to non-editable counterparts. |
@@ -254,7 +254,7 @@ route tiers are reserved for organization-specific extensions and have no baseli
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|------------------|----------------|
-| Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-sync-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
+| Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine, Online Verifier | Airflow (tier-based periodic DAGs), Redis (concurrency guard + dry-run cache), DataHub SDK, PostgreSQL |
 | Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector + Apache AGE), Airflow (tier-based periodic DAG) |
 | Metadata Generation | UC4 | `/spoke/common/metagen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/metagen/` | Metadata Generation Service, Source-Code Analyzer, dataProduct Composer, Review Queue (field-level + action-level) | LLM API, PostgreSQL, DataHub SDK (read + approved writes to editable aspects only) |

@@ -38,7 +38,7 @@ features at `/spoke/common/...` with engineering-flavoured framing.
 The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
 `auth`, and disables the run button (passive runs are external; the
 `event/ingestion` history is mirrored from DataHub hourly by the
-`ingestion-passive-sync-hourly` DAG).
+`ingestion-passive-hourly` DAG).
 
 ```
 ┌────────────────────────────────────────────────┐

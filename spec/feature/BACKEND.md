@@ -204,7 +204,7 @@ a non-dry-run that ingests zero entities is treated as failure) → on success m
 (see [Event Catalogue](#event-catalogue)).
 
 **Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
-called hourly by the `ingestion-passive-sync-hourly` DAG): enumerate all configs with
+called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with
 `mode = passive` → for each, query DataHub for ingestion run history of the dataset URN
 → insert any new runs as rows in the unified `events` table with
 `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the active path's event
@@ -559,24 +559,24 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 
 | DAG | File | Trigger | Schedule |
 |-----|------|---------|----------|
-| `ingestion-periodic-hourly` | `ingestion_periodic_hourly.py` | Airflow schedule | `@hourly` |
-| `ingestion-periodic-daily` | `ingestion_periodic_daily.py` | Airflow schedule | `@daily` |
-| `ingestion-periodic-weekly` | `ingestion_periodic_weekly.py` | Airflow schedule | `@weekly` |
-| `ingestion-passive-sync-hourly` | `ingestion_passive_sync_hourly.py` | Airflow schedule | `@hourly` |
-| `validation-periodic-hourly` | `validation_periodic_hourly.py` | Airflow schedule | `@hourly` |
-| `validation-periodic-daily` | `validation_periodic_daily.py` | Airflow schedule | `@daily` |
-| `validation-periodic-weekly` | `validation_periodic_weekly.py` | Airflow schedule | `@weekly` |
-| `metrics-periodic-hourly` | `metrics_periodic_hourly.py` | Airflow schedule | `@hourly` |
-| `metrics-periodic-daily` | `metrics_periodic_daily.py` | Airflow schedule | `@daily` |
-| `metrics-periodic-weekly` | `metrics_periodic_weekly.py` | Airflow schedule | `@weekly` |
-| `metagen-periodic-hourly` | `metagen_periodic_hourly.py` | Airflow schedule | `@hourly` |
-| `metagen-periodic-daily` | `metagen_periodic_daily.py` | Airflow schedule | `@daily` |
-| `metagen-periodic-weekly` | `metagen_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `ingestion-active-hourly` | `ingestion_active_hourly.py` | Airflow schedule | `@hourly` |
+| `ingestion-active-daily` | `ingestion_active_daily.py` | Airflow schedule | `@daily` |
+| `ingestion-active-weekly` | `ingestion_active_weekly.py` | Airflow schedule | `@weekly` |
+| `ingestion-passive-hourly` | `ingestion_passive_hourly.py` | Airflow schedule | `@hourly` |
+| `validation-hourly` | `validation_hourly.py` | Airflow schedule | `@hourly` |
+| `validation-daily` | `validation_daily.py` | Airflow schedule | `@daily` |
+| `validation-weekly` | `validation_weekly.py` | Airflow schedule | `@weekly` |
+| `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
+| `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
+| `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
+| `metagen-hourly` | `metagen_hourly.py` | Airflow schedule | `@hourly` |
+| `metagen-daily` | `metagen_daily.py` | Airflow schedule | `@daily` |
+| `metagen-weekly` | `metagen_weekly.py` | Airflow schedule | `@weekly` |
 | `metagen` | `metagen.py` | API | On-demand |
 | `metrics` | `metrics.py` | API | On-demand |
-| `ontogen-periodic-hourly` | `ontogen_periodic_hourly.py` | Airflow schedule | `@hourly` |
-| `ontogen-periodic-daily` | `ontogen_periodic_daily.py` | Airflow schedule | `@daily` |
-| `ontogen-periodic-weekly` | `ontogen_periodic_weekly.py` | Airflow schedule | `@weekly` |
+| `ontogen-hourly` | `ontogen_hourly.py` | Airflow schedule | `@hourly` |
+| `ontogen-daily` | `ontogen_daily.py` | Airflow schedule | `@daily` |
+| `ontogen-weekly` | `ontogen_weekly.py` | Airflow schedule | `@weekly` |
 | `ontogen` | `ontogen.py` | API | On-demand |
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
 
@@ -643,8 +643,17 @@ Ingestion supports two trigger modes per dataset:
 
 **Static tier-based DAGs**: DataSpoke uses three static Airflow DAGs per domain (hourly,
 daily, weekly). Each DAG fetches the dataset list for its tier at execution time
-(`POST /internal/activities/ingestion/list-periodic`), then uses dynamic task mapping
+(`POST /internal/activities/ingestion/list-active`), then uses dynamic task mapping
 (`expand()`) to run ingestion for each dataset in parallel (`max_active_runs`: 5).
+
+> **Scaling assumption**: ingestion and validation activity endpoints execute
+> synchronously inside the API process; Airflow is scheduler + fan-out, not worker.
+> Combined with LocalExecutor (~1 CPU / 2 Gi), the baseline scales by *smearing across
+> tiers* — operators move heavy datasets to `daily`/`weekly` and reserve `hourly` for
+> genuinely time-sensitive pipelines. Holds for tens to low-hundreds of datasets with a
+> small hourly hot set; "hundreds of datasets all on hourly" needs a follow-up
+> (CeleryExecutor / KubernetesExecutor, dispatching via DAG run-conf like metagen, or
+> per-source-DB concurrency caps) — none in baseline.
 
 ---
 

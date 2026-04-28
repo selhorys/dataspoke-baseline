@@ -81,7 +81,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 - **Passive** — 외부 시스템이 DataHub에 직접 인제스트한다.
   DataSpoke는 추출기를 실행하지 않고,
   데이터셋의 인제스천 설정을 `mode: passive`로 표시할 뿐이다.
-  `ingestion-passive-sync-hourly` Airflow DAG이 **시간마다** 실행되어,
+  `ingestion-passive-hourly` Airflow DAG이 **시간마다** 실행되어,
   passive로 표시된 모든 데이터셋의 DataHub 인제스천 실행 이력을 폴링하고
   결과 상태를 `event/ingestion`에 한 행씩 기록한다.
   덕분에 클라이언트 입장에서는 모드와 무관하게 동일한 API surface로 보인다.
@@ -146,7 +146,7 @@ DataSpoke가 추출기를 돌리지 않기 때문이다.
 외부 데이터 파이프라인(DataSpoke 외부의 Airflow DAG)이
 스키마와 속성을 DataHub로 직접 emit한다.
 
-매시간 DataSpoke의 `ingestion-passive-sync-hourly` DAG이
+매시간 DataSpoke의 `ingestion-passive-hourly` DAG이
 passive 표시된 데이터셋의 DataHub 실행 이력을 폴링해
 events 테이블에 한 행씩 기록한다.
 Imazon은 동일한 API로 이벤트를 읽는다:
