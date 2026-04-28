@@ -67,7 +67,7 @@ networkpolicy, helpers), three application `subcharts/` (frontend, api, event-co
 | event-consumer | `file://subcharts/event-consumer` | 0.1.0 | `event-consumer.enabled` |
 | postgresql | `bitnami/postgresql` | ~18.5.0 | `postgresql.enabled` |
 | redis | `bitnami/redis` | ~25.3.0 | `redis.enabled` |
-| airflow | `apache-airflow/airflow` | ~1.20.0 | `airflow.enabled` |
+| airflow | `apache-airflow/airflow` | ~1.20.0 (chart; ships Airflow 3.1.8 app) | `airflow.enabled` |
 
 Tilde ranges allow patch-level updates. Exact resolved versions are locked in `Chart.lock`.
 
@@ -78,7 +78,7 @@ Tilde ranges allow patch-level updates. Exact resolved versions are locked in `C
 | Component | Type | Prod | Dev | Stateful |
 |-----------|------|------|-----|----------|
 | frontend | Deployment | enabled | **disabled** | no |
-| api | Deployment | enabled | **disabled** | no |
+| api | Deployment | enabled | enabled (in-cluster, `testMode: true`) | no |
 | event-consumer | Deployment | **disabled** | **disabled** | no |
 | postgresql | StatefulSet | enabled | enabled | yes (PV) |
 | redis | Deployment | enabled | enabled | no |
@@ -106,7 +106,7 @@ Deployment envFrom → container env vars
 ### ConfigMap keys
 
 Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`,
-`DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_HOST/PORT`,
+`DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_URL`,
 `DATASPOKE_LLM_PROVIDER/MODEL`.
 
 ### Secret keys
@@ -193,9 +193,9 @@ Two approaches:
 | frontend | 2 | 250m / 500m | 256Mi / 512Mi | — |
 | api | 2 | 500m / 1000m | 512Mi / 1024Mi | — |
 | event-consumer† | 1 | 250m / 500m | 512Mi / 1024Mi | — |
-| postgresql | 1 | 1000m / 2000m | 2048Mi / 6144Mi | 50Gi |
+| postgresql | 1 | 1000m / 2000m | 2048Mi / 6144Mi | 50Gi (custom image with `pgvector` + Apache AGE extensions) |
 | redis | 1+1 | 250m / 500m | 256Mi / 512Mi | — |
-| airflow (api-server + scheduler + triggerer) | 1+1+1 | 250m / 500m | 512Mi / 1024Mi | DAGs baked into a custom image |
+| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | 250m / 500m | 512Mi / 1024Mi | DAGs baked into a custom image; `dag-processor` is an Airflow 3.x component |
 | **Total** | | **~5000m / ~10000m** | **~9.5Gi / ~22Gi** | **50Gi** |
 
 † event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m
@@ -203,8 +203,9 @@ CPU and ~512Mi/1024Mi memory. Airflow uses LocalExecutor — no separate Celery 
 
 ### Dev Minimums
 
-See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget). The dev profile uses ~7.9 Gi memory
-limits / ~3.5 CPU limits for DataSpoke infrastructure alone.
+See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget) for the canonical numbers.
+The DataSpoke namespace alone (api + airflow + postgres + redis) requires ~11 Gi of
+memory limits.
 
 ---
 

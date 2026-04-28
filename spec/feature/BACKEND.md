@@ -23,10 +23,9 @@
 5. [Event Emission](#event-emission)
 6. [Airflow Workflows (`src/workflows/`)](#airflow-workflows-srcworkflows)
 7. [Kafka Consumers *(optional, not enabled in baseline)*](#kafka-consumers-optional-not-enabled-in-baseline)
-8. [WebSocket Feed Mechanism](#websocket-feed-mechanism)
-9. [Dependency Injection](#dependency-injection)
-10. [Error Handling](#error-handling)
-11. [Configuration](#configuration)
+8. [Dependency Injection](#dependency-injection)
+9. [Error Handling](#error-handling)
+10. [Configuration](#configuration)
 
 Data contracts (PostgreSQL schema including pgvector tables) are specified in
 [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
@@ -835,24 +834,6 @@ uncommitted for redelivery.
 
 ---
 
-## WebSocket Feed Mechanism
-
-The API exposes WebSocket channels fed via **Redis pub/sub**, decoupling activity endpoints
-(producers) from FastAPI WebSocket handlers (consumers).
-
-### Pub/Sub Channels
-
-| Redis Channel | Producer | API WS Endpoint |
-|---------------|----------|-----------------|
-| `ws:validation:{dataset_urn}` | Validation activities | `/spoke/common/data/{dataset_urn}/stream/validation` |
-| `ws:metric:updates` | Metrics activities | `/spoke/dg/metric/stream` |
-
-Activity endpoints publish JSON progress/result messages to the appropriate Redis channel.
-The WebSocket handler subscribes and forwards messages to clients. Message schemas are
-defined in [API](../API.md#websocket-channels).
-
----
-
 ## Dependency Injection
 
 **API route handlers** receive backend services via FastAPI `Depends()` (see
@@ -895,7 +876,7 @@ completes with reduced enrichment. All failures are logged at WARNING with `exc_
 | LLM description enrichment | IngestionService (active mode) | Ingested without enriched description |
 | Source SQL execution | ValidationService | Rule skipped, marked as ERROR in `assertionRunEvent` |
 | ML validation model fit | ValidationService | Value recorded without validation verdict |
-| Redis pub/sub + cache write | ValidationService | WebSocket unnotified; next read hits DB |
+| Redis cache write | ValidationService | Next read hits DB |
 | pgvector similarity search | MetagenService | No alternative suggestions |
 | LLM dataset classification | OntogenService | Dataset excluded from classification |
 | LLM cross-data MD synthesis | MetagenService | `cross_data.md` action list empty for the run |

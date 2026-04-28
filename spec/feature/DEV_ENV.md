@@ -233,7 +233,7 @@ Advisory mutex for coordinating multi-tester access. Lightweight Python HTTP ser
 
 | Resource | Details |
 |----------|---------|
-| Deployment | `dev-lock` — 1 replica, `python:3.12-slim`, 64 Mi / 100m CPU |
+| Deployment | `dev-lock` — 1 replica, `python:3.13-slim`, 64 Mi / 100m CPU |
 | Service | `dev-lock` — ClusterIP, port 8080 |
 
 Lock state is **in-memory only** — resets on pod restart. Full protocol in
@@ -264,7 +264,10 @@ Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/`
 
 ### Component reinstall
 
-There is no dedicated `reinstall.sh`. To reset a single component cleanly, run its own
+There is no dedicated `reinstall.sh`. For application-code iteration cycles
+(rebuild image + `helm upgrade` + DAG verification), use
+`dev_env/dataspoke-test-mode.sh` — see [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+To reset a single infrastructure component cleanly, run its own
 `uninstall.sh` followed by `install.sh` (each sub-installer is idempotent and tears down PVCs +
 Helm release for its scope). Example:
 `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh`.
@@ -364,8 +367,9 @@ default 1024Mi is insufficient.
 ### Pod stuck in Pending
 
 **Cause**: Insufficient cluster resources.
-**Fix**: Check `kubectl describe node`. The full environment requires ~16.8 GiB / ~7.75 CPU — 24
-GB / 8+ CPU recommended.
+**Fix**: Check `kubectl describe node`. The full environment's memory *requests* sum
+to ~13 GiB and *limits* to ~25 GiB (see §Resource Budget) on top of ~3.5 CPU; 24 GB /
+8+ CPU is the recommended cluster headroom.
 
 ### datahub-system-update takes 5-10 minutes
 

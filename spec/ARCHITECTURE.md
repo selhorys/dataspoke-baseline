@@ -142,8 +142,8 @@ FastAPI auto-generates OpenAPI 3.0 documentation from Pydantic models and route 
 
 Portal-style interface with user-group-specific entry points (DE, DA, DG). Provides:
 - Chart visualizations for metrics dashboards (DG) and data overviews
-- Interactive graph rendering for taxonomy/ontology visualization
-- Real-time updates via WebSocket for validation status and alerts
+- Interactive graph rendering for ontology visualization (UC3 nodes / triples)
+- Polling-based live freshness against `event/...` and `attr/.../result` endpoints (no WebSocket / SSE in the baseline API)
 - Search interface for natural language queries (DA)
 
 For layout, shared components, routing, and auth, see
@@ -165,7 +165,8 @@ Three-tier URI structure:
 /api/v1/hub/...            → DataHub pass-through (optional ingress for clients)
 ```
 
-Supports RESTful CRUD and WebSocket channels for real-time streaming (alerts, validation progress).
+RESTful CRUD only — the baseline API has no WebSocket or SSE surface; clients poll
+`event/...` and `attr/.../result` endpoints for live freshness.
 
 For the complete route catalogue, JWT authentication model, middleware stack, and error
 catalogue, see [`spec/API.md`](API.md).
@@ -252,7 +253,10 @@ coding-agent loops as an **Online Verifier**.
 
 The Ontology Generator is governed by a singleton conf at `/api/v1/spoke/common/ontogen/attr/conf`
 (`is_enabled`, `schedule_tier`, `dataset_filter`, `max_manual_queries_per_dataset`,
-`max_system_queries_per_dataset`, `default_run_prompt`) and
+`max_system_queries_per_dataset`, `default_run_prompt`). The `dataset_filter` shape
+(tags / glossary_terms / dataset_urns, OR-ed) matches UC5's `measurement_query.dataset_filter`;
+unresolved `dataset_urns` at run time are skipped and reported in the
+`ONTOGEN.RUN_COMPLETE` event's `unresolved_urns` field. The conf is paired with
 zero-or-more **seeds** (human-authored Markdown documents at
 `/api/v1/spoke/common/ontogen/attr/seed/{seed_id}`) that steer LLM naming and scoping. A
 manual `POST /method/run` may also carry a transient Markdown body that acts as a
@@ -394,7 +398,7 @@ logic, and convenience methods. Patterns defined in
 | API | FastAPI (Python 3.13) | Async support, auto OpenAPI docs, Pydantic validation |
 | Backend | Python 3.13 | Rich data/ML libraries, DataHub SDK compatibility |
 | Message Broker | Kafka | DataHub integration standard |
-| Orchestration | Airflow | Python DAG definitions, HttpOperator tasks calling internal activity endpoints, built-in scheduling and retry |
+| Orchestration | Airflow 3.1.8 | Python DAG definitions, HttpOperator tasks calling internal activity endpoints, built-in scheduling and retry; LocalExecutor on the dev profile |
 | Operational DB | PostgreSQL 17 (pgvector + Apache AGE) | ACID guarantees, JSONB flexibility, first-class vector similarity (pgvector), graph queries available (AGE) |
 | Cache | Redis | API caching, rate limiting, session management |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
@@ -505,7 +509,7 @@ The repository is organized by deployment concern and application layer. Key top
 |----------|--------|-----------|-------------|
 | API framework | FastAPI | Async, auto OpenAPI, Pydantic, high perf | Flask (simpler but no async), Django (too opinionated) |
 | Frontend | Next.js | SSR, file-based routing, React ecosystem | CRA (no SSR), Vue (smaller ecosystem) |
-| Orchestration | Airflow | Python DAG definitions, HttpOperator tasks, built-in UI, LocalExecutor | Temporal (heavier infra), Kestra (if YAML-first flows preferred) |
+| Orchestration | Airflow | Python DAG definitions, HttpOperator tasks, built-in UI, LocalExecutor | Temporal (heavier infra) |
 | Operational DB | PostgreSQL 17 (pgvector + AGE) | Single-engine ACID storage for relational, vector, and graph workloads. Consolidates operational DB + vector DB + graph DB to reduce infra surface | Dedicated Qdrant (Rust perf, separate infra); Weaviate (multi-tenant); Pinecone (managed only); Neo4j (dedicated graph) |
 | API documentation | FastAPI auto-generated OpenAPI + Pydantic schemas as SSOT | Always-in-sync docs; AI agents read route definitions directly | Standalone OpenAPI file (requires manual sync) |
 
