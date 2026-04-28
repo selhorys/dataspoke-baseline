@@ -404,9 +404,14 @@ config. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
-| `sources` | Input sources to consider — at minimum `datahub_aspects`; optionally `sql_logs`, `github_repos`, `external_docs`. |
-| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs) and `glossary_terms` (DataHub glossary term URNs); same shape as UC5's `measurement_query.dataset_filter`. |
+| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC5's `measurement_query.dataset_filter`. |
+| `max_manual_queries_per_dataset` | Per-dataset cap on `source = MANUAL` Query entities used as evidence. Default `20`. `0` disables. |
+| `max_system_queries_per_dataset` | Per-dataset cap on `source = SYSTEM` Query entities (multi-asset joins only). Default `10`. `0` disables. |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
+
+The first implementation reads DataHub aspects + DataHub Query entities only;
+broader input sources (raw SQL logs, GitHub repos, external docs) are deferred to a
+later release.
 
 The conf is a single row in `ontogen_config` (singleton table; see
 [BACKEND_SCHEMA §ontogen_config](BACKEND_SCHEMA.md#ontogen_config)).
@@ -430,9 +435,37 @@ or manual `POST /method/run`):
 1. Load the working ontology — all `status='approved'` rows from `ontogen_nodes`,
    `ontogen_edges`, `ontogen_triples` (incremental inference; pending and rejected
    rows are not carried forward).
-2. Enumerate datasets matching `dataset_filter` from DataHub.
-3. For each input source listed in `sources`, fetch evidence (DataHub aspects, SQL
-   logs, GitHub repos, external docs).
+2. Enumerate datasets matching `dataset_filter` from DataHub — union of datasets
+   carrying any listed `tags`, any listed `glossary_terms`, and any of the explicit
+   `dataset_urns`. Listed URNs that don't resolve are skipped and accumulated for
+   the run-complete event's `unresolved_urns`. `{}` means all datasets.
+3. Fetch evidence from DataHub aspects:
+   - **Canonical**: `schemaMetadata`, `datasetProperties`, `globalTags`,
+     `glossaryTerms`, `upstreamLineage`, `usageStats`.
+   - **UC4-approved editable**: `editableDatasetProperties.description`,
+     `editableSchemaMetadata.editableSchemaFieldInfo[].description`, and
+     `dataProductProperties.description` on `dataProduct` entities whose `assets`
+     intersect the in-scope datasets. DataSpoke writes these aspects only after a
+     UC4 reviewer approves the proposal (UC4 `field_status='approved'`); draft
+     states (`pending` / `edited`) stay in `metagen_results.proposals` and are
+     never written to DataHub. UC3 therefore reads DataHub directly with no JOIN
+     against `metagen_results` — *presence* is the approval signal.
+   - **Query entities** (DataHub Queries feature, `queryProperties` +
+     `querySubjects` aspects). For each in-scope dataset, call `listQueries`
+     filtered by entity URN, twice:
+     - `source = MANUAL` (highlighted queries — human-curated): take up to
+       `max_manual_queries_per_dataset`, no subject-count restriction.
+     - `source = SYSTEM` (auto-discovered by crawlers): take up to
+       `max_system_queries_per_dataset`, restricted to `len(querySubjects) ≥ 2`
+       (multi-asset joins) to filter out single-table monitoring/health-check
+       noise.
+
+     Within each cap, sort joins-first by `len(querySubjects)` desc, then
+     `lastModified` desc as tiebreaker. Either cap set to `0` skips that source.
+     The MANUAL/SYSTEM split exists only at the read layer; once selected, both
+     sets are concatenated into the same evidence corpus passed to the LLM, with
+     the SQL `statement`, `name`, `description`, and resolved `querySubjects`
+     dataset URNs.
 4. Load active seeds (`ontogen_seeds.status='active'`). Resolve the one-shot prompt:
    if the `POST /method/run` request carries a non-empty `text/markdown` body, use
    that body; otherwise fall back to `ontogen_config.default_run_prompt` (used by both
@@ -525,9 +558,13 @@ measurement execution. Activate/deactivate metric scheduling. No alarm evaluatio
 tracking, no notification dispatch.
 
 **`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub
-tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only
-datasets matching ANY of the listed tags or glossary terms are included in the measurement.
-Filters are OR-ed across all dimensions.
+tag URNs), `glossary_terms` (list of DataHub glossary term URNs), and `dataset_urns` (list
+of explicit `urn:li:dataset:(…)` URNs for pinning to a known set). When specified, only
+datasets matching ANY listed tag, glossary term, or explicit URN are included in the
+measurement — filters are OR-ed across all three dimensions; an empty array on any
+dimension contributes nothing; `{}` means all datasets. URN format is validated at
+PUT/PATCH (`422 INVALID_DATASET_URN`); entries that don't resolve in DataHub at run time
+are skipped and reported in the `METRIC.RUN_COMPLETE` event's `unresolved_urns` field.
 
 **Breakdown format**: Every measurement result includes a `breakdown` JSONB with a unified
 per-dataset entry shape:
@@ -623,7 +660,7 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `METRIC.CONFIG_CREATE` | PUT definition (new) |
 | `METRIC.CONFIG_UPDATE` | PUT definition (existing) or PATCH |
 | `METRIC.CONFIG_DELETE` | DELETE definition |
-| `METRIC.RUN_COMPLETE` | POST run measurement succeeds |
+| `METRIC.RUN_COMPLETE` | POST run measurement succeeds. Payload includes `unresolved_urns: [string]` listing any `dataset_filter.dataset_urns` entries that did not resolve in DataHub at run time (skipped, not failed) |
 
 #### Ontology Generation — singleton conf and seeds (`entity_type=ontogen`)
 
@@ -635,8 +672,8 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 | `ONTOGEN.SEED_CREATE` | POST a seed |
 | `ONTOGEN.SEED_UPDATE` | PATCH a seed |
 | `ONTOGEN.SEED_DELETE` | DELETE a seed |
-| `ONTOGEN.RUN_COMPLETE` | A re-inference run succeeds |
-| `ONTOGEN.SOURCE_FAILED` | A configured input source (sql_logs, github_repos, …) failed during a run |
+| `ONTOGEN.RUN_COMPLETE` | A re-inference run succeeds. Payload includes `unresolved_urns: [string]` listing any `dataset_filter.dataset_urns` entries that did not resolve in DataHub at run time (skipped, not failed) |
+| `ONTOGEN.RUN_FAILED` | A re-inference run failed (DataHub fetch error, LLM error, persistence error, …) |
 
 #### Ontology Generation — node / edge / triple (`entity_type=node|edge|triple`)
 
@@ -833,7 +870,7 @@ failures.
 | `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
-| `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER` |
+| `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN`, `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
 
 Error response format matches [API](../API.md#error-catalogue). Exception hierarchy is
 defined in `src/shared/exceptions.py`.

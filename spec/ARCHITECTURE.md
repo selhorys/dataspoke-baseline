@@ -186,7 +186,7 @@ feature designs are specified per feature in `spec/feature/spoke/`.
 |---------|-------------|
 | Ingestion Control | Active and passive ingestion modes — DataSpoke either runs the extractor on a tier schedule or mirrors run history from externally-ingested datasets; single control surface for lifecycle management |
 | Validation | DataHub assertion management (Open Assertions Spec + DataSpoke extensions), partition-aware rule execution, SQL-based timeseries validation, real-time Online Verifier for coding agents |
-| Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from DataHub aspects, SQL logs, source code, and external docs; persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontogen API with independent review queues per result type |
+| Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from DataHub aspects (canonical + UC4-approved editable variants) and DataHub Query entities (highlighted MANUAL + auto-discovered SYSTEM joins, capped per-dataset); persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontogen API with independent review queues per result type |
 | Metadata Generation | Per-dataset proposals for documentation fields — table description, column descriptions, and dataProduct cross-data MDs (create/modify/split/retitle actions); review queue with field-level approve/edit/reject; approved writes go to editable DataHub aspects |
 | Governance | Metric aggregation (pure aggregation over DataHub metadata + DataSpoke results), per-dataset breakdown, trend analysis, and a multi-perspective overview (metric values, blind spots, ontology graph, medallion layers, ownership topology) |
 
@@ -251,16 +251,19 @@ coding-agent loops as an **Online Verifier**.
 ### 3. Ontology Generation (UC3)
 
 The Ontology Generator is governed by a singleton conf at `/api/v1/spoke/common/ontogen/attr/conf`
-(`is_enabled`, `schedule_tier`, `sources`, `dataset_filter`, `default_run_prompt`) and
+(`is_enabled`, `schedule_tier`, `dataset_filter`, `max_manual_queries_per_dataset`,
+`max_system_queries_per_dataset`, `default_run_prompt`) and
 zero-or-more **seeds** (human-authored Markdown documents at
 `/api/v1/spoke/common/ontogen/attr/seed/{seed_id}`) that steer LLM naming and scoping. A
 manual `POST /method/run` may also carry a transient Markdown body that acts as a
 **one-shot prompt** for that single run on top of the persistent seeds (not stored);
 runs without a body — periodic Airflow invocations and manual calls with an empty
-body — fall back to `attr/conf.default_run_prompt`. The configured Airflow tier DAG reads the
-selected input sources — DataHub aspects (schema, descriptions, tags, lineage) at
-minimum, optionally SQL logs, GitHub repos, external docs — and the active seeds (plus
-the one-shot prompt, if any), then runs an LLM-powered pipeline that emits a
+body — fall back to `attr/conf.default_run_prompt`. The configured Airflow tier DAG reads
+DataHub aspects (schema, descriptions, tags, lineage, usage) and DataHub Query
+entities (highlighted MANUAL + auto-discovered SYSTEM joins, capped per dataset by
+the conf) — the only input sources in the first implementation — together with the
+active seeds (plus the one-shot prompt, if any), then runs an LLM-powered pipeline
+that emits a
 **subject / predicate / object triple ontology**: **nodes** (subjects / objects),
 **edges** (predicates / relationship types), and **triples**
 (`(subject_node, edge, object_node)` facts). Inference is **incremental**: each run
@@ -295,7 +298,7 @@ that the reviewer approves individually. Future scope: proposals for `domains` a
 Airflow per-tier periodic DAGs invoke the Metrics Aggregator — pure aggregation with no direct
 data observation. It reads pre-existing DataHub metadata (e.g. `datasetProperties.description`,
 `ownership`), DataSpoke validation results, and ingestion event history; applies the optional
-`dataset_filter` (tags / glossary_terms, OR-ed); and writes a single measured value +
+`dataset_filter` (tags / glossary_terms / dataset_urns, OR-ed; unresolved URNs reported in `METRIC.RUN_COMPLETE.unresolved_urns`); and writes a single measured value +
 per-dataset breakdown to `metric_results`. Surfaced via `/api/v1/spoke/dg/metric` (metric
 dashboard) and `/api/v1/spoke/dg/overview` (ontology graph, medallion coverage, ownership
 topology — all read-only aggregations).

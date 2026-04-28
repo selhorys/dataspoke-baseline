@@ -305,19 +305,40 @@ graph DB와 vector DB에 유지한다.*
 - **Triple** — `(subject_node, edge, object_node)` 사실. 트리플은 사전에 승인된
   노드와 엣지로만 구성되므로, 개념 어휘를 한 번 승인해 여러 사실에서 재사용한다.
 
-노드와 엣지 ID는 slug(`book`, `placed_by`)이며, 트리플 ID는 UUID이다.
+노드와 엣지 ID는 slug(`book`, `placed_by`)이며, 노드·엣지 slug에는 `__`를 포함할
+수 없다(트리플 ID 구분자로 예약). 트리플 ID는
+`subject_node_id__edge_id__object_node_id` 형태의 결합 slug
+(예: `order_line__references__book`)로, ID 자체가 사실을 인코딩하므로 재추론 사이에
+자연히 idempotent하다.
 
 **Conf는 싱글톤.** UC1 / UC2 / UC4의 데이터셋별 conf와 달리, 온톨로지는 글로벌
-아티팩트이다. `/spoke/common/ontogen/attr/conf`의 운영 conf는 추론 DAG 실행 시점,
-사용 입력 소스, 스코프 데이터셋을 제어한다.
+아티팩트이다. `/spoke/common/ontogen/attr/conf`의 운영 conf는 추론 DAG 실행 시점과
+스코프 데이터셋을 제어한다. 1차 구현은 DataHub aspect(스키마, 설명, 태그, 리니지,
+사용량)와 **UC4에서 승인된 editable 변형** —
+`editableDatasetProperties.description`,
+`editableSchemaMetadata.editableSchemaFieldInfo[].description`,
+`dataProduct` 엔티티의 `dataProductProperties.description` — 그리고 DataHub의
+**Query 엔티티**(Queries 기능: `queryProperties`+`querySubjects` aspect) — 사람이
+하이라이트한 highlighted 쿼리(`source = MANUAL`)와 크롤러가 자동 수집한 쿼리
+(`source = SYSTEM`, 노이즈 차단을 위해 다중 자산 조인으로 제한)를 모두 포함 — 만
+입력으로 사용한다. DataSpoke는 UC4 리뷰어가 제안을 승인한 뒤에만 해당 editable
+aspect를 DataHub에 쓰므로, DataHub에 *존재*한다는 사실 자체가 승인 신호다 — UC3는
+별도 조인이 필요 없다. UC4의 *초안* 상태(`pending` / `edited`)는 DataHub에
+기록되지 않으므로 LLM이 다른 LLM의 미승인 추측을 학습할 수 없다. SQL 로그·GitHub
+저장소·외부 문서 등 더 넓은 입력 소스는 후속 릴리스로 미룬다.
 
 | `attr/conf` 필드 | 용도 |
 |---|---|
 | `is_enabled` | 추론 DAG 마스터 스위치 |
 | `schedule_tier` | `hourly` / `daily` / `weekly` 재추론 주기 |
-| `sources` | 사용할 입력 소스 — 최소 `datahub_aspects`; 선택적으로 `sql_logs`, `github_repos`, `external_docs` |
-| `dataset_filter` | 선택적 스코프 필터 — `tags`(DataHub 태그 URN 리스트)와 `glossary_terms`(glossary term URN 리스트); UC5의 `measurement_query.dataset_filter`와 동일 형태 |
+| `dataset_filter` | 선택적 스코프 필터 — `tags`(DataHub 태그 URN 리스트), `glossary_terms`(glossary term URN 리스트), `dataset_urns`(고정된 데이터셋 집합을 지정하는 명시적 `urn:li:dataset:(…)` URN 리스트). 세 차원은 OR로 합쳐지며, 어느 한 차원의 빈 배열은 기여하지 않고, `{}`는 모든 데이터셋을 의미한다. URN 포맷은 PUT/PATCH 시점에 검증하고, 실행 시점에 DataHub에서 해석되지 않는 항목은 skip하며 run-complete 이벤트의 `unresolved_urns`에 보고한다. UC5의 `measurement_query.dataset_filter`와 동일 형태 |
+| `max_manual_queries_per_dataset` | LLM에 증거로 투입되는 `source = MANUAL` Query 엔티티의 데이터셋당 상한. 기본 `20`. `0`이면 highlighted 쿼리 입력 비활성 |
+| `max_system_queries_per_dataset` | `source = SYSTEM` Query 엔티티의 데이터셋당 상한 (다중 자산 조인 `len(querySubjects) ≥ 2`로 제한). 기본 `10`. `0`이면 자동 수집 쿼리 입력 비활성 |
 | `default_run_prompt` | 본문 없이 호출되는 실행(주기적 Airflow 실행, 본문 없는 수동 `POST /method/run`)의 일회성 프롬프트로 사용되는 선택적 Markdown 문자열. null이면 기본값 비활성 |
+
+각 상한 안에서 쿼리는 **조인 우선**(`len(querySubjects)` 내림차순)으로 정렬하고
+`lastModified` 내림차순을 동률 처리에 사용한다. 상한이 묶일 때 단일 테이블 쿼리보다
+교차 데이터셋 증거가 우선된다.
 
 **Seed가 추론을 안내한다.** seed는 데이터 소스와 함께 추론 실행이 소비하는
 사람이 작성한 **Markdown 문서**(프롬프트, 도메인 힌트, 명명 규칙)이다.
@@ -328,8 +349,8 @@ PATCH는 문서 교체, DELETE는 폐기한다.
 
 **실행 시맨틱.** 추론 실행은 직렬화된다: 실행 중에 `method/run`을 다시 부르면
 `409 ONTOGEN_RUNNING`을 반환한다. `?dry_run=true`는 추론을 평가하고 노드 / 엣지 /
-트리플 결과를 기록 없이 반환하므로, `sources`·`seed`·`dataset_filter` 변경의
-효과를 적용 전에 미리 보는 데 유용하다.
+트리플 결과를 기록 없이 반환하므로, `seed`·`dataset_filter` 변경의 효과를 적용
+전에 미리 보는 데 유용하다.
 
 **증분 추론.** 각 실행은 기존의 **승인된** 노드·엣지·트리플을 기반으로 시작한다 —
 LLM이 매번 온톨로지를 처음부터 다시 도출하지 않는다.
@@ -360,7 +381,7 @@ LLM이 매번 온톨로지를 처음부터 다시 도출하지 않는다.
 | `POST /spoke/common/ontogen/attr/seed` | 추론 seed 생성 — 본문은 원시 Markdown(`Content-Type: text/markdown`); 서버가 `seed_id` 부여 |
 | `GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` | seed 조회·보강·폐기 |
 | `POST /spoke/common/ontogen/method/run` | 수동 재추론 트리거. 선택적 `Content-Type: text/markdown` 본문은 해당 실행에만 적용되는 일회성 프롬프트로 작동; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
-| `GET /spoke/common/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) |
+| `GET /spoke/common/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
 | `GET /spoke/common/ontogen/result/node` | 노드(주어 / 목적어) 리스트(confidence·상태 포함) |
 | `GET /spoke/common/ontogen/result/node/{node_id}` | 멤버 데이터셋 포함 노드 상세 |
 | `GET /spoke/common/ontogen/result/node/{node_id}/attr` | 노드 속성(confidence, 근거) |
@@ -388,8 +409,9 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "sources": ["datahub_aspects", "sql_logs", "github_repos"],
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]}
+  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+  "max_manual_queries_per_dataset": 20,
+  "max_system_queries_per_dataset": 10
 }
 ```
 
@@ -407,9 +429,11 @@ Imazon은 온라인 서점이다. *order*를 헤더 개념으로, *order line*�
 ```
 
 **입력.** 위 conf에 따라 DataSpoke는 세 OLTP 테이블에 대한 DataHub aspect
-(`schemaMetadata`, `datasetProperties`, `upstreamLineage`)와
-SQL 쿼리 로그, 일부 `imazon/order-service` GitHub 저장소를 읽는다.
-seed가 명명 선택을 안내한다.
+(`schemaMetadata`, `datasetProperties`, `upstreamLineage`, `usageStats`)와, UC4에서
+승인된 editable 변형(`editableDatasetProperties`, `editableSchemaMetadata`,
+존재하는 `dataProduct` 엔티티의 `dataProductProperties`), 그리고 각 데이터셋에
+연결된 DataHub Query 엔티티 — MANUAL(highlighted) 최대 20건과 SYSTEM(자동 수집,
+조인만) 최대 10건, 조인 우선 정렬 — 을 읽는다. seed가 명명 선택을 안내한다.
 
 **추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 모두 `pending_review`:
 
@@ -419,8 +443,8 @@ Nodes (subjects / objects):
   CUSTOMER     confidence 0.94   member: customers.profiles    (primary)
   ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
     evidence:
-      - 외래 키 book_id → catalog.books.book_id (스키마)
-      - customers.profiles와의 조인이 order-service 쿼리의 84%에 등장 (SQL 로그)
+      - 외래 키 book_id → catalog.books.book_id (schemaMetadata)
+      - orders.line_items → customers.profiles 의 upstreamLineage
 
 Edges (predicates):
   references   confidence 0.95   semantics: foreign-key reference

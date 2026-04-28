@@ -187,7 +187,7 @@ nodes → edges → triples.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `sources`, `dataset_filter`, `default_run_prompt`) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `max_manual_queries_per_dataset`, `max_system_queries_per_dataset`, `default_run_prompt`) | Ontology Generation | UC3 |
 | `PUT` | `/spoke/common/ontogen/attr/conf` | Create or replace operational conf | Ontology Generation | UC3 |
 | `PATCH` | `/spoke/common/ontogen/attr/conf` | Partially update operational conf | Ontology Generation | UC3 |
 | `DELETE` | `/spoke/common/ontogen/attr/conf` | Remove operational conf (effectively disables) | Ontology Generation | UC3 |
@@ -197,7 +197,7 @@ nodes → edges → triples.
 | `PATCH` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Replace seed Markdown body (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
 | `DELETE` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Retire a seed | Ontology Generation | UC3 |
 | `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/node/{node_id}` | Get node detail (incl. member datasets) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/node/{node_id}/attr` | Get node attributes (confidence, source evidence) | Ontology Generation | UC3 |
@@ -348,9 +348,15 @@ dimensions), built-in metric types, and extensibility model: see
 suffix `metrics-{metric_id}`.
 
 **`measurement_query.dataset_filter`**: Optional filter object in the metric definition.
-Fields: `tags` (list of DataHub tag URNs) and `glossary_terms` (list of DataHub glossary
-term URNs). When specified, only datasets matching ANY of the listed tags or glossary terms
-are included in the measurement. Filters are OR-ed across all dimensions.
+Fields: `tags` (list of DataHub tag URNs), `glossary_terms` (list of DataHub glossary term
+URNs), and `dataset_urns` (list of explicit `urn:li:dataset:(…)` URNs for pinning to a
+known set). When specified, only datasets matching ANY listed tag, glossary term, or
+explicit URN are included in the measurement. Filters are OR-ed across all three
+dimensions; an empty array on any dimension contributes nothing; `{}` means all datasets.
+URN format is validated at PUT/PATCH time (`422 INVALID_DATASET_URN`); `dataset_urns`
+entries that don't resolve in DataHub at run time are skipped and reported in the
+`METRIC.RUN_COMPLETE` event's `unresolved_urns` field. The same shape and validation
+apply to UC3's `ontogen/attr/conf.dataset_filter` (reported via `ONTOGEN.RUN_COMPLETE`).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -575,6 +581,7 @@ All errors follow the standard envelope:
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
+| `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for both `ontogen/attr/conf` and `metric/{id}/attr/conf` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |

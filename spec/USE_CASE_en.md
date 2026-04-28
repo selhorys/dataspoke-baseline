@@ -282,20 +282,42 @@ three independently reviewable result types:
   composed of pre-approved nodes and edges, so the conceptual vocabulary is approved
   once and reused across many specific facts.
 
-Node and edge IDs are slugs (`book`, `placed_by`); triple IDs are UUIDs.
+Node and edge IDs are slugs (`book`, `placed_by`); node and edge slugs may not
+contain `__` (reserved as the triple-ID separator). A triple ID is the composite
+slug `subject_node_id__edge_id__object_node_id` (e.g.,
+`order_line__references__book`), so the ID itself encodes the fact and is
+inherently idempotent across re-inference runs.
 
 **Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2 / UC4, the
 ontology is a global artifact. The operational conf at `/spoke/common/ontogen/attr/conf`
-controls when the inference DAG runs, which input sources it reads, and which datasets
-are in scope.
+controls when the inference DAG runs and which datasets are in scope. The first
+implementation reads DataHub aspects only (schemas, descriptions, tags, lineage,
+usage), plus the **UC4-approved editable variants** —
+`editableDatasetProperties.description`,
+`editableSchemaMetadata.editableSchemaFieldInfo[].description`, and
+`dataProductProperties.description` on `dataProduct` entities — and **Query
+entities** (DataHub's "Queries" feature: `queryProperties` + `querySubjects` aspects)
+covering both the human-curated **highlighted** queries (`source = MANUAL`) and the
+crawler-discovered **auto-discovered** queries (`source = SYSTEM`, restricted to
+multi-asset joins for noise control). DataSpoke writes those editable aspects only
+after a UC4 reviewer approves the proposal, so their *presence* in DataHub is the
+approval signal — UC3 needs no separate join. UC4 *draft* states (`pending` /
+`edited`) are never written to DataHub, so the LLM never learns from another LLM's
+unreviewed guess. Broader sources (SQL logs, GitHub repos, external docs) are
+deferred to a later release.
 
 | `attr/conf` field | Purpose |
 |---|---|
 | `is_enabled` | Master switch for the inference DAG |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence |
-| `sources` | Input sources to consider — at minimum `datahub_aspects`; optionally `sql_logs`, `github_repos`, `external_docs` |
-| `dataset_filter` | Optional scope filter — `tags` (list of DataHub tag URNs) and `glossary_terms` (list of glossary term URNs); same shape as UC5's `measurement_query.dataset_filter` |
+| `dataset_filter` | Optional scope filter — `tags` (list of DataHub tag URNs), `glossary_terms` (list of glossary term URNs), and `dataset_urns` (list of explicit `urn:li:dataset:(…)` URNs for pinning to a known set). Filters are OR-ed across all three dimensions; an empty array on any dimension contributes nothing; `{}` means all datasets. URN format is validated at PUT/PATCH time; entries that don't resolve in DataHub at run time are skipped and reported in the run-complete event's `unresolved_urns` field. Same shape as UC5's `measurement_query.dataset_filter` |
+| `max_manual_queries_per_dataset` | Per-dataset cap on `source = MANUAL` Query entities fed to the LLM as evidence. Default `20`. `0` disables highlighted queries as input |
+| `max_system_queries_per_dataset` | Per-dataset cap on `source = SYSTEM` Query entities (restricted to multi-asset joins, `len(querySubjects) ≥ 2`). Default `10`. `0` disables auto-discovered queries as input |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs that do not supply their own — i.e., periodic Airflow runs, and manual `POST /method/run` calls with no body. Null disables the default |
+
+Within each cap, queries are sorted **joins-first** (`len(querySubjects)` desc) with
+`lastModified` desc as tiebreaker, so cross-dataset evidence is preferred over
+single-table queries when the cap binds.
 
 **Seeds steer inference.** A seed is a human-authored **Markdown document** (prompt,
 domain hint, naming convention) that the inference run consumes alongside the data
@@ -307,8 +329,7 @@ replaces the document, DELETE retires.
 **Run semantics.** Inference runs are serialised: a duplicate `method/run` while one
 is in flight returns `409 ONTOGEN_RUNNING`. `?dry_run=true` evaluates the inference and
 returns the would-be node / edge / triple set without persisting changes — useful for
-previewing the effect of a `sources`, `seed`, or `dataset_filter` change before
-committing.
+previewing the effect of a `seed` or `dataset_filter` change before committing.
 
 **Incremental inference.** Each run starts from the existing **approved** nodes,
 edges, and triples — the LLM does not re-derive the ontology from scratch. New
@@ -342,7 +363,7 @@ nodes and its edge are approved; attempting to do so returns
 | `POST /spoke/common/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` |
 | `GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` | Read, refine, or retire a seed |
 | `POST /spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
-| `GET /spoke/common/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.SOURCE_FAILED`) |
+| `GET /spoke/common/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
 | `GET /spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status |
 | `GET /spoke/common/ontogen/result/node/{node_id}` | Node detail incl. member datasets |
 | `GET /spoke/common/ontogen/result/node/{node_id}/attr` | Node attributes (confidence, source evidence) |
@@ -370,8 +391,9 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "sources": ["datahub_aspects", "sql_logs", "github_repos"],
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]}
+  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+  "max_manual_queries_per_dataset": 20,
+  "max_system_queries_per_dataset": 10
 }
 ```
 
@@ -389,8 +411,12 @@ the per-book row. Prefer business-friendly names over table names.
 ```
 
 **Inputs.** Per the conf, DataSpoke reads DataHub aspects (`schemaMetadata`,
-`datasetProperties`, `upstreamLineage`) for the three OLTP tables, plus SQL query logs
-and a few `imazon/order-service` GitHub repos. The seed shapes naming choices.
+`datasetProperties`, `upstreamLineage`, `usageStats`) for the three OLTP tables, plus
+the UC4-approved editable variants (`editableDatasetProperties`,
+`editableSchemaMetadata`) where present and `dataProductProperties` on existing
+`dataProduct` entities, plus DataHub Query entities scoped to each dataset — up to
+20 MANUAL (highlighted) and up to 10 SYSTEM (auto-discovered, joins only), sorted
+joins-first. The seed shapes naming choices.
 
 **Inferred output.** Three nodes, two edges, two triples — all `pending_review`:
 
@@ -400,8 +426,8 @@ Nodes (subjects / objects):
   CUSTOMER     confidence 0.94   member: customers.profiles    (primary)
   ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
     evidence:
-      - foreign key book_id → catalog.books.book_id (schema)
-      - join with customers.profiles appears in 84% of order-service queries (SQL logs)
+      - foreign key book_id → catalog.books.book_id (schemaMetadata)
+      - upstreamLineage from orders.line_items to customers.profiles
 
 Edges (predicates):
   references   confidence 0.95   semantics: foreign-key reference

@@ -145,8 +145,9 @@ Singleton row holding the Ontology Generation conf (UC3).
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence (required when `is_enabled=true`) |
-| `sources` | `JSONB` | Input sources — at minimum `["datahub_aspects"]`; optional `sql_logs`, `github_repos`, `external_docs` |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...]}`; same shape as `metric_definitions.measurement_query.dataset_filter` |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `metric_definitions.measurement_query.dataset_filter` |
+| `max_manual_queries_per_dataset` | `INTEGER` | Per-dataset cap on `source = MANUAL` Query entities fed to the LLM. CHECK ≥ 0; default `20`; `0` disables |
+| `max_system_queries_per_dataset` | `INTEGER` | Per-dataset cap on `source = SYSTEM` Query entities (multi-asset joins only). CHECK ≥ 0; default `10`; `0` disables |
 | `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -171,7 +172,7 @@ There is no parent/child hierarchy.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `TEXT` PK | Node identifier (slug, e.g. `book`, `customer`, `order_line`) |
+| `id` | `TEXT` PK | Node identifier (slug, e.g. `book`, `customer`, `order_line`); `__` is forbidden (reserved as triple-ID separator) |
 | `name` | `TEXT` UNIQUE | Node display name |
 | `description` | `TEXT` | LLM-generated description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
@@ -201,7 +202,7 @@ on its own and is reused across many triples.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `TEXT` PK | Edge identifier (slug, e.g. `references`, `placed_by`) |
+| `id` | `TEXT` PK | Edge identifier (slug, e.g. `references`, `placed_by`); `__` is forbidden (reserved as triple-ID separator) |
 | `label` | `TEXT` UNIQUE | Edge display label |
 | `semantics` | `TEXT` NULL | LLM-generated short semantics description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
@@ -219,7 +220,7 @@ edge (FK to `ontogen_edges`) are themselves `approved`.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Triple identifier |
+| `id` | `TEXT` PK | Triple identifier — composite slug `{subject_node_id}__{edge_id}__{object_node_id}` (e.g. `order_line__references__book`); enforced to equal the concatenation of the three FK columns below |
 | `subject_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Subject node |
 | `edge_id` | `TEXT` FK → `ontogen_edges(id)` | Predicate edge |
 | `object_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Object node |
@@ -239,7 +240,7 @@ Governance metric definitions.
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
 | `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
-| `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_rules_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...]}}` |
+| `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_rules_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}}`; `dataset_filter` dimensions OR-ed; `{}` = all datasets |
 | `is_active` | `BOOLEAN` | Whether scheduled measurement is active |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
 | `created_at` | `TIMESTAMPTZ` | |

@@ -109,7 +109,7 @@ Each MANIFESTO feature has a clear integration direction:
 | Ingestion Control (active) | UC1 | **Write** | Emit enriched metadata (properties, lineage, tags, ownership). Applies to `mode: active` configs only. |
 | Ingestion Control (passive) | UC1 | **Read** | The hourly `ingestion-passive-sync-hourly` DAG polls DataHub ingestion run history for `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes. |
 | Validation | UC2 | **Read + Write** | Query profiles, operations, lineage; register `assertionInfo`, emit `assertionRunEvent` |
-| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
+| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; UC4-approved editable variants (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`); and DataHub Query entities (`queryProperties` + `querySubjects`) — both highlighted (`source = MANUAL`) and auto-discovered joins (`source = SYSTEM`, `len(querySubjects) ≥ 2`), capped per dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
 | Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities. Tag / glossary-term proposals are future scope and not part of the baseline. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
@@ -240,6 +240,31 @@ off any UC3 node, edge, or triple ID.
 |--------|----------|-------------|------------|----------------|
 | `dataProductProperties` | `DataProductPropertiesClass` | `dataProduct` | `name`, `description` (Markdown), `assets[]` (dataset URNs) | `POST /openapi/v3/entity/dataproduct` |
 
+### Query Aspects
+
+DataHub's "Queries" feature stores SQL queries as standalone `query` entities,
+surfaced on the dataset Queries tab in three lists: **highlighted** (`source = MANUAL`,
+human-curated via the UI), **recent** (`source = SYSTEM`, auto-discovered by
+crawlers), and **popular** (ranked by usage). The `source` field is **immutable
+after creation** — DataHub's `UpdateQueryInput` exposes only `name`, `description`,
+`statement`, and `subjects`. A SYSTEM query cannot be promoted to MANUAL in place;
+the only path is "copy the SQL and create a new MANUAL query".
+
+UC3 reads both sources as ontology evidence, capped per dataset by
+`ontogen_config.max_manual_queries_per_dataset` and
+`ontogen_config.max_system_queries_per_dataset` (see
+[BACKEND §Ontology Generation](feature/BACKEND.md#ontology-generation-service-srcbackendontogen)).
+
+| Aspect | SDK Class | Entity Type | Key Fields | REST Read Path |
+|--------|----------|-------------|------------|----------------|
+| `queryProperties` | `QueryPropertiesClass` | `query` | `statement.value` (SQL), `name`, `description`, `source` (`MANUAL` \| `SYSTEM`), `lastModified` | `GET /aspects/{urn}?aspect=queryProperties` |
+| `querySubjects` | `QuerySubjectsClass` | `query` | `subjects[].entity` (dataset URN; optional schema field URN) | `GET /aspects/{urn}?aspect=querySubjects` |
+
+**Listing per dataset.** Use the `listQueries` GraphQL with an entity-URN filter and
+optional `source` filter (same pattern as the DataHub frontend's
+`useHighlightedQueries`, `useRecentQueries`). The `count` parameter caps the result
+set server-side, matching the per-dataset config caps.
+
 ### Aspect Usage by Feature
 
 Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
@@ -262,7 +287,9 @@ the `ingestion-passive-sync-hourly` DAG and writes no aspects.*
 | `datasetUsageStatistics` | — | — | R | R | R |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | — | W | — | — | R |
-| `dataProductProperties` | — | — | — | W (create / modify / split / retitle on approval) | R |
+| `dataProductProperties` | — | — | R | W (create / modify / split / retitle on approval) | R |
+| `queryProperties` | — | — | R (per-dataset cap, MANUAL + SYSTEM-with-joins) | — | — |
+| `querySubjects` | — | — | R (joins-first sort key) | — | — |
 
 ## SDK Patterns
 

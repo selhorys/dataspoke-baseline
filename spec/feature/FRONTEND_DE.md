@@ -282,7 +282,8 @@ cross-data MD actions). Each field row exposes individual approve / edit / rejec
 
 Singleton conf editor (UC3 has no per-dataset config). Edits via
 `PUT/PATCH /spoke/common/ontogen/attr/conf` with fields `is_enabled`, `schedule_tier`,
-`sources`, `dataset_filter`. A `[Run Now]` button calls
+`dataset_filter`, `max_manual_queries_per_dataset`,
+`max_system_queries_per_dataset`, `default_run_prompt`. A `[Run Now]` button calls
 `POST /spoke/common/ontogen/method/run` (optional `?dry_run=true`; optional
 `Content-Type: text/markdown` body acts as a one-shot prompt for this single run).
 
