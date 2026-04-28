@@ -52,7 +52,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 |---|---|---|
 | UC1 | Ingestion Control | [Active와 Passive 인제스천](#uc1-ingestion-control) |
 | UC2 | Validation | [규칙 등록, 스케줄·Dry-Run 실행](#uc2-validation) |
-| UC3 | Ontology Generation | [Imazon 데이터셋 전반의 개념 추론](#uc3-ontology-generation) |
+| UC3 | Ontology Generation | [Imazon 데이터셋 전반의 노드·엣지·트리플 추론](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [설명·MD 문서 제안](#uc4-metadata-generation) |
 | UC5 | Governance | [인제스천 신선도와 검증 점수](#uc5-governance) |
 
@@ -547,7 +547,7 @@ UI는 Markdown으로 렌더링한다.
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | 타깃 필드·주기·상태 설정 |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | 타깃 필드·schedule_tier·상태 설정 |
 | `POST /spoke/common/data/{urn}/method/metagen/run` | 생성 실행 트리거 |
 | `GET /spoke/common/data/{urn}/attr/metagen/result?latest=true` | 데이터셋의 최신 제안 조회 |
 | `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` | 승인/부분 승인/거부 — body `{ "verdict": "approve"\|"reject", "fields": [...], "reason": "…" }`. 승인 시 선택된 부분이 DataHub에 기록된다. |
@@ -564,7 +564,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 ```json
 {
   "targets": ["dataset.description", "column.description", "cross_data.md"],
-  "period": "weekly",
+  "schedule_tier": "weekly",
   "is_enabled": true
 }
 ```

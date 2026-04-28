@@ -243,7 +243,7 @@ configurations.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | Validation | UC2, UC5 |
 | `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents); concurrent runs return `409 VALIDATION_RUNNING` | Validation | UC2 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, period, status) | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, schedule_tier, status) | Metadata Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace metadata generation configuration | Metadata Generation | UC4 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Partially update metadata generation configuration | Metadata Generation | UC4 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove metadata generation configuration | Metadata Generation | UC4 |
@@ -362,7 +362,7 @@ apply to UC3's `ontogen/attr/conf.dataset_filter` (reported via `ONTOGEN.RUN_COM
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, enabled status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, period, enabled status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, schedule_tier, enabled status) | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, enabled status) | Governance | UC5 |
 | `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Governance | UC5 |
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
@@ -571,7 +571,9 @@ All errors follow the standard envelope:
 | `FORBIDDEN` | 403 | Valid token; groups claim does not satisfy route requirement |
 | `DATASET_NOT_FOUND` | 404 | Dataset URN does not exist in DataHub (read paths, e.g. `GET /spoke/common/data/{urn}`) |
 | `DATASET_NOT_IN_DATAHUB` | 422 | The targeted dataset URN is not yet tracked by DataHub, so a feature with a "dataset must exist in SSOT first" precondition cannot proceed (e.g. `PUT /spoke/common/data/{urn}/attr/validation/conf`) |
-| `CONCEPT_NOT_FOUND` | 404 | Ontology concept ID not found |
+| `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
+| `EDGE_NOT_FOUND` | 404 | Ontology edge ID not found |
+| `TRIPLE_NOT_FOUND` | 404 | Ontology triple ID not found |
 | `CONFIG_NOT_FOUND` | 404 | Ingestion config or validation config not found |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |

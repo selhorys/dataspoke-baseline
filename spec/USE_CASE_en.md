@@ -44,7 +44,7 @@ pipelines that Imazon already operates. DataSpoke covers both modes.
 |---|---|---|
 | UC1 | Ingestion Control | [Active and Passive Ingestion](#uc1-ingestion-control) |
 | UC2 | Validation | [Rule Registration, Scheduled and Dry-Run](#uc2-validation) |
-| UC3 | Ontology Generation | [Concept Inference Across Imazon Datasets](#uc3-ontology-generation) |
+| UC3 | Ontology Generation | [Node, Edge, and Triple Inference Across Imazon Datasets](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [Description and MD Doc Proposals](#uc4-metadata-generation) |
 | UC5 | Governance | [Ingestion Freshness and Validation Score](#uc5-governance) |
 
@@ -529,7 +529,7 @@ Future scope (mentioned, not modelled here): proposals for `domains` and `global
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | Configure target fields, period, status |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | Configure target fields, schedule_tier, status |
 | `POST /spoke/common/data/{urn}/method/metagen/run` | Trigger a generation run |
 | `GET /spoke/common/data/{urn}/attr/metagen/result?latest=true` | Get the latest proposal for a dataset |
 | `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` | Approve / partial-approve / reject — body `{ "verdict": "approve"\|"reject", "fields": [...], "reason": "…" }`. Approval writes the chosen subset to DataHub. |
@@ -546,7 +546,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 ```json
 {
   "targets": ["dataset.description", "column.description", "cross_data.md"],
-  "period": "weekly",
+  "schedule_tier": "weekly",
   "is_enabled": true
 }
 ```
