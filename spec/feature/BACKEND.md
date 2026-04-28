@@ -378,7 +378,7 @@ of actions, each independently approvable:
 
 - `verdict: "approve"` + `fields` omitted → approve all proposed fields and actions.
 - `verdict: "approve"` + `fields: [...]` → approve only the listed field paths and / or
-  cross-data action indices.
+  cross-data actions referenced as `cross_data.md.<action_id>`.
 - `verdict: "reject"` → reject the whole proposal (or the listed `fields` only).
 
 On approval, the service writes the approved subset to the editable DataHub aspects in a
@@ -614,7 +614,7 @@ do not emit events. If a request is rejected before reaching the service layer
 Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 
 - **Domain** identifies the feature: `INGESTION`, `VALIDATION`, `METAGEN`,
-  `METRIC`, `CONCEPT`, `ONTOGEN`.
+  `METRIC`, `NODE`, `EDGE`, `TRIPLE`, `ONTOGEN`.
 - **Action** describes what happened. Two categories:
   - *Config lifecycle*: `CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE` —
     emitted by PUT, PATCH, DELETE on a configuration resource.
@@ -866,7 +866,7 @@ failures.
 
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
-| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `CONCEPT_NOT_FOUND` |
+| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
 | `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |

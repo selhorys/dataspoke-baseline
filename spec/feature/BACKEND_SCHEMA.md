@@ -130,7 +130,7 @@ generation run for one dataset.
 |--------|------|-------------|
 | `id` | `UUID` PK | Result identifier |
 | `dataset_urn` | `TEXT` | Target dataset |
-| `proposals` | `JSONB` | Per-field proposals keyed by target — `dataset.description`, `column.description.{fieldPath}`, `cross_data.md` (the latter holds an ordered list of `{action: create\|modify\|split\|retitle, ...}` items) |
+| `proposals` | `JSONB` | Per-field proposals keyed by target — `dataset.description`, `column.description.{fieldPath}`, `cross_data.md` (the latter holds an ordered list of `{action_id, action: create\|modify\|split\|retitle, ...}` items; `action_id` is the stable string used to reference an individual action via `cross_data.md.<action_id>` in PATCH `fields`) |
 | `field_status` | `JSONB` | Per-field review status — keyed identically to `proposals`, value is `pending` / `approved` / `rejected` / `edited`. Field-level review (a single PATCH may approve a subset) updates only the listed entries. |
 | `run_id` | `UUID` | Airflow DAG run ID |
 | `generated_at` | `TIMESTAMPTZ` | |

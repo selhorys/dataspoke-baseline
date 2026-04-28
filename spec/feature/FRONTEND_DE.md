@@ -269,7 +269,7 @@ cross-data MD actions). Each field row exposes individual approve / edit / rejec
 - **Generate Now** → `POST /spoke/common/data/{urn}/method/metagen/run`
 - **Per-field Approve / Edit / Reject** →
   `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` with
-  `{"verdict": "approve"|"reject", "fields": ["dataset.description", "column.description.book_id", "cross_data.md[0]", ...], "reason": "…"}`.
+  `{"verdict": "approve"|"reject", "fields": ["dataset.description", "column.description.book_id", "cross_data.md.<action_id>", ...], "reason": "…"}`.
   Approval writes the listed subset to **editable** DataHub aspects only
   (`editableDatasetProperties`, `editableSchemaMetadata.editableSchemaFieldInfo`,
   `dataProductProperties`).

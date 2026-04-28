@@ -134,7 +134,7 @@ dataset for the node if a better option exists.
 │  Platform: Oracle  │  Certified for Reporting ✓            │
 │  Fitness: 94/100   │  Schema stable 90 days ✓              │
 │                                                            │
-│  [ Overview | Fitness Check | Concept ]                    │
+│  [ Overview | Fitness Check | Ontology ]                   │
 │  ─────────────────────────────────────────                 │
 │                                                            │
 │  (tab content)                                             │
