@@ -45,8 +45,8 @@ Stores per-dataset ingestion configuration.
 | `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
 | `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth or passive mode |
-| `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow (active mode) or scheduled status sync (passive mode) |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for active mode — `hourly`, `daily`, or `weekly` (required when `mode='active'` and `is_active=true`); null for passive mode |
+| `is_enabled` | `BOOLEAN` | Enable scheduled execution via Airflow (active mode) or scheduled status sync (passive mode) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for active mode — `hourly`, `daily`, or `weekly` (required when `mode='active'` and `is_enabled=true`); null for passive mode |
 | `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG (active mode only) |
 | `status` | `TEXT` | `OK` (DAG verification succeeded), `ERROR` (verification failed) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
@@ -80,8 +80,8 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
-| `is_active` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
-| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
+| `is_enabled` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -114,8 +114,8 @@ Stores per-dataset metadata generation configuration (UC4).
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `targets` | `JSONB` | List of target documentation fields. Baseline values: `dataset.description`, `column.description`, `cross_data.md` |
 | `code_refs` | `JSONB` NULL | GitHub repo/file references for code analysis |
-| `is_active` | `BOOLEAN` | Enable scheduled execution via Airflow |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
+| `is_enabled` | `BOOLEAN` | Enable scheduled execution via Airflow |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
 | `status` | `TEXT` | `draft` |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -241,8 +241,8 @@ Governance metric definitions.
 | `description` | `TEXT` | What this metric measures |
 | `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
 | `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_rules_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}}`; `dataset_filter` dimensions OR-ed; `{}` = all datasets |
-| `is_active` | `BOOLEAN` | Whether scheduled measurement is active |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_active=true`) |
+| `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 

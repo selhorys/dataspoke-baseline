@@ -241,7 +241,7 @@ Ingestion config model: see
 [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields:
 `dataset_urn` (unique per dataset), `mode` (`active` | `passive`), `platform` (`postgres`,
 `kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details),
-`is_active`/`schedule_tier` (tier-based scheduling for active mode),
+`is_enabled`/`schedule_tier` (tier-based scheduling for active mode),
 `status` (DAG verification outcome).
 
 **Active run pipeline** (`IngestionService.run()`): load config → connect to source via
@@ -317,7 +317,7 @@ functions) for determining the target partition.
 
 **Configuration model**: Per-dataset config stored in `validation_configs` with:
 - `schedule_tier` (TEXT): Schedule tier for periodic execution — `hourly`, `daily`, or
-  `weekly` (required when `is_active=true`).
+  `weekly` (required when `is_enabled=true`).
 - `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec,
   extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
 
