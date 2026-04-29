@@ -12,7 +12,7 @@ Your job is to write production-quality Next.js + TypeScript code in `src/fronte
 ## Before writing anything
 
 1. Read the **feature spec** for the area you're working on:
-   - `spec/feature/FRONTEND_BASIC.md` — application shell, routing, auth flow, shared components, state management, real-time connectivity
+   - `spec/feature/FRONTEND_BASIC.md` — application shell, routing, auth flow, shared components, state management, polling-based live updates (no WebSocket / SSE in the baseline)
    - `spec/feature/FRONTEND_DE.md` — Data Engineering workspace (if building DE features)
    - `spec/feature/FRONTEND_DA.md` — Data Analysis workspace (if building DA features)
    - `spec/feature/FRONTEND_DG.md` — Data Governance workspace (if building DG features)

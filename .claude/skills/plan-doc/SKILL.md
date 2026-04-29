@@ -24,28 +24,32 @@ spec/
 │                              ← REST API conventions: URI structure, request/response
 │                                 format, content/metadata separation, meta-classifiers.
 │
-├── feature/            ← Deep-dive specs for COMMON (cross-cutting) features.
-│   │                     Clean, timeless reference format.
-│   │                     No log-style content (no dates, authors, changelogs).
-│   └── <FEATURE>.md      e.g. API.md, DEV_ENV.md
+├── feature/            ← Deep-dive specs for ALL FIVE BASELINE features
+│   │                     (Ingestion Control, Validation, Ontology Generation,
+│   │                     Metadata Generation, Governance) plus cross-cutting
+│   │                     infrastructure. Timeless reference format.
+│   └── <FEATURE>.md      e.g. BACKEND.md, BACKEND_SCHEMA.md, FRONTEND_*.md,
+│                         DEV_ENV.md, HELM_CHART.md
 │
-└── feature/spoke/      ← Deep-dive specs for USER-GROUP-SPECIFIC features.
-    │                     Same timeless reference format as feature/.
-    │                     One file per feature, tagged by user group (DE/DA/DG).
-    └── <FEATURE>.md      e.g. INGESTION.md, NL_SEARCH.md, METRICS_DASHBOARD.md
+└── feature/spoke/      ← Reserved for ORGANIZATION-SPECIFIC EXTENSIONS in
+    │                     forks/customizations. The DataSpoke baseline ships
+    │                     nothing here. Tag each file by user group (DE/DA/DG).
+    └── <FEATURE>.md      e.g. an organization's custom DE search, custom DA
+                          dashboard, etc.
 ```
 
 **Routing rules:**
 - Top-level `spec/` — project-wide documents only. Do NOT create new top-level files unless the topic affects the whole system and warrants an architectural-level document.
-- `spec/feature/` — common/cross-cutting feature deep-dives that are not specific to a single user group (e.g. `API.md`, `DEV_ENV.md`, shared infrastructure).
-- `spec/feature/spoke/` — user-group-specific feature deep-dives. These map to features defined in the MANIFESTO under DE, DA, or DG groups. Examples: `INGESTION.md` (DE), `ONLINE_VALIDATOR.md` (DE/DA), `NL_SEARCH.md` (DA), `METRICS_DASHBOARD.md` (DG).
+- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `DEV_ENV.md`, `BACKEND.md`, `HELM_CHART.md`). The user-group framing (DE / DA / DG) is a UI / API extensibility surface only — baseline governance routes under `/spoke/dg/` are still part of the baseline product and live here.
+- `spec/feature/spoke/` — **organization-specific extensions only**. The DataSpoke baseline product ships nothing here; it exists for forks/customizations to add features under `/spoke/de/` or `/spoke/da/` (and additional `/spoke/dg/` extensions beyond the baseline).
 
 Implementation plans and decision records are tracked via GitHub Issues and PRs, not in the spec directory.
 
 **How to decide between `feature/` and `feature/spoke/`:**
-- If the feature belongs to a specific user group in the MANIFESTO (DE/DA/DG) → `feature/spoke/`
-- If the feature is cross-cutting infrastructure, shared across groups, or not user-group-specific → `feature/`
-- When in doubt, check the MANIFESTO's "Features by User Group" section
+- Any of the five MANIFESTO baseline features → `feature/`, regardless of which workspace surfaces it
+- Cross-cutting infrastructure (API, dev env, helm, shared services) → `feature/`
+- An organization-specific extension that only exists in a fork → `feature/spoke/`
+- When in doubt, check `MANIFESTO_en.md §2.1` — anything listed there belongs in `feature/`
 
 ---
 
@@ -69,7 +73,7 @@ If writing about a specific feature, also check for an existing `spec/feature/<F
 | Destination | When to use | Document type |
 |-------------|-------------|---------------|
 | `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) or a common cross-cutting topic (API, dev environment, shared services). The five baseline features all live here, regardless of which user-group workspace surfaces them. | Common Feature Spec (see template A) |
-| `spec/feature/spoke/<FEATURE>.md` | An organization-specific extension exclusive to one user-group workspace (DE / DA), filed under the workspace it belongs to. The baseline product ships nothing here. | Spoke Feature Spec (see template A, with user-group tag) |
+| `spec/feature/spoke/<FEATURE>.md` | An organization-specific extension to one user-group workspace (`/spoke/de/`, `/spoke/da/`, or governance extensions beyond the baseline under `/spoke/dg/`). The DataSpoke baseline product ships nothing here. | Spoke Feature Spec (see template A, with user-group tag) |
 | `spec/<DOC>.md` (top-level) | Only for project-wide topics that belong alongside MANIFESTO and ARCHITECTURE | Top-level spec (use template A without feature context) |
 
 ---

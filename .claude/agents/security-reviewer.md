@@ -24,7 +24,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 
 ### Sensitive path globs (authoritative list)
 
-- `src/api/auth/**` — JWT/auth (`dependencies.py`, `internal.py`, `jwt.py`, `ws.py`)
+- `src/api/auth/**` — JWT/auth (`dependencies.py`, `internal.py`, `jwt.py`)
 - `src/api/routers/**` — when the diff touches `Depends(get_current_user)`, `require_*`, `require_internal_token`, or other auth guards
 - `src/shared/settings.py` — secret env vars (JWT, DataHub token, Postgres, LLM, Airflow, internal-token)
 - `src/shared/datahub/**` — DataHub client and emission (`client.py`, `consumer.py`, `events.py`)
