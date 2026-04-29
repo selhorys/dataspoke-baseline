@@ -10,8 +10,9 @@ global:
     allowInsecureImages: true
 
 # ---------------------------------------------------------------------------
-# Application components: frontend/workers run on the host; API runs in-cluster
-# so Airflow can reach it via http://dataspoke-api:8000.
+# Application components: frontend runs on the host; event-consumer is disabled
+# in dev (baseline UC1–UC5 are schedule-driven, not event-driven). API runs
+# in-cluster so Airflow can reach it via http://dataspoke-api:8002.
 # ---------------------------------------------------------------------------
 frontend:
   enabled: false
@@ -41,7 +42,7 @@ api:
     limits:
       cpu: "1"
       memory: 1024Mi
-workers:
+event-consumer:
   enabled: false
 
 # ---------------------------------------------------------------------------

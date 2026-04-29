@@ -26,7 +26,7 @@ chart serves both production and development — only the values file differs:
   environment.
 - **Dev** (`values-dev.yaml`): Infrastructure + API server, reduced resources. Used by
   `dev_env/dataspoke-infra/install.sh`. The API runs in-cluster so Airflow can reach it directly.
-  Frontend and workers are disabled.
+  Frontend and event-consumer are disabled.
 
 ```
 Production Deployment                    Dev Deployment (dev_env)
@@ -134,7 +134,7 @@ directly from `dev_env/.env`.
 
 ### Dev (`values-dev.yaml`)
 
-- API enabled in-cluster (1 replica, `testMode: true`); frontend/workers disabled
+- API enabled in-cluster (1 replica, `testMode: true`); frontend/event-consumer disabled
 - Single replicas, reduced resource limits
 - Airflow 3.1.8 minimized for dev: reduced resources, LocalExecutor, single api-server instance,
   DAGs baked into a custom image built from `docker-images/airflow/Dockerfile`
@@ -252,8 +252,8 @@ Kafka :9092). Controlled by `networkPolicy.enabled` (default: `false`) and
 
 The dev profile enables the API in-cluster (so Airflow callbacks work via cluster DNS) and
 enables ingress for the API and Airflow (so developers can access them via the nginx-ingress
-endpoints). Frontend and workers remain disabled. Airflow runs in the cluster in both dev and
-production.
+endpoints). Frontend and event-consumer remain disabled. Airflow runs in the cluster in both
+dev and production.
 
 This means:
 1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments —
@@ -280,9 +280,9 @@ helm upgrade --install dataspoke ./helm-charts/dataspoke \
   # Optionally add: --set event-consumer.enabled=true
 ```
 
-The API is already enabled in `values-dev.yaml`. Frontend and workers can be enabled on-demand
-for full in-cluster testing. Every code change requires a container rebuild and `helm upgrade` —
-this is automated by `dev_env/dataspoke-test-mode.sh`. See
+The API is already enabled in `values-dev.yaml`. Frontend and event-consumer can be enabled
+on-demand for full in-cluster testing. Every code change requires a container rebuild and
+`helm upgrade` — this is automated by `dev_env/dataspoke-test-mode.sh`. See
 [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 ---

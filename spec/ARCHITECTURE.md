@@ -413,7 +413,7 @@ For dev/CI, DataHub and DataSpoke infrastructure dependencies are provisioned by
 scripts (see [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for install/uninstall,
 configuration, and resource budget). The dev environment reuses the production umbrella Helm
 chart (`helm-charts/dataspoke/`) with a `values-dev.yaml` overlay that reduces resources and
-disables frontend/workers; the API runs in-cluster so Airflow callbacks reach it via
+disables frontend/event-consumer; the API runs in-cluster so Airflow callbacks reach it via
 `http://dataspoke-api:8002`. Unit tests run locally without the cluster; see
 [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 

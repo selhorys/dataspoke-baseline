@@ -2,20 +2,17 @@ dependencies:
 - name: frontend
   repository: file://subcharts/frontend
   version: 0.1.0
-- name: api
-  repository: file://subcharts/api
-  version: 0.1.0
-- name: workers
-  repository: file://subcharts/workers
+- name: event-consumer
+  repository: file://subcharts/event-consumer
   version: 0.1.0
 - name: postgresql
   repository: https://charts.bitnami.com/bitnami
   version: 18.5.24
 - name: redis
   repository: https://charts.bitnami.com/bitnami
-  version: 25.3.11
+  version: 25.3.12
 - name: airflow
   repository: https://airflow.apache.org
   version: 1.20.0
-digest: sha256:84f7690c9493b39456826cb2c81b853b498446b7fef8c2f48814c4a912382bdc
-generated: "2026-04-20T00:59:22.662272+09:00"
+digest: sha256:f3991164ae2476328bb0d0fb6d3e2e2a407856164cfdb4748e0da2a6c2a57e92
+generated: "2026-04-30T00:23:47.94267+09:00"

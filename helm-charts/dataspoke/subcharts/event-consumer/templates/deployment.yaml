@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "workers.fullname" . }}
+  name: {{ include "event-consumer.fullname" . }}
   labels:
-    {{- include "workers.labels" . | nindent 4 }}
+    {{- include "event-consumer.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "workers.selectorLabels" . | nindent 6 }}
+      {{- include "event-consumer.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "workers.selectorLabels" . | nindent 8 }}
+        {{- include "event-consumer.selectorLabels" . | nindent 8 }}
     spec:
       containers:
-        - name: workers
+        - name: event-consumer
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           envFrom:

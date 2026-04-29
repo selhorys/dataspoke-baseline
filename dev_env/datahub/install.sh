@@ -313,6 +313,32 @@ if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
       -d '{"username":"datahub","password":"datahub"}' \
       -c "$COOKIE_FILE" -o /dev/null 2>/dev/null
 
+    # GMS marks Ready before all bootstrap MCEs (default platform policies)
+    # are ingested.  Poll for the "Generate Personal Access Tokens" privilege
+    # until it lights up, otherwise createAccessToken returns 403 even though
+    # the user logged in successfully.
+    info "  Waiting for createAccessToken privilege to bootstrap..."
+    PRIV_TIMEOUT=120
+    PRIV_ELAPSED=0
+    PRIV_READY=false
+    while (( PRIV_ELAPSED < PRIV_TIMEOUT )); do
+      HAS_PRIV=$(curl -s -X POST "${DATAHUB_FRONTEND}/api/graphql" \
+        -H "Content-Type: application/json" \
+        -b "$COOKIE_FILE" \
+        -d '{"query":"{ me { platformPrivileges { generatePersonalAccessTokens } } }"}' 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['me']['platformPrivileges']['generatePersonalAccessTokens'])" 2>/dev/null \
+        || echo "false")
+      if [[ "$HAS_PRIV" == "True" ]]; then
+        PRIV_READY=true
+        break
+      fi
+      sleep 5
+      (( PRIV_ELAPSED += 5 ))
+    done
+    if [[ "$PRIV_READY" != "true" ]]; then
+      warn "  generatePersonalAccessTokens privilege did not bootstrap within ${PRIV_TIMEOUT}s — attempting anyway."
+    fi
+
     PAT_RESPONSE=$(curl -s -X POST "${DATAHUB_FRONTEND}/api/graphql" \
       -H "Content-Type: application/json" \
       -b "$COOKIE_FILE" \

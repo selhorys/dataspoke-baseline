@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: dataspoke/workers
+  repository: dataspoke/event-consumer
   tag: latest
   pullPolicy: IfNotPresent
 

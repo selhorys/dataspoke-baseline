@@ -12,15 +12,10 @@ dependencies:
     repository: "file://subcharts/frontend"
     condition: frontend.enabled
 
-  - name: api
+  - name: event-consumer
     version: "0.1.0"
-    repository: "file://subcharts/api"
-    condition: api.subchart.enabled
-
-  - name: workers
-    version: "0.1.0"
-    repository: "file://subcharts/workers"
-    condition: workers.enabled
+    repository: "file://subcharts/event-consumer"
+    condition: event-consumer.enabled
 
   # --- Infrastructure subcharts (community) ---
   - name: postgresql

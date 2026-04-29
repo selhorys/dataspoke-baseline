@@ -1,8 +1,8 @@
-{{- define "workers.name" -}}
+{{- define "event-consumer.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "workers.fullname" -}}
+{{- define "event-consumer.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -15,20 +15,20 @@
 {{- end }}
 {{- end }}
 
-{{- define "workers.chart" -}}
+{{- define "event-consumer.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "workers.labels" -}}
-helm.sh/chart: {{ include "workers.chart" . }}
-{{ include "workers.selectorLabels" . }}
+{{- define "event-consumer.labels" -}}
+helm.sh/chart: {{ include "event-consumer.chart" . }}
+{{ include "event-consumer.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
-{{- define "workers.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "workers.name" . }}
+{{- define "event-consumer.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "event-consumer.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}

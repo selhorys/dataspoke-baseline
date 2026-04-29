@@ -86,7 +86,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
    ```
 3. Show access information (ingress endpoints table is in `dev_env/README.md §Ingress Endpoints`; substitute `DATASPOKE_DEV_INGRESS_IP` / `DATASPOKE_DEV_INGRESS_DOMAIN` from `dev_env/.env`).
 4. Inform the user that `dev_env/.env` has been populated with ingress-derived runtime variables (hosts, URLs, ports) by `nginx-ingress/install.sh`, and that they should run `source dev_env/.env` to load them into their shell.
-5. Note that the API is deployed in-cluster by `dataspoke-infra/install.sh` (via the umbrella Helm chart). To rebuild and redeploy after code changes, use `./dev_env/dataspoke-test-mode.sh`. Frontend runs on the host: `cd src/frontend && npm run dev` (http://localhost:3000).
+5. Note that the API is deployed in-cluster by `dataspoke-infra/install.sh` (via the umbrella Helm chart). To rebuild and redeploy after code changes, use `./dev_env/dataspoke-test-mode.sh`. Frontend (once `src/frontend/` is implemented — currently TBD) runs on the host: `cd src/frontend && npm run dev` (http://localhost:3000).
 
 ---
 
@@ -172,7 +172,7 @@ Parse `$ARGUMENTS` and the user's request for these options:
 
 ### Deploy
 
-1. Run `./dev_env/dataspoke-test-mode.sh` with parsed flags in the foreground (it builds the image, deploys via Helm, and waits for rollout — typically 1-2 minutes).
+1. Run `./dev_env/dataspoke-test-mode.sh` with parsed flags in the foreground. The script builds the API image, calls `dataspoke-infra/install.sh` (which itself rebuilds the custom PostgreSQL and Airflow images unless `SKIP_POSTGRES_BUILD=1` / `SKIP_AIRFLOW_BUILD=1` are set), runs `helm upgrade`, restarts the API deployment, and verifies Airflow DAGs. First run can take 5–10 minutes due to image builds; subsequent rebuilds with `--skip-build` are 1–2 minutes.
 2. Monitor the output for errors. If the build or rollout fails, report the error and suggest remediation.
 3. On success, report the running state to the user:
    - API URL: `http://app.<INGRESS_DOMAIN>/api/v1/`

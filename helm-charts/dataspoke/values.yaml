@@ -50,8 +50,6 @@ frontend:
 
 api:
   enabled: true
-  subchart:
-    enabled: false    # Set true only to use the legacy subcharts/api deployment
   replicaCount: 2
   image:
     repository: dataspoke/api
@@ -86,20 +84,23 @@ api:
       cpu: "1"
       memory: 1024Mi
 
-workers:
-  enabled: true
-  replicaCount: 2
+event-consumer:
+  # Optional Kafka consumer for DataHub MCL/MCP events. Disabled by default —
+  # baseline UC1–UC5 are schedule-driven via Airflow, not event-driven.
+  # See spec/feature/BACKEND.md §Kafka Consumers.
+  enabled: false
+  replicaCount: 1
   image:
-    repository: dataspoke/workers
+    repository: dataspoke/event-consumer
     tag: latest
     pullPolicy: IfNotPresent
   resources:
     requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
       cpu: 500m
       memory: 1024Mi
-    limits:
-      cpu: "1"
-      memory: 2048Mi
 
 # ---------------------------------------------------------------------------
 # Infrastructure subcharts

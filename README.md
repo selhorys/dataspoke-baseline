@@ -23,9 +23,9 @@ Fork or copy this repository to create a data catalog for your organization.
 
 ### Deploy to Production
 
-DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables all components: frontend, API, workers, and infrastructure (PostgreSQL with pgvector + Apache AGE, Redis, Airflow).
+DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables the application components (frontend, API) and infrastructure (PostgreSQL with pgvector + Apache AGE, Redis, Airflow). The optional event-consumer subchart is shipped disabled — baseline UC1–UC5 are schedule-driven via Airflow rather than event-driven.
 
-1. **Build and push images**: `docker build -t <registry>/dataspoke/api:latest -f docker-images/api/Dockerfile .` (Workers and Frontend images TBD)
+1. **Build and push images**: `docker build -t <registry>/dataspoke/api:latest -f docker-images/api/Dockerfile .` (Frontend image TBD; event-consumer is disabled by default)
 2. **Configure**: Copy `helm-charts/dataspoke/values.yaml` and customize — container images, ingress hosts/TLS, DataHub connection (`config.datahub.gmsUrl`), and secrets (PostgreSQL, Redis, JWT, LLM API key). For production secrets management, consider [External Secrets Operator](https://external-secrets.io/).
 3. **Install**:
    ```bash

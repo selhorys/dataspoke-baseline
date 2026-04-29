@@ -25,7 +25,7 @@ DataSpoke application connects to.
 The API server is deployed **in-cluster** alongside Airflow so that workflow callbacks work
 directly via cluster DNS (`http://dataspoke-api:8002`). Developers access the API via the
 nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for testing. Frontend and
-workers are not installed in the dev cluster.
+event-consumer are not installed in the dev cluster.
 See [TESTING.md §Testing Modes](../TESTING.md#testing-modes).
 
 DataHub is installed in the dev cluster **for convenience**; in production it is an external

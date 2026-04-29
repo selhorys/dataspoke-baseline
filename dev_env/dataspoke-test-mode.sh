@@ -8,7 +8,7 @@
 # ingress — no port-forward needed.
 #
 # DATASPOKE_TEST_MODE=true is baked into values-dev.yaml (api.testMode: true)
-# so Airflow callbacks reach the API via http://dataspoke-api:8000 within the
+# so Airflow callbacks reach the API via http://dataspoke-api:8002 within the
 # cluster.
 #
 # Usage:
