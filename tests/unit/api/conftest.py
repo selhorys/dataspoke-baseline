@@ -8,7 +8,6 @@ from httpx import ASGITransport, AsyncClient
 from src.api.auth.jwt import create_access_token
 from src.api.main import app
 
-
 _STATE_ATTRS = ("datahub", "redis", "vector", "llm", "airflow")
 
 

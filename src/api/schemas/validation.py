@@ -12,8 +12,14 @@ _VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 
 
 class CreateValidationConfigRequest(BaseModel):
-    dataset_urn: str = Field(description="DataHub URN of the dataset to validate, e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'")
+    dataset_urn: str = Field(
+        description=(
+            "DataHub URN of the dataset to validate, "
+            "e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'"
+        )
+    )
     rules: list[dict[str, Any]] = Field(
+        max_length=200,
         description=(
             "List of validation rules. Each rule is a dict with at minimum `rule_id` and `type` keys.\n\n"
             "**Common fields** (all types): `rule_id` (unique ID), `type`, "
@@ -31,8 +37,8 @@ class CreateValidationConfigRequest(BaseModel):
             "`order` (list), `values` (list), optional `ml_validation` config"
         )
     )
-    schedule_tier: str | None = Field(default=None, description="Schedule tier for periodic validation runs: 'hourly', 'daily', or 'weekly'. Required when is_active is true.")
-    is_active: bool = Field(default=False, description="Whether the validation config is active and scheduled to run")
+    schedule_tier: str | None = Field(default=None, description="Schedule tier for periodic validation runs: 'hourly', 'daily', or 'weekly'. Required when is_enabled is true.")
+    is_enabled: bool = Field(default=False, description="Whether the validation config is enabled and scheduled to run")
     owner: str = Field(description="Owner identifier (email or user URN) responsible for this validation config")
 
     model_config = {
@@ -97,7 +103,7 @@ class CreateValidationConfigRequest(BaseModel):
                     },
                 ],
                 "schedule_tier": "daily",
-                "is_active": True,
+                "is_enabled": True,
                 "owner": "de-lead@imazon.com",
             }
         }
@@ -111,9 +117,9 @@ class CreateValidationConfigRequest(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_is_active_schedule_tier(self) -> "CreateValidationConfigRequest":
-        if self.is_active and not self.schedule_tier:
-            raise ValueError("schedule_tier is required when is_active is true")
+    def validate_is_enabled_schedule_tier(self) -> "CreateValidationConfigRequest":
+        if self.is_enabled and not self.schedule_tier:
+            raise ValueError("schedule_tier is required when is_enabled is true")
         return self
 
 
@@ -126,7 +132,7 @@ class PatchValidationConfigRequest(BaseModel):
         )
     )
     schedule_tier: str | None = Field(default=None, description="Updated schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.")
-    is_active: bool | None = Field(default=None, description="Set to true to activate scheduling (schedule_tier must be provided in the same request), false to pause.")
+    is_enabled: bool | None = Field(default=None, description="Set to true to enable scheduling (schedule_tier must be provided in the same request), false to pause.")
 
     @field_validator("schedule_tier")
     @classmethod
@@ -136,10 +142,10 @@ class PatchValidationConfigRequest(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_is_active_schedule_tier(self) -> "PatchValidationConfigRequest":
-        if self.is_active is True and self.schedule_tier is None:
+    def validate_is_enabled_schedule_tier(self) -> "PatchValidationConfigRequest":
+        if self.is_enabled is True and self.schedule_tier is None:
             raise ValueError(
-                "schedule_tier must be provided in the same patch when setting is_active to true"
+                "schedule_tier must be provided in the same patch when setting is_enabled to true"
             )
         return self
 
@@ -155,7 +161,7 @@ class PatchValidationConfigRequest(BaseModel):
                     },
                 ],
                 "schedule_tier": "daily",
-                "is_active": True,
+                "is_enabled": True,
             }
         }
     }
@@ -164,13 +170,24 @@ class PatchValidationConfigRequest(BaseModel):
 class RunValidationRequest(BaseModel):
     partition: dict[str, Any] | None = Field(
         default=None,
-        description="Optional partition filter for incremental validation. Example: {\"date\": \"2024-01-15\"} or {\"partition_id\": 42}"
+        description=(
+            "Optional partition filter for incremental validation. "
+            "Example: {\"date\": \"2024-01-15\"} or {\"partition_id\": 42}"
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "No-write evaluation — powers the Online Verifier for coding agents. "
+            "When true, rules are evaluated but results are not persisted."
+        ),
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
                 "partition": {"updated_at": "2026-04-04"},
+                "dry_run": False,
             }
         }
     }
@@ -189,7 +206,7 @@ class ValidationConfigResponse(SingleResponse):
                     {"rule_id": "r-vol-001", "type": "volume", "metric": "row_count", "condition": {"type": "between", "min": 10, "max": 10000}},
                 ],
                 "schedule_tier": "daily",
-                "is_active": True,
+                "is_enabled": True,
                 "owner": "de-lead@imazon.com",
                 "created_at": "2026-04-01T06:00:00Z",
                 "updated_at": "2026-04-04T06:00:00Z",
@@ -201,7 +218,7 @@ class ValidationConfigResponse(SingleResponse):
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     rules: list[dict[str, Any]] = Field(description="List of validation rule definitions")
     schedule_tier: str | None = Field(description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'")
-    is_active: bool = Field(description="Whether scheduled validation runs are enabled")
+    is_enabled: bool = Field(description="Whether scheduled validation runs are enabled")
     owner: str = Field(description="Owner identifier responsible for this validation config")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")

@@ -30,15 +30,15 @@ All workflow IDs follow the pattern ``{type}-{identifier}``:
   ============  =============================  ==============================
   Scope         Format                         Example
   ============  =============================  ==============================
-  URN-scoped    ``{type}-{md5(urn)[:12]}``     ``ingestion-6eb5d0afa434``
+  URN-scoped    ``{type}-{md5(urn)[:12]}``     ``metagen-6eb5d0afa434``
   Key-scoped    ``{type}-{key}``               ``metrics-imazon.freshness``
-  Singleton     ``{type}``                     ``ontology-rebuild``
+  Singleton     ``{type}``                     ``ontogen-singleton``
   Test          ``test-{type}-{short-label}``  ``test-ingestion-title-master``
   ============  =============================  ==============================
 
 - ``type`` is a lowercase kebab-case workflow name matching the module
-  (``ingestion``, ``validation``, ``generation``, ``metrics``,
-  ``embedding-sync``, ``ontology-rebuild``).
+  (``ingestion``, ``validation``, ``metagen``, ``metrics``, ``ontogen``,
+  ``datahub-sync``).
 - Test IDs always start with ``test-`` so they can be identified and
   cleaned up in the Airflow UI.  Use short, readable labels — never
   embed full URNs.
@@ -46,11 +46,11 @@ All workflow IDs follow the pattern ``{type}-{identifier}``:
 
 import hashlib
 
-from src.shared.settings import settings
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
 from src.shared.llm.client import LLMClient
+from src.shared.settings import settings
 from src.shared.vector.client import PgVectorManager
 
 
@@ -91,7 +91,7 @@ def make_vector() -> PgVectorManager:
     return PgVectorManager(session_factory=SessionLocal)
 
 
-def make_db_session():
+def make_db_session():  # type: ignore[no-untyped-def]
     """Create a fresh AsyncSession for activity use.
 
     Returns an AsyncSession usable as ``async with make_db_session() as db:``.
@@ -100,7 +100,7 @@ def make_db_session():
     return SessionLocal()
 
 
-def make_notification():
+def make_notification() -> object:
     if settings.test_mode:
         from src.workflows._stubs import StubNotificationService
 
@@ -108,3 +108,36 @@ def make_notification():
     from src.shared.notifications.service import NotificationService
 
     return NotificationService()
+
+
+def make_ontogen() -> tuple:  # type: ignore[type-arg]
+    """Construct OntogenService with all required dependencies.
+
+    Spec: spec/feature/BACKEND.md §Feature Services — OntogenService requires
+    datahub, db, cache, llm, age (AGE graph), vector.
+    """
+    from src.backend.ontogen.service import OntogenService
+    from src.shared.db.session import SessionLocal as _SessionLocal
+    from src.shared.graph.client import AgeGraph
+
+    datahub = make_datahub()
+    cache = make_cache()
+    llm = make_llm()
+    vector = make_vector()
+    age = AgeGraph(session_factory=_SessionLocal)
+    # db session is provided by callers via async context manager
+    return OntogenService, datahub, cache, llm, age, vector
+
+
+def make_metagen() -> tuple:  # type: ignore[type-arg]
+    """Construct MetagenService with all required dependencies.
+
+    Spec: spec/feature/BACKEND.md §Feature Services — MetagenService requires
+    datahub, db, cache, llm.
+    """
+    from src.backend.metagen.service import MetagenService
+
+    datahub = make_datahub()
+    llm = make_llm()
+    # db session is provided by callers via async context manager
+    return MetagenService, datahub, llm

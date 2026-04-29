@@ -8,7 +8,7 @@ shared httpx client's headers, and re-logs-in once on 401.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -88,7 +88,7 @@ class AirflowClient:
         we default to the current UTC timestamp when the caller doesn't
         provide one via conf.
         """
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         body: dict[str, Any] = {"conf": conf or {}, "logical_date": now_iso}
         resp = await self._authed_call(
             lambda: self._client.post(f"/api/v2/dags/{dag_id}/dagRuns", json=body)

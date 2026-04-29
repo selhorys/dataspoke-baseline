@@ -1,10 +1,10 @@
 """Unit tests for DI provider return types and auth dependencies."""
 
-import pytest
-from fastapi import HTTPException
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.internal import require_internal_token

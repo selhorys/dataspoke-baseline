@@ -1,11 +1,23 @@
+"""Governance metrics router — /spoke/dg/metric/...
+
+Handler naming: BACKEND.md §Route Handler Naming Convention.
+Auth: require_dg.
+Spec: API.md §Metric (/spoke/dg/metric).
+
+Changes vs legacy:
+- Dropped method/activate and method/deactivate POST routes (use is_enabled on PUT/PATCH).
+- is_active → is_enabled everywhere.
+- Handler names follow convention: get_metric_list, get_metric, get_metric_attr,
+  get_metric_conf, put_metric_conf, patch_metric_conf, delete_metric_conf,
+  get_metric_results, post_metric_run, get_metric_events.
+"""
+
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Response, WebSocket, status
-from starlette.websockets import WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.auth.dependencies import require_dg
-from src.api.auth.ws import ws_authenticate
-from src.api.dependencies import get_airflow_client, get_metrics_service, get_redis
+from src.api.dependencies import get_airflow_client, get_metrics_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
@@ -19,7 +31,7 @@ from src.api.schemas.metrics import (
     RunMetricRequest,
     UpsertMetricConfigRequest,
 )
-from src.backend.metrics.service import MetricsService
+from src.backend.metrics.service import MetricDefinitionRecord, MetricsService
 from src.shared.db.models import Event, MetricDefinition, MetricResult
 from src.shared.settings import settings
 from src.workflows.airflow.client import AirflowClient
@@ -31,7 +43,7 @@ router = APIRouter(
 )
 
 
-def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
+def _definition_response(m: "MetricDefinitionRecord") -> MetricDefinitionResponse:
     return MetricDefinitionResponse(
         id=m.id,
         title=m.title,
@@ -39,28 +51,28 @@ def _definition_response(m) -> MetricDefinitionResponse:  # noqa: ANN001
         theme=m.theme,
         measurement_query=m.measurement_query,
         schedule_tier=m.schedule_tier,
-        is_active=m.is_active,
+        is_enabled=m.is_enabled,
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
 
 
 @router.get("", response_model=MetricDefinitionListResponse)
-async def get_metrics(
+async def get_metric_list(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
     theme: str | None = Query(default=None),
-    is_active_filter: bool | None = Query(default=None, alias="is_active"),
+    is_enabled_filter: bool | None = Query(default=None, alias="is_enabled"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionListResponse:
-    """List metric definitions with optional theme and active filters."""
+    """List metric definitions with optional theme and enabled filters."""
     order_by = parse_sort(sort, {"created_at": MetricDefinition.created_at}, None)
     metrics, total_count = await service.list_metrics(
         offset=offset,
         limit=limit,
         theme_filter=theme,
-        is_active_filter=is_active_filter,
+        is_enabled_filter=is_enabled_filter,
         order_by=order_by,
     )
     return MetricDefinitionListResponse(
@@ -76,7 +88,7 @@ async def get_metric(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Retrieve a single metric definition by ID."""
+    """Get metric summary (identity, theme, enabled status)."""
     metric = await service.get_metric(metric_id)
     return _definition_response(metric)
 
@@ -86,7 +98,7 @@ async def get_metric_attr(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricAttrResponse:
-    """Retrieve the aggregated attribute sub-resource for a metric."""
+    """Get metric attributes overview (theme, schedule_tier, enabled status)."""
     attr = await service.get_metric_attr(metric_id)
     return MetricAttrResponse(**attr)
 
@@ -96,7 +108,7 @@ async def get_metric_conf(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Retrieve the configuration for a metric definition."""
+    """Get full metric definition (title, theme, measurement_query, schedule_tier, enabled)."""
     metric = await service.get_metric_config(metric_id)
     return _definition_response(metric)
 
@@ -108,7 +120,10 @@ async def put_metric_conf(
     response: Response,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Create or replace a metric definition configuration (upsert)."""
+    """Create or replace a metric definition (upsert).
+
+    Use is_enabled field to enable/disable the metric's scheduled measurement.
+    """
     metric, created = await service.upsert_metric_config(
         metric_id=metric_id,
         title=body.title,
@@ -116,7 +131,7 @@ async def put_metric_conf(
         theme=body.theme,
         measurement_query=body.measurement_query,
         schedule_tier=body.schedule_tier,
-        is_active=body.is_active,
+        is_enabled=body.is_enabled,
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
@@ -129,7 +144,10 @@ async def patch_metric_conf(
     body: PatchMetricConfigRequest,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Partially update a metric definition's configuration."""
+    """Update metric definition fields.
+
+    Set is_enabled=true/false to enable or disable scheduled measurement.
+    """
     patch = body.model_dump(exclude_unset=True)
     metric = await service.patch_metric_config(metric_id, patch)
     return _definition_response(metric)
@@ -140,12 +158,12 @@ async def delete_metric_conf(
     metric_id: str,
     service: MetricsService = Depends(get_metrics_service),
 ) -> None:
-    """Delete a metric definition and its configuration."""
+    """Remove a metric definition and its configuration."""
     await service.delete_metric_config(metric_id)
 
 
 @router.get("/{metric_id}/attr/result", response_model=MetricResultListResponse)
-async def get_metric_result(
+async def get_metric_results(
     metric_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -154,7 +172,7 @@ async def get_metric_result(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricResultListResponse:
-    """List metric measurement results with optional time range and pagination."""
+    """Get measurement results (numeric timeseries; ?from/to for time range)."""
     order_by = parse_sort(sort, {"measured_at": MetricResult.measured_at}, None)
     results, total_count = await service.get_results(
         metric_id,
@@ -187,11 +205,9 @@ async def post_metric_run(
     body: RunMetricRequest,
     airflow: AirflowClient = Depends(get_airflow_client),
 ) -> MetricRunResultResponse:
-    """Trigger a metric measurement run via Airflow."""
+    """Trigger a metric measurement run; concurrent runs return 409 METRIC_RUNNING."""
     workflow_id = f"metrics-{metric_id}"
-    await airflow.check_no_duplicate(
-        "metrics", "workflow_id", workflow_id, "METRIC_RUNNING"
-    )
+    await airflow.check_no_duplicate("metrics", "workflow_id", workflow_id, "METRIC_RUNNING")
     dag_run = await airflow.trigger_and_wait(
         "metrics",
         conf={
@@ -209,26 +225,6 @@ async def post_metric_run(
     )
 
 
-@router.post("/{metric_id}/method/activate", response_model=MetricDefinitionResponse)
-async def post_metric_activate(
-    metric_id: str,
-    service: MetricsService = Depends(get_metrics_service),
-) -> MetricDefinitionResponse:
-    """Activate a metric definition to enable scheduled measurement runs."""
-    metric = await service.activate(metric_id)
-    return _definition_response(metric)
-
-
-@router.post("/{metric_id}/method/deactivate", response_model=MetricDefinitionResponse)
-async def post_metric_deactivate(
-    metric_id: str,
-    service: MetricsService = Depends(get_metrics_service),
-) -> MetricDefinitionResponse:
-    """Deactivate a metric definition to pause scheduled measurement runs."""
-    metric = await service.deactivate(metric_id)
-    return _definition_response(metric)
-
-
 @router.get("/{metric_id}/event", response_model=EventListResponse)
 async def get_metric_events(
     metric_id: str,
@@ -239,7 +235,7 @@ async def get_metric_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> EventListResponse:
-    """List events for a metric with time range and pagination."""
+    """Metric run events (run completions, definition changes)."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         metric_id,
@@ -255,47 +251,14 @@ async def get_metric_events(
         total_count=total_count,
         events=[
             EventResponse(
-                id=e["id"],
+                id=str(e["id"]),
                 entity_type=e["entity_type"],
                 entity_id=e["entity_id"],
                 event_type=e["event_type"],
                 status=e["status"],
-                detail=e["detail"],
+                detail=e.get("detail", {}),
                 occurred_at=e["occurred_at"],
             )
             for e in events
         ],
     )
-
-
-# ── WebSocket: metric update stream ───────────────────────────────────────────
-
-# Separate router without HTTP auth dependencies — WebSocket routes handle
-# authentication via the message-based handshake inside the handler.
-ws_router = APIRouter(prefix="/metric", tags=["dg/metric"])
-
-
-@ws_router.websocket("/stream")
-async def stream_metrics(websocket: WebSocket) -> None:
-    """Stream metric updates via Redis pub/sub.
-
-    Protocol:
-    1. Client sends ``{"type": "auth", "token": "<jwt>"}``
-    2. Server replies ``{"type": "auth_ok"}`` then forwards Redis messages
-    3. Connection stays open until the client disconnects
-    """
-
-    await websocket.accept()
-
-    if not await ws_authenticate(websocket):
-        return
-
-    cache = get_redis()
-    try:
-        async for message in cache.subscribe("ws:metric:updates"):
-            await websocket.send_text(message)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await cache.close()
-        await websocket.close()

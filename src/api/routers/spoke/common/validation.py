@@ -1,7 +1,10 @@
-"""Cross-dataset validation list and detail views.
+"""Cross-dataset validation list view — /spoke/common/validation.
 
 Per-dataset operations (attr CRUD, result, method/run, event) live under the
-canonical /spoke/common/data/{dataset_urn}/attr/validation/ surface.
+canonical /spoke/common/data/{dataset_urn}/... surface.
+
+Handler naming: BACKEND.md §Route Handler Naming Convention.
+Spec: API.md §Validation (/spoke/common/validation).
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -12,7 +15,6 @@ from src.api.schemas.common import parse_sort
 from src.api.schemas.validation import ValidationConfigListResponse, ValidationConfigResponse
 from src.backend.validation.service import ValidationService
 from src.shared.db.models import ValidationConfig
-from src.shared.exceptions import EntityNotFoundError
 
 router = APIRouter(
     prefix="/validation",
@@ -22,22 +24,20 @@ router = APIRouter(
 
 
 @router.get("", response_model=ValidationConfigListResponse)
-async def get_validation_configs(
+async def get_validation_list(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
-    is_active_filter: bool | None = Query(default=None, alias="is_active"),
+    is_enabled_filter: bool | None = Query(default=None, alias="is_enabled"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigListResponse:
-    """List validation configs with optional active filter and pagination.
+    """List validation attributes across datasets (paginated, filterable by is_enabled).
 
-    Returns all validation configs across datasets. Use the `is_active` query
-    parameter to filter by scheduling status. Sort by `created_at_asc` or
-    `created_at_desc`.
+    Each row aggregates the per-dataset attr/validation/* (conf and latest result).
     """
     order_by = parse_sort(sort, {"created_at": ValidationConfig.created_at}, None)
     configs, total_count = await service.list_configs(
-        offset=offset, limit=limit, is_active_filter=is_active_filter, order_by=order_by
+        offset=offset, limit=limit, is_enabled_filter=is_enabled_filter, order_by=order_by
     )
     return ValidationConfigListResponse(
         offset=offset,
@@ -45,19 +45,3 @@ async def get_validation_configs(
         total_count=total_count,
         configs=[ValidationConfigResponse.model_validate(c) for c in configs],
     )
-
-
-@router.get("/{dataset_urn}", response_model=ValidationConfigResponse)
-async def get_validation_config(
-    dataset_urn: str,
-    service: ValidationService = Depends(get_validation_service),
-) -> ValidationConfigResponse:
-    """Retrieve a single validation config by dataset URN.
-
-    Returns the complete config including all rules, schedule, owner, and
-    timestamps. Returns 404 if no config exists for the given URN.
-    """
-    config = await service.get_config(dataset_urn)
-    if config is None:
-        raise EntityNotFoundError("validation_config", dataset_urn)
-    return ValidationConfigResponse.model_validate(config)

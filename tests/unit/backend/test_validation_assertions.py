@@ -3,14 +3,13 @@
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from datahub.metadata.schema_classes import (
     AssertionResultTypeClass,
     AssertionRunStatusClass,
     AssertionTypeClass,
     PartitionTypeClass,
 )
+
 from src.backend.validation.assertions import (
     build_assertion_info,
     build_assertion_urn,
@@ -18,7 +17,6 @@ from src.backend.validation.assertions import (
     register_assertion,
     report_result,
 )
-
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.orders.daily_fulfillment_summary,DEV)"
 _RULE_ID = "freshness_rule_1"

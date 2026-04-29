@@ -5,6 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from src.api.dependencies import get_dataset_service
+from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
 from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse, QualityScoreResponse
 from src.api.schemas.events import EventListResponse, EventResponse
@@ -16,7 +17,7 @@ sub_router = APIRouter()
 
 @sub_router.get("/{dataset_urn}", response_model=DatasetResponse)
 async def get_data(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetResponse:
     """Retrieve a dataset summary by URN."""
@@ -26,7 +27,7 @@ async def get_data(
 
 @sub_router.get("/{dataset_urn}/attr", response_model=DatasetAttributesResponse)
 async def get_data_attr(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetAttributesResponse:
     """Retrieve extended attributes (columns, quality score, owners) for a dataset."""
@@ -51,7 +52,7 @@ async def get_data_attr(
 
 @sub_router.get("/{dataset_urn}/event", response_model=EventListResponse)
 async def get_data_events(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),

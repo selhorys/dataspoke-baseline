@@ -4,9 +4,6 @@ Long-lived clients (DataHub, Redis, pgvector, LLM, Airflow) are constructed
 once during application startup (via the lifespan in src/api/main.py) and
 stored on app.state. Per-request providers below simply retrieve the shared
 instance, which keeps constructors out of the hot path.
-
-Service providers (get_ingestion_service, get_validation_service, etc.)
-will be added as backend services are implemented in src/backend/.
 """
 
 from collections.abc import AsyncGenerator
@@ -30,7 +27,7 @@ def get_datahub(request: Request) -> DataHubClient:
     return request.app.state.datahub
 
 
-async def get_db() -> AsyncGenerator[AsyncSession]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as session:
         yield session
 
@@ -58,7 +55,7 @@ def get_airflow_client(request: Request) -> AirflowClient:
     return request.app.state.airflow
 
 
-# ── Service providers (added as backend services are implemented) ──
+# ── Service providers ──────────────────────────────────────────────
 
 
 async def get_dataset_service(
@@ -72,8 +69,9 @@ async def get_dataset_service(
 async def get_ingestion_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
+    cache: RedisClient = Depends(get_redis),
 ) -> IngestionService:
-    return IngestionService(datahub=datahub, db=db)
+    return IngestionService(datahub=datahub, db=db, cache=cache)
 
 
 async def get_validation_service(
@@ -86,34 +84,37 @@ async def get_validation_service(
     return ValidationService(datahub=datahub, db=db, cache=cache)
 
 
-async def get_generation_service(
+async def get_metagen_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     llm: LLMClient = Depends(get_llm),
-    vector: PgVectorManager = Depends(get_vector),
-) -> "GenerationService":
-    from src.backend.generation.service import GenerationService
+    cache: RedisClient = Depends(get_redis),
+) -> "MetagenService":
+    from src.backend.metagen.service import MetagenService
 
-    return GenerationService(datahub=datahub, db=db, llm=llm, vector=vector)
+    return MetagenService(datahub=datahub, db=db, llm=llm, cache=cache)
 
 
-async def get_search_service(
+async def get_ontogen_service(
     datahub: DataHubClient = Depends(get_datahub),
+    db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
     llm: LLMClient = Depends(get_llm),
     vector: PgVectorManager = Depends(get_vector),
-) -> "SearchService":
-    from src.backend.search.service import SearchService
+) -> "OntogenService":
+    from src.shared.graph.client import AgeGraph
+    from src.shared.db.session import SessionLocal
+    from src.backend.ontogen.service import OntogenService
 
-    return SearchService(datahub=datahub, cache=cache, llm=llm, vector=vector)
-
-
-async def get_ontology_service(
-    db: AsyncSession = Depends(get_db),
-) -> "OntologyService":
-    from src.backend.ontology.service import OntologyService
-
-    return OntologyService(db=db)
+    age = AgeGraph(session_factory=SessionLocal)
+    return OntogenService(
+        datahub=datahub,
+        db=db,
+        cache=cache,
+        llm=llm,
+        age=age,
+        vector=vector,
+    )
 
 
 async def get_metrics_service(
@@ -132,5 +133,8 @@ async def get_overview_service(
     cache: RedisClient = Depends(get_redis),
 ) -> "OverviewService":
     from src.backend.overview.service import OverviewService
+    from src.shared.graph.client import AgeGraph
+    from src.shared.db.session import SessionLocal
 
-    return OverviewService(datahub=datahub, db=db, cache=cache)
+    age = AgeGraph(session_factory=SessionLocal)
+    return OverviewService(datahub=datahub, db=db, cache=cache, age=age)

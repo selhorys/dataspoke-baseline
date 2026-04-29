@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 _DAGS_DIR = Path(__file__).resolve().parents[3] / "src" / "workflows" / "dags"
 _DAG_ID = "datahub-sync-daily"
 
@@ -47,30 +46,35 @@ def test_datahub_sync_daily_dag_file_exists():
 
 
 def test_datahub_sync_daily_dag_id_string_present():
-    """The DAG file must declare dag_id='datahub-sync-daily' (exact string)."""
+    """The DAG file must reference the 'datahub-sync-daily' ID (literal or via variable)."""
     dag_file = _DAGS_DIR / "datahub_sync_daily.py"
     source = dag_file.read_text()
-    assert f'dag_id="{_DAG_ID}"' in source or f"dag_id='{_DAG_ID}'" in source, (
-        f"dag_id='{_DAG_ID}' not found in {dag_file.name}"
+    # The ID may appear as a literal or assigned to _DAG_ID then referenced via dag_id=_DAG_ID.
+    id_present = (
+        f'"{_DAG_ID}"' in source
+        or f"'{_DAG_ID}'" in source
+    )
+    assert id_present, (
+        f"'{_DAG_ID}' string not found anywhere in {dag_file.name}"
     )
 
 
 def test_datahub_sync_daily_calls_sync_endpoint():
-    """The DAG task must target the /internal/admin/datahub/sync endpoint."""
+    """The DAG task must target the /internal/activities/datahub/sync endpoint."""
     dag_file = _DAGS_DIR / "datahub_sync_daily.py"
     source = dag_file.read_text()
-    assert "/internal/admin/datahub/sync" in source, (
-        "DAG task does not reference /internal/admin/datahub/sync"
+    assert "/internal/activities/datahub/sync" in source, (
+        "DAG task does not reference /internal/activities/datahub/sync"
     )
 
 
-def test_datahub_sync_daily_is_singleton():
-    """datahub-sync-daily is a singleton DAG (not in PERIODIC_DAG_IDS)."""
-    from src.workflows.registry import PERIODIC_DAG_IDS, SYNC_DAG_IDS
+def test_datahub_sync_daily_is_in_sync_dag_ids():
+    """datahub-sync-daily must be registered in SYNC_DAG_IDS and ALL_DAG_IDS."""
+    from src.workflows.registry import ALL_DAG_IDS, SYNC_DAG_IDS
 
     assert _DAG_ID in SYNC_DAG_IDS, (
         f"'{_DAG_ID}' not in SYNC_DAG_IDS — verify src/workflows/registry.py"
     )
-    assert _DAG_ID not in PERIODIC_DAG_IDS, (
-        f"'{_DAG_ID}' erroneously added to PERIODIC_DAG_IDS"
+    assert _DAG_ID in ALL_DAG_IDS, (
+        f"'{_DAG_ID}' not in ALL_DAG_IDS — verify src/workflows/registry.py"
     )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,7 +12,6 @@ from src.backend.validation.ml_validation import (
     _validate_range,
     validate_values,
 )
-
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.orders.daily_fulfillment_summary,DEV)"
 _RULE_ID = "ts_r1"

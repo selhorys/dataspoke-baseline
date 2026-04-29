@@ -1,22 +1,33 @@
-"""Metrics workflow — schedule tier helpers for Airflow-based periodic metrics runs.
+"""Metrics workflow — parameter models and schedule tier helpers.
 
-Manual runs trigger the 'metrics' Airflow DAG via AirflowClient.
+Manual on-demand runs trigger the 'metrics' Airflow DAG via AirflowClient.
 Periodic metric execution is handled by static Airflow DAGs keyed by
-schedule tier (hourly, daily, weekly). The list-periodic activity endpoint
-queries active metric definitions for a given tier and passes them to the DAG.
+schedule tier (hourly, daily, weekly). The list-active activity endpoint
+queries enabled metric definitions for a given tier and passes them to the DAG.
+
+Spec: spec/feature/BACKEND.md §DAG Catalogue, §Concurrency Guards
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
-async def get_metrics_for_tier(db: object, tier: str) -> list[str]:
-    """Return metric IDs with active definitions matching the given schedule tier.
+class MetricRunParams(BaseModel):
+    """Parameters for a single metric measurement run."""
 
-    Called by the /internal/activities/metrics/list-periodic endpoint so that
+    metric_id: str
+
+
+async def get_metrics_for_tier(db: Any, tier: str) -> list[str]:
+    """Return metric IDs with is_enabled=True and schedule_tier matching the given tier.
+
+    Called by the /internal/activities/metrics/list-active endpoint so that
     Airflow DAGs can discover which metrics to run for a given tier
     (hourly, daily, weekly).
     """
@@ -24,9 +35,9 @@ async def get_metrics_for_tier(db: object, tier: str) -> list[str]:
 
     from src.shared.db.models import MetricDefinition
 
-    result = await db.execute(  # type: ignore[union-attr]
+    result = await db.execute(
         select(MetricDefinition.id).where(
-            MetricDefinition.is_active == True,  # noqa: E712
+            MetricDefinition.is_enabled == True,  # noqa: E712
             MetricDefinition.schedule_tier == tier,
         )
     )

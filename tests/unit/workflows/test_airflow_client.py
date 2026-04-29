@@ -1,6 +1,5 @@
 """Unit tests for AirflowClient with mocked httpx."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,7 +37,7 @@ def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
     resp.status_code = status_code
     resp.json.return_value = data
     if status_code >= 400:
-        from httpx import HTTPStatusError, Request, Response
+        from httpx import HTTPStatusError
         resp.raise_for_status.side_effect = HTTPStatusError(
             "error", request=MagicMock(), response=MagicMock()
         )

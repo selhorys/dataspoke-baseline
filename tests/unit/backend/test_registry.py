@@ -10,12 +10,9 @@ Tests cover:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, call
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from src.shared.db.registry import mark_registered, mark_unregistered, sync_with_datahub
-
 
 # ---------------------------------------------------------------------------
 # Helpers

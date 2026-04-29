@@ -1,43 +1,49 @@
 """Airflow DAG: metrics
 
-Metric collection and update publishing. Triggered via API (no schedule).
+On-demand metric measurement run for a single metric definition.
+Triggered via POST /api/v1/spoke/dg/metrics/{metric_id}/method/metrics/run.
+
+Concurrency guard: the triggering API route calls
+AirflowClient.check_no_duplicate("metrics", "conf_key", "metrics-{metric_id}")
+before triggering; duplicate runs for the same metric return 409.
+
+Spec: spec/feature/BACKEND.md §DAG Catalogue, §Concurrency Guards
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+from _internal_headers import internal_headers
 from airflow import DAG
 from airflow.providers.http.operators.http import HttpOperator
 
-from _internal_headers import internal_headers
-
-_DEFAULT_ARGS = {
-    "retries": 3,
-    "retry_delay": timedelta(seconds=10),
-}
+_DAG_ID = "metrics"
 
 with DAG(
-    dag_id="metrics",
-    description="Metric collection and update publishing",
+    dag_id=_DAG_ID,
+    description="On-demand metric measurement run for a single metric definition",
     schedule=None,
+    start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=2,
     is_paused_upon_creation=False,
-    default_args=_DEFAULT_ARGS,
+    default_args={
+        "retries": 3,
+        "retry_delay": timedelta(seconds=10),
+        "execution_timeout": timedelta(minutes=5),
+    },
     tags=["metrics", "on-demand"],
     doc_md="""
 ## metrics
 
-Runs a metric computation and publishes the result update.
+Triggered by the DataSpoke API for a specific metric ID.
 
 **Inputs** (via `dag_run.conf`):
-- `callback_base_url`: DataSpoke API base URL (default: `"http://dataspoke-api:8002"`)
 - `metric_id`: metric identifier string (required)
-- `dry_run`: boolean flag (default: `false`)
+- `conf_key`: dedup key of the form `metrics-{metric_id}` (for duplicate detection)
 
 **Tasks**:
-1. `run_metric` — POST `/internal/activities/metrics/run` — computes the metric
-2. `publish_metric_update` — POST `/internal/activities/metrics/publish-update` — publishes result (uses XCom from step 1)
+1. `run_metric` — POST `/internal/activities/metrics/run`
 """,
 ) as dag:
     run_metric = HttpOperator(
@@ -46,22 +52,7 @@ Runs a metric computation and publishes the result update.
         endpoint="/internal/activities/metrics/run",
         method="POST",
         headers=internal_headers(),
-        data=(
-            '{"metric_id": "{{ dag_run.conf.get(\'metric_id\', \'\') }}",'
-            ' "dry_run": {{ dag_run.conf.get(\'dry_run\', false) | lower }}}'
-        ),
-        response_filter=lambda response: response.json(),
+        data='{"metric_id": "{{ dag_run.conf.get(\'metric_id\', \'\') }}"}',
+        response_filter=lambda r: r.json(),
         log_response=True,
     )
-
-    publish_metric_update = HttpOperator(
-        task_id="publish_metric_update",
-        http_conn_id="dataspoke_api",
-        endpoint="/internal/activities/metrics/publish-update",
-        method="POST",
-        headers=internal_headers(),
-        data="{{ ti.xcom_pull(task_ids='run_metric') | tojson }}",
-        log_response=True,
-    )
-
-    run_metric >> publish_metric_update

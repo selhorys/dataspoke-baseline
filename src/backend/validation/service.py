@@ -2,6 +2,7 @@
 
 import json
 import logging
+import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -11,8 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.validation.assertions import (
-    build_assertion_urn,
     build_assertion_info,
+    build_assertion_urn,
     build_run_event,
     register_assertion,
     report_result,
@@ -22,6 +23,7 @@ from src.shared.cache.client import RedisClient
 from src.shared.config import VALIDATION_RESULT_CACHE_TTL
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
+from src.shared.db.registry import ensure_dataset_registered
 from src.shared.events import (
     VALIDATION_COMPLETE,
     VALIDATION_CONFIG_CREATE,
@@ -29,7 +31,6 @@ from src.shared.events import (
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
 )
-from src.shared.db.registry import ensure_dataset_registered
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class ValidationConfigRecord(BaseModel):
     dataset_urn: str
     rules: list[dict[str, Any]]
     schedule_tier: str | None = None
-    is_active: bool = False
+    is_enabled: bool = False
     owner: str
     created_at: datetime
     updated_at: datetime
@@ -88,7 +89,7 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
         dataset_urn=row.dataset_urn,
         rules=rules,
         schedule_tier=row.schedule_tier,
-        is_active=row.is_active,
+        is_enabled=row.is_enabled,
         owner=row.owner,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -142,10 +143,12 @@ class ValidationService:
         dataset_urn: str,
         rules: list[dict[str, Any]],
         schedule_tier: str | None,
-        is_active: bool,
+        is_enabled: bool,
         owner: str,
     ) -> tuple[ValidationConfigRecord, bool]:
-        await ensure_dataset_registered(self._db, self._datahub, dataset_urn, require_in_datahub=True)
+        await ensure_dataset_registered(
+            self._db, self._datahub, dataset_urn, require_in_datahub=True
+        )
 
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
@@ -155,7 +158,7 @@ class ValidationService:
         if existing:
             existing.rules = rules
             existing.schedule_tier = schedule_tier
-            existing.is_active = is_active
+            existing.is_enabled = is_enabled
             existing.owner = owner
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
@@ -165,7 +168,7 @@ class ValidationService:
                 dataset_urn=dataset_urn,
                 rules=rules,
                 schedule_tier=schedule_tier,
-                is_active=is_active,
+                is_enabled=is_enabled,
                 owner=owner,
             )
             self._db.add(existing)
@@ -183,7 +186,7 @@ class ValidationService:
                 "operation": "PUT",
                 "config_id": str(existing.id),
                 "rule_count": len(rules),
-                "is_active": existing.is_active,
+                "is_enabled": existing.is_enabled,
             },
         )
 
@@ -201,8 +204,8 @@ class ValidationService:
             row.rules = patch["rules"]
         if "schedule_tier" in patch:
             row.schedule_tier = patch["schedule_tier"]
-        if "is_active" in patch and patch["is_active"] is not None:
-            row.is_active = patch["is_active"]
+        if "is_enabled" in patch and patch["is_enabled"] is not None:
+            row.is_enabled = patch["is_enabled"]
         row.updated_at = datetime.now(tz=UTC)
 
         self._db.add(row)
@@ -241,16 +244,29 @@ class ValidationService:
             {"operation": "DELETE", "config_id": config_id},
         )
 
+    async def list_active_for_tier(self, tier: str) -> list[str]:
+        """Return dataset URNs where is_enabled=True and schedule_tier matches.
+
+        Used by the validation-{hourly,daily,weekly} DAGs.
+        """
+        result = await self._db.execute(
+            select(ValidationConfig.dataset_urn).where(
+                ValidationConfig.is_enabled.is_(True),
+                ValidationConfig.schedule_tier == tier,
+            )
+        )
+        return list(result.scalars().all())
+
     async def list_configs(
         self,
         offset: int = 0,
         limit: int = 20,
-        is_active_filter: bool | None = None,
+        is_enabled_filter: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[ValidationConfigRecord], int]:
         base = select(ValidationConfig)
-        if is_active_filter is not None:
-            base = base.where(ValidationConfig.is_active == is_active_filter)
+        if is_enabled_filter is not None:
+            base = base.where(ValidationConfig.is_enabled == is_enabled_filter)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -310,23 +326,53 @@ class ValidationService:
         run_id: str | None = None,
         dry_run: bool = False,
     ) -> ValidationRunSummary:
-        """Execute all rules for a dataset against the specified partition.
+        """Execute all rules for a dataset with a Redis SETNX concurrency guard.
+
+        Raises ConflictError("VALIDATION_RUNNING") when the lock is already held.
+        The lock is released via CAS in the finally block.
 
         Pipeline per rule:
-        1. Publish progress to Redis pub/sub
-        2. Evaluate rule via evaluate_rule()
-        3. Build assertion URN, info, and run event
-        4. Register assertion in DataHub (best-effort)
-        5. Report result to DataHub (best-effort)
-        6. Persist ValidationResult row to PostgreSQL
-        7. Publish rule_result to Redis pub/sub
-        8. Publish summary to Redis pub/sub
-        9. Cache summary in Redis
-        10. Record VALIDATION.COMPLETE event
+        1. Acquire Redis SETNX guard.
+        2. Publish progress to Redis pub/sub.
+        3. Evaluate rule via evaluate_rule().
+        4. Build assertion URN, info, and run event.
+        5. Register assertion in DataHub (best-effort).
+        6. Report result to DataHub (best-effort).
+        7. Persist ValidationResult row to PostgreSQL.
+        8. Publish rule_result to Redis pub/sub.
+        9. Publish summary to Redis pub/sub.
+        10. Cache summary in Redis.
+        11. Record VALIDATION.COMPLETE event.
 
         If ``dry_run`` is True, validate that the config exists and return a
         success summary without executing any rules.
         """
+        lock_key = f"validation:running:{dataset_urn}"
+        lock_token: str | None = None
+
+        lock_token = secrets.token_urlsafe(16)
+        acquired = await self._cache.set_nx(lock_key, lock_token, ttl_seconds=3600)
+        if not acquired:
+            raise ConflictError(
+                "VALIDATION_RUNNING",
+                f"Validation is already running for {dataset_urn}",
+            )
+
+        try:
+            return await self._run_inner(
+                dataset_urn, partition=partition, run_id=run_id, dry_run=dry_run
+            )
+        finally:
+            await self._cache.delete_if_value(lock_key, lock_token)
+
+    async def _run_inner(
+        self,
+        dataset_urn: str,
+        partition: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        dry_run: bool = False,
+    ) -> ValidationRunSummary:
+        """Inner validation run logic (called inside the SETNX guard)."""
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("validation_config", dataset_urn)
@@ -594,21 +640,12 @@ async def run_validation_with_lock(
     service: ValidationService,
     cache: RedisClient,
     dataset_urn: str,
-    partition: dict | None = None,
+    partition: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> ValidationRunSummary:
     """Run validation with a Redis concurrency guard.
 
-    Shared by the public API routes (validation.py and data.py).
-    Raises ConflictError if validation is already running for the dataset.
+    Delegates directly to ``service.run()`` which self-guards via its own CAS
+    lock.  The ``cache`` argument is kept for backward compatibility.
     """
-    lock_key = f"validation:running:{dataset_urn}"
-    acquired = await cache.set_nx(lock_key, "1", ttl_seconds=3600)
-    if not acquired:
-        raise ConflictError(
-            "VALIDATION_RUNNING", f"Validation is already running for {dataset_urn}"
-        )
-    try:
-        return await service.run(dataset_urn, partition=partition, dry_run=dry_run)
-    finally:
-        await cache.delete(lock_key)
+    return await service.run(dataset_urn, partition=partition, dry_run=dry_run)

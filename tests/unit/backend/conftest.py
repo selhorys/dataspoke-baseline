@@ -116,45 +116,149 @@ def make_datahub_schema(field_paths: list[str]) -> MagicMock:
     return schema
 
 
-# ── Concept / relationship factories ─────────────────────────────────────────
+# ── OntogenNode / OntogenEdge / OntogenTriple factories ──────────────────────
 
 
-def make_concept_row(
+def make_ontogen_node_row(
     *,
-    name: str = "test_concept",
-    description: str = "A test concept",
-    parent_id: uuid.UUID | None = None,
-    status: str = "pending",
-    version: int = 1,
+    id: str = "book",
+    name: str = "Book",
+    description: str = "A book entity",
+    confidence_score: float = 0.9,
+    status: str = "pending_review",
 ) -> MagicMock:
-    """Create a mock ConceptCategory row."""
+    """Create a mock OntogenNode row."""
     row = MagicMock()
-    row.id = uuid.uuid4()
+    row.id = id
     row.name = name
     row.description = description
-    row.parent_id = parent_id
+    row.confidence_score = confidence_score
     row.status = status
-    row.version = version
+    row.glossary_term_urn = None
+    row.evidence = {"datasets": [], "run_at": "2025-01-01T00:00:00+00:00"}
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row
 
 
-def make_relationship_row(
+def make_ontogen_edge_row(
     *,
-    concept_a: uuid.UUID | None = None,
-    concept_b: uuid.UUID | None = None,
-    relationship_type: str = "related_to",
+    id: str = "has-edition",
+    label: str = "has edition",
+    semantics: str | None = "One book has many editions",
     confidence_score: float = 0.85,
+    status: str = "pending_review",
 ) -> MagicMock:
-    """Create a mock ConceptRelationship row."""
+    """Create a mock OntogenEdge row."""
+    row = MagicMock()
+    row.id = id
+    row.label = label
+    row.semantics = semantics
+    row.confidence_score = confidence_score
+    row.status = status
+    row.evidence = {"run_at": "2025-01-01T00:00:00+00:00"}
+    row.created_at = datetime.now(tz=UTC)
+    row.updated_at = datetime.now(tz=UTC)
+    return row
+
+
+def make_ontogen_triple_row(
+    *,
+    subject_node_id: str = "book",
+    edge_id: str = "has-edition",
+    object_node_id: str = "edition",
+    confidence_score: float = 0.8,
+    status: str = "pending_review",
+) -> MagicMock:
+    """Create a mock OntogenTriple row.
+
+    ID format: {subject_node_id}__{edge_id}__{object_node_id}
+    """
+    row = MagicMock()
+    row.id = f"{subject_node_id}__{edge_id}__{object_node_id}"
+    row.subject_node_id = subject_node_id
+    row.edge_id = edge_id
+    row.object_node_id = object_node_id
+    row.confidence_score = confidence_score
+    row.status = status
+    row.evidence = {"datasets": [], "run_at": "2025-01-01T00:00:00+00:00"}
+    row.created_at = datetime.now(tz=UTC)
+    row.updated_at = datetime.now(tz=UTC)
+    return row
+
+
+def make_dataset_node_map_row(
+    *,
+    dataset_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,test.table,PROD)",
+    node_id: str = "book",
+    confidence_score: float = 0.9,
+    status: str = "pending",
+    is_primary: bool = True,
+) -> MagicMock:
+    """Create a mock DatasetNodeMap row."""
+    row = MagicMock()
+    row.dataset_urn = dataset_urn
+    row.node_id = node_id
+    row.confidence_score = confidence_score
+    row.status = status
+    row.is_primary = is_primary
+    row.created_at = datetime.now(tz=UTC)
+    return row
+
+
+# ── MetagenResult factory ────────────────────────────────────────────────────
+
+
+def make_metagen_result_row(
+    *,
+    dataset_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,test.table,PROD)",
+    proposals: dict | None = None,
+    field_status: dict | None = None,
+    generated_at: datetime | None = None,
+) -> MagicMock:
+    """Create a mock MetagenResult row.
+
+    proposals and field_status are JSONB dicts per BACKEND_SCHEMA.
+    """
     row = MagicMock()
     row.id = uuid.uuid4()
-    row.concept_a = concept_a or uuid.uuid4()
-    row.concept_b = concept_b or uuid.uuid4()
-    row.relationship_type = relationship_type
-    row.confidence_score = confidence_score
-    row.created_at = datetime.now(tz=UTC)
+    row.dataset_urn = dataset_urn
+    row.proposals = proposals or {
+        "dataset.description": "Generated description for the dataset.",
+        "column.description.id": "Primary key column.",
+    }
+    row.field_status = field_status or {
+        "dataset.description": "pending",
+        "column.description.id": "pending",
+    }
+    row.run_id = uuid.uuid4()
+    row.generated_at = generated_at or datetime.now(tz=UTC)
+    row.last_reviewed_at = None
+    return row
+
+
+# ── Metric breakdown factory ─────────────────────────────────────────────────
+
+
+def make_metric_breakdown_row(
+    breakdown: dict | None = None,
+) -> MagicMock:
+    """Create a mock MetricResult row with unified breakdown shape.
+
+    breakdown shape: {"dataset_count": <int>, "datasets": [{"urn": ..., "category": ..., "detail": ...}]}
+    """
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.metric_id = "ingestion-freshness"
+    row.value = 0.5
+    row.breakdown = breakdown or {
+        "dataset_count": 2,
+        "datasets": [
+            {"urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t1,PROD)", "category": "fresh", "detail": {"last_event_at": "2025-01-01T00:00:00+00:00"}},
+            {"urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t2,PROD)", "category": "stale", "detail": {"last_event_at": "2024-01-01T00:00:00+00:00"}},
+        ],
+    }
+    row.measured_at = datetime.now(tz=UTC)
     return row
 
 

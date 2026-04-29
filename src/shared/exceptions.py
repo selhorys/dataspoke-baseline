@@ -3,10 +3,27 @@
 All backend services raise subclasses of DataSpokeError.
 The API layer catches these and maps them to HTTP responses.
 
+Exception-to-HTTP mapping (per spec/feature/BACKEND.md §Error Handling):
+
+  EntityNotFoundError   → 404  DATASET_NOT_FOUND | CONFIG_NOT_FOUND | METRIC_NOT_FOUND
+                                 | NODE_NOT_FOUND | EDGE_NOT_FOUND | TRIPLE_NOT_FOUND
+  ConflictError         → 409  DUPLICATE_CONFIG | INGESTION_RUNNING | VALIDATION_RUNNING
+                                 | GENERATION_RUNNING | METRIC_RUNNING | ONTOGEN_RUNNING
+  DataHubUnavailableError → 502  DATAHUB_UNAVAILABLE
+  StorageUnavailableError → 503  STORAGE_UNAVAILABLE
+  ValidationError (Pydantic) → 422  INVALID_PARAMETER | INVALID_DATASET_URN
+  PreconditionFailedError → 422  DATASET_NOT_IN_DATAHUB | ONTOGEN_TRIPLE_DEPENDENCY_PENDING
+
 Convention: entity_type strings passed to EntityNotFoundError must be lowercase
-singular nouns (e.g. "dataset", "config", "metric", "concept") — the error_code
-is derived as entity_type.upper() + "_NOT_FOUND".
+singular nouns (e.g. "dataset", "config", "metric", "node", "edge", "triple") —
+the error_code is derived as entity_type.upper() + "_NOT_FOUND".
 """
+
+import re
+
+# Strip ASCII control characters (0x00–0x1f, 0x7f) from user-supplied values
+# before embedding them in exception messages to prevent log injection.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class DataSpokeError(Exception):
@@ -19,27 +36,57 @@ class DataSpokeError(Exception):
 
 
 class EntityNotFoundError(DataSpokeError):
-    """Raised when a requested entity does not exist."""
+    """Raised when a requested entity does not exist.
+
+    Valid entity_type values (each maps to a 404 error code):
+      "dataset"  → DATASET_NOT_FOUND
+      "config"   → CONFIG_NOT_FOUND
+      "metric"   → METRIC_NOT_FOUND
+      "node"     → NODE_NOT_FOUND
+      "edge"     → EDGE_NOT_FOUND
+      "triple"   → TRIPLE_NOT_FOUND
+    """
 
     def __init__(self, entity_type: str, entity_id: str) -> None:
         self.error_code = f"{entity_type.upper()}_NOT_FOUND"
-        super().__init__(f"{entity_type} '{entity_id}' not found")
+        _safe_id = _CTRL_RE.sub("?", str(entity_id))
+        super().__init__(f"{entity_type} '{_safe_id}' not found")
 
 
 class ConflictError(DataSpokeError):
-    """Raised when an operation conflicts with current state."""
+    """Raised when an operation conflicts with current state (HTTP 409).
+
+    Valid error_code values:
+      DUPLICATE_CONFIG      — attempt to create a config that already exists
+      INGESTION_RUNNING     — concurrent active ingestion run for the dataset
+      VALIDATION_RUNNING    — concurrent validation run for the dataset
+      GENERATION_RUNNING    — concurrent metadata-generation run for the dataset
+      METRIC_RUNNING        — concurrent metric measurement
+      ONTOGEN_RUNNING       — ontogen singleton inference already in progress
+    """
 
     def __init__(self, error_code: str, message: str = "") -> None:
         self.error_code = error_code
         super().__init__(message)
 
 
-class PreconditionError(DataSpokeError):
-    """Raised when a precondition for an operation is not met."""
+class PreconditionFailedError(DataSpokeError):
+    """Raised when a precondition for an operation is not met (HTTP 422).
+
+    Valid error_code values:
+      DATASET_NOT_IN_DATAHUB            — dataset URN not registered in DataHub
+      ONTOGEN_TRIPLE_DEPENDENCY_PENDING — triple approval attempted when endpoint
+                                          nodes or edge are not yet approved
+    """
 
     def __init__(self, error_code: str, message: str = "") -> None:
         self.error_code = error_code
         super().__init__(message)
+
+
+# Keep PreconditionError as an alias for backward compatibility with existing callers.
+# Pass 2/3 will migrate to PreconditionFailedError.
+PreconditionError = PreconditionFailedError
 
 
 class DataHubUnavailableError(DataSpokeError):
@@ -64,3 +111,17 @@ class EventProcessingError(DataSpokeError):
     """Raised when a Kafka event handler fails to process an event."""
 
     error_code: str = "EVENT_PROCESSING_FAILED"
+
+
+class InvalidDatasetUrnError(DataSpokeError):
+    """Raised when a dataset URN fails format validation (HTTP 422).
+
+    Convenience subclass so callers don't need to construct ConflictError
+    or PreconditionFailedError by hand for this common case.
+    """
+
+    error_code: str = "INVALID_DATASET_URN"
+
+    def __init__(self, urn: str, message: str = "") -> None:
+        _safe_urn = _CTRL_RE.sub("?", str(urn))
+        super().__init__(message or f"Invalid dataset URN: {_safe_urn!r}")

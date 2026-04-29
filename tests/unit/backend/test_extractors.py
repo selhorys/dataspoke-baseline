@@ -1,12 +1,9 @@
 """Unit tests for ingestion extractors (mocked infrastructure)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from src.backend.ingestion.extractors import (
     SUPPORTED_PLATFORMS,
-    IngestionResult,
     run_datahub_ingestion,
 )
 

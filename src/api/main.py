@@ -23,16 +23,13 @@ from src.api.routers.spoke.common import (
     data as common_data,
 )
 from src.api.routers.spoke.common import (
-    gen as common_gen,
-)
-from src.api.routers.spoke.common import (
     ingestion as common_ingestion,
 )
 from src.api.routers.spoke.common import (
-    ontology as common_ontology,
+    metagen as common_metagen,
 )
 from src.api.routers.spoke.common import (
-    search as common_search,
+    ontogen as common_ontogen,
 )
 from src.api.routers.spoke.common import (
     validation as common_validation,
@@ -222,20 +219,16 @@ def create_app() -> FastAPI:
             },
         },
         {
-            "name": "common/gen",
-            "description": "AI metadata generation config CRUD, generate, and apply. Requires common auth.",
+            "name": "common/metagen",
+            "description": "AI metadata generation config CRUD, run, and result review. Requires common auth.",
         },
         {
             "name": "common/data",
-            "description": "Dataset overview with embedded ingestion, validation, and generation sub-resources. Requires common auth.",
+            "description": "Dataset overview with embedded ingestion, validation, and metagen sub-resources. Requires common auth.",
         },
         {
-            "name": "common/ontology",
-            "description": "Concept taxonomy CRUD and approval workflow. Requires common auth.",
-        },
-        {
-            "name": "common/search",
-            "description": "Vector-powered dataset search and reindex. Requires common auth.",
+            "name": "common/ontogen",
+            "description": "Ontology generation config, seed management, run, and node/edge/triple graph view. Requires common auth.",
         },
         {
             "name": "dg/metric",
@@ -347,17 +340,14 @@ def create_app() -> FastAPI:
     app.include_router(admin_router.internal_router, include_in_schema=False)
 
     # ── Spoke/common routes ────────────────────────────────────────────────────
-    app.include_router(common_ontology.router, prefix=SPOKE_COMMON)
+    app.include_router(common_ontogen.router, prefix=SPOKE_COMMON)
     app.include_router(common_data.router, prefix=SPOKE_COMMON)
-    app.include_router(common_data.ws_router, prefix=SPOKE_COMMON)
     app.include_router(common_ingestion.router, prefix=SPOKE_COMMON)
     app.include_router(common_validation.router, prefix=SPOKE_COMMON)
-    app.include_router(common_gen.router, prefix=SPOKE_COMMON)
-    app.include_router(common_search.router, prefix=SPOKE_COMMON)
+    app.include_router(common_metagen.router, prefix=SPOKE_COMMON)
 
     # ── Spoke/dg routes ────────────────────────────────────────────────────────
     app.include_router(dg_metrics.router, prefix=SPOKE_DG)
-    app.include_router(dg_metrics.ws_router, prefix=SPOKE_DG)
     app.include_router(dg_overview.router, prefix=SPOKE_DG)
 
     # ── Hub pass-through routes ────────────────────────────────────────────────

@@ -1,8 +1,5 @@
 from datetime import UTC, datetime
 
-import pytest
-from pydantic import ValidationError
-
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
 from src.shared.models.ontology import Concept, ConceptRelationship

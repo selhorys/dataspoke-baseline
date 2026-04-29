@@ -8,25 +8,28 @@ from pydantic import ValidationError
 from src.api.schemas.common import PaginationParams, TimeRangeParams
 from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse
 from src.api.schemas.events import EventListResponse, EventResponse
-from src.api.schemas.generation import (
-    CreateGenerationConfigRequest,
-    GenerationConfigListResponse,
-    GenerationConfigResponse,
-)
 from src.api.schemas.ingestion import (
     CreateIngestionConfigRequest,
     IngestionConfigListResponse,
     IngestionConfigResponse,
     RunResultResponse,
 )
+from src.api.schemas.metagen import (
+    MetagenConfPutRequest,
+    MetagenListResponse,
+    MetagenResultListResponse,
+)
 from src.api.schemas.metrics import (
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
     UpsertMetricConfigRequest,
 )
-from src.api.schemas.ontology import ConceptListResponse, ConceptResponse
+from src.api.schemas.ontogen import (
+    NodeListResponse,
+    OntogenConfPutRequest,
+    SeedListResponse,
+)
 from src.api.schemas.overview import OverviewResponse
-from src.api.schemas.search import SearchResponse, SearchResultItem
 from src.api.schemas.validation import (
     CreateValidationConfigRequest,
     ValidationConfigListResponse,
@@ -82,7 +85,7 @@ class TestIngestionSchemas:
         data = req.model_dump()
         parsed = CreateIngestionConfigRequest.model_validate(data)
         assert parsed.dataset_urn == req.dataset_urn
-        assert parsed.is_active is False
+        assert parsed.is_enabled is False
 
     def test_create_request_kafka_no_auth(self) -> None:
         req = CreateIngestionConfigRequest(
@@ -119,10 +122,9 @@ class TestIngestionSchemas:
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
             auth={"username": "user", "secret_ref": "pw"},
-            is_active=False,
+            is_enabled=False,
+            mode="active",
             schedule_tier=None,
-            enrichment_sources=None,
-            custom_extractors=None,
             workflow_dag_id=None,
             status="OK",
             created_at=datetime.now(tz=UTC),
@@ -168,7 +170,7 @@ class TestValidationSchemas:
             dataset_urn="urn:li:dataset:test",
             rules=[{"rule_id": "r1", "type": "volume"}],
             schedule_tier=None,
-            is_active=False,
+            is_enabled=False,
             owner="admin",
             created_at=now,
             updated_at=now,
@@ -183,79 +185,48 @@ class TestValidationSchemas:
         assert resp.configs == []
 
 
-class TestGenerationSchemas:
-    def test_create_request(self) -> None:
-        req = CreateGenerationConfigRequest(
+class TestMetagenSchemas:
+    def test_put_request_valid_targets(self) -> None:
+        req = MetagenConfPutRequest(
             dataset_urn="urn:li:dataset:test",
-            target_fields={"description": True, "tags": True},
+            targets=["dataset.description", "column.description"],
             owner="admin",
         )
-        assert req.code_refs is None
+        assert "dataset.description" in req.targets
 
-    def test_config_response(self) -> None:
-        now = datetime.now(tz=UTC)
-        resp = GenerationConfigResponse(
-            id="1",
-            dataset_urn="urn:li:dataset:test",
-            target_fields={"description": True},
-            code_refs=None,
-            schedule_cron=None,
-            status="draft",
-            owner="admin",
-            created_at=now,
-            updated_at=now,
-        )
-        assert resp.resp_time is not None
+    def test_put_request_invalid_target(self) -> None:
+        with pytest.raises(ValidationError):
+            MetagenConfPutRequest(
+                dataset_urn="urn:li:dataset:test",
+                targets=["invalid.field"],
+                owner="admin",
+            )
 
     def test_list_response(self) -> None:
-        resp = GenerationConfigListResponse()
-        assert resp.configs == []
+        resp = MetagenListResponse()
+        assert resp.results == []
+        assert resp.total_count == 0
+
+    def test_result_list_response(self) -> None:
+        resp = MetagenResultListResponse()
+        assert resp.results == []
 
 
-class TestSearchSchemas:
-    def test_search_result_item(self) -> None:
-        item = SearchResultItem(
-            urn="urn:li:dataset:test",
-            name="test",
-            platform="postgres",
-            score=0.95,
-            owners=["urn:li:corpuser:alice"],
-            quality_score=85,
+class TestOntogenSchemas:
+    def test_conf_put_request(self) -> None:
+        req = OntogenConfPutRequest(
+            default_run_prompt="## Ontology\nBuild a taxonomy.",
+            is_enabled=True,
         )
-        assert item.owners == ["urn:li:corpuser:alice"]
-        assert item.quality_score == 85
-        assert item.sql_context is None
+        assert req.is_enabled is True
 
-    def test_search_response(self) -> None:
-        item = SearchResultItem(
-            urn="urn:li:dataset:test",
-            name="test",
-            platform="postgres",
-            score=0.95,
-        )
-        resp = SearchResponse(datasets=[item], total_count=1)
-        assert len(resp.datasets) == 1
-        assert resp.total_count == 1
+    def test_seed_list_response(self) -> None:
+        resp = SeedListResponse(seeds=[])
+        assert resp.seeds == []
 
-
-class TestOntologySchemas:
-    def test_concept_response(self) -> None:
-        now = datetime.now(tz=UTC)
-        resp = ConceptResponse(
-            id="c1",
-            name="PII",
-            description="Personally identifiable information",
-            parent_id=None,
-            status="approved",
-            version=1,
-            created_at=now,
-            updated_at=now,
-        )
-        assert resp.resp_time is not None
-
-    def test_concept_list_response(self) -> None:
-        resp = ConceptListResponse()
-        assert resp.concepts == []
+    def test_node_list_response(self) -> None:
+        resp = NodeListResponse()
+        assert resp.nodes == []
 
 
 class TestDatasetSchemas:
@@ -283,31 +254,31 @@ class TestMetricsSchemas:
             description="Counts total rows",
             theme="quality",
             measurement_query={"type": "poorly_documented"},
-            is_active=False,
+            is_enabled=False,
         )
-        assert req.is_active is False
+        assert req.is_enabled is False
 
-    def test_upsert_request_active_with_schedule(self) -> None:
+    def test_upsert_request_enabled_with_schedule(self) -> None:
         req = UpsertMetricConfigRequest(
             title="Row Count",
             description="Counts total rows",
             theme="quality",
             measurement_query={"type": "poorly_documented"},
-            is_active=True,
+            is_enabled=True,
             schedule_tier="daily",
         )
-        assert req.is_active is True
+        assert req.is_enabled is True
         assert req.schedule_tier == "daily"
 
-    def test_upsert_request_active_without_schedule_ok(self) -> None:
+    def test_upsert_request_enabled_without_schedule_ok(self) -> None:
         req = UpsertMetricConfigRequest(
             title="Row Count",
             description="Counts total rows",
             theme="quality",
             measurement_query={"type": "poorly_documented"},
-            is_active=True,
+            is_enabled=True,
         )
-        assert req.is_active is True
+        assert req.is_enabled is True
         assert req.schedule_tier is None
 
     def test_definition_response(self) -> None:
@@ -319,7 +290,7 @@ class TestMetricsSchemas:
             theme="quality",
             measurement_query={"type": "poorly_documented"},
             schedule_tier=None,
-            is_active=True,
+            is_enabled=True,
             created_at=now,
             updated_at=now,
         )

@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.backend.validation.rules import (
-    RuleEvaluation,
     evaluate_condition as _evaluate_condition,
-    parse_duration_seconds as _parse_duration_seconds,
+)
+from src.backend.validation.rules import (
     evaluate_rule,
 )
-
+from src.backend.validation.rules import (
+    parse_duration_seconds as _parse_duration_seconds,
+)
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.orders.daily_fulfillment_summary,DEV)"
 _PARTITION: dict = {}

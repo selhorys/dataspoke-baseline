@@ -35,9 +35,22 @@ def require_auth(payload: dict = Depends(_get_credentials)) -> dict:
     return payload
 
 
+def _coerce_groups(payload: dict) -> list[str]:
+    """Defensively coerce the 'groups' claim to a list[str].
+
+    A malformed JWT carrying ``groups: "admin"`` (string instead of array)
+    would match ``"admin" in groups`` via substring, granting unintended access.
+    This helper normalises the claim before any membership check.
+    """
+    groups_raw = payload.get("groups", [])
+    if not isinstance(groups_raw, list):
+        groups_raw = []
+    return [g for g in groups_raw if isinstance(g, str)]
+
+
 def _require_group(group: str):
     def _dep(payload: dict = Depends(require_auth)) -> dict:
-        groups: list[str] = payload.get("groups", [])
+        groups = _coerce_groups(payload)
         if "admin" in groups or group in groups:
             return payload
         raise HTTPException(
@@ -55,7 +68,7 @@ require_any_group = _require_group("__any__")
 
 
 def _require_any_valid_group(payload: dict = Depends(require_auth)) -> dict:
-    groups: list[str] = payload.get("groups", [])
+    groups = _coerce_groups(payload)
     valid = {"de", "da", "dg", "admin"}
     if not set(groups) & valid:
         raise HTTPException(

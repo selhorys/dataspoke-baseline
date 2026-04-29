@@ -1,6 +1,5 @@
-"""Unit tests for OverviewService (mocked infrastructure)."""
+"""Unit tests for OverviewService (mocked infrastructure — triple-graph model)."""
 
-import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,24 +7,13 @@ import pytest
 
 from src.backend.overview.service import OverviewService, _classify_medallion
 from tests.unit.backend.conftest import (
-    make_concept_row,
+    make_dataset_node_map_row,
+    make_ontogen_edge_row,
+    make_ontogen_node_row,
+    make_ontogen_triple_row,
     make_quality_score_mock,
-    make_relationship_row,
     mock_db_refresh,
 )
-
-
-def _make_dataset_concept_map_row(
-    dataset_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,test.table,PROD)",
-    concept_id: uuid.UUID | None = None,
-    confidence_score: float = 0.9,
-):
-    row = MagicMock()
-    row.dataset_urn = dataset_urn
-    row.concept_id = concept_id or uuid.uuid4()
-    row.confidence_score = confidence_score
-    row.created_at = datetime.now(tz=UTC)
-    return row
 
 
 def _make_config_row(
@@ -42,9 +30,34 @@ def _make_config_row(
     return row
 
 
+def _empty_nodes_result() -> MagicMock:
+    """Return a DB result mock for node_q that yields no approved nodes.
+
+    When node_ids is empty, _build_triple_graph returns early — edge_q and
+    triple_q are NOT issued.  The next db.execute call in get_overview is the
+    maps query (blind spots).
+    """
+    r = MagicMock()
+    r.scalars.return_value.all.return_value = []
+    return r
+
+
+def _empty_maps_result() -> MagicMock:
+    """Return a DB result mock for the approved_maps_q that yields no rows."""
+    r = MagicMock()
+    r.__iter__ = MagicMock(return_value=iter([]))
+    return r
+
+
 @pytest.fixture
-def service(datahub, db, cache):
-    return OverviewService(datahub=datahub, db=db, cache=cache)
+def age():
+    """Mock AgeGraph — no real AGE connection."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def service(datahub, db, cache, age):
+    return OverviewService(datahub=datahub, db=db, cache=cache, age=age)
 
 
 # ── classify_medallion ────────────────────────────────────────────────────
@@ -67,29 +80,69 @@ def test_medallion_gold_three_plus_upstream():
     assert _classify_medallion(10) == "gold"
 
 
-# ── get_overview: concept nodes ───────────────────────────────────────────
+# ── get_overview: triple-graph nodes ──────────────────────────────────────
 
 
 @patch("src.backend.overview.service.compute_quality_score")
-async def test_get_overview_assembles_concept_nodes(mock_quality, service, db, datahub):
-    concept_rows = [make_concept_row(name=f"concept_{i}", status="approved") for i in range(3)]
+async def test_get_overview_assembles_ontogen_nodes(mock_quality, service, db, datahub):
+    """Approved OntogenNode rows produce graph nodes of type 'ontogen_node'.
 
-    # DB queries: concepts, relationships, dataset_concept_map
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = concept_rows
+    When nodes are present, _build_triple_graph issues 3 DB calls:
+    node_q, edge_q, triple_q.  Then get_overview issues a 4th for maps.
+    """
+    node_rows = [make_ontogen_node_row(id=f"node-{i}", name=f"Node {i}", status="approved") for i in range(3)]
 
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
+    nodes_result = MagicMock()
+    nodes_result.scalars.return_value.all.return_value = node_rows
 
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
+    edges_result = MagicMock()
+    edges_result.scalars.return_value.all.return_value = []
 
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    triples_result = MagicMock()
+    triples_result.scalars.return_value.all.return_value = []
+
+    maps_result = _empty_maps_result()
+
+    db.execute = AsyncMock(side_effect=[nodes_result, edges_result, triples_result, maps_result])
     datahub.enumerate_datasets = AsyncMock(return_value=[])
 
     snapshot = await service.get_overview()
-    concept_nodes = [n for n in snapshot.nodes if n.type == "concept"]
-    assert len(concept_nodes) == 3
+    ontogen_nodes = [n for n in snapshot.nodes if n.type == "ontogen_node"]
+    assert len(ontogen_nodes) == 3
+
+
+@patch("src.backend.overview.service.compute_quality_score")
+async def test_get_overview_triple_graph_edges(mock_quality, service, db, datahub):
+    """Approved triples produce graph edges of type 'ontogen_triple'.
+
+    4 DB calls: node_q, edge_q, triple_q, maps_q.
+    """
+    subj = make_ontogen_node_row(id="book", name="Book", status="approved")
+    obj = make_ontogen_node_row(id="edition", name="Edition", status="approved")
+    edge = make_ontogen_edge_row(id="has-edition", label="has edition", status="approved")
+    triple = make_ontogen_triple_row(
+        subject_node_id="book", edge_id="has-edition", object_node_id="edition", status="approved"
+    )
+
+    nodes_result = MagicMock()
+    nodes_result.scalars.return_value.all.return_value = [subj, obj]
+
+    edges_result = MagicMock()
+    edges_result.scalars.return_value.all.return_value = [edge]
+
+    triples_result = MagicMock()
+    triples_result.scalars.return_value.all.return_value = [triple]
+
+    maps_result = _empty_maps_result()
+
+    db.execute = AsyncMock(side_effect=[nodes_result, edges_result, triples_result, maps_result])
+    datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    snapshot = await service.get_overview()
+    ontology_edges = [e for e in snapshot.edges if e.type == "ontogen_triple"]
+    assert len(ontology_edges) == 1
+    assert ontology_edges[0].source == "book"
+    assert ontology_edges[0].target == "edition"
 
 
 # ── get_overview: dataset nodes ───────────────────────────────────────────
@@ -97,18 +150,14 @@ async def test_get_overview_assembles_concept_nodes(mock_quality, service, db, d
 
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_assembles_dataset_nodes(mock_quality, service, db, datahub):
+    """Dataset nodes are assembled from datahub.enumerate_datasets().
+
+    No approved ontogen nodes → 2 DB calls: node_q (empty, early return), maps_q.
+    """
     mock_quality.return_value = make_quality_score_mock(75.0)
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
-
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    # No approved nodes → _build_triple_graph returns early after node_q
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), _empty_maps_result()])
 
     urns = [
         "urn:li:dataset:(urn:li:dataPlatform:postgres,db.table_a,PROD)",
@@ -123,44 +172,18 @@ async def test_get_overview_assembles_dataset_nodes(mock_quality, service, db, d
     assert dataset_nodes[0].metadata["quality_score"] == 75.0
 
 
-# ── get_overview: concept relationships ───────────────────────────────────
-
-
-@patch("src.backend.overview.service.compute_quality_score")
-async def test_get_overview_includes_concept_relationships(mock_quality, service, db, datahub):
-    rel_rows = [make_relationship_row(), make_relationship_row()]
-
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = rel_rows
-
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
-    datahub.enumerate_datasets = AsyncMock(return_value=[])
-
-    snapshot = await service.get_overview()
-    cr_edges = [e for e in snapshot.edges if e.type == "concept_relationship"]
-    assert len(cr_edges) == 2
-
-
 # ── get_overview: lineage edges ───────────────────────────────────────────
 
 
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_get_overview_includes_lineage_edges(mock_quality, service, db, datahub):
+    """Upstream lineage produces edges of type 'lineage'.
+
+    No approved nodes → 2 DB calls.
+    """
     mock_quality.return_value = make_quality_score_mock(50.0)
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), _empty_maps_result()])
 
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.raw,PROD)"
     urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.clean,PROD)"
@@ -180,49 +203,15 @@ async def test_get_overview_includes_lineage_edges(mock_quality, service, db, da
     assert lineage_edges[0].target == urn_b
 
 
-# ── get_overview: concept-dataset edges ───────────────────────────────────
-
-
-@patch("src.backend.overview.service.compute_quality_score")
-async def test_get_overview_includes_concept_dataset_edges(mock_quality, service, db, datahub):
-    mock_quality.return_value = make_quality_score_mock(80.0)
-
-    concept_id = uuid.uuid4()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.table,PROD)"
-    map_row = _make_dataset_concept_map_row(dataset_urn=urn, concept_id=concept_id)
-
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = [map_row]
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
-
-    datahub.enumerate_datasets = AsyncMock(return_value=[urn])
-    datahub.get_upstream_lineage = AsyncMock(return_value=[])
-
-    snapshot = await service.get_overview()
-    cd_edges = [e for e in snapshot.edges if e.type == "concept_dataset"]
-    assert len(cd_edges) == 1
-    assert cd_edges[0].source == urn
-    assert cd_edges[0].target == str(concept_id)
-
-
 # ── get_overview: medallion summary ───────────────────────────────────────
 
 
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_medallion_summary_counts(mock_quality, service, db, datahub):
+    """Medallion counts reflect upstream depth. No approved nodes → 2 DB calls."""
     mock_quality.return_value = make_quality_score_mock(60.0)
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), _empty_maps_result()])
 
     urn_bronze = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.raw,PROD)"
     urn_silver = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.clean,PROD)"
@@ -244,26 +233,28 @@ async def test_medallion_summary_counts(mock_quality, service, db, datahub):
     assert snapshot.medallion.gold == 1
 
 
-# ── get_overview: blind spots ─────────────────────────────────────────────
+# ── get_overview: blind spots (dataset_node_map-based) ────────────────────
 
 
 @patch("src.backend.overview.service.compute_quality_score")
-async def test_blind_spots_datasets_without_concept_mapping(mock_quality, service, db, datahub):
+async def test_blind_spots_datasets_without_approved_node_map(mock_quality, service, db, datahub):
+    """A dataset with no approved DatasetNodeMap row is a blind spot.
+
+    No approved nodes → 2 DB calls: node_q (empty), maps_q.
+    """
     mock_quality.return_value = make_quality_score_mock(70.0)
 
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,PROD)"
     urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.b,PROD)"
     urn_c = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.c,PROD)"
 
-    map_row = _make_dataset_concept_map_row(dataset_urn=urn_a)
+    # urn_a has an approved mapping; urn_b and urn_c do not
+    map_row_a = make_dataset_node_map_row(dataset_urn=urn_a, status="approved")
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
     maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = [map_row]
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    maps_result.__iter__ = MagicMock(return_value=iter([map_row_a]))
+
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), maps_result])
 
     datahub.enumerate_datasets = AsyncMock(return_value=[urn_a, urn_b, urn_c])
     datahub.get_upstream_lineage = AsyncMock(return_value=[])
@@ -276,19 +267,20 @@ async def test_blind_spots_datasets_without_concept_mapping(mock_quality, servic
 
 
 @patch("src.backend.overview.service.compute_quality_score")
-async def test_blind_spots_empty_when_all_mapped(mock_quality, service, db, datahub):
+async def test_blind_spots_empty_when_all_mapped_approved(mock_quality, service, db, datahub):
+    """No blind spots when all datasets have approved DatasetNodeMap rows.
+
+    No approved nodes → 2 DB calls.
+    """
     mock_quality.return_value = make_quality_score_mock(80.0)
 
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,PROD)"
-    map_row = _make_dataset_concept_map_row(dataset_urn=urn)
+    map_row = make_dataset_node_map_row(dataset_urn=urn, status="approved")
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
     maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = [map_row]
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    maps_result.__iter__ = MagicMock(return_value=iter([map_row]))
+
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), maps_result])
 
     datahub.enumerate_datasets = AsyncMock(return_value=[urn])
     datahub.get_upstream_lineage = AsyncMock(return_value=[])
@@ -299,6 +291,10 @@ async def test_blind_spots_empty_when_all_mapped(mock_quality, service, db, data
 
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_blind_spots_all_when_no_mappings(mock_quality, service, db, datahub):
+    """All datasets are blind spots when no DatasetNodeMap rows exist.
+
+    No approved nodes → 2 DB calls.
+    """
     mock_quality.return_value = make_quality_score_mock(60.0)
 
     urns = [
@@ -306,13 +302,7 @@ async def test_blind_spots_all_when_no_mappings(mock_quality, service, db, datah
         "urn:li:dataset:(urn:li:dataPlatform:postgres,db.b,PROD)",
     ]
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), _empty_maps_result()])
 
     datahub.enumerate_datasets = AsyncMock(return_value=urns)
     datahub.get_upstream_lineage = AsyncMock(return_value=[])
@@ -326,6 +316,7 @@ async def test_blind_spots_all_when_no_mappings(mock_quality, service, db, datah
 
 @patch("src.backend.overview.service.compute_quality_score")
 async def test_overview_stats_calculated(mock_quality, service, db, datahub):
+    """Stats reflect quality scores and blind spot count. No approved nodes → 2 DB calls."""
     scores = [
         make_quality_score_mock(80.0),
         make_quality_score_mock(0.0),
@@ -333,13 +324,7 @@ async def test_overview_stats_calculated(mock_quality, service, db, datahub):
     ]
     mock_quality.side_effect = scores
 
-    concepts_result = MagicMock()
-    concepts_result.scalars.return_value.all.return_value = []
-    rels_result = MagicMock()
-    rels_result.scalars.return_value.all.return_value = []
-    maps_result = MagicMock()
-    maps_result.scalars.return_value.all.return_value = []
-    db.execute = AsyncMock(side_effect=[concepts_result, rels_result, maps_result])
+    db.execute = AsyncMock(side_effect=[_empty_nodes_result(), _empty_maps_result()])
 
     urns = ["urn:a", "urn:b", "urn:c"]
     datahub.enumerate_datasets = AsyncMock(return_value=urns)
@@ -371,7 +356,6 @@ async def test_get_config_creates_default_when_missing(service, db):
     result_mock.scalar_one_or_none.return_value = None
     db.execute = AsyncMock(return_value=result_mock)
 
-    # After insert + refresh, the row returned should have defaults
     async def _fake_refresh(obj):
         obj.layout = "force"
         obj.color_by = "quality_score"

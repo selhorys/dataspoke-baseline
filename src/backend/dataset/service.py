@@ -95,23 +95,9 @@ class DatasetService:
                 overall_score=data["overall_score"],
                 dimensions=data.get("dimensions", {}),
             )
-        else:
-            # Fallback: read latest validation result from PostgreSQL
-            from src.shared.db.models import ValidationResult
-
-            latest_q = (
-                select(ValidationResult)
-                .where(ValidationResult.dataset_urn == dataset_urn)
-                .order_by(ValidationResult.measured_at.desc())
-                .limit(1)
-            )
-            latest = (await self._db.execute(latest_q)).scalar_one_or_none()
-            if latest:
-                quality_score = QualityScore(
-                    overall_score=latest.quality_score,
-                    dimensions=latest.dimensions,
-                    dimension_details=latest.dimension_details,
-                )
+        # No Redis cache hit: return quality_score=None; the validation-score
+        # measurer in src/backend/metrics/ covers the dashboard aggregation.
+        # The dataset service does not duplicate that aggregation.
 
         return DatasetAttributes(
             urn=dataset_urn,
@@ -131,12 +117,25 @@ class DatasetService:
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
         order_by: Any = None,
+        event_type_prefix: str | None = None,
     ) -> tuple[list[EventRecord], int]:
+        """Return paginated events for a dataset, optionally filtered by event type prefix.
+
+        Parameters
+        ----------
+        dataset_urn:
+            The dataset URN to query events for.
+        event_type_prefix:
+            If provided, only return events whose ``event_type`` starts with this
+            prefix (e.g. ``"INGESTION."`` or ``"VALIDATION."``).
+        """
         base = select(Event).where(
             Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
         )
 
+        if event_type_prefix is not None:
+            base = base.where(Event.event_type.like(f"{event_type_prefix}%"))
         if from_dt is not None:
             base = base.where(Event.occurred_at >= from_dt)
         if to_dt is not None:
@@ -146,7 +145,11 @@ class DatasetService:
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = Event.occurred_at.desc()
-        rows_q = base.order_by(order_by if order_by is not None else default_order).offset(offset).limit(limit)
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 

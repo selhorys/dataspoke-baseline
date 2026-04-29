@@ -36,6 +36,23 @@ class RedisClient:
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
 
+    async def delete_if_value(self, key: str, expected: str) -> bool:
+        """Delete *key* only if its current value equals *expected* (CAS).
+
+        Implements the canonical Lua compare-and-swap to prevent a worker whose
+        TTL expired from deleting a lock token acquired by a later worker.
+
+        Returns True if the key was deleted, False if the value did not match
+        (or the key was already absent).
+        """
+        _LUA_CAS = (
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) "
+            "else return 0 end"
+        )
+        result = await self._redis.eval(_LUA_CAS, 1, key, expected)
+        return bool(result)
+
     async def publish(self, channel: str, message: str) -> None:
         await self._redis.publish(channel, message)
 

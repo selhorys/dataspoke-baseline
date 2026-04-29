@@ -3,6 +3,8 @@ from src.shared.exceptions import (
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
+    InvalidDatasetUrnError,
+    PreconditionFailedError,
     StorageUnavailableError,
 )
 
@@ -36,8 +38,29 @@ def test_entity_not_found_is_dataspokerror() -> None:
 
 def test_entity_not_found_various_types() -> None:
     assert EntityNotFoundError("metric", "m1").error_code == "METRIC_NOT_FOUND"
-    assert EntityNotFoundError("concept", "c1").error_code == "CONCEPT_NOT_FOUND"
+    assert EntityNotFoundError("node", "n1").error_code == "NODE_NOT_FOUND"
+    assert EntityNotFoundError("edge", "e1").error_code == "EDGE_NOT_FOUND"
+    assert EntityNotFoundError("triple", "t1").error_code == "TRIPLE_NOT_FOUND"
     assert EntityNotFoundError("config", "cfg").error_code == "CONFIG_NOT_FOUND"
+
+
+def test_precondition_failed_error_code() -> None:
+    exc = PreconditionFailedError("ONTOGEN_TRIPLE_DEPENDENCY_PENDING")
+    assert exc.error_code == "ONTOGEN_TRIPLE_DEPENDENCY_PENDING"
+    assert isinstance(exc, DataSpokeError)
+
+
+def test_precondition_failed_dataset_not_in_datahub() -> None:
+    exc = PreconditionFailedError("DATASET_NOT_IN_DATAHUB", "dataset not registered")
+    assert exc.error_code == "DATASET_NOT_IN_DATAHUB"
+    assert str(exc) == "dataset not registered"
+
+
+def test_invalid_dataset_urn_error() -> None:
+    exc = InvalidDatasetUrnError("bad-urn")
+    assert exc.error_code == "INVALID_DATASET_URN"
+    assert isinstance(exc, DataSpokeError)
+    assert "bad-urn" in str(exc)
 
 
 def test_conflict_error_code() -> None:

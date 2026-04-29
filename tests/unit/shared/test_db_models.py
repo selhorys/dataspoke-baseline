@@ -6,17 +6,21 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: F811
 from src.shared.db.models import (
     TIMESTAMPTZ,  # noqa: F401
     Base,
-    ConceptCategory,
-    ConceptRelationship,
-    DatasetConceptMap,
+    DatasetNodeMap,
     DatasetRegistry,
     DepartmentMapping,
     Event,
-    GenerationConfig,
-    GenerationResult,
     IngestionConfig,
+    MetagenConfig,
+    MetagenResult,
     MetricDefinition,
     MetricResult,
+    NodeEmbedding,
+    OntogenConfig,
+    OntogenEdge,
+    OntogenNode,
+    OntogenSeed,
+    OntogenTriple,
     OverviewConfig,
     ValidationConfig,
     ValidationResult,
@@ -27,16 +31,20 @@ ALL_MODELS = [
     DatasetRegistry,
     ValidationConfig,
     ValidationResult,
-    GenerationConfig,
-    GenerationResult,
-    ConceptCategory,
-    DatasetConceptMap,
-    ConceptRelationship,
+    MetagenConfig,
+    MetagenResult,
     MetricDefinition,
     MetricResult,
     Event,
     DepartmentMapping,
     OverviewConfig,
+    OntogenConfig,
+    OntogenSeed,
+    OntogenNode,
+    OntogenEdge,
+    OntogenTriple,
+    DatasetNodeMap,
+    NodeEmbedding,
 ]
 
 EXPECTED_TABLES = {
@@ -44,21 +52,25 @@ EXPECTED_TABLES = {
     "dataset_registry",
     "validation_configs",
     "validation_results",
-    "generation_configs",
-    "generation_results",
-    "concept_categories",
-    "dataset_concept_map",
-    "concept_relationships",
+    "metagen_configs",
+    "metagen_results",
     "metric_definitions",
     "metric_results",
     "events",
     "department_mapping",
     "overview_config",
+    "ontogen_config",
+    "ontogen_seeds",
+    "ontogen_nodes",
+    "ontogen_edges",
+    "ontogen_triples",
+    "dataset_node_map",
+    "node_embeddings",
 }
 
 
-def test_all_14_models_exist() -> None:
-    assert len(ALL_MODELS) == 14
+def test_all_18_models_exist() -> None:
+    assert len(ALL_MODELS) == 18
 
 
 def test_table_names_match() -> None:
@@ -77,12 +89,11 @@ def test_uuid_primary_keys() -> None:
         IngestionConfig,
         ValidationConfig,
         ValidationResult,
-        GenerationConfig,
-        GenerationResult,
-        ConceptCategory,
-        ConceptRelationship,
+        MetagenConfig,
+        MetagenResult,
         MetricResult,
         Event,
+        OntogenSeed,
     ]
     for model in uuid_pk_models:
         mapper = inspect(model)
@@ -92,30 +103,35 @@ def test_uuid_primary_keys() -> None:
 
 
 def test_text_primary_keys() -> None:
-    mapper = inspect(MetricDefinition)
-    pk_cols = mapper.primary_key
-    assert len(pk_cols) == 1
-    assert str(pk_cols[0].type) == "TEXT"
-
-    mapper = inspect(DepartmentMapping)
-    pk_cols = mapper.primary_key
-    assert len(pk_cols) == 1
-    assert str(pk_cols[0].type) == "TEXT"
+    text_pk_models = [MetricDefinition, DepartmentMapping, OntogenNode, OntogenEdge, OntogenTriple]
+    for model in text_pk_models:
+        mapper = inspect(model)
+        pk_cols = mapper.primary_key
+        assert len(pk_cols) == 1, f"{model.__name__} should have single PK"
+        assert str(pk_cols[0].type) == "TEXT", f"{model.__name__} PK should be TEXT"
 
 
-def test_integer_primary_key_overview_config() -> None:
-    mapper = inspect(OverviewConfig)
-    pk_cols = mapper.primary_key
-    assert len(pk_cols) == 1
-    assert str(pk_cols[0].type) == "INTEGER"
+def test_integer_primary_key_singleton_models() -> None:
+    for model in (OverviewConfig, OntogenConfig):
+        mapper = inspect(model)
+        pk_cols = mapper.primary_key
+        assert len(pk_cols) == 1
+        assert str(pk_cols[0].type) == "INTEGER", f"{model.__name__} PK should be INTEGER"
 
 
-def test_dataset_concept_map_composite_pk() -> None:
-    mapper = inspect(DatasetConceptMap)
+def test_dataset_node_map_composite_pk() -> None:
+    mapper = inspect(DatasetNodeMap)
     pk_cols = mapper.primary_key
     assert len(pk_cols) == 2
     pk_names = {c.name for c in pk_cols}
-    assert pk_names == {"dataset_urn", "concept_id"}
+    assert pk_names == {"dataset_urn", "node_id"}
+
+
+def test_node_embedding_text_pk() -> None:
+    mapper = inspect(NodeEmbedding)
+    pk_cols = mapper.primary_key
+    assert len(pk_cols) == 1
+    assert str(pk_cols[0].type) == "TEXT"
 
 
 def test_jsonb_columns() -> None:
@@ -127,16 +143,44 @@ def test_jsonb_columns() -> None:
         (ValidationResult, "partition"),
         (ValidationResult, "values"),
         (ValidationResult, "issues"),
-        (GenerationConfig, "target_fields"),
-        (GenerationResult, "proposals"),
+        (MetagenConfig, "targets"),
+        (MetagenResult, "proposals"),
+        (MetagenResult, "field_status"),
         (MetricDefinition, "measurement_query"),
         (MetricResult, "breakdown"),
         (Event, "detail"),
         (OverviewConfig, "filters"),
+        (OntogenConfig, "dataset_filter"),
+        (OntogenNode, "evidence"),
+        (OntogenEdge, "evidence"),
+        (OntogenTriple, "evidence"),
     ]
     for model, col_name in jsonb_checks:
         col = model.__table__.columns[col_name]
         assert isinstance(col.type, JSONB), f"{model.__name__}.{col_name} should be JSONB"
+
+
+def test_is_enabled_column_on_config_models() -> None:
+    """All mutable config models use is_enabled (not is_active)."""
+    enabled_models = [IngestionConfig, ValidationConfig, MetagenConfig, MetricDefinition, OntogenConfig]
+    for model in enabled_models:
+        col_names = {col.name for col in model.__table__.columns}
+        assert "is_enabled" in col_names, f"{model.__name__} missing is_enabled column"
+        assert "is_active" not in col_names, f"{model.__name__} has obsolete is_active column"
+
+
+def test_concept_tables_do_not_exist() -> None:
+    """Concept-model tables were removed in migration 002."""
+    table_names = {t.name for t in Base.metadata.sorted_tables}
+    for obsolete in ("concept_categories", "concept_relationships", "dataset_concept_map"):
+        assert obsolete not in table_names, f"Obsolete table '{obsolete}' still registered"
+
+
+def test_generation_tables_do_not_exist() -> None:
+    """generation_configs/generation_results were renamed to metagen_* in migration 002."""
+    table_names = {t.name for t in Base.metadata.sorted_tables}
+    for obsolete in ("generation_configs", "generation_results"):
+        assert obsolete not in table_names, f"Obsolete table '{obsolete}' still registered"
 
 
 def test_timestamptz_columns() -> None:
@@ -152,31 +196,46 @@ def test_timestamptz_columns() -> None:
                 "applied_at",
                 "resolved_at",
                 "due_date",
+                "last_reviewed_at",
             ):
                 assert isinstance(col.type, type(TIMESTAMPTZ)) and col.type.timezone, (
                     f"{model.__name__}.{col.name} should be TIMESTAMP(timezone=True)"
                 )
 
 
-def test_concept_category_self_referencing_fk() -> None:
-    table = ConceptCategory.__table__
-    fks = list(table.foreign_keys)
-    assert len(fks) == 1
-    assert fks[0].column.table.name == "concept_categories"
+def test_ontogen_triple_composite_id_constraint() -> None:
+    """OntogenTriple has a CHECK that id = subject__edge__object."""
+    check_names = {c.name for c in OntogenTriple.__table__.constraints}
+    assert "ck_ontogen_triples_id_composite" in check_names
 
 
-def test_concept_relationship_fks() -> None:
-    table = ConceptRelationship.__table__
+def test_ontogen_node_no_double_underscore_constraint() -> None:
+    check_names = {c.name for c in OntogenNode.__table__.constraints}
+    assert "ck_ontogen_nodes_id_no_double_underscore" in check_names
+
+
+def test_ontogen_edge_no_double_underscore_constraint() -> None:
+    check_names = {c.name for c in OntogenEdge.__table__.constraints}
+    assert "ck_ontogen_edges_id_no_double_underscore" in check_names
+
+
+def test_ontogen_triple_fks() -> None:
+    table = OntogenTriple.__table__
     fk_targets = {fk.column.table.name for fk in table.foreign_keys}
-    assert fk_targets == {"concept_categories"}
-    assert len(list(table.foreign_keys)) == 2
+    assert "ontogen_nodes" in fk_targets
+    assert "ontogen_edges" in fk_targets
 
 
-def test_dataset_concept_map_fk() -> None:
-    table = DatasetConceptMap.__table__
-    fks = list(table.foreign_keys)
-    assert len(fks) == 1
-    assert fks[0].column.table.name == "concept_categories"
+def test_dataset_node_map_fk_to_ontogen_nodes() -> None:
+    table = DatasetNodeMap.__table__
+    fk_targets = {fk.column.table.name for fk in table.foreign_keys}
+    assert fk_targets == {"ontogen_nodes"}
+
+
+def test_node_embedding_fk_to_ontogen_nodes() -> None:
+    table = NodeEmbedding.__table__
+    fk_targets = {fk.column.table.name for fk in table.foreign_keys}
+    assert fk_targets == {"ontogen_nodes"}
 
 
 def test_metric_result_fk() -> None:
@@ -201,15 +260,28 @@ def test_metric_definition_has_no_alarm_columns() -> None:
     assert "alarm_recipients" not in col_names
 
 
+def test_ingestion_config_has_mode_column() -> None:
+    col_names = {col.name for col in IngestionConfig.__table__.columns}
+    assert "mode" in col_names
+
+
+def test_metagen_result_has_field_status_column() -> None:
+    col_names = {col.name for col in MetagenResult.__table__.columns}
+    assert "field_status" in col_names
+    assert "proposals" in col_names
+
+
 def test_indexes_exist() -> None:
     expected_indexes = {
         "ix_validation_results_urn_measured",
         "ix_validation_results_run_id",
-        "ix_generation_results_urn_generated",
+        "ix_metagen_results_urn_generated",
         "ix_metric_results_metric_measured",
         "ix_events_entity_occurred",
-        "ix_dataset_concept_map_concept",
-        "ix_concept_categories_parent",
+        "ix_ontogen_triples_subject",
+        "ix_ontogen_triples_object",
+        "ix_ontogen_triples_edge",
+        "ix_dataset_node_map_node_id",
     }
     actual_indexes: set[str] = set()
     for table in Base.metadata.sorted_tables:
@@ -220,6 +292,6 @@ def test_indexes_exist() -> None:
     )
 
 
-def test_base_metadata_has_14_tables() -> None:
+def test_base_metadata_has_18_tables() -> None:
     tables_in_schema = [t for t in Base.metadata.sorted_tables if t.schema == "dataspoke"]
-    assert len(tables_in_schema) == 14
+    assert len(tables_in_schema) == 18

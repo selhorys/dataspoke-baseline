@@ -32,7 +32,7 @@ class UpsertMetricConfigRequest(BaseModel):
         default=None,
         description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'",
     )
-    is_active: bool = Field(
+    is_enabled: bool = Field(
         default=True, description="Whether the metric is active and scheduled for measurement"
     )
 
@@ -57,7 +57,7 @@ class UpsertMetricConfigRequest(BaseModel):
                     },
                 },
                 "schedule_tier": "daily",
-                "is_active": True,
+                "is_enabled": True,
             }
         }
     }
@@ -75,7 +75,7 @@ class PatchMetricConfigRequest(BaseModel):
     schedule_tier: str | None = Field(
         default=None, description="Updated schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'."
     )
-    is_active: bool | None = Field(
+    is_enabled: bool | None = Field(
         default=None, description="Set to true to enable the metric, false to pause"
     )
 
@@ -103,7 +103,7 @@ class MetricDefinitionResponse(SingleResponse):
         description="Query configuration used to measure this metric"
     )
     schedule_tier: str | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
-    is_active: bool = Field(description="Whether the metric is actively being measured")
+    is_enabled: bool = Field(description="Whether the metric is actively being measured")
     created_at: datetime = Field(description="UTC timestamp when the metric was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
@@ -120,7 +120,7 @@ class MetricAttrResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the metric")
     title: str = Field(description="Human-readable metric title")
     theme: MetricTheme = Field(description="Metric theme: 'quality', 'governance', or 'freshness'")
-    is_active: bool = Field(description="Whether the metric is actively being measured")
+    is_enabled: bool = Field(description="Whether the metric is actively being measured")
     schedule_tier: str | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
     latest_value: float | None = Field(
         default=None, description="Most recent measured value for this metric"

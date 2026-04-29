@@ -3,7 +3,7 @@
 import pytest
 from httpx import AsyncClient
 
-from src.api.routers.auth import _verify_credentials, _get_user_groups
+from src.api.routers.auth import _get_user_groups, _verify_credentials
 from tests.unit.api.conftest import auth_headers
 
 AUTH_TOKEN = "/api/v1/auth/token"
@@ -127,7 +127,7 @@ async def test_revoke_clears_cookie(client: AsyncClient) -> None:
 
 async def test_auth_required_route_without_token_returns_401(client: AsyncClient) -> None:
     """Accessing a protected route without a token must return 401."""
-    response = await client.get("/api/v1/spoke/common/ontology")
+    response = await client.get("/api/v1/spoke/common/ingestion")
     assert response.status_code == 401
 
 
@@ -190,7 +190,7 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
         for group in ["de", "da", "dg"]:
             mock_session.execute = AsyncMock(side_effect=[count_result, rows_result])
             headers = auth_headers(groups=[group])
-            response = await client.get("/api/v1/spoke/common/ontology", headers=headers)
+            response = await client.get("/api/v1/spoke/common/ingestion", headers=headers)
             assert response.status_code == 200, (
                 f"Expected 200 for group={group}, got {response.status_code}"
             )

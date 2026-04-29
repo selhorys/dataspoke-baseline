@@ -1,19 +1,29 @@
-"""Source of truth for Airflow DAG IDs that DataSpoke expects."""
+"""Source of truth for Airflow DAG IDs that DataSpoke expects.
 
-ON_DEMAND_DAG_IDS: tuple[str, ...] = (
-    "generation",
-    "metrics",
-    "embedding-sync",
-    "ontology-rebuild",
+Spec: spec/feature/BACKEND.md §DAG Catalogue
+"""
+
+TIERS: tuple[str, ...] = ("hourly", "daily", "weekly")
+
+INGESTION_ACTIVE_DAG_IDS: tuple[str, ...] = tuple(
+    f"ingestion-active-{tier}" for tier in TIERS
 )
-PERIODIC_TIERS: tuple[str, ...] = ("hourly", "daily", "weekly")
-PERIODIC_DOMAINS: tuple[str, ...] = ("ingestion", "metrics", "validation")
-PERIODIC_DAG_IDS: tuple[str, ...] = tuple(
-    f"{domain}-periodic-{tier}"
-    for domain in PERIODIC_DOMAINS
-    for tier in PERIODIC_TIERS
-)
+INGESTION_PASSIVE_DAG_IDS: tuple[str, ...] = ("ingestion-passive-hourly",)
+VALIDATION_DAG_IDS: tuple[str, ...] = tuple(f"validation-{tier}" for tier in TIERS)
+METRICS_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metrics-{tier}" for tier in TIERS)
+METAGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metagen-{tier}" for tier in TIERS)
+ONTOGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"ontogen-{tier}" for tier in TIERS)
+
+ON_DEMAND_DAG_IDS: tuple[str, ...] = ("metagen", "metrics", "ontogen")
 SYNC_DAG_IDS: tuple[str, ...] = ("datahub-sync-daily",)
+
 ALL_DAG_IDS: frozenset[str] = frozenset(
-    ON_DEMAND_DAG_IDS + PERIODIC_DAG_IDS + SYNC_DAG_IDS
+    INGESTION_ACTIVE_DAG_IDS
+    + INGESTION_PASSIVE_DAG_IDS
+    + VALIDATION_DAG_IDS
+    + METRICS_TIER_DAG_IDS
+    + METAGEN_TIER_DAG_IDS
+    + ONTOGEN_TIER_DAG_IDS
+    + ON_DEMAND_DAG_IDS
+    + SYNC_DAG_IDS
 )

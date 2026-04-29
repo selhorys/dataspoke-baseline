@@ -1,11 +1,18 @@
-"""Validation sub-resource handlers: /data/{dataset_urn}/attr/validation/*"""
+"""Validation sub-resource handlers: /data/{dataset_urn}/attr/validation/*
+   and siblings: /data/{dataset_urn}/method/validation/run
+                  /data/{dataset_urn}/event/validation
+
+Handler naming: BACKEND.md §Route Handler Naming Convention.
+Spec: API.md §Data Resource (lines 239–245).
+"""
 
 import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from src.api.dependencies import get_redis, get_validation_service
+from src.api.dependencies import get_validation_service
+from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.validation import (
@@ -18,19 +25,21 @@ from src.api.schemas.validation import (
 )
 from src.api.schemas.validation import RunResultResponse as ValidationRunResultResponse
 from src.backend.validation.service import ValidationService
-from src.shared.cache.client import RedisClient
 from src.shared.db.models import Event, ValidationResult
 from src.shared.exceptions import EntityNotFoundError
 
 sub_router = APIRouter()
 
 
+# ── Conf CRUD ─────────────────────────────────────────────────────────────────
+
+
 @sub_router.get("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
 async def get_data_validation_conf(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    """Retrieve the validation config embedded within the dataset resource."""
+    """Retrieve the validation config for a dataset."""
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
@@ -39,17 +48,17 @@ async def get_data_validation_conf(
 
 @sub_router.put("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
 async def put_data_validation_conf(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     body: CreateValidationConfigRequest,
     response: Response,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    """Create or replace the validation config for the dataset (upsert)."""
+    """Create or replace the validation config for a dataset (upsert)."""
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         rules=body.rules,
         schedule_tier=body.schedule_tier,
-        is_active=body.is_active,
+        is_enabled=body.is_enabled,
         owner=body.owner,
     )
     if created:
@@ -59,28 +68,35 @@ async def put_data_validation_conf(
 
 @sub_router.patch("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfigResponse)
 async def patch_data_validation_conf(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     body: PatchValidationConfigRequest,
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigResponse:
-    """Partially update the validation config for the dataset."""
+    """Partially update the validation config for a dataset."""
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
     return ValidationConfigResponse.model_validate(config)
 
 
-@sub_router.delete("/{dataset_urn}/attr/validation/conf", status_code=status.HTTP_204_NO_CONTENT)
+@sub_router.delete(
+    "/{dataset_urn}/attr/validation/conf", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_data_validation_conf(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     service: ValidationService = Depends(get_validation_service),
 ) -> None:
-    """Delete the validation config for the dataset."""
+    """Delete the validation config for a dataset."""
     await service.delete_config(dataset_urn)
 
 
-@sub_router.get("/{dataset_urn}/attr/validation/result", response_model=ValidationResultListResponse)
-async def get_data_validation_result(
-    dataset_urn: str,
+# ── Results ───────────────────────────────────────────────────────────────────
+
+
+@sub_router.get(
+    "/{dataset_urn}/attr/validation/result", response_model=ValidationResultListResponse
+)
+async def get_data_validation_results(
+    dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
@@ -89,7 +105,7 @@ async def get_data_validation_result(
     partition: str | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
-    """List validation results for the dataset with time range, partition, and pagination."""
+    """List assertion result history with time range, partition, and pagination."""
     order_by = parse_sort(sort, {"measured_at": ValidationResult.measured_at}, None)
     partition_filter: dict | None = None
     if partition:
@@ -128,23 +144,26 @@ async def get_data_validation_result(
     )
 
 
+# ── Run (sibling path) ────────────────────────────────────────────────────────
+
+
 @sub_router.post(
-    "/{dataset_urn}/attr/validation/method/run",
+    "/{dataset_urn}/method/validation/run",
     response_model=ValidationRunResultResponse,
 )
 async def post_data_validation_run(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     body: RunValidationRequest,
     service: ValidationService = Depends(get_validation_service),
-    cache: RedisClient = Depends(get_redis),
 ) -> ValidationRunResultResponse:
-    """Trigger a validation run for the dataset via the data sub-resource."""
-    from src.backend.validation.service import run_validation_with_lock
+    """Trigger a validation run for the dataset.
 
+    Optional partition and dry_run in body. Concurrent runs return 409 VALIDATION_RUNNING.
+    """
     config = await service.get_config(dataset_urn)
     if config is None:
         raise EntityNotFoundError("validation_config", dataset_urn)
-    result = await run_validation_with_lock(service, cache, dataset_urn, partition=body.partition)
+    result = await service.run(dataset_urn, partition=body.partition, dry_run=body.dry_run)
     return ValidationRunResultResponse(
         run_id=result.run_id,
         status=result.status,
@@ -155,9 +174,12 @@ async def post_data_validation_run(
     )
 
 
-@sub_router.get("/{dataset_urn}/attr/validation/event", response_model=EventListResponse)
+# ── Events (sibling path) ─────────────────────────────────────────────────────
+
+
+@sub_router.get("/{dataset_urn}/event/validation", response_model=EventListResponse)
 async def get_data_validation_events(
-    dataset_urn: str,
+    dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
@@ -165,7 +187,7 @@ async def get_data_validation_events(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: ValidationService = Depends(get_validation_service),
 ) -> EventListResponse:
-    """List validation events for the dataset with time range and pagination."""
+    """Validation event reports for a dataset (VALIDATION.COMPLETE)."""
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events(
         dataset_urn, offset=offset, limit=limit, from_dt=from_time, to_dt=to_time, order_by=order_by
@@ -176,12 +198,12 @@ async def get_data_validation_events(
         total_count=total_count,
         events=[
             EventResponse(
-                id=e["id"],
+                id=str(e["id"]),
                 entity_type=e["entity_type"],
                 entity_id=e["entity_id"],
                 event_type=e["event_type"],
                 status=e["status"],
-                detail=e["detail"],
+                detail=e.get("detail", {}),
                 occurred_at=e["occurred_at"],
             )
             for e in events

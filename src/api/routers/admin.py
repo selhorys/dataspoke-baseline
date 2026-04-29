@@ -5,27 +5,20 @@ Also mounted as ``/internal/admin/…`` for scripts and automation (requires ``X
 """
 
 import logging
-from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.dependencies import require_admin
 from src.api.auth.internal import require_internal_token
 from src.api.dependencies import get_airflow_client, get_datahub, get_db
+from src.api.schemas.admin import DatahubSyncRequest
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.registry import sync_with_datahub
 from src.workflows.airflow.client import AirflowClient
 from src.workflows.registry import ALL_DAG_IDS as _EXPECTED_DAGS
 
 logger = logging.getLogger(__name__)
-
-DatasetUrn = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^urn:li:dataset:")]
-
-
-class DatahubSyncRequest(BaseModel):
-    dataset_urns: Annotated[list[DatasetUrn], Field(max_length=10_000)] | None = None
 
 
 router = APIRouter(

@@ -13,7 +13,6 @@ from src.backend.validation.timeseries import (
 )
 from src.shared.exceptions import EntityNotFoundError
 
-
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.orders.daily_fulfillment_summary,DEV)"
 
 
