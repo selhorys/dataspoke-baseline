@@ -84,11 +84,6 @@ class PreconditionFailedError(DataSpokeError):
         super().__init__(message)
 
 
-# Keep PreconditionError as an alias for backward compatibility with existing callers.
-# Pass 2/3 will migrate to PreconditionFailedError.
-PreconditionError = PreconditionFailedError
-
-
 class DataHubUnavailableError(DataSpokeError):
     """Raised when DataHub GMS is unreachable or returns an error."""
 

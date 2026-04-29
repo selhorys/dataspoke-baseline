@@ -12,7 +12,6 @@ from src.shared.datahub.events import (
     deserialize_mcl,
     detect_new_clusters,
     sync_vector_index,
-    update_health_score,
 )
 from src.shared.exceptions import DataHubUnavailableError, EventProcessingError
 
@@ -164,10 +163,6 @@ class TestHandlerEntityTypeFiltering:
         event = _make_event(entity_type="dashboard", aspect_name="schemaMetadata")
         await detect_new_clusters(event)
 
-    async def test_update_health_score_skips_non_dataset(self) -> None:
-        event = _make_event(entity_type="dataJob", aspect_name="ownership")
-        await update_health_score(event)
-
     async def test_handler_runs_for_dataset(self) -> None:
         event = _make_event(entity_type="dataset", aspect_name="datasetProperties")
         # Should not raise
@@ -184,8 +179,6 @@ class TestBuildRouter:
             "datasetProperties",
             "schemaMetadata",
             "globalTags",
-            "ownership",
-            "datasetProfile",
         }
         assert set(router.registered_aspects.keys()) == expected_aspects
 
@@ -199,11 +192,5 @@ class TestBuildRouter:
         # schemaMetadata → sync_vector_index + detect_new_clusters
         assert handlers["schemaMetadata"] == [sync_vector_index, detect_new_clusters]
 
-        # globalTags → sync_vector_index + update_health_score
-        assert handlers["globalTags"] == [sync_vector_index, update_health_score]
-
-        # ownership → update_health_score
-        assert handlers["ownership"] == [update_health_score]
-
-        # datasetProfile → update_health_score
-        assert handlers["datasetProfile"] == [update_health_score]
+        # globalTags → sync_vector_index only (prior aggregator handler removed)
+        assert handlers["globalTags"] == [sync_vector_index]

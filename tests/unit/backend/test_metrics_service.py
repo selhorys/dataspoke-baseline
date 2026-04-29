@@ -359,9 +359,9 @@ async def test_breakdown_field_names_unified(service, db, datahub):
 
 
 async def test_unknown_metric_type_raises(service, db, datahub):
-    """Unknown metric type in measurement_query raises PreconditionFailedError."""
+    """Unknown aggregation key in measurement_query raises PreconditionFailedError."""
     def_row = _make_definition_row(
-        measurement_query={"type": "dataset_count"}
+        measurement_query={"aggregation": "dataset_count"}
     )
 
     def_result = MagicMock()
@@ -372,7 +372,7 @@ async def test_unknown_metric_type_raises(service, db, datahub):
 
     with pytest.raises(PreconditionFailedError) as exc_info:
         await service.run(def_row.id, dry_run=True)
-    assert "UNSUPPORTED_METRIC_TYPE" in exc_info.value.error_code or "INVALID" in exc_info.value.error_code
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
 
 
 async def test_dataset_filter_passthrough(service, db, datahub):

@@ -72,7 +72,7 @@ async def _read_markdown_body(
             cl = None
         if cl is not None and cl > max_bytes:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail={
                     "error_code": "PAYLOAD_TOO_LARGE",
                     "message": f"Body exceeds {max_bytes} bytes",
@@ -81,7 +81,7 @@ async def _read_markdown_body(
     body = await request.body()
     if len(body) > max_bytes:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail={
                 "error_code": "PAYLOAD_TOO_LARGE",
                 "message": f"Body exceeds {max_bytes} bytes",

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import DatasetRegistry
-from src.shared.exceptions import PreconditionError
+from src.shared.exceptions import PreconditionFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ async def ensure_dataset_registered(
     1. SELECT from dataset_registry
     2. If no row: check DataHub via get_aspect(DatasetPropertiesClass),
        INSERT row with result (handles concurrent INSERT race)
-    3. If require_in_datahub and datahub_registered is False: raise PreconditionError
+    3. If require_in_datahub and datahub_registered is False: raise PreconditionFailedError
     4. Return datahub_registered
 
     Does NOT commit — the caller's commit covers both the registry
@@ -60,7 +60,7 @@ async def ensure_dataset_registered(
             registered = row.datahub_registered if row is not None else False
 
     if require_in_datahub and not registered:
-        raise PreconditionError(
+        raise PreconditionFailedError(
             "DATASET_NOT_IN_DATAHUB",
             f"Dataset '{dataset_urn}' is not registered in DataHub",
         )

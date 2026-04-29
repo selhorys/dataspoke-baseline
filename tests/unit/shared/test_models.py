@@ -2,7 +2,6 @@ from datetime import UTC, datetime
 
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
-from src.shared.models.ontology import Concept, ConceptRelationship
 from src.shared.models.quality import QualityIssue, QualityScore
 
 NOW = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
@@ -87,38 +86,6 @@ def test_dataset_attributes_with_quality_score() -> None:
 def test_dataset_attributes_no_quality_score() -> None:
     attrs = DatasetAttributes(urn="urn:x", column_count=5)
     assert attrs.quality_score is None
-
-
-# ── Concept ───────────────────────────────────────────────────────────────────
-
-
-def test_concept_status_default() -> None:
-    concept = Concept(
-        id="c1",
-        name="Revenue",
-        description="Business revenue metric",
-        created_at=NOW,
-        updated_at=NOW,
-    )
-    assert concept.status == "pending"
-    assert concept.version == 1
-    assert concept.parent_id is None
-
-
-# ── ConceptRelationship ───────────────────────────────────────────────────────
-
-
-def test_concept_relationship_fields() -> None:
-    rel = ConceptRelationship(
-        id="r1",
-        concept_a="c1",
-        concept_b="c2",
-        relationship_type="related_to",
-        confidence_score=0.85,
-        created_at=NOW,
-    )
-    assert rel.relationship_type == "related_to"
-    assert rel.confidence_score == 0.85
 
 
 # ── EventRecord ───────────────────────────────────────────────────────────────

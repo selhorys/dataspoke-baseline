@@ -17,12 +17,6 @@ _VALID_MODES = frozenset({"active", "passive"})
 
 
 class CreateIngestionConfigRequest(BaseModel):
-    dataset_urn: str = Field(
-        description=(
-            "DataHub URN of the dataset to ingest, "
-            "e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'"
-        )
-    )
     mode: Literal["active", "passive"] = Field(
         default="active",
         description=(
@@ -66,19 +60,10 @@ class CreateIngestionConfigRequest(BaseModel):
         default=None,
         description="Schedule tier for periodic active-mode runs: 'hourly', 'daily', or 'weekly'. Required when is_enabled is true.",
     )
-    enrichment_sources: dict[str, Any] | None = Field(
-        default=None,
-        description="Optional additional enrichment sources to merge after primary ingestion.",
-    )
-    custom_extractors: dict[str, Any] | None = Field(
-        default=None,
-        description="Optional custom extractor configuration overrides.",
-    )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)",
                 "mode": "active",
                 "platform": "postgres",
                 "locator": {"host": "db.example.com", "port": 5432},
@@ -133,12 +118,6 @@ class PatchIngestionConfigRequest(BaseModel):
     schedule_tier: str | None = Field(
         default=None,
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
-    )
-    enrichment_sources: dict[str, Any] | None = Field(
-        default=None, description="Updated enrichment sources configuration."
-    )
-    custom_extractors: dict[str, Any] | None = Field(
-        default=None, description="Updated custom extractor configuration."
     )
 
     @field_validator("schedule_tier")
@@ -199,7 +178,7 @@ class IngestionConfigResponse(SingleResponse):
         description="Airflow DAG ID for the registered ingestion DAG"
     )
     status: IngestionConfigStatus = Field(
-        description="Config lifecycle status: 'OK' (DAG registered and ready) or 'draft' (not yet registered)"
+        description="DAG verification outcome: 'OK' (DAG registered and ready) or 'ERROR' (verification failed)"
     )
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")

@@ -12,12 +12,6 @@ _VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 
 
 class CreateValidationConfigRequest(BaseModel):
-    dataset_urn: str = Field(
-        description=(
-            "DataHub URN of the dataset to validate, "
-            "e.g. 'urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.orders,PROD)'"
-        )
-    )
     rules: list[dict[str, Any]] = Field(
         max_length=200,
         description=(
@@ -44,7 +38,6 @@ class CreateValidationConfigRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
                 "rules": [
                     {
                         "rule_id": "r-fresh-001",

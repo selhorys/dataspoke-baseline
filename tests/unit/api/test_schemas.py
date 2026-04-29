@@ -76,7 +76,6 @@ class TestTimeRangeParams:
 class TestIngestionSchemas:
     def test_create_request_round_trip(self) -> None:
         req = CreateIngestionConfigRequest(
-            dataset_urn="urn:li:dataset:test",
             platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
@@ -84,12 +83,10 @@ class TestIngestionSchemas:
         )
         data = req.model_dump()
         parsed = CreateIngestionConfigRequest.model_validate(data)
-        assert parsed.dataset_urn == req.dataset_urn
         assert parsed.is_enabled is False
 
     def test_create_request_kafka_no_auth(self) -> None:
         req = CreateIngestionConfigRequest(
-            dataset_urn="urn:li:dataset:test",
             platform="kafka",
             locator={"bootstrap_servers": "kafka:9092"},
             identifier={"topic": "my-topic"},
@@ -99,7 +96,6 @@ class TestIngestionSchemas:
     def test_create_request_invalid_platform(self) -> None:
         with pytest.raises(ValidationError):
             CreateIngestionConfigRequest(
-                dataset_urn="urn:li:dataset:test",
                 platform="unsupported",
                 locator={},
                 identifier={},
@@ -108,7 +104,6 @@ class TestIngestionSchemas:
     def test_create_request_missing_auth_for_postgresql(self) -> None:
         with pytest.raises(ValidationError, match="auth is required"):
             CreateIngestionConfigRequest(
-                dataset_urn="urn:li:dataset:test",
                 platform="postgres",
                 locator={"host": "localhost", "port": 5432},
                 identifier={"database": "testdb"},
@@ -148,7 +143,6 @@ class TestIngestionSchemas:
 class TestValidationSchemas:
     def test_create_request(self) -> None:
         req = CreateValidationConfigRequest(
-            dataset_urn="urn:li:dataset:test",
             rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
             owner="admin",
         )
@@ -156,7 +150,6 @@ class TestValidationSchemas:
 
     def test_create_request_with_schedule(self) -> None:
         req = CreateValidationConfigRequest(
-            dataset_urn="urn:li:dataset:test",
             rules=[],
             schedule_tier="daily",
             owner="admin",
@@ -253,7 +246,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "poorly_documented"},
+            measurement_query={"aggregation": "ingestion-freshness"},
             is_enabled=False,
         )
         assert req.is_enabled is False
@@ -263,7 +256,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "poorly_documented"},
+            measurement_query={"aggregation": "ingestion-freshness"},
             is_enabled=True,
             schedule_tier="daily",
         )
@@ -275,7 +268,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "poorly_documented"},
+            measurement_query={"aggregation": "ingestion-freshness"},
             is_enabled=True,
         )
         assert req.is_enabled is True
@@ -288,7 +281,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"type": "poorly_documented"},
+            measurement_query={"aggregation": "ingestion-freshness"},
             schedule_tier=None,
             is_enabled=True,
             created_at=now,
@@ -306,7 +299,7 @@ class TestOverviewSchemas:
         resp = OverviewResponse()
         assert resp.layout == "force"
         assert resp.color_by == "quality_score"
-        assert resp.stats.total_datasets == 0
+        assert resp.filters == {}
 
 
 class TestEventSchemas:

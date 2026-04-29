@@ -183,30 +183,6 @@ async def detect_new_clusters(event: MetadataChangeLogEvent) -> None:
         )
 
 
-async def update_health_score(event: MetadataChangeLogEvent) -> None:
-    """Re-compute health scores when ownership or tags change.
-
-    Calls aggregate_health_scores directly (no workflow required) because
-    the aggregation needs the current event context and there is no
-    single-dataset workflow variant for health scoring.
-    """
-    if event.entity_type != "dataset":
-        return
-    logger.info(
-        "update_health_score",
-        entity_urn=event.entity_urn,
-        aspect_name=event.aspect_name,
-    )
-    from src.backend.metrics.aggregator import aggregate_health_scores
-    from src.shared.db.session import SessionLocal
-    from src.workflows._common import make_cache, make_datahub
-
-    datahub = make_datahub()
-    cache = make_cache()
-    async with SessionLocal() as db:
-        await aggregate_health_scores(datahub=datahub, db=db, cache=cache)
-
-
 # ── Router Factory ───────────────────────────────────────────────────────────
 
 
@@ -228,8 +204,4 @@ def build_router(*, airflow_client: Any = None) -> EventRouter:
     router.register("globalTags", sync_vector_index)
     # Generation (UC4)
     router.register("schemaMetadata", detect_new_clusters)
-    # Metrics (UC6)
-    router.register("ownership", update_health_score)
-    router.register("globalTags", update_health_score)
-    router.register("datasetProfile", update_health_score)
     return router

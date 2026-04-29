@@ -6,6 +6,7 @@ from src.api.schemas.overview import (
     GraphEdgeResponse,
     GraphNodeResponse,
     MedallionSummaryResponse,
+    OntologyGraphResponse,
     OverviewResponse,
     OverviewSnapshotResponse,
     PatchOverviewRequest,
@@ -23,29 +24,38 @@ router = APIRouter(
 async def get_overview(
     service: OverviewService = Depends(get_overview_service),
 ) -> OverviewSnapshotResponse:
-    """Retrieve the governance overview snapshot including lineage graph and medallion summary."""
+    """Retrieve the governance overview snapshot."""
     snapshot = await service.get_overview()
     return OverviewSnapshotResponse(
-        nodes=[
-            GraphNodeResponse(id=n.id, type=n.type, label=n.label, metadata=n.metadata)
-            for n in snapshot.nodes
-        ],
-        edges=[
-            GraphEdgeResponse(source=e.source, target=e.target, type=e.type, metadata=e.metadata)
-            for e in snapshot.edges
-        ],
+        metric_values=snapshot.metric_values,
+        per_dataset_breakdown=snapshot.per_dataset_breakdown,
+        blind_spots=snapshot.blind_spots,
+        ontology_graph=OntologyGraphResponse(
+            nodes=[
+                GraphNodeResponse(
+                    id=n.id,
+                    type=n.type,
+                    label=n.label,
+                    metadata=n.metadata,
+                )
+                for n in snapshot.ontology_graph.nodes
+            ],
+            edges=[
+                GraphEdgeResponse(
+                    source=e.source,
+                    target=e.target,
+                    type=e.type,
+                    metadata=e.metadata,
+                )
+                for e in snapshot.ontology_graph.edges
+            ],
+        ),
         medallion=MedallionSummaryResponse(
             bronze=snapshot.medallion.bronze,
             silver=snapshot.medallion.silver,
             gold=snapshot.medallion.gold,
         ),
-        blind_spots=snapshot.blind_spots,
-        stats={
-            "total_datasets": snapshot.stats.total_datasets,
-            "monitored_datasets": snapshot.stats.monitored_datasets,
-            "avg_quality_score": snapshot.stats.avg_quality_score,
-            "issues_count": snapshot.stats.issues_count,
-        },
+        ownership_topology=snapshot.ownership_topology,
     )
 
 

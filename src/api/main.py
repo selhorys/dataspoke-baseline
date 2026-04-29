@@ -41,7 +41,7 @@ from src.shared.exceptions import (
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
-    PreconditionError,
+    PreconditionFailedError,
     StorageUnavailableError,
 )
 
@@ -120,7 +120,7 @@ async def _handle_conflict(request: Request, exc: ConflictError) -> JSONResponse
     return _error_json(request, 409, exc.error_code, str(exc))
 
 
-async def _handle_precondition(request: Request, exc: PreconditionError) -> JSONResponse:
+async def _handle_precondition(request: Request, exc: PreconditionFailedError) -> JSONResponse:
     return _error_json(request, 422, exc.error_code, str(exc))
 
 
@@ -145,39 +145,9 @@ def create_app() -> FastAPI:
         {
             "name": "common/ingestion",
             "description": (
-                "Ingestion config CRUD and run operations. Requires common auth (de/da/dg/admin groups).\n\n"
-                "DataSpoke ingestion implements a **source-agnostic metadata extraction** pattern built on "
-                "[DataHub's entity-aspect model](https://datahubproject.io/docs/what/aspect). "
-                "Each dataset in DataHub is described by composable *aspects* — typed metadata facets. "
-                "DataSpoke's ingestion pipeline connects to heterogeneous data sources, discovers schema "
-                "metadata, and expresses the results as standard DataHub aspects via the REST Emitter API.\n\n"
-                "## DataSpoke vs DataHub Native Ingestion\n\n"
-                "| Concern | DataHub Native Ingestion | DataSpoke Ingestion |\n"
-                "|---------|--------------------------|---------------------|\n"
-                "| Trigger | CLI batch (`datahub ingest`) | HTTP API + Airflow cron |\n"
-                "| Configuration | YAML recipes | JSONB config in PostgreSQL |\n"
-                "| Source plugins | 200+ community connectors | Focused extractors (extensible) |\n"
-                "| Output | Aspects + lineage + profiling | Core aspects (Status, Properties, Schema) |\n\n"
-                "## Source Abstraction\n\n"
-                "The `platform` / `locator` / `identifier` / `auth` model provides a uniform interface "
-                "across data platforms. Each `platform` maps to a dedicated extractor that handles "
-                "connection, schema discovery, and type mapping.\n\n"
-                "| Platform | Status | Locator | Identifier |\n"
-                "|----------|--------|---------|------------|\n"
-                "| **postgres** | Implemented | host, port | database, schema_name, table |\n"
-                "| **kafka** | Implemented | bootstrap_servers | topic, cluster |\n"
-                "| **mysql** | Planned | host, port | database, schema_name, table |\n"
-                "| **oracle** | Planned | host, port | database, schema_name, table |\n"
-                "| **bigquery** | Planned | project_id | dataset, table |\n"
-                "| **snowflake** | Planned | account_id | database, schema_name, table |\n\n"
-                "## Aspect Emission\n\n"
-                "A successful non-dry-run ingestion emits three aspects to DataHub per discovered dataset:\n"
-                "- `StatusClass(removed=False)` — marks the entity as active\n"
-                "- `DatasetPropertiesClass` — name, qualified name, description, custom properties\n"
-                "- `SchemaMetadataClass` — field list with native-to-DataHub type mapping "
-                "(e.g., PostgreSQL `integer` → DataHub `NUMBER`)\n\n"
-                "**`dry_run` mode**: Extracts and validates source metadata without calling DataHub's "
-                "REST Emitter — useful for verifying connection parameters and previewing schema."
+                "Ingestion config CRUD and run operations. Requires common auth "
+                "(de/da/dg/admin groups). See spec/feature/BACKEND.md §Ingestion Service "
+                "for the active/passive split, extractor model, and aspect emission details."
             ),
             "externalDocs": {
                 "description": "DataHub Dataset Entity — aspect catalog and REST endpoints",
@@ -187,90 +157,52 @@ def create_app() -> FastAPI:
         {
             "name": "common/validation",
             "description": (
-                "Validation config CRUD, run, and result queries. Requires common auth.\n\n"
-                "DataSpoke provides a convenience and customization layer on top of "
-                "[DataHub's assertion framework](https://datahubproject.io/docs/managed-datahub/observe/assertions). "
-                "Each validation config registers assertion rules per dataset; DataSpoke executes them and "
-                "reports results back to DataHub as `assertionRunEvent` timeseries aspects.\n\n"
-                "## Supported Rule Types\n\n"
-                "| Type | Purpose | DataHub Assertion |\n"
-                "|------|---------|-------------------|\n"
-                "| **freshness** | Verify data was updated within a lookback window | "
-                "[Freshness](https://datahubproject.io/docs/managed-datahub/observe/freshness-assertions) |\n"
-                "| **volume** | Check row count stays within expected bounds | "
-                "[Volume](https://datahubproject.io/docs/managed-datahub/observe/volume-assertions) |\n"
-                "| **field** | Validate column-level metrics (null count, distinct count, min/max, etc.) | "
-                "[Column](https://datahubproject.io/docs/managed-datahub/observe/column-assertions) |\n"
-                "| **schema** | Ensure required fields exist with expected types | "
-                "[Schema](https://datahubproject.io/docs/managed-datahub/observe/schema-assertions) |\n"
-                "| **sql** | Run a custom SQL statement and assert on the scalar result | "
-                "[Custom SQL](https://datahubproject.io/docs/managed-datahub/observe/custom-sql-assertions) |\n"
-                "| **custom** | DataSpoke-original logic (e.g., `sql_timeseries` with ML-based anomaly detection) | N/A (DataSpoke extension) |\n\n"
-                "All rule types support `partition` and `order` variables for targeting specific data partitions. "
-                "The `custom` type with `subtype: sql_timeseries` enables trend tracking with configurable "
-                "ML validation (model type, lookback window, target columns).\n\n"
-                "Rule format follows the "
-                "[DataHub Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec) "
-                "with DataSpoke extensions (`rule_id`, `partition`, `order`, `ml_validation`)."
+                "Validation config CRUD, run, and result queries. Requires common auth. "
+                "See spec/feature/BACKEND.md §Validation Service for rule types, "
+                "partition semantics, and DataHub assertion mapping."
             ),
             "externalDocs": {
-                "description": "DataHub Assertion Entity — assertionInfo and assertionRunEvent aspects",
+                "description": (
+                    "DataHub Assertion Entity — assertionInfo and assertionRunEvent aspects"
+                ),
                 "url": "https://datahubproject.io/docs/generated/metamodel/entities/assertion",
             },
         },
         {
             "name": "common/metagen",
-            "description": "AI metadata generation config CRUD, run, and result review. Requires common auth.",
+            "description": (
+                "AI metadata generation config CRUD, run, and result review. "
+                "Requires common auth."
+            ),
         },
         {
             "name": "common/data",
-            "description": "Dataset overview with embedded ingestion, validation, and metagen sub-resources. Requires common auth.",
+            "description": (
+                "Dataset overview with embedded ingestion, validation, and metagen "
+                "sub-resources. Requires common auth."
+            ),
         },
         {
             "name": "common/ontogen",
-            "description": "Ontology generation config, seed management, run, and node/edge/triple graph view. Requires common auth.",
+            "description": (
+                "Ontology generation config, seed management, run, and node/edge/triple "
+                "graph view. Requires common auth."
+            ),
         },
         {
             "name": "dg/metric",
             "description": (
                 "Governance metric definitions, measurement results, and scheduling. "
-                "Requires DG auth (dg/admin groups).\n\n"
-                "## Pure Aggregation Principle\n\n"
-                "DataSpoke metrics implement the **observatory pattern**: a metric does not observe the "
-                "data estate directly — it aggregates results that already exist in DataHub metadata or "
-                "DataSpoke validation results. The metrics layer has no data source credentials, no SQL "
-                "execution against production databases, and no network access to external systems beyond "
-                "DataHub's API.\n\n"
-                "## Data Governance Dimensions\n\n"
-                "Built-in metric types are categorized by the data governance quality dimension they measure:\n\n"
-                "| Governance Dimension | Metric Type | Data Source |\n"
-                "|---------------------|-------------|-------------|\n"
-                "| **Completeness** (metadata) | `poorly_documented` | "
-                "DataHub `DatasetPropertiesClass.description` — counts datasets with description < 20 chars |\n"
-                "| **Freshness** (timeliness) | `stale_datasets` | "
-                "DataSpoke `validation_results` — counts datasets with no freshness rule or failing freshness validation |\n"
-                "| *(extensible)* | Custom types | "
-                "Any DataHub aspect or DataSpoke result table |\n\n"
-                "New metric types are added by implementing a measurement function that reads from "
-                "DataHub aspects or DataSpoke tables — never by adding direct source connections.\n\n"
-                "## DataHub Relationship\n\n"
-                "Metrics are **read-only consumers** of DataHub metadata. They read aspects "
-                "(`DatasetPropertiesClass`, `OwnershipClass`, `globalTags`, `glossaryTerms`) via "
-                "the DataHub SDK but never write aspects. Metric results are stored exclusively in "
-                "DataSpoke's PostgreSQL `metric_results` table.\n\n"
-                "## Measurement Query & Dataset Filter\n\n"
-                "Each metric definition carries a `measurement_query` with a `type` field that selects "
-                "the aggregation function. The query vocabulary is currently fixed (`poorly_documented`, "
-                "`stale_datasets`); unsupported types return `422 UNSUPPORTED_METRIC_TYPE`.\n\n"
-                "**`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub "
-                "tag URNs) and `glossary_terms` (list of DataHub glossary term URNs). When specified, only "
-                "datasets matching ANY of the listed tags or glossary terms are included. "
-                "Filters are OR-ed across all dimensions."
+                "Requires DG auth (dg/admin groups). See spec/feature/BACKEND.md §Metrics Service "
+                "for aggregation semantics, measurement_query shape (aggregation key), "
+                "dataset_filter, and breakdown format."
             ),
         },
         {
             "name": "dg/overview",
-            "description": "Data governance overview dashboard and lineage graph. Requires DG auth.",
+            "description": (
+                "Data governance overview dashboard and lineage graph. Requires DG auth."
+            ),
         },
         {
             "name": "hub",
@@ -303,7 +235,7 @@ def create_app() -> FastAPI:
     # ── Exception handlers (specific → generic) ───────────────────────────────
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
-    app.add_exception_handler(PreconditionError, _handle_precondition)  # type: ignore[arg-type]
+    app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]

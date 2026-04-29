@@ -193,9 +193,6 @@ def test_timestamptz_columns() -> None:
                 "measured_at",
                 "occurred_at",
                 "generated_at",
-                "applied_at",
-                "resolved_at",
-                "due_date",
                 "last_reviewed_at",
             ):
                 assert isinstance(col.type, type(TIMESTAMPTZ)) and col.type.timezone, (

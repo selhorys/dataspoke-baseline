@@ -24,8 +24,9 @@ class UpsertMetricConfigRequest(BaseModel):
     measurement_query: dict[str, Any] = Field(
         description=(
             "Query configuration for metric measurement. "
-            "Required key: 'type' ('poorly_documented' or 'stale_datasets'). "
-            "Optional key: 'dataset_filter' with 'tags' and/or 'glossary_terms' lists for OR-filtering."
+            "Required key: 'aggregation' — registered measurer key, e.g. 'ingestion-freshness' or 'validation-score'. "
+            "Optional key: 'dataset_filter' with 'tags', 'glossary_terms', and/or 'dataset_urns' lists for OR-filtering. "
+            "Unsupported aggregation values return 422 INVALID_PARAMETER."
         )
     )
     schedule_tier: str | None = Field(
@@ -46,14 +47,13 @@ class UpsertMetricConfigRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "title": "Poorly documented datasets",
-                "description": "Measures how many datasets have descriptions shorter than 20 characters",
-                "theme": "governance",
+                "title": "Ingestion freshness coverage",
+                "description": "Measures the percentage of datasets with a recent successful ingestion run",
+                "theme": "freshness",
                 "measurement_query": {
-                    "type": "poorly_documented",
+                    "aggregation": "ingestion-freshness",
                     "dataset_filter": {
                         "tags": ["urn:li:tag:PII"],
-                        "glossary_terms": ["urn:li:glossaryTerm:CustomerData"],
                     },
                 },
                 "schedule_tier": "daily",
@@ -70,7 +70,11 @@ class PatchMetricConfigRequest(BaseModel):
         default=None, description="Updated metric theme: 'quality', 'governance', or 'freshness'"
     )
     measurement_query: dict[str, Any] | None = Field(
-        default=None, description="Updated query configuration for metric measurement."
+        default=None,
+        description=(
+            "Updated query configuration for metric measurement. "
+            "Required key: 'aggregation' — registered measurer key, e.g. 'ingestion-freshness' or 'validation-score'."
+        ),
     )
     schedule_tier: str | None = Field(
         default=None, description="Updated schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'."

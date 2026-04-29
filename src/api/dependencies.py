@@ -130,11 +130,7 @@ async def get_metrics_service(
 async def get_overview_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
-    cache: RedisClient = Depends(get_redis),
 ) -> "OverviewService":
     from src.backend.overview.service import OverviewService
-    from src.shared.graph.client import AgeGraph
-    from src.shared.db.session import SessionLocal
 
-    age = AgeGraph(session_factory=SessionLocal)
-    return OverviewService(datahub=datahub, db=db, cache=cache, age=age)
+    return OverviewService(datahub=datahub, db=db)
