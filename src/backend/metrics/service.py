@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.metrics.measurers import get_measurer, list_measurers
@@ -298,6 +298,9 @@ class MetricsService:
         if row is None:
             raise EntityNotFoundError("metric", metric_id)
 
+        await self._db.execute(
+            delete(MetricResult).where(MetricResult.metric_id == metric_id)
+        )
         await self._db.delete(row)
         await self._db.commit()
 

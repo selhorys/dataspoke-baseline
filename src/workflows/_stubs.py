@@ -143,6 +143,13 @@ class StubRedisClient:
     async def delete(self, key: str) -> None:
         pass
 
+    async def delete_if_value(self, key: str, expected: str) -> bool:
+        return True
+
+    async def subscribe(self, channel: str):  # type: ignore[no-untyped-def]
+        if False:
+            yield ""  # pragma: no cover — async generator placeholder
+
     async def close(self) -> None:
         pass
 

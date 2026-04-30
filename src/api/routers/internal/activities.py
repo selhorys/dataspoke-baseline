@@ -237,6 +237,7 @@ async def metrics_list_active(body: MetricsListActiveRequest) -> list[str]:
 
 class MetricsRunRequest(BaseModel):
     metric_id: str
+    dry_run: bool = False
 
 
 @router.post("/metrics/run")
@@ -249,7 +250,7 @@ async def metrics_run(body: MetricsRunRequest) -> dict[str, object]:
             from src.backend.metrics.service import MetricsService
 
             service = MetricsService(datahub=datahub, db=db, cache=cache)
-            result = await service.run(body.metric_id)
+            result = await service.run(body.metric_id, dry_run=body.dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
     except DataSpokeError as exc:
         return _error_response(exc)  # type: ignore[return-value]

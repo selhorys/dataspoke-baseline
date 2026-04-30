@@ -309,7 +309,9 @@ curl -s http://app.<INGRESS_IP>.nip.io/api/v1/spoke/common/data/$URN \
   -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
-URN format: `urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.<schema>.<table>,DEV)`
+URN format: `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.<schema>.<table>,DEV)`
+(`example_db` is the dummy-data instance name emitted by `tests/integration/util/datahub.py`;
+the Imazon company narrative lives at the dataset / column level, not in the URN segment.)
 
 Route tiers: `/api/v1/spoke/common/…` (any group), `/api/v1/spoke/[de|da|dg]/…` (matching
 group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).

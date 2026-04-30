@@ -40,6 +40,7 @@ Triggered by the DataSpoke API for a specific metric ID.
 
 **Inputs** (via `dag_run.conf`):
 - `metric_id`: metric identifier string (required)
+- `dry_run`: "true" / "false" string (optional; defaults to false)
 - `conf_key`: dedup key of the form `metrics-{metric_id}` (for duplicate detection)
 
 **Tasks**:
@@ -52,7 +53,10 @@ Triggered by the DataSpoke API for a specific metric ID.
         endpoint="/internal/activities/metrics/run",
         method="POST",
         headers=internal_headers(),
-        data='{"metric_id": "{{ dag_run.conf.get(\'metric_id\', \'\') }}"}',
+        data=(
+            '{"metric_id": "{{ dag_run.conf.get(\'metric_id\', \'\') }}",'
+            ' "dry_run": {{ \'true\' if dag_run.conf.get(\'dry_run\', \'false\') in [\'true\', True] else \'false\' }}}'
+        ),
         response_filter=lambda r: r.json(),
         log_response=True,
     )
