@@ -95,7 +95,7 @@ For testing conventions (unit/integration/api-wired integration/E2E, toolchain, 
 Follow `spec/TESTING.md §Integration Testing` for the full 7-step workflow, pre-flight + reinstall table, lock protocol, data reset, Imazon test-data rule, assertion rules, and manual API testing. Key reminders:
 
 - Run `./dev_env/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
-- Run tests in three **separate** groups (unit → non-api-wired integration → api-wired integration). Mixing causes Airflow resource contention.
+- Run tests in three **separate** groups (unit → spot integration → api-wired integration). Mixing causes Airflow resource contention.
 - Never truncate integration test output (no `| tail`, `| head`, or piped filters) — always show complete pytest output.
 
 ## Testing prauto

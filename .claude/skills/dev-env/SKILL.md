@@ -178,7 +178,7 @@ Parse `$ARGUMENTS` and the user's request for these options:
    - API URL: `http://app.<INGRESS_DOMAIN>/api/v1/`
    - ReDoc UI: `http://app.<INGRESS_DOMAIN>/redoc`
    - Health: `http://app.<INGRESS_DOMAIN>/health`
-   - How to run tests: `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/`
+   - How to run tests: `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/` (spot) or `… tests/integration/api_wired/` (UC user stories) — run in separate invocations
    - How to stop: `./dev_env/dataspoke-test-mode.sh --stop`
 
 ### Stop

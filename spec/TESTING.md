@@ -18,7 +18,7 @@
 3. [Python Environment Setup](#python-environment-setup)
 4. [Unit Testing](#unit-testing)
 5. [Integration Testing](#integration-testing)
-6. [API-Wired Integration Testing](#api-wired-integration-testing)
+6. [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)
 7. [Manual REST API Testing](#manual-rest-api-testing)
 8. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
 9. [Test Data Design](#test-data-design)
@@ -46,10 +46,13 @@ Tests live under `tests/` at the repo root, mirroring `src/`:
 
 - `tests/unit/` — `api/`, `backend/`, `shared/`, `workflows/`, `frontend/` (mirrors `src/`
   modules)
-- `tests/integration/` — Dev-env-backed tests: `util/` (dummy-data reset/ingest utilities with
-  `fixtures/sql/` and `fixtures/kafka/`), `api_wired/` (REST-only tests split into `spot/` for
-  single-endpoint and `story/` for multi-step UC scenarios), `conftest.py` (root fixtures:
-  infra, lock, dummy-data lifecycle), `test_*_integration.py` (non-API-wired tests)
+- `tests/integration/` — Dev-env-backed tests:
+  - `spot/` — compact, independent tests of Python classes/functions or REST endpoints. The set
+    must cover all integration scope on its own (api-wired removable without losing coverage).
+  - `api_wired/` — REST-only tests that implement the five `USE_CASE_en.md` user stories
+    end-to-end. One file per UC, steps mirror the user-story narrative.
+  - `util/` — dummy-data reset/ingest utilities with `fixtures/sql/` and `fixtures/kafka/`.
+  - `conftest.py` — root fixtures: infra, lock, dummy-data lifecycle.
 - `tests/e2e/` — Playwright end-to-end tests
 
 ---
@@ -116,8 +119,9 @@ Follow these seven steps in order. `conftest.py` automates Steps 2/7 (lock) at s
 and Steps 3/6 (dummy-data reset) at module scope. It also loads `dev_env/.env` and runs
 `alembic upgrade head`. The manual commands below are for reference.
 
-1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place REST-only tests
-   under `api_wired/`, others under `integration/`.
+1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place compact
+   per-concern tests under `integration/spot/`; reserve `integration/api_wired/` for the five
+   UC user-story tests (see [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)).
 2. **Acquire dev-env lock** -- `POST http://<INGRESS_IP>:9221/lock/acquire` with
    `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set
    `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
@@ -196,47 +200,68 @@ When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-de
 
 ---
 
-## API-Wired Integration Testing
+## Spot vs Api-Wired Integration Tests
 
-API-wired tests exercise the **API server and backend services as a combined unit** using only
-REST API calls via `httpx.AsyncClient`. No direct Python service imports in test logic.
+Integration tests split into two complementary sets. Together they describe what "covered" means
+for the integration layer; each set is run as its own pytest group (see
+[Test Execution Groups](#test-execution-groups)).
 
-### Subtypes
+### Spot integration tests (`tests/integration/spot/`)
 
-| Subtype | Directory | Scale | Purpose |
-|---------|-----------|-------|---------|
-| **Spot** | `api_wired/spot/` | 1-5 API calls | Individual endpoint CRUD, error cases |
-| **Story** | `api_wired/story/` | 10-100 API calls | End-to-end UC scenario through realistic API sequence |
+Each test exercises **one concern** -- a single Python class/function or a single REST endpoint
+behavior -- with the **minimum span** of setup needed to prove it works against real
+infrastructure.
 
-### Naming
+- **Independence**: tests do not chain -- one test's pass/fail must not depend on another's
+  state. Reset fixtures handle data lifecycle.
+- **Coverage rule**: the set as a whole must cover the full integration scope. If api-wired
+  tests were skipped entirely, the spot set alone should still catch backend regressions.
+- **Boundary**: a spot test may call dataspoke Python directly (e.g., a backend service or a
+  workflow stub) **or** call the API over HTTP. Either is valid -- pick whichever proves the
+  concern most directly.
+- **Test-mode API server**: required only when the test calls REST. Pure-Python spot tests
+  may skip `dataspoke-test-mode.sh` and rely on dev-env infra alone.
+- **Reads like spec**: each test's docstring names the concern; assertions match the spec
+  contract, not implementation internals.
 
-- Spot: `test_<feature>.py` (e.g., `test_dataset_service.py`)
-- Story: `test_<uc_id>_<short_name>.py` (e.g., `test_uc1_dataset_discovery.py`)
+### Api-wired integration tests (`tests/integration/api_wired/`)
+
+Each test implements one of the five **`USE_CASE_en.md` user stories** end-to-end through the
+public REST API. There is exactly one file per UC -- `test_uc{1..5}_<slug>.py`.
+
+- **REST only**: test logic uses `httpx.AsyncClient` against `http://app.<INGRESS_IP>.nip.io/`.
+  No direct imports of `src/backend`, `src/workflows`, or peripheral SDK clients in the test
+  body. Setup/teardown fixtures may use `tests.integration.util` to reset/ingest data; the
+  test itself stays REST-only.
+- **Mirrors the narrative**: steps follow the user-story prose verbatim where possible.
+  Annotate each step with the matching paragraph from `USE_CASE_en.md` so the test reads as
+  the executable form of the story.
+- **Test-mode API server**: required.
+- **Readability over DRY**: show full request payloads inline; do not abstract API calls into
+  helpers. Shared fixtures (auth, urn lookup) live in `conftest.py`.
+- **Why this split**: the spot set proves the parts; api-wired proves the parts compose into
+  the user-visible journey. Both must pass for an integration release.
 
 ### Running
 
-API-wired tests require the in-cluster API server:
-
 ```bash
-# Build and deploy the in-cluster API (may restart pods via Helm)
-./dev_env/dataspoke-test-mode.sh                  # builds image, deploys via Helm
-# Or skip rebuild if image already pushed:
-./dev_env/dataspoke-test-mode.sh --skip-build
-
-# Reset seed data after deploy (into stable infrastructure)
+# Spot -- some tests need the test-mode server, others do not. Run together for simplicity:
+./dev_env/dataspoke-test-mode.sh --skip-build      # safe to run; idempotent
 uv run python -m tests.integration.util --reset-all
+DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/
 
-# Run (DATASPOKE_TEST_MODE must be set in the pytest process)
+# Api-wired -- always run with the test-mode server up
+./dev_env/dataspoke-test-mode.sh --skip-build
+uv run python -m tests.integration.util --reset-all
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
-# Teardown
+# Teardown (optional; leave running if you'll iterate)
 ./dev_env/dataspoke-test-mode.sh --stop
 ```
 
-The `require_server` fixture verifies: (1) `DATASPOKE_TEST_MODE` is set, (2) server health via
-`/health`, (3) Airflow DAGs are registered via `/admin/dags/verify`.
-
-Non-api-wired tests do not require the running server.
+The `require_server` fixture (in `conftest.py`) verifies (1) `DATASPOKE_TEST_MODE` is set,
+(2) `/health` returns 200, (3) Airflow DAGs are registered via `/admin/dags/verify`. Spot
+tests opt in by depending on the fixture; api-wired tests always depend on it.
 
 ### Test Execution Groups
 
@@ -245,17 +270,11 @@ Tests must run in **three separate groups**:
 | Group | Command | Requires server? |
 |-------|---------|-----------------|
 | 1. Unit | `uv run pytest tests/unit/` | No |
-| 2. Non-api-wired integration | `uv run pytest tests/integration/ --ignore=tests/integration/api_wired/` | No |
+| 2. Spot integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/` | Recommended (some tests opt in) |
 | 3. Api-wired integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/` | Yes |
 
-**Why separate groups?** The test-mode server uses Airflow DAGs. Running api-wired and
-non-api-wired tests together causes competing Airflow load.
-
-### Readability Principle
-
-API-wired tests prioritize **readability over DRY** for HTTP requests. Each test shows the
-full request payload inline -- do not abstract API calls into helper functions. Shared cleanup
-helpers and conftest fixtures may be extracted.
+**Why separate groups?** The test-mode server runs Airflow DAGs. Mixing spot and api-wired
+runs causes competing Airflow load and flaky timing.
 
 ---
 
@@ -306,7 +325,7 @@ group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).
 
 ### References
 
-- Valid URNs and request payloads: existing spot tests in `tests/integration/api_wired/spot/`
+- Valid URNs and request payloads: spot tests in `tests/integration/spot/`
 - Full route catalogue: `spec/API.md`
 - Imazon test data: [Test Data Design](#test-data-design) below
 

@@ -1,6 +1,6 @@
 ---
 name: test
-description: Writes and runs tests for DataSpoke across all layers (unit, integration, API-wired, E2E). Use when the user asks to write tests, improve test coverage, or verify implementation correctness.
+description: Writes and runs tests for DataSpoke across all layers (unit, spot integration, api-wired integration, E2E). Use when the user asks to write tests, improve test coverage, or verify implementation correctness.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 ---
@@ -25,18 +25,22 @@ tests/
 │   ├── shared/                # Integration client tests (mocked external services)
 │   └── workflows/             # Airflow workflow tests (mocked activities)
 ├── integration/
-│   ├── conftest.py            # Root fixtures (infra, lifecycle, mocks, data helpers)
-│   ├── test_*_integration.py  # Non-api-wired tests (infra clients, Kafka, Airflow, etc.)
-│   ├── api_wired/
-│   │   ├── spot/              # Individual endpoint CRUD + error cases
-│   │   └── story/             # Multi-step USE_CASE scenario tests
+│   ├── conftest.py            # Root fixtures (infra, lock, dummy-data lifecycle)
+│   ├── spot/                  # Compact, independent tests of one concern each;
+│   │                          # Python or REST; together cover all integration scope.
+│   ├── api_wired/             # REST-only USE_CASE user-story tests
+│   │   └── test_uc{1..5}_<slug>.py
 │   └── util/                  # Dummy-data reset helpers + Airflow test utilities + fixtures
 └── conftest.py                # Shared pytest configuration
 ```
 
 ## Testing rules
 
-All testing conventions — mocking rules, pre-flight, lock protocol, data reset, Imazon test-data rule, assertion rules, API-wired readability, test-mode stubs, execution groups (unit / non-api-wired integration / api-wired integration / E2E) — are defined in `spec/TESTING.md`. Read it first, then apply what matches the task.
+All testing conventions — mocking rules, pre-flight, lock protocol, data reset, Imazon test-data rule, assertion rules, api-wired readability, test-mode stubs, execution groups (unit / spot integration / api-wired integration / E2E) — are defined in `spec/TESTING.md`. Read it first, then apply what matches the task.
+
+The integration-test split is **spot** vs **api-wired**:
+- `tests/integration/spot/` — one concern per test; can call dataspoke Python directly **or** call REST. The set must cover all integration scope on its own.
+- `tests/integration/api_wired/` — REST-only end-to-end tests of the five `USE_CASE_en.md` user stories. One file per UC; steps mirror the user-story narrative.
 
 Agent-specific notes:
 - Mirror the source tree when adding unit tests: `src/backend/validation/service.py` → `tests/unit/backend/test_validation_service.py`.
