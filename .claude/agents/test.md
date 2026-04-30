@@ -67,4 +67,5 @@ Run the tests you wrote to verify they pass. Fix any failures before reporting c
 End your work with a structured summary:
 - **Files changed**: list of created/modified test files with one-line descriptions
 - **Tests**: total tests run, passed, failed, skipped
+- **Test → spec traceability map**: for each test file, list each test function (or test group) with the spec document and acceptance criterion it traces to (e.g. `test_uc1_ingestion_happy_path → spec/USE_CASE_en.md §UC1 step 3`; `test_validation_rule_trip → spec/feature/VALIDATION.md §3.2`). The reviewer uses this to audit whether assertions derive from the spec rather than from current impl behavior. If a test does not trace cleanly to a spec line, say so explicitly rather than fabricating a citation.
 - **Reviewer findings verified** (if applicable): which findings were confirmed vs disproved by tests

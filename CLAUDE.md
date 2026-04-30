@@ -79,7 +79,7 @@ End-to-end steps:
 4. `backend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
 5. `workflow` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
    (steps 4 and 5 may run concurrently when workflow does not depend on new backend API contracts)
-6. `test` agent — write and run tests (can also verify specific reviewer findings)
+6. `test` agent → `test-reviewer` agent → [fix pass if REVISE, max 1 iteration]
 7. `frontend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
 8. `k8s-helm` agent — containerize and deploy (when ready, no review loop)
 

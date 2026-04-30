@@ -100,10 +100,11 @@ directly in the main conversation.
 
 | Subagent | Role | Scope | Tools |
 |----------|------|-------|-------|
-| `reviewer` | Evaluator | Independently reviews generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after each generator | Read, Glob, Grep, Bash |
+| `reviewer` | Evaluator | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `workflow`, and `frontend` generators | Read, Glob, Grep, Bash |
+| `test-reviewer` | Evaluator | Independently reviews test-generator output. Produces structured pass/fail scoring across 5 test-specific criteria: spec traceability, spec-derived (vs impl-calibrated) assertions, failure-mode coverage, plausibly-broken-impl sensitivity, and property-based testing opportunity (advisory). Invoked after the `test` generator | Read, Glob, Grep, Bash |
 | `security-reviewer` | Evaluator | Parallel security review when a generator's diff touches sensitive paths (auth, secrets, migrations, DataHub emission, Helm credentials, new dependencies, `.prauto/`). Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, crypto. Authoritative glob list lives in the agent file | Read, Glob, Grep, Bash |
 
-Both reviewers use read-only tools — they analyze and report but do not write code.
+All three reviewers use read-only tools — they analyze and report but do not write code.
 
 ### Generators (sonnet model)
 
@@ -119,8 +120,9 @@ Both reviewers use read-only tools — they analyze and report but do not write 
 
 The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan
 mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles
-(backend → workflow → test → frontend, each followed by `reviewer` with a single fix pass) →
-`k8s-helm` when ready (no review loop). Sequential by default; backend and workflow may run
+(backend → workflow → test → frontend, each followed by its evaluator — `reviewer` for code
+generators, `test-reviewer` for the `test` agent — with a single fix pass) → `k8s-helm` when
+ready (no review loop). Sequential by default; backend and workflow may run
 concurrently when workflow does not consume new API contracts, and frontend may run concurrently
 with the test phase when it does not depend on pending backend changes. The main agent
 orchestrates by passing the approved plan into generators, generator completion reports into the
@@ -204,8 +206,8 @@ requirements.
 2. **Run `/plan-doc`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/dev-env install`** — bring up the DataHub environment
 4. **Implement features** using the plan → approve → generate → evaluate workflow:
-   Plan mode → approve → `backend` → `reviewer` → `test` → `frontend` → `reviewer` →
-   `k8s-helm`
+   Plan mode → approve → `backend` → `reviewer` → `workflow` → `reviewer` → `test` →
+   `test-reviewer` → `frontend` → `reviewer` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
@@ -245,16 +247,18 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    Delegate implementation to generator agents rather than writing code in the main
    conversation.
 
-8. **Generator-evaluator separation** — Generators (backend, workflow, frontend) write code and
-   self-test. An independent `reviewer` agent evaluates the output against the spec and approved
-   plan. Self-evaluation is insufficient for quality assurance — models tend to praise their own
-   work. External critique from a separate context is a stronger signal. (Source:
+8. **Generator-evaluator separation** — Generators (backend, workflow, frontend, test) produce
+   code or tests and self-verify. An independent evaluator agent — `reviewer` for code,
+   `test-reviewer` for tests — then evaluates the output against the spec and approved plan.
+   Self-evaluation is insufficient for quality assurance — models tend to praise their own work.
+   External critique from a separate context is a stronger signal. (Source:
    [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
 
-9. **Model-appropriate roles** — Use the strongest model (opus) for the `reviewer` role, which
-   requires judgment, reasoning, and resistance to self-praise patterns. Use faster models
-   (sonnet) for volume code generation. Planning uses Claude's built-in Plan mode (which runs on
-   the session's current model) rather than a dedicated subagent.
+9. **Model-appropriate roles** — Use the strongest model (opus) for evaluator roles (`reviewer`,
+   `test-reviewer`, `security-reviewer`), which require judgment, reasoning, and resistance to
+   self-praise patterns. Use faster models (sonnet) for volume code generation. Planning uses
+   Claude's built-in Plan mode (which runs on the session's current model) rather than a
+   dedicated subagent.
 
 10. **Bounded iteration** — Review loops are capped at 1 fix iteration per generator to control
     cost and latency. Unresolved issues after one fix pass are escalated to the user rather than
