@@ -1,4 +1,4 @@
-"""Measurer: validation-score — datasets categorised by rule pass rate.
+"""Measurer: pct_rules_passing — datasets categorised by rule pass rate.
 
 A dataset is *rules_passing* if its most-recent validation result row for
 each rule has ``assertion_result='SUCCESS'``.  If any rule's latest result is
@@ -20,7 +20,7 @@ from src.shared.db.models import ValidationResult
 _PASSING = "SUCCESS"
 
 
-@register_measurer("validation-score")
+@register_measurer("pct_rules_passing")
 async def measure(
     datasets: list[str],
     *,

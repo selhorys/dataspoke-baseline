@@ -28,10 +28,10 @@ async def get_validation_list(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
-    is_enabled_filter: bool | None = Query(default=None, alias="is_enabled"),
+    is_enabled_filter: bool | None = Query(default=None, alias="status"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationConfigListResponse:
-    """List validation attributes across datasets (paginated, filterable by is_enabled).
+    """List validation attributes across datasets (paginated, filterable by status).
 
     Each row aggregates the per-dataset attr/validation/* (conf and latest result).
     """

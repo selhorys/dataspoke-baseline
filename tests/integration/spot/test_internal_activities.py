@@ -10,10 +10,16 @@ Internal routes are mounted WITHOUT the /api/v1 prefix (see src/api/main.py line
 # spec: BACKEND.md §Tier-DAG selection
 # spec: BACKEND.md §Ingestion Service / §Validation Service / §Metrics Service
 
+import os
 import urllib.parse
 
 import httpx
 import pytest
+
+# Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
+_PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
+_PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
+_PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
 
 # Imazon dataset that is guaranteed to exist in DataHub after reset
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
@@ -47,8 +53,8 @@ async def test_ingestion_list_active_hourly(
         json={
             "mode": "active",
             "platform": "postgres",
-            "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
-            "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
             "auth": {"username": "spoke_reader", "secret_ref": "k8s-secret/pg-spoke-reader"},
             "is_enabled": True,
             "schedule_tier": "hourly",
@@ -62,8 +68,8 @@ async def test_ingestion_list_active_hourly(
         json={
             "mode": "active",
             "platform": "postgres",
-            "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
-            "identifier": {"database": "imazon", "schema_name": "catalog", "table": "editions"},
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
             "auth": {"username": "spoke_reader", "secret_ref": "k8s-secret/pg-spoke-reader"},
             "is_enabled": True,
             "schedule_tier": "daily",
@@ -116,9 +122,9 @@ async def test_ingestion_run_activity(
         json={
             "mode": "active",
             "platform": "postgres",
-            "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
-                "database": "imazon",
+                "database": _PG_DB,
                 "schema_name": "catalog",
                 "table": "title_master",
             },
@@ -393,7 +399,7 @@ async def test_metrics_list_active_hourly(
         "description": "Spot test metric for tier-selection.",
         "theme": "freshness",
         "measurement_query": {
-            "aggregation": "ingestion-freshness",
+            "aggregation": "pct_fresh",
             "dataset_filter": {"dataset_urns": [_TEST_URN]},
         },
         "is_enabled": True,
@@ -459,7 +465,7 @@ async def test_metrics_run_activity(
             "description": "Spot test metric description.",
             "theme": "freshness",
             "measurement_query": {
-                "aggregation": "ingestion-freshness",
+                "aggregation": "pct_fresh",
                 "dataset_filter": {"dataset_urns": [_TEST_URN]},
             },
             "schedule_tier": "hourly",

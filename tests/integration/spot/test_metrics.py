@@ -112,7 +112,7 @@ async def test_metric_conf_put(
             "title": "Spot Test Ingestion Freshness",
             "description": "Spot test metric description.",
             "theme": "freshness",
-            "measurement_query": {"aggregation": "ingestion-freshness"},
+            "measurement_query": {"aggregation": "pct_fresh"},
             "schedule_tier": "hourly",
             "is_enabled": False,
         },
@@ -143,7 +143,7 @@ async def test_metric_conf_patch(
             "title": "Spot Test Metric",
             "description": "Spot test metric description.",
             "theme": "freshness",
-            "measurement_query": {"aggregation": "ingestion-freshness"},
+            "measurement_query": {"aggregation": "pct_fresh"},
             "schedule_tier": "hourly",
             "is_enabled": False,
         },
@@ -178,7 +178,7 @@ async def test_metric_conf_delete(
             "title": "Spot Delete Metric",
             "description": "Spot test metric description.",
             "theme": "freshness",
-            "measurement_query": {"aggregation": "ingestion-freshness"},
+            "measurement_query": {"aggregation": "pct_fresh"},
             "schedule_tier": "hourly",
             "is_enabled": False,
         },
@@ -213,7 +213,7 @@ async def test_metric_put_with_invalid_urn_returns_422(
             "description": "Tests URN validation at PUT.",
             "theme": "freshness",
             "measurement_query": {
-                "aggregation": "ingestion-freshness",
+                "aggregation": "pct_fresh",
                 "dataset_filter": {
                     "dataset_urns": ["not-a-valid-urn"]
                 },
@@ -272,7 +272,7 @@ async def test_metric_run(
             "description": "Spot test metric description.",
             "theme": "freshness",
             "measurement_query": {
-                "aggregation": "ingestion-freshness",
+                "aggregation": "pct_fresh",
                 "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
             },
             "schedule_tier": "hourly",
@@ -388,7 +388,7 @@ async def test_metric_run_unresolved_urns_in_event(
             "description": "Tests unresolved_urns reporting.",
             "theme": "freshness",
             "measurement_query": {
-                "aggregation": "ingestion-freshness",
+                "aggregation": "pct_fresh",
                 "dataset_filter": {"dataset_urns": [_GHOST_URN]},
             },
             "schedule_tier": "hourly",
@@ -460,7 +460,7 @@ async def test_metric_run_concurrent_returns_409(
             "description": "Tests concurrent run guard.",
             "theme": "freshness",
             "measurement_query": {
-                "aggregation": "ingestion-freshness",
+                "aggregation": "pct_fresh",
                 "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
             },
             "schedule_tier": "hourly",
@@ -536,7 +536,7 @@ async def test_metric_run_dry_run_does_not_persist(
             "description": "Spot test metric description.",
             "theme": "freshness",
             "measurement_query": {
-                "aggregation": "ingestion-freshness",
+                "aggregation": "pct_fresh",
                 "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
             },
             "schedule_tier": "hourly",
@@ -600,7 +600,7 @@ async def test_metric_result_list_envelope(
         json={
             "title": "Spot Result Metric",
             "theme": "freshness",
-            "measurement_query": {"aggregation": "ingestion-freshness"},
+            "measurement_query": {"aggregation": "pct_fresh"},
             "schedule_tier": "hourly",
             "is_enabled": False,
         },
@@ -636,7 +636,7 @@ async def test_metric_event_list_envelope(
             "title": "Spot Event Metric",
             "description": "Spot test metric description.",
             "theme": "freshness",
-            "measurement_query": {"aggregation": "ingestion-freshness"},
+            "measurement_query": {"aggregation": "pct_fresh"},
             "schedule_tier": "hourly",
             "is_enabled": False,
         },

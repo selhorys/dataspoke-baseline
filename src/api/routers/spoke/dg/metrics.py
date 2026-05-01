@@ -67,7 +67,7 @@ async def get_metric_list(
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
     theme: str | None = Query(default=None),
-    is_enabled_filter: bool | None = Query(default=None, alias="is_enabled"),
+    is_enabled_filter: bool | None = Query(default=None, alias="status"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionListResponse:
     """List metric definitions with optional theme and enabled filters."""

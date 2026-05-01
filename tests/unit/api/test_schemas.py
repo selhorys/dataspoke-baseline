@@ -246,7 +246,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"aggregation": "ingestion-freshness"},
+            measurement_query={"aggregation": "pct_fresh"},
             is_enabled=False,
         )
         assert req.is_enabled is False
@@ -256,7 +256,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"aggregation": "ingestion-freshness"},
+            measurement_query={"aggregation": "pct_fresh"},
             is_enabled=True,
             schedule_tier="daily",
         )
@@ -268,7 +268,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"aggregation": "ingestion-freshness"},
+            measurement_query={"aggregation": "pct_fresh"},
             is_enabled=True,
         )
         assert req.is_enabled is True
@@ -281,7 +281,7 @@ class TestMetricsSchemas:
             title="Row Count",
             description="Counts total rows",
             theme="quality",
-            measurement_query={"aggregation": "ingestion-freshness"},
+            measurement_query={"aggregation": "pct_fresh"},
             schedule_tier=None,
             is_enabled=True,
             created_at=now,

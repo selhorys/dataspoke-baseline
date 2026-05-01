@@ -1,4 +1,4 @@
-"""Measurer: ingestion-freshness — datasets categorised as fresh or stale.
+"""Measurer: pct_fresh — datasets categorised as fresh or stale.
 
 A dataset is *fresh* if its latest ``INGESTION.COMPLETE`` event occurred within
 the freshness window defined in the metric's ``measurement_query``
@@ -21,7 +21,7 @@ from src.shared.events import INGESTION_COMPLETE
 _DEFAULT_FRESHNESS_DAYS = 1
 
 
-@register_measurer("ingestion-freshness")
+@register_measurer("pct_fresh")
 async def measure(
     datasets: list[str],
     *,

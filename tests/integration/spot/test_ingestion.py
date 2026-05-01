@@ -12,10 +12,16 @@ Concerns covered:
 # spec: API.md §Standard Envelope
 # spec: BACKEND.md §Ingestion Service
 
+import os
 import urllib.parse
 
 import httpx
 import pytest
+
+# Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
+_PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
+_PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
+_PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
 
 # Use a fixed test URN that we know won't conflict with Imazon seed data.
 # This dataset is registered in DataHub during the module's DUMMY_DATA_DATAHUB_SCHEMAS reset.
@@ -49,7 +55,7 @@ async def test_ingestion_list_paginated_envelope(
     _common_payload = {
         "mode": "active",
         "platform": "postgres",
-        "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+        "locator": {"host": _PG_HOST, "port": _PG_PORT},
         "auth": {
             "username": "spoke_reader",
             "secret_ref": "k8s-secret/pg-spoke-reader",
@@ -61,7 +67,7 @@ async def test_ingestion_list_paginated_envelope(
         headers=admin_headers,
         json={
             **_common_payload,
-            "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
         },
     )
     await api_client.put(
@@ -69,7 +75,7 @@ async def test_ingestion_list_paginated_envelope(
         headers=admin_headers,
         json={
             **_common_payload,
-            "identifier": {"database": "imazon", "schema_name": "catalog", "table": "editions"},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
         },
     )
 
@@ -141,9 +147,9 @@ async def test_ingestion_conf_put_patch_delete(
         json={
             "mode": "active",
             "platform": "postgres",
-            "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
-                "database": "imazon",
+                "database": _PG_DB,
                 "schema_name": "catalog",
                 "table": "title_master",
             },
@@ -195,9 +201,9 @@ async def test_ingestion_run_dry_run(
         json={
             "mode": "active",
             "platform": "postgres",
-            "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
-                "database": "imazon",
+                "database": _PG_DB,
                 "schema_name": "catalog",
                 "table": "title_master",
             },
@@ -240,9 +246,9 @@ async def test_ingestion_events_list_envelope(
         json={
             "mode": "active",
             "platform": "postgres",
-            "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
-                "database": "imazon",
+                "database": _PG_DB,
                 "schema_name": "catalog",
                 "table": "title_master",
             },

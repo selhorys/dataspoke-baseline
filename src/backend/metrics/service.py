@@ -1,10 +1,10 @@
 """Metrics service — metric CRUD, run pipeline, and event recording.
 
 Metrics are pure aggregation over pre-existing data (DataHub metadata and
-validation results). The only supported metric types are:
-- ``ingestion-freshness``: datasets categorised as fresh/stale based on
-  latest INGESTION.COMPLETE event recency.
-- ``validation-score``: datasets categorised as rules_passing/rules_failing
+validation results). The supported ``measurement_query.aggregation`` values are:
+- ``pct_fresh``: datasets categorised as fresh/stale based on latest
+  INGESTION.COMPLETE event recency.
+- ``pct_rules_passing``: datasets categorised as rules_passing/rules_failing
   based on latest validation results.
 
 Unsupported aggregation types raise ``INVALID_PARAMETER``.

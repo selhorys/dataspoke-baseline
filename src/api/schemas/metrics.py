@@ -24,7 +24,7 @@ class UpsertMetricConfigRequest(BaseModel):
     measurement_query: dict[str, Any] = Field(
         description=(
             "Query configuration for metric measurement. "
-            "Required key: 'aggregation' — registered measurer key, e.g. 'ingestion-freshness' or 'validation-score'. "
+            "Required key: 'aggregation' — registered measurer key, e.g. 'pct_fresh' or 'pct_rules_passing'. "
             "Optional key: 'dataset_filter' with 'tags', 'glossary_terms', and/or 'dataset_urns' lists for OR-filtering. "
             "Unsupported aggregation values return 422 INVALID_PARAMETER."
         )
@@ -51,7 +51,7 @@ class UpsertMetricConfigRequest(BaseModel):
                 "description": "Measures the percentage of datasets with a recent successful ingestion run",
                 "theme": "freshness",
                 "measurement_query": {
-                    "aggregation": "ingestion-freshness",
+                    "aggregation": "pct_fresh",
                     "dataset_filter": {
                         "tags": ["urn:li:tag:PII"],
                     },
@@ -73,7 +73,7 @@ class PatchMetricConfigRequest(BaseModel):
         default=None,
         description=(
             "Updated query configuration for metric measurement. "
-            "Required key: 'aggregation' — registered measurer key, e.g. 'ingestion-freshness' or 'validation-score'."
+            "Required key: 'aggregation' — registered measurer key, e.g. 'pct_fresh' or 'pct_rules_passing'."
         ),
     )
     schedule_tier: str | None = Field(

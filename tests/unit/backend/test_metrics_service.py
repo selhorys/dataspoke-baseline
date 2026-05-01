@@ -31,7 +31,7 @@ def _make_definition_row(
     row.title = title
     row.description = description
     row.theme = theme
-    row.measurement_query = measurement_query or {"aggregation": "ingestion-freshness"}
+    row.measurement_query = measurement_query or {"aggregation": "pct_fresh"}
     row.schedule_tier = schedule_tier
     row.is_enabled = is_enabled
     row.created_at = datetime.now(tz=UTC)
@@ -171,7 +171,7 @@ async def test_upsert_metric_config_create(service, db):
         title="Ingestion Freshness",
         description="desc",
         theme="freshness",
-        measurement_query={"aggregation": "ingestion-freshness"},
+        measurement_query={"aggregation": "pct_fresh"},
     )
     assert db.add.called
     assert db.commit.await_count >= 1
@@ -188,7 +188,7 @@ async def test_upsert_metric_config_update(service, db):
         title="Updated",
         description="new desc",
         theme="freshness",
-        measurement_query={"aggregation": "ingestion-freshness"},
+        measurement_query={"aggregation": "pct_fresh"},
     )
     assert existing.title == "Updated"
     assert db.commit.await_count >= 1
@@ -282,7 +282,7 @@ async def test_run_ingestion_freshness_persists(service, db, datahub):
     """
     def_row = _make_definition_row(
         metric_id="ingestion-freshness",
-        measurement_query={"aggregation": "ingestion-freshness"},
+        measurement_query={"aggregation": "pct_fresh"},
     )
 
     def_result = MagicMock()
@@ -314,7 +314,7 @@ async def test_run_ingestion_freshness_persists(service, db, datahub):
 async def test_run_dry_run_does_not_persist(service, db, datahub):
     """dry_run=True: measure but do not call db.add for MetricResult."""
     def_row = _make_definition_row(
-        measurement_query={"aggregation": "ingestion-freshness"}
+        measurement_query={"aggregation": "pct_fresh"}
     )
 
     def_result = MagicMock()
@@ -347,7 +347,7 @@ async def test_breakdown_field_names_unified(service, db, datahub):
     _BREAKDOWN_FORBIDDEN_KEY = "metric_type"
 
     def_row = _make_definition_row(
-        measurement_query={"aggregation": "ingestion-freshness"}
+        measurement_query={"aggregation": "pct_fresh"}
     )
 
     def_result = MagicMock()
@@ -423,7 +423,7 @@ async def test_dataset_filter_passthrough(service, db, datahub):
     """tags/glossary_terms from measurement_query.dataset_filter are forwarded to enumerate_datasets."""
     def_row = _make_definition_row(
         measurement_query={
-            "aggregation": "ingestion-freshness",
+            "aggregation": "pct_fresh",
             "dataset_filter": {
                 "tags": ["urn:li:tag:PII"],
                 "glossary_terms": ["urn:li:glossaryTerm:CustomerData"],
@@ -456,7 +456,7 @@ async def test_dataset_filter_passthrough_dataset_urns(service, db, datahub):
 
     def_row = _make_definition_row(
         measurement_query={
-            "aggregation": "ingestion-freshness",
+            "aggregation": "pct_fresh",
             "dataset_filter": {"dataset_urns": [_PINNED_URN]},
         }
     )
@@ -498,7 +498,7 @@ async def test_dataset_filter_empty_returns_all(service, db, datahub):
     """
     def_row = _make_definition_row(
         measurement_query={
-            "aggregation": "ingestion-freshness",
+            "aggregation": "pct_fresh",
             "dataset_filter": {},
         }
     )
@@ -537,7 +537,7 @@ async def test_dataset_filter_or_semantics(service, db, datahub):
 
     def_row = _make_definition_row(
         measurement_query={
-            "aggregation": "ingestion-freshness",
+            "aggregation": "pct_fresh",
             "dataset_filter": {
                 "tags": [_TAG_URN],
                 "glossary_terms": [_TERM_URN],
