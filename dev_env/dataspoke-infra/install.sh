@@ -59,16 +59,20 @@ kubectl create secret generic dataspoke-redis-secret \
   --from-literal=REDIS_PASSWORD="${DATASPOKE_REDIS_PASSWORD}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# Generate internal-auth token for Airflow→API calls (idempotent: skip if secret exists)
-if kubectl -n "${NS}" get secret dataspoke-internal-auth >/dev/null 2>&1; then
-  info "dataspoke-internal-auth already exists — skipping."
-else
-  info "Generating dataspoke-internal-auth token..."
-  token="$(openssl rand -hex 32)"
-  kubectl -n "${NS}" create secret generic dataspoke-internal-auth \
-    --from-literal=token="${token}"
-  info "dataspoke-internal-auth created."
+# Internal-auth token (Airflow→API): .env is the source of truth. Generate
+# and persist back to .env on first run, then upsert the cluster secret.
+if [[ -z "${DATASPOKE_INTERNAL_TOKEN:-}" ]]; then
+  info "DATASPOKE_INTERNAL_TOKEN unset — generating and appending to .env..."
+  DATASPOKE_INTERNAL_TOKEN="$(openssl rand -hex 32)"
+  printf '\nDATASPOKE_INTERNAL_TOKEN=%s\n' "${DATASPOKE_INTERNAL_TOKEN}" \
+    >> "$SCRIPT_DIR/../.env"
 fi
+
+info "Applying dataspoke-internal-auth..."
+kubectl create secret generic dataspoke-internal-auth \
+  --namespace "${NS}" \
+  --from-literal=token="${DATASPOKE_INTERNAL_TOKEN}" \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 # ---------------------------------------------------------------------------
 # Register required Helm repositories (idempotent)

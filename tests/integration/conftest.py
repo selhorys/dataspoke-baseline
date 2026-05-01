@@ -15,7 +15,6 @@ import asyncio
 import base64
 import json
 import os
-import subprocess
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -141,26 +140,6 @@ def _auth_headers() -> dict[str, str]:
 # ── Shared fixtures ───────────────────────────────────────────────────────────
 
 
-def _alembic_cmd(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run an alembic command against the dev-env PostgreSQL."""
-    host = os.environ["DATASPOKE_POSTGRES_HOST"]
-    port = os.environ["DATASPOKE_POSTGRES_PORT"]
-    user = os.environ["DATASPOKE_POSTGRES_USER"]
-    password = os.environ["DATASPOKE_POSTGRES_PASSWORD"]
-    db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
-    alembic_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
-
-    env = {**os.environ, "PYTHONPATH": _PROJECT_ROOT, "DATASPOKE_ALEMBIC_URL": alembic_url}
-    return subprocess.run(
-        ["alembic", *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=_PROJECT_ROOT,
-        env=env,
-    )
-
-
 @pytest.fixture(scope="session")
 def integration_db_url() -> str:
     host = os.environ["DATASPOKE_POSTGRES_HOST"]
@@ -217,11 +196,75 @@ async def redis_client():
     await client.close()
 
 
+async def _bootstrap_schema(db_url: str) -> None:
+    from sqlalchemy import pool as sa_pool
+
+    from src.shared.config import EMBEDDING_DIMENSION
+    from src.shared.db.models import Base
+
+    engine = create_async_engine(
+        db_url, poolclass=sa_pool.NullPool, isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS dataspoke"))
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS age"))
+            await conn.execute(
+                text('SET search_path = ag_catalog, "$user", public, pg_catalog')
+            )
+            await conn.execute(
+                text(
+                    """
+                    DO $$ BEGIN
+                        PERFORM ag_catalog.create_graph('dataspoke_ontogen');
+                    EXCEPTION WHEN others THEN
+                        IF SQLERRM LIKE '%already exists%' OR SQLSTATE = '42710' THEN
+                            NULL;
+                        ELSE
+                            RAISE;
+                        END IF;
+                    END $$
+                    """
+                )
+            )
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS dataspoke.dataset_embeddings (
+                        dataset_urn TEXT PRIMARY KEY,
+                        platform TEXT,
+                        tags JSONB,
+                        owners JSONB,
+                        quality_score FLOAT,
+                        has_pii BOOLEAN,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        embedding vector({EMBEDDING_DIMENSION}) NOT NULL
+                    )
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS dataset_embeddings_embedding_hnsw_idx "
+                    "ON dataspoke.dataset_embeddings USING hnsw (embedding vector_cosine_ops)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS node_embeddings_embedding_hnsw_idx "
+                    "ON dataspoke.node_embeddings USING hnsw (embedding vector_cosine_ops)"
+                )
+            )
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture(scope="session", autouse=True)
-def alembic_at_head() -> None:
-    """Ensure the dataspoke schema is at head for the entire test session."""
-    result = _alembic_cmd("upgrade", "head")
-    assert result.returncode == 0, f"alembic upgrade failed: {result.stderr}"
+def schema_bootstrap(integration_db_url: str) -> None:
+    """Idempotent schema setup: schema, extensions, AGE graph, ORM tables, HNSW indexes."""
+    asyncio.run(_bootstrap_schema(integration_db_url))
     yield  # type: ignore[misc]
 
 
