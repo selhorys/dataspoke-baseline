@@ -15,6 +15,7 @@ Spec: spec/feature/BACKEND.md §Metrics Service
 
 import logging
 import re as _re
+import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -39,6 +40,7 @@ from src.shared.events import (
     METRIC_RUN_COMPLETE,
 )
 from src.shared.exceptions import (
+    ConflictError,
     EntityNotFoundError,
     InvalidDatasetUrnError,
     PreconditionFailedError,
@@ -363,6 +365,25 @@ class MetricsService:
         metric_id: str,
         dry_run: bool = False,
     ) -> MetricRunResult:
+        lock_key = f"metrics:running:{metric_id}"
+        lock_token: str | None = None
+
+        if self._cache is not None:
+            lock_token = secrets.token_urlsafe(16)
+            acquired = await self._cache.set_nx(lock_key, lock_token, ttl_seconds=3600)
+            if not acquired:
+                raise ConflictError(
+                    "METRIC_RUNNING",
+                    f"Metric measurement is already running for {metric_id}",
+                )
+
+        try:
+            return await self._run_inner(metric_id, dry_run)
+        finally:
+            if self._cache is not None and lock_token is not None:
+                await self._cache.delete_if_value(lock_key, lock_token)
+
+    async def _run_inner(self, metric_id: str, dry_run: bool) -> MetricRunResult:
         definition = await self.get_metric(metric_id)
         run_id = str(uuid.uuid4())
 

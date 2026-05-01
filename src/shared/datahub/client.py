@@ -110,6 +110,7 @@ class DataHubClient:
                 input: {
                     urn: $urn,
                     direction: DOWNSTREAM,
+                    types: [DATASET],
                     count: 1000
                 }
             ) {
@@ -130,6 +131,7 @@ class DataHubClient:
                 input: {
                     urn: $urn,
                     direction: UPSTREAM,
+                    types: [DATASET],
                     count: 1000
                 }
             ) {

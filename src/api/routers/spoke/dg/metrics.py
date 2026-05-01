@@ -16,8 +16,10 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+import secrets
+
 from src.api.auth.dependencies import require_dg
-from src.api.dependencies import get_airflow_client, get_metrics_service
+from src.api.dependencies import get_airflow_client, get_metrics_service, get_redis
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
@@ -32,7 +34,9 @@ from src.api.schemas.metrics import (
     UpsertMetricConfigRequest,
 )
 from src.backend.metrics.service import MetricDefinitionRecord, MetricsService
+from src.shared.cache.client import RedisClient
 from src.shared.db.models import Event, MetricDefinition, MetricResult
+from src.shared.exceptions import ConflictError
 from src.shared.settings import settings
 from src.workflows.airflow.client import AirflowClient
 
@@ -204,25 +208,37 @@ async def post_metric_run(
     metric_id: str,
     body: RunMetricRequest,
     airflow: AirflowClient = Depends(get_airflow_client),
+    cache: RedisClient = Depends(get_redis),
 ) -> MetricRunResultResponse:
     """Trigger a metric measurement run; concurrent runs return 409 METRIC_RUNNING."""
     workflow_id = f"metrics-{metric_id}"
-    await airflow.check_no_duplicate("metrics", "workflow_id", workflow_id, "METRIC_RUNNING")
-    dag_run = await airflow.trigger_and_wait(
-        "metrics",
-        conf={
-            "callback_base_url": settings.airflow_callback_base_url,
-            "metric_id": metric_id,
-            "dry_run": str(body.dry_run).lower(),
-            "workflow_id": workflow_id,
-        },
-    )
-    conf_out = dag_run.conf or {}
-    return MetricRunResultResponse(
-        run_id=conf_out.get("run_id", dag_run.dag_run_id),
-        status=conf_out.get("status", dag_run.state.value),
-        detail=conf_out.get("detail", {}),
-    )
+    lock_key = f"metrics:running:{metric_id}"
+    lock_token = secrets.token_urlsafe(16)
+    acquired = await cache.set_nx(lock_key, lock_token, ttl_seconds=3600)
+    if not acquired:
+        raise ConflictError(
+            "METRIC_RUNNING",
+            f"A metrics DAG run is already running for {metric_id}",
+        )
+    try:
+        await airflow.check_no_duplicate("metrics", "workflow_id", workflow_id, "METRIC_RUNNING")
+        dag_run = await airflow.trigger_and_wait(
+            "metrics",
+            conf={
+                "callback_base_url": settings.airflow_callback_base_url,
+                "metric_id": metric_id,
+                "dry_run": str(body.dry_run).lower(),
+                "workflow_id": workflow_id,
+            },
+        )
+        conf_out = dag_run.conf or {}
+        return MetricRunResultResponse(
+            run_id=conf_out.get("run_id", dag_run.dag_run_id),
+            status=conf_out.get("status", dag_run.state.value),
+            detail=conf_out.get("detail", {}),
+        )
+    finally:
+        await cache.delete_if_value(lock_key, lock_token)
 
 
 @router.get("/{metric_id}/event", response_model=EventListResponse)

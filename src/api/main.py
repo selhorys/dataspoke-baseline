@@ -41,6 +41,7 @@ from src.shared.exceptions import (
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
+    InvalidDatasetUrnError,
     PreconditionFailedError,
     StorageUnavailableError,
 )
@@ -121,6 +122,12 @@ async def _handle_conflict(request: Request, exc: ConflictError) -> JSONResponse
 
 
 async def _handle_precondition(request: Request, exc: PreconditionFailedError) -> JSONResponse:
+    return _error_json(request, 422, exc.error_code, str(exc))
+
+
+async def _handle_invalid_dataset_urn(
+    request: Request, exc: InvalidDatasetUrnError
+) -> JSONResponse:
     return _error_json(request, 422, exc.error_code, str(exc))
 
 
@@ -236,6 +243,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
+    app.add_exception_handler(InvalidDatasetUrnError, _handle_invalid_dataset_urn)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]

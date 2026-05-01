@@ -39,7 +39,7 @@ async def get_data_ingestion_conf(
     """Retrieve the ingestion config for a dataset."""
     config = await service.get_config(dataset_urn)
     if config is None:
-        raise EntityNotFoundError("ingestion_config", dataset_urn)
+        raise EntityNotFoundError("config", dataset_urn)
     return IngestionConfigResponse.model_validate(config)
 
 

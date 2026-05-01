@@ -45,7 +45,7 @@ async def resolve_source_config(
     )
     row = result.scalar_one_or_none()
     if row is None:
-        raise EntityNotFoundError("ingestion_config", dataset_urn)
+        raise EntityNotFoundError("config", dataset_urn)
 
     return row.platform, row.locator, row.identifier, row.auth
 

@@ -42,7 +42,7 @@ async def get_data_validation_conf(
     """Retrieve the validation config for a dataset."""
     config = await service.get_config(dataset_urn)
     if config is None:
-        raise EntityNotFoundError("validation_config", dataset_urn)
+        raise EntityNotFoundError("config", dataset_urn)
     return ValidationConfigResponse.model_validate(config)
 
 
@@ -162,7 +162,7 @@ async def post_data_validation_run(
     """
     config = await service.get_config(dataset_urn)
     if config is None:
-        raise EntityNotFoundError("validation_config", dataset_urn)
+        raise EntityNotFoundError("config", dataset_urn)
     result = await service.run(dataset_urn, partition=body.partition, dry_run=body.dry_run)
     return ValidationRunResultResponse(
         run_id=result.run_id,

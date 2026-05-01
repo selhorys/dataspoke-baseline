@@ -238,7 +238,7 @@ class MetagenService:
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("metagen_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         for field_name in ("targets", "code_refs", "schedule_tier", "owner"):
             if field_name in patch and patch[field_name] is not None:
@@ -270,7 +270,7 @@ class MetagenService:
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("metagen_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         config_id = str(row.id)
         await self._db.delete(row)
@@ -443,7 +443,7 @@ class MetagenService:
         """Inner run logic (called inside the SETNX guard)."""
         config = await self.get_config(dataset_urn)
         if config is None:
-            raise EntityNotFoundError("metagen_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         run_id_str = run_id or str(uuid.uuid4())
 

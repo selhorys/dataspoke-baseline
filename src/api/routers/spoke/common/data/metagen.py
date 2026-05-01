@@ -43,7 +43,7 @@ async def get_data_metagen_conf(
 
     config = await service.get_config(dataset_urn)
     if config is None:
-        raise EntityNotFoundError("metagen_config", dataset_urn)
+        raise EntityNotFoundError("config", dataset_urn)
     return MetagenConfResponse(
         id=config.id,
         dataset_urn=config.dataset_urn,

@@ -198,7 +198,7 @@ class ValidationService:
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("validation_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         if "rules" in patch and patch["rules"] is not None:
             row.rules = patch["rules"]
@@ -231,7 +231,7 @@ class ValidationService:
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("validation_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         config_id = str(row.id)
         await self._db.delete(row)
@@ -375,7 +375,7 @@ class ValidationService:
         """Inner validation run logic (called inside the SETNX guard)."""
         config = await self.get_config(dataset_urn)
         if config is None:
-            raise EntityNotFoundError("validation_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         if dry_run:
             return ValidationRunSummary(

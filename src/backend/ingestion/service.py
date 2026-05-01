@@ -174,7 +174,7 @@ class IngestionService:
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("ingestion_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         if "mode" in patch and patch["mode"] is not None:
             row.mode = patch["mode"]
@@ -217,7 +217,7 @@ class IngestionService:
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("ingestion_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         config_id = str(row.id)
         schedule_tier = row.schedule_tier
@@ -327,7 +327,7 @@ class IngestionService:
 
         config = await self.get_config(dataset_urn)
         if config is None:
-            raise EntityNotFoundError("ingestion_config", dataset_urn)
+            raise EntityNotFoundError("config", dataset_urn)
 
         ingestion_result = await run_datahub_ingestion(
             datahub=self._datahub,

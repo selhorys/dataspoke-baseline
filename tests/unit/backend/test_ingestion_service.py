@@ -192,7 +192,7 @@ async def test_patch_config_not_found(service, db):
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.patch_config("nonexistent", {"schedule_tier": "daily"})
-    assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
 # ── delete_config ────────────────────────────────────────────────────────────
@@ -213,7 +213,7 @@ async def test_delete_config_not_found(service, db):
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.delete_config("nonexistent")
-    assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
 # ── list_configs ─────────────────────────────────────────────────────────────
@@ -389,7 +389,7 @@ async def test_run_config_not_found(service, db):
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.run("nonexistent")
-    assert exc_info.value.error_code == "INGESTION_CONFIG_NOT_FOUND"
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
 # ── Redis SETNX concurrency guard ─────────────────────────────────────────────
