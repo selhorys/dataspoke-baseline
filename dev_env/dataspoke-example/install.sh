@@ -69,10 +69,12 @@ kubectl rollout status deployment/example-kafka \
   --namespace "${NS}" \
   --timeout=3m
 
-info "Waiting for Kafka topic-init job to complete (timeout: 2m)..."
+info "Waiting for Kafka topic-init job to complete (timeout: 5m)..."
+# 5m envelope covers Autopilot cold-start: image pull + broker bootstrap +
+# the wait-for-kafka init container's 5s polling loop before topic creation.
 kubectl wait --for=condition=complete job/example-kafka-topic-init \
   --namespace "${NS}" \
-  --timeout=2m
+  --timeout=5m
 
 # ---------------------------------------------------------------------------
 # Print connection info
