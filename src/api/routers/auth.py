@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import jwt as pyjwt
 import redis.exceptions
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, Response, status
 from passlib.context import CryptContext
 
 from src.api.auth.jwt import create_access_token, create_refresh_token, decode_token
@@ -13,6 +13,7 @@ from src.api.config import settings
 from src.api.dependencies import get_redis
 from src.api.schemas.auth import RefreshRequest, RevokeRequest, TokenRequest, TokenResponse
 from src.shared.cache.client import RedisClient
+from src.shared.exceptions import AuthenticationError, StorageUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,7 @@ def _get_user_groups(email: str) -> list[str]:
 async def issue_token(body: TokenRequest, response: Response) -> TokenResponse:
     """Exchange email + password for access token + refresh token cookie."""
     if not _verify_credentials(body.email, body.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Invalid credentials."},
-        )
+        raise AuthenticationError("Invalid credentials.")
 
     groups = _get_user_groups(body.email)
     # TBD(user-accounts): Read email from user record instead of using subject directly
@@ -89,48 +87,29 @@ async def refresh_token(
 ) -> TokenResponse:
     """Issue a new access token using the HttpOnly refresh token cookie."""
     if refresh_token_cookie is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Refresh token cookie missing."},
-        )
+        raise AuthenticationError("Refresh token cookie missing.")
 
     # Fail-closed by design: if the revocation store is unavailable we deny the refresh.
     try:
         is_revoked = await cache.get(_revocation_key(refresh_token_cookie))
     except redis.exceptions.RedisError as exc:
         logger.warning("revocation_check_failed", exc_info=exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error_code": "SERVICE_UNAVAILABLE",
-                "message": "Token revocation store unavailable; refresh denied.",
-            },
+        raise StorageUnavailableError(
+            "Token revocation store unavailable; refresh denied."
         )
 
     if is_revoked:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Refresh token has been revoked."},
-        )
+        raise AuthenticationError("Refresh token has been revoked.")
 
     try:
         payload = decode_token(refresh_token_cookie)
     except pyjwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Refresh token has expired."},
-        )
+        raise AuthenticationError("Refresh token has expired.")
     except pyjwt.PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Invalid refresh token."},
-        )
+        raise AuthenticationError("Invalid refresh token.")
 
     if payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error_code": "UNAUTHORIZED", "message": "Not a refresh token."},
-        )
+        raise AuthenticationError("Not a refresh token.")
 
     subject: str = payload["sub"]
     groups = _get_user_groups(subject)
@@ -147,12 +126,8 @@ async def refresh_token(
             await cache.set_nx(_revocation_key(refresh_token_cookie), "1", ttl)
         except redis.exceptions.RedisError as exc:
             logger.warning("revocation_write_failed", exc_info=exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error_code": "SERVICE_UNAVAILABLE",
-                    "message": "Token revocation store unavailable; refresh denied.",
-                },
+            raise StorageUnavailableError(
+                "Token revocation store unavailable; refresh denied."
             )
 
     # TBD(user-accounts): Read email from user record instead of fabricating

@@ -96,6 +96,17 @@ class StorageUnavailableError(DataSpokeError):
     error_code: str = "STORAGE_UNAVAILABLE"
 
 
+class AuthenticationError(DataSpokeError):
+    """Raised for auth flow failures (invalid credentials, missing/revoked refresh
+    cookie, malformed JWT). Maps to HTTP 401.
+    """
+
+    error_code: str = "UNAUTHORIZED"
+
+    def __init__(self, message: str = "Unauthorized") -> None:
+        super().__init__(message)
+
+
 class NotificationError(DataSpokeError):
     """Raised when a notification (e.g. email) fails to send."""
 

@@ -152,7 +152,7 @@ async def test_invalid_credentials_returns_401(client: AsyncClient) -> None:
     )
     assert response.status_code == 401
     body = response.json()
-    assert body["detail"]["error_code"] == "UNAUTHORIZED"
+    assert body["error_code"] == "UNAUTHORIZED"
 
 
 async def test_refresh_without_cookie_returns_401(client: AsyncClient) -> None:
@@ -307,7 +307,7 @@ async def test_revoke_then_refresh_returns_401_revoked(client: AsyncClient) -> N
         refresh_resp = await client.post(AUTH_REFRESH)
         assert refresh_resp.status_code == 401
         body = refresh_resp.json()
-        assert body["detail"]["error_code"] == "UNAUTHORIZED"
+        assert body["error_code"] == "UNAUTHORIZED"
         # Message text is impl-defined; spec only mandates error_code == UNAUTHORIZED
     finally:
         app.dependency_overrides.pop(get_redis, None)
@@ -345,7 +345,7 @@ async def test_token_rotation_rejects_old_cookie(client: AsyncClient) -> None:
         refresh2 = await client.post(AUTH_REFRESH)
         assert refresh2.status_code == 401
         body = refresh2.json()
-        assert body["detail"]["error_code"] == "UNAUTHORIZED"
+        assert body["error_code"] == "UNAUTHORIZED"
         # Message text is impl-defined; spec only mandates error_code == UNAUTHORIZED
     finally:
         app.dependency_overrides.pop(get_redis, None)
@@ -420,7 +420,7 @@ async def test_refresh_redis_failure_returns_503(client: AsyncClient) -> None:
         refresh_resp = await client.post(AUTH_REFRESH)
         assert refresh_resp.status_code == 503
         body = refresh_resp.json()
-        assert body["detail"]["error_code"] == "SERVICE_UNAVAILABLE"
+        assert body["error_code"] == "STORAGE_UNAVAILABLE"
     finally:
         app.dependency_overrides.pop(get_redis, None)
 
@@ -445,7 +445,7 @@ async def test_stub_auth_disabled_rejects_correct_admin_creds(
     response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     assert response.status_code == 401
     body = response.json()
-    assert body["detail"]["error_code"] == "UNAUTHORIZED"
+    assert body["error_code"] == "UNAUTHORIZED"
 
 
 async def test_stub_auth_disabled_rejects_verify_credentials() -> None:

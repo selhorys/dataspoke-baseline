@@ -24,7 +24,7 @@ class RedisClient:
     async def get(self, key: str) -> str | None:
         return await self._redis.get(key)
 
-    async def set(self, key: str, value: str, ttl_seconds: int = 300) -> None:
+    async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
         await self._redis.set(key, value, ex=ttl_seconds)
 
     async def set_nx(self, key: str, value: str, ttl_seconds: int = 300) -> bool:

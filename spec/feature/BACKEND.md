@@ -196,6 +196,12 @@ Ingestion config model: see
 `is_enabled`/`schedule_tier` (tier-based scheduling for active mode),
 `status` (DAG verification outcome).
 
+**Mode is mutable post-creation** via PATCH. Switching `active` → `passive` is allowed and
+takes effect on the next periodic tier sweep; the previously-scheduled active runs are not
+cancelled retroactively but no new active runs are scheduled. Switching `passive` → `active`
+requires the standard active-mode fields (`schedule_tier`, `locator`/`auth`) to be populated.
+`method/run` is rejected (`422 INVALID_PARAMETER`) for `passive` configs.
+
 **Active run pipeline** (`IngestionService.run()`): load config → connect to source via
 `locator`/`auth` → discover schema via `identifier` → emit `StatusClass` +
 `DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`;

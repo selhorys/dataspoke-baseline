@@ -124,7 +124,7 @@ The current authentication implementation uses a stub identity store:
 - **Redis-backed token revocation**: Revoked refresh tokens are stored in Redis under
   `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime.
   Refresh and revoke are fail-closed on the Redis path — if the store is unreachable,
-  `POST /auth/token/refresh` returns `503 SERVICE_UNAVAILABLE`.
+  `POST /auth/token/refresh` returns `503 STORAGE_UNAVAILABLE` (Redis is the storage subsystem).
 - **No group resolution**: The admin account receives all groups (`admin`, `de`, `da`, `dg`);
   non-admin users receive an empty group list.
 - **HTTP-only cookies**: The refresh token cookie uses `secure=False`.
@@ -213,6 +213,13 @@ nodes → edges → triples.
 | `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/attr` | Get triple attributes (confidence, source evidence) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/event` | Triple-level change history | Ontology Generation | UC3 |
 | `POST` | `/spoke/common/ontogen/result/triple/{triple_id}/method/review` | Review a pending triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved | Ontology Generation | UC3 |
+
+**Payload caps** (validated at the schema layer; cap violations return `422`):
+- `attr/conf.default_run_prompt` ≤ 16,000 chars
+- `attr/conf.dataset_filter.dataset_urns` ≤ 1,000 entries
+- `attr/seed` Markdown body ≤ 64 KiB
+- `method/run` one-shot Markdown body ≤ 64 KiB
+- node / edge / triple `method/review.reason` ≤ 2,000 chars
 
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
 
@@ -323,6 +330,11 @@ surface: `attr/metagen/{conf,result}` (PATCH on `result/{result_id}` performs re
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/metagen` | List metadata generation attributes across datasets — each row aggregates the per-dataset `attr/metagen/*` (conf and latest result) (paginated, filterable) | Metadata Generation | UC4 |
+
+**Payload caps** (per-dataset PATCH on `attr/metagen/result/{result_id}`; validated at schema; violations return `422`):
+- `reason` ≤ 2,000 chars
+- `fields` list ≤ 200 entries
+- each `fields[*]` entry ≤ 512 chars
 
 ### Data Governance (`/spoke/dg`)
 
@@ -558,8 +570,9 @@ All errors follow the standard envelope:
 | `409 Conflict` | Duplicate resource or concurrent run attempt |
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation), or a request that is well-formed but cannot be processed because a referenced precondition is not met (e.g. dataset not yet present in DataHub) |
 | `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
+| `500 Internal Server Error` | Fallback for an unhandled `DataSpokeError` with no specific status mapping |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
-| `503 Service Unavailable` | Airflow or PostgreSQL connection failure |
+| `503 Service Unavailable` | PostgreSQL, Redis, or other storage-tier dependency unreachable; or internal auth secret not configured |
 
 ### Application Error Codes
 
@@ -585,5 +598,7 @@ All errors follow the standard envelope:
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for both `ontogen/attr/conf` and `metric/{id}/attr/conf` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
-| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed |
+| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
+| `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |
+| `INTERNAL_ERROR` | 500 | Unhandled `DataSpokeError` with no specific status mapping (fallback) |

@@ -71,8 +71,8 @@ async def test_token_issue_invalid_credentials(api_client: httpx.AsyncClient) ->
     )
 
     assert resp.status_code == 401
-    # FastAPI HTTPException wraps the error body under "detail"
-    assert resp.json()["detail"]["error_code"] == "UNAUTHORIZED"
+    # spec/API.md §Error Catalogue — top-level error envelope
+    assert resp.json()["error_code"] == "UNAUTHORIZED"
 
 
 @pytest.mark.asyncio

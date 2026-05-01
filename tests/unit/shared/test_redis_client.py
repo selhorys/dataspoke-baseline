@@ -49,16 +49,14 @@ async def test_get_returns_none_on_miss(client, mock_redis) -> None:
     assert result is None
 
 
-async def test_set_with_default_ttl(client, mock_redis) -> None:
-    # WARN: 300s default contradicts BACKEND.md L142 (validation cache should be 60s).
-    # Surfaces impl gap — default may not be correct for validation paths.
-    # Ontogen paths (300s) are spec-correct; callers must pass ttl_seconds=60 for
-    # validation:{dataset_urn}:result and rate_limit:{user_id} keys.
-    await client.set("key", "value")
-    mock_redis.set.assert_awaited_once_with("key", "value", ex=300)
+async def test_set_requires_explicit_ttl(client, mock_redis) -> None:
+    """ttl_seconds is keyword-only and required — there is no default.
 
-
-async def test_set_with_custom_ttl(client, mock_redis) -> None:
+    spec/feature/BACKEND.md §Cache Key Conventions defines per-key TTLs
+    (60s/300s); passing the wrong default would silently mis-cache.
+    """
+    with pytest.raises(TypeError):
+        await client.set("key", "value")  # type: ignore[call-arg]
     await client.set("key", "value", ttl_seconds=60)
     mock_redis.set.assert_awaited_once_with("key", "value", ex=60)
 

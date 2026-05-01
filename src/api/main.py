@@ -37,6 +37,7 @@ from src.api.routers.spoke.common import (
 from src.api.routers.spoke.dg import metrics as dg_metrics
 from src.api.routers.spoke.dg import overview as dg_overview
 from src.shared.exceptions import (
+    AuthenticationError,
     ConflictError,
     DataHubUnavailableError,
     DataSpokeError,
@@ -129,6 +130,10 @@ async def _handle_invalid_dataset_urn(
     request: Request, exc: InvalidDatasetUrnError
 ) -> JSONResponse:
     return _error_json(request, 422, exc.error_code, str(exc))
+
+
+async def _handle_authentication(request: Request, exc: AuthenticationError) -> JSONResponse:
+    return _error_json(request, 401, exc.error_code, str(exc))
 
 
 async def _handle_validation(request: Request, exc: PydanticValidationError) -> JSONResponse:
@@ -244,6 +249,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
     app.add_exception_handler(InvalidDatasetUrnError, _handle_invalid_dataset_urn)  # type: ignore[arg-type]
+    app.add_exception_handler(AuthenticationError, _handle_authentication)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
