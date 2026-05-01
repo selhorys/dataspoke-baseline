@@ -169,20 +169,6 @@ def test_is_enabled_column_on_config_models() -> None:
         assert "is_active" not in col_names, f"{model.__name__} has obsolete is_active column"
 
 
-def test_concept_tables_do_not_exist() -> None:
-    """Concept-model tables were removed in migration 002."""
-    table_names = {t.name for t in Base.metadata.sorted_tables}
-    for obsolete in ("concept_categories", "concept_relationships", "dataset_concept_map"):
-        assert obsolete not in table_names, f"Obsolete table '{obsolete}' still registered"
-
-
-def test_generation_tables_do_not_exist() -> None:
-    """generation_configs/generation_results were renamed to metagen_* in migration 002."""
-    table_names = {t.name for t in Base.metadata.sorted_tables}
-    for obsolete in ("generation_configs", "generation_results"):
-        assert obsolete not in table_names, f"Obsolete table '{obsolete}' still registered"
-
-
 def test_timestamptz_columns() -> None:
     for model in ALL_MODELS:
         table = model.__table__

@@ -1,7 +1,9 @@
 """Initial schema — all DataSpoke tables in the ``dataspoke`` schema.
 
-Reflects the current ORM models in ``src/shared/db/models.py`` plus the
-``dataset_embeddings`` pgvector table used by the search/reindex pipeline.
+Creates the full operational schema: 18 ORM-backed tables, the
+``dataset_embeddings`` pgvector table used by the search/reindex pipeline,
+the pgvector ``vector`` extension, and the Apache AGE ``dataspoke_ontogen``
+graph used to materialise ``ontogen_triples`` for graph traversal.
 
 Revision ID: 001
 Revises: None
@@ -23,16 +25,18 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "dataspoke"
 TIMESTAMPTZ = TIMESTAMP(timezone=True)
-EMBEDDINGS_TABLE = "dataset_embeddings"
-EMBEDDINGS_HNSW_INDEX = "dataset_embeddings_embedding_hnsw_idx"
+DATASET_EMBEDDINGS_TABLE = "dataset_embeddings"
+DATASET_EMBEDDINGS_HNSW_INDEX = "dataset_embeddings_embedding_hnsw_idx"
+NODE_EMBEDDINGS_TABLE = "node_embeddings"
+NODE_EMBEDDINGS_HNSW_INDEX = "node_embeddings_embedding_hnsw_idx"
 
 
 def upgrade() -> None:
     op.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
 
     # pgvector extension — idempotent. The Bitnami initdb hook also creates
-    # this at cluster bootstrap; the guard here makes the migration safe
-    # against a DB that was provisioned without that hook.
+    # this at cluster bootstrap; the guard here keeps the migration safe
+    # against a DB provisioned without that hook.
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     # ── ingestion_configs ────────────────────────────────────────────────
@@ -40,14 +44,13 @@ def upgrade() -> None:
         "ingestion_configs",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("dataset_urn", sa.Text(), nullable=False),
+        sa.Column("mode", sa.Text(), nullable=False, server_default="active"),
         sa.Column("platform", sa.Text(), nullable=False),
         sa.Column("locator", JSONB, nullable=False),
         sa.Column("identifier", JSONB, nullable=False),
         sa.Column("auth", JSONB, nullable=True),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("enrichment_sources", JSONB, nullable=True),
-        sa.Column("custom_extractors", JSONB, nullable=True),
         sa.Column("workflow_dag_id", sa.Text(), nullable=True),
         sa.Column("status", sa.Text(), nullable=False, server_default="OK"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -73,7 +76,7 @@ def upgrade() -> None:
         sa.Column("dataset_urn", sa.Text(), nullable=False),
         sa.Column("rules", JSONB, nullable=False),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("owner", sa.Text(), nullable=False),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -109,14 +112,15 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── generation_configs ───────────────────────────────────────────────
+    # ── metagen_configs ──────────────────────────────────────────────────
     op.create_table(
-        "generation_configs",
+        "metagen_configs",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("dataset_urn", sa.Text(), nullable=False),
-        sa.Column("target_fields", JSONB, nullable=False),
+        sa.Column("targets", JSONB, nullable=False),
         sa.Column("code_refs", JSONB, nullable=True),
-        sa.Column("schedule_cron", sa.Text(), nullable=True),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("status", sa.Text(), nullable=False, server_default="draft"),
         sa.Column("owner", sa.Text(), nullable=False),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -125,87 +129,22 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── generation_results ───────────────────────────────────────────────
+    # ── metagen_results ──────────────────────────────────────────────────
     op.create_table(
-        "generation_results",
+        "metagen_results",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("dataset_urn", sa.Text(), nullable=False),
         sa.Column("proposals", JSONB, nullable=False),
-        sa.Column("similar_diffs", JSONB, nullable=False),
-        sa.Column("approval_status", sa.Text(), nullable=False, server_default="pending"),
+        sa.Column("field_status", JSONB, nullable=False),
         sa.Column("run_id", UUID(as_uuid=True), nullable=False),
         sa.Column("generated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.Column("applied_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("last_reviewed_at", TIMESTAMPTZ, nullable=True),
         schema=SCHEMA,
     )
     op.create_index(
-        "ix_generation_results_urn_generated",
-        "generation_results",
+        "ix_metagen_results_urn_generated",
+        "metagen_results",
         ["dataset_urn", sa.text("generated_at DESC")],
-        schema=SCHEMA,
-    )
-
-    # ── concept_categories ───────────────────────────────────────────────
-    op.create_table(
-        "concept_categories",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("name", sa.Text(), nullable=False),
-        sa.Column(
-            "parent_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.concept_categories.id"),
-            nullable=True,
-        ),
-        sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("name"),
-        schema=SCHEMA,
-    )
-    op.create_index(
-        "ix_concept_categories_parent", "concept_categories", ["parent_id"], schema=SCHEMA
-    )
-
-    # ── dataset_concept_map ──────────────────────────────────────────────
-    op.create_table(
-        "dataset_concept_map",
-        sa.Column("dataset_urn", sa.Text(), primary_key=True),
-        sa.Column(
-            "concept_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.concept_categories.id"),
-            primary_key=True,
-        ),
-        sa.Column("confidence_score", sa.Float(), nullable=False),
-        sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
-        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        schema=SCHEMA,
-    )
-    op.create_index(
-        "ix_dataset_concept_map_concept", "dataset_concept_map", ["concept_id"], schema=SCHEMA
-    )
-
-    # ── concept_relationships ────────────────────────────────────────────
-    op.create_table(
-        "concept_relationships",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "concept_a",
-            UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.concept_categories.id"),
-            nullable=False,
-        ),
-        sa.Column(
-            "concept_b",
-            UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.concept_categories.id"),
-            nullable=False,
-        ),
-        sa.Column("relationship_type", sa.Text(), nullable=False),
-        sa.Column("confidence_score", sa.Float(), nullable=False),
-        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
     )
 
@@ -218,7 +157,7 @@ def upgrade() -> None:
         sa.Column("theme", sa.Text(), nullable=False),
         sa.Column("measurement_query", JSONB, nullable=False),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
@@ -274,7 +213,7 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── overview_config ──────────────────────────────────────────────────
+    # ── overview_config (singleton) ──────────────────────────────────────
     op.create_table(
         "overview_config",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -282,16 +221,180 @@ def upgrade() -> None:
         sa.Column("color_by", sa.Text(), nullable=False, server_default="quality_score"),
         sa.Column("filters", JSONB, nullable=False),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint("id = 1", name="ck_overview_config_singleton"),
+        schema=SCHEMA,
+    )
+
+    # ── ontogen_config (singleton) ───────────────────────────────────────
+    op.create_table(
+        "ontogen_config",
+        sa.Column(
+            "id",
+            sa.Integer(),
+            primary_key=True,
+            server_default="1",
+        ),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("schedule_tier", sa.Text(), nullable=True),
+        sa.Column("dataset_filter", JSONB, nullable=False, server_default="'{}'::jsonb"),
+        sa.Column(
+            "max_manual_queries_per_dataset",
+            sa.Integer(),
+            nullable=False,
+            server_default="20",
+        ),
+        sa.Column(
+            "max_system_queries_per_dataset",
+            sa.Integer(),
+            nullable=False,
+            server_default="10",
+        ),
+        sa.Column("default_run_prompt", sa.Text(), nullable=True),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint("id = 1", name="ck_ontogen_config_singleton"),
+        sa.CheckConstraint(
+            "max_manual_queries_per_dataset >= 0",
+            name="ck_ontogen_config_max_manual_queries_gte0",
+        ),
+        sa.CheckConstraint(
+            "max_system_queries_per_dataset >= 0",
+            name="ck_ontogen_config_max_system_queries_gte0",
+        ),
+        schema=SCHEMA,
+    )
+
+    # ── ontogen_seeds ────────────────────────────────────────────────────
+    op.create_table(
+        "ontogen_seeds",
+        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("body_md", sa.Text(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="active"),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+
+    # ── ontogen_nodes ────────────────────────────────────────────────────
+    op.create_table(
+        "ontogen_nodes",
+        sa.Column("id", sa.Text(), primary_key=True),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("confidence_score", sa.Float(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
+        sa.Column("glossary_term_urn", sa.Text(), nullable=True),
+        sa.Column("evidence", JSONB, nullable=True),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.UniqueConstraint("name"),
+        # __ is reserved as the triple-ID separator
+        sa.CheckConstraint(
+            "position('__' in id) = 0",
+            name="ck_ontogen_nodes_id_no_double_underscore",
+        ),
+        schema=SCHEMA,
+    )
+
+    # ── ontogen_edges ────────────────────────────────────────────────────
+    op.create_table(
+        "ontogen_edges",
+        sa.Column("id", sa.Text(), primary_key=True),
+        sa.Column("label", sa.Text(), nullable=False),
+        sa.Column("semantics", sa.Text(), nullable=True),
+        sa.Column("confidence_score", sa.Float(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
+        sa.Column("evidence", JSONB, nullable=True),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.UniqueConstraint("label"),
+        sa.CheckConstraint(
+            "position('__' in id) = 0",
+            name="ck_ontogen_edges_id_no_double_underscore",
+        ),
+        schema=SCHEMA,
+    )
+
+    # ── ontogen_triples ──────────────────────────────────────────────────
+    op.create_table(
+        "ontogen_triples",
+        sa.Column("id", sa.Text(), primary_key=True),
+        sa.Column(
+            "subject_node_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_nodes.id"),
+            nullable=False,
+        ),
+        sa.Column(
+            "edge_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_edges.id"),
+            nullable=False,
+        ),
+        sa.Column(
+            "object_node_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_nodes.id"),
+            nullable=False,
+        ),
+        sa.Column("confidence_score", sa.Float(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
+        sa.Column("evidence", JSONB, nullable=True),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "id = subject_node_id || '__' || edge_id || '__' || object_node_id",
+            name="ck_ontogen_triples_id_composite",
+        ),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_ontogen_triples_subject",
+        "ontogen_triples",
+        ["subject_node_id"],
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_ontogen_triples_object",
+        "ontogen_triples",
+        ["object_node_id"],
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_ontogen_triples_edge",
+        "ontogen_triples",
+        ["edge_id"],
+        schema=SCHEMA,
+    )
+
+    # ── dataset_node_map ─────────────────────────────────────────────────
+    op.create_table(
+        "dataset_node_map",
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column(
+            "node_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_nodes.id"),
+            primary_key=True,
+        ),
+        sa.Column("confidence_score", sa.Float(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
+        sa.Column("is_primary", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_dataset_node_map_node_id",
+        "dataset_node_map",
+        ["node_id"],
         schema=SCHEMA,
     )
 
     # ── dataset_embeddings (pgvector) ────────────────────────────────────
     # The ``vector(N)`` type is not a SQLAlchemy built-in; the embedding
-    # column is added via raw DDL (below) so we don't need a custom type
-    # adapter. Application queries bind vectors with an explicit ``::vector``
-    # cast.
+    # column is added via raw DDL so we don't need a custom type adapter.
+    # Application queries bind vectors with an explicit ``::vector`` cast.
     op.create_table(
-        EMBEDDINGS_TABLE,
+        DATASET_EMBEDDINGS_TABLE,
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
         sa.Column("platform", sa.Text(), nullable=True),
         sa.Column("tags", JSONB, nullable=True),
@@ -302,42 +405,85 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     op.execute(
-        f"ALTER TABLE {SCHEMA}.{EMBEDDINGS_TABLE} "
+        f"ALTER TABLE {SCHEMA}.{DATASET_EMBEDDINGS_TABLE} "
         f"ADD COLUMN embedding vector({EMBEDDING_DIMENSION}) NOT NULL "
         f"DEFAULT array_fill(0, ARRAY[{EMBEDDING_DIMENSION}])::vector({EMBEDDING_DIMENSION})"
     )
     op.execute(
-        f"ALTER TABLE {SCHEMA}.{EMBEDDINGS_TABLE} ALTER COLUMN embedding DROP DEFAULT"
+        f"ALTER TABLE {SCHEMA}.{DATASET_EMBEDDINGS_TABLE} ALTER COLUMN embedding DROP DEFAULT"
     )
     # HNSW index with cosine distance ops — matches the ``<=>`` operator
     # used by ``PgVectorManager.search``.
     op.execute(
-        f"CREATE INDEX {EMBEDDINGS_HNSW_INDEX} "
-        f"ON {SCHEMA}.{EMBEDDINGS_TABLE} "
+        f"CREATE INDEX {DATASET_EMBEDDINGS_HNSW_INDEX} "
+        f"ON {SCHEMA}.{DATASET_EMBEDDINGS_TABLE} "
         f"USING hnsw (embedding vector_cosine_ops)"
+    )
+
+    # ── node_embeddings (pgvector) ───────────────────────────────────────
+    op.create_table(
+        NODE_EMBEDDINGS_TABLE,
+        sa.Column(
+            "node_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_nodes.id"),
+            primary_key=True,
+        ),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{NODE_EMBEDDINGS_TABLE} "
+        f"ADD COLUMN embedding vector({EMBEDDING_DIMENSION}) NOT NULL "
+        f"DEFAULT array_fill(0, ARRAY[{EMBEDDING_DIMENSION}])::vector({EMBEDDING_DIMENSION})"
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{NODE_EMBEDDINGS_TABLE} ALTER COLUMN embedding DROP DEFAULT"
+    )
+    op.execute(
+        f"CREATE INDEX {NODE_EMBEDDINGS_HNSW_INDEX} "
+        f"ON {SCHEMA}.{NODE_EMBEDDINGS_TABLE} "
+        f"USING hnsw (embedding vector_cosine_ops)"
+    )
+
+    # ── Apache AGE extension + graph ─────────────────────────────────────
+    # age may already be installed via the initdb hook; CREATE EXTENSION
+    # IF NOT EXISTS is idempotent.
+    op.execute("CREATE EXTENSION IF NOT EXISTS age")
+    # LOAD is session-scoped; required before any ag_catalog calls.
+    op.execute("LOAD 'age'")
+    # Create graph — wrapped in PL/pgSQL exception block to be idempotent.
+    op.execute(
+        """
+        DO $$ BEGIN
+            PERFORM ag_catalog.create_graph('dataspoke_ontogen');
+        EXCEPTION WHEN others THEN
+            -- Ignore "graph already exists" and any duplicate_object error.
+            IF SQLERRM LIKE '%already exists%' OR SQLSTATE = '42710' THEN
+                NULL;
+            ELSE
+                RAISE;
+            END IF;
+        END $$
+        """
+    )
+    # Grant ag_catalog usage to the current application role so service
+    # queries work. Wrapped in a DO block so non-owner roles (where the
+    # initdb hook already granted access) don't fail on insufficient_privilege.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+          GRANT USAGE ON SCHEMA ag_catalog TO CURRENT_USER;
+        EXCEPTION WHEN insufficient_privilege THEN
+          RAISE NOTICE 'ag_catalog GRANT skipped (insufficient privilege; assumed pre-granted by initdb hook)';
+        END $$;
+        """
     )
 
 
 def downgrade() -> None:
-    op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.{EMBEDDINGS_HNSW_INDEX}")
-    for table in [
-        EMBEDDINGS_TABLE,
-        "overview_config",
-        "department_mapping",
-        "events",
-        "metric_results",
-        "metric_definitions",
-        "concept_relationships",
-        "dataset_concept_map",
-        "concept_categories",
-        "generation_results",
-        "generation_configs",
-        "validation_results",
-        "validation_configs",
-        "dataset_registry",
-        "ingestion_configs",
-    ]:
-        op.drop_table(table, schema=SCHEMA)
-    op.execute(sa.text(f"DROP SCHEMA IF EXISTS {SCHEMA}"))
-    # The ``vector`` extension is intentionally NOT dropped — it may be
-    # shared with other schemas/databases on the same PostgreSQL cluster.
+    # Pre-release schema; no reverse path is provided.
+    pass

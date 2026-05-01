@@ -2,10 +2,6 @@
 
 All tables live in the ``dataspoke`` schema. See spec/feature/BACKEND_SCHEMA.md
 for the authoritative column/index definitions.
-
-Migration 001 created the initial schema; migration 002 dropped concept-model
-tables, renamed generation_* → metagen_*, renamed is_active → is_enabled, and
-added ontogen_* tables + node_embeddings.
 """
 
 import uuid
@@ -478,7 +474,7 @@ class NodeEmbedding(Base):
         Text, ForeignKey(f"{SCHEMA}.ontogen_nodes.id"), primary_key=True
     )
     # Vector dimension is fixed at EMBEDDING_DIMENSION (1536 by default).
-    # The HNSW index (node_embeddings_embedding_hnsw_idx) is created by migration 002 via raw DDL.
+    # The HNSW index (node_embeddings_embedding_hnsw_idx) is created by the alembic migration via raw DDL.
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
