@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.internal import require_internal_token
@@ -50,6 +51,99 @@ class TestInfraProviders:
             await gen.__anext__()
         except StopAsyncIteration:
             pass
+
+
+# ── Group-to-Route Access Control: admin routes require 'admin' group ─────────
+
+
+class TestAdminGroupEnforcement:
+    """Tests that /admin/* routes are restricted to tokens with 'admin' in groups.
+
+    spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group exclusively.
+    spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong group claim.
+    """
+
+    async def test_dg_only_token_cannot_access_admin_dags_verify(
+        self, client: AsyncClient
+    ) -> None:
+        """A token with groups=['dg'] (no admin) hitting /admin/dags/verify must get 403.
+
+        spec: API.md §Group-to-Route Access Control — /admin/* accessible to admins only.
+        spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; groups
+        claim does not satisfy route requirement.
+        """
+        from tests.unit.api.conftest import auth_headers
+
+        # Mint a real token with only 'dg' — no 'admin' claim
+        # spec: API.md §JWT Claims — groups is the claim enforced against URI tier
+        dg_only_headers = auth_headers(groups=["dg"])
+
+        response = await client.post(
+            "/api/v1/admin/dags/verify",
+            headers=dg_only_headers,
+        )
+        assert response.status_code == 403, (
+            f"Token with groups=['dg'] must be rejected with 403 on /admin/dags/verify "
+            f"per spec/API.md §Group-to-Route Access Control, got {response.status_code}"
+        )
+
+    async def test_de_only_token_cannot_access_admin_dags_verify(
+        self, client: AsyncClient
+    ) -> None:
+        """A token with groups=['de'] (no admin) hitting /admin/dags/verify must get 403.
+
+        spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' claim exclusively.
+        """
+        from tests.unit.api.conftest import auth_headers
+
+        de_only_headers = auth_headers(groups=["de"])
+
+        response = await client.post(
+            "/api/v1/admin/dags/verify",
+            headers=de_only_headers,
+        )
+        assert response.status_code == 403, (
+            f"Token with groups=['de'] must be rejected with 403 on /admin/dags/verify "
+            f"per spec/API.md §Group-to-Route Access Control, got {response.status_code}"
+        )
+
+    async def test_admin_token_can_access_admin_dags_verify(
+        self, client: AsyncClient
+    ) -> None:
+        """A token with groups=['admin'] passes the auth guard on /admin/dags/verify.
+
+        spec: API.md §Admin Role — 'admin' group bypasses group-tier restrictions.
+        We inject an AsyncMock AirflowClient so the route can complete without a
+        real Airflow instance, giving a 200 response. The key assertion is that
+        the 'admin' group is not rejected with 403.
+        """
+        from unittest.mock import AsyncMock
+
+        from src.api.dependencies import get_airflow_client
+        from src.api.main import app
+        from tests.unit.api.conftest import auth_headers
+
+        # Inject a stub Airflow client that returns an empty DAG list
+        mock_airflow = AsyncMock()
+        mock_airflow.list_dags = AsyncMock(return_value=[])
+        app.dependency_overrides[get_airflow_client] = lambda: mock_airflow
+
+        try:
+            admin_headers = auth_headers(groups=["admin"])
+            response = await client.post(
+                "/api/v1/admin/dags/verify",
+                headers=admin_headers,
+            )
+            # Must not be 403 — admin group must pass the auth guard
+            # spec: API.md §Admin Role — 'admin' group bypasses group-tier restrictions
+            assert response.status_code != 403, (
+                f"Admin token must not get 403 on /admin/dags/verify "
+                f"per spec/API.md §Admin Role, got {response.status_code}"
+            )
+            # With the stub returning [], verify_dags returns a 200 with the expected shape
+            assert response.status_code == 200
+        finally:
+            app.dependency_overrides.pop(get_airflow_client, None)
 
 
 # ── require_internal_token ────────────────────────────────────────────────────

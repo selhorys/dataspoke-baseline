@@ -1,4 +1,11 @@
-"""Unit tests for SQLAlchemy ORM models — metadata introspection only, no DB needed."""
+"""Tests for src/shared/db/models.py — verifies ORM model definitions against
+spec/feature/BACKEND_SCHEMA.md (schema layout, PK types, JSONB columns, indexes)
+and spec/feature/BACKEND.md §Shared Services (PostgreSQL).
+
+NOTE — constraint-name tests: SQLAlchemy constraint names are implementation details
+and are subject to rename without changing behavior. Tests for constraint *behavior*
+(i.e., what CHECK expressions enforce) are preferred over tests for constraint *names*.
+Name assertions are retained only where a spec source explicitly mandates the name."""
 
 from sqlalchemy import inspect
 from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: F811
@@ -69,8 +76,14 @@ EXPECTED_TABLES = {
 }
 
 
-def test_all_18_models_exist() -> None:
-    assert len(ALL_MODELS) == 18
+def test_all_models_exist() -> None:
+    """ALL_MODELS list must contain exactly the tables defined in EXPECTED_TABLES.
+
+    The count is derived from the set, not hard-coded, to avoid brittleness when
+    the schema evolves. The EXPECTED_TABLES set is the authoritative list.
+    """
+    actual_table_names = {m.__tablename__ for m in ALL_MODELS}
+    assert actual_table_names == EXPECTED_TABLES
 
 
 def test_table_names_match() -> None:
@@ -187,19 +200,76 @@ def test_timestamptz_columns() -> None:
 
 
 def test_ontogen_triple_composite_id_constraint() -> None:
-    """OntogenTriple has a CHECK that id = subject__edge__object."""
-    check_names = {c.name for c in OntogenTriple.__table__.constraints}
-    assert "ck_ontogen_triples_id_composite" in check_names
+    """OntogenTriple must have a CHECK enforcing id = subject_node_id || '__' || edge_id || '__' || object_node_id.
+
+    Tests the constraint *expression* rather than its name. Constraint names are
+    implementation details — they may be renamed without changing enforcement behavior.
+    The expression is what prevents invalid composite IDs from being stored.
+    """
+    from sqlalchemy import CheckConstraint as _Check
+    check_exprs = [
+        str(c.sqltext)
+        for c in OntogenTriple.__table__.constraints
+        if isinstance(c, _Check)
+    ]
+    # The expression must enforce the concatenation rule: id = subject || '__' || edge || '__' || object
+    assert any(
+        "subject_node_id" in expr and "edge_id" in expr and "object_node_id" in expr
+        for expr in check_exprs
+    ), f"No composite-id CHECK found on ontogen_triples. Constraints: {check_exprs}"
 
 
 def test_ontogen_node_no_double_underscore_constraint() -> None:
-    check_names = {c.name for c in OntogenNode.__table__.constraints}
-    assert "ck_ontogen_nodes_id_no_double_underscore" in check_names
+    """OntogenNode must have a CHECK that prevents '__' in the id column.
+
+    Tests the constraint *expression* rather than its name. The double-underscore
+    separator is the triple id encoding: subject_node_id__edge_id__object_node_id.
+    Node ids must not contain '__' so the composite id is unambiguously parseable.
+
+    The spec-mandated predicate is `position('__' in id) = 0` (PostgreSQL).
+    SQLite does not support the `position()` function so this test inspects the
+    parsed expression rather than executing DDL.
+
+    NOTE: The `position()` function is PG-specific — behavioral enforcement can
+    only be integration-tested against a live PostgreSQL instance.
+    """
+    from sqlalchemy import CheckConstraint as _Check
+    check_exprs = [
+        str(c.sqltext)
+        for c in OntogenNode.__table__.constraints
+        if isinstance(c, _Check)
+    ]
+    # Require the exact predicate as defined in src/shared/db/models.py
+    assert any(
+        "position('__' in id) = 0" in expr
+        for expr in check_exprs
+    ), f"Expected position('__' in id) = 0 CHECK not found on ontogen_nodes. Constraints: {check_exprs}"
 
 
 def test_ontogen_edge_no_double_underscore_constraint() -> None:
-    check_names = {c.name for c in OntogenEdge.__table__.constraints}
-    assert "ck_ontogen_edges_id_no_double_underscore" in check_names
+    """OntogenEdge must have a CHECK that prevents '__' in the id column.
+
+    Tests the constraint *expression* rather than its name. Same rationale as
+    test_ontogen_node_no_double_underscore_constraint above.
+
+    The spec-mandated predicate is `position('__' in id) = 0` (PostgreSQL).
+    SQLite does not support the `position()` function so this test inspects the
+    parsed expression rather than executing DDL.
+
+    NOTE: The `position()` function is PG-specific — behavioral enforcement can
+    only be integration-tested against a live PostgreSQL instance.
+    """
+    from sqlalchemy import CheckConstraint as _Check
+    check_exprs = [
+        str(c.sqltext)
+        for c in OntogenEdge.__table__.constraints
+        if isinstance(c, _Check)
+    ]
+    # Require the exact predicate as defined in src/shared/db/models.py
+    assert any(
+        "position('__' in id) = 0" in expr
+        for expr in check_exprs
+    ), f"Expected position('__' in id) = 0 CHECK not found on ontogen_edges. Constraints: {check_exprs}"
 
 
 def test_ontogen_triple_fks() -> None:
@@ -275,6 +345,13 @@ def test_indexes_exist() -> None:
     )
 
 
-def test_base_metadata_has_18_tables() -> None:
-    tables_in_schema = [t for t in Base.metadata.sorted_tables if t.schema == "dataspoke"]
-    assert len(tables_in_schema) == 18
+def test_base_metadata_tables_match_expected_set() -> None:
+    """Base.metadata must contain exactly the tables named in EXPECTED_TABLES.
+
+    Uses set comparison rather than a hard-coded count so this test does not
+    need to be updated when table names change — only EXPECTED_TABLES needs
+    updating. Count assertions on table totals are brittle and provide no
+    additional safety beyond the set check.
+    """
+    actual = {t.name for t in Base.metadata.sorted_tables if t.schema == "dataspoke"}
+    assert actual == EXPECTED_TABLES

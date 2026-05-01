@@ -17,6 +17,22 @@ Concerns covered:
 - POST /spoke/common/ontogen/result/node/{node_id}/method/review — approve node
 - POST /spoke/common/ontogen/result/edge/{edge_id}/method/review — approve edge
 - POST /spoke/common/ontogen/result/triple/{triple_id}/method/review — approve triple
+
+NOTE: node_embeddings sync is verified at the DAG/run-level integration test, not on
+per-node REST review approval.  spec/feature/BACKEND_SCHEMA.md §node_embeddings lists
+DAG and on-demand inference runs as the ONLY sync triggers — the review endpoint is
+not a trigger.
+
+NOTE: AGE graph materialisation is verified at the run-level integration test.
+spec/feature/BACKEND.md L397-398 mandates AGE persistence as part of the inference
+pipeline (step 9); the triple-approve REST endpoint best-effort materialises, which is
+not spec-mandated per BACKEND.md L411-414.
+
+Spec traceability:
+- spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+- spec/feature/BACKEND.md §Approval flow (node/edge/triple review)
+- spec/feature/BACKEND_SCHEMA.md §Graph (ontogen_triples → AGE)
+- spec/feature/BACKEND_SCHEMA.md §node_embeddings (pgvector)
 """
 
 import uuid
@@ -193,7 +209,12 @@ async def test_ontogen_run_dry_run(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /spoke/common/ontogen/method/run with dry_run=true returns run summary."""
+    """POST /spoke/common/ontogen/method/run?dry_run=true returns OntogenRunSummary body.
+
+    Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+    — ?dry_run=true evaluates steps 2–8 without persisting; returns OntogenRunSummary
+    with status (str), dry_run (bool), unresolved_urns (list), counts (dict).
+    """
     resp = await api_client.post(
         "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
         headers=admin_headers,
@@ -201,8 +222,11 @@ async def test_ontogen_run_dry_run(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert "status" in body
-    assert "dry_run" in body
+    # Assert all OntogenRunSummary keys are present with correct types
+    assert "status" in body and isinstance(body["status"], str)
+    assert "dry_run" in body and isinstance(body["dry_run"], bool)
+    assert "unresolved_urns" in body and isinstance(body["unresolved_urns"], list)
+    assert "counts" in body and isinstance(body["counts"], dict)
     assert body["dry_run"] is True
 
 
@@ -456,3 +480,5 @@ async def test_ontogen_triple_review_dependency_order(
         await _delete_row(async_session, OntogenNode, subj_id)
         await _delete_row(async_session, OntogenNode, obj_id)
         await _delete_row(async_session, OntogenEdge, edge_id)
+
+

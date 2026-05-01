@@ -9,6 +9,8 @@ Concerns covered:
 - POST /data/{urn}/method/ingestion/run — dry_run=true triggers without writing
 - GET /data/{urn}/event/ingestion — event list returns paginated envelope
 """
+# spec: API.md §Standard Envelope
+# spec: BACKEND.md §Ingestion Service
 
 import urllib.parse
 
@@ -20,25 +22,91 @@ import pytest
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 
+# Second test URN for seeding N>1 configs in pagination test
+_TEST_URN_2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+_ENCODED_URN_2 = urllib.parse.quote(_TEST_URN_2, safe="")
+
 
 @pytest.mark.asyncio
 async def test_ingestion_list_paginated_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/common/ingestion returns a paginated collection envelope."""
-    resp = await api_client.get(
+    """GET /spoke/common/ingestion returns a paginated collection envelope.
+
+    Seeds N=2 configs, verifies total_count >= N and that limit=1 trims the
+    result page to exactly 1 item while total_count still reflects the full set.
+
+    spec: API.md §Standard Envelope — paginated response must carry
+    configs[], total_count, offset, limit.
+    spec: BACKEND.md §Ingestion Service — list_configs paginates ingestion_configs rows.
+    """
+    # spec: API.md §Standard Envelope
+    _base_conf_1 = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
+    _base_conf_2 = f"/api/v1/spoke/common/data/{_ENCODED_URN_2}/attr/ingestion/conf"
+
+    # Seed two distinct ingestion configs so the list has at least N=2 entries
+    _common_payload = {
+        "mode": "active",
+        "platform": "postgres",
+        "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
+        "auth": {
+            "username": "spoke_reader",
+            "secret_ref": "k8s-secret/pg-spoke-reader",
+        },
+        "is_enabled": False,
+    }
+    await api_client.put(
+        _base_conf_1,
+        headers=admin_headers,
+        json={
+            **_common_payload,
+            "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+        },
+    )
+    await api_client.put(
+        _base_conf_2,
+        headers=admin_headers,
+        json={
+            **_common_payload,
+            "identifier": {"database": "imazon", "schema_name": "catalog", "table": "editions"},
+        },
+    )
+
+    # List with limit=10 — should show both seeded configs
+    resp_all = await api_client.get(
         "/api/v1/spoke/common/ingestion?offset=0&limit=10",
         headers=admin_headers,
     )
+    assert resp_all.status_code == 200
+    body_all = resp_all.json()
+    # spec: API.md §Standard Envelope — required envelope keys
+    assert "configs" in body_all
+    assert "offset" in body_all
+    assert "limit" in body_all
+    assert "total_count" in body_all
+    assert isinstance(body_all["configs"], list)
+    # total_count must reflect ALL configs, not just the current page
+    assert body_all["total_count"] >= 2, (
+        f"Expected total_count >= 2 after seeding 2 configs, got {body_all['total_count']}"
+    )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "configs" in body
-    assert "offset" in body
-    assert "limit" in body
-    assert "total_count" in body
-    assert isinstance(body["configs"], list)
+    # List with limit=1 — page must be trimmed to exactly 1 item
+    resp_paged = await api_client.get(
+        "/api/v1/spoke/common/ingestion?offset=0&limit=1",
+        headers=admin_headers,
+    )
+    assert resp_paged.status_code == 200
+    body_paged = resp_paged.json()
+    assert len(body_paged["configs"]) == min(2, 1), (
+        f"Expected page size 1 (limit=1), got {len(body_paged['configs'])}"
+    )
+    # total_count must still reflect the full count despite the small page
+    assert body_paged["total_count"] >= 2
+
+    # Cleanup
+    await api_client.delete(_base_conf_1, headers=admin_headers)
+    await api_client.delete(_base_conf_2, headers=admin_headers)
 
 
 @pytest.mark.asyncio

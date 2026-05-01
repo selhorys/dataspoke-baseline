@@ -2,8 +2,10 @@
 
 Concerns covered:
 - POST /admin/dags/verify — returns 200 with expected DAG list structure
+- POST /admin/dags/verify — 403 FORBIDDEN when token lacks 'admin' group
 - POST /internal/admin/datahub/sync — full sync returns sync result envelope
 - POST /internal/admin/datahub/sync — targeted sync (single URN) returns sync result
+- POST /internal/admin/datahub/sync — 401 when X-Internal-Token header is missing
 """
 
 import pytest
@@ -15,7 +17,11 @@ async def test_admin_dags_verify(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /admin/dags/verify returns 200 with found/missing/total_expected."""
+    """POST /admin/dags/verify returns 200 with found/missing/total_expected.
+
+    spec: API.md §Admin — /admin routes require 'admin' group claim.
+    spec: API.md §Internal Admin — POST /admin/dags/verify returns {found, missing, total_expected}.
+    """
     resp = await api_client.post(
         "/api/v1/admin/dags/verify",
         headers=admin_headers,
@@ -29,7 +35,39 @@ async def test_admin_dags_verify(
     assert isinstance(body["found"], list)
     assert isinstance(body["missing"], list)
     assert isinstance(body["total_expected"], int)
-    assert body["total_expected"] > 0
+    # spec: API.md §Internal Admin — {found, missing, total_expected} structural invariant:
+    # total_expected == len(found) + len(missing) (every expected DAG is either found or missing)
+    assert body["total_expected"] == len(body["found"]) + len(body["missing"]), (
+        f"total_expected ({body['total_expected']}) must equal "
+        f"len(found) ({len(body['found'])}) + len(missing) ({len(body['missing'])})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_dags_verify_requires_admin_group(api_client: httpx.AsyncClient) -> None:
+    """POST /admin/dags/verify returns 403 when token has no 'admin' group.
+
+    spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group exclusively.
+    spec: API.md §Admin Role — admin routes require the 'admin' claim exclusively.
+    """
+    from src.api.auth.jwt import create_access_token
+
+    # Mint a real signed token with only 'dg' group — no 'admin' claim
+    dg_only_token, _ = create_access_token(
+        subject="dg-only-user",
+        groups=["dg"],
+        email="dg-user@example.com",
+    )
+    dg_only_headers = {"Authorization": f"Bearer {dg_only_token}"}
+
+    resp = await api_client.post(
+        "/api/v1/admin/dags/verify",
+        headers=dg_only_headers,
+    )
+    assert resp.status_code == 403, (
+        f"A 'dg'-only token must get 403 on /admin route per spec/API.md "
+        f"§Group-to-Route Access Control, got {resp.status_code}"
+    )
 
 
 @pytest.mark.asyncio
@@ -50,11 +88,36 @@ async def test_admin_dags_verify_all_found(
 
 
 @pytest.mark.asyncio
+async def test_internal_admin_datahub_sync_missing_token_returns_401(
+    api_client: httpx.AsyncClient,
+) -> None:
+    """POST /internal/admin/datahub/sync without X-Internal-Token header returns 401.
+
+    spec: API.md §Internal Admin — internal routes gated by X-Internal-Token shared-secret header.
+    spec: API.md §Application Error Codes — UNAUTHORIZED (401) for missing/wrong auth.
+    Omitting the header entirely (not a wrong value) must still produce 401, not 403.
+    """
+    resp = await api_client.post(
+        "/internal/admin/datahub/sync",
+        # No X-Internal-Token header — must be rejected
+        json={},
+    )
+    assert resp.status_code == 401, (
+        f"Missing X-Internal-Token must return 401 per spec/API.md §Internal Admin, "
+        f"got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_internal_admin_datahub_sync_full(
     api_client: httpx.AsyncClient,
     internal_headers: dict[str, str],
 ) -> None:
-    """POST /internal/admin/datahub/sync with no body performs a full sync."""
+    """POST /internal/admin/datahub/sync with no body performs a full sync.
+
+    spec: API.md §Internal Admin — POST /internal/admin/datahub/sync returns
+    {checked, flipped_true, flipped_false, unchanged, not_found}.
+    """
     # Internal routes are mounted WITHOUT /api/v1 prefix (see main.py)
     resp = await api_client.post(
         "/internal/admin/datahub/sync",
@@ -64,7 +127,7 @@ async def test_internal_admin_datahub_sync_full(
 
     assert resp.status_code == 200
     body = resp.json()
-    # Spec: returns {checked, flipped_true, flipped_false, unchanged, not_found}
+    # spec: API.md §Internal Admin — response shape
     assert "checked" in body
     assert "flipped_true" in body
     assert "flipped_false" in body

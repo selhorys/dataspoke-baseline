@@ -43,10 +43,14 @@ def test_params_with_prompt_md() -> None:
 
 
 def test_params_rejects_wrong_type_for_dry_run() -> None:
-    """OntogenRunParams dry_run must be a bool-coercible value."""
-    # Pydantic v2 coerces strings "true"/"false" — just verify it doesn't crash
-    params = OntogenRunParams(dry_run=True)
-    assert isinstance(params.dry_run, bool)
+    """OntogenRunParams rejects a dict value for dry_run with ValidationError.
+
+    Pydantic v2 coerces scalar-compatible types (str/int) but a dict literal
+    is not bool-coercible and must raise ValidationError.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+    with pytest.raises(PydanticValidationError):
+        OntogenRunParams(dry_run={"x": 1})  # type: ignore[arg-type]
 
 
 # ── DAG registry ──────────────────────────────────────────────────────────────

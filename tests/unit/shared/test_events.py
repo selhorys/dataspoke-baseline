@@ -1,4 +1,12 @@
-"""Unit tests for the MCL EventRouter, deserialization, and handler dispatch."""
+"""Tests for src/shared/datahub/events.py — MCL EventRouter, deserialization, and
+handler dispatch. Covers spec/DATAHUB_INTEGRATION.md §Event Subscription.
+
+NOTE — TestBuildRouter: the reference handler set (datasetProperties, schemaMetadata,
+globalTags → sync_vector_index / detect_new_clusters) is an implementation detail
+that is NOT part of the baseline contract. Per spec/DATAHUB_INTEGRATION.md L347-353:
+'The baseline UC1–UC5 flows are schedule-driven via Airflow tier DAGs and do not
+subscribe to DataHub's Kafka topics.' These tests pin the current impl; treat handler
+registration changes as an expected revision point, not a regression."""
 
 import json
 from unittest.mock import AsyncMock

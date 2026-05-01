@@ -2,6 +2,10 @@
 - /spoke/common/data/{dataset_urn}/attr/metagen/* (per-dataset)
 - /spoke/common/data/{dataset_urn}/method/metagen/run
 - /spoke/common/metagen (cross-dataset list)
+
+Spec traceability:
+- spec/API.md §Common (/spoke/common) §Metadata Generation
+- spec/feature/BACKEND.md §Metadata Generation Service §Approval flow (L289-L299)
 """
 
 import uuid
@@ -22,6 +26,14 @@ _METAGEN_BASE = "/api/v1/spoke/common/metagen"
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,public.users,PROD)"
 # URL-encode the parens for path params
 _VALID_URN_ENC = _VALID_URN.replace("(", "%28").replace(")", "%29").replace(",", "%2C")
+
+# Named constants for cap values (F5/F6)
+# impl-cap; spec gap surfaced 2026-05-01 — cap defined at src/api/schemas/metagen.py (max_length=2000)
+_REASON_MAX_LEN = 2000
+# impl-cap; spec gap surfaced 2026-05-01 — cap defined at src/api/schemas/metagen.py (max_items=200)
+_FIELDS_MAX_COUNT = 200
+# impl-cap; spec gap surfaced 2026-05-01 — cap defined at src/api/schemas/metagen.py (max_length=512)
+_FIELD_ENTRY_MAX_LEN = 512
 
 
 def _make_config_record() -> MagicMock:
@@ -162,11 +174,14 @@ async def test_patch_result_malformed_uuid_returns_422(client, mock_svc: AsyncMo
 
 @pytest.mark.asyncio
 async def test_patch_result_reason_too_long_returns_422(client, mock_svc: AsyncMock) -> None:
-    """PATCH /data/{urn}/attr/metagen/result/{id} with reason > 2000 chars returns 422."""
+    """PATCH /data/{urn}/attr/metagen/result/{id} with reason > 2000 chars returns 422.
+
+    Cap: _REASON_MAX_LEN (impl-cap; spec gap surfaced 2026-05-01).
+    """
     result_id = str(uuid.uuid4())
     resp = await client.patch(
         f"{_DATA_BASE}/{_VALID_URN_ENC}/attr/metagen/result/{result_id}",
-        json={"verdict": "approve", "reason": "x" * 2001},
+        json={"verdict": "approve", "reason": "x" * (_REASON_MAX_LEN + 1)},  # impl-cap
         headers=auth_headers(["de"]),
     )
     assert resp.status_code == 422
@@ -174,9 +189,12 @@ async def test_patch_result_reason_too_long_returns_422(client, mock_svc: AsyncM
 
 @pytest.mark.asyncio
 async def test_patch_result_fields_too_many_returns_422(client, mock_svc: AsyncMock) -> None:
-    """PATCH /data/{urn}/attr/metagen/result/{id} with fields > 200 entries returns 422."""
+    """PATCH /data/{urn}/attr/metagen/result/{id} with fields > 200 entries returns 422.
+
+    Cap: _FIELDS_MAX_COUNT (impl-cap; spec gap surfaced 2026-05-01).
+    """
     result_id = str(uuid.uuid4())
-    too_many_fields = [f"column.description.col{i}" for i in range(201)]
+    too_many_fields = [f"column.description.col{i}" for i in range(_FIELDS_MAX_COUNT + 1)]  # impl-cap
     resp = await client.patch(
         f"{_DATA_BASE}/{_VALID_URN_ENC}/attr/metagen/result/{result_id}",
         json={"verdict": "approve", "fields": too_many_fields},
@@ -187,11 +205,14 @@ async def test_patch_result_fields_too_many_returns_422(client, mock_svc: AsyncM
 
 @pytest.mark.asyncio
 async def test_patch_result_field_entry_too_long_returns_422(client, mock_svc: AsyncMock) -> None:
-    """PATCH /data/{urn}/attr/metagen/result/{id} with a field entry > 512 chars returns 422."""
+    """PATCH /data/{urn}/attr/metagen/result/{id} with a field entry > 512 chars returns 422.
+
+    Cap: _FIELD_ENTRY_MAX_LEN (impl-cap; spec gap surfaced 2026-05-01).
+    """
     result_id = str(uuid.uuid4())
     resp = await client.patch(
         f"{_DATA_BASE}/{_VALID_URN_ENC}/attr/metagen/result/{result_id}",
-        json={"verdict": "approve", "fields": ["x" * 513]},
+        json={"verdict": "approve", "fields": ["x" * (_FIELD_ENTRY_MAX_LEN + 1)]},  # impl-cap
         headers=auth_headers(["de"]),
     )
     assert resp.status_code == 422

@@ -1,4 +1,8 @@
-"""Unit tests for notification domain models."""
+"""Tests for src/shared/notifications/models.py — notification domain models.
+
+Verifies contracts in spec/feature/BACKEND.md §Shared Services (Notifications row):
+ActionItem and SLAAlert Pydantic schemas are the data structures passed to
+NotificationService for email dispatch in Validation (UC2) and Governance (UC5)."""
 
 from datetime import UTC, datetime
 

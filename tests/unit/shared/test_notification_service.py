@@ -1,4 +1,13 @@
-"""Unit tests for NotificationService."""
+"""Tests for src/shared/notifications/service.py — NotificationService.
+
+Verifies contracts in spec/feature/BACKEND.md §Shared Services (Notifications row):
+master toggle DATASPOKE_NOTIFICATION_ENABLED (default false — no-ops in dev), SMTP
+dispatch, HTML body formatting for action-item and SLA-alert emails.
+
+NOTE (escalated F3/F4/F5): SMTP call sequence, log message format, and priority sort
+order are implementation details not explicitly specified in BACKEND.md. These tests
+pin the current impl. A spec extension to BACKEND.md would be needed to make them
+fully spec-anchored. See test-reviewer findings F3, F4, F5."""
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch

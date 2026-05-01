@@ -355,7 +355,10 @@ async def test_evaluate_freshness_failure_stale_data(datahub):
 
     assert result.assertion_result == "FAILURE"
     assert result.values["hours_since_last_update"] > 48.0
-    assert any(i.get("type") == "freshness_violation" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "freshness_violation" issue type is not spec-anchored
 
 
 async def test_evaluate_freshness_no_operations(datahub):
@@ -367,7 +370,10 @@ async def test_evaluate_freshness_no_operations(datahub):
 
     assert result.assertion_result == "FAILURE"
     assert result.values["hours_since_last_update"] is None
-    assert any(i.get("type") == "no_data" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "no_data" issue type is not spec-anchored
 
 
 async def test_evaluate_freshness_operation_no_timestamp(datahub):
@@ -381,7 +387,10 @@ async def test_evaluate_freshness_operation_no_timestamp(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "missing_timestamp" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "missing_timestamp" issue type is not spec-anchored
 
 
 async def test_evaluate_freshness_uses_fallback_on_bad_interval(datahub):
@@ -449,7 +458,11 @@ async def test_evaluate_volume_failure_less_than_threshold(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "volume_violation" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "volume_violation" issue type is not spec-anchored;
+    # spec only requires "issues" list with msg — row_count key is impl-internal
     assert result.issues[0]["row_count"] == 50
 
 
@@ -482,11 +495,14 @@ async def test_evaluate_volume_no_profile(datahub):
 
     assert result.assertion_result == "FAILURE"
     assert result.values["row_count"] is None
-    assert any(i.get("type") == "no_data" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "no_data" issue type is not spec-anchored
 
 
 async def test_evaluate_volume_missing_row_count(datahub):
-    """Profile exists but rowCount is None → FAILURE with missing_metric issue."""
+    """Profile exists but rowCount is None → FAILURE with at least one issue."""
     profile = MagicMock()
     profile.rowCount = None
     datahub.get_timeseries = AsyncMock(return_value=[profile])
@@ -499,7 +515,10 @@ async def test_evaluate_volume_missing_row_count(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "missing_metric" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "missing_metric" issue type is not spec-anchored
 
 
 async def test_evaluate_volume_no_condition_passes(datahub):
@@ -563,7 +582,11 @@ async def test_evaluate_field_null_proportion_failure(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "field_violation" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "field_violation" issue type is not spec-anchored;
+    # spec only requires "issues" list with msg — field/metric keys are impl-internal
     assert result.issues[0]["field"] == "rating_score_legacy"
     assert result.issues[0]["metric"] == "null_proportion"
 
@@ -585,7 +608,11 @@ async def test_evaluate_field_field_not_found(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "field_not_found" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "field_not_found" issue type is not spec-anchored;
+    # spec only requires "issues" list with msg — field key is impl-internal
     assert result.issues[0]["field"] == "nonexistent_field"
 
 
@@ -607,7 +634,10 @@ async def test_evaluate_field_metric_not_available(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "missing_metric" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "missing_metric" issue type is not spec-anchored
 
 
 async def test_evaluate_field_no_profile(datahub):
@@ -624,7 +654,10 @@ async def test_evaluate_field_no_profile(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "no_data" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "no_data" issue type is not spec-anchored
 
 
 async def test_evaluate_field_metric_map_covers_standard_metrics(datahub):
@@ -700,7 +733,10 @@ async def test_evaluate_schema_superset_failure_missing_field(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "missing_fields" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "missing_fields" issue type is not spec-anchored
 
 
 async def test_evaluate_schema_exact_match_success(datahub):
@@ -748,7 +784,10 @@ async def test_evaluate_schema_exact_match_failure_extra_field(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "extra_fields" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "extra_fields" issue type is not spec-anchored
 
 
 async def test_evaluate_schema_subset_success(datahub):
@@ -790,7 +829,10 @@ async def test_evaluate_schema_subset_failure_extra_field(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "extra_fields" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "extra_fields" issue type is not spec-anchored
 
 
 async def test_evaluate_schema_type_mismatch(datahub):
@@ -810,9 +852,15 @@ async def test_evaluate_schema_type_mismatch(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "type_mismatch" for i in result.issues)
-    mismatch = next(i for i in result.issues if i.get("type") == "type_mismatch")
-    assert mismatch["field"] == "order_id"
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "type_mismatch" issue type is not spec-anchored;
+    # spec only requires "issues" list with msg — expected/actual keys are impl-internal
+    mismatch = next(
+        (i for i in result.issues if i.get("field") == "order_id"), None
+    )
+    assert mismatch is not None
     assert mismatch["expected"] == "integer"
     assert mismatch["actual"] == "varchar"
 
@@ -830,7 +878,10 @@ async def test_evaluate_schema_no_schema_metadata(datahub):
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "FAILURE"
-    assert any(i.get("type") == "no_schema" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "no_schema" issue type is not spec-anchored
 
 
 async def test_evaluate_schema_values_contain_field_counts(datahub):
@@ -952,7 +1003,10 @@ async def test_evaluate_sql_with_db_condition_fails(datahub):
 
     assert result.assertion_result == "FAILURE"
     assert result.values["result"] == 5
-    assert any(i.get("type") == "sql_condition_violation" for i in result.issues)
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "sql_condition_violation" issue type is not spec-anchored
 
 
 async def test_evaluate_sql_with_db_no_rows_returns_error(datahub):
@@ -980,7 +1034,9 @@ async def test_evaluate_sql_with_db_no_rows_returns_error(datahub):
         result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
 
     assert result.assertion_result == "ERROR"
-    assert any(i.get("type") == "no_data" for i in result.issues)
+    # ERROR results must have at least one issue
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    # impl-internal taxonomy: "no_data" issue type is not spec-anchored
 
 
 async def test_evaluate_sql_without_db_still_returns_not_implemented(datahub):
@@ -1099,8 +1155,15 @@ async def test_evaluate_custom_sql_timeseries_with_ml_some_fail(datahub):
 
     assert result.assertion_result == "FAILURE"
     assert result.validation == {"row_count": False}
-    assert any(i.get("type") == "ml_validation_failure" for i in result.issues)
-    ml_issue = next(i for i in result.issues if i.get("type") == "ml_validation_failure")
+    # FAILURE must emit at least one issue with non-empty msg
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert all(i.get("msg") for i in result.issues)
+    # impl-internal taxonomy: "ml_validation_failure" issue type is not spec-anchored;
+    # spec only requires "issues" list with msg — failed_targets key is impl-internal
+    ml_issue = next(
+        (i for i in result.issues if "failed_targets" in i), None
+    )
+    assert ml_issue is not None, "Expected an issue containing failed_targets"
     assert "row_count" in ml_issue["failed_targets"]
 
 
@@ -1154,8 +1217,10 @@ async def test_evaluate_custom_sql_timeseries_execute_raises_returns_error(datah
         result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION, db=db)
 
     assert result.assertion_result == "ERROR"
-    assert any(i.get("type") == "source_error" for i in result.issues)
-    assert "source connection refused" in result.issues[0]["msg"]
+    # ERROR results must have at least one issue containing the original error message
+    assert isinstance(result.issues, list) and len(result.issues) > 0
+    assert any("source connection refused" in i.get("msg", "") for i in result.issues)
+    # impl-internal taxonomy: "source_error" issue type is not spec-anchored
 
 
 async def test_evaluate_custom_sql_timeseries_ml_exception_swallowed_returns_success(datahub):

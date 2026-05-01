@@ -1,4 +1,9 @@
-"""Unit tests for src/shared/graph/client.py — AgeGraph security and correctness."""
+"""Tests for src/shared/graph/client.py — AgeGraph security and correctness.
+
+Verifies contracts in spec/feature/BACKEND.md §Shared Services (Graph/Apache AGE row)
+and spec/feature/BACKEND_SCHEMA.md §Graph: parameterized bind params prevent SQL/Cypher
+injection, SET LOCAL search_path is scoped to the transaction, AGE errors are wrapped as
+DataSpokeError to prevent information leakage, and traverse() enforces max_hops bounds."""
 
 from unittest.mock import AsyncMock, MagicMock, call, patch
 

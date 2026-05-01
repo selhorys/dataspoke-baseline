@@ -270,7 +270,11 @@ async def test_run_raises_conflict_when_lock_held(svc: OntogenService, cache: As
 async def test_run_dry_run_returns_summary_no_db_writes(
     svc: OntogenService, db: AsyncMock, cache: AsyncMock, llm: AsyncMock
 ) -> None:
-    """run(dry_run=True) returns OntogenRunSummary without writing to DB."""
+    """run(dry_run=True) returns OntogenRunSummary without writing to DB.
+
+    Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+    — step 9: ?dry_run=true evaluates steps 2-8 without persisting.
+    """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock(return_value=None)
 
@@ -316,8 +320,10 @@ async def test_run_dry_run_returns_summary_no_db_writes(
 
     assert isinstance(summary, OntogenRunSummary)
     assert summary.dry_run is True
-    # No OntogenNode/Edge/Triple rows committed
-    assert db.commit.call_count == 0 or True  # dry_run doesn't persist
+    # No OntogenNode/Edge/Triple rows committed on dry_run
+    # Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+    # — ?dry_run=true evaluates steps 2–8 without persisting (step 9 is skipped).
+    assert db.commit.call_count == 0
 
 
 # ── LLM proposal validation ───────────────────────────────────────────────────

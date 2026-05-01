@@ -93,6 +93,9 @@ async def test_postgresql_dry_run_discovers_but_does_not_emit():
 
 
 async def test_postgresql_run_emits_three_aspects():
+    # spec: BACKEND.md §Ingestion Service — "Aspects emitted (non-dry-run, per discovered
+    # dataset): StatusClass(removed=False), DatasetPropertiesClass, SchemaMetadataClass"
+    # spec: BACKEND.md L182-L184
     datahub = AsyncMock()
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = [
@@ -120,8 +123,18 @@ async def test_postgresql_run_emits_three_aspects():
 
     assert result.entities_ingested == 1
     assert result.errors == []
-    # StatusClass + DatasetPropertiesClass + SchemaMetadataClass
-    assert datahub.emit_aspect.call_count == 3
+
+    # Assert exact set of emitted aspect class names rather than raw call count;
+    # guards against silent order changes or extra/missing aspect emissions.
+    # spec: BACKEND.md §Ingestion Service — aspects emitted per discovered dataset (L182-L184)
+    emitted_aspect_types = {
+        type(call.args[1]).__name__
+        for call in datahub.emit_aspect.call_args_list
+    }
+    assert emitted_aspect_types == {"StatusClass", "DatasetPropertiesClass", "SchemaMetadataClass"}, (
+        f"Expected exactly {{StatusClass, DatasetPropertiesClass, SchemaMetadataClass}}, "
+        f"got {emitted_aspect_types}"
+    )
 
 
 async def test_postgresql_connection_failure_returns_error():
@@ -174,6 +187,9 @@ async def test_kafka_dry_run_discovers_but_does_not_emit():
 
 
 async def test_kafka_run_emits_three_aspects():
+    # spec: BACKEND.md §Ingestion Service — "Aspects emitted (non-dry-run, per discovered
+    # dataset): StatusClass(removed=False), DatasetPropertiesClass, SchemaMetadataClass"
+    # spec: BACKEND.md L182-L184
     datahub = AsyncMock()
     sample_messages = [{"key": "value"}]
 
@@ -193,4 +209,14 @@ async def test_kafka_run_emits_three_aspects():
 
     assert result.entities_ingested == 1
     assert result.errors == []
-    assert datahub.emit_aspect.call_count == 3
+
+    # Assert exact set of emitted aspect class names rather than raw call count.
+    # spec: BACKEND.md §Ingestion Service — aspects emitted per discovered dataset (L182-L184)
+    emitted_aspect_types = {
+        type(call.args[1]).__name__
+        for call in datahub.emit_aspect.call_args_list
+    }
+    assert emitted_aspect_types == {"StatusClass", "DatasetPropertiesClass", "SchemaMetadataClass"}, (
+        f"Expected exactly {{StatusClass, DatasetPropertiesClass, SchemaMetadataClass}}, "
+        f"got {emitted_aspect_types}"
+    )

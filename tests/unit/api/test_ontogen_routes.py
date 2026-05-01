@@ -1,4 +1,10 @@
-"""Unit tests for /spoke/common/ontogen routes."""
+"""Unit tests for /spoke/common/ontogen routes.
+
+Spec traceability:
+- spec/API.md §Authentication & Authorization §Group-to-Route Access Control
+- spec/API.md §Common (/spoke/common) §Ontology Generation
+- spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+"""
 
 import uuid
 from datetime import UTC, datetime
@@ -16,6 +22,16 @@ from src.shared.exceptions import (
 from tests.unit.api.conftest import auth_headers, make_token
 
 _BASE = "/api/v1/spoke/common/ontogen"
+
+# Named constants — cap values from the implementation
+# impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
+_REASON_MAX_LEN = 2000
+_BODY_MAX_BYTES = 64 * 1024  # 64 KiB
+# impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
+_DATASET_FILTER_LIST_CAP = 1000
+
+# Valid groups per spec/API.md §Group-to-Route Access Control table
+_VALID_GROUPS = ("de", "da", "dg", "admin")
 
 
 def _make_conf_row() -> MagicMock:
@@ -62,19 +78,30 @@ async def test_get_conf_without_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_conf_with_de_group_token_returns_200(client, mock_svc: AsyncMock) -> None:
-    """GET /ontogen/attr/conf with 'de' group token returns 200."""
+@pytest.mark.parametrize("group", list(_VALID_GROUPS))
+async def test_get_conf_with_valid_group_token_returns_200(
+    client, mock_svc: AsyncMock, group: str
+) -> None:
+    """GET /ontogen/attr/conf with any valid group token returns 200.
+
+    Spec: spec/API.md §Group-to-Route Access Control — /spoke/common/… requires
+    any valid group; de/da/dg/admin all qualify.
+    """
     mock_svc.get_conf = AsyncMock(return_value=_make_conf_row())
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers([group]))
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_get_conf_with_dg_group_token_returns_200(client, mock_svc: AsyncMock) -> None:
-    """GET /ontogen/attr/conf with 'dg' group token returns 200."""
+async def test_get_conf_with_unrecognised_group_token_returns_403(client, mock_svc: AsyncMock) -> None:
+    """GET /ontogen/attr/conf with an unrecognised group ('ops') returns 403.
+
+    Spec: spec/API.md §Group-to-Route Access Control — /spoke/common/… requires
+    any *valid* group; 'ops' is not in the valid set and must be rejected.
+    """
     mock_svc.get_conf = AsyncMock(return_value=_make_conf_row())
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["dg"]))
-    assert resp.status_code == 200
+    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["ops"]))
+    assert resp.status_code == 403
 
 
 # ── Conf round-trip ───────────────────────────────────────────────────────────
@@ -98,8 +125,12 @@ async def test_put_conf_returns_200(client, mock_svc: AsyncMock) -> None:
 
 @pytest.mark.asyncio
 async def test_put_conf_validates_dataset_filter_list_cap(client, mock_svc: AsyncMock) -> None:
-    """PUT /ontogen/attr/conf with dataset_filter.dataset_urns > 1000 entries returns 422."""
-    too_many_urns = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,t{i},PROD)" for i in range(1001)]
+    """PUT /ontogen/attr/conf with dataset_filter.dataset_urns > 1000 entries returns 422.
+
+    Cap: _DATASET_FILTER_LIST_CAP (impl-cap; spec gap surfaced 2026-05-01).
+    """
+    # impl-cap; spec gap surfaced 2026-05-01
+    too_many_urns = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
 
     resp = await client.put(
         f"{_BASE}/attr/conf",
@@ -133,8 +164,11 @@ async def test_post_seed_returns_201(client, mock_svc: AsyncMock) -> None:
 
 @pytest.mark.asyncio
 async def test_post_seed_body_too_large_returns_413(client, mock_svc: AsyncMock) -> None:
-    """POST /ontogen/attr/seed with body > 64 KiB returns 413."""
-    big_body = b"x" * (64 * 1024 + 1)
+    """POST /ontogen/attr/seed with body > 64 KiB returns 413.
+
+    Cap: _BODY_MAX_BYTES (impl-cap; spec gap surfaced 2026-05-01).
+    """
+    big_body = b"x" * (_BODY_MAX_BYTES + 1)  # impl-cap; spec gap surfaced 2026-05-01
     resp = await client.post(
         f"{_BASE}/attr/seed",
         content=big_body,
@@ -161,14 +195,21 @@ async def test_get_seed_malformed_uuid_returns_422(client, mock_svc: AsyncMock) 
 
 
 @pytest.mark.asyncio
-async def test_post_run_returns_200(client, mock_svc: AsyncMock) -> None:
-    """POST /ontogen/method/run returns 200."""
+async def test_post_run_returns_200_with_run_summary_body(client, mock_svc: AsyncMock) -> None:
+    """POST /ontogen/method/run returns 200 with OntogenRunSummary body containing
+    spec-mandated fields.
+
+    Spec: spec/feature/BACKEND.md §Inference Pipeline L400-401 — ?dry_run=true evaluates
+    steps 2-8 without persisting; run returns OntogenRunSummary.
+    Spec: spec/feature/BACKEND.md L354 / L523 — unresolved_urns carries dataset URNs that
+    did not resolve in DataHub at run time (ONTOGEN RUN_COMPLETE event payload).
+    """
     from src.backend.ontogen.service import OntogenRunSummary
 
     mock_svc.run = AsyncMock(return_value=OntogenRunSummary(
         status="success",
         dry_run=False,
-        unresolved_urns=[],
+        unresolved_urns=["urn:li:dataset:(urn:li:dataPlatform:postgres,missing,PROD)"],
         counts={"nodes_added": 0, "edges_added": 0, "triples_added": 0},
     ))
 
@@ -178,12 +219,21 @@ async def test_post_run_returns_200(client, mock_svc: AsyncMock) -> None:
         headers=auth_headers(["de"]),
     )
     assert resp.status_code == 200
+    body = resp.json()
+    # Spec-mandated: unresolved_urns must be a list (BACKEND.md L354/L523 — dataset_filter
+    # URNs that don't resolve are skipped and reported here)
+    assert "unresolved_urns" in body and isinstance(body["unresolved_urns"], list)
+    # Spec-mandated: dry_run echoed in response body (BACKEND.md L400-401)
+    assert "dry_run" in body and isinstance(body["dry_run"], bool)
 
 
 @pytest.mark.asyncio
 async def test_post_run_body_too_large_returns_413(client, mock_svc: AsyncMock) -> None:
-    """POST /ontogen/method/run with body > 64 KiB returns 413."""
-    big_body = b"x" * (64 * 1024 + 1)
+    """POST /ontogen/method/run with body > 64 KiB returns 413.
+
+    Cap: _BODY_MAX_BYTES (impl-cap; spec gap surfaced 2026-05-01).
+    """
+    big_body = b"x" * (_BODY_MAX_BYTES + 1)  # impl-cap; spec gap surfaced 2026-05-01
     resp = await client.post(
         f"{_BASE}/method/run",
         content=big_body,
@@ -221,10 +271,13 @@ async def test_post_triple_review_dependency_error_returns_422(client, mock_svc:
 
 @pytest.mark.asyncio
 async def test_post_node_review_reason_too_long_returns_422(client, mock_svc: AsyncMock) -> None:
-    """POST .../result/node/{id}/method/review with reason > 2000 chars returns 422."""
+    """POST .../result/node/{id}/method/review with reason > 2000 chars returns 422.
+
+    Cap: _REASON_MAX_LEN (impl-cap; spec gap surfaced 2026-05-01).
+    """
     resp = await client.post(
         f"{_BASE}/result/node/book/method/review",
-        json={"verdict": "approve", "reason": "x" * 2001},
+        json={"verdict": "approve", "reason": "x" * (_REASON_MAX_LEN + 1)},  # impl-cap
         headers=auth_headers(["de"]),
     )
     assert resp.status_code == 422

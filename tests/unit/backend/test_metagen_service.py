@@ -309,3 +309,84 @@ async def test_review_result_updates_last_reviewed_at(svc: MetagenService, db: A
     record = await svc.review_result(str(row.id), verdict="reject")
     # After review, last_reviewed_at should have been set on the row
     assert row.last_reviewed_at is not None
+
+
+# ── State-machine edge cases ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_review_already_approved_field_is_idempotent_or_errors(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """Re-approving an already-approved field is either idempotent or raises consistently.
+
+    Spec: spec/feature/BACKEND.md L289-L299 — approve writes editable DataHub
+    aspects; the spec is silent on idempotency for double-approve.
+    # Spec silent on idempotency — verified 2026-05-01; documenting observed behaviour.
+
+    Observed behaviour: a second approve PATCH on the same field does not raise;
+    the field_status remains 'approved' and the DataHub emit is repeated.
+    """
+    row = make_metagen_result_row(
+        field_status={"dataset.description": "approved"},
+    )
+    row.proposals = {"dataset.description": "An approved description."}
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = row
+    db.execute = AsyncMock(return_value=result_mock)
+    mock_db_refresh(db)
+
+    svc._datahub.emit_aspect = AsyncMock()
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+
+    # Re-approve the already-approved field
+    try:
+        record = await svc.review_result(
+            str(row.id), verdict="approve", fields=["dataset.description"]
+        )
+        # Idempotent path: field remains approved
+        # Spec silent on idempotency — spec/feature/BACKEND.md L289-L299
+        assert record.field_status["dataset.description"] == "approved"
+    except Exception as exc:
+        # Error path: service must raise one of the documented conflict/precondition
+        # exception types — not an arbitrary unhandled error.
+        # Spec silent on idempotency — documenting that either path is acceptable.
+        assert isinstance(exc, (PreconditionFailedError, ConflictError)), (
+            f"Expected PreconditionFailedError or ConflictError on double-approve, "
+            f"got {type(exc).__name__}: {exc}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_review_unknown_field_handled_consistently(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """PATCH with fields=['nonexistent.field'] is a no-op (unknown key silently ignored).
+
+    Spec: spec/feature/BACKEND.md L289-L299 — field-level review updates only the
+    listed entries; the spec is silent on unknown field paths. Observed behaviour:
+    unknown field paths are not present in field_status so no update occurs; the
+    call succeeds (200) without modifying any existing field status.
+    # Spec silent on unknown-field behavior — verified 2026-05-01.
+    """
+    row = make_metagen_result_row(
+        field_status={"dataset.description": "pending"},
+    )
+    row.proposals = {"dataset.description": "A description."}
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = row
+    db.execute = AsyncMock(return_value=result_mock)
+    mock_db_refresh(db)
+
+    svc._datahub.emit_aspect = AsyncMock()
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+
+    # PATCH with a nonexistent field — spec silent on this; document observed no-op
+    # Spec silent on unknown-field behavior — spec/feature/BACKEND.md L289-L299
+    record = await svc.review_result(
+        str(row.id), verdict="approve", fields=["nonexistent.field"]
+    )
+    # Existing field unchanged — nonexistent field is silently skipped
+    assert record.field_status.get("dataset.description") == "pending"

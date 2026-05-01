@@ -1,4 +1,7 @@
-"""Unit tests for the async session factory — no DB connection needed."""
+"""Tests for src/shared/db/session.py — verifies the async session factory contracts
+from spec/feature/BACKEND.md §Shared Services (PostgreSQL row): pool size 10, max
+overflow 5, asyncpg driver, DATABASE_URL construction from DATASPOKE_POSTGRES_* env
+vars."""
 
 import inspect as stdlib_inspect
 from unittest.mock import patch
@@ -52,10 +55,12 @@ def test_database_url_from_env() -> None:
 
 
 def test_engine_pool_size() -> None:
+    """Pool size must be 10 per spec/feature/BACKEND.md §Shared Services: 'Pool size 10, max overflow 5'."""
     assert engine.pool.size() == 10
 
 
 def test_engine_max_overflow() -> None:
+    """Max overflow must be 5 per spec/feature/BACKEND.md §Shared Services: 'Pool size 10, max overflow 5'."""
     assert engine.pool._max_overflow == 5
 
 

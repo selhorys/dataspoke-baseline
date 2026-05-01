@@ -275,7 +275,11 @@ def test_metric_breakdown_row_custom():
 
 
 async def test_run_ingestion_freshness_persists(service, db, datahub):
-    """ingestion-freshness run: measure + persist MetricResult + record event."""
+    """ingestion-freshness run: measure + persist MetricResult + record event.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline) — non-dry-run
+    must call db.add at least twice (MetricResult + Event) and commit at least once.
+    """
     def_row = _make_definition_row(
         metric_id="ingestion-freshness",
         measurement_query={"aggregation": "ingestion-freshness"},
@@ -283,9 +287,6 @@ async def test_run_ingestion_freshness_persists(service, db, datahub):
 
     def_result = MagicMock()
     def_result.scalar_one_or_none.return_value = def_row
-
-    db.execute = AsyncMock(return_value=def_result)
-    db.refresh = AsyncMock()
 
     datahub.enumerate_datasets = AsyncMock(return_value=["urn:li:dataset:1", "urn:li:dataset:2"])
     # No events for either dataset → stale
@@ -296,6 +297,18 @@ async def test_run_ingestion_freshness_persists(service, db, datahub):
 
     result = await service.run(def_row.id)
     assert result.status == "success"
+
+    # db.add must be called at least twice: MetricResult + Event
+    # Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)
+    assert db.add.call_count >= 2, (
+        f"Expected db.add called >= 2 times (MetricResult + Event), got {db.add.call_count}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
+    )
+    # db.commit must be awaited at least once to persist the result
+    assert db.commit.await_count >= 1, (
+        f"Expected db.commit awaited >= 1 time, got {db.commit.await_count}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
+    )
 
 
 async def test_run_dry_run_does_not_persist(service, db, datahub):
@@ -323,7 +336,16 @@ async def test_run_dry_run_does_not_persist(service, db, datahub):
 
 
 async def test_breakdown_field_names_unified(service, db, datahub):
-    """Breakdown must use 'dataset_count' and 'datasets' keys."""
+    """Breakdown must use 'dataset_count' and 'datasets' keys (not 'metric_type').
+
+    Spec: spec/feature/BACKEND.md §Metrics Service L457-L459 — every measurement
+    result includes a breakdown JSONB with unified per-dataset entry shape
+    {"dataset_count": <int>, "datasets": [{"urn": "...", "category": "...", "detail": {...}}]}.
+    """
+    _BREAKDOWN_COUNT_KEY = "dataset_count"
+    _BREAKDOWN_DATASETS_KEY = "datasets"
+    _BREAKDOWN_FORBIDDEN_KEY = "metric_type"
+
     def_row = _make_definition_row(
         measurement_query={"aggregation": "ingestion-freshness"}
     )
@@ -342,26 +364,48 @@ async def test_breakdown_field_names_unified(service, db, datahub):
     result = await service.run(def_row.id)
     assert result.status == "success"
 
-    # Check the persisted breakdown via db.add call
-    add_call_args = db.add.call_args_list
+    # Locate the persisted MetricResult object from db.add call_args_list.
+    # The guard is an unconditional assertion (not `if`) so missing the object
+    # is a test failure rather than a silent pass.
     metric_result_arg = None
-    for call in add_call_args:
+    for call in db.add.call_args_list:
         obj = call[0][0]
         if hasattr(obj, "breakdown") and hasattr(obj, "metric_id"):
             metric_result_arg = obj
             break
 
-    if metric_result_arg is not None:
-        breakdown = metric_result_arg.breakdown
-        assert "dataset_count" in breakdown
-        assert "datasets" in breakdown
-        assert "metric_type" not in breakdown
+    assert metric_result_arg is not None, (
+        "db.add was not called with a MetricResult object — service may not be persisting "
+        "the run result. Spec: BACKEND.md §Metrics Service (run pipeline)."
+    )
+
+    breakdown = metric_result_arg.breakdown
+    assert _BREAKDOWN_COUNT_KEY in breakdown, (
+        f"breakdown missing '{_BREAKDOWN_COUNT_KEY}' key. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service L457-L459."
+    )
+    assert _BREAKDOWN_DATASETS_KEY in breakdown, (
+        f"breakdown missing '{_BREAKDOWN_DATASETS_KEY}' key. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service L457-L459."
+    )
+    assert _BREAKDOWN_FORBIDDEN_KEY not in breakdown, (
+        f"breakdown must not contain legacy '{_BREAKDOWN_FORBIDDEN_KEY}' key. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service L457-L459."
+    )
 
 
 async def test_unknown_metric_type_raises(service, db, datahub):
-    """Unknown aggregation key in measurement_query raises PreconditionFailedError."""
+    """Unknown aggregation key in measurement_query raises PreconditionFailedError.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — unsupported aggregations
+    return 422 INVALID_PARAMETER.
+
+    NOTE (F8): Uses a clearly invalid string to decouple from F1 (aggregation enum
+    mismatch). 'dataset_count' was previously used but that value conflicts with
+    potential valid enum entries; 'definitely-not-a-real-aggregation' is always wrong.
+    """
     def_row = _make_definition_row(
-        measurement_query={"aggregation": "dataset_count"}
+        measurement_query={"aggregation": "definitely-not-a-real-aggregation"}
     )
 
     def_result = MagicMock()
@@ -398,6 +442,176 @@ async def test_dataset_filter_passthrough(service, db, datahub):
     datahub.enumerate_datasets.assert_awaited_once_with(
         tags=["urn:li:tag:PII"],
         glossary_terms=["urn:li:glossaryTerm:CustomerData"],
+    )
+
+
+async def test_dataset_filter_passthrough_dataset_urns(service, db, datahub):
+    """dataset_filter.dataset_urns are resolved individually via get_aspect, not enumerate_datasets.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — dataset_filter with dataset_urns
+    (list of explicit urn:li:dataset:(…) URNs for pinning to a known set).
+    Entries that resolve → included in measurement; entries that don't → unresolved_urns.
+    """
+    _PINNED_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+
+    def_row = _make_definition_row(
+        measurement_query={
+            "aggregation": "ingestion-freshness",
+            "dataset_filter": {"dataset_urns": [_PINNED_URN]},
+        }
+    )
+
+    def_result = MagicMock()
+    def_result.scalar_one_or_none.return_value = def_row
+
+    # Resolve the explicit URN: get_aspect returns a non-None props object
+    props_mock = MagicMock()
+    datahub.get_aspect = AsyncMock(return_value=props_mock)
+
+    # The event query for the resolved URN → no event → stale
+    event_result = MagicMock()
+    event_result.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(side_effect=[def_result, event_result])
+    db.refresh = AsyncMock()
+
+    result = await service.run(def_row.id, dry_run=True)
+
+    assert result.status == "success"
+    # enumerate_datasets must NOT be called — explicit URNs bypass enumeration
+    datahub.enumerate_datasets.assert_not_awaited()
+    # get_aspect must be called for the pinned URN to resolve it
+    datahub.get_aspect.assert_awaited_once()
+    call_args = datahub.get_aspect.call_args[0]
+    assert call_args[0] == _PINNED_URN, (
+        "get_aspect should be called with the pinned URN. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service — dataset_filter.dataset_urns."
+    )
+    # No unresolved URNs since the URN resolved
+    assert result.detail["unresolved_urns"] == []
+
+
+async def test_dataset_filter_empty_returns_all(service, db, datahub):
+    """dataset_filter={} means all datasets — enumerate_datasets called with no filter args.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — '{}' means all datasets;
+    an empty array on any dimension contributes nothing.
+    """
+    def_row = _make_definition_row(
+        measurement_query={
+            "aggregation": "ingestion-freshness",
+            "dataset_filter": {},
+        }
+    )
+
+    def_result = MagicMock()
+    def_result.scalar_one_or_none.return_value = def_row
+
+    # enumerate_datasets returns all datasets (no filter)
+    datahub.enumerate_datasets = AsyncMock(return_value=["urn:all-1", "urn:all-2"])
+    event_result = MagicMock()
+    event_result.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(side_effect=[def_result, event_result, event_result])
+    db.refresh = AsyncMock()
+
+    result = await service.run(def_row.id, dry_run=True)
+
+    assert result.status == "success"
+    # enumerate_datasets called once with no keyword filter arguments
+    datahub.enumerate_datasets.assert_awaited_once_with()
+
+
+async def test_dataset_filter_or_semantics(service, db, datahub):
+    """tags + glossary_terms + dataset_urns are OR-ed: all three dimensions contribute datasets.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service L447-L451 — 'only datasets matching ANY
+    listed tag, glossary term, or explicit URN are included — filters are OR-ed
+    across all three dimensions'.
+
+    # Note: Mock returns both URNs unconditionally; AND vs OR distinction at the
+    # enumerate_datasets boundary not testable at unit level. Coverage gap surfaced
+    # for api-wired integration.
+    """
+    _TAG_URN = "urn:li:tag:PII"
+    _TERM_URN = "urn:li:glossaryTerm:CustomerData"
+    _EXPLICIT_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.raw_events,DEV)"
+
+    def_row = _make_definition_row(
+        measurement_query={
+            "aggregation": "ingestion-freshness",
+            "dataset_filter": {
+                "tags": [_TAG_URN],
+                "glossary_terms": [_TERM_URN],
+                "dataset_urns": [_EXPLICIT_URN],
+            },
+        }
+    )
+
+    def_result = MagicMock()
+    def_result.scalar_one_or_none.return_value = def_row
+
+    # Tags+glossary_terms path: enumerate_datasets returns two distinct URNs
+    _TAG_MATCHED = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)"
+    _TERM_MATCHED = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    datahub.enumerate_datasets = AsyncMock(return_value=[_TAG_MATCHED, _TERM_MATCHED])
+
+    # Explicit URN path: get_aspect resolves successfully
+    props_mock = MagicMock()
+    datahub.get_aspect = AsyncMock(return_value=props_mock)
+
+    # One event query per resolved URN (3 total: TAG_MATCHED, TERM_MATCHED, EXPLICIT_URN)
+    event_result = MagicMock()
+    event_result.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(
+        side_effect=[def_result, event_result, event_result, event_result]
+    )
+    db.refresh = AsyncMock()
+
+    # Use dry_run=False so MetricResult is passed to db.add and we can inspect breakdown.datasets
+    result = await service.run(def_row.id, dry_run=False)
+
+    assert result.status == "success"
+    # enumerate_datasets called once for tags+glossary_terms combined
+    datahub.enumerate_datasets.assert_awaited_once_with(
+        tags=[_TAG_URN],
+        glossary_terms=[_TERM_URN],
+    )
+    # get_aspect called once for the explicit URN
+    datahub.get_aspect.assert_awaited_once()
+
+    # The union of TAG_MATCHED + TERM_MATCHED + EXPLICIT_URN = 3 distinct URNs
+    # Verify via breakdown_summary.dataset_count (OR semantics, no duplicates)
+    # Spec: spec/feature/BACKEND.md §Metrics Service L447-L451
+    assert result.detail["breakdown_summary"]["dataset_count"] == 3, (
+        "Expected exactly 3 datasets (TAG_MATCHED + TERM_MATCHED + EXPLICIT_URN). "
+        "Spec: BACKEND.md §Metrics Service L447-L451 — OR-ed across all three dimensions."
+    )
+
+    # Inspect the MetricResult object passed to db.add and verify all 3 URNs
+    # appear in breakdown.datasets — confirms set union is written to the DB row.
+    # Spec: spec/feature/BACKEND.md §Metrics Service L454-L458 — breakdown shape.
+    metric_result_arg = None
+    for call in db.add.call_args_list:
+        obj = call[0][0]
+        if hasattr(obj, "breakdown") and hasattr(obj, "metric_id"):
+            metric_result_arg = obj
+            break
+
+    assert metric_result_arg is not None, (
+        "db.add was not called with a MetricResult object. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
+    )
+    persisted_urns = {entry["urn"] for entry in metric_result_arg.breakdown.get("datasets", [])}
+    assert _TAG_MATCHED in persisted_urns, (
+        f"TAG_MATCHED URN '{_TAG_MATCHED}' missing from persisted breakdown.datasets. "
+        "Spec: BACKEND.md §Metrics Service L447-L451."
+    )
+    assert _TERM_MATCHED in persisted_urns, (
+        f"TERM_MATCHED URN '{_TERM_MATCHED}' missing from persisted breakdown.datasets. "
+        "Spec: BACKEND.md §Metrics Service L447-L451."
+    )
+    assert _EXPLICIT_URN in persisted_urns, (
+        f"EXPLICIT_URN '{_EXPLICIT_URN}' missing from persisted breakdown.datasets. "
+        "Spec: BACKEND.md §Metrics Service L447-L451."
     )
 
 

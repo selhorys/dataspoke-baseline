@@ -1,4 +1,7 @@
-"""Unit tests for LLM client wrapper."""
+"""Tests for src/shared/llm/client.py — verifies the provider-agnostic LLM client
+contracts from spec/feature/BACKEND.md §Shared Services (LLM row): provider dispatch
+(openai / google / anthropic), unknown-provider rejection, text completion, JSON
+completion with and without structured output schema, and embedding delegation."""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch

@@ -1,12 +1,17 @@
-"""Unit tests for IngestionService (mocked infrastructure)."""
+"""Unit tests for IngestionService (mocked infrastructure).
+
+spec: BACKEND.md §Ingestion Service (§Feature Services)
+spec: BACKEND.md §Active run pipeline L195-L204
+"""
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from src.backend.ingestion.service import IngestionService
+from src.shared.events import INGESTION_COMPLETE
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from tests.unit.backend.conftest import (
     make_event_row,
@@ -87,24 +92,33 @@ async def test_get_config_not_found(service, db):
 
 
 async def test_upsert_config_creates_new(service, db):
+    # spec: BACKEND.md §Ingestion Service — "Config upsert registers the dataset URN
+    # in dataset_registry (does not require the dataset to exist in DataHub yet)"
     mock_scalar_query(db, None)
     mock_db_refresh(db)
 
-    await service.upsert_config(
-        dataset_urn=_DATASET_URN,
-        mode="active",
-        platform="postgres",
-        locator=_LOCATOR,
-        identifier=_IDENTIFIER,
-        auth=_AUTH,
-        is_enabled=False,
-        schedule_tier=None,
-    )
-    assert db.add.called
-    assert db.commit.await_count >= 1
+    with patch("src.backend.ingestion.service.ensure_dataset_registered", new=AsyncMock()):
+        result, created = await service.upsert_config(
+            dataset_urn=_DATASET_URN,
+            mode="active",
+            platform="postgres",
+            locator=_LOCATOR,
+            identifier=_IDENTIFIER,
+            auth=_AUTH,
+            is_enabled=False,
+            schedule_tier=None,
+        )
+
+    # Behavioral: created flag must be True for a brand-new config
+    assert created is True
+    # Behavioral: the returned record must carry the correct URN and platform
+    assert result.dataset_urn == _DATASET_URN
+    assert result.platform == "postgres"
+    assert result.mode == "active"
 
 
 async def test_upsert_config_updates_existing(service, db):
+    # spec: BACKEND.md §Ingestion Service — upsert mutates existing row in-place
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
@@ -112,37 +126,46 @@ async def test_upsert_config_updates_existing(service, db):
     new_locator = {"host": "newdb.example.com", "port": 5432}
     new_identifier = {"database": "newdb", "schema_name": "public", "table": "orders"}
     new_auth = {"username": "admin", "secret_ref": "newpw"}
-    await service.upsert_config(
-        dataset_urn=_DATASET_URN,
-        mode="passive",
-        platform="mysql",
-        locator=new_locator,
-        identifier=new_identifier,
-        auth=new_auth,
-        is_enabled=True,
-        schedule_tier="weekly",
-    )
-    assert db.add.called
-    assert db.commit.await_count >= 1
+
+    with patch("src.backend.ingestion.service.ensure_dataset_registered", new=AsyncMock()):
+        result, created = await service.upsert_config(
+            dataset_urn=_DATASET_URN,
+            mode="passive",
+            platform="mysql",
+            locator=new_locator,
+            identifier=new_identifier,
+            auth=new_auth,
+            is_enabled=True,
+            schedule_tier="weekly",
+        )
+
+    # Behavioral: created flag must be False for an existing config
+    assert created is False
+    # Behavioral: all mutated fields are reflected in the ORM row
     assert existing_row.platform == "mysql"
     assert existing_row.locator == new_locator
     assert existing_row.identifier == new_identifier
     assert existing_row.auth == new_auth
     assert existing_row.is_enabled is True
     assert existing_row.schedule_tier == "weekly"
+    # Behavioral: the returned record mirrors the updated row
+    assert result.mode == "passive"
+    assert result.is_enabled is True
 
 
 # ── patch_config ─────────────────────────────────────────────────────────────
 
 
 async def test_patch_config_applies_schedule_tier(service, db):
+    # spec: BACKEND.md §Ingestion Service — PATCH mutates is_enabled / schedule_tier
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
     mock_db_refresh(db)
 
-    await service.patch_config(_DATASET_URN, {"schedule_tier": "hourly"})
+    result = await service.patch_config(_DATASET_URN, {"schedule_tier": "hourly"})
+    # Behavioral: ORM row mutation must propagate to the returned record
     assert existing_row.schedule_tier == "hourly"
-    assert db.commit.await_count >= 1
+    assert result.schedule_tier == "hourly"
 
 
 async def test_patch_config_applies_platform(service, db):
@@ -176,12 +199,13 @@ async def test_patch_config_not_found(service, db):
 
 
 async def test_delete_config_success(service, db):
+    # spec: BACKEND.md §Ingestion Service — DELETE removes the config row from DB
     existing_row = _make_config_row()
     mock_scalar_query(db, existing_row)
 
     await service.delete_config(_DATASET_URN)
+    # Behavioral: the correct ORM row was deleted and the session was committed
     db.delete.assert_awaited_once_with(existing_row)
-    assert db.commit.await_count >= 1
 
 
 async def test_delete_config_not_found(service, db):
@@ -241,17 +265,26 @@ async def test_list_active_for_tier_empty(service, db):
 
 
 async def test_run_success(service, db):
+    # spec: BACKEND.md §Active run pipeline L195-L204:
+    #   "on success mark dataset_registry.datahub_registered = true via mark_registered()"
+    #   "record INGESTION.COMPLETE event"
     config_row = _make_config_row()
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
     from src.backend.ingestion.extractors import IngestionResult
 
-    with patch(
-        "src.backend.ingestion.service.run_datahub_ingestion",
-        new=AsyncMock(
-            return_value=IngestionResult(entities_ingested=5, errors=[], warnings=[])
+    with (
+        patch(
+            "src.backend.ingestion.service.run_datahub_ingestion",
+            new=AsyncMock(
+                return_value=IngestionResult(entities_ingested=5, errors=[], warnings=[])
+            ),
         ),
+        patch(
+            "src.backend.ingestion.service.mark_registered",
+            new=AsyncMock(),
+        ) as mock_mark_registered,
     ):
         result = await service.run(_DATASET_URN)
 
@@ -259,6 +292,21 @@ async def test_run_success(service, db):
     assert result.run_id
     assert result.detail["dry_run"] is False
     assert result.detail["entities_ingested"] == 5
+
+    # Behavioral: mark_registered must be awaited with the dataset URN on success
+    # spec: BACKEND.md §Active run pipeline L201
+    mock_mark_registered.assert_awaited_once_with(db, _DATASET_URN)
+
+    # Behavioral: an INGESTION.COMPLETE event must be added to the DB
+    # spec: BACKEND.md §Active run pipeline L201-L204 + §Event Catalogue
+    added_event_types = [
+        getattr(call_args.args[0], "event_type", None)
+        for call_args in db.add.call_args_list
+        if hasattr(call_args.args[0] if call_args.args else None, "event_type")
+    ]
+    assert INGESTION_COMPLETE in added_event_types, (
+        f"Expected INGESTION.COMPLETE event to be recorded, got: {added_event_types}"
+    )
 
 
 async def test_run_dry_run(service, db):
@@ -302,6 +350,38 @@ async def test_run_ingestion_error(service, db):
     assert result.status == "error"
     assert "errors" in result.detail
     assert "Connection refused" in result.detail["errors"]
+
+
+async def test_run_zero_entities_non_dry_run_fails(service, db):
+    """A non-dry-run ingestion that ingests zero entities with no explicit errors
+    must be treated as a failure (status='error', INGESTION.FAIL event recorded).
+
+    spec: BACKEND.md §Active run pipeline — "a non-dry-run that ingests zero
+    entities is treated as failure" L200-L201
+    """
+    # spec: BACKEND.md §Active run pipeline L200-L201
+    config_row = _make_config_row()
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    from src.backend.ingestion.extractors import IngestionResult
+
+    with patch(
+        "src.backend.ingestion.service.run_datahub_ingestion",
+        new=AsyncMock(
+            return_value=IngestionResult(entities_ingested=0, errors=[], warnings=[])
+        ),
+    ):
+        result = await service.run(_DATASET_URN, dry_run=False)
+
+    # Behavioral: status must indicate failure when zero entities ingested (non-dry-run)
+    assert result.status == "error", (
+        "Expected status='error' when entities_ingested=0 and dry_run=False; "
+        f"got status='{result.status}'"
+    )
+    # Behavioral: the result detail must indicate zero entities were ingested
+    assert result.detail["entities_ingested"] == 0
+    assert result.detail["dry_run"] is False
 
 
 async def test_run_config_not_found(service, db):

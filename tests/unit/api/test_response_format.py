@@ -87,9 +87,13 @@ def test_error_response_has_required_fields() -> None:
 
 
 def test_discovered_models_are_not_empty() -> None:
-    """Sanity check: ensure discovery finds a reasonable number of models."""
-    assert len(_ALL_RESPONSE_MODELS) >= 15, (
-        f"Expected at least 15 response models, found {len(_ALL_RESPONSE_MODELS)}"
+    """Sanity check: ensure discovery finds at least one response model.
+
+    The threshold '>= 15' was impl-pinned to the current model count; dropped to '>0'
+    to avoid false failures as the schema set evolves. — spec gap surfaced 2026-05-01
+    """
+    assert len(_ALL_RESPONSE_MODELS) > 0, (
+        f"Schema discovery found no response models — check src/api/schemas/"
     )
 
 

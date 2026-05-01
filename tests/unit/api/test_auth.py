@@ -55,18 +55,95 @@ class _FakeRedis:
 
 
 async def test_valid_login_returns_access_token(client: AsyncClient) -> None:
+    # spec: API.md §Token Strategy — access token lifetime is 15 minutes
+    _ACCESS_TOKEN_SECONDS = 15 * 60  # 900 seconds per spec/API.md §Token Strategy
     response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     assert response.status_code == 200
     body = response.json()
     assert "access_token" in body
-    assert body["token_type"] == "bearer"
-    assert body["expires_in"] > 0
+    # token_type is impl-pinned; spec/API.md does not mandate it — spec gap surfaced 2026-05-01
+    assert body["expires_in"] == _ACCESS_TOKEN_SECONDS, (
+        f"expires_in must be {_ACCESS_TOKEN_SECONDS}s (15 min) per spec/API.md §Token Strategy, "
+        f"got {body['expires_in']}"
+    )
 
 
 async def test_valid_login_sets_refresh_cookie(client: AsyncClient) -> None:
+    """POST /auth/token sets a refresh token cookie with required security attributes.
+
+    spec: API.md §Token Strategy — refresh token stored in HttpOnly cookie.
+    spec: API.md §Known Limitations (Current Stub) — HTTP-only cookie mandated.
+    spec: API.md §Token Strategy — refresh token lifetime is 7 days (604800 seconds).
+    """
+    _REFRESH_TTL_SECONDS = 7 * 24 * 3600  # 604800 seconds per spec/API.md §Token Strategy
     response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
     assert response.status_code == 200
     assert "refresh_token" in response.cookies
+
+    # Inspect the raw Set-Cookie header for security attributes
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "refresh_token" in set_cookie, "set-cookie header must contain refresh_token"
+    set_cookie_lower = set_cookie.lower()
+
+    # spec: API.md §Known Limitations (Current Stub) — HttpOnly is the only mandated cookie flag
+    assert "httponly" in set_cookie_lower, (
+        "Refresh cookie must be HttpOnly per spec/API.md §Known Limitations (Current Stub)"
+    )
+
+    # spec: API.md §Token Strategy — refresh token lifetime is 7 days = 604800 seconds
+    assert f"max-age={_REFRESH_TTL_SECONDS}" in set_cookie_lower, (
+        f"Refresh cookie Max-Age must be {_REFRESH_TTL_SECONDS}s (7 days) "
+        "per spec/API.md §Token Strategy"
+    )
+
+    # samesite and path are impl-pinned; spec/API.md does not mandate them — spec gap surfaced 2026-05-01
+
+
+async def test_access_token_carries_groups_and_email(client: AsyncClient) -> None:
+    """Issued access token payload contains sub, email, groups, exp, iat.
+
+    spec: API.md §JWT Claims — access-token payload: sub (user uuid), email,
+    groups (array of user-group identifiers), exp, iat.
+    The admin account receives all groups (admin, de, da, dg) per spec/API.md §Known Limitations.
+    """
+    import jwt as pyjwt
+
+    from src.api.config import settings as api_settings
+
+    response = await client.post(AUTH_TOKEN, json={"email": "admin", "password": "admin"})
+    assert response.status_code == 200
+    raw_token = response.json()["access_token"]
+
+    # Decode without verification is safe here — we already trust the server issued it.
+    # We use the known secret to do a full verification to also confirm signature.
+    payload = pyjwt.decode(
+        raw_token,
+        api_settings.jwt_secret_key,
+        algorithms=[api_settings.jwt_algorithm],
+    )
+
+    # spec: API.md §JWT Claims — sub must be set
+    assert "sub" in payload and payload["sub"], (
+        "Access token must carry 'sub' claim per spec/API.md §JWT Claims"
+    )
+
+    # spec: API.md §JWT Claims — email claim must be present
+    assert "email" in payload, "Access token must carry 'email' claim per spec/API.md §JWT Claims"
+    # Admin login uses "admin" as email in stub identity store
+    assert payload["email"] == "admin", (
+        "Access token 'email' must match admin login email per spec/API.md §JWT Claims"
+    )
+
+    # spec: API.md §JWT Claims — groups is an array; admin gets all groups
+    assert "groups" in payload, "Access token must carry 'groups' claim per spec/API.md §JWT Claims"
+    assert isinstance(payload["groups"], list), "'groups' must be a list"
+    assert "admin" in payload["groups"], (
+        "Admin account must have 'admin' in groups per spec/API.md §Known Limitations"
+    )
+
+    # spec: API.md §JWT Claims — exp and iat must be present
+    assert "exp" in payload, "Access token must carry 'exp' claim per spec/API.md §JWT Claims"
+    assert "iat" in payload, "Access token must carry 'iat' claim per spec/API.md §JWT Claims"
 
 
 async def test_invalid_credentials_returns_401(client: AsyncClient) -> None:
@@ -202,7 +279,12 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
 
 
 async def test_revoke_then_refresh_returns_401_revoked(client: AsyncClient) -> None:
-    """After POST /auth/token/revoke, refreshing the same cookie returns 401 with 'revoked'."""
+    """After POST /auth/token/revoke, refreshing the same cookie returns 401 UNAUTHORIZED.
+
+    spec: API.md §Known Limitations — Redis-backed token revocation; fail-closed.
+    spec: API.md §Application Error Codes — UNAUTHORIZED (401) for token missing/expired/malformed.
+    Note: message text (e.g. 'revoked') is impl-defined; only error_code is spec-mandated.
+    """
     from src.api.dependencies import get_redis
     from src.api.main import app
 
@@ -221,17 +303,24 @@ async def test_revoke_then_refresh_returns_401_revoked(client: AsyncClient) -> N
         assert revoke_resp.status_code == 204
 
         # Trying to refresh with the revoked cookie must fail
+        # spec: API.md §Application Error Codes — UNAUTHORIZED (401)
         refresh_resp = await client.post(AUTH_REFRESH)
         assert refresh_resp.status_code == 401
         body = refresh_resp.json()
         assert body["detail"]["error_code"] == "UNAUTHORIZED"
-        assert "revoked" in body["detail"]["message"].lower()
+        # Message text is impl-defined; spec only mandates error_code == UNAUTHORIZED
     finally:
         app.dependency_overrides.pop(get_redis, None)
 
 
 async def test_token_rotation_rejects_old_cookie(client: AsyncClient) -> None:
-    """After a successful refresh (token rotation), the OLD cookie must be rejected."""
+    """After a successful refresh (token rotation), the OLD cookie must be rejected.
+
+    Token rotation is current impl best-practice; spec/API.md is silent on rotation enforcement.
+    spec: API.md §Application Error Codes — UNAUTHORIZED (401) for token missing/expired/malformed.
+    Note: message text is impl-defined; spec only mandates status_code == 401 and
+    error_code == UNAUTHORIZED.
+    """
     from src.api.dependencies import get_redis
     from src.api.main import app
 
@@ -251,12 +340,13 @@ async def test_token_rotation_rejects_old_cookie(client: AsyncClient) -> None:
 
         # Second refresh attempt with the OLD cookie must be rejected.
         # Refresh1 mutated client.cookies to the rotated token; restore old.
+        # spec: API.md §Application Error Codes — UNAUTHORIZED (401)
         client.cookies.set("refresh_token", old_cookie)
         refresh2 = await client.post(AUTH_REFRESH)
         assert refresh2.status_code == 401
         body = refresh2.json()
         assert body["detail"]["error_code"] == "UNAUTHORIZED"
-        assert "revoked" in body["detail"]["message"].lower()
+        # Message text is impl-defined; spec only mandates error_code == UNAUTHORIZED
     finally:
         app.dependency_overrides.pop(get_redis, None)
 

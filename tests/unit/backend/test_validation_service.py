@@ -155,7 +155,11 @@ async def test_patch_config_not_found(service, db):
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.patch_config("nonexistent", {"schedule_tier": "daily"})
-    assert exc_info.value.error_code == "VALIDATION_CONFIG_NOT_FOUND"
+    # spec: API.md L577 — entity_type="config" → error_code="CONFIG_NOT_FOUND"
+    # IMPL BUG (F-R2.1): impl calls EntityNotFoundError("validation_config", ...)
+    # which produces "VALIDATION_CONFIG_NOT_FOUND" — not the spec-mandated code.
+    # This test FAILS until impl is corrected to use entity_type="config".
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
 # ── delete_config ────────────────────────────────────────────────────────────
@@ -175,7 +179,11 @@ async def test_delete_config_not_found(service, db):
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.delete_config("nonexistent")
-    assert exc_info.value.error_code == "VALIDATION_CONFIG_NOT_FOUND"
+    # spec: API.md L577 — entity_type="config" → error_code="CONFIG_NOT_FOUND"
+    # IMPL BUG (F-R2.1): impl calls EntityNotFoundError("validation_config", ...)
+    # which produces "VALIDATION_CONFIG_NOT_FOUND" — not the spec-mandated code.
+    # This test FAILS until impl is corrected to use entity_type="config".
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
 # ── list_configs ─────────────────────────────────────────────────────────────
@@ -273,7 +281,8 @@ async def test_run_success(service, db, datahub, cache):
         assert summary.passed == 1
         assert summary.failed == 0
         assert summary.errored == 0
-        assert summary.status == "success"
+        # Status enum is impl-defined; spec USE_CASE_en.md L196-L197 silent on enum values
+        assert summary.status.lower() == "success"
 
 
 async def test_run_config_not_found(service, db, cache):
@@ -283,7 +292,11 @@ async def test_run_config_not_found(service, db, cache):
 
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.run("nonexistent")
-    assert exc_info.value.error_code == "VALIDATION_CONFIG_NOT_FOUND"
+    # spec: API.md L577 — entity_type="config" → error_code="CONFIG_NOT_FOUND"
+    # IMPL BUG (F-R2.1): impl calls EntityNotFoundError("validation_config", ...)
+    # which produces "VALIDATION_CONFIG_NOT_FOUND" — not the spec-mandated code.
+    # This test FAILS until impl is corrected to use entity_type="config".
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
 async def test_run_with_partition(service, db, datahub, cache):
@@ -322,7 +335,8 @@ async def test_run_with_partition(service, db, datahub, cache):
         summary = await service.run(_DATASET_URN, partition={"load_date": "2025-03-10"})
         assert summary.failed == 1
         assert summary.passed == 0
-        assert summary.status == "failure"
+        # Status enum is impl-defined; spec USE_CASE_en.md L196-L197 silent on enum values
+        assert summary.status.lower() == "failure"
 
 
 async def test_run_empty_rules(service, db, datahub, cache):
@@ -343,7 +357,8 @@ async def test_run_empty_rules(service, db, datahub, cache):
     summary = await service.run(_DATASET_URN)
     assert summary.total == 0
     assert summary.passed == 0
-    assert summary.status == "success"
+    # spec: USE_CASE_en.md L196-L197 — status field; casing not mandated by spec
+    assert summary.status.lower() == "success"
 
 
 # ── Redis SETNX concurrency guard ─────────────────────────────────────────────

@@ -10,9 +10,14 @@ Concerns covered:
 - GET /data/{urn}/attr/metagen/result — result list (paginated)
 - PATCH /data/{urn}/attr/metagen/result/{result_id} — review (approve and reject)
 - GET /data/{urn}/event/metagen — event list envelope
+
+Spec traceability:
+- spec/feature/BACKEND.md §Metadata Generation Service §Approval flow (L289-L299)
+- spec/feature/BACKEND_SCHEMA.md §metagen_results
 """
 
 import urllib.parse
+import uuid
 
 import httpx
 import pytest
@@ -20,6 +25,12 @@ import pytest
 # title_master is a DataHub-seeded Imazon dataset (catalog schema)
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
+
+# Named constants for cap values
+# impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
+_REASON_MAX_LEN = 2000
+_FIELDS_MAX_COUNT = 200  # impl-cap; spec gap surfaced 2026-05-01
+_FIELD_ENTRY_MAX_LEN = 512  # impl-cap; spec gap surfaced 2026-05-01
 
 
 @pytest.mark.asyncio
@@ -148,7 +159,12 @@ async def test_metagen_run_dry_run(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST method/metagen/run with dry_run=true returns result envelope without persisting."""
+    """POST method/metagen/run with dry_run=true returns MetagenRunResponse envelope.
+
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline
+    — dry_run returns a synthetic MetagenResultRecord without persisting.
+    MetagenRunResponse must contain id, dataset_urn, proposals.
+    """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
     base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
 
@@ -172,7 +188,10 @@ async def test_metagen_run_dry_run(
 
     assert run_resp.status_code == 200
     body = run_resp.json()
-    assert "id" in body or "dataset_urn" in body or "proposals" in body
+    # All three keys must be present per MetagenRunResponse schema
+    # Spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline
+    assert "id" in body and "dataset_urn" in body and "proposals" in body
+    assert body["dataset_urn"] == _TEST_URN
 
     # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
@@ -212,20 +231,73 @@ async def test_metagen_result_list_paginated(
     await api_client.delete(base_conf, headers=admin_headers)
 
 
+async def _insert_pending_metagen_result(
+    session,
+    *,
+    dataset_urn: str,
+    proposals: dict | None = None,
+    field_status: dict | None = None,
+) -> str:
+    """Seed a metagen_results row directly via async_session (deterministic state).
+
+    Mirrors the DB-seeding pattern from test_ontogen.py review tests so the
+    approve/reject paths can be exercised without depending on the stub LLM
+    returning non-empty proposals.
+    Spec: spec/feature/BACKEND.md L289-L299 (approve writes DataHub editable aspects).
+    """
+    import uuid as _uuid
+    from sqlalchemy import text
+
+    result_id = _uuid.uuid4()
+    run_id = _uuid.uuid4()
+    _proposals = proposals or {"dataset.description": "Seeded test description."}
+    _field_status = field_status or {"dataset.description": "pending"}
+
+    import json
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.metagen_results"
+            " (id, dataset_urn, proposals, field_status, run_id, generated_at)"
+            " VALUES (:id, :dataset_urn, CAST(:proposals AS jsonb),"
+            " CAST(:field_status AS jsonb), :run_id, now())"
+        ),
+        {
+            "id": str(result_id),
+            "dataset_urn": dataset_urn,
+            "proposals": json.dumps(_proposals),
+            "field_status": json.dumps(_field_status),
+            "run_id": str(run_id),
+        },
+    )
+    await session.commit()
+    return str(result_id)
+
+
+async def _delete_metagen_result(session, result_id: str, dataset_urn: str) -> None:
+    """Clean up a seeded metagen_results row."""
+    from sqlalchemy import text
+    await session.execute(
+        text("DELETE FROM dataspoke.metagen_results WHERE id = :id AND dataset_urn = :urn"),
+        {"id": result_id, "urn": dataset_urn},
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_metagen_result_review_approve_and_reject(
+async def test_metagen_result_review_reject(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
+    async_session,
 ) -> None:
-    """POST run creates a result; PATCH result/{id} approves or rejects it.
+    """PATCH result/{id} with 'reject' sets all field_status entries to 'rejected'.
 
-    If no result is available (empty run), test is skipped gracefully.
+    Seeds a metagen_results row directly (no LLM dependency) so the reject path
+    is deterministic regardless of stub LLM behaviour.
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L289-L299.
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
-    base_results = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result"
 
-    # Create config and trigger non-dry run to produce a proposal
+    # Ensure config exists for the URN
     await api_client.put(
         base_conf,
         headers=admin_headers,
@@ -237,40 +309,84 @@ async def test_metagen_result_review_approve_and_reject(
         },
     )
 
-    run_resp = await api_client.post(
-        base_run,
-        headers=admin_headers,
-        json={"dry_run": False},
+    result_id = await _insert_pending_metagen_result(
+        async_session,
+        dataset_urn=_TEST_URN,
+        proposals={"dataset.description": "Seeded description for rejection test."},
+        field_status={"dataset.description": "pending"},
     )
-    assert run_resp.status_code == 200
-    run_body = run_resp.json()
-    result_id = run_body.get("id")
 
-    if result_id is None:
-        # Query latest result from result list
-        results_resp = await api_client.get(
-            f"{base_results}?latest=true",
+    encoded_result_id = urllib.parse.quote(result_id, safe="")
+    try:
+        review_resp = await api_client.patch(
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}",
             headers=admin_headers,
+            json={"verdict": "reject", "reason": "spot-test rejection"},
         )
-        results_body = results_resp.json()
-        results = results_body.get("results", [])
-        if not results:
-            pytest.skip("No metagen result to review (stub LLM returned no proposals)")
+        assert review_resp.status_code == 200, review_resp.text
+        body = review_resp.json()
+        assert body["id"] == result_id
+        # All fields must be rejected
+        # Spec: spec/feature/BACKEND.md L295 — verdict=reject sets all to 'rejected'
+        for status_val in body["field_status"].values():
+            assert status_val == "rejected"
+    finally:
+        await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
 
-        result_id = results[0]["id"]
 
-    # Attempt reject verdict
-    encoded_result_id = urllib.parse.quote(str(result_id), safe="")
-    review_resp = await api_client.patch(
-        f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}",
+@pytest.mark.asyncio
+async def test_metagen_result_review_approve(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session,
+) -> None:
+    """PATCH result/{id} with 'approve' writes DataHub editable aspects.
+
+    Seeds a metagen_results row directly (no LLM dependency) so the approve path
+    is deterministic regardless of stub LLM behaviour.
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L289-L299
+    — on approval the service writes to editable DataHub aspects in a single emit_mcp
+    per affected entity and emits METAGEN.APPROVE event.
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    # Ensure config exists for the URN
+    await api_client.put(
+        base_conf,
         headers=admin_headers,
-        json={"verdict": "reject", "reason": "spot-test rejection"},
+        json={
+            "targets": ["dataset.description"],
+            "is_enabled": False,
+            "schedule_tier": None,
+            "owner": "spot-test@imazon.com",
+        },
     )
-    assert review_resp.status_code == 200
-    assert review_resp.json()["id"] == result_id
 
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
+    result_id = await _insert_pending_metagen_result(
+        async_session,
+        dataset_urn=_TEST_URN,
+        proposals={"dataset.description": "Seeded description for approval test."},
+        field_status={"dataset.description": "pending"},
+    )
+
+    encoded_result_id = urllib.parse.quote(result_id, safe="")
+    try:
+        review_resp = await api_client.patch(
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}",
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "spot-test approval"},
+        )
+        assert review_resp.status_code == 200, review_resp.text
+        body = review_resp.json()
+        assert body["id"] == result_id
+        # All fields must be approved
+        # Spec: spec/feature/BACKEND.md L289 — verdict=approve flips all pending fields
+        for status_val in body["field_status"].values():
+            assert status_val == "approved"
+    finally:
+        await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
 
 
 @pytest.mark.asyncio
