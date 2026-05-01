@@ -4,10 +4,9 @@ from collections.abc import AsyncIterator
 
 import redis.asyncio as aioredis
 
-# Cache key conventions
+# Cache key conventions — see spec/feature/BACKEND.md §Cache Key Conventions.
 VALIDATION_CACHE_KEY = "validation:{dataset_urn}:result"
 QUALITY_CACHE_KEY = "quality:{dataset_urn}:score"
-SEARCH_CACHE_KEY = "search:{query_hash}"
 RATE_LIMIT_KEY = "rate_limit:{user_id}"
 
 

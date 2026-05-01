@@ -141,6 +141,7 @@ for current method signatures.
 |---------|-----|---------|
 | `validation:{dataset_urn}:result` | 60s | Latest validation run result cache |
 | `validation:dry_run:{hash}` | 60s | Online Verifier dry-run cache for coding agents |
+| `quality:{dataset_urn}:score` | 300s | Cached `QualityScore` aggregation for dataset attr-get |
 | `ontogen:node:{node_id}` | 300s | Ontology Generation node lookup cache |
 | `ontogen:edge:{edge_id}` | 300s | Ontology Generation edge lookup cache |
 | `ontogen:triple:{triple_id}` | 300s | Ontology Generation triple lookup cache |

@@ -1,21 +1,15 @@
 """Tests for src/shared/cache/client.py — Redis client wrapper.
 
 Verifies contracts in spec/feature/BACKEND.md §Shared Services (Redis row) and
-§Cache Key Conventions (L138-L148): async get/set/delete/publish/subscribe
-operations, default TTL, and cache key format strings.
+§Cache Key Conventions: async get/set/delete/publish/subscribe operations and
+cache key format strings.
 
-Spec-anchored TTLs (BACKEND.md L142-L147):
+Spec-anchored TTLs (BACKEND.md §Cache Key Conventions):
   - validation:{dataset_urn}:result  → 60s
+  - quality:{dataset_urn}:score      → 300s
   - rate_limit:{user_id}             → 60s
   - ontogen:node/edge/triple:{id}    → 300s
-
-Keys NOT in spec (impl-only, no spec backing):
-  - QUALITY_CACHE_KEY  (quality:{dataset_urn}:score)  — no spec row
-  - SEARCH_CACHE_KEY   (search:{query_hash})           — no spec row
-
-The RedisClient.set() default TTL is 300s, which is correct for ontogen paths
-but does NOT match the 60s TTL required by spec for validation and rate-limit
-paths. Callers must pass ttl_seconds=60 explicitly for those paths."""
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,7 +18,6 @@ import pytest
 from src.shared.cache.client import (
     QUALITY_CACHE_KEY,
     RATE_LIMIT_KEY,
-    SEARCH_CACHE_KEY,
     VALIDATION_CACHE_KEY,
     RedisClient,
 )
@@ -103,22 +96,12 @@ async def test_subscribe_yields_messages(client, mock_redis) -> None:
 
 
 def test_cache_key_formatting() -> None:
-    """Verify cache key format strings against spec/feature/BACKEND.md §Cache Key Conventions.
-
-    VALIDATION_CACHE_KEY and RATE_LIMIT_KEY are spec-anchored (BACKEND.md L142, L147).
-    QUALITY_CACHE_KEY and SEARCH_CACHE_KEY are impl-pinned with no spec row — they
-    exercise what the impl exports but cannot be fully validated against the spec table.
-    """
-    # Spec-anchored (BACKEND.md L142): validation:{dataset_urn}:result
+    """Verify cache key format strings against spec/feature/BACKEND.md §Cache Key Conventions."""
     assert (
         VALIDATION_CACHE_KEY.format(dataset_urn="urn:li:dataset:x")
         == "validation:urn:li:dataset:x:result"
     )
-    # Impl-pinned: quality:{dataset_urn}:score — NOT in BACKEND.md §Cache Key Conventions
     assert (
         QUALITY_CACHE_KEY.format(dataset_urn="urn:li:dataset:x") == "quality:urn:li:dataset:x:score"
     )
-    # Impl-pinned: search:{query_hash} — NOT in BACKEND.md §Cache Key Conventions
-    assert SEARCH_CACHE_KEY.format(query_hash="abc123") == "search:abc123"
-    # Spec-anchored (BACKEND.md L147): rate_limit:{user_id}
     assert RATE_LIMIT_KEY.format(user_id="user-1") == "rate_limit:user-1"

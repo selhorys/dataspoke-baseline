@@ -365,10 +365,10 @@ Validation, UC3 Ontology Generation, UC4 Metadata Generation, UC5 Governance.
 
 > **Note**: The fixture below extends the minimal Imazon profile sketched in
 > [`USE_CASE_en.md`](USE_CASE_en.md#imaginary-company-profile-imazon) (5 OLTP tables and 2
-> Kafka topics) with additional schemas needed to exercise PII auto-classification, multi-hop
-> lineage, ontology variants, and time-series anomaly detection. The narrative scenarios in
-> `USE_CASE_en.md` remain authoritative for feature behavior; this fixture is the test data
-> that backs them and may be revised when integration tests are rewritten.
+> Kafka topics) with additional schemas needed to exercise ontology variants and time-series
+> anomaly detection. The narrative scenarios in `USE_CASE_en.md` remain authoritative for
+> feature behavior; this fixture is the test data that backs them and may be revised when
+> integration tests are rewritten.
 
 | Schema.Table | Rows | Primary UC | Key Characteristic |
 |---|---|---|---|
@@ -378,14 +378,14 @@ Validation, UC3 Ontology Generation, UC4 Metadata Generation, UC5 Governance.
 | `orders.order_items` | 80 | UC1, UC3 | Multi-hop join path (PL/SQL lineage + ontology edges) |
 | `orders.daily_fulfillment_summary` | 30 | UC2 | 1 anomalous low-volume day (Jan 15) — time-series validation |
 | `orders.raw_events` | 100 | UC2 | Lifecycle event stream |
-| `orders.eu_purchase_history` | 30 | UC1 | PII: shipping_address, payment_last4 (auto-classified on ingestion) |
-| `customers.eu_profiles` | 20 | UC1 | PII: email, full_name, DOB |
+| `orders.eu_purchase_history` | 30 | UC1 | EU shipping/payment columns (PII-shaped test data) |
+| `customers.eu_profiles` | 20 | UC1 | EU profile columns (PII-shaped test data) |
 | `reviews.user_ratings` | 50 | UC2 | Healthy: rating_score NOT NULL |
 | `reviews.user_ratings_legacy` | 50 | UC2 | Degraded: ~30% NULL rating_score |
 | `publishers.feed_raw` | 20 | UC1 | JSONB raw payload |
 | `shipping.carrier_status` | 40 | UC2 | Delayed and exception statuses |
 | `inventory.book_stock` | 25 | UC3, UC4 | Multi-warehouse stock — BOOK/PRINT concept variant |
-| `marketing.eu_email_campaigns` | 15 | UC1, UC5 | Downstream of eu_profiles (ingestion + governance PII metrics) |
+| `marketing.eu_email_campaigns` | 15 | UC1, UC5 | Downstream of eu_profiles (ingestion + governance metrics) |
 | `products.digital_catalog` | 20 | UC3, UC4 | ~30% NULL isbn — BOOK/DIGITAL concept variant |
 | `content.ebook_assets` | 20 | UC3, UC4 | EPUB/PDF/MOBI assets |
 | `storefront.listing_items` | 15 | UC3, UC4 | Marketplace listings |
@@ -399,11 +399,11 @@ via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMet
 
 ### Data Design Choices
 
-- **UC1**: EU PII tables (`orders.eu_purchase_history`, `customers.eu_profiles`,
-  `marketing.eu_email_campaigns`) carry structurally realistic EU PII across DE/FR/ES/IT/NL —
-  tests PII auto-classification on ingestion
+- **UC1**: EU PII-shaped tables (`orders.eu_purchase_history`, `customers.eu_profiles`,
+  `marketing.eu_email_campaigns`) carry structurally realistic data across DE/FR/ES/IT/NL —
+  reserved as test surface for future PII classification features
 - **UC1**: `order_items -> editions -> title_master -> genre_hierarchy` full referential
-  integrity — tests multi-hop PL/SQL lineage extraction
+  integrity — reserved as test surface for future multi-hop lineage extraction
 - **UC2**: `user_ratings_legacy` has 30% NULL `rating_score` — tests data quality detection
 - **UC2**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15) — tests time-series
   anomaly detection / predictive SLA
