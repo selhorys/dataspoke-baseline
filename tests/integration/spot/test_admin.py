@@ -8,6 +8,9 @@ Concerns covered:
 - POST /internal/admin/datahub/sync — 401 when X-Internal-Token header is missing
 """
 
+import os
+import urllib.parse
+
 import pytest
 import httpx
 
@@ -139,20 +142,51 @@ async def test_internal_admin_datahub_sync_full(
 @pytest.mark.asyncio
 async def test_internal_admin_datahub_sync_targeted(
     api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
     internal_headers: dict[str, str],
 ) -> None:
-    """POST /internal/admin/datahub/sync with dataset_urns performs a targeted sync."""
+    """POST /internal/admin/datahub/sync with dataset_urns performs a targeted sync.
+
+    Pre-seeds dataset_registry by upserting an ingestion conf for the URN — this is
+    the natural flow that populates the registry (BACKEND.md §Ingestion Service
+    "Config upsert registers the dataset URN in dataset_registry"). Without seeding,
+    sync_with_datahub counts the URN as not_found rather than checked.
+    """
     test_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    encoded_urn = urllib.parse.quote(test_urn, safe="")
+    conf_path = f"/api/v1/spoke/common/data/{encoded_urn}/attr/ingestion/conf"
 
-    # Internal routes are mounted WITHOUT /api/v1 prefix (see main.py)
-    resp = await api_client.post(
-        "/internal/admin/datahub/sync",
-        headers=internal_headers,
-        json={"dataset_urns": [test_urn]},
+    pg_host = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
+    pg_port = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
+    pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
+
+    # Seed registry via ingestion conf upsert (calls ensure_dataset_registered).
+    put_resp = await api_client.put(
+        conf_path,
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "platform": "postgres",
+            "locator": {"host": pg_host, "port": pg_port},
+            "identifier": {"database": pg_db, "schema_name": "catalog", "table": "title_master"},
+            "auth": {"username": "spoke_reader", "secret_ref": "k8s-secret/pg-spoke-reader"},
+            "is_enabled": False,
+        },
     )
+    assert put_resp.status_code in (200, 201), put_resp.text
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "checked" in body
-    # Targeted: checked should be 1 (the URN we submitted)
-    assert body["checked"] >= 1
+    try:
+        # Internal routes are mounted WITHOUT /api/v1 prefix (see main.py)
+        resp = await api_client.post(
+            "/internal/admin/datahub/sync",
+            headers=internal_headers,
+            json={"dataset_urns": [test_urn]},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "checked" in body
+        # Targeted: checked should be 1 (the URN we submitted)
+        assert body["checked"] >= 1
+    finally:
+        await api_client.delete(conf_path, headers=admin_headers)
