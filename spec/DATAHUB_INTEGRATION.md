@@ -171,6 +171,7 @@ Regular aspects represent the current state of an entity. Read via `get_aspect()
 | `globalTags` | `GlobalTagsClass` | `tags[].tag` (URN) | `GET /aspects/{urn}?aspect=globalTags` | `POST /openapi/v3/entity/dataset` |
 | `glossaryTerms` | `GlossaryTermsClass` | `terms[].urn`, `terms[].context` | `GET /aspects/{urn}?aspect=glossaryTerms` | `POST /openapi/v3/entity/dataset` |
 | `upstreamLineage` | `UpstreamLineageClass` | `upstreams[].dataset` (URN), `upstreams[].type` | `GET /aspects/{urn}?aspect=upstreamLineage` | `POST /openapi/v3/entity/dataset` |
+| `status` | `StatusClass` | `removed` (bool) | `GET /aspects/{urn}?aspect=status` | `POST /openapi/v3/entity/dataset` |
 | `deprecation` | `DeprecationClass` | `deprecated` (bool), `note`, `replacement` (URN), `decommissionTime` | `GET /aspects/{urn}?aspect=deprecation` | `POST /openapi/v3/entity/dataset` |
 
 #### Editable vs Non-Editable Description Aspects
@@ -281,6 +282,7 @@ the `ingestion-passive-hourly` DAG and writes no aspects.*
 | `globalTags` | W | — | R | — *(future scope)* | R |
 | `glossaryTerms` | — | — | R + W (term per approved node, attached to member datasets; glossary-term relationships per approved triple) | — *(future scope)* | R |
 | `upstreamLineage` | W | R | R | R | R |
+| `status` | W | — | — | — | — |
 | `deprecation` | — | R | — | — | — |
 | `datasetProfile` | — | R | — | — | R |
 | `operation` | — | R | — | — | R |

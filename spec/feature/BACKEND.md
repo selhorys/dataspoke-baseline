@@ -161,8 +161,17 @@ cross-domain event history from the unified `events` table. Does not own any Pos
 configuration tables.
 
 **DataHub aspects read**: `datasetProperties`, `editableDatasetProperties`, `ownership`,
-`globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`. Quality score
-from Redis cache.
+`globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`.
+
+**`quality_score` (server-side)**: For each dataset response, the service computes
+`quality_score = passed_rules / total_rules` from the latest per-rule rows in
+`validation_results` for that `dataset_urn` (one row per rule, latest by `measured_at`),
+counting `assertion_result = 'SUCCESS'` as passed. The result is read-through cached at
+`quality:{dataset_urn}:score` (TTL 300s; see [Cache Key Conventions](#cache-key-conventions))
+and surfaced as the `quality_score` field on `GET /spoke/common/data/{urn}` and
+`GET /spoke/common/dataset` list rows. When the dataset has no validation config (or no
+results yet), `quality_score` is omitted from the response. Cache invalidation is
+write-through after each validation run completes.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
@@ -755,7 +764,6 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `BULK_BATCH_SIZE` | 100 | DataHub bulk scan batch size |
 | `BULK_BATCH_DELAY_MS` | 100 | Delay between bulk batches |
 | `VALIDATION_RESULT_CACHE_TTL` | 60 | Validation result Redis cache TTL (seconds) |
-| `SEARCH_RESULT_CACHE_TTL` | 120 | Search result Redis cache TTL (seconds) |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Below this -> pending human review |
 

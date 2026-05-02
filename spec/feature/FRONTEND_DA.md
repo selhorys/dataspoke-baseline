@@ -61,10 +61,10 @@ Same data sources as DE: `GET /spoke/common/validation` (list) and
 `/event/validation`. Run via `POST .../method/validation/run`. No new fields
 or endpoints — only the score-label and primary-action wording differ
 ("Fitness Score" / "Check Fitness" instead of "Quality Score" / "Run
-Validation"). The score is computed client-side as
-`passed_rules / total_rules` from the latest `attr/validation/result` rows;
-rule-type vocabulary is fixed (see
-[FRONTEND_DE §Validation](FRONTEND_DE.md#validation-uc2)).
+Validation"). The score is the server-provided `quality_score` field on
+the same DE-shared endpoints (computed and cached server-side; see
+[FRONTEND_DE §Validation](FRONTEND_DE.md#validation-uc2)); rule-type
+vocabulary is fixed.
 
 ### Dataset detail (`/da/dataset/[urn]`)
 

@@ -57,9 +57,9 @@ route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 ### Non-Goals
 
 - Production deployment (use `helm-charts/dataspoke` for production)
-- Running DataSpoke application services in-cluster as the default workflow (for on-demand
-  in-cluster testing, use the umbrella Helm chart with application subcharts enabled — see
-  [TESTING.md §Testing Modes](../TESTING.md#testing-modes))
+- Running the **frontend** or the **event-consumer** in-cluster (frontend runs on the host
+  via `npm run dev`; the event-consumer is opt-in for organisations adding event-driven
+  extensions and is not deployed in dev)
 - External data source connectivity (example sources are in-cluster only)
 - High availability or data persistence between dev environment resets
 

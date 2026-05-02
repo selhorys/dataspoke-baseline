@@ -30,7 +30,7 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core
 - **API-first**: FastAPI implementation in `src/api/` is the SSOT for the API contract; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
-- **Airflow 3.1.8** for workflow orchestration (HTTP-triggered DAGs, LocalExecutor, fixed schedule tiers); **PostgreSQL 17** (with `pgvector` for vector search and Apache `age` for ontogen triple graph materialization) for operational DB
+- **Airflow 3.1.8** for workflow orchestration (fixed schedule tiers + on-demand HTTP triggers, LocalExecutor); **PostgreSQL 17** (with `pgvector` for vector search and Apache `age` for ontogen triple graph materialization) for operational DB
 - **Headless / API-first**: backend's primary task is to support `spec/API.md`; frontend is a thin reference UI that consumes API routes verbatim (no invented endpoints); per `spec/feature/FRONTEND_BASIC.md` no streaming surface exists in the baseline — clients poll `event/...` and `attr/.../result`
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
 - **DataHub debugging protocol**: For any DataHub integration or infrastructure issue, consult `ref/github/datahub/` source code and use the `/datahub-api` skill before guessing configs or iterating through Helm upgrades.
@@ -46,8 +46,7 @@ Specs must not contradict each other — propagate changes up and down. Priority
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Binding conventions. |
 | 3 | `ARCHITECTURE.md`, `TESTING.md` | System architecture and testing conventions. |
 | 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md` | Claude Code scaffold conventions; autonomous PR worker. |
-| 5 | `feature/<FEATURE>.md` | Common feature specs. |
-| 6 | `feature/spoke/<FEATURE>.md` | User-group-specific feature specs. |
+| 5 | `feature/<FEATURE>.md` | Common feature specs and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`). |
 
 When both `_en.md` and `_kr.md` exist, read only English unless directed otherwise. Write Korean in plain style (-다/-한다).
 
@@ -73,7 +72,7 @@ When in doubt, plan. Never self-classify a task as "trivial" to skip planning.
 
 End-to-end steps:
 
-1. Read the relevant spec in `spec/feature/` or `spec/feature/spoke/`
+1. Read the relevant spec in `spec/feature/`
 2. **Plan (built-in Plan mode)** — produce implementation plan with files, contracts, and acceptance criteria. The plan MUST specify which generator agents (`backend`, `workflow`, `frontend`, `test`, `k8s-helm`) to launch and in what order. See `spec/AI_SCAFFOLD.md` §Plan quality checklist.
 3. **Human approves the plan** — do NOT proceed to code generation without explicit approval
 4. `backend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
@@ -110,7 +109,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 **Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-from-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
-**Subagents**: `reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
+**Subagents**: `reviewer` (evaluator, opus), `test-reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.
-**Hooks**: `.claude/hooks/` — integration-test preflight (blocking), plan-gate reminder, permission-hygiene warning. Wired via `.claude/settings.json`.
+**Hooks**: `.claude/hooks/` — integration-test preflight (blocking), plan-gate reminder, permission-hygiene warning, commit confirmation. Wired via `.claude/settings.json`.
 **Statusline**: `.claude/statusline.sh` — model · effort · cwd · git-branch · 5-hour block reset countdown. Reset segment requires `ccusage` on `$PATH` (`npm i -g ccusage` on node ≥ 18, or `brew install bun && bun add -g ccusage`); omitted silently if unavailable.

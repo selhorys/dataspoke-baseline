@@ -42,7 +42,7 @@ Which spec file changed, and how?
   Examples:
     /spec-harmonize spec/feature/SEARCH.md new
     /spec-harmonize spec/ARCHITECTURE.md modified
-    /spec-harmonize spec/feature/spoke/DE_VALIDATOR.md deleted
+    /spec-harmonize spec/feature/FRONTEND_DA.md deleted
 ```
 
 Wait for the user's reply before proceeding.
@@ -74,8 +74,7 @@ Classify the changed file using the spec hierarchy from `CLAUDE.md`:
 | 2 | `spec/API_DESIGN_PRINCIPLE_*.md`, `spec/DATAHUB_INTEGRATION.md` | Binding conventions |
 | 3 | `spec/ARCHITECTURE.md`, `spec/TESTING.md`, `spec/USE_CASE_*.md` | System architecture |
 | 4 | `spec/AI_SCAFFOLD.md`, `spec/AI_PRAUTO.md` | Scaffold conventions |
-| 5 | `spec/feature/*.md` | Common feature specs |
-| 6 | `spec/feature/spoke/*.md` | User-group-specific specs |
+| 5 | `spec/feature/*.md` | Common feature specs and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`) |
 | — | `CLAUDE.md`, `README.md`, `.claude/**` | Harness documents |
 
 The priority level determines which other documents may need updating and which require user confirmation.
@@ -100,7 +99,7 @@ Based on the changed spec and its priority level, identify all documents that sh
 
 ### Rules for which targets to check
 
-- **New spec (priority 5–6)**: Check ARCHITECTURE.md (feature mapping), README.md (documentation table), USE_CASE_en.md (cross-refs), and sibling feature specs (cross-refs).
+- **New spec (priority 5)**: Check ARCHITECTURE.md (feature mapping), README.md (documentation table), USE_CASE_en.md (cross-refs), and sibling feature specs (cross-refs).
 - **New spec (priority 1–4)**: Check CLAUDE.md (spec hierarchy), README.md (documentation table), AI_SCAFFOLD.md (if scaffold-related).
 - **Modified spec**: Check all targets that currently reference the changed file for stale content.
 - **Deleted spec**: Check all targets for dead references that need removal.
@@ -156,7 +155,7 @@ Follow the spec hierarchy for confirmation requirements:
 | Priority 1 (MANIFESTO) | **Never modify.** Only flag contradictions for user review. |
 | Priority 2–3 | **Always ask** before applying. Show diff preview first. |
 | Priority 4 | **Ask** before applying. Show proposed changes. |
-| Priority 5–6, README, CLAUDE.md | **Ask** before applying. May batch multiple changes in one confirmation. |
+| Priority 5, README, CLAUDE.md | **Ask** before applying. May batch multiple changes in one confirmation. |
 
 ### Apply process
 

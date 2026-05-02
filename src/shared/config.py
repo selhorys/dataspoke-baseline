@@ -16,7 +16,6 @@ BULK_BATCH_DELAY_MS: int = 100
 
 # Redis cache TTLs (seconds)
 VALIDATION_RESULT_CACHE_TTL: int = 60
-SEARCH_RESULT_CACHE_TTL: int = 120
 
 # Vector search
 EMBEDDING_DIMENSION: int = 1536

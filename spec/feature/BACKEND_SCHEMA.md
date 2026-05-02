@@ -80,7 +80,7 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
 | `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
-| `is_enabled` | `BOOLEAN` | Enable cron-triggered periodic execution (default false) |
+| `is_enabled` | `BOOLEAN` | Enable Airflow tier-based periodic execution (default false) |
 | `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
 | `owner` | `TEXT` | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |

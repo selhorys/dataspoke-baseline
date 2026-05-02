@@ -144,7 +144,6 @@ Portal-style interface with user-group-specific entry points (DE, DA, DG). Provi
 - Chart visualizations for metrics dashboards (DG) and data overviews
 - Interactive graph rendering for ontology visualization (UC3 nodes / triples)
 - Polling-based live freshness against `event/...` and `attr/.../result` endpoints (no WebSocket / SSE in the baseline API)
-- Search interface for natural language queries (DA)
 
 For layout, shared components, routing, and auth, see
 [`spec/feature/FRONTEND_BASIC.md`](feature/FRONTEND_BASIC.md). Per-workspace specs:
@@ -176,10 +175,10 @@ catalogue, see [`spec/API.md`](API.md).
 **Technology**: Python 3.13, Airflow for orchestration
 
 Core computational layer. For the full backend specification — layered architecture, shared
-services, Airflow workflows, and infrastructure integration patterns — see
-[`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL schema including
-pgvector tables) in [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md). Individual
-feature designs are specified per feature in `spec/feature/spoke/`.
+services, per-feature service designs, Airflow workflows, and infrastructure integration
+patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL
+schema including pgvector tables) in
+[`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md).
 
 **Key capabilities by feature** (MANIFESTO §2.1):
 
@@ -367,15 +366,17 @@ lock protocol, see [`spec/TESTING.md`](TESTING.md).
 
 DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace
 containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed),
-`dataspoke-event-consumer` (optional Kafka consumer Deployment — co-located in the API by
-default), `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` +
+`dataspoke-event-consumer` (optional Kafka consumer Deployment — opt-in for organisations
+adding event-driven extensions; not deployed in the baseline),
+`dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` +
 `dataspoke-airflow-triggerer` (Airflow 3.1 LocalExecutor; api-server replaces the former Flask
 webserver), `postgresql` (StatefulSet with PV — custom image layering pgvector + Apache AGE on
 PG 17), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST)
 and `datahub-kafka:9092` (event streaming).
 
-`dataspoke-event-consumer` is optional — enable the separate pod for independent scaling in
-production (Kafka consumers scale by partition count).
+`dataspoke-event-consumer` is **disabled by default** — baseline UC1–UC5 are schedule-driven
+via Airflow tier DAGs and do not subscribe to DataHub MCL events. Enable the separate pod
+when an organisation adds event-driven extensions; Kafka consumers scale by partition count.
 
 For replica counts, resource requests/limits, PV sizes, component matrix, and network policy,
 see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md). DataSpoke's namespace requires egress
@@ -429,7 +430,7 @@ The repository is organized by deployment concern and application layer. Key top
 | Directory | Purpose |
 |-----------|---------|
 | `src/` | Application source: `api/` (FastAPI), `backend/` (services), `shared/` (clients), `workflows/` (Airflow DAGs), `frontend/` (Next.js) |
-| `spec/` | Architecture and feature specifications (`feature/` for cross-cutting, `feature/spoke/` for user-group-specific) |
+| `spec/` | Architecture and feature specifications (common feature specs and user-group-specific FRONTEND_DE/DA/DG specs in `feature/`) |
 | `tests/` | Unit, integration, and E2E test suites |
 | `dev_env/` | Kubernetes dev environment scripts |
 | `helm-charts/` | Umbrella Helm chart for deployment |

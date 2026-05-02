@@ -67,8 +67,8 @@ The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
 │    [Edit]  [Delete]                                  │
 │                                                      │
 │  event/ingestion (latest 5)                          │
-│    2026-04-25 ✓ INGESTION.RUN_COMPLETE               │
-│    2026-04-24 ✓ INGESTION.RUN_COMPLETE               │
+│    2026-04-25 ✓ INGESTION.COMPLETE                   │
+│    2026-04-24 ✓ INGESTION.COMPLETE                   │
 └──────────────────────────────────────────────────────┘
         Detail (`/de/ingestion/[urn]`)
 ```
@@ -80,11 +80,15 @@ The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
 | `/de/validation` | `GET /spoke/common/validation` | — |
 | `/de/validation/[urn]` | `GET .../attr/validation/conf`, `GET .../attr/validation/result?latest=true` (per-rule), `GET .../attr/validation/result?from&to` (timeline), `GET .../event/validation` | `PUT/PATCH/DELETE .../attr/validation/conf` (fields: `rules[]`, `is_enabled`, `schedule_tier`); `POST .../method/validation/run` (`{partition?, dry_run?}`) |
 
-The "Quality Score" displayed in the list and detail header is computed
-client-side as `passed_rules / total_rules` over the latest result rows; no
-backend field by that name exists. Rule type vocabulary is fixed:
-`freshness`, `volume`, `field`, `schema`, `sql`, `custom` (with optional
-`subtype: "sql_timeseries"` for the partition-aware ML extension).
+The "Quality Score" displayed in the list and detail header is the
+server-provided `quality_score` field on `GET /spoke/common/dataset` rows
+and `GET /spoke/common/data/{urn}` (computed and cached server-side as
+`passed_rules / total_rules`; see
+[BACKEND §Dataset Service](BACKEND.md#dataset-service-srcbackenddataset)).
+The score is omitted when no validation results exist; the UI renders "—"
+in that case. Rule type vocabulary is fixed: `freshness`, `volume`,
+`field`, `schema`, `sql`, `custom` (with optional `subtype: "sql_timeseries"`
+for the partition-aware ML extension).
 
 ```
 ┌──────────────────────────────────────────────────────┐

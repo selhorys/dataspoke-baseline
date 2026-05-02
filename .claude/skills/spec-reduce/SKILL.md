@@ -64,7 +64,6 @@ wc -l <files> | sort -rn
 
 **Tier 3 — Feature specs** (target: contracts + behavior, not implementation):
 - `spec/feature/*.md`
-- `spec/feature/spoke/*.md`
 
 **Tier 4 — READMEs** (target: quick-start + reference, pointers to specs):
 - `README.md` (root)

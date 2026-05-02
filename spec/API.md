@@ -424,6 +424,15 @@ Airflow DAGs, and automation.
 | `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
 
+### Internal Activities (`/internal/activities`)
+
+Cluster-internal activity endpoints invoked by Airflow DAGs (HttpOperator → in-cluster API
+DNS) to drive long-running domain workflows (ingestion, validation, ontogen, metagen, metric
+runs). Gated by the same `X-Internal-Token` header. The per-domain route shapes are not
+catalogued in this spec — they are an implementation detail of the workflow boundary and live
+with the relevant feature service in [BACKEND.md](feature/BACKEND.md). External clients must
+not call these routes; they are not exposed through ingress.
+
 ### System
 
 | Method | Path | Purpose |

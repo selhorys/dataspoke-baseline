@@ -24,32 +24,20 @@ spec/
 │                              ← REST API conventions: URI structure, request/response
 │                                 format, content/metadata separation, meta-classifiers.
 │
-├── feature/            ← Deep-dive specs for ALL FIVE BASELINE features
-│   │                     (Ingestion Control, Validation, Ontology Generation,
-│   │                     Metadata Generation, Governance) plus cross-cutting
-│   │                     infrastructure. Timeless reference format.
-│   └── <FEATURE>.md      e.g. BACKEND.md, BACKEND_SCHEMA.md, FRONTEND_*.md,
-│                         DEV_ENV.md, HELM_CHART.md
-│
-└── feature/spoke/      ← Reserved for ORGANIZATION-SPECIFIC EXTENSIONS in
-    │                     forks/customizations. The DataSpoke baseline ships
-    │                     nothing here. Tag each file by user group (DE/DA/DG).
-    └── <FEATURE>.md      e.g. an organization's custom DE search, custom DA
-                          dashboard, etc.
+└── feature/            ← Deep-dive specs for ALL FIVE BASELINE features
+    │                     (Ingestion Control, Validation, Ontology Generation,
+    │                     Metadata Generation, Governance) plus cross-cutting
+    │                     infrastructure and user-group-specific FRONTEND
+    │                     specs. Timeless reference format.
+    └── <FEATURE>.md      e.g. BACKEND.md, BACKEND_SCHEMA.md,
+                          FRONTEND_BASIC/DE/DA/DG.md, DEV_ENV.md, HELM_CHART.md
 ```
 
 **Routing rules:**
 - Top-level `spec/` — project-wide documents only. Do NOT create new top-level files unless the topic affects the whole system and warrants an architectural-level document.
-- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `DEV_ENV.md`, `BACKEND.md`, `HELM_CHART.md`). The user-group framing (DE / DA / DG) is a UI / API extensibility surface only — baseline governance routes under `/spoke/dg/` are still part of the baseline product and live here.
-- `spec/feature/spoke/` — **organization-specific extensions only**. The DataSpoke baseline product ships nothing here; it exists for forks/customizations to add features under `/spoke/de/` or `/spoke/da/` (and additional `/spoke/dg/` extensions beyond the baseline).
+- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `DEV_ENV.md`, `BACKEND.md`, `HELM_CHART.md`) and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`). The user-group framing (DE / DA / DG) is a UI / API extensibility surface only — baseline governance routes under `/spoke/dg/` are still part of the baseline product and live here. Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH_DA.md`); no separate subdirectory is required.
 
 Implementation plans and decision records are tracked via GitHub Issues and PRs, not in the spec directory.
-
-**How to decide between `feature/` and `feature/spoke/`:**
-- Any of the five MANIFESTO baseline features → `feature/`, regardless of which workspace surfaces it
-- Cross-cutting infrastructure (API, dev env, helm, shared services) → `feature/`
-- An organization-specific extension that only exists in a fork → `feature/spoke/`
-- When in doubt, check `MANIFESTO_en.md §2.1` — anything listed there belongs in `feature/`
 
 ---
 
@@ -64,7 +52,7 @@ Additionally, read these when relevant to the topic:
 - `spec/API_DESIGN_PRINCIPLE_en.md` — when designing API endpoints
 - `spec/USE_CASE_en.md` — for use case context (UC1–UC5)
 
-If writing about a specific feature, also check for an existing `spec/feature/<FEATURE>.md` or `spec/feature/spoke/<FEATURE>.md` to extend rather than create a duplicate.
+If writing about a specific feature, also check for an existing `spec/feature/<FEATURE>.md` to extend rather than create a duplicate.
 
 ---
 
@@ -72,8 +60,7 @@ If writing about a specific feature, also check for an existing `spec/feature/<F
 
 | Destination | When to use | Document type |
 |-------------|-------------|---------------|
-| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) or a common cross-cutting topic (API, dev environment, shared services). The five baseline features all live here, regardless of which user-group workspace surfaces them. | Common Feature Spec (see template A) |
-| `spec/feature/spoke/<FEATURE>.md` | An organization-specific extension to one user-group workspace (`/spoke/de/`, `/spoke/da/`, or governance extensions beyond the baseline under `/spoke/dg/`). The DataSpoke baseline product ships nothing here. | Spoke Feature Spec (see template A, with user-group tag) |
+| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance), a common cross-cutting topic (API, dev environment, shared services), a user-group-specific FRONTEND spec (`FRONTEND_DE/DA/DG.md`), or an organization-specific extension in a fork (e.g. `SEARCH_DA.md`). | Feature Spec (see template A; tag with user group when applicable) |
 | `spec/<DOC>.md` (top-level) | Only for project-wide topics that belong alongside MANIFESTO and ARCHITECTURE | Top-level spec (use template A without feature context) |
 
 ---
@@ -96,11 +83,11 @@ Use the template for the chosen destination. Follow these style rules for both:
 
 ---
 
-## Template A — Feature Spec (`spec/feature/spoke/<FEATURE>.md` or `spec/feature/<FEATURE>.md`)
+## Template A — Feature Spec (`spec/feature/<FEATURE>.md`)
 
 No version/date/author metadata block. This is a timeless reference document.
 
-For spoke features, include the user group tag. For common features, omit it.
+For user-group-specific or organization-extension features, include the user group tag. For common features, omit it.
 
 ```markdown
 # <Feature Name>
@@ -136,6 +123,6 @@ For spoke features, include the user group tag. For common features, omit it.
 
 ## Step 4 — Update cross-references if needed
 
-- If a new `spec/feature/` or `spec/feature/spoke/` document introduces components or data models that belong in the architecture overview, update `spec/ARCHITECTURE.md`.
+- If a new `spec/feature/` document introduces components or data models that belong in the architecture overview, update `spec/ARCHITECTURE.md`.
 - If the document changes how a use case is realized, note it in `spec/USE_CASE_en.md` as a cross-reference.
 - Never modify `spec/MANIFESTO_en.md` or `spec/MANIFESTO_kr.md`.

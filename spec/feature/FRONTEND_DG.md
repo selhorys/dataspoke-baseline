@@ -115,9 +115,9 @@ response sub-fields verbatim — no derived analysis on top:
 | Ownership | `overview.ownership` | Owner / team coverage from DataHub `ownership` aspect |
 
 Visualization config persists via `GET/PATCH /spoke/dg/overview/attr`.
-Settings are limited to layout / status / size / confidence-threshold filters
-that the overview response can answer locally — no fields beyond what
-`overview.attr` returns.
+Settings are limited to the `layout`, `color_by`, and `filters` fields
+catalogued in [BACKEND_SCHEMA §`overview_config`](BACKEND_SCHEMA.md#overview_config) —
+no fields beyond what `overview.attr` returns.
 
 ```
 ┌──────────────────────────────────────────────────────┐

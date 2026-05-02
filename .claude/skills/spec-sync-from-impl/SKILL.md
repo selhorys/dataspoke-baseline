@@ -134,7 +134,7 @@ Follow the spec hierarchy from `CLAUDE.md`. Higher-priority documents constrain 
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Fix factual inaccuracies only. Keep conventions abstract — no impl details. |
 | 3 | `ARCHITECTURE.md`, `TESTING.md`, `USE_CASE_en/kr.md` | Update component lists, tech stack, data flows if they've changed. Keep architectural level — no code-level detail. |
 | 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md` | Update to reflect current scaffold structure and prauto behavior. May include moderate detail (file trees, config keys, workflow steps). |
-| 5–6 | `feature/*.md`, `feature/spoke/*.md` | Full detail allowed. These are the deep-dive specs. |
+| 5 | `feature/*.md` | Full detail allowed. These are the deep-dive specs. |
 
 ### Brevity rules
 

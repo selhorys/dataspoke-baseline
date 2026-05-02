@@ -37,10 +37,10 @@ and Helm charts) is specified separately in `spec/feature/DEV_ENV.md` and
 
 `.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/`
 (subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code
-lifecycle events — integration-test preflight, plan-gate reminder, permission-hygiene warning),
-`statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine),
-and `settings.local.json` (local overrides). See §Skills and §Subagents below for the full
-catalogue.
+lifecycle events — integration-test preflight, plan-gate reminder, permission-hygiene warning,
+commit confirmation), `statusline.sh` (status line composer), `settings.json` (tool permissions
++ hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and §Subagents
+below for the full catalogue.
 
 The scaffold works alongside these structural elements:
 
@@ -194,7 +194,6 @@ requirements.
 | Features, product identity, user-group framing | `spec/MANIFESTO_*.md` |
 | Tech stack, system components | `spec/ARCHITECTURE.md` |
 | Baseline feature specs | `spec/feature/` |
-| Organization-specific extensions (per user group) | `spec/feature/spoke/` |
 | API routers and backend services | `src/api/`, `src/backend/` |
 | Cluster and namespace config | `dev_env/.env` |
 | Org-specific agent conventions | `.claude/agents/` |
