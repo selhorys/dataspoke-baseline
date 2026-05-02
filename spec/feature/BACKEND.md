@@ -163,15 +163,28 @@ configuration tables.
 **DataHub aspects read**: `datasetProperties`, `editableDatasetProperties`, `ownership`,
 `globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`.
 
-**`quality_score` (server-side)**: For each dataset response, the service computes
-`quality_score = passed_rules / total_rules` from the latest per-rule rows in
-`validation_results` for that `dataset_urn` (one row per rule, latest by `measured_at`),
-counting `assertion_result = 'SUCCESS'` as passed. The result is read-through cached at
-`quality:{dataset_urn}:score` (TTL 300s; see [Cache Key Conventions](#cache-key-conventions))
-and surfaced as the `quality_score` field on `GET /spoke/common/data/{urn}` and
-`GET /spoke/common/dataset` list rows. When the dataset has no validation config (or no
-results yet), `quality_score` is omitted from the response. Cache invalidation is
-write-through after each validation run completes.
+**`quality_score` (server-side)**: A 0–100 composite score computed from DataHub
+aspects. The dataset service delegates to `src/backend/dataset/scoring.py`, which
+combines five dimensions with fixed weights (must sum to 1.0):
+
+| Dimension | Weight | Source aspect(s) | Computation |
+|-----------|--------|------------------|-------------|
+| `completeness` | 0.25 | `SchemaMetadata` | Percentage of fields with a non-empty `description`. |
+| `freshness` | 0.25 | `Operation` (timeseries, latest) | 100 if last operation ≤ 1 day ago, 0 if ≥ 30 days, linear in between. |
+| `schema_stability` | 0.15 | DataHub Timeline `getSchemaVersionList` | Starts at 100; subtracts `10 × major_changes + 1 × minor_change` over the last 30 days. Single-version (initial 0.0.0) scores 100. |
+| `data_quality` | 0.20 | `DatasetProfile` (timeseries, latest) | Starts at 100; subtracts `avg(nullProportion) × 100`; further -30 if `rowCount == 0`. |
+| `ownership_tags` | 0.15 | `Ownership`, `GlobalTags` | 100 if both present, 50 if exactly one, 0 if neither. |
+
+`overall = round(sum(dimensions[k] × weights[k]), 2)`, clamped to `[0, 100]`. The
+score is read-through cached at `quality:{dataset_urn}:score` (TTL 300s; see
+[Cache Key Conventions](#cache-key-conventions)) and surfaced as the `quality_score`
+field on `GET /spoke/common/data/{urn}` and `GET /spoke/common/dataset` list rows.
+The full breakdown (`overall_score`, `dimensions`, optional `dimension_details`) is
+returned by the dataset domain via the `QualityScore` model. The score is independent
+of the validation feature — datasets without validation configs still have a
+`quality_score` derived from aspects alone. The governance metric `validation-score`
+(see §Metrics Service) is a separate measurement computed from `validation_results`,
+not from aspects.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 

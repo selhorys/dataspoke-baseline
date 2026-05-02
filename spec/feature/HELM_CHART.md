@@ -55,19 +55,26 @@ Production Deployment                    Dev Deployment (dev_env)
 
 `helm-charts/dataspoke/` is a standard Helm umbrella chart with `Chart.yaml` (apiVersion v2),
 `values.yaml` (production), `values-dev.yaml` (dev overlay), `templates/` (configmap, secrets,
-networkpolicy, helpers), three application `subcharts/` (frontend, api, event-consumer), and
-`charts/` (fetched dependency archives).
+networkpolicy, helpers, **plus the API Deployment / Service / Ingress** rendered directly from
+the umbrella), two application `subcharts/` (frontend, event-consumer), and `charts/` (fetched
+dependency archives).
+
+The API server is *not* a separate subchart. Its Deployment, Service, and Ingress live in
+`templates/api-*.yaml` so the API can be wired into the same `dataspoke-api` cluster DNS name
+that Airflow callbacks expect, while still respecting the `api.*` values block.
 
 ### Dependencies
 
 | Subchart | Source | Version | Condition |
 |----------|--------|---------|-----------|
 | frontend | `file://subcharts/frontend` | 0.1.0 | `frontend.enabled` |
-| api | `file://subcharts/api` | 0.1.0 | `api.enabled` |
 | event-consumer | `file://subcharts/event-consumer` | 0.1.0 | `event-consumer.enabled` |
 | postgresql | `bitnami/postgresql` | ~18.5.0 | `postgresql.enabled` |
 | redis | `bitnami/redis` | ~25.3.0 | `redis.enabled` |
 | airflow | `apache-airflow/airflow` | ~1.20.0 (chart; ships Airflow 3.1.8 app) | `airflow.enabled` |
+
+The API is configured under the `api.*` values block (not a subchart) and gated by
+`api.enabled` against the umbrella's own templates.
 
 Tilde ranges allow patch-level updates. Exact resolved versions are locked in `Chart.lock`.
 

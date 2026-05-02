@@ -197,6 +197,12 @@ automatically unless `SKIP_POSTGRES_BUILD=1`.
 > automatically unless `SKIP_AIRFLOW_BUILD=1`. No PVC, no gitSync. Updating a
 > DAG requires a rebuild + `kubectl rollout restart` of the Airflow workloads.
 
+> **API image is built from source.** `dev_env/dataspoke-api/build.sh` builds
+> the `api:dev` image from `docker-images/api/Dockerfile`. It is invoked by
+> `dev_env/dataspoke-test-mode.sh` (use `--skip-build` to reuse the existing
+> image). Code changes to `src/api`, `src/backend`, or `src/shared` require a
+> rebuild + `helm upgrade`, both of which `dataspoke-test-mode.sh` runs end-to-end.
+
 **Kubernetes Secrets** (created by `dataspoke-infra/install.sh` before Helm install):
 
 | Secret Name | Keys |

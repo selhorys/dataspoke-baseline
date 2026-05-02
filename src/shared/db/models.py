@@ -193,7 +193,7 @@ class MetricDefinition(Base):
     theme: Mapped[str] = mapped_column(Text, nullable=False)
     measurement_query: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

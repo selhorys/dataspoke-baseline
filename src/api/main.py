@@ -2,12 +2,12 @@
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
@@ -106,12 +106,49 @@ async def lifespan(app: FastAPI):
         logger.info("lifespan_shutdown_complete")
 
 
-def _error_json(request: Request, status: int, error_code: str, message: str) -> JSONResponse:
+def _resp_time() -> str:
+    """ISO 8601 UTC timestamp with millisecond precision (matches spec §Date/Time)."""
+    now = datetime.now(tz=UTC)
+    return f"{now.strftime('%Y-%m-%dT%H:%M:%S.')}{now.microsecond // 1000:03d}Z"
+
+
+def _error_json(
+    request: Request,
+    status: int,
+    error_code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     trace_id = request.headers.get(_TRACE_HEADER, "")
     return JSONResponse(
         status_code=status,
-        content={"error_code": error_code, "message": message, "trace_id": trace_id},
+        content={
+            "error_code": error_code,
+            "message": message,
+            "trace_id": trace_id,
+            "resp_time": _resp_time(),
+        },
+        headers=headers,
     )
+
+
+async def _handle_rate_limit(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return the standard error envelope on 429 plus SlowAPI's rate-limit headers.
+
+    SlowAPI's default handler emits a plain text body. We wrap it so clients see
+    the standard {error_code, message, trace_id, resp_time} envelope while keeping
+    SlowAPI's X-RateLimit-* and Retry-After headers via _inject_headers.
+    """
+    response = _error_json(
+        request,
+        429,
+        "RATE_LIMIT_EXCEEDED",
+        f"Rate limit exceeded: {exc.detail}" if getattr(exc, "detail", None) else "Rate limit exceeded.",
+    )
+    view_rate_limit = getattr(request.state, "view_rate_limit", None)
+    if view_rate_limit is not None:
+        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
+    return response
 
 
 async def _handle_not_found(request: Request, exc: EntityNotFoundError) -> JSONResponse:
@@ -242,7 +279,7 @@ def create_app() -> FastAPI:
 
     # ── State (needed by slowapi) ──────────────────────────────────────────────
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RateLimitExceeded, _handle_rate_limit)  # type: ignore[arg-type]
 
     # ── Exception handlers (specific → generic) ───────────────────────────────
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]

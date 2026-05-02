@@ -12,6 +12,7 @@ class ErrorResponse(BaseModel):
     error_code: str = Field(description="Machine-readable error code, e.g. 'NOT_FOUND' or 'VALIDATION_ERROR'")
     message: str = Field(description="Human-readable description of the error")
     trace_id: str = Field(description="Unique request trace identifier for log correlation")
+    resp_time: datetime = Field(default_factory=_now_utc, description="UTC timestamp when this response was generated")
 
 
 class PaginatedResponse(BaseModel):

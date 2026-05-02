@@ -157,7 +157,7 @@ def upgrade() -> None:
         sa.Column("theme", sa.Text(), nullable=False),
         sa.Column("measurement_query", JSONB, nullable=False),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,

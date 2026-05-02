@@ -410,9 +410,17 @@ after JWT validation.
 
 ### Admin (`/admin`)
 
-Routes for user management and system configuration. Accessible only to users with `"admin"`
-in the `groups` claim. Specific routes are defined in dedicated admin feature specs and are
-not catalogued here.
+Operator and system routes accessible to users with the `"admin"` group claim. Mirrors of
+these endpoints are also available under `/internal/admin/…` for unattended automation
+(Airflow DAGs, scripts) — the internal mount is gated by the `X-Internal-Token`
+shared-secret header instead of a JWT.
+
+| Method | Path | Body | Response | Auth |
+|--------|------|------|----------|------|
+| `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT (`admin` group) |
+
+Additional admin routes (user management, identity store administration) are reserved for
+future feature specs and are not catalogued here.
 
 ### Internal Admin (`/internal/admin`)
 
@@ -439,6 +447,11 @@ not call these routes; they are not exposed through ingress.
 |--------|------|---------|
 | `GET` | `/health` | Liveness check (no auth required) |
 | `GET` | `/ready` | Readiness check (verifies DataHub, PostgreSQL, Redis connectivity) |
+
+> **Prefix exception**: System routes are mounted at the root (`/health`, `/ready`) — not
+> under `/api/v1/…` — so probes from kubelet, ingress, and platform tooling stay independent
+> of the API version. This is the only documented exception to the `/api/v1` prefix
+> convention.
 
 ---
 
@@ -533,7 +546,10 @@ All timestamps use ISO 8601 with UTC: `2026-02-27T10:00:00.000Z`.
 Requests pass through, in order: (1) **CORS** — allow configured origins, reject others with
 403; (2) **request logging** — method, path, trace ID, client IP before the handler;
 (3) **rate limiting** — SlowAPI fixed-window per user (Redis with in-memory fallback,
-default 120 req/min); (4) **JWT validation** — verify signature/expiry and extract claims;
+default 120 req/min). On 429 the response body matches the standard error envelope
+(`error_code: "RATE_LIMIT_EXCEEDED"`, `message`, `trace_id`, `resp_time`) and headers
+include `Retry-After` plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`;
+(4) **JWT validation** — verify signature/expiry and extract claims;
 (5) **group enforcement** — check the `groups` claim against the URI tier;
 (6) **route handler** — FastAPI DI + business logic;
 (7) **response logging** — status, latency, trace ID.
@@ -561,9 +577,13 @@ All errors follow the standard envelope:
 {
   "error_code": "DATASET_NOT_FOUND",
   "message": "No dataset found for URN 'urn:li:dataset:unknown'.",
-  "trace_id": "550e8400-e29b-41d4-a716-446655440000"
+  "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+  "resp_time": "2026-02-27T10:00:00.000Z"
 }
 ```
+
+The `resp_time` (ISO 8601 UTC, millisecond precision) is included on every error
+response, matching the success envelope.
 
 ### HTTP Status Codes
 
@@ -578,7 +598,7 @@ All errors follow the standard envelope:
 | `404 Not Found` | Resource does not exist |
 | `409 Conflict` | Duplicate resource or concurrent run attempt |
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation), or a request that is well-formed but cannot be processed because a referenced precondition is not met (e.g. dataset not yet present in DataHub) |
-| `429 Too Many Requests` | Rate limit exceeded; `Retry-After` header is set |
+| `429 Too Many Requests` | Rate limit exceeded. Body uses the standard error envelope with `error_code: "RATE_LIMIT_EXCEEDED"`; response carries `Retry-After` and `X-RateLimit-*` headers (limit, remaining, reset) |
 | `500 Internal Server Error` | Fallback for an unhandled `DataSpokeError` with no specific status mapping |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
 | `503 Service Unavailable` | PostgreSQL, Redis, or other storage-tier dependency unreachable; or internal auth secret not configured |
