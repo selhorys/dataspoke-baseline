@@ -238,8 +238,10 @@ run time the extractor calls the resolver; failures surface as `IngestionResult(
 `DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`;
 a non-dry-run that ingests zero entities is treated as failure) → on success mark
 `dataset_registry.datahub_registered = true` via `mark_registered()` in
-`src/shared/db/registry.py` → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event
-(see [Event Catalogue](#event-catalogue)).
+`src/shared/db/registry.py` (skipped on `dry_run`) → record `INGESTION.COMPLETE` /
+`INGESTION.FAIL` event (recorded for both dry-run and non-dry-run; the run's
+`dry_run` boolean is preserved in the event's `detail` payload so downstream readers
+can distinguish them; see [Event Catalogue](#event-catalogue)).
 
 **Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
 called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with

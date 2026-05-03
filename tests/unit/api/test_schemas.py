@@ -122,6 +122,47 @@ class TestIngestionSchemas:
                 identifier={"database": "testdb"},
             )
 
+    def test_passive_mode_with_schedule_tier_raises(self) -> None:
+        # spec: USE_CASE_en.md §UC1 — passive mode carries no schedule_tier.
+        # spec: BACKEND.md §Ingestion Service — schedule_tier is for active mode only.
+        with pytest.raises(ValidationError, match="schedule_tier is not allowed for passive"):
+            CreateIngestionConfigRequest(
+                mode="passive",
+                platform="kafka",
+                locator={"bootstrap_servers": "kafka:9092"},
+                identifier={"topic": "my-topic"},
+                schedule_tier="daily",
+            )
+
+    def test_passive_mode_is_enabled_true_without_schedule_tier_ok(self) -> None:
+        # spec: USE_CASE_en.md §UC1 — passive can be enabled without a schedule_tier;
+        # the hourly status-sync DAG drives passive runs, not a tier-DAG.
+        req = CreateIngestionConfigRequest(
+            mode="passive",
+            platform="kafka",
+            locator={"bootstrap_servers": "kafka:9092"},
+            identifier={"topic": "my-topic"},
+            is_enabled=True,
+        )
+        assert req.is_enabled is True
+        assert req.schedule_tier is None
+
+    def test_active_mode_is_enabled_true_without_schedule_tier_raises(self) -> None:
+        # spec: BACKEND.md §Ingestion Service — active mode tied to schedule_tier
+        # for tier-DAG dispatch.
+        with pytest.raises(ValidationError, match="schedule_tier is required"):
+            CreateIngestionConfigRequest(
+                mode="active",
+                platform="postgres",
+                locator={"host": "localhost", "port": 5432},
+                identifier={"database": "testdb"},
+                auth={
+                    "username": "u",
+                    "secret_ref": {"name": "dataspoke-conf-x", "key": "k"},
+                },
+                is_enabled=True,
+            )
+
     def test_config_response_has_resp_time(self) -> None:
         # spec: SECRET_RESOLUTION.md §Data Model — persisted (response) shape is
         # {username, secret_ref: {name, key}} — no password.

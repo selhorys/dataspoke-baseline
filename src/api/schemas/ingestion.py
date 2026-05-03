@@ -153,8 +153,12 @@ class CreateIngestionConfigRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_fields(self) -> "CreateIngestionConfigRequest":
-        if self.is_enabled and not self.schedule_tier:
-            raise ValueError("schedule_tier is required when is_enabled is true")
+        if self.mode == "passive" and self.schedule_tier is not None:
+            raise ValueError("schedule_tier is not allowed for passive mode")
+        if self.mode == "active" and self.is_enabled and not self.schedule_tier:
+            raise ValueError(
+                "schedule_tier is required when is_enabled is true and mode is active"
+            )
         # Pass only the persisted shape (username + secret_ref without force_overwrite)
         # so that CredentialAuth (extra="forbid") does not reject transient API fields.
         auth_dict: dict[str, Any] | None = None
@@ -208,7 +212,14 @@ class PatchIngestionConfigRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_fields(self) -> "PatchIngestionConfigRequest":
-        if self.is_enabled is True and self.schedule_tier is None:
+        if self.mode == "passive" and self.schedule_tier is not None:
+            raise ValueError("schedule_tier is not allowed for passive mode")
+        if self.mode == "active" and self.is_enabled is True and self.schedule_tier is None:
+            raise ValueError(
+                "schedule_tier must be provided in the same patch when setting "
+                "is_enabled to true and mode to active"
+            )
+        if self.mode is None and self.is_enabled is True and self.schedule_tier is None:
             raise ValueError(
                 "schedule_tier must be provided in the same patch when setting is_enabled to true"
             )
