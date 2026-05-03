@@ -14,9 +14,12 @@ Concerns covered:
 
 import os
 import urllib.parse
+import uuid
 
 import httpx
 import pytest
+
+_FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
 
 # Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
 _PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
@@ -180,6 +183,15 @@ async def test_ingestion_conf_put_patch_delete(
     assert put_body["dataset_urn"] == _TEST_URN
     assert put_body["platform"] == "postgres"
     assert put_body["mode"] == "active"
+    # spec: SECRET_RESOLUTION.md §Data Model — persisted/echoed shape is reference-only
+    assert "password" not in put_body["auth"], (
+        f"plaintext password leaked into PUT response: {put_body['auth']}"
+    )
+    assert "force_overwrite" not in put_body["auth"]["secret_ref"], (
+        f"transient force_overwrite leaked into PUT response: {put_body['auth']}"
+    )
+    assert put_body["auth"]["secret_ref"]["name"] == _VAULT_NAME
+    assert put_body["auth"]["secret_ref"]["key"] == _VAULT_KEY
 
     # PATCH — disable (partial update)
     patch_resp = await api_client.patch(
@@ -244,6 +256,10 @@ async def test_ingestion_run_dry_run(
     run_body = run_resp.json()
     assert "run_id" in run_body
     assert "status" in run_body
+    assert run_body["status"].lower() not in _FAIL_TAIL, (
+        f"run unexpectedly returned fail-tail status {run_body['status']!r} — "
+        "secret resolution or downstream connectivity may be broken"
+    )
 
     # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
@@ -295,3 +311,193 @@ async def test_ingestion_events_list_envelope(
 
     # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_ingestion_conf_put_secret_collision_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Second vault PUT against same (name, key) without force_overwrite → 422.
+
+    spec: SECRET_RESOLUTION.md §Validation matrix row 3 / §Vault-write flow step 2
+    spec: SECRET_RESOLUTION.md §Error taxonomy — SecretCollision → 422 INVALID_PARAMETER
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
+    collision_secret = f"dataspoke-conf-spot-collision-{uuid.uuid4().hex[:8]}"
+
+    # First PUT: vault writes the secret. force_overwrite=True for idempotency
+    # if the test re-runs against an existing secret.
+    put1 = await api_client.put(
+        base_conf,
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "platform": "postgres",
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": collision_secret,
+                    "key": "password",
+                    "force_overwrite": True,
+                },
+            },
+            "is_enabled": False,
+        },
+    )
+    assert put1.status_code in (200, 201), put1.text
+
+    try:
+        # Second PUT against the same (name, key) without force_overwrite
+        put2 = await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "platform": "postgres",
+                "locator": {"host": _PG_HOST, "port": _PG_PORT},
+                "identifier": {
+                    "database": _PG_DB,
+                    "schema_name": "catalog",
+                    "table": "title_master",
+                },
+                "auth": {
+                    "username": _PG_USER,
+                    "password": _PG_PASSWORD,
+                    "secret_ref": {
+                        "name": collision_secret,
+                        "key": "password",
+                        # force_overwrite omitted → defaults to False
+                    },
+                },
+                "is_enabled": False,
+            },
+        )
+        assert put2.status_code == 422, (
+            f"second PUT without force_overwrite expected 422, got {put2.status_code}: {put2.text}"
+        )
+    finally:
+        # Cleanup the conf row; the underlying k8s Secret persists per spec.
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_ingestion_conf_put_invalid_secret_ref_prefix_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """secret_ref.name without dataspoke-conf- prefix → 422 SecretRefNameForbidden.
+
+    spec: SECRET_RESOLUTION.md §Name prefix policy
+    spec: SECRET_RESOLUTION.md §Validation matrix last row
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
+
+    resp = await api_client.put(
+        base_conf,
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "platform": "postgres",
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": "external-team-pg-secret",  # missing required prefix
+                    "key": "password",
+                    "force_overwrite": True,
+                },
+            },
+            "is_enabled": False,
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT with non-prefix secret_ref.name expected 422, got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingestion_conf_put_reference_path_to_existing_secret(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Reference path: vault first, then PUT a different conf with no password
+    pointing at the same Secret — verify path succeeds.
+
+    spec: SECRET_RESOLUTION.md §Validation matrix row 4
+    spec: SECRET_RESOLUTION.md §Reference-path verify flow
+    """
+    ref_secret = f"dataspoke-conf-spot-ref-{uuid.uuid4().hex[:8]}"
+    base_conf_1 = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
+    base_conf_2 = f"/api/v1/spoke/common/data/{_ENCODED_URN_2}/attr/ingestion/conf"
+
+    # Vault path on URN 1 to establish the Secret in dataspoke-01
+    vault_resp = await api_client.put(
+        base_conf_1,
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "platform": "postgres",
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {"name": ref_secret, "key": "password", "force_overwrite": True},
+            },
+            "is_enabled": False,
+        },
+    )
+    assert vault_resp.status_code in (200, 201), vault_resp.text
+
+    try:
+        # Reference path on URN 2 — no password, point at the just-vaulted Secret
+        ref_resp = await api_client.put(
+            base_conf_2,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "platform": "postgres",
+                "locator": {"host": _PG_HOST, "port": _PG_PORT},
+                "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
+                "auth": {
+                    "username": _PG_USER,
+                    "secret_ref": {"name": ref_secret, "key": "password"},
+                },
+                "is_enabled": False,
+            },
+        )
+        assert ref_resp.status_code in (200, 201), ref_resp.text
+        ref_body = ref_resp.json()
+        assert ref_body["auth"]["secret_ref"]["name"] == ref_secret
+        assert "password" not in ref_body["auth"], (
+            f"reference-path response leaked password key: {ref_body['auth']}"
+        )
+
+        # Reference to a NON-existent key on the same Secret should 422
+        bad_key_resp = await api_client.put(
+            base_conf_2,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "platform": "postgres",
+                "locator": {"host": _PG_HOST, "port": _PG_PORT},
+                "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
+                "auth": {
+                    "username": _PG_USER,
+                    "secret_ref": {"name": ref_secret, "key": "nonexistent-key"},
+                },
+                "is_enabled": False,
+            },
+        )
+        assert bad_key_resp.status_code == 422, (
+            f"reference path to nonexistent key expected 422, got {bad_key_resp.status_code}"
+        )
+    finally:
+        await api_client.delete(base_conf_1, headers=admin_headers)
+        await api_client.delete(base_conf_2, headers=admin_headers)

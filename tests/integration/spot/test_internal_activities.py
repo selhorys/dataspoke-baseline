@@ -16,6 +16,9 @@ import urllib.parse
 import httpx
 import pytest
 
+_FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
+_SYSTEM_ERROR_TAIL: frozenset[str] = frozenset({"error", "errored"})
+
 # Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
 _PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
 _PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
@@ -178,6 +181,10 @@ async def test_ingestion_run_activity(
     assert "run_id" in body and "status" in body, (
         f"Expected both 'run_id' and 'status' in ingestion run response, got: {list(body.keys())}"
     )
+    assert body["status"].lower() not in _FAIL_TAIL, (
+        f"run unexpectedly returned fail-tail status {body['status']!r} — "
+        "secret resolution or downstream connectivity may be broken"
+    )
 
     # Cleanup
     await api_client.delete(conf_url, headers=admin_headers)
@@ -295,6 +302,11 @@ async def test_validation_run_activity(
     # spec: BACKEND.md §Validation Run Pipeline — response must carry both run_id and status
     assert "run_id" in body and "status" in body, (
         f"Expected both 'run_id' and 'status' in validation run response, got: {list(body.keys())}"
+    )
+    assert body["status"].lower() not in _SYSTEM_ERROR_TAIL, (
+        f"validation run system-errored: status={body['status']!r} — "
+        "secret resolution or downstream connectivity may be broken "
+        "(rule failures surface as 'failure', not 'error')"
     )
 
     # Cleanup
@@ -513,6 +525,10 @@ async def test_metrics_run_activity(
     # spec: BACKEND.md §Metrics Service — response must carry both run_id and status
     assert "run_id" in body and "status" in body, (
         f"Expected both 'run_id' and 'status' in metrics run response, got: {list(body.keys())}"
+    )
+    assert body["status"].lower() not in _FAIL_TAIL, (
+        f"run unexpectedly returned fail-tail status {body['status']!r} — "
+        "secret resolution or downstream connectivity may be broken"
     )
 
     # Cleanup
