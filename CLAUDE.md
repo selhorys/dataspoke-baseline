@@ -56,7 +56,7 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 
 - Conventional Commits: `<type>: <subject>` (e.g. `feat:`, `fix:`, `docs:`, `refactor:`)
 - **Always run `git diff` (or `git diff --staged`) and base the commit message on the actual diff output**, not on prior conversation context or memory of what was changed
-- Body optional, **max 5 lines** if included
+- Body optional, **max 15 lines, max 100 chars per line** if included
 
 ## Implementation Workflow
 
