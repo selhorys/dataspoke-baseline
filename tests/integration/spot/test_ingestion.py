@@ -22,6 +22,10 @@ import pytest
 _PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
 _PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
+_PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
+_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
+_VAULT_NAME = "dataspoke-conf-spot-pg"
+_VAULT_KEY = "password"
 
 # Use a fixed test URN that we know won't conflict with Imazon seed data.
 # This dataset is registered in DataHub during the module's DUMMY_DATA_DATAHUB_SCHEMAS reset.
@@ -57,8 +61,13 @@ async def test_ingestion_list_paginated_envelope(
         "platform": "postgres",
         "locator": {"host": _PG_HOST, "port": _PG_PORT},
         "auth": {
-            "username": "spoke_reader",
-            "secret_ref": "k8s-secret/pg-spoke-reader",
+            "username": _PG_USER,
+            "password": _PG_PASSWORD,
+            "secret_ref": {
+                "name": _VAULT_NAME,
+                "key": _VAULT_KEY,
+                "force_overwrite": True,
+            },
         },
         "is_enabled": False,
     }
@@ -154,8 +163,13 @@ async def test_ingestion_conf_put_patch_delete(
                 "table": "title_master",
             },
             "auth": {
-                "username": "spoke_reader",
-                "secret_ref": "k8s-secret/pg-spoke-reader",
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
             },
             "is_enabled": False,
             "schedule_tier": None,
@@ -208,8 +222,13 @@ async def test_ingestion_run_dry_run(
                 "table": "title_master",
             },
             "auth": {
-                "username": "spoke_reader",
-                "secret_ref": "k8s-secret/pg-spoke-reader",
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
             },
             "is_enabled": False,
         },
@@ -253,8 +272,13 @@ async def test_ingestion_events_list_envelope(
                 "table": "title_master",
             },
             "auth": {
-                "username": "spoke_reader",
-                "secret_ref": "k8s-secret/pg-spoke-reader",
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
             },
             "is_enabled": False,
         },

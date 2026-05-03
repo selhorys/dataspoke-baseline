@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: dataspoke-api
     spec:
       enableServiceLinks: false
+      {{- if .Values.api.secretReader.enabled }}
+      serviceAccountName: {{ include "dataspoke.fullname" . }}-api
+      {{- end }}
       {{- with .Values.api.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}

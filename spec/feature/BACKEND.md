@@ -224,6 +224,15 @@ cancelled retroactively but no new active runs are scheduled. Switching `passive
 requires the standard active-mode fields (`schedule_tier`, `locator`/`auth`) to be populated.
 `method/run` is rejected (`422 INVALID_PARAMETER`) for `passive` configs.
 
+**Auth resolution**: the `auth` field carries a structured `secret_ref: {name, key}` that
+points at a Kubernetes Secret in DataSpoke's own namespace. On PUT, callers either supply
+`password` (vault path: API writes the Secret then persists only the reference) or omit
+`password` (reference path: API verifies a pre-existing Secret). Plaintext passwords are
+never persisted in `ingestion_configs.auth`. Validation matrix, vault/verify/resolve
+flows, RBAC, and error taxonomy live in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). At
+run time the extractor calls the resolver; failures surface as `IngestionResult(errors=[…])`
+→ `status="error"`.
+
 **Active run pipeline** (`IngestionService.run()`): load config → connect to source via
 `locator`/`auth` → discover schema via `identifier` → emit `StatusClass` +
 `DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`;

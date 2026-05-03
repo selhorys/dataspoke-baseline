@@ -20,6 +20,10 @@ import pytest
 _PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
 _PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
+_PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
+_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
+_VAULT_NAME = "dataspoke-conf-spot-pg"
+_VAULT_KEY = "password"
 
 # Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
 # before this module's tests run (autoused by tests/integration/conftest.py).
@@ -59,7 +63,15 @@ async def test_ingestion_list_active_hourly(
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
-            "auth": {"username": "spoke_reader", "secret_ref": "k8s-secret/pg-spoke-reader"},
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
+            },
             "is_enabled": True,
             "schedule_tier": "hourly",
         },
@@ -74,7 +86,15 @@ async def test_ingestion_list_active_hourly(
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
-            "auth": {"username": "spoke_reader", "secret_ref": "k8s-secret/pg-spoke-reader"},
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
+            },
             "is_enabled": True,
             "schedule_tier": "daily",
         },
@@ -133,8 +153,13 @@ async def test_ingestion_run_activity(
                 "table": "title_master",
             },
             "auth": {
-                "username": "spoke_reader",
-                "secret_ref": "k8s-secret/pg-spoke-reader",
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
             },
             "is_enabled": True,
             "schedule_tier": "daily",

@@ -7,6 +7,7 @@ Spec: API.md §Data Resource (lines 233–238).
 """
 
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
@@ -15,17 +16,92 @@ from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import (
+    AuthSpec,
     CreateIngestionConfigRequest,
     IngestionConfigResponse,
     PatchIngestionConfigRequest,
     RunIngestionRequest,
     RunResultResponse,
+    SecretRefSpec,
+)
+from src.backend.ingestion.secret_resolver import (
+    SecretCollision,
+    SecretRefNameForbidden,
+    SecretRefNotFound,
+    SecretResolverUnavailable,
+    verify_secret_ref,
+    write_secret_value,
 )
 from src.backend.ingestion.service import IngestionService
 from src.shared.db.models import Event
-from src.shared.exceptions import EntityNotFoundError
+from src.shared.exceptions import (
+    EntityNotFoundError,
+    PreconditionFailedError,
+    StorageUnavailableError,
+)
 
 sub_router = APIRouter()
+
+
+def _vault_or_verify(auth: AuthSpec) -> AuthSpec:
+    """Write or verify the Kubernetes Secret for ``auth``, then return the reference shape.
+
+    Vault path (``auth.password`` is present): write the password to the Secret,
+    then strip the password before the service layer sees it.
+
+    Reference path (``auth.password`` is absent): verify the Secret + key exist.
+
+    Raises:
+        PreconditionFailedError: SecretCollision, SecretRefNotFound, or SecretRefNameForbidden.
+        StorageUnavailableError: SecretResolverUnavailable (k8s config not loadable or API error).
+    """
+    assert auth.secret_ref is not None  # enforced by AuthSpec.enforce_matrix
+
+    ref = auth.secret_ref
+
+    if auth.password is not None:
+        try:
+            write_secret_value(
+                name=ref.name,
+                key=ref.key,
+                value=auth.password,
+                force_overwrite=ref.force_overwrite,
+            )
+        except SecretRefNameForbidden as exc:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                f"SecretRefNameForbidden: {exc}",
+            ) from exc
+        except SecretCollision as exc:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                f"Secret collision: {exc}",
+            ) from exc
+        except SecretResolverUnavailable as exc:
+            raise StorageUnavailableError(str(exc)) from exc
+    else:
+        try:
+            verify_secret_ref(name=ref.name, key=ref.key)
+        except SecretRefNameForbidden as exc:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                f"SecretRefNameForbidden: {exc}",
+            ) from exc
+        except SecretRefNotFound as exc:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                f"Secret reference not found: {exc}",
+            ) from exc
+        except SecretResolverUnavailable as exc:
+            raise StorageUnavailableError(str(exc)) from exc
+
+    return AuthSpec(
+        username=auth.username,
+        secret_ref=SecretRefSpec(
+            name=ref.name,
+            key=ref.key,
+        ),
+    )
 
 
 # ── Conf CRUD ─────────────────────────────────────────────────────────────────
@@ -50,14 +126,35 @@ async def put_data_ingestion_conf(
     response: Response,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
-    """Create or replace the ingestion config for a dataset (upsert)."""
+    """Create or replace the ingestion config for a dataset (upsert).
+
+    When ``auth`` is present, the handler either vaults the password (vault path)
+    or verifies a pre-existing Secret (reference path) before persisting the
+    reference shape.  Plaintext passwords are never forwarded to the service layer.
+    """
+    resolved_auth: AuthSpec | None = body.auth
+    if resolved_auth is not None:
+        resolved_auth = _vault_or_verify(resolved_auth)
+
+    auth_dict: dict[str, Any] | None = None
+    if resolved_auth is not None:
+        # Persist the reference shape only: {username, secret_ref: {name, key}}.
+        # password is never persisted; force_overwrite is a transient API-only field.
+        auth_dict = {
+            "username": resolved_auth.username,
+            "secret_ref": {
+                "name": resolved_auth.secret_ref.name,  # type: ignore[union-attr]
+                "key": resolved_auth.secret_ref.key,  # type: ignore[union-attr]
+            },
+        }
+
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         mode=body.mode,
         platform=body.platform,
         locator=body.locator,
         identifier=body.identifier,
-        auth=body.auth,
+        auth=auth_dict,
         is_enabled=body.is_enabled,
         schedule_tier=body.schedule_tier,
     )
@@ -72,8 +169,24 @@ async def patch_data_ingestion_conf(
     body: PatchIngestionConfigRequest,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionConfigResponse:
-    """Partially update the ingestion config for a dataset."""
+    """Partially update the ingestion config for a dataset.
+
+    When ``auth`` is present in the PATCH body, vault/verify is performed before
+    the service layer write.  Fields not included in the PATCH body are preserved.
+    """
     patch = body.model_dump(exclude_unset=True)
+
+    if body.auth is not None:
+        resolved_auth = _vault_or_verify(body.auth)
+        # Persist the reference shape only: {username, secret_ref: {name, key}}.
+        patch["auth"] = {
+            "username": resolved_auth.username,
+            "secret_ref": {
+                "name": resolved_auth.secret_ref.name,  # type: ignore[union-attr]
+                "key": resolved_auth.secret_ref.key,  # type: ignore[union-attr]
+            },
+        }
+
     config = await service.patch_config(dataset_urn, patch)
     return IngestionConfigResponse.model_validate(config)
 

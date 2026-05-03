@@ -75,15 +75,28 @@ class TestTimeRangeParams:
 
 class TestIngestionSchemas:
     def test_create_request_round_trip(self) -> None:
-        req = CreateIngestionConfigRequest(
-            platform="postgres",
-            locator={"host": "localhost", "port": 5432},
-            identifier={"database": "testdb"},
-            auth={"username": "user", "secret_ref": "pw"},
+        # spec: SECRET_RESOLUTION.md §Validation matrix row 4 — reference path shape
+        # {username, secret_ref: {name, key}} must survive a model_dump / re-validate cycle.
+        req = CreateIngestionConfigRequest.model_validate(
+            {
+                "platform": "postgres",
+                "locator": {"host": "localhost", "port": 5432},
+                "identifier": {"database": "testdb"},
+                "auth": {
+                    "username": "readonly",
+                    "secret_ref": {"name": "dataspoke-conf-db", "key": "password"},
+                },
+            }
         )
         data = req.model_dump()
         parsed = CreateIngestionConfigRequest.model_validate(data)
         assert parsed.is_enabled is False
+        assert parsed.auth is not None
+        assert parsed.auth.username == "readonly"
+        assert parsed.auth.secret_ref is not None
+        assert parsed.auth.secret_ref.name == "dataspoke-conf-db"
+        assert parsed.auth.secret_ref.key == "password"
+        assert parsed.auth.password is None
 
     def test_create_request_kafka_no_auth(self) -> None:
         req = CreateIngestionConfigRequest(
@@ -110,18 +123,23 @@ class TestIngestionSchemas:
             )
 
     def test_config_response_has_resp_time(self) -> None:
+        # spec: SECRET_RESOLUTION.md §Data Model — persisted (response) shape is
+        # {username, secret_ref: {name, key}} — no password.
         resp = IngestionConfigResponse(
             id="1",
             dataset_urn="urn:li:dataset:test",
-            platform="postgres",
+            platform="postgres",  # type: ignore[arg-type]
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
-            auth={"username": "user", "secret_ref": "pw"},
+            auth={
+                "username": "readonly",
+                "secret_ref": {"name": "dataspoke-conf-db", "key": "password"},
+            },
             is_enabled=False,
             mode="active",
             schedule_tier=None,
             workflow_dag_id=None,
-            status="OK",
+            status="OK",  # type: ignore[arg-type]
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )

@@ -11,8 +11,13 @@ Concerns covered:
 import os
 import urllib.parse
 
-import pytest
 import httpx
+import pytest
+
+_PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
+_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
+_VAULT_NAME = "dataspoke-conf-spot-pg"
+_VAULT_KEY = "password"
 
 
 @pytest.mark.asyncio
@@ -169,7 +174,15 @@ async def test_internal_admin_datahub_sync_targeted(
             "platform": "postgres",
             "locator": {"host": pg_host, "port": pg_port},
             "identifier": {"database": pg_db, "schema_name": "catalog", "table": "title_master"},
-            "auth": {"username": "spoke_reader", "secret_ref": "k8s-secret/pg-spoke-reader"},
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
+            },
             "is_enabled": False,
         },
     )

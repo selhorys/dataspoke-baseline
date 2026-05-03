@@ -79,11 +79,24 @@ class SnowflakeIdentifier(BaseModel):
 # ── Auth sub-models (access credentials) ─────────────────────────────────────
 
 
+class SecretRefRecord(BaseModel):
+    """Persisted reference to a Kubernetes Secret — no transient fields."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    key: str
+
+
 class CredentialAuth(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    """Persisted credential auth shape: {username, secret_ref: {name, key}}.
+
+    Passwords are never persisted — the API boundary rewrites vault-path requests
+    to this reference shape before the DB write.
+    """
+
+    model_config = ConfigDict(extra="forbid")
     username: str
-    secret_ref: str | None = None
-    password: str | None = None
+    secret_ref: SecretRefRecord | None = None
 
 
 class NoAuth(BaseModel):

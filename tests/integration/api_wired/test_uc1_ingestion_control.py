@@ -20,6 +20,12 @@ import pytest
 _PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
 _PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
+_PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
+_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
+
+# spec: SECRET_RESOLUTION.md §Name prefix policy — names must start with dataspoke-conf-
+_VAULT_NAME = "dataspoke-conf-uc1-title-master"
+_VAULT_KEY = "password"
 
 _ACTIVE_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
@@ -64,6 +70,8 @@ async def test_uc1_active_and_passive_ingestion(
         # UC1 narrative: "DataSpoke is the ingestor. An Airflow tier DAG runs the
         # platform extractor on the configured schedule_tier."
         # spec: USE_CASE_en.md §UC1 L89-L104 (Active — catalog.books, Postgres, daily)
+        # spec: SECRET_RESOLUTION.md §Vault-write flow — vault path with force_overwrite=true
+        # for idempotent test runs (re-running the test does not collide on an existing key).
         put_active_resp = await api_client.put(
             active_conf_url,
             headers=admin_headers,
@@ -77,8 +85,13 @@ async def test_uc1_active_and_passive_ingestion(
                     "table": "title_master",
                 },
                 "auth": {
-                    "username": "spoke_reader",
-                    "secret_ref": "k8s-secret/pg-spoke-reader",
+                    "username": _PG_USER,
+                    "password": _PG_PASSWORD,
+                    "secret_ref": {
+                        "name": _VAULT_NAME,
+                        "key": _VAULT_KEY,
+                        "force_overwrite": True,
+                    },
                 },
                 "is_enabled": False,
                 "schedule_tier": "daily",
@@ -96,6 +109,18 @@ async def test_uc1_active_and_passive_ingestion(
         assert active_body["is_enabled"] is False
         # spec: USE_CASE_en.md §UC1 L82 — identifier survives round-trip
         assert active_body["identifier"]["table"] == "title_master"
+        # spec: SECRET_RESOLUTION.md §Vault-write flow step 4-5 — response carries reference
+        # shape only: {username, secret_ref: {name, key}}. Password dropped before DB write.
+        assert active_body["auth"]["username"] == _PG_USER
+        assert "password" not in active_body["auth"], (
+            "Response auth must not expose the plaintext password. "
+            "spec: SECRET_RESOLUTION.md §Vault-write flow step 4"
+        )
+        assert active_body["auth"]["secret_ref"] == {"name": _VAULT_NAME, "key": _VAULT_KEY}, (
+            f"Response secret_ref must be the reference shape {{name, key}}; "
+            f"got {active_body['auth'].get('secret_ref')!r}. "
+            "spec: SECRET_RESOLUTION.md §Vault-write flow step 5"
+        )
 
         # ── Step 2: Dry-run connection check ─────────────────────────────────
         # UC1 narrative: "A coding agent verifies connectivity before turning the

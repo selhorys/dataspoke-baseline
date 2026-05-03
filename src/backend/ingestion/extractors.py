@@ -21,6 +21,12 @@ from datahub.metadata.schema_classes import (
 )
 from pydantic import BaseModel
 
+from src.backend.ingestion.secret_resolver import (
+    SecretRefMalformed,
+    SecretRefNotFound,
+    SecretResolverUnavailable,
+    resolve_secret_ref,
+)
 from src.shared.models.ingestion import Platform
 
 if TYPE_CHECKING:
@@ -76,6 +82,52 @@ class IngestionResult(BaseModel):
     warnings: list[str]
 
 
+def _resolve_auth_password(auth: dict[str, Any] | None) -> str | IngestionResult:
+    """Return the plaintext password from auth, or an IngestionResult on resolution error.
+
+    Handles the persisted reference shape ``{username, secret_ref: {name, key}}``.
+    Plaintext passwords in the persisted dict are never used — the only valid source
+    of a credential at run time is ``auth.secret_ref``.
+    """
+    if not auth:
+        return ""
+
+    if "password" in auth:
+        logger.warning(
+            "Persisted auth contains a plaintext 'password' field — ignoring. "
+            "Only secret_ref is used at run time."
+        )
+
+    secret_ref = auth.get("secret_ref")
+    if not secret_ref:
+        return ""
+
+    if not isinstance(secret_ref, dict):
+        return IngestionResult(
+            entities_ingested=0,
+            errors=[f"Invalid secret_ref shape: {secret_ref!r}"],
+            warnings=[],
+        )
+
+    name = secret_ref.get("name")
+    key = secret_ref.get("key")
+    if not name or not key:
+        return IngestionResult(
+            entities_ingested=0,
+            errors=["secret_ref missing name or key"],
+            warnings=[],
+        )
+
+    try:
+        return resolve_secret_ref(f"k8s-secret/{name}/{key}")
+    except (SecretRefMalformed, SecretRefNotFound, SecretResolverUnavailable) as exc:
+        return IngestionResult(
+            entities_ingested=0,
+            errors=[f"Secret resolution failed: {exc}"],
+            warnings=[],
+        )
+
+
 # ── PostgreSQL extractor ─────────────────────────────────────────────────────
 
 
@@ -95,9 +147,10 @@ async def _extract_postgresql(
     schema_name = identifier.get("schema_name")
     table = identifier.get("table")
     username = auth.get("username", "") if auth else ""
-    # Use 'password' directly if provided, otherwise fall back to 'secret_ref'
-    # (in production, secret_ref would be resolved via a secret manager)
-    password = auth.get("password", auth.get("secret_ref", "")) if auth else ""
+    resolved = _resolve_auth_password(auth)
+    if isinstance(resolved, IngestionResult):
+        return resolved
+    password = resolved
 
     try:
         conn = await asyncpg.connect(

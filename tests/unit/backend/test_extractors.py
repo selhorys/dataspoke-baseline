@@ -6,6 +6,7 @@ from src.backend.ingestion.extractors import (
     SUPPORTED_PLATFORMS,
     run_datahub_ingestion,
 )
+from src.backend.ingestion.secret_resolver import SecretRefNotFound, SecretResolverUnavailable
 
 # ── SUPPORTED_PLATFORMS ────────────────────────────────────────────────────
 
@@ -37,12 +38,13 @@ async def test_unsupported_source_returns_error():
 
 async def test_not_yet_implemented_source_returns_warning():
     datahub = AsyncMock()
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
     result = await run_datahub_ingestion(
         datahub=datahub,
         platform="mysql",
         locator={"host": "x", "port": 3306},
         identifier={"database": "db"},
-        auth={"username": "u", "secret_ref": "s"},
+        auth=_auth,
         dataset_urn="urn:li:dataset:x",
     )
     assert result.entities_ingested == 0
@@ -75,14 +77,18 @@ async def test_postgresql_dry_run_discovers_but_does_not_emit():
         },
     ]
 
-    with patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg:
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    with (
+        patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
+        patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
+    ):
         mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
         result = await run_datahub_ingestion(
             datahub=datahub,
             platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb", "schema_name": "public", "table": "users"},
-            auth={"username": "u", "secret_ref": "p"},
+            auth=_auth,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,testdb.public.users,PROD)",
             dry_run=True,
         )
@@ -109,14 +115,18 @@ async def test_postgresql_run_emits_three_aspects():
         },
     ]
 
-    with patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg:
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    with (
+        patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
+        patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
+    ):
         mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
         result = await run_datahub_ingestion(
             datahub=datahub,
             platform="postgres",
             locator={"host": "localhost", "port": 5432},
             identifier={"database": "testdb"},
-            auth={"username": "u", "secret_ref": "p"},
+            auth=_auth,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,testdb.public.users,PROD)",
             dry_run=False,
         )
@@ -140,14 +150,18 @@ async def test_postgresql_run_emits_three_aspects():
 async def test_postgresql_connection_failure_returns_error():
     datahub = AsyncMock()
 
-    with patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg:
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    with (
+        patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
+        patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
+    ):
         mock_asyncpg.connect = AsyncMock(side_effect=ConnectionRefusedError("refused"))
         result = await run_datahub_ingestion(
             datahub=datahub,
             platform="postgres",
             locator={"host": "badhost", "port": 5432},
             identifier={"database": "testdb"},
-            auth={"username": "u", "secret_ref": "p"},
+            auth=_auth,
             dataset_urn="urn:li:dataset:x",
             dry_run=False,
         )
@@ -155,6 +169,64 @@ async def test_postgresql_connection_failure_returns_error():
     assert result.entities_ingested == 0
     assert len(result.errors) == 1
     assert "connection failed" in result.errors[0].lower()
+
+
+async def test_postgresql_resolver_not_found_returns_error_result():
+    # spec: SECRET_RESOLUTION.md §Error taxonomy — SecretRefNotFound surfaces as
+    # IngestionResult(errors=[...]) at run time (no 5xx).
+    # spec: SECRET_RESOLUTION.md §Caller integration "At run time" step 5 —
+    # "On any resolver exception: return IngestionResult(errors=[…])".
+    datahub = AsyncMock()
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    with (
+        patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
+        patch(
+            "src.backend.ingestion.extractors.resolve_secret_ref",
+            side_effect=SecretRefNotFound("secret 'dataspoke-conf-test' does not exist"),
+        ),
+    ):
+        result = await run_datahub_ingestion(
+            datahub=datahub,
+            platform="postgres",
+            locator={"host": "localhost", "port": 5432},
+            identifier={"database": "testdb"},
+            auth=_auth,
+            dataset_urn="urn:li:dataset:x",
+            dry_run=False,
+        )
+
+    assert result.entities_ingested == 0
+    assert len(result.errors) >= 1
+    mock_asyncpg.connect.assert_not_called()
+
+
+async def test_postgresql_resolver_unavailable_returns_error_result():
+    # spec: SECRET_RESOLUTION.md §Error taxonomy — SecretResolverUnavailable surfaces as
+    # IngestionResult(errors=[...]) at run time (no 5xx).
+    # spec: SECRET_RESOLUTION.md §Caller integration "At run time" step 5 —
+    # "On any resolver exception: return IngestionResult(errors=[…])".
+    datahub = AsyncMock()
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    with (
+        patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
+        patch(
+            "src.backend.ingestion.extractors.resolve_secret_ref",
+            side_effect=SecretResolverUnavailable("in-cluster config not available"),
+        ),
+    ):
+        result = await run_datahub_ingestion(
+            datahub=datahub,
+            platform="postgres",
+            locator={"host": "localhost", "port": 5432},
+            identifier={"database": "testdb"},
+            auth=_auth,
+            dataset_urn="urn:li:dataset:x",
+            dry_run=False,
+        )
+
+    assert result.entities_ingested == 0
+    assert len(result.errors) >= 1
+    mock_asyncpg.connect.assert_not_called()
 
 
 # ── Kafka extractor (mocked consumer) ────────────────────────────────────────

@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
+from src.backend.ingestion.secret_resolver import _NAME_PREFIX
 from src.shared.models.enums import IngestionConfigStatus
 from src.shared.models.ingestion import (
     Platform,
@@ -14,6 +15,69 @@ from src.shared.models.ingestion import (
 
 _VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 _VALID_MODES = frozenset({"active", "passive"})
+
+
+# ── Auth sub-models ───────────────────────────────────────────────────────────
+
+
+class SecretRefSpec(BaseModel):
+    name: str = Field(
+        min_length=1,
+        max_length=253,
+        description="Kubernetes Secret name (k8s DNS-label limit: 253 chars)",
+    )
+    key: str = Field(min_length=1, description="Key within the Kubernetes Secret data map")
+    force_overwrite: bool = Field(
+        default=False,
+        description=(
+            "Vault path only: when true, overwrite an existing (name, key) "
+            "instead of raising 422 SecretCollision. Ignored on reference path."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name_prefix(cls, v: str) -> str:
+        if not v.startswith(_NAME_PREFIX):
+            raise ValueError(
+                f"SecretRefNameForbidden: secret_ref.name must start with '{_NAME_PREFIX}'; "
+                f"got '{v}'"
+            )
+        return v
+
+
+class AuthSpec(BaseModel):
+    username: str = Field(min_length=1, description="Database / service username")
+    password: str | None = Field(
+        default=None,
+        description=(
+            "Plaintext password — vault path only. Written to the Kubernetes Secret "
+            "identified by secret_ref and never persisted in the DataSpoke database."
+        ),
+    )
+    secret_ref: SecretRefSpec | None = Field(
+        default=None,
+        description=(
+            "Reference to a Kubernetes Secret in DataSpoke's own namespace. "
+            "Required when password is present (vault path) or alone (reference path)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def enforce_matrix(self) -> "AuthSpec":
+        if self.password is None and self.secret_ref is None:
+            raise ValueError(
+                "auth must include secret_ref (reference path) or password+secret_ref (vault path)"
+            )
+        if self.password is not None and self.secret_ref is None:
+            raise ValueError(
+                "Plaintext-only auth is not allowed; supply secret_ref (vault path) "
+                "or omit password and reference a pre-existing secret"
+            )
+        return self
+
+
+# ── Request models ────────────────────────────────────────────────────────────
 
 
 class CreateIngestionConfigRequest(BaseModel):
@@ -45,11 +109,13 @@ class CreateIngestionConfigRequest(BaseModel):
             "- kafka: {\"topic\": \"user-events\", \"cluster\": \"prod\"}"
         )
     )
-    auth: dict[str, Any] | None = Field(
+    auth: AuthSpec | None = Field(
         default=None,
         description=(
-            "Access credentials. Required for postgres/mysql/oracle/snowflake, omit for bigquery/kafka.\n"
-            "Example: {\"username\": \"readonly\", \"secret_ref\": \"k8s-secret/db-password\"}"
+            "Access credentials. Required for postgres/mysql/oracle/snowflake; "
+            "omit for bigquery/kafka. "
+            "Vault path: supply both password and secret_ref. "
+            "Reference path: supply secret_ref only (pre-provisioned Secret)."
         ),
     )
     is_enabled: bool = Field(
@@ -68,7 +134,10 @@ class CreateIngestionConfigRequest(BaseModel):
                 "platform": "postgres",
                 "locator": {"host": "db.example.com", "port": 5432},
                 "identifier": {"database": "mydb", "schema_name": "public", "table": "orders"},
-                "auth": {"username": "readonly", "secret_ref": "k8s-secret/db-password"},
+                "auth": {
+                    "username": "readonly",
+                    "secret_ref": {"name": "dataspoke-conf-mydb-creds", "key": "password"},
+                },
                 "is_enabled": True,
                 "schedule_tier": "daily",
             }
@@ -86,8 +155,18 @@ class CreateIngestionConfigRequest(BaseModel):
     def validate_fields(self) -> "CreateIngestionConfigRequest":
         if self.is_enabled and not self.schedule_tier:
             raise ValueError("schedule_tier is required when is_enabled is true")
+        # Pass only the persisted shape (username + secret_ref without force_overwrite)
+        # so that CredentialAuth (extra="forbid") does not reject transient API fields.
+        auth_dict: dict[str, Any] | None = None
+        if self.auth is not None:
+            auth_dict = {"username": self.auth.username}
+            if self.auth.secret_ref is not None:
+                auth_dict["secret_ref"] = {
+                    "name": self.auth.secret_ref.name,
+                    "key": self.auth.secret_ref.key,
+                }
         validate_platform_fields(
-            self.platform, self.locator, self.identifier, self.auth
+            self.platform, self.locator, self.identifier, auth_dict
         )
         return self
 
@@ -108,8 +187,8 @@ class PatchIngestionConfigRequest(BaseModel):
         default=None,
         description="Updated dataset identity dict.",
     )
-    auth: dict[str, Any] | None = Field(
-        default=None, description="Updated access credentials dict."
+    auth: AuthSpec | None = Field(
+        default=None, description="Updated access credentials. Same vault/reference shapes as PUT."
     )
     is_enabled: bool | None = Field(
         default=None,
@@ -142,7 +221,15 @@ class PatchIngestionConfigRequest(BaseModel):
             if self.identifier is not None:
                 identifier_cls.model_validate(self.identifier)
             if self.auth is not None:
-                auth_cls.model_validate(self.auth)
+                # Pass only the persisted shape so CredentialAuth (extra="forbid")
+                # does not reject transient API fields (password, force_overwrite).
+                auth_payload: dict[str, Any] = {"username": self.auth.username}
+                if self.auth.secret_ref is not None:
+                    auth_payload["secret_ref"] = {
+                        "name": self.auth.secret_ref.name,
+                        "key": self.auth.secret_ref.key,
+                    }
+                auth_cls.model_validate(auth_payload)
         return self
 
 
@@ -168,7 +255,7 @@ class IngestionConfigResponse(SingleResponse):
         description="Dataset identity within the source infrastructure"
     )
     auth: dict[str, Any] | None = Field(
-        description="Access credentials (secret references only, no plaintext passwords)"
+        description="Access credentials (reference shape only — no plaintext passwords)"
     )
     is_enabled: bool = Field(description="Whether scheduled ingestion runs are enabled")
     schedule_tier: str | None = Field(

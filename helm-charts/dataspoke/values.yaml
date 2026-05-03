@@ -83,6 +83,8 @@ api:
     limits:
       cpu: "1"
       memory: 1024Mi
+  secretReader:
+    enabled: true
 
 event-consumer:
   # Optional Kafka consumer for DataHub MCL/MCP events. Disabled by default —
