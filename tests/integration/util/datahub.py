@@ -54,6 +54,41 @@ KAFKA_PLATFORM = "kafka"
 ENV = "DEV"
 PG_INSTANCE = "example_db"
 
+# Dataspoke operational DB — used to reconcile dataset_registry rows whose
+# datahub_registered cache was frozen False before this ingest.
+_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
+_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_POSTGRES_PORT", "9201"))
+_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
+_DATASPOKE_PG_PASSWORD = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
+_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+
+
+async def _mark_registry_registered(urns: list[str]) -> None:
+    """Flip dataset_registry.datahub_registered=true for any existing rows in `urns`.
+
+    Why: ensure_dataset_registered() only queries DataHub on the row's first
+    insert and never refreshes. A row created before its dataset existed in
+    DataHub stays frozen at false, blocking validation (require_in_datahub=True).
+    """
+    if not urns:
+        return
+    conn = await asyncpg.connect(
+        host=_DATASPOKE_PG_HOST,
+        port=_DATASPOKE_PG_PORT,
+        user=_DATASPOKE_PG_USER,
+        password=_DATASPOKE_PG_PASSWORD,
+        database=_DATASPOKE_PG_DB,
+    )
+    try:
+        await conn.execute(
+            "UPDATE dataset_registry "
+            "SET datahub_registered = TRUE, updated_at = NOW() "
+            "WHERE dataset_urn = ANY($1::text[]) AND datahub_registered = FALSE",
+            urns,
+        )
+    finally:
+        await conn.close()
+
 TARGET_SCHEMAS: frozenset[str] = frozenset(
     {
         "catalog",
@@ -382,6 +417,8 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
+    await _mark_registry_registered(list(datasets.keys()))
+
     print(
         f"  Ingested {len(datasets)} PG datasets "
         f"({sum(len(c) for c in datasets.values())} columns)."
@@ -466,7 +503,7 @@ def _build_kafka_schema_fields(
 # ---------------------------------------------------------------------------
 
 
-def ingest_kafka_datasets() -> int:
+async def ingest_kafka_datasets() -> int:
     """Discover Kafka topics from JSONL fixtures and emit metadata to DataHub.
 
     Returns count of datasets ingested.
@@ -520,6 +557,8 @@ def ingest_kafka_datasets() -> int:
             )
         )
 
+    await _mark_registry_registered(list(datasets.keys()))
+
     print(
         f"  Ingested {len(datasets)} Kafka datasets "
         f"({sum(len(f) for f in datasets.values())} fields)."
@@ -547,7 +586,7 @@ async def reset_and_ingest(
     """
     deleted = reset_datasets()
     pg_count = await ingest_pg_datasets(schemas=schemas)
-    kafka_count = ingest_kafka_datasets()
+    kafka_count = await ingest_kafka_datasets()
     return deleted, pg_count + kafka_count
 
 
@@ -570,7 +609,7 @@ async def async_main() -> None:
     print("[INFO]  Ingesting example-postgres tables into DataHub...")
     pg_count = await ingest_pg_datasets()
     print("[INFO]  Ingesting example-kafka topics into DataHub...")
-    kafka_count = ingest_kafka_datasets()
+    kafka_count = await ingest_kafka_datasets()
     print(f"[INFO]  Done. {pg_count + kafka_count} datasets registered in DataHub.")
 
 

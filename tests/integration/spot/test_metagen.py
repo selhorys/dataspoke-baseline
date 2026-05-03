@@ -22,6 +22,10 @@ import uuid
 import httpx
 import pytest
 
+# Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
+# before this module's tests run (autoused by tests/integration/conftest.py).
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
 # title_master is a DataHub-seeded Imazon dataset (catalog schema)
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")

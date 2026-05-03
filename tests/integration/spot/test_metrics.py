@@ -24,6 +24,10 @@ import asyncio
 import pytest
 import httpx
 
+# Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
+# before this module's tests run (autoused by tests/integration/conftest.py).
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
 _TEST_METRIC_ID = "spot-test-freshness"
 
 # Spec: spec/USE_CASE_en.md §UC5 L640-L643 — baseline metric IDs seeded at startup

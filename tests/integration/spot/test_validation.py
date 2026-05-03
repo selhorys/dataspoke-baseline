@@ -20,6 +20,10 @@ import urllib.parse
 import httpx
 import pytest
 
+# Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
+# before this module's tests run (autoused by tests/integration/conftest.py).
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
 # title_master is a DataHub-seeded Imazon dataset (catalog schema)
 # spec: USE_CASE_en.md §UC2 — validation always operates on a dataset DataHub already knows
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
