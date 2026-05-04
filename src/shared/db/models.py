@@ -50,7 +50,7 @@ class IngestionConfig(Base):
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(Text, nullable=False, default="active-custom")
     platform: Mapped[str] = mapped_column(Text, nullable=False)
-    locator: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    locator: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     identifier: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     auth: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

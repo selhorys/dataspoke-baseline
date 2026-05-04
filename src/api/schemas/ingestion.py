@@ -93,14 +93,17 @@ class CreateIngestionConfigRequest(BaseModel):
     platform: Platform = Field(
         description="Data platform that determines the locator/identifier/auth structure"
     )
-    locator: dict[str, Any] = Field(
+    locator: dict[str, Any] | None = Field(
+        default=None,
         description=(
-            "Infrastructure location. Structure varies by platform:\n"
+            "Infrastructure location. Required for `active-custom` mode; must be omitted "
+            "for `passive` mode (passive ingestors handle their own connectivity out-of-band). "
+            "Structure varies by platform:\n"
             "- postgres/mysql/oracle: {\"host\": \"db.example.com\", \"port\": 5432}\n"
             "- bigquery: {\"project_id\": \"my-project\"}\n"
             "- snowflake: {\"account_id\": \"abc12345\"}\n"
             "- kafka: {\"bootstrap_servers\": \"kafka:9092\"}"
-        )
+        ),
     )
     identifier: dict[str, Any] = Field(
         description=(
@@ -159,14 +162,20 @@ class CreateIngestionConfigRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_fields(self) -> "CreateIngestionConfigRequest":
-        if self.mode == "passive" and self.schedule_tier is not None:
-            raise ValueError("schedule_tier is not allowed for passive mode")
-        if self.mode == "active-custom" and self.is_enabled and not self.schedule_tier:
+        if self.mode == "passive":
+            if self.schedule_tier is not None:
+                raise ValueError("schedule_tier is not allowed for passive mode")
+            if self.locator is not None:
+                raise ValueError("locator is not allowed for passive mode")
+            if self.auth is not None:
+                raise ValueError("auth is not allowed for passive mode")
+            return self
+        if self.locator is None:
+            raise ValueError("locator is required for active-custom mode")
+        if self.is_enabled and not self.schedule_tier:
             raise ValueError(
                 "schedule_tier is required when is_enabled is true and mode is active-custom"
             )
-        # Pass only the persisted shape (username + secret_ref without force_overwrite)
-        # so that CredentialAuth (extra="forbid") does not reject transient API fields.
         auth_dict: dict[str, Any] | None = None
         if self.auth is not None:
             auth_dict = {"username": self.auth.username}
@@ -270,7 +279,10 @@ class IngestionConfigResponse(SingleResponse):
         ),
     )
     platform: Platform = Field(description="Data platform, e.g. 'postgres'")
-    locator: dict[str, Any] = Field(description="Infrastructure location configuration")
+    locator: dict[str, Any] | None = Field(
+        default=None,
+        description="Infrastructure location configuration (`active-custom` only; null for `passive`)",
+    )
     identifier: dict[str, Any] = Field(
         description="Dataset identity within the source infrastructure"
     )

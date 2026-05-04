@@ -129,7 +129,6 @@ class TestIngestionSchemas:
             CreateIngestionConfigRequest(
                 mode="passive",
                 platform="kafka",
-                locator={"bootstrap_servers": "kafka:9092"},
                 identifier={"topic": "my-topic"},
                 schedule_tier="daily",
             )
@@ -140,7 +139,6 @@ class TestIngestionSchemas:
         req = CreateIngestionConfigRequest(
             mode="passive",
             platform="kafka",
-            locator={"bootstrap_servers": "kafka:9092"},
             identifier={"topic": "my-topic"},
             is_enabled=True,
         )

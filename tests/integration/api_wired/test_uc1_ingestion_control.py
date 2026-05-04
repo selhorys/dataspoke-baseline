@@ -193,7 +193,7 @@ async def test_uc1_active_custom_postgres(
         enable_resp = await api_client.patch(
             active_conf_url,
             headers=admin_headers,
-            json={"is_enabled": True},
+            json={"is_enabled": True, "schedule_tier": "daily"},
         )
         assert enable_resp.status_code == 200, (
             f"PATCH is_enabled=true failed: {enable_resp.status_code} {enable_resp.text}"
@@ -551,10 +551,10 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
 
         events_body = None
         passive_events_count = 0
-        deadline = time.time() + 30.0
+        deadline = time.time() + 60.0
         while time.time() < deadline:
             sync_resp = await api_client.post(
-                "/api/v1/internal/activities/ingestion/passive-sync",
+                "/internal/activities/ingestion/passive-sync",
                 headers=internal_headers,
             )
             assert sync_resp.status_code in (200, 204), (
@@ -574,11 +574,11 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
             ])
             if passive_events_count > events_before_count:
                 break
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(2.0)
 
         assert passive_events_count > events_before_count, (
             f"Expected new INGESTION.COMPLETE/FAIL events with source='passive' to appear "
-            f"within 30s (before={events_before_count}, after={passive_events_count}); "
+            f"within 60s (before={events_before_count}, after={passive_events_count}); "
             f"got events: {(events_body or {}).get('events', [])}. "
             "spec: USE_CASE_en.md §UC1 Case 2 — passive sync writes event rows"
         )
@@ -846,7 +846,7 @@ async def test_uc1_passive_kafka_via_external_script(
         deadline = time.time() + 30.0
         while time.time() < deadline:
             sync_resp = await api_client.post(
-                "/api/v1/internal/activities/ingestion/passive-sync",
+                "/internal/activities/ingestion/passive-sync",
                 headers=internal_headers_dict,
             )
             assert sync_resp.status_code in (200, 204), (

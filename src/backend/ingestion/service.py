@@ -50,7 +50,7 @@ class IngestionConfigRecord(BaseModel):
     dataset_urn: str
     mode: str
     platform: str
-    locator: dict[str, Any]
+    locator: dict[str, Any] | None = None
     identifier: dict[str, Any]
     auth: dict[str, Any] | None = None
     is_enabled: bool
@@ -116,7 +116,7 @@ class IngestionService:
         dataset_urn: str,
         mode: str,
         platform: str,
-        locator: dict[str, Any],
+        locator: dict[str, Any] | None,
         identifier: dict[str, Any],
         auth: dict[str, Any] | None,
         is_enabled: bool,
@@ -579,22 +579,40 @@ class IngestionService:
     async def _fetch_datahub_run_history(
         self, dataset_urn: str
     ) -> list[dict[str, Any]]:
-        """Query DataHub for ingestion execution history for *dataset_urn*.
+        """Query DataHub for ingestion run history of *dataset_urn*.
 
-        Returns a list of dicts with: run_id, status, run_at (datetime | None).
+        Combines two surfaces:
+          - DataProcessInstance runs via `dataset(urn).runs(direction:OUTGOING)`
+            for ingestors that follow the Custom Ingestor Authoring Contract
+            (DataSpoke active-custom + external scripts).
+          - `Operation` time-series aspects with ingestion-like
+            `operationType` (INSERT/UPDATE/CREATE/ALTER) for ingestors that
+            emit Operation aspects per run (DataHub Managed Ingestion's
+            standard source plugins). Each entry becomes one
+            INGESTION.COMPLETE event. DELETE/DROP/UNKNOWN are excluded —
+            they don't represent ingestion of new metadata.
 
-        Best-effort — raises on DataHub connectivity failures (caller wraps).
+        Returns a list of dicts with: run_id, status (SUCCESS-mapped or
+        empty for unknown), run_at.
         """
+        out: list[dict[str, Any]] = []
+        out.extend(await self._fetch_dpi_runs(dataset_urn))
+        out.extend(await self._fetch_operation_runs(dataset_urn))
+        return out
+
+    async def _fetch_dpi_runs(self, dataset_urn: str) -> list[dict[str, Any]]:
         gql = """
         query getIngestionRunHistory($urn: String!) {
             dataset(urn: $urn) {
-                runs(start: 0, count: 50) {
+                runs(start: 0, count: 50, direction: OUTGOING) {
                     runs {
                         urn
-                        state
-                        aspectList {
-                            name
-                            payload
+                        state {
+                            status
+                            timestampMillis
+                            result {
+                                resultType
+                            }
                         }
                     }
                 }
@@ -609,7 +627,7 @@ class IngestionService:
             )
         except Exception:
             logger.warning(
-                "ingestion_passive_datahub_query_failed",
+                "ingestion_passive_datahub_dpi_query_failed",
                 extra={"dataset_urn": dataset_urn},
                 exc_info=True,
             )
@@ -621,34 +639,64 @@ class IngestionService:
 
         out: list[dict[str, Any]] = []
         for run in runs_data:
-            run_urn = run.get("urn", "")
-            state = run.get("state", "")
-            run_at: datetime | None = None
+            dpi_urn = run.get("urn", "")
+            events = run.get("state") or []
 
-            # Attempt to extract timestamp from aspectList
-            for aspect in run.get("aspectList") or []:
-                if aspect.get("name") in ("executionRequestResult", "dataHubIngestionRunSummary"):
-                    try:
-                        import json as _json
+            terminal = next(
+                (e for e in events if e.get("status") == "COMPLETE"),
+                None,
+            )
+            if terminal is None:
+                continue
 
-                        payload = aspect.get("payload") or {}
-                        if isinstance(payload, str):
-                            payload = _json.loads(payload)
-                        ts_ms = (
-                            payload.get("startTimeMs")
-                            or payload.get("timestampMillis")
-                            or payload.get("startedAt")
-                        )
-                        if ts_ms and isinstance(ts_ms, (int, float)):
-                            run_at = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
-                    except Exception:
-                        pass
+            ts_ms = terminal.get("timestampMillis")
+            if not isinstance(ts_ms, (int, float)):
+                continue
+            run_at = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+
+            result_type = ((terminal.get("result") or {}).get("resultType")) or ""
 
             out.append(
                 {
-                    "run_id": run_urn,
-                    "status": state,
-                    "run_at": run_at or datetime.now(tz=UTC),
+                    "run_id": dpi_urn,
+                    "status": result_type,
+                    "run_at": run_at,
+                }
+            )
+        return out
+
+    _INGESTION_LIKE_OPERATION_TYPES: frozenset[str] = frozenset(
+        {"INSERT", "UPDATE", "CREATE", "ALTER"}
+    )
+
+    async def _fetch_operation_runs(self, dataset_urn: str) -> list[dict[str, Any]]:
+        from datahub.metadata.schema_classes import OperationClass
+
+        try:
+            ops = await self._datahub.get_timeseries(
+                dataset_urn, OperationClass, limit=50
+            )
+        except Exception:
+            logger.warning(
+                "ingestion_passive_datahub_operation_query_failed",
+                extra={"dataset_urn": dataset_urn},
+                exc_info=True,
+            )
+            return []
+
+        out: list[dict[str, Any]] = []
+        for op in ops:
+            op_type = getattr(op, "operationType", None)
+            if op_type not in self._INGESTION_LIKE_OPERATION_TYPES:
+                continue
+            ts_ms = getattr(op, "timestampMillis", None)
+            if not isinstance(ts_ms, (int, float)):
+                continue
+            out.append(
+                {
+                    "run_id": f"operation:{op_type}:{ts_ms}",
+                    "status": "SUCCESS",
+                    "run_at": datetime.fromtimestamp(ts_ms / 1000, tz=UTC),
                 }
             )
         return out
