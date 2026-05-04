@@ -33,12 +33,16 @@ features at `/spoke/common/...` with engineering-flavoured framing.
 | Page | Read | Write |
 |---|---|---|
 | `/de/ingestion` | `GET /spoke/common/ingestion` | — |
-| `/de/ingestion/[urn]` | `GET .../attr/ingestion/conf`, `GET .../event/ingestion` | `PUT/PATCH .../attr/ingestion/conf` (fields: `mode`, `platform`, `locator`, `identifier`, `auth`, `is_enabled`, `schedule_tier`); `POST .../method/ingestion/run` (`{dry_run?}`); `DELETE .../attr/ingestion/conf` |
+| `/de/ingestion/[urn]` | `GET .../attr/ingestion/conf`, `GET .../event/ingestion` | `PUT/PATCH .../attr/ingestion/conf` (fields: `mode: 'active-custom' \| 'passive'`, `platform`, `identifier`, plus `locator`/`auth`/`schedule_tier` for `active-custom`); `POST .../method/ingestion/run` (`{dry_run?}`, `active-custom` only); `DELETE .../attr/ingestion/conf` |
 
-The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
-`auth`, and disables the run button (passive runs are external; the
-`event/ingestion` history is mirrored from DataHub hourly by the
-`ingestion-passive-hourly` DAG).
+The `mode` field gates form behaviour. `active-custom` shows all input fields and
+enables both Run and Dry-Run buttons. `passive` hides `locator`, `auth`, and
+`schedule_tier`, disables both run buttons (passive runs are external; `method/ingestion/run`
+returns `409 INGESTION_NOT_APPLICABLE`), and surfaces a "Configure ingestion in DataHub"
+deep link (`http://datahub.<INGRESS_DOMAIN>/ingestion`) as a convenience. Passive
+`event/ingestion` history is populated by the hourly `ingestion-passive-hourly` DAG
+observing whatever ingestor emits `DataProcessInstance` records — see
+[BACKEND §Custom Ingestor Authoring Contract](BACKEND.md#custom-ingestor-authoring-contract).
 
 ```
 ┌────────────────────────────────────────────────┐
@@ -46,9 +50,9 @@ The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
 ├──────────────────────┬───────┬────────┬────────┤
 │  dataset_urn         │ mode  │ tier   │ events │
 ├──────────────────────┼───────┼────────┼────────┤
-│  catalog.books       │ active│ daily  │ 2h ✓   │
+│  catalog.books       │ a-cust│ daily  │ 2h ✓   │
 │  orders.shipments    │ passiv│ —      │ 1h ✓   │
-│  reviews.legacy      │ active│ weekly │ 3d ▲   │
+│  reviews.legacy      │ a-cust│ weekly │ 3d ▲   │
 └──────────────────────┴───────┴────────┴────────┘
         List (`/de/ingestion` ← `/spoke/common/ingestion`)
 ```
@@ -58,7 +62,7 @@ The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
 │  ← catalog.books               [Run Now] [Dry Run]   │
 ├──────────────────────────────────────────────────────┤
 │  attr/ingestion/conf                                 │
-│    mode:           active                            │
+│    mode:           active-custom                     │
 │    platform:       postgres                          │
 │    locator:        {host: "pg.imazon", port: 5432}   │
 │    identifier:     {database, schema_name, table}    │
@@ -70,7 +74,28 @@ The `mode` field gates form behaviour: `passive` hides `schedule_tier` and
 │    2026-04-25 ✓ INGESTION.COMPLETE                   │
 │    2026-04-24 ✓ INGESTION.COMPLETE                   │
 └──────────────────────────────────────────────────────┘
-        Detail (`/de/ingestion/[urn]`)
+        Detail — active-custom (`/de/ingestion/[urn]`)
+```
+
+```
+┌──────────────────────────────────────────────────────┐
+│  ← orders.shipments         [Run Now]✗ [Dry Run]✗    │
+├──────────────────────────────────────────────────────┤
+│  attr/ingestion/conf                                 │
+│    mode:           passive                           │
+│    platform:       kafka                             │
+│    identifier:     {topic, cluster}                  │
+│    is_enabled:     ✓                                 │
+│    [Edit]  [Delete]                                  │
+│                                                      │
+│  ⓘ Passive — runs are configured externally.         │
+│    [↗ Configure ingestion in DataHub]                │
+│                                                      │
+│  event/ingestion (latest 5)                          │
+│    2026-04-25 ✓ INGESTION.COMPLETE  (DPI: ext)       │
+│    (empty until external ingestor emits a DPI)       │
+└──────────────────────────────────────────────────────┘
+        Detail — passive (`/de/ingestion/[urn]`)
 ```
 
 ### Validation (UC2)

@@ -189,12 +189,15 @@ not from aspects.
 ### Ingestion Service (`src/backend/ingestion/`)
 
 **Covers**: MANIFESTO §2.1 Ingestion Control (UC1). Behavioural narrative — including the
-active / passive split — lives in [USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control);
-DataHub aspect reads/writes are catalogued in
-[DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference). This
+`active-custom` / `passive` split — lives in
+[USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control); DataHub aspect reads/writes are
+catalogued in [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
+The DPI emission contract that all ingestors (in-house and external) must satisfy lives
+below in [§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract). This
 section describes the implementation only.
 
-**Supported platforms** (extractor module per platform):
+**Supported platforms** (in-house extractor module per platform; applies to `active-custom`
+mode — `passive` mode is platform-agnostic since DataSpoke does not run the extractor):
 
 | Platform | Status | Locator | Identifier |
 |----------|--------|---------|------------|
@@ -202,9 +205,11 @@ section describes the implementation only.
 | `kafka` | Implemented | `bootstrap_servers` | `topic`, `cluster` |
 | `mysql`, `oracle`, `bigquery`, `snowflake` | Planned | platform-specific | platform-specific |
 
-**Aspects emitted** (non-dry-run, per discovered dataset): `StatusClass(removed=False)`,
-`DatasetPropertiesClass`, `SchemaMetadataClass`. `dry_run: true` runs the extractor and
-returns the schema preview without calling DataHub's REST Emitter.
+**Aspects emitted** (non-dry-run, per discovered dataset, by the `active-custom` extractor):
+`StatusClass(removed=False)`, `DatasetPropertiesClass`, `SchemaMetadataClass`, plus
+`DataProcessInstance` start + complete `RunEvent` aspects per run (see
+[§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract)). `dry_run: true`
+runs the extractor and returns the schema preview without emitting any aspects.
 
 #### Implementation
 
@@ -213,18 +218,23 @@ the dataset URN in `dataset_registry` (does not require the dataset to exist in 
 
 Ingestion config model: see
 [`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields:
-`dataset_urn` (unique per dataset), `mode` (`active` | `passive`), `platform` (`postgres`,
-`kafka` implemented; others TODO), `locator`/`identifier`/`auth` (JSONB connection details),
-`is_enabled`/`schedule_tier` (tier-based scheduling for active mode),
+`dataset_urn` (unique per dataset), `mode` (`active-custom` | `passive`), `platform`
+(`postgres`, `kafka` implemented for `active-custom`; any platform allowed for `passive`),
+`locator`/`identifier`/`auth` (JSONB connection details; `locator`/`auth` are
+`active-custom`-only), `is_enabled`/`schedule_tier` (`schedule_tier` is `active-custom`-only),
 `status` (DAG verification outcome).
 
-**Mode is mutable post-creation** via PATCH. Switching `active` → `passive` is allowed and
-takes effect on the next periodic tier sweep; the previously-scheduled active runs are not
-cancelled retroactively but no new active runs are scheduled. Switching `passive` → `active`
-requires the standard active-mode fields (`schedule_tier`, `locator`/`auth`) to be populated.
-`method/run` is rejected (`422 INVALID_PARAMETER`) for `passive` configs; for `active` configs with `is_enabled=false` it is rejected (`409 INGESTION_DISABLED`) unless `dry_run=true`.
+**Mode is mutable post-creation** via PATCH. Switching `active-custom` → `passive` is
+allowed and takes effect on the next periodic tier sweep; previously-scheduled
+`active-custom` runs are not cancelled retroactively but no new ones are scheduled.
+Switching `passive` → `active-custom` requires the `active-custom`-only fields
+(`schedule_tier`, `locator`, `auth`) to be populated. `method/run` is rejected
+(`409 INGESTION_NOT_APPLICABLE`) for `passive` configs because passive ingestion is
+run externally; for `active-custom` configs with `is_enabled=false` it is rejected
+(`409 INGESTION_DISABLED`) unless `dry_run=true`.
 
-**Auth resolution**: the `auth` field carries a structured `secret_ref: {name, key}` that
+**Auth resolution** (`active-custom` only — passive ingestors handle their own auth
+out-of-band): the `auth` field carries a structured `secret_ref: {name, key}` that
 points at a Kubernetes Secret in DataSpoke's own namespace. On PUT, callers either supply
 `password` (vault path: API writes the Secret then persists only the reference) or omit
 `password` (reference path: API verifies a pre-existing Secret). Plaintext passwords are
@@ -233,24 +243,86 @@ flows, RBAC, and error taxonomy live in [SECRET_RESOLUTION.md](SECRET_RESOLUTION
 run time the extractor calls the resolver; failures surface as `IngestionResult(errors=[…])`
 → `status="error"`.
 
-**Active run pipeline** (`IngestionService.run()`): load config → connect to source via
-`locator`/`auth` → discover schema via `identifier` → emit `StatusClass` +
-`DatasetPropertiesClass` + `SchemaMetadataClass` to DataHub (skipped on `dry_run`;
-a non-dry-run that ingests zero entities is treated as failure) → on success mark
-`dataset_registry.datahub_registered = true` via `mark_registered()` in
-`src/shared/db/registry.py` (skipped on `dry_run`) → record `INGESTION.COMPLETE` /
-`INGESTION.FAIL` event (recorded for both dry-run and non-dry-run; the run's
-`dry_run` boolean is preserved in the event's `detail` payload so downstream readers
-can distinguish them; see [Event Catalogue](#event-catalogue)).
+**Active-custom run pipeline** (`IngestionService.run()`): load config → connect to source via
+`locator`/`auth` → emit `DataProcessInstanceRunEvent(STARTED)` against a deterministic DPI
+URN derived from `run_id` (skipped on `dry_run`; see
+[§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract)) → discover schema
+via `identifier` → emit `StatusClass` + `DatasetPropertiesClass` + `SchemaMetadataClass` to
+DataHub (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as
+failure) → emit `DataProcessInstanceRunEvent(COMPLETE | FAILED)` carrying the run outcome
+(skipped on `dry_run`) → on success mark `dataset_registry.datahub_registered = true` via
+`mark_registered()` in `src/shared/db/registry.py` (skipped on `dry_run`) → record
+`INGESTION.COMPLETE` / `INGESTION.FAIL` event (recorded for both dry-run and non-dry-run;
+the run's `dry_run` boolean is preserved in the event's `detail` payload so downstream
+readers can distinguish them; see [Event Catalogue](#event-catalogue)).
 
 **Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
 called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with
-`mode = passive` AND `is_enabled = true` → for each, query DataHub for ingestion run
-history of the dataset URN → insert any new runs as rows in the unified `events` table
-with `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the active path's
-event shape so clients see a uniform stream). Passive configs with `is_enabled=false`
-are skipped. No aspects are emitted; the registry's `datahub_registered` flag is
-reconciled by the existing `datahub-sync-daily` DAG.
+`mode = passive` AND `is_enabled = true` → for each, query DataHub for `DataProcessInstance`
+runs of the dataset URN via the `dataset(urn).runs` GraphQL field → insert any new runs as
+rows in the unified `events` table with `event_type = INGESTION.COMPLETE` /
+`INGESTION.FAIL` (mirroring the `active-custom` path's event shape so clients see a uniform
+stream). The poll surfaces *any* DPI emitter — DataHub Managed Ingestion executions,
+custom acryl-datahub-SDK scripts, third-party pipelines — provided the emitter satisfies
+the [§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract). Passive
+configs with `is_enabled=false` are skipped. No aspects are emitted by DataSpoke; the
+registry's `datahub_registered` flag is reconciled by the existing `datahub-sync-daily`
+DAG.
+
+### Custom Ingestor Authoring Contract
+
+**Audience**: anyone writing an ingestor that produces metadata for a dataset registered
+in DataSpoke. This contract is binding for (a) DataSpoke's own in-house `active-custom`
+extractors, (b) any future in-house extractor added to
+`src/backend/ingestion/extractors.py`, and (c) any external script or pipeline ingesting
+into a dataset that is registered in DataSpoke as `mode: passive`.
+
+**Why this contract exists**: DataHub's `DataProcessInstance` (DPI) is the universal
+"this is an ingestion run" entity. DataSpoke's hourly poll surfaces runs as
+`event/ingestion` rows by querying `dataset(urn).runs` GraphQL. Without DPI emission,
+runs are invisible to DataSpoke's observation surface — the dataset still appears in
+`GET /spoke/common/ingestion` and the `ingestion-freshness` metric still works via
+DataHub's dataset timestamps, but per-run drill-down is unavailable. Making DPI emission
+a project-wide MUST gives one observation contract that serves both in-house and external
+authors.
+
+**Required aspects per run** (in the listed order):
+
+| # | Aspect | Notes |
+|---|--------|-------|
+| 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"dataspoke-postgres-<run_id>"`); `type = BATCH_SCHEDULED` |
+| 2 | `DataProcessInstanceRelationships` | `relationships.entities = [<dataset_urn>]`; `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs |
+| 3 | `DataProcessInstanceRunEvent` (`status = STARTED`) | Emitted **before** any schema/property aspect work begins on the dataset |
+| 4 | `StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`, … | The actual ingested metadata. Authors emit whatever aspects are appropriate for their source — DPI does not constrain the metadata shape. |
+| 5 | `DataProcessInstanceRunEvent` (`status = COMPLETE`) | Emitted **after** all aspect work is finished. Carry `result.resultType = SUCCESS` for happy-path; `result.resultType = FAILURE` and `result.nativeResultType = <author-specific code>` for failures. |
+
+**DPI URN convention**: `urn:li:dataProcessInstance:<deterministic-id>`. Recommend
+`<platform>-<run_id>` so retries on the same logical run remain addressable. DataSpoke's
+in-house extractors derive `run_id` as `uuid4()` per `IngestionService._run_inner`
+invocation.
+
+**Failure semantics**: a failed run still emits the COMPLETE `RunEvent`, not a missing
+event. DataSpoke's hourly poll maps `result.resultType = FAILURE` to an `INGESTION.FAIL`
+row in `event/ingestion`. A run that emits STARTED but never emits COMPLETE/FAILED is
+treated as in-flight (and never surfaced) until a terminal `RunEvent` arrives or a
+human cleans it up via DataHub's UI.
+
+**Ordering guarantee**: the STARTED event must precede schema/property emission for the
+dataset; the terminal event must follow all aspect work. The poll only surfaces runs
+that have reached a terminal `RunEvent`. Out-of-order emission produces non-deterministic
+`event/ingestion` ordering.
+
+**Reference implementation**: see `src/backend/ingestion/service.py::_run_inner` and
+`src/backend/ingestion/extractors.py` for the canonical DPI emission pattern. External
+script authors should mirror the same call sequence using the `acryl-datahub` Python SDK.
+
+**Authoring checklist** (self-verify before treating an ingestor as "done"):
+
+- [ ] DPI URN is deterministic per logical run (retries reuse the same URN)
+- [ ] `Properties` and `Relationships` aspects are emitted before the first `RunEvent`
+- [ ] STARTED `RunEvent` is emitted before any dataset aspect emission
+- [ ] Terminal `RunEvent` (COMPLETE/FAILED) is emitted after all aspect work, with `result.resultType` set
+- [ ] Failures emit a terminal event (do not let the run hang in STARTED)
 
 ### Validation Service (`src/backend/validation/`)
 

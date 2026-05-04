@@ -241,7 +241,7 @@ configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Control | UC1 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Control | UC1 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Control | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING`. Rejected with `409 INGESTION_DISABLED` when the conf is disabled and `dry_run` is not true | Ingestion Control | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly — `active-custom` configs only (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING`; rejected with `409 INGESTION_DISABLED` when the conf is disabled and `dry_run` is not true; rejected with `409 INGESTION_NOT_APPLICABLE` for `passive` configs (passive ingestion is run externally) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports (success/failure notices) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation | UC2, UC5 |
@@ -287,11 +287,16 @@ and [DATAHUB_INTEGRATION §Aspect Reference](DATAHUB_INTEGRATION.md#aspect-refer
 Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
 surface: `attr/ingestion/conf` (CRUD), `method/ingestion/run`, `event/ingestion`.
 
-`attr/ingestion/conf` carries a `mode` flag (`active` | `passive`) — active configs are
-run by DataSpoke on the configured `schedule_tier`; passive configs are populated by
-external pipelines and have their run history mirrored into `event/ingestion` by a
-hourly DataHub status-sync job. Both modes share the same API surface; see
-[BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion).
+`attr/ingestion/conf` carries a `mode` flag (`active-custom` | `passive`) —
+`active-custom` configs are run by DataSpoke's in-house extractor on the configured
+`schedule_tier`; `passive` configs are populated by external ingestors (DataHub Managed
+Ingestion, custom acryl-datahub-SDK scripts, or any pipeline that emits
+`DataProcessInstance` records per run) and have their run history mirrored into
+`event/ingestion` by an hourly poll job. Both modes share the same API surface;
+`method/ingestion/run` applies to `active-custom` only and returns
+`409 INGESTION_NOT_APPLICABLE` for `passive`. See
+[BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)
+and [BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -619,8 +624,9 @@ response, matching the success envelope.
 | `CONFIG_NOT_FOUND` | 404 | Ingestion config or validation config not found |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
-| `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
 | `INGESTION_DISABLED` | 409 | Ingestion conf has `is_enabled=false`; non-dry-run rejected |
+| `INGESTION_NOT_APPLICABLE` | 409 | `method/ingestion/run` called against a `passive`-mode conf; passive ingestion is run externally and has no DataSpoke-side run pipeline |
+| `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
 | `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |
 | `VALIDATION_DISABLED` | 409 | Validation conf has `is_enabled=false`; non-dry-run rejected |
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |

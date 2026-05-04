@@ -50,7 +50,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 
 | # | MANIFESTO 기능 | 유스케이스 |
 |---|---|---|
-| UC1 | Ingestion Control | [Active와 Passive 인제스천](#uc1-ingestion-control) |
+| UC1 | Ingestion Control | [Active-custom과 Passive 인제스천](#uc1-ingestion-control) |
 | UC2 | Validation | [규칙 등록, 스케줄·Dry-Run 실행](#uc2-validation) |
 | UC3 | Ontology Generation | [Imazon 데이터셋 전반의 노드·엣지·트리플 추론](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [설명·MD 문서 제안](#uc4-metadata-generation) |
@@ -67,48 +67,65 @@ DataSpoke는 두 모드를 모두 지원한다.
 ### User Story
 
 > *데이터 팀원으로서*,
-> *DataSpoke가 직접 인제스트하든 외부 파이프라인이 DataHub로 인제스트하든
+> *DataSpoke가 직접 인제스트하든 외부 시스템이 인제스트하든
 > 관계없이 모든 데이터셋을 등록·실행·관찰하고 싶다*,
 > *그래서* 단일 DataSpoke surface가 자산 전체의
 > 인제스천 설정·실행·이벤트 이력을 다루도록 한다.
 
 지원하는 인제스천 모드는 두 가지다:
 
-- **Active** — DataSpoke가 인제스터다.
+- **`active-custom`** — DataSpoke가 자체 in-house 추출기 프레임워크로
+  인제스터 역할을 한다.
   Airflow tier DAG이 설정된 `schedule_tier`(`hourly` / `daily` / `weekly`)에 따라
   플랫폼별 추출기를 실행하고 결과를 DataHub로 emit한다.
   수동·dry-run 실행도 지원된다.
-- **Passive** — 외부 시스템이 DataHub에 직접 인제스트한다.
-  DataSpoke는 추출기를 실행하지 않고,
-  데이터셋의 인제스천 설정을 `mode: passive`로 표시할 뿐이다.
-  `ingestion-passive-hourly` Airflow DAG이 **시간마다** 실행되어,
-  passive로 표시된 모든 데이터셋의 DataHub 인제스천 실행 이력을 폴링하고
-  결과 상태를 `event/ingestion`에 한 행씩 기록한다.
-  덕분에 클라이언트 입장에서는 모드와 무관하게 동일한 API surface로 보인다.
+  DataSpoke가 구현해 둔 플랫폼(현재 `postgres`, `kafka`)에 한정된다.
+  실행마다 표준 스키마 aspect와 함께 **`DataProcessInstance`를 emit하며**,
+  이것이 `event/ingestion`의 근거가 된다.
+- **`passive`** — DataSpoke가 추출기를 실행하지 않고,
+  실행을 일으키기 위한 어떠한 프로그램적 조작도 하지 않는다.
+  사용자가 원하는 방식으로 추출을 설정한다:
+  DataHub Managed Ingestion(UI 또는 GraphQL)에서 레시피를 구성하거나,
+  `acryl-datahub` SDK로 일회성 Python 스크립트를 실행하거나,
+  외부 파이프라인에 연결한다.
+  DataSpoke는 URN을 등록하고 시간별 `ingestion-passive-hourly` DAG으로 관찰만 한다.
+  이 DAG은 DataHub의 `DataProcessInstance` 레코드를 폴링해
+  실행마다 한 행씩 `event/ingestion`에 기록한다.
+  외부 인제스터가 무엇이든 **실행마다 `DataProcessInstance`를 emit해야**
+  DataSpoke 이벤트에 노출된다
+  ([BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)).
+
+DPI emission 계약은 두 모드에 동일하게 적용된다.
+DataSpoke의 active-custom 추출기도 외부 passive 인제스터와 똑같이 DPI를 emit하므로,
+누가 실행했는지와 무관하게 관찰 동작은 일관된다.
 
 ### API Mapping
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | 인제스천 설정 등록·읽기·갱신·삭제 (`mode`, `platform`, `locator`, `identifier`, `auth`, `is_enabled`, active 모드용 `schedule_tier`) |
-| `POST /spoke/common/data/{urn}/method/ingestion/run` | 수동 실행 (`dry_run: true`로 연결 점검) — active 설정에서만 |
-| `GET /spoke/common/data/{urn}/event/ingestion` | 데이터셋별 인제스천 이벤트 이력 (active: DataSpoke 실행이 기록; passive: 시간별 DataHub 동기화가 기록) |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | 인제스천 설정 등록·읽기·갱신·삭제 (`mode`, `platform`, `identifier`; `active-custom`에 한해 `locator`/`auth`/`schedule_tier` 추가) |
+| `POST /spoke/common/data/{urn}/method/ingestion/run` | 수동 실행 (`dry_run: true`로 연결 점검) — **`active-custom` 설정에서만**. passive 설정은 `409 INGESTION_NOT_APPLICABLE`을 반환한다 |
+| `GET /spoke/common/data/{urn}/event/ingestion` | 데이터셋별 인제스천 이벤트 이력 (active-custom: DataSpoke 실행이 기록; passive: DataHub의 DataProcessInstance 레코드를 시간별 폴링이 기록) |
 | `GET /spoke/common/ingestion` | 데이터셋별 `attr/ingestion/*`을 집계하는 크로스 데이터셋 리스트 뷰 |
 
 ### Imazon 예시
 
-**Active — `catalog.books` (Postgres, daily).**
+#### Case 1 — Active-custom, Postgres `catalog.title_master` (daily)
+
+DataSpoke가 추출을 소유한다.
+Airflow `ingestion-active-daily` DAG이 매일 in-house Postgres 추출기를 호출하고,
+수동 실행도 가능하다.
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.title_master,PROD)/attr/ingestion/conf
 ```
 ```json
 {
-  "mode": "active",
+  "mode": "active-custom",
   "platform": "postgres",
   "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
-  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "books"},
-  "auth": {"username": "spoke_reader", "secret_ref": "vault://imazon/pg/spoke_reader"},
+  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+  "auth": {"username": "spoke_reader", "secret_ref": {"name": "dataspoke-source-cred-title-master", "key": "password"}},
   "is_enabled": true,
   "schedule_tier": "daily"
 }
@@ -120,50 +137,112 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 POST .../method/ingestion/run    { "dry_run": true }
 ```
 
+`is_enabled=false` 동안 `method/ingestion/run`을 호출할 수 있는 유일한 방법은 dry-run이다.
+non-dry-run은 `409 INGESTION_DISABLED`를 반환한다.
+
 일간 Airflow tier DAG 실행 후, 팀이 데이터셋별 이벤트 이력을 조회한다:
 
 ```http
 GET .../event/ingestion?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
-**Passive — `orders.shipments` (Kafka, 외부 인제스트).**
+각 행은 실행 중에 DataSpoke 추출기가 DataHub에 emit한 `DataProcessInstance` aspect에 기반한다.
+즉, 동일한 레코드가 DataHub UI에서도 보인다.
+
+#### Case 2 — Passive, Postgres `catalog.reviews` (DataHub Managed Ingestion 경유)
+
+팀이 컬럼 단위 lineage와 프로파일 통계를 원한다.
+DataSpoke의 in-house 추출기는 이를 생성하지 않는다.
+DataHub Managed Ingestion을 직접 설정한다:
+**`http://datahub.<domain>/ingestion`**에서
+`catalog.reviews` 대상의 postgres 레시피를 daily cron으로 만들고,
+DataHub의 executor가 실행하도록 둔다.
+DataSpoke는 이 설정에 손을 대지 않는다.
+
+데이터셋을 DataSpoke surface에 노출하고 이벤트 이력을 받기 위해 passive로 등록한다:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,orders.shipments,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.reviews,PROD)/attr/ingestion/conf
+```
+```json
+{
+  "mode": "passive",
+  "platform": "postgres",
+  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "reviews"},
+  "is_enabled": true
+}
+```
+
+`locator`, `auth`, `schedule_tier`는 없다 — 외부 인제스터의 영역이다.
+이 URN에 대한 `POST .../method/ingestion/run`은 `409 INGESTION_NOT_APPLICABLE`을 반환한다.
+
+DataHub의 executor가 실행을 마칠 때마다 데이터셋에 대한 `DataProcessInstance`를 기록한다.
+시간별 `ingestion-passive-hourly` DAG이 이를 픽업한다:
+
+```http
+GET .../event/ingestion?from=…&to=…
+```
+```json
+{
+  "events": [
+    {
+      "event_type": "INGESTION.COMPLETE",
+      "status": "success",
+      "occurred_at": "2026-04-25T03:14:00Z",
+      "detail": {"source": "passive", "datahub_status": "SUCCEEDED", "run_id": "..."}
+    }
+  ]
+}
+```
+
+#### Case 3 — Passive, Kafka `imazon.orders.events` (커스텀 일회성 스크립트)
+
+Imazon이 일회성 맥락에서 Kafka 토픽 메타데이터를 적재해야 한다:
+개발자가 `acryl-datahub` SDK를 사용하는 Python 스크립트를 실행한다.
+이 스크립트는 호출마다 Status, SchemaMetadata, `DataProcessInstance`를 emit한다.
+스크립트는 DataSpoke 외부에 있고 스케줄링되지 않는다.
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.orders.events,PROD)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "passive",
   "platform": "kafka",
-  "locator": {"bootstrap_servers": "kafka.imazon.internal:9092"},
-  "identifier": {"topic": "orders.shipments", "cluster": "PROD"},
+  "identifier": {"topic": "orders.events", "cluster": "PROD"},
   "is_enabled": true
 }
 ```
 
-`schedule_tier`는 없다.
-DataSpoke가 추출기를 돌리지 않기 때문이다.
-외부 데이터 파이프라인(DataSpoke 외부의 Airflow DAG)이
-스키마와 속성을 DataHub로 직접 emit한다.
+스크립트가 실행되어 DPI를 emit하면, 다음 시간별 폴링에서 Case 2와 동일한 형태로
+`event/ingestion`에 한 행이 노출된다.
+**스크립트가 DPI를 emit하지 않으면** 해당 URN의 이벤트 리스트는 비어 있게 된다.
+데이터셋은 여전히 `GET /spoke/common/ingestion`에 노출되고,
+스키마는 여전히 DataHub에 있으며,
+[`ingestion-freshness` 메트릭](#uc5-governance)도 DataHub 타임스탬프로 추적한다.
+다만 `event/ingestion`을 통한 실행 단위 드릴다운은 불가능해진다.
+스크립트 작성자가 따라야 할 DPI emission 계약은
+[BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)에 정의되어 있다.
+DataSpoke의 active-custom 추출기도 동일한 계약을 따른다.
 
-매시간 DataSpoke의 `ingestion-passive-hourly` DAG이
-passive 표시된 데이터셋의 DataHub 실행 이력을 폴링해
-events 테이블에 한 행씩 기록한다.
-Imazon은 동일한 API로 이벤트를 읽는다:
-
-```http
-GET .../event/ingestion?from=…&to=…
-```
-
-**크로스 데이터셋 오버뷰.**
+#### 크로스 데이터셋 오버뷰
 
 ```http
 GET /api/v1/spoke/common/ingestion?limit=100
 ```
 
 데이터셋별로 한 행을 반환한다.
-각 행은 `attr/ingestion/*` 집합(모드, 스케줄, 마지막 이벤트 상태)을 담는다.
+각 행은 `attr/ingestion/*` 집합(모드, 적용되는 경우 스케줄, 마지막 이벤트 상태)을 담는다.
 대시보드와 일괄 감사에 유용하다.
+
+### 범위 노트
+
+DataSpoke 인제스천의 책임은 **소스 연결, 스키마 디스커버리, 신선도 신호**다.
+프로파일링·컬럼 단위 lineage·사용량 분석은 in-house `active-custom` 경로의 범위 밖이다.
+이를 필요로 하는 팀은 DataHub Managed Ingestion을 직접 설정하고,
+해당 데이터셋을 DataSpoke에 `mode: passive`로 등록한다.
+이로써 DataSpoke 추출기 surface를 작게 유지하고,
+"DataSpoke는 control surface, DataHub는 메타데이터의 SSOT" 원칙과 일관성을 지킨다.
 
 ---
 

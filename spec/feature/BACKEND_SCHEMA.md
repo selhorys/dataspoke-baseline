@@ -40,14 +40,14 @@ Stores per-dataset ingestion configuration.
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `mode` | `TEXT` | `active` (DataSpoke runs the extractor) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `ingestion-passive-hourly` DAG) |
+| `mode` | `TEXT` | `active-custom` (DataSpoke's in-house extractor runs on a tier schedule) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `ingestion-passive-hourly` DAG observing `DataProcessInstance` aspects in DataHub) |
 | `platform` | `TEXT` | DataHub platform name (`postgres`, `kafka`, `mysql`, `bigquery`, etc.) |
-| `locator` | `JSONB` | Infrastructure location (e.g., `{"host", "port"}` for RDBMS) |
+| `locator` | `JSONB` NULL | Infrastructure location (e.g., `{"host", "port"}` for RDBMS); `active-custom` only — null for `passive` (passive ingestors handle their own connectivity out-of-band) |
 | `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
-| `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); null for ambient auth or passive mode |
-| `is_enabled` | `BOOLEAN` | Enable scheduled execution via Airflow (active mode) or scheduled status sync (passive mode) |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for active mode — `hourly`, `daily`, or `weekly` (required when `mode='active'` and `is_enabled=true`); null for passive mode |
-| `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG (active mode only) |
+| `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); `active-custom` only — null for `passive` (passive ingestors handle their own auth out-of-band) |
+| `is_enabled` | `BOOLEAN` | Enable scheduled execution via Airflow (`active-custom` mode) or scheduled status sync (`passive` mode) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for `active-custom` mode — `hourly`, `daily`, or `weekly` (required when `mode='active-custom'` and `is_enabled=true`); null for `passive` mode |
+| `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG (`active-custom` mode only) |
 | `status` | `TEXT` | `OK` (DAG verification succeeded), `ERROR` (verification failed) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |

@@ -184,7 +184,7 @@ schema including pgvector tables) in
 
 | Feature | Capabilities |
 |---------|-------------|
-| Ingestion Control | Active and passive ingestion modes — DataSpoke either runs the extractor on a tier schedule or mirrors run history from externally-ingested datasets; single control surface for lifecycle management |
+| Ingestion Control | `active-custom` and `passive` ingestion modes — DataSpoke either runs an in-house extractor on a tier schedule or observes externally-ingested datasets via `DataProcessInstance` polling; single control surface for lifecycle management |
 | Validation | DataHub assertion management (Open Assertions Spec + DataSpoke extensions), partition-aware rule execution, SQL-based timeseries validation, real-time Online Verifier for coding agents |
 | Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from DataHub aspects (canonical + UC4-approved editable variants) and DataHub Query entities (highlighted MANUAL + auto-discovered SYSTEM joins, capped per-dataset); persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontogen API with independent review queues per result type |
 | Metadata Generation | Per-dataset proposals for documentation fields — table description, column descriptions, and dataProduct cross-data MDs (create/modify/split/retitle actions); review queue with field-level approve/edit/reject; approved writes go to editable DataHub aspects |
@@ -225,7 +225,7 @@ the cross-cutting flow that ties the features together.
 
 | UC | Trigger surface | Implementation entry | DataHub side-effect |
 |---|---|---|---|
-| UC1 Ingestion Control | Airflow tier DAG (active mode) or hourly `ingestion-passive-hourly` DAG (passive mode); manual `POST .../method/ingestion/run` | `IngestionService` | Active: emits `Status` + `DatasetProperties` + `SchemaMetadata` aspects. Passive: no aspect writes; mirrors run history into `event/ingestion`. |
+| UC1 Ingestion Control | Airflow tier DAG (`active-custom` mode) or hourly `ingestion-passive-hourly` DAG (`passive` mode); manual `POST .../method/ingestion/run` (`active-custom` only) | `IngestionService` | `active-custom`: emits `Status` + `DatasetProperties` + `SchemaMetadata` + `DataProcessInstance` aspects. `passive`: no aspect writes; mirrors externally-emitted `DataProcessInstance` run history into `event/ingestion`. |
 | UC2 Validation | Airflow tier DAG; manual `POST .../method/validation/run` (`dry_run` powers the Online Verifier) | `ValidationService` | Registers `assertionInfo`; reports `assertionRunEvent` per rule per run. |
 | UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | On node approval: glossary term attached to member datasets. On triple approval: glossary-term relationship between subject and object terms. |
 | UC4 Metadata Generation | Airflow tier DAG; manual `POST .../method/metagen/run` | `MetagenService` | On reviewer approval only: writes to editable aspects (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`) — never to non-editable counterparts. |

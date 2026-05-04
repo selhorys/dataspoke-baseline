@@ -42,7 +42,7 @@ pipelines that Imazon already operates. DataSpoke covers both modes.
 
 | # | MANIFESTO Feature | Use Case |
 |---|---|---|
-| UC1 | Ingestion Control | [Active and Passive Ingestion](#uc1-ingestion-control) |
+| UC1 | Ingestion Control | [Active-Custom and Passive Ingestion](#uc1-ingestion-control) |
 | UC2 | Validation | [Rule Registration, Scheduled and Dry-Run](#uc2-validation) |
 | UC3 | Ontology Generation | [Node, Edge, and Triple Inference Across Imazon Datasets](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [Description and MD Doc Proposals](#uc4-metadata-generation) |
@@ -59,45 +59,58 @@ controlling, and managing data ingestion in one place.*
 
 > *As a* data team member,
 > *I want to* register, run, and observe ingestion for any dataset I care about — whether
-> DataSpoke ingests it directly or an external pipeline ingests it into DataHub —
+> DataSpoke ingests it itself or some external system does —
 > *so that* one DataSpoke surface drives ingestion config, runs, and event history for
 > the whole estate.
 
 Two ingestion modes are supported:
 
-- **Active** — DataSpoke is the ingestor. An Airflow tier DAG runs the platform
-  extractor on the configured `schedule_tier` (`hourly` / `daily` / `weekly`) and emits
-  results to DataHub. Manual and dry-run runs are also supported.
-- **Passive** — an external system ingests directly into DataHub. DataSpoke does not
-  run the extractor; it only marks the dataset's ingestion config as `mode: passive`. A
-  `ingestion-passive-hourly` Airflow DAG runs **hourly**, polls DataHub for
-  ingestion run history of all passive-marked datasets, and writes the resulting status
-  as rows on `event/ingestion`. The DataSpoke API surface therefore looks the same to
-  clients regardless of mode.
+- **`active-custom`** — DataSpoke is the ingestor, using its own in-house extractor
+  framework. An Airflow tier DAG runs the platform extractor on the configured
+  `schedule_tier` (`hourly` / `daily` / `weekly`) and emits results to DataHub. Manual
+  and dry-run runs are also supported. Limited to platforms DataSpoke has implemented
+  (`postgres`, `kafka` today). Each run emits the standard schema aspects **plus a
+  `DataProcessInstance`** that powers `event/ingestion`.
+- **`passive`** — DataSpoke does **not** run the extractor and does nothing programmatic
+  toward making the run happen. The user sets up extraction however they prefer:
+  configuring a recipe in DataHub Managed Ingestion (UI or GraphQL), running a one-off
+  Python script with the `acryl-datahub` SDK, or wiring it into any external pipeline.
+  DataSpoke registers the URN and observes via the hourly `ingestion-passive-hourly`
+  DAG, which polls DataHub for `DataProcessInstance` records and writes one row per
+  run to `event/ingestion`. Whatever the external ingestor is, **it must emit a
+  `DataProcessInstance` per run** for runs to surface in DataSpoke's events
+  ([BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)).
+
+The same DPI emission contract applies in both modes — DataSpoke's own active-custom
+extractors emit DPI just as external passive ingestors must, so observation behavior is
+uniform regardless of who ran the job.
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | Register, read, update, remove ingestion conf (`mode`, `platform`, `locator`, `identifier`, `auth`, `is_enabled`, `schedule_tier` for active mode) |
-| `POST /spoke/common/data/{urn}/method/ingestion/run` | Manual run (`dry_run: true` for connection check) — active configs only |
-| `GET /spoke/common/data/{urn}/event/ingestion` | Per-dataset ingestion event history (active: written by DataSpoke runs; passive: written by the hourly DataHub status sync) |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | Register, read, update, remove ingestion conf (`mode`, `platform`, `identifier`, plus `locator`/`auth`/`schedule_tier` for `active-custom`) |
+| `POST /spoke/common/data/{urn}/method/ingestion/run` | Manual run (`dry_run: true` for connection check) — **`active-custom` configs only**; passive configs return `409 INGESTION_NOT_APPLICABLE` |
+| `GET /spoke/common/data/{urn}/event/ingestion` | Per-dataset ingestion event history (active-custom: written by DataSpoke runs; passive: written by the hourly poll observing DataProcessInstance records in DataHub) |
 | `GET /spoke/common/ingestion` | Cross-dataset list view aggregating per-dataset `attr/ingestion/*` |
 
-### Imazon Example
+### Imazon Examples
 
-**Active — `catalog.books` (Postgres, daily).**
+#### Case 1 — Active-custom, Postgres `catalog.title_master` (daily)
+
+DataSpoke owns the extraction. An Airflow `ingestion-active-daily` DAG calls the
+in-house Postgres extractor every day; manual runs are also possible.
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.title_master,PROD)/attr/ingestion/conf
 ```
 ```json
 {
-  "mode": "active",
+  "mode": "active-custom",
   "platform": "postgres",
   "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
-  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "books"},
-  "auth": {"username": "spoke_reader", "secret_ref": "vault://imazon/pg/spoke_reader"},
+  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+  "auth": {"username": "spoke_reader", "secret_ref": {"name": "dataspoke-source-cred-title-master", "key": "password"}},
   "is_enabled": true,
   "schedule_tier": "daily"
 }
@@ -117,41 +130,100 @@ After the daily Airflow tier DAG runs, the team reads the per-dataset event hist
 GET .../event/ingestion?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
-**Passive — `orders.shipments` (Kafka, externally ingested).**
+Each row is backed by a `DataProcessInstance` aspect that DataSpoke's extractor emitted
+to DataHub during the run, so the same record is also visible in DataHub's UI.
+
+#### Case 2 — Passive, Postgres `catalog.reviews` via DataHub Managed Ingestion
+
+The team wants column-level lineage and profile statistics that DataSpoke's in-house
+extractor doesn't produce. They configure DataHub Managed Ingestion directly:
+**at `http://datahub.<domain>/ingestion`**, create a postgres recipe targeting
+`catalog.reviews` with a daily cron, and let DataHub's executor run it. DataSpoke does
+not touch this configuration.
+
+To make the dataset appear on DataSpoke's surface and pick up event history, register
+it as passive:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,orders.shipments,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.reviews,PROD)/attr/ingestion/conf
+```
+```json
+{
+  "mode": "passive",
+  "platform": "postgres",
+  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "reviews"},
+  "is_enabled": true
+}
+```
+
+No `locator`, `auth`, or `schedule_tier` — those belong to the external ingestor.
+`POST .../method/ingestion/run` returns `409 INGESTION_NOT_APPLICABLE` for this URN.
+
+Each time DataHub's executor finishes a run, it writes a `DataProcessInstance` for
+the dataset. The hourly `ingestion-passive-hourly` DAG picks it up:
+
+```http
+GET .../event/ingestion?from=…&to=…
+```
+```json
+{
+  "events": [
+    {
+      "event_type": "INGESTION.COMPLETE",
+      "status": "success",
+      "occurred_at": "2026-04-25T03:14:00Z",
+      "detail": {"source": "passive", "datahub_status": "SUCCEEDED", "run_id": "..."}
+    }
+  ]
+}
+```
+
+#### Case 3 — Passive, Kafka `imazon.orders.events` via custom one-time script
+
+Imazon needs to load metadata for a Kafka topic from a one-off context: a developer
+runs a Python script using the `acryl-datahub` SDK that emits Status, SchemaMetadata,
+and a `DataProcessInstance` per invocation. The script lives outside DataSpoke and is
+not scheduled.
+
+```http
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.orders.events,PROD)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "passive",
   "platform": "kafka",
-  "locator": {"bootstrap_servers": "kafka.imazon.internal:9092"},
-  "identifier": {"topic": "orders.shipments", "cluster": "PROD"},
+  "identifier": {"topic": "orders.events", "cluster": "PROD"},
   "is_enabled": true
 }
 ```
 
-No `schedule_tier`. DataSpoke does not run an extractor. The external data pipeline (an
-Airflow DAG outside DataSpoke) emits the schema and properties to DataHub directly.
+When the script runs and emits a DPI, the next hourly poll surfaces a row in
+`event/ingestion` exactly as in Case 2. **If the script does not emit a DPI**, the
+events list stays empty for that URN — the dataset still appears in `GET
+/spoke/common/ingestion`, the schema is still in DataHub, and the
+[`ingestion-freshness` metric](#uc5-governance) still tracks it via DataHub timestamps;
+only per-run drill-down via `event/ingestion` is unavailable. The DPI emission
+contract that script authors must follow is documented in
+[BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)
+— the same contract that DataSpoke's own active-custom extractors satisfy.
 
-Every hour, DataSpoke's `ingestion-passive-hourly` DAG polls DataHub for ingestion
-runs of all passive-marked datasets with `is_enabled=true` and writes one row per run
-to the events table. Passive configs with `is_enabled=false` are skipped by the hourly
-status sync. Imazon reads them through the same API:
-
-```http
-GET .../event/ingestion?from=…&to=…
-```
-
-**Cross-dataset overview.**
+#### Cross-dataset overview
 
 ```http
 GET /api/v1/spoke/common/ingestion?limit=100
 ```
 
-Returns one row per dataset with its full `attr/ingestion/*` aggregate (mode, schedule,
-last event status). Useful for dashboards and bulk audit.
+Returns one row per dataset with its full `attr/ingestion/*` aggregate (mode, schedule
+where applicable, last event status). Useful for dashboards and bulk audit.
+
+### Scope Note
+
+DataSpoke ingestion's responsibility is **source connectivity, schema discovery, and
+freshness signals**. Profiling, column-level lineage, and usage analytics are out of
+scope for the in-house `active-custom` path; teams that need them should configure
+DataHub Managed Ingestion directly and register the dataset with `mode: passive` in
+DataSpoke. This keeps DataSpoke's extractor surface small and consistent with the
+"DataSpoke is a control surface, DataHub is the SSOT for metadata" principle.
 
 ---
 
