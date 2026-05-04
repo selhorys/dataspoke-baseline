@@ -27,7 +27,7 @@ _PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
-_VAULT_NAME = "dataspoke-conf-spot-pg"
+_VAULT_NAME = "dataspoke-source-cred-spot-pg"
 _VAULT_KEY = "password"
 
 # Use a fixed test URN that we know won't conflict with Imazon seed data.
@@ -324,7 +324,7 @@ async def test_ingestion_conf_put_secret_collision_returns_422(
     spec: SECRET_RESOLUTION.md §Error taxonomy — SecretCollision → 422 INVALID_PARAMETER
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
-    collision_secret = f"dataspoke-conf-spot-collision-{uuid.uuid4().hex[:8]}"
+    collision_secret = f"dataspoke-source-cred-spot-collision-{uuid.uuid4().hex[:8]}"
 
     # First PUT: vault writes the secret. force_overwrite=True for idempotency
     # if the test re-runs against an existing secret.
@@ -389,7 +389,7 @@ async def test_ingestion_conf_put_invalid_secret_ref_prefix_returns_422(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """secret_ref.name without dataspoke-conf- prefix → 422 SecretRefNameForbidden.
+    """secret_ref.name without dataspoke-source-cred- prefix → 422 SecretRefNameForbidden.
 
     spec: SECRET_RESOLUTION.md §Name prefix policy
     spec: SECRET_RESOLUTION.md §Validation matrix last row
@@ -432,7 +432,7 @@ async def test_ingestion_conf_put_reference_path_to_existing_secret(
     spec: SECRET_RESOLUTION.md §Validation matrix row 4
     spec: SECRET_RESOLUTION.md §Reference-path verify flow
     """
-    ref_secret = f"dataspoke-conf-spot-ref-{uuid.uuid4().hex[:8]}"
+    ref_secret = f"dataspoke-source-cred-spot-ref-{uuid.uuid4().hex[:8]}"
     base_conf_1 = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
     base_conf_2 = f"/api/v1/spoke/common/data/{_ENCODED_URN_2}/attr/ingestion/conf"
 

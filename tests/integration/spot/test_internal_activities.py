@@ -25,7 +25,7 @@ _PG_PORT = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
-_VAULT_NAME = "dataspoke-conf-spot-pg"
+_VAULT_NAME = "dataspoke-source-cred-spot-pg"
 _VAULT_KEY = "password"
 
 # Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub

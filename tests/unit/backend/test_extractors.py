@@ -38,7 +38,7 @@ async def test_unsupported_source_returns_error():
 
 async def test_not_yet_implemented_source_returns_warning():
     datahub = AsyncMock()
-    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}}
     result = await run_datahub_ingestion(
         datahub=datahub,
         platform="mysql",
@@ -77,7 +77,7 @@ async def test_postgresql_dry_run_discovers_but_does_not_emit():
         },
     ]
 
-    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}}
     with (
         patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
         patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
@@ -115,7 +115,7 @@ async def test_postgresql_run_emits_three_aspects():
         },
     ]
 
-    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}}
     with (
         patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
         patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
@@ -150,7 +150,7 @@ async def test_postgresql_run_emits_three_aspects():
 async def test_postgresql_connection_failure_returns_error():
     datahub = AsyncMock()
 
-    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}}
     with (
         patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
         patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
@@ -177,12 +177,12 @@ async def test_postgresql_resolver_not_found_returns_error_result():
     # spec: SECRET_RESOLUTION.md §Caller integration "At run time" step 5 —
     # "On any resolver exception: return IngestionResult(errors=[…])".
     datahub = AsyncMock()
-    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}}
     with (
         patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
         patch(
             "src.backend.ingestion.extractors.resolve_secret_ref",
-            side_effect=SecretRefNotFound("secret 'dataspoke-conf-test' does not exist"),
+            side_effect=SecretRefNotFound("secret 'dataspoke-source-cred-test' does not exist"),
         ),
     ):
         result = await run_datahub_ingestion(
@@ -206,7 +206,7 @@ async def test_postgresql_resolver_unavailable_returns_error_result():
     # spec: SECRET_RESOLUTION.md §Caller integration "At run time" step 5 —
     # "On any resolver exception: return IngestionResult(errors=[…])".
     datahub = AsyncMock()
-    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-conf-test", "key": "password"}}
+    _auth = {"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}}
     with (
         patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
         patch(

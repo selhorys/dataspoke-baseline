@@ -16,7 +16,7 @@ import pytest
 
 _PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
-_VAULT_NAME = "dataspoke-conf-spot-pg"
+_VAULT_NAME = "dataspoke-source-cred-spot-pg"
 _VAULT_KEY = "password"
 
 

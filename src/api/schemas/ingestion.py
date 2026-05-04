@@ -136,7 +136,7 @@ class CreateIngestionConfigRequest(BaseModel):
                 "identifier": {"database": "mydb", "schema_name": "public", "table": "orders"},
                 "auth": {
                     "username": "readonly",
-                    "secret_ref": {"name": "dataspoke-conf-mydb-creds", "key": "password"},
+                    "secret_ref": {"name": "dataspoke-source-cred-mydb-creds", "key": "password"},
                 },
                 "is_enabled": True,
                 "schedule_tier": "daily",

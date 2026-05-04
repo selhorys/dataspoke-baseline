@@ -169,6 +169,13 @@ directly from `dev_env/.env`.
 
 ## Secrets Management
 
+The chart manages two distinct Secret families, governed by different conventions:
+
+| Family | Owner | Purpose |
+|--------|-------|---------|
+| **Infra Secrets** (`dataspoke-postgres-secret`, `dataspoke-redis-secret`, `dataspoke-secrets`, `dataspoke-internal-auth`, …) | Operator (Helm install) | DataSpoke's own runtime credentials — DataHub token, internal Postgres/Redis passwords, JWT signing key, internal-auth shared secret. Documented in this section. |
+| **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Caller chooses `secret_ref.{name,key}`; the API writes (vault path) or only verifies (reference path). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the infra Secrets above. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). |
+
 ### Dev
 
 Secrets come from `dev_env/.env`. The install script creates K8s Secrets before the Helm install:
@@ -188,6 +195,19 @@ Two approaches:
 - **Option B** (recommended): Use [External Secrets Operator](https://external-secrets.io/) to
   sync from AWS Secrets Manager, Vault, or GCP Secret Manager. Set `secrets.createSecret: false`
   and reference the externally-managed secret.
+
+### API RBAC for source-credential Secrets
+
+When `api.secretReader.enabled` is `true` (default), the umbrella renders
+`templates/api-secret-reader-rbac.yaml`: a dedicated ServiceAccount on the API
+Deployment, plus a `Role` granting `get` / `create` / `patch` on `secrets` in the API
+release namespace, and a matching `RoleBinding`. `delete` is intentionally omitted —
+ingestion-config DELETE does not auto-clean source-credential Secrets (reference
+counting is out of scope; see SECRET_RESOLUTION.md §Open Questions). Single-namespace
+policy: no cross-namespace Roles or RoleBindings are rendered. Disable the value to
+opt out entirely; the Deployment then falls back to the default ServiceAccount and the
+resolver raises `SecretResolverUnavailable` on every PUT/PATCH that touches
+`secret_ref`.
 
 ---
 

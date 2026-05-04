@@ -81,7 +81,7 @@ This is a deliberate simplification over the prior cross-ns design:
 ### Name prefix policy
 
 Both the vault path and the reference path require `secret_ref.name` to start with the
-fixed prefix `dataspoke-conf-`. Names not matching the prefix are rejected with 422
+fixed prefix `dataspoke-source-cred-`. Names not matching the prefix are rejected with 422
 `SecretRefNameForbidden` at the API boundary.
 
 This is a security boundary, not a convention: DataSpoke's own runtime config Secrets
@@ -95,7 +95,7 @@ to Secrets DataSpoke itself owns by convention.
 
 Operators with externally-managed source credentials (Terraform, ESO, manual `kubectl`)
 must place those Secrets under the prefix, e.g., rename `team-pg-prod` to
-`dataspoke-conf-team-pg-prod`, or have ESO sync into the prefix.
+`dataspoke-source-cred-team-pg-prod`, or have ESO sync into the prefix.
 
 Defense-in-depth: the Helm `Role`'s `resourceNames` may also be constrained to a prefix
 where Kubernetes supports it. Note that `resourceNames` does not constrain `create`
@@ -144,14 +144,14 @@ it is silently ignored.
 | `{username, password, secret_ref: {name}}` (missing `key`) | 422 — `secret_ref.key` required |
 | `{username, password, secret_ref: {key}}` (missing `name`) | 422 — `secret_ref.name` required |
 | Any shape with `secret_ref` as a string (legacy) | 422 — must be an object |
-| `secret_ref.name` not matching prefix `dataspoke-conf-` | 422 `SecretRefNameForbidden` (both paths) |
+| `secret_ref.name` not matching prefix `dataspoke-source-cred-` | 422 `SecretRefNameForbidden` (both paths) |
 
 For sources that do not require auth (e.g., Kafka with `NoAuth`), `auth` may be omitted
 entirely. Per-platform requirements are enforced by `validate_platform_fields()`.
 
 ### Vault-write flow
 
-0. **Prefix check**: `secret_ref.name` must start with `dataspoke-conf-`. If not, return
+0. **Prefix check**: `secret_ref.name` must start with `dataspoke-source-cred-`. If not, return
    422 `SecretRefNameForbidden`. Enforced in the validator alongside step 1.
 1. **Validator** (Pydantic + `model_validator`) enforces the matrix above.
 2. **Collision check**: API calls k8s `read_namespaced_secret(name, own-ns)`. If the Secret
@@ -181,7 +181,7 @@ acceptable trade-off vs. the complexity of two-phase commit.
 
 On `{username, secret_ref: {name, key}}` PUT/PATCH:
 
-0. Prefix check: `secret_ref.name` must start with `dataspoke-conf-`. If not, return 422
+0. Prefix check: `secret_ref.name` must start with `dataspoke-source-cred-`. If not, return 422
    `SecretRefNameForbidden`.
 1. API calls k8s `read_namespaced_secret(name, own-ns)`.
 2. Secret missing → 422 `SecretRefNotFound: secret '<name>' does not exist`.
@@ -215,13 +215,15 @@ dev — `KUBERNETES_SERVICE_HOST` unset), every subsequent call raises
 In-memory cache, 60s TTL, keyed on `(name, key)` (namespace is implicit own-ns). Bounds
 the k8s API call rate when a burst of dry-runs hits the same Secret. Per-process; pod
 restart clears it. TTL is short enough that secret rotations propagate within a minute.
+Bounded with a hard cap (LRU eviction by insertion order) so a long-running pod with
+many distinct refs cannot grow the cache without limit.
 
 ### Error taxonomy
 
 | Error | When | Surface |
 |---|---|---|
 | `SecretRefMalformed` | Validator: `secret_ref` shape wrong (non-object, missing fields, empty values) | 422 INVALID_PARAMETER at PUT/PATCH |
-| `SecretRefNameForbidden` | `secret_ref.name` does not start with `dataspoke-conf-` | 422 INVALID_PARAMETER at PUT/PATCH |
+| `SecretRefNameForbidden` | `secret_ref.name` does not start with `dataspoke-source-cred-` | 422 INVALID_PARAMETER at PUT/PATCH |
 | `SecretCollision` | Vault path: target `(name, key)` already exists and `force_overwrite=false` | 422 INVALID_PARAMETER at PUT/PATCH |
 | `SecretRefNotFound` | Reference-path verify failed; or run-time: Secret/key disappeared between PUT and run | 422 at PUT/PATCH; `IngestionResult(errors=[…])` → `status="error"` at run-time |
 | `SecretResolverUnavailable` | In-cluster k8s config not loadable (host-mode dev) | 503 at PUT/PATCH (cannot verify or vault); `IngestionResult(errors=[…])` at run-time |
@@ -320,6 +322,7 @@ def write_secret_value(name: str, key: str, value: str, force_overwrite: bool) -
 def verify_secret_ref(name: str, key: str) -> None: ...
 
 class SecretRefMalformed(ValueError): ...
+class SecretRefNameForbidden(ValueError): ...
 class SecretRefNotFound(LookupError): ...
 class SecretCollision(ValueError): ...
 class SecretResolverUnavailable(RuntimeError): ...
@@ -329,8 +332,10 @@ All three operations are synchronous. The k8s Python client's calls are blocking
 fast; async wrappers add no value over the downstream extractor latency that already
 dominates ingestion runs.
 
-`resolve_secret_ref` accepts only the `k8s-secret/<name>/<key>` form (3 segments, own-ns
-implicit). The 4-segment cross-namespace form is rejected as `SecretRefMalformed`.
+`resolve_secret_ref` accepts only the `k8s-secret/<name>/<key>` form — exactly two
+segments after the `k8s-secret/` prefix, with the namespace implicit (own-ns). A
+three-segment tail (`k8s-secret/<ns>/<name>/<key>`, the legacy cross-namespace form)
+is rejected as `SecretRefMalformed`.
 
 ### Caller integration
 
@@ -398,7 +403,7 @@ governs how DataSpoke vaults and resolves *user-supplied source* credentials.
 - [ ] Auto-cleanup on conf DELETE: should ingestion-config DELETE remove the underlying
       Secret? Requires reference counting (a Secret may back multiple confs). Future
       work; baseline leaves Secrets in place. An operator-side cleanup script (list all
-      `dataspoke-conf-*` Secrets, intersect with active confs, delete the orphans) would
+      `dataspoke-source-cred-*` Secrets, intersect with active confs, delete the orphans) would
       cover this without burdening the runtime API.
 - [ ] Pluggable backends (Vault, AWS Secrets Manager, GCP Secret Manager): the resolver
       and writer are sized for one interface. When a second backend is needed, lift the

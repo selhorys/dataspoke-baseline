@@ -84,7 +84,7 @@ class TestIngestionSchemas:
                 "identifier": {"database": "testdb"},
                 "auth": {
                     "username": "readonly",
-                    "secret_ref": {"name": "dataspoke-conf-db", "key": "password"},
+                    "secret_ref": {"name": "dataspoke-source-cred-db", "key": "password"},
                 },
             }
         )
@@ -94,7 +94,7 @@ class TestIngestionSchemas:
         assert parsed.auth is not None
         assert parsed.auth.username == "readonly"
         assert parsed.auth.secret_ref is not None
-        assert parsed.auth.secret_ref.name == "dataspoke-conf-db"
+        assert parsed.auth.secret_ref.name == "dataspoke-source-cred-db"
         assert parsed.auth.secret_ref.key == "password"
         assert parsed.auth.password is None
 
@@ -158,7 +158,7 @@ class TestIngestionSchemas:
                 identifier={"database": "testdb"},
                 auth={
                     "username": "u",
-                    "secret_ref": {"name": "dataspoke-conf-x", "key": "k"},
+                    "secret_ref": {"name": "dataspoke-source-cred-x", "key": "k"},
                 },
                 is_enabled=True,
             )
@@ -174,7 +174,7 @@ class TestIngestionSchemas:
             identifier={"database": "testdb"},
             auth={
                 "username": "readonly",
-                "secret_ref": {"name": "dataspoke-conf-db", "key": "password"},
+                "secret_ref": {"name": "dataspoke-source-cred-db", "key": "password"},
             },
             is_enabled=False,
             mode="active",

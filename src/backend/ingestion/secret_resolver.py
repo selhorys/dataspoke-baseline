@@ -30,7 +30,7 @@ _CACHE_MAX_SIZE = 512
 # Prevents callers from targeting DataSpoke's own infra Secrets
 # (dataspoke-secrets, dataspoke-internal-auth, etc.) via the vault or
 # reference path.
-_NAME_PREFIX = "dataspoke-conf-"
+_NAME_PREFIX = "dataspoke-source-cred-"
 
 _init_lock = threading.Lock()
 

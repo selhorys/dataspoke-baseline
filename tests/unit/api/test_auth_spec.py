@@ -37,13 +37,13 @@ class TestAuthSpecValidationMatrix:
             {
                 "username": "u",
                 "password": "p",
-                "secret_ref": {"name": "dataspoke-conf-x", "key": "k"},
+                "secret_ref": {"name": "dataspoke-source-cred-x", "key": "k"},
             }
         )
         assert auth.username == "u"
         assert auth.password == "p"
         assert auth.secret_ref is not None
-        assert auth.secret_ref.name == "dataspoke-conf-x"
+        assert auth.secret_ref.name == "dataspoke-source-cred-x"
         assert auth.secret_ref.key == "k"
         assert auth.secret_ref.force_overwrite is False
 
@@ -54,7 +54,7 @@ class TestAuthSpecValidationMatrix:
             {
                 "username": "u",
                 "password": "p",
-                "secret_ref": {"name": "dataspoke-conf-x", "key": "k", "force_overwrite": True},
+                "secret_ref": {"name": "dataspoke-source-cred-x", "key": "k", "force_overwrite": True},
             }
         )
         assert auth.secret_ref is not None
@@ -66,12 +66,12 @@ class TestAuthSpecValidationMatrix:
         auth = AuthSpec.model_validate(
             {
                 "username": "u",
-                "secret_ref": {"name": "dataspoke-conf-x", "key": "k"},
+                "secret_ref": {"name": "dataspoke-source-cred-x", "key": "k"},
             }
         )
         assert auth.password is None
         assert auth.secret_ref is not None
-        assert auth.secret_ref.name == "dataspoke-conf-x"
+        assert auth.secret_ref.name == "dataspoke-source-cred-x"
 
     def test_row_5_missing_key_in_secret_ref_raises(self) -> None:
         # spec: SECRET_RESOLUTION.md §Validation matrix row 5
@@ -81,7 +81,7 @@ class TestAuthSpecValidationMatrix:
                 {
                     "username": "u",
                     "password": "p",
-                    "secret_ref": {"name": "dataspoke-conf-x"},
+                    "secret_ref": {"name": "dataspoke-source-cred-x"},
                 }
             )
 
@@ -110,7 +110,7 @@ class TestAuthSpecValidationMatrix:
 
     def test_row_8_reference_path_name_without_prefix_raises(self) -> None:
         # spec: SECRET_RESOLUTION.md §Validation matrix row 8
-        # secret_ref.name not matching prefix dataspoke-conf- → 422 (reference path).
+        # secret_ref.name not matching prefix dataspoke-source-cred- → 422 (reference path).
         with pytest.raises(ValidationError):
             AuthSpec.model_validate(
                 {
@@ -121,7 +121,7 @@ class TestAuthSpecValidationMatrix:
 
     def test_row_9_vault_path_name_without_prefix_raises(self) -> None:
         # spec: SECRET_RESOLUTION.md §Validation matrix row 9
-        # secret_ref.name not matching prefix dataspoke-conf- → 422 (vault path).
+        # secret_ref.name not matching prefix dataspoke-source-cred- → 422 (vault path).
         with pytest.raises(ValidationError):
             AuthSpec.model_validate(
                 {
@@ -145,12 +145,12 @@ class TestCredentialAuthPersistenceModel:
         auth = CredentialAuth.model_validate(
             {
                 "username": "readonly",
-                "secret_ref": {"name": "dataspoke-conf-db", "key": "password"},
+                "secret_ref": {"name": "dataspoke-source-cred-db", "key": "password"},
             }
         )
         assert auth.username == "readonly"
         assert auth.secret_ref is not None
-        assert auth.secret_ref.name == "dataspoke-conf-db"
+        assert auth.secret_ref.name == "dataspoke-source-cred-db"
         assert auth.secret_ref.key == "password"
 
     def test_secret_ref_record_rejects_force_overwrite(self) -> None:
@@ -159,5 +159,5 @@ class TestCredentialAuthPersistenceModel:
         # reject it.
         with pytest.raises(ValidationError):
             SecretRefRecord.model_validate(
-                {"name": "dataspoke-conf-x", "key": "k", "force_overwrite": True}
+                {"name": "dataspoke-source-cred-x", "key": "k", "force_overwrite": True}
             )

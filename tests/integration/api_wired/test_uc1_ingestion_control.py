@@ -23,8 +23,8 @@ _PG_DB = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db
 _PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
 
-# spec: SECRET_RESOLUTION.md §Name prefix policy — names must start with dataspoke-conf-
-_VAULT_NAME = "dataspoke-conf-uc1-title-master"
+# spec: SECRET_RESOLUTION.md §Name prefix policy — names must start with dataspoke-source-cred-
+_VAULT_NAME = "dataspoke-source-cred-uc1-title-master"
 _VAULT_KEY = "password"
 
 _ACTIVE_URN = (

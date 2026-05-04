@@ -137,13 +137,13 @@ class TestParseRef:
     def test_valid_ref_calls_k8s_with_correct_name_and_key(self) -> None:
         # spec: SECRET_RESOLUTION.md §Run-time read flow
         # k8s-secret/<name>/<key> — 2 segments after prefix — must call client
-        # with name=dataspoke-conf-foo, key=password.
+        # with name=dataspoke-source-cred-foo, key=password.
         _sr_module._resolver_state["client"].read_namespaced_secret.return_value = (
             _make_secret({"password": "hunter2"})
         )
-        result = resolve_secret_ref("k8s-secret/dataspoke-conf-foo/password")
+        result = resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo/password")
         _sr_module._resolver_state["client"].read_namespaced_secret.assert_called_once_with(
-            name="dataspoke-conf-foo", namespace="dataspoke-01"
+            name="dataspoke-source-cred-foo", namespace="dataspoke-01"
         )
         assert result == "hunter2"
 
@@ -151,17 +151,17 @@ class TestParseRef:
         # spec: SECRET_RESOLUTION.md §Interfaces — "The 4-segment cross-namespace form
         # is rejected as SecretRefMalformed."
         with pytest.raises(SecretRefMalformed):
-            resolve_secret_ref("k8s-secret/some-ns/dataspoke-conf-foo/password")
+            resolve_secret_ref("k8s-secret/some-ns/dataspoke-source-cred-foo/password")
 
     def test_missing_key_segment_raises_malformed(self) -> None:
         # spec: SECRET_RESOLUTION.md §Interfaces — must have exactly 2 segments after prefix.
         with pytest.raises(SecretRefMalformed):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-foo")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo")
 
     def test_wrong_prefix_raises_malformed(self) -> None:
         # spec: SECRET_RESOLUTION.md §Interfaces — ref must start with 'k8s-secret/'.
         with pytest.raises(SecretRefMalformed):
-            resolve_secret_ref("vault-secret/dataspoke-conf-foo/password")
+            resolve_secret_ref("vault-secret/dataspoke-source-cred-foo/password")
 
     def test_empty_name_segment_raises_malformed(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — SecretRefMalformed on empty segments.
@@ -188,24 +188,24 @@ class TestCache:
     def test_two_calls_within_ttl_hit_k8s_only_once(self) -> None:
         # spec: SECRET_RESOLUTION.md §Cache — "Bounds the k8s API call rate when a burst
         # of dry-runs hits the same Secret."
-        resolve_secret_ref("k8s-secret/dataspoke-conf-db/pw")
-        resolve_secret_ref("k8s-secret/dataspoke-conf-db/pw")
+        resolve_secret_ref("k8s-secret/dataspoke-source-cred-db/pw")
+        resolve_secret_ref("k8s-secret/dataspoke-source-cred-db/pw")
         core = _sr_module._resolver_state["client"]
         assert core.read_namespaced_secret.call_count == 1
 
     def test_cache_miss_after_ttl_expiry_hits_k8s_again(self) -> None:
         # spec: SECRET_RESOLUTION.md §Cache — TTL is short enough that secret rotations
         # propagate within a minute. Simulate expiry by directly manipulating cache entries.
-        resolve_secret_ref("k8s-secret/dataspoke-conf-db/pw")
+        resolve_secret_ref("k8s-secret/dataspoke-source-cred-db/pw")
         core = _sr_module._resolver_state["client"]
         assert core.read_namespaced_secret.call_count == 1
 
         # Forcibly expire the cache entry (set expiry in the past).
-        key = ("dataspoke-conf-db", "pw")
+        key = ("dataspoke-source-cred-db", "pw")
         value, _ = _sr_module._cache[key]
         _sr_module._cache[key] = (value, time.monotonic() - 1.0)
 
-        resolve_secret_ref("k8s-secret/dataspoke-conf-db/pw")
+        resolve_secret_ref("k8s-secret/dataspoke-source-cred-db/pw")
         assert core.read_namespaced_secret.call_count == 2
 
     def test_write_invalidates_cache_and_next_resolve_returns_new_value(self) -> None:
@@ -214,7 +214,7 @@ class TestCache:
         # after a write, a subsequent resolve returns the new value within the TTL window.
         core = _sr_module._resolver_state["client"]
         core.read_namespaced_secret.return_value = _make_secret({"pw": "original"})
-        resolve_secret_ref("k8s-secret/dataspoke-conf-db/pw")
+        resolve_secret_ref("k8s-secret/dataspoke-source-cred-db/pw")
         first_call_count = core.read_namespaced_secret.call_count
 
         # write_secret_value collision check sees 404 (no existing secret), then creates.
@@ -225,12 +225,12 @@ class TestCache:
         ]
         core.create_namespaced_secret.return_value = MagicMock()
 
-        write_secret_value("dataspoke-conf-db", "pw", "rotated", force_overwrite=False)
+        write_secret_value("dataspoke-source-cred-db", "pw", "rotated", force_overwrite=False)
 
         # Next resolve must return the new value, not the stale cached "original".
         core.read_namespaced_secret.side_effect = None
         core.read_namespaced_secret.return_value = _make_secret({"pw": "rotated"})
-        result = resolve_secret_ref("k8s-secret/dataspoke-conf-db/pw")
+        result = resolve_secret_ref("k8s-secret/dataspoke-source-cred-db/pw")
         assert result == "rotated"
         assert core.read_namespaced_secret.call_count > first_call_count
 
@@ -246,7 +246,7 @@ class TestCache:
             return _make_secret({key: f"val-{name}-{key}"})
 
         for i in range(n):
-            name = f"dataspoke-conf-src-{i}"
+            name = f"dataspoke-source-cred-src-{i}"
             key = "pw"
             core.read_namespaced_secret.return_value = make_secret_for(name, key)
             resolve_secret_ref(f"k8s-secret/{name}/{key}")
@@ -277,17 +277,17 @@ class TestHostMode:
         # subsequent call raises SecretResolverUnavailable — no silent fallback."
         with patch(_INCLUSTER_TARGET, side_effect=_NO_KUBECONFIG):
             with pytest.raises(SecretResolverUnavailable):
-                resolve_secret_ref("k8s-secret/dataspoke-conf-foo/pw")
+                resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo/pw")
 
     def test_subsequent_calls_raise_unavailable_after_failed_init(self) -> None:
         # spec: SECRET_RESOLUTION.md §Design — once available=False, no retry of _init.
         with patch(_INCLUSTER_TARGET, side_effect=_NO_KUBECONFIG):
             with pytest.raises(SecretResolverUnavailable):
-                resolve_secret_ref("k8s-secret/dataspoke-conf-foo/pw")
+                resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo/pw")
 
         assert _sr_module._resolver_state["available"] is False
         with pytest.raises(SecretResolverUnavailable):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-foo/pw")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo/pw")
 
 
 # ── Resolver error-mapping tests ──────────────────────────────────────────────
@@ -302,41 +302,41 @@ class TestResolverErrorMapping:
     def test_secret_with_key_returns_decoded_value(self) -> None:
         # spec: SECRET_RESOLUTION.md §Run-time read flow — cache + return data[key] (base64-decoded)
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"pw": "my-password"})
-        result = resolve_secret_ref("k8s-secret/dataspoke-conf-x/pw")
+        result = resolve_secret_ref("k8s-secret/dataspoke-source-cred-x/pw")
         assert result == "my-password"
 
     def test_secret_without_key_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — SecretRefNotFound when key absent.
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"other_key": "val"})
         with pytest.raises(SecretRefNotFound):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-x/pw")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-x/pw")
 
     def test_secret_with_none_data_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Run-time read flow — secret.data is None means
         # the key cannot be present; SecretRefNotFound must be raised.
         self._fake_core.read_namespaced_secret.return_value = _make_secret(None)
         with pytest.raises(SecretRefNotFound):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-x/pw")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-x/pw")
 
     def test_404_api_exception_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — SecretRefNotFound on 404.
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(404)
         with pytest.raises(SecretRefNotFound):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-x/pw")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-x/pw")
 
     def test_403_api_exception_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — "RBAC 403 from k8s API → wrapped to
         # SecretRefNotFound for read."
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(403)
         with pytest.raises(SecretRefNotFound):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-x/pw")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-x/pw")
 
     def test_500_api_exception_raises_resolver_unavailable(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — "K8s API transient errors (5xx) →
         # SecretResolverUnavailable."
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(500)
         with pytest.raises(SecretResolverUnavailable):
-            resolve_secret_ref("k8s-secret/dataspoke-conf-x/pw")
+            resolve_secret_ref("k8s-secret/dataspoke-source-cred-x/pw")
 
 
 # ── Writer tests ──────────────────────────────────────────────────────────────
@@ -352,7 +352,7 @@ class TestWriteSecretValue:
         # spec: SECRET_RESOLUTION.md §Vault-write flow step 3 — "Secret does not exist
         # → create_namespaced_secret with data: {key: base64(password)}."
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(404)
-        write_secret_value("dataspoke-conf-db", "password", "s3cr3t", force_overwrite=False)
+        write_secret_value("dataspoke-source-cred-db", "password", "s3cr3t", force_overwrite=False)
 
         self._fake_core.create_namespaced_secret.assert_called_once()
         call_kwargs = self._fake_core.create_namespaced_secret.call_args
@@ -365,7 +365,7 @@ class TestWriteSecretValue:
         # key absent from data → patch_namespaced_secret (merge-patch) to add data[key].
         # force_overwrite is irrelevant here."
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"other": "val"})
-        write_secret_value("dataspoke-conf-db", "password", "s3cr3t", force_overwrite=False)
+        write_secret_value("dataspoke-source-cred-db", "password", "s3cr3t", force_overwrite=False)
 
         self._fake_core.patch_namespaced_secret.assert_called_once()
         self._fake_core.create_namespaced_secret.assert_not_called()
@@ -383,7 +383,7 @@ class TestWriteSecretValue:
         # contains data[key], and force_overwrite=false, return 422 SecretCollision."
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"password": "old"})
         with pytest.raises(SecretCollision):
-            write_secret_value("dataspoke-conf-db", "password", "new", force_overwrite=False)
+            write_secret_value("dataspoke-source-cred-db", "password", "new", force_overwrite=False)
 
     def test_secret_exists_key_present_force_overwrite_patches_only_target_key(self) -> None:
         # spec: SECRET_RESOLUTION.md §Vault-write flow step 3 — "Secret exists and
@@ -391,7 +391,7 @@ class TestWriteSecretValue:
         self._fake_core.read_namespaced_secret.return_value = _make_secret(
             {"password": "old", "other": "keep"}
         )
-        write_secret_value("dataspoke-conf-db", "password", "new", force_overwrite=True)
+        write_secret_value("dataspoke-source-cred-db", "password", "new", force_overwrite=True)
 
         self._fake_core.patch_namespaced_secret.assert_called_once()
         call_kwargs = self._fake_core.patch_namespaced_secret.call_args
@@ -415,7 +415,7 @@ class TestWriteSecretValue:
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(404)
         self._fake_core.create_namespaced_secret.side_effect = _make_api_exception(403)
         with pytest.raises(SecretResolverUnavailable):
-            write_secret_value("dataspoke-conf-db", "pw", "val", force_overwrite=False)
+            write_secret_value("dataspoke-source-cred-db", "pw", "val", force_overwrite=False)
 
     def test_500_on_patch_raises_resolver_unavailable(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — "K8s API transient errors (5xx) →
@@ -423,7 +423,7 @@ class TestWriteSecretValue:
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"other": "val"})
         self._fake_core.patch_namespaced_secret.side_effect = _make_api_exception(500)
         with pytest.raises(SecretResolverUnavailable):
-            write_secret_value("dataspoke-conf-db", "pw", "val", force_overwrite=False)
+            write_secret_value("dataspoke-source-cred-db", "pw", "val", force_overwrite=False)
 
 
 # ── Verifier tests ────────────────────────────────────────────────────────────
@@ -438,34 +438,34 @@ class TestVerifySecretRef:
     def test_secret_exists_key_in_data_no_exception(self) -> None:
         # spec: SECRET_RESOLUTION.md §Reference-path verify flow — step 4: persist auth.
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"pw": "val"})
-        verify_secret_ref("dataspoke-conf-db", "pw")  # must not raise
+        verify_secret_ref("dataspoke-source-cred-db", "pw")  # must not raise
 
     def test_secret_missing_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Reference-path verify flow step 2 — "Secret missing
         # → 422 SecretRefNotFound."
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(404)
         with pytest.raises(SecretRefNotFound):
-            verify_secret_ref("dataspoke-conf-db", "pw")
+            verify_secret_ref("dataspoke-source-cred-db", "pw")
 
     def test_key_missing_in_data_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Reference-path verify flow step 3 — "data[key]
         # missing → 422 SecretRefNotFound."
         self._fake_core.read_namespaced_secret.return_value = _make_secret({"other": "val"})
         with pytest.raises(SecretRefNotFound):
-            verify_secret_ref("dataspoke-conf-db", "pw")
+            verify_secret_ref("dataspoke-source-cred-db", "pw")
 
     def test_403_raises_not_found(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — "RBAC Forbidden (403) →
         # SecretRefNotFound for read."
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(403)
         with pytest.raises(SecretRefNotFound):
-            verify_secret_ref("dataspoke-conf-db", "pw")
+            verify_secret_ref("dataspoke-source-cred-db", "pw")
 
     def test_500_raises_resolver_unavailable(self) -> None:
         # spec: SECRET_RESOLUTION.md §Error taxonomy — K8s 5xx → SecretResolverUnavailable.
         self._fake_core.read_namespaced_secret.side_effect = _make_api_exception(500)
         with pytest.raises(SecretResolverUnavailable):
-            verify_secret_ref("dataspoke-conf-db", "pw")
+            verify_secret_ref("dataspoke-source-cred-db", "pw")
 
     def test_name_without_prefix_raises_name_forbidden(self) -> None:
         # spec: SECRET_RESOLUTION.md §Reference-path verify flow step 0 — prefix check.
