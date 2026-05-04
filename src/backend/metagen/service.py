@@ -445,6 +445,12 @@ class MetagenService:
         if config is None:
             raise EntityNotFoundError("config", dataset_urn)
 
+        if not config.is_enabled and not dry_run:
+            raise ConflictError(
+                "GENERATION_DISABLED",
+                f"Metadata generation is disabled for {dataset_urn}; only dry-run is permitted",
+            )
+
         run_id_str = run_id or str(uuid.uuid4())
 
         # Step 2: Gather evidence

@@ -242,7 +242,7 @@ async def test_get_results_time_range(service, db):
 
 
 async def test_run_success(service, db, datahub, cache):
-    config_row = _make_config_row()
+    config_row = _make_config_row(is_enabled=True)
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
@@ -299,8 +299,50 @@ async def test_run_config_not_found(service, db, cache):
     assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
+async def test_run_rejects_non_dry_run_when_disabled(service, db, cache):
+    """Non-dry-run against a disabled config raises ConflictError('VALIDATION_DISABLED').
+
+    spec: BACKEND.md §Validation Service — is_enabled=false rejects non-dry-run
+    with 409 VALIDATION_DISABLED.
+    spec: USE_CASE_en.md §UC2 — "When is_enabled=false, non-dry-run calls to
+    method/validation/run return 409 VALIDATION_DISABLED. Dry-run is always
+    permitted regardless of is_enabled." (L261)
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    config_row = _make_config_row(is_enabled=False)
+    mock_scalar_query(db, config_row)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.run(_DATASET_URN, partition=None, dry_run=False)
+
+    assert exc_info.value.error_code == "VALIDATION_DISABLED"
+
+
+async def test_run_allows_dry_run_when_disabled(service, db, cache):
+    """Dry-run bypasses the disabled guard and returns a ValidationRunSummary.
+
+    spec: BACKEND.md §Validation Service — dry_run=True is always permitted
+    regardless of is_enabled.
+    spec: USE_CASE_en.md §UC2 (disabled gate mirrors UC1 pattern)
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    config_row = _make_config_row(is_enabled=False)
+    mock_scalar_query(db, config_row)
+
+    from src.backend.validation.service import ValidationRunSummary
+
+    summary = await service.run(_DATASET_URN, partition=None, dry_run=True)
+
+    assert isinstance(summary, ValidationRunSummary)
+    assert summary.status.lower() == "success"
+
+
 async def test_run_with_partition(service, db, datahub, cache):
-    config_row = _make_config_row()
+    config_row = _make_config_row(is_enabled=True)
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
@@ -340,7 +382,7 @@ async def test_run_with_partition(service, db, datahub, cache):
 
 
 async def test_run_empty_rules(service, db, datahub, cache):
-    config_row = _make_config_row(rules=[])
+    config_row = _make_config_row(rules=[], is_enabled=True)
     mock_scalar_query(db, config_row)
 
     cache.publish = AsyncMock()

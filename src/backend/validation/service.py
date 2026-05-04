@@ -377,6 +377,12 @@ class ValidationService:
         if config is None:
             raise EntityNotFoundError("config", dataset_urn)
 
+        if not config.is_enabled and not dry_run:
+            raise ConflictError(
+                "VALIDATION_DISABLED",
+                f"Validation is disabled for {dataset_urn}; only dry-run is permitted",
+            )
+
         if dry_run:
             return ValidationRunSummary(
                 run_id=run_id or str(uuid.uuid4()),

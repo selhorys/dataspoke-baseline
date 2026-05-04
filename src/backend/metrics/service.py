@@ -385,6 +385,13 @@ class MetricsService:
 
     async def _run_inner(self, metric_id: str, dry_run: bool) -> MetricRunResult:
         definition = await self.get_metric(metric_id)
+
+        if not definition.is_enabled and not dry_run:
+            raise ConflictError(
+                "METRIC_DISABLED",
+                f"Metric {metric_id} is disabled; only dry-run is permitted",
+            )
+
         run_id = str(uuid.uuid4())
 
         # Measure — includes unresolved_urns from dataset_filter

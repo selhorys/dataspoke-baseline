@@ -1,14 +1,38 @@
 """Unit tests for src/backend/metagen/service.py — MetagenService."""
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, call
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from src.backend.metagen.service import MetagenService, _build_initial_field_status
+from src.backend.metagen.service import MetagenService, MetagenResultRecord, _build_initial_field_status
 from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
 
 from tests.unit.backend.conftest import make_metagen_result_row, mock_db_refresh, mock_scalar_query
+
+_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
+
+
+def _make_metagen_config_row(
+    dataset_urn: str = _DATASET_URN,
+    targets: list | None = None,
+    is_enabled: bool = False,
+    schedule_tier: str | None = None,
+    owner: str = "alice@example.com",
+):
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.dataset_urn = dataset_urn
+    row.targets = targets if targets is not None else ["dataset.description"]
+    row.code_refs = None
+    row.is_enabled = is_enabled
+    row.schedule_tier = schedule_tier
+    row.status = "active"
+    row.owner = owner
+    row.created_at = datetime.now(tz=UTC)
+    row.updated_at = datetime.now(tz=UTC)
+    return row
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -83,6 +107,59 @@ async def test_run_raises_conflict_when_lock_held(svc: MetagenService, cache: As
         await svc.run("urn:li:dataset:(urn:li:dataPlatform:postgres,t,PROD)")
 
     assert exc_info.value.error_code == "GENERATION_RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_non_dry_run_when_disabled(svc: MetagenService, cache: AsyncMock, db: AsyncMock) -> None:
+    """Non-dry-run against a disabled config raises ConflictError('GENERATION_DISABLED').
+
+    spec: BACKEND.md §Metadata Generation Service — is_enabled=false rejects
+    non-dry-run with 409 GENERATION_DISABLED.
+    spec: USE_CASE_en.md §UC4 — "When is_enabled=false, non-dry-run calls to
+    method/metagen/run return 409 GENERATION_DISABLED. Dry-run is always
+    permitted regardless of is_enabled." (L628)
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    config_row = _make_metagen_config_row(is_enabled=False)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = config_row
+    db.execute = AsyncMock(return_value=result_mock)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await svc.run(_DATASET_URN, dry_run=False)
+
+    assert exc_info.value.error_code == "GENERATION_DISABLED"
+
+
+@pytest.mark.asyncio
+async def test_run_allows_dry_run_when_disabled(svc: MetagenService, cache: AsyncMock, db: AsyncMock) -> None:
+    """Dry-run bypasses the disabled guard and returns a MetagenResultRecord.
+
+    spec: BACKEND.md §Metadata Generation Service — dry_run=True is always
+    permitted regardless of is_enabled.
+    spec: USE_CASE_en.md §UC4 (disabled gate mirrors UC1 pattern)
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    config_row = _make_metagen_config_row(is_enabled=False, targets=["dataset.description"])
+    config_result = MagicMock()
+    config_result.scalar_one_or_none.return_value = config_row
+
+    node_map_result = MagicMock()
+    node_map_result.scalars.return_value.all.return_value = []
+    db.execute = AsyncMock(side_effect=[config_result, node_map_result])
+
+    with (
+        patch.object(svc, "_gather_evidence", new=AsyncMock(return_value={})),
+        patch.object(svc, "_propose_target", new=AsyncMock(return_value="Generated description")),
+    ):
+        result = await svc.run(_DATASET_URN, dry_run=True)
+
+    assert isinstance(result, MetagenResultRecord)
+    assert result.dataset_urn == _DATASET_URN
 
 
 # ── list_metagen — cross-dataset ──────────────────────────────────────────────

@@ -537,6 +537,13 @@ class OntogenService:
         """Inner run logic (called inside the SETNX guard)."""
         # Step 2: Load conf and resolve one-shot prompt
         conf = await self.get_conf()
+
+        if not conf.is_enabled and not dry_run:
+            raise ConflictError(
+                "ONTOGEN_DISABLED",
+                "Ontogen is disabled; only dry-run is permitted",
+            )
+
         effective_prompt = prompt_md or conf.default_run_prompt
 
         # Step 3: Enumerate datasets matching dataset_filter

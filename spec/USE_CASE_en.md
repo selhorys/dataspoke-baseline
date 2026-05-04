@@ -109,6 +109,8 @@ A coding agent verifies connectivity before turning the schedule on:
 POST .../method/ingestion/run    { "dry_run": true }
 ```
 
+Dry-run is also the only way to exercise `method/ingestion/run` while `is_enabled=false`; non-dry-run calls return `409 INGESTION_DISABLED`.
+
 After the daily Airflow tier DAG runs, the team reads the per-dataset event history:
 
 ```http
@@ -134,8 +136,9 @@ No `schedule_tier`. DataSpoke does not run an extractor. The external data pipel
 Airflow DAG outside DataSpoke) emits the schema and properties to DataHub directly.
 
 Every hour, DataSpoke's `ingestion-passive-hourly` DAG polls DataHub for ingestion
-runs of all passive-marked datasets and writes one row per run to the events table.
-Imazon reads them through the same API:
+runs of all passive-marked datasets with `is_enabled=true` and writes one row per run
+to the events table. Passive configs with `is_enabled=false` are skipped by the hourly
+status sync. Imazon reads them through the same API:
 
 ```http
 GET .../event/ingestion?from=…&to=…
@@ -254,6 +257,8 @@ GET .../attr/validation/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 
 **Cross-dataset overview.** Ops teams browse `GET /spoke/common/validation` to see
 per-dataset latest pass/fail.
+
+When `is_enabled=false`, non-dry-run calls to `method/validation/run` return `409 VALIDATION_DISABLED`. Dry-run (`dry_run: true`) is always permitted regardless of `is_enabled`.
 
 ---
 
@@ -471,6 +476,8 @@ After approval, each node lands in DataHub as a glossary term attached to its me
 datasets, and each approved triple becomes a glossary-term relationship between the
 subject and object terms — DataHub remains the SSOT for the resulting vocabulary.
 
+When `is_enabled=false`, non-dry-run calls to `method/run` return `409 ONTOGEN_DISABLED`. Dry-run (`?dry_run=true`) is always permitted regardless of `is_enabled`.
+
 ---
 
 ## UC4: Metadata Generation
@@ -618,6 +625,8 @@ The team can then watch the proposal lifecycle:
 GET .../event/metagen
 ```
 
+When `is_enabled=false`, non-dry-run calls to `method/metagen/run` return `409 GENERATION_DISABLED`. Dry-run is always permitted regardless of `is_enabled`.
+
 ---
 
 ## UC5: Governance
@@ -726,3 +735,5 @@ GET /api/v1/spoke/dg/overview
 `orders.line_items`, `customers.profiles`, `orders.shipments`, and `orders.events` by
 their freshness and validation status, alongside any blind spots — datasets visible in
 DataHub that have not yet been mapped to a UC3 node.
+
+When `is_enabled=false`, non-dry-run calls to `method/run` on a metric return `409 METRIC_DISABLED`. Dry-run (`dry_run: true`) is always permitted regardless of `is_enabled`.

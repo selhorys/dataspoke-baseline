@@ -149,6 +149,61 @@ async def test_uc1_active_and_passive_ingestion(
             f"{run_body['status']!r}"
         )
 
+        # ── Step 2a: Real run while disabled → 409 INGESTION_DISABLED ──────────
+        # spec: BACKEND.md §Ingestion Service — non-dry-run is rejected with
+        # 409 INGESTION_DISABLED when is_enabled=false.
+        # spec: USE_CASE_en.md §UC1 — dry-run is the only way to exercise
+        # method/ingestion/run while is_enabled=false.
+        disabled_run_resp = await api_client.post(
+            active_run_url,
+            headers=admin_headers,
+            json={"dry_run": False},
+        )
+        assert disabled_run_resp.status_code == 409, (
+            f"Expected 409 INGESTION_DISABLED when is_enabled=false, "
+            f"got {disabled_run_resp.status_code}: {disabled_run_resp.text}"
+        )
+        disabled_run_body = disabled_run_resp.json()
+        assert disabled_run_body.get("error_code") == "INGESTION_DISABLED", (
+            f"Expected error_code='INGESTION_DISABLED'; got {disabled_run_body.get('error_code')!r}. "
+            "spec: USE_CASE_en.md §UC1 — non-dry-run calls return 409 INGESTION_DISABLED"
+        )
+
+        # ── Step 2b: Enable conf, real run succeeds ──────────────────────────
+        # spec: USE_CASE_en.md §UC1 — after PATCH is_enabled=true, run proceeds.
+        enable_resp = await api_client.patch(
+            active_conf_url,
+            headers=admin_headers,
+            json={"is_enabled": True},
+        )
+        assert enable_resp.status_code == 200, (
+            f"PATCH is_enabled=true failed: {enable_resp.status_code} {enable_resp.text}"
+        )
+
+        enabled_run_resp = await api_client.post(
+            active_run_url,
+            headers=admin_headers,
+            json={"dry_run": False},
+        )
+        assert enabled_run_resp.status_code == 200, (
+            f"Expected 200 after enabling conf; got {enabled_run_resp.status_code}: "
+            f"{enabled_run_resp.text}"
+        )
+        # spec: USE_CASE_en.md §UC1 — response carries run_id and status
+        enabled_run_body = enabled_run_resp.json()
+        assert "run_id" in enabled_run_body, "enabled real-run response must carry run_id"
+        assert "status" in enabled_run_body, "enabled real-run response must carry status"
+
+        # Restore is_enabled=false so the rest of the test continues with the original state.
+        restore_resp = await api_client.patch(
+            active_conf_url,
+            headers=admin_headers,
+            json={"is_enabled": False},
+        )
+        assert restore_resp.status_code == 200, (
+            f"PATCH restore is_enabled=false failed: {restore_resp.status_code} {restore_resp.text}"
+        )
+
         # ── Step 3: Event history query on active dataset ────────────────────
         # UC1 narrative: "After the daily Airflow tier DAG runs, the team reads
         # the per-dataset event history."

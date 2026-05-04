@@ -209,8 +209,16 @@ async def post_metric_run(
     body: RunMetricRequest,
     airflow: AirflowClient = Depends(get_airflow_client),
     cache: RedisClient = Depends(get_redis),
+    service: MetricsService = Depends(get_metrics_service),
 ) -> MetricRunResultResponse:
     """Trigger a metric measurement run; concurrent runs return 409 METRIC_RUNNING."""
+    definition = await service.get_metric(metric_id)
+    if not definition.is_enabled and not body.dry_run:
+        raise ConflictError(
+            "METRIC_DISABLED",
+            f"Metric {metric_id} is disabled; only dry-run is permitted",
+        )
+
     workflow_id = f"metrics-{metric_id}"
     lock_key = f"metrics:running:{metric_id}"
     lock_token = secrets.token_urlsafe(16)

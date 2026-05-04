@@ -9,6 +9,8 @@ Exception-to-HTTP mapping (per spec/feature/BACKEND.md §Error Handling):
                                  | NODE_NOT_FOUND | EDGE_NOT_FOUND | TRIPLE_NOT_FOUND
   ConflictError         → 409  DUPLICATE_CONFIG | INGESTION_RUNNING | VALIDATION_RUNNING
                                  | GENERATION_RUNNING | METRIC_RUNNING | ONTOGEN_RUNNING
+                                 | INGESTION_DISABLED | VALIDATION_DISABLED
+                                 | GENERATION_DISABLED | METRIC_DISABLED | ONTOGEN_DISABLED
   DataHubUnavailableError → 502  DATAHUB_UNAVAILABLE
   StorageUnavailableError → 503  STORAGE_UNAVAILABLE
   ValidationError (Pydantic) → 422  INVALID_PARAMETER | INVALID_DATASET_URN
@@ -63,6 +65,11 @@ class ConflictError(DataSpokeError):
       GENERATION_RUNNING    — concurrent metadata-generation run for the dataset
       METRIC_RUNNING        — concurrent metric measurement
       ONTOGEN_RUNNING       — ontogen singleton inference already in progress
+      INGESTION_DISABLED    — ingestion conf has is_enabled=false; only dry-run permitted
+      VALIDATION_DISABLED   — validation conf has is_enabled=false; only dry-run permitted
+      GENERATION_DISABLED   — metagen conf has is_enabled=false; only dry-run permitted
+      METRIC_DISABLED       — metric definition has is_enabled=false; only dry-run permitted
+      ONTOGEN_DISABLED      — ontogen conf has is_enabled=false; only dry-run permitted
     """
 
     def __init__(self, error_code: str, message: str = "") -> None:

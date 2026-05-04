@@ -263,6 +263,86 @@ async def test_run_raises_conflict_when_lock_held(svc: OntogenService, cache: As
     assert exc_info.value.error_code == "ONTOGEN_RUNNING"
 
 
+@pytest.mark.asyncio
+async def test_run_rejects_non_dry_run_when_disabled(svc: OntogenService, db: AsyncMock, cache: AsyncMock) -> None:
+    """Non-dry-run raises ConflictError('ONTOGEN_DISABLED') when singleton conf is disabled.
+
+    spec: BACKEND.md §Ontology Generation Service — is_enabled=false rejects
+    non-dry-run with 409 ONTOGEN_DISABLED.
+    spec: USE_CASE_en.md §UC3 — "When is_enabled=false, non-dry-run calls to
+    method/run return 409 ONTOGEN_DISABLED. Dry-run is always permitted
+    regardless of is_enabled." (L479)
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = False
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+    conf.max_manual_queries_per_dataset = 20
+    conf.max_system_queries_per_dataset = 10
+    mock_scalar_query(db, conf)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await svc.run(dry_run=False)
+
+    assert exc_info.value.error_code == "ONTOGEN_DISABLED"
+
+
+@pytest.mark.asyncio
+async def test_run_allows_dry_run_when_disabled(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock, llm: AsyncMock
+) -> None:
+    """Dry-run bypasses the disabled guard and returns OntogenRunSummary.
+
+    spec: BACKEND.md §Ontology Generation Service — dry_run=True is always
+    permitted regardless of is_enabled.
+    spec: USE_CASE_en.md §UC3 (disabled gate mirrors UC1 pattern)
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = False
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+    conf.max_manual_queries_per_dataset = 20
+    conf.max_system_queries_per_dataset = 10
+
+    def make_result(scalar_val=None, scalars_val=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_val
+        ms = MagicMock()
+        ms.all.return_value = scalars_val or []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    db.execute = AsyncMock(side_effect=[
+        conf_result,
+        make_result(scalars_val=[]),
+        make_result(scalars_val=[]),
+        make_result(scalars_val=[]),
+        make_result(scalars_val=[]),
+    ])
+
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+    llm.complete_json = AsyncMock(return_value={"nodes": [], "edges": [], "triples": []})
+    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
+        summary = await svc.run(dry_run=True)
+
+    assert isinstance(summary, OntogenRunSummary)
+    assert summary.dry_run is True
+
+
 # ── dry_run happy path ────────────────────────────────────────────────────────
 
 

@@ -278,12 +278,17 @@ class IngestionService:
         return list(result.scalars().all())
 
     async def list_passive_configs(self) -> list[IngestionConfigRecord]:
-        """Return all mode='passive' configs (any is_enabled state).
+        """Return all mode='passive' configs (only `is_enabled=True`).
 
         Used by sync_passive_status() and the passive-hourly DAG.
+        Configs with is_enabled=False are skipped so the hourly status sync
+        ignores disabled passive configs.
         """
         result = await self._db.execute(
-            select(IngestionConfig).where(IngestionConfig.mode == "passive")
+            select(IngestionConfig).where(
+                IngestionConfig.mode == "passive",
+                IngestionConfig.is_enabled.is_(True),
+            )
         )
         return [_record_from_row(r) for r in result.scalars().all()]
 
@@ -328,6 +333,12 @@ class IngestionService:
         config = await self.get_config(dataset_urn)
         if config is None:
             raise EntityNotFoundError("config", dataset_urn)
+
+        if not config.is_enabled and not dry_run:
+            raise ConflictError(
+                "INGESTION_DISABLED",
+                f"Ingestion is disabled for {dataset_urn}; only dry-run is permitted",
+            )
 
         ingestion_result = await run_datahub_ingestion(
             datahub=self._datahub,

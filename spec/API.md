@@ -196,7 +196,7 @@ nodes → edges → triples.
 | `GET` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Get seed Markdown document (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
 | `PATCH` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Replace seed Markdown body (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
 | `DELETE` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Retire a seed | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING`. Rejected with `409 ONTOGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/node/{node_id}` | Get node detail (incl. member datasets) | Ontology Generation | UC3 |
@@ -241,14 +241,14 @@ configurations.
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Control | UC1 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Control | UC1 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Control | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING`. Rejected with `409 INGESTION_DISABLED` when the conf is disabled and `dry_run` is not true | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports (success/failure notices) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | Validation | UC2, UC5 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents); concurrent runs return `409 VALIDATION_RUNNING` | Validation | UC2 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents); concurrent runs return `409 VALIDATION_RUNNING`. Rejected with `409 VALIDATION_DISABLED` when the conf is disabled and `dry_run` is not true | Validation | UC2 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, schedule_tier, status) | Metadata Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace metadata generation configuration | Metadata Generation | UC4 |
@@ -256,7 +256,7 @@ configurations.
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove metadata generation configuration | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/result` | Get metadata proposals (historical; `?latest=true` for most recent only; `?approved=true` to filter to approved proposals) | Metadata Generation | UC4 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/result/{result_id}` | Approve (or reject, or partially approve specific fields of) a pending metadata proposal — body: `{"verdict": "approve"\|"reject", "fields": [...] (optional, omit for full approval), "reason": "…"}`. On approval, DataSpoke writes the approved subset to DataHub. | Metadata Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/metagen/run` | Trigger metadata generation run; concurrent runs return `409 GENERATION_RUNNING` | Metadata Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/method/metagen/run` | Trigger metadata generation run; concurrent runs return `409 GENERATION_RUNNING`. Rejected with `409 GENERATION_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Metadata generation event reports (success/failure notices) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation, and metagen) | Data Resource | — |
 
@@ -380,7 +380,7 @@ apply to UC3's `ontogen/attr/conf.dataset_filter` (reported via `ONTOGEN.RUN_COM
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Governance | UC5 |
-| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING` | Governance | UC5 |
+| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
 
 #### Overview (`/spoke/dg/overview`)
@@ -620,10 +620,15 @@ response, matching the success envelope.
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
 | `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
+| `INGESTION_DISABLED` | 409 | Ingestion conf has `is_enabled=false`; non-dry-run rejected |
 | `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |
+| `VALIDATION_DISABLED` | 409 | Validation conf has `is_enabled=false`; non-dry-run rejected |
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
+| `GENERATION_DISABLED` | 409 | Metagen conf has `is_enabled=false`; non-dry-run rejected |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
+| `METRIC_DISABLED` | 409 | Metric definition has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
+| `ONTOGEN_DISABLED` | 409 | Ontogen conf has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for both `ontogen/attr/conf` and `metric/{id}/attr/conf` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |

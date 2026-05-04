@@ -4,6 +4,7 @@ spec: BACKEND.md §Ingestion Service (§Feature Services)
 spec: BACKEND.md §Active run pipeline L195-L204
 """
 
+import re
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -268,7 +269,7 @@ async def test_run_success(service, db):
     # spec: BACKEND.md §Active run pipeline L195-L204:
     #   "on success mark dataset_registry.datahub_registered = true via mark_registered()"
     #   "record INGESTION.COMPLETE event"
-    config_row = _make_config_row()
+    config_row = _make_config_row(is_enabled=True)
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
@@ -329,7 +330,7 @@ async def test_run_dry_run(service, db):
 
 
 async def test_run_ingestion_error(service, db):
-    config_row = _make_config_row()
+    config_row = _make_config_row(is_enabled=True)
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
@@ -360,7 +361,7 @@ async def test_run_zero_entities_non_dry_run_fails(service, db):
     entities is treated as failure" L200-L201
     """
     # spec: BACKEND.md §Active run pipeline L200-L201
-    config_row = _make_config_row()
+    config_row = _make_config_row(is_enabled=True)
     mock_scalar_query(db, config_row)
     mock_db_refresh(db)
 
@@ -392,6 +393,90 @@ async def test_run_config_not_found(service, db):
     assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
+async def test_run_rejects_non_dry_run_when_disabled(service, db):
+    """Non-dry-run against a disabled config raises ConflictError('INGESTION_DISABLED').
+
+    spec: BACKEND.md §Ingestion Service — is_enabled=false rejects non-dry-run
+    with 409 INGESTION_DISABLED.
+    spec: USE_CASE_en.md §UC1 — "non-dry-run calls return 409 INGESTION_DISABLED"
+    (L112: "Dry-run is also the only way to exercise method/ingestion/run while
+    is_enabled=false; non-dry-run calls return 409 INGESTION_DISABLED.")
+    """
+    config_row = _make_config_row(is_enabled=False)
+    mock_scalar_query(db, config_row)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.run(_DATASET_URN, dry_run=False)
+
+    assert exc_info.value.error_code == "INGESTION_DISABLED"
+
+
+async def test_run_allows_dry_run_when_disabled(service, db):
+    """Dry-run bypasses the disabled guard and returns an IngestionRunResult.
+
+    spec: BACKEND.md §Ingestion Service — dry_run=True is always permitted
+    regardless of is_enabled.
+    spec: USE_CASE_en.md §UC1 L106-L110
+    """
+    config_row = _make_config_row(is_enabled=False)
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    from src.backend.ingestion.extractors import IngestionResult
+    from src.backend.ingestion.service import IngestionRunResult
+
+    with patch(
+        "src.backend.ingestion.service.run_datahub_ingestion",
+        new=AsyncMock(
+            return_value=IngestionResult(entities_ingested=0, errors=[], warnings=[])
+        ),
+    ):
+        result = await service.run(_DATASET_URN, dry_run=True)
+
+    assert isinstance(result, IngestionRunResult)
+    assert result.detail["dry_run"] is True
+
+
+async def test_list_passive_configs_excludes_disabled(service, db):
+    """list_passive_configs() WHERE clause filters on is_enabled=True.
+
+    Verifies the compiled SQL — removing the is_enabled filter from the impl
+    must make this test fail.
+
+    spec: BACKEND.md §Ingestion passive status-sync — enumerate all configs with
+    mode='passive' AND is_enabled=True.
+    spec: USE_CASE_en.md §UC1 — passive sync skips disabled configs (L140
+    "Passive configs with is_enabled=false are skipped by the hourly sync")
+    """
+    from sqlalchemy import true
+
+    # Capture the statement passed to db.execute by intercepting the call.
+    captured: list = []
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = []
+
+    async def _capture_and_return(stmt, *args, **kwargs):
+        captured.append(stmt)
+        return result_mock
+
+    db.execute = _capture_and_return
+
+    await service.list_passive_configs()
+
+    assert captured, "db.execute was never called"
+    stmt = captured[0]
+
+    # Compile the statement with literal binds so the WHERE clause is fully visible.
+    compiled = stmt.compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+
+    # The WHERE clause must constrain is_enabled to true. Anchored regex avoids
+    # false-positives from is_enabled appearing in the SELECT column list.
+    assert re.search(r"is_enabled\s+(IS|=)\s+true", sql, re.IGNORECASE), (
+        f"Expected 'is_enabled IS true' (or '= true') in WHERE clause; got: {sql}"
+    )
+
+
 # ── Redis SETNX concurrency guard ─────────────────────────────────────────────
 
 
@@ -409,7 +494,7 @@ async def test_run_redis_setnx_acquired_then_released(service_with_cache, db, ca
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
-    config_row = _make_config_row()
+    config_row = _make_config_row(is_enabled=True)
     mock_scalar_query(db, config_row)
 
     from src.backend.ingestion.extractors import IngestionResult

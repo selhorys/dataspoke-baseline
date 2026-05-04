@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.backend.metrics.service import MetricsService
-from src.shared.exceptions import EntityNotFoundError, PreconditionFailedError
+from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
 from tests.unit.backend.conftest import (
     make_event_row,
     make_metric_breakdown_row,
@@ -613,6 +613,61 @@ async def test_dataset_filter_or_semantics(service, db, datahub):
         f"EXPLICIT_URN '{_EXPLICIT_URN}' missing from persisted breakdown.datasets. "
         "Spec: BACKEND.md §Metrics Service L447-L451."
     )
+
+
+# ── is_enabled=false disabled guard ──────────────────────────────────────────
+
+
+async def test_run_rejects_non_dry_run_when_disabled(service, db, datahub):
+    """Non-dry-run against a disabled metric raises ConflictError('METRIC_DISABLED').
+
+    spec: BACKEND.md §Metrics Service — is_enabled=false rejects non-dry-run
+    with 409 METRIC_DISABLED.
+    spec: USE_CASE_en.md §UC5 — "When is_enabled=false, non-dry-run calls to
+    method/run on a metric return 409 METRIC_DISABLED. Dry-run is always
+    permitted regardless of is_enabled." (L739)
+    """
+    def_row = _make_definition_row(
+        metric_id="ingestion-freshness",
+        is_enabled=False,
+    )
+
+    def_result = MagicMock()
+    def_result.scalar_one_or_none.return_value = def_row
+    db.execute = AsyncMock(return_value=def_result)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.run("ingestion-freshness", dry_run=False)
+
+    assert exc_info.value.error_code == "METRIC_DISABLED"
+
+
+async def test_run_allows_dry_run_when_disabled(service, db, datahub):
+    """Dry-run bypasses the disabled guard and returns a MetricRunResult.
+
+    spec: BACKEND.md §Metrics Service — dry_run=True is always permitted
+    regardless of is_enabled.
+    spec: USE_CASE_en.md §UC5 (disabled gate mirrors UC1 pattern)
+    """
+    def_row = _make_definition_row(
+        metric_id="ingestion-freshness",
+        measurement_query={"aggregation": "pct_fresh"},
+        is_enabled=False,
+    )
+
+    def_result = MagicMock()
+    def_result.scalar_one_or_none.return_value = def_row
+
+    datahub.enumerate_datasets = AsyncMock(return_value=["urn:li:dataset:1"])
+    event_result = MagicMock()
+    event_result.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(side_effect=[def_result, event_result])
+
+    result = await service.run("ingestion-freshness", dry_run=True)
+
+    assert result.status == "success"
+    assert result.detail["dry_run"] is True
+    assert db.commit.await_count == 0
 
 
 # ── No activate / deactivate methods ─────────────────────────────────────────

@@ -222,7 +222,7 @@ Ingestion config model: see
 takes effect on the next periodic tier sweep; the previously-scheduled active runs are not
 cancelled retroactively but no new active runs are scheduled. Switching `passive` → `active`
 requires the standard active-mode fields (`schedule_tier`, `locator`/`auth`) to be populated.
-`method/run` is rejected (`422 INVALID_PARAMETER`) for `passive` configs.
+`method/run` is rejected (`422 INVALID_PARAMETER`) for `passive` configs; for `active` configs with `is_enabled=false` it is rejected (`409 INGESTION_DISABLED`) unless `dry_run=true`.
 
 **Auth resolution**: the `auth` field carries a structured `secret_ref: {name, key}` that
 points at a Kubernetes Secret in DataSpoke's own namespace. On PUT, callers either supply
@@ -245,11 +245,12 @@ can distinguish them; see [Event Catalogue](#event-catalogue)).
 
 **Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
 called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with
-`mode = passive` → for each, query DataHub for ingestion run history of the dataset URN
-→ insert any new runs as rows in the unified `events` table with
-`event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the active path's event
-shape so clients see a uniform stream). No aspects are emitted; the registry's
-`datahub_registered` flag is reconciled by the existing `datahub-sync-daily` DAG.
+`mode = passive` AND `is_enabled = true` → for each, query DataHub for ingestion run
+history of the dataset URN → insert any new runs as rows in the unified `events` table
+with `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the active path's
+event shape so clients see a uniform stream). Passive configs with `is_enabled=false`
+are skipped. No aspects are emitted; the registry's `datahub_registered` flag is
+reconciled by the existing `datahub-sync-daily` DAG.
 
 ### Validation Service (`src/backend/validation/`)
 
@@ -288,6 +289,9 @@ source SQL for `custom/sql_timeseries`, running `ml_validation` against historic
 when configured) → register `assertionInfo` in DataHub if absent → report each rule's
 `assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` → record
 `VALIDATION.COMPLETE` event.
+
+**Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
+raises `409 VALIDATION_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
 
 ### Metadata Generation Service (`src/backend/metagen/`)
 
@@ -337,6 +341,9 @@ of actions, each independently approvable:
 On approval, the service writes the approved subset to the editable DataHub aspects in a
 single `emit_mcp` per affected entity. Each successful write emits a `METAGEN.APPROVE`
 event; rejections emit `METAGEN.REJECT` (see [Event Catalogue](#event-catalogue)).
+
+**Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
+raises `409 GENERATION_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
 
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
@@ -440,6 +447,9 @@ or manual `POST /method/run`):
 Concurrent inference runs return `409 ONTOGEN_RUNNING`; `?dry_run=true` evaluates
 steps 2–8 without persisting.
 
+**Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
+raises `409 ONTOGEN_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
+
 **Approval flow**. Each result type uses `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
 with `{verdict, reason}`:
 
@@ -503,6 +513,11 @@ per-dataset entry shape:
 (e.g. `{"last_event_at": "..."}` for ingestion-freshness, `{"rule_id": "fresh_daily",
 "failed": 1, "total": 4}` for validation-score). Time-range queries on `attr/result` use
 the breakdown to answer per-dataset historical questions without re-running the metric.
+
+**Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
+raises `409 METRIC_DISABLED`. This check is enforced both in `MetricsService._run_inner()`
+and at the route layer in `post_metric_run()` (which bypasses `MetricsService.run()` to
+call Airflow directly). Dry-run is permitted regardless of `is_enabled`.
 
 ### Overview Service (`src/backend/overview/`)
 
@@ -743,7 +758,7 @@ failures.
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `VALIDATION_DISABLED`, `GENERATION_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |
