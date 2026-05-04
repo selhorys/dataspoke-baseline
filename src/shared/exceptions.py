@@ -59,17 +59,18 @@ class ConflictError(DataSpokeError):
     """Raised when an operation conflicts with current state (HTTP 409).
 
     Valid error_code values:
-      DUPLICATE_CONFIG      — attempt to create a config that already exists
-      INGESTION_RUNNING     — concurrent active ingestion run for the dataset
-      VALIDATION_RUNNING    — concurrent validation run for the dataset
-      GENERATION_RUNNING    — concurrent metadata-generation run for the dataset
-      METRIC_RUNNING        — concurrent metric measurement
-      ONTOGEN_RUNNING       — ontogen singleton inference already in progress
-      INGESTION_DISABLED    — ingestion conf has is_enabled=false; only dry-run permitted
-      VALIDATION_DISABLED   — validation conf has is_enabled=false; only dry-run permitted
-      GENERATION_DISABLED   — metagen conf has is_enabled=false; only dry-run permitted
-      METRIC_DISABLED       — metric definition has is_enabled=false; only dry-run permitted
-      ONTOGEN_DISABLED      — ontogen conf has is_enabled=false; only dry-run permitted
+      DUPLICATE_CONFIG         — attempt to create a config that already exists
+      INGESTION_RUNNING        — concurrent active ingestion run for the dataset
+      VALIDATION_RUNNING       — concurrent validation run for the dataset
+      GENERATION_RUNNING       — concurrent metadata-generation run for the dataset
+      METRIC_RUNNING           — concurrent metric measurement
+      ONTOGEN_RUNNING          — ontogen singleton inference already in progress
+      INGESTION_DISABLED       — ingestion conf has is_enabled=false; only dry-run permitted
+      INGESTION_NOT_APPLICABLE — method/run called on a passive config; run externally
+      VALIDATION_DISABLED      — validation conf has is_enabled=false; only dry-run permitted
+      GENERATION_DISABLED      — metagen conf has is_enabled=false; only dry-run permitted
+      METRIC_DISABLED          — metric definition has is_enabled=false; only dry-run permitted
+      ONTOGEN_DISABLED         — ontogen conf has is_enabled=false; only dry-run permitted
     """
 
     def __init__(self, error_code: str, message: str = "") -> None:

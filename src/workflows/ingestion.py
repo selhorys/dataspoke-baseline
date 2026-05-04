@@ -48,6 +48,7 @@ async def get_datasets_for_tier(db: Any, tier: str) -> list[str]:
         select(IngestionConfig.dataset_urn).where(
             IngestionConfig.is_enabled == True,  # noqa: E712
             IngestionConfig.schedule_tier == tier,
+            IngestionConfig.mode == "active-custom",
         )
     )
     return [row[0] for row in result.all()]

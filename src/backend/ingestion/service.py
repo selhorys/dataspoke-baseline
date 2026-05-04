@@ -5,10 +5,22 @@ Spec: spec/feature/BACKEND.md §Ingestion Service
 
 import logging
 import secrets
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from datahub.metadata.schema_classes import (
+    AuditStampClass,
+    DataProcessInstanceOutputClass,
+    DataProcessInstancePropertiesClass,
+    DataProcessInstanceRelationshipsClass,
+    DataProcessInstanceRunEventClass,
+    DataProcessInstanceRunResultClass,
+    DataProcessRunStatusClass,
+    DataProcessTypeClass,
+    RunResultTypeClass,
+)
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -264,14 +276,14 @@ class IngestionService:
         return [_record_from_row(r) for r in rows], total_count
 
     async def list_active_for_tier(self, tier: str) -> list[str]:
-        """Return dataset URNs where is_enabled=True, mode='active', and schedule_tier matches.
+        """Return dataset URNs where is_enabled=True, mode='active-custom', and schedule_tier matches.
 
         Used by the ingestion-active-{hourly,daily,weekly} DAGs.
         """
         result = await self._db.execute(
             select(IngestionConfig.dataset_urn).where(
                 IngestionConfig.is_enabled.is_(True),
-                IngestionConfig.mode == "active",
+                IngestionConfig.mode == "active-custom",
                 IngestionConfig.schedule_tier == tier,
             )
         )
@@ -334,34 +346,122 @@ class IngestionService:
         if config is None:
             raise EntityNotFoundError("config", dataset_urn)
 
+        if config.mode != "active-custom":
+            raise ConflictError(
+                "INGESTION_NOT_APPLICABLE",
+                f"method/ingestion/run is only valid for active-custom configs; "
+                f"{dataset_urn} has mode={config.mode}. "
+                f"Passive ingestion is run externally — see "
+                f"BACKEND.md §Custom Ingestor Authoring Contract.",
+            )
+
         if not config.is_enabled and not dry_run:
             raise ConflictError(
                 "INGESTION_DISABLED",
                 f"Ingestion is disabled for {dataset_urn}; only dry-run is permitted",
             )
 
-        ingestion_result = await run_datahub_ingestion(
-            datahub=self._datahub,
-            platform=config.platform,
-            locator=config.locator,
-            identifier=config.identifier,
-            auth=config.auth,
-            dataset_urn=dataset_urn,
-            dry_run=dry_run,
-        )
+        dpi_urn = f"urn:li:dataProcessInstance:{config.platform}-{run_id}"
+        start_ms = int(time.time() * 1000)
 
-        errors = ingestion_result.errors
-        warnings = ingestion_result.warnings
+        if not dry_run:
+            await self._datahub.emit_aspect(
+                dpi_urn,
+                DataProcessInstancePropertiesClass(
+                    name=f"dataspoke-{config.platform}-{run_id}",
+                    type=DataProcessTypeClass.BATCH_SCHEDULED,
+                    created=AuditStampClass(time=start_ms, actor="urn:li:corpuser:dataspoke"),
+                ),
+            )
+            await self._datahub.emit_aspect(
+                dpi_urn,
+                DataProcessInstanceRelationshipsClass(
+                    upstreamInstances=[],
+                    parentTemplate=None,
+                ),
+            )
+            await self._datahub.emit_aspect(
+                dpi_urn,
+                DataProcessInstanceOutputClass(outputs=[dataset_urn]),
+            )
+            await self._datahub.emit_aspect(
+                dpi_urn,
+                DataProcessInstanceRunEventClass(
+                    status=DataProcessRunStatusClass.STARTED,
+                    timestampMillis=start_ms,
+                ),
+            )
 
-        # A real (non-dry-run) ingestion that produced zero entities is a failure
-        if not dry_run and ingestion_result.entities_ingested == 0 and not errors:
-            errors = list(warnings) or ["No entities ingested from source"]
+        try:
+            ingestion_result = await run_datahub_ingestion(
+                datahub=self._datahub,
+                platform=config.platform,
+                locator=config.locator,
+                identifier=config.identifier,
+                auth=config.auth,
+                dataset_urn=dataset_urn,
+                dry_run=dry_run,
+            )
 
-        status = "error" if errors else "success"
+            errors = ingestion_result.errors
+            warnings = ingestion_result.warnings
 
-        if status == "success" and not dry_run:
-            await mark_registered(self._db, dataset_urn)
-            await self._db.commit()
+            # A real (non-dry-run) ingestion that produced zero entities is a failure
+            if not dry_run and ingestion_result.entities_ingested == 0 and not errors:
+                errors = list(warnings) or ["No entities ingested from source"]
+
+            status = "error" if errors else "success"
+
+            if status == "success" and not dry_run:
+                await mark_registered(self._db, dataset_urn)
+                await self._db.commit()
+
+        except Exception as exc:
+            if not dry_run:
+                end_ms = int(time.time() * 1000)
+                try:
+                    await self._datahub.emit_aspect(
+                        dpi_urn,
+                        DataProcessInstanceRunEventClass(
+                            status=DataProcessRunStatusClass.COMPLETE,
+                            timestampMillis=end_ms,
+                            result=DataProcessInstanceRunResultClass(
+                                type=RunResultTypeClass.FAILURE,
+                                nativeResultType="exception",
+                            ),
+                            durationMillis=end_ms - start_ms,
+                        ),
+                    )
+                except Exception:
+                    # Best-effort terminal emission; never let the failure path raise its own error.
+                    logger.exception(
+                        "Failed to emit DPI FAILURE terminal event after extractor exception"
+                    )
+                await self._record_event(
+                    dataset_urn,
+                    INGESTION_FAIL,
+                    "error",
+                    {"run_id": run_id, "platform": config.platform, "exception": str(exc)},
+                )
+            raise
+
+        if not dry_run:
+            end_ms = int(time.time() * 1000)
+            result_type = (
+                RunResultTypeClass.SUCCESS if status == "success" else RunResultTypeClass.FAILURE
+            )
+            await self._datahub.emit_aspect(
+                dpi_urn,
+                DataProcessInstanceRunEventClass(
+                    status=DataProcessRunStatusClass.COMPLETE,
+                    timestampMillis=end_ms,
+                    result=DataProcessInstanceRunResultClass(
+                        type=result_type,
+                        nativeResultType="dataspoke",
+                    ),
+                    durationMillis=end_ms - start_ms,
+                ),
+            )
 
         detail: dict[str, Any] = {
             "run_id": run_id,

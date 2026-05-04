@@ -14,7 +14,7 @@ from src.shared.models.ingestion import (
 )
 
 _VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
-_VALID_MODES = frozenset({"active", "passive"})
+_VALID_MODES = frozenset({"active-custom", "passive"})
 
 
 # ── Auth sub-models ───────────────────────────────────────────────────────────
@@ -81,11 +81,13 @@ class AuthSpec(BaseModel):
 
 
 class CreateIngestionConfigRequest(BaseModel):
-    mode: Literal["active", "passive"] = Field(
-        default="active",
+    mode: Literal["active-custom", "passive"] = Field(
+        default="active-custom",
         description=(
-            "Ingestion mode: 'active' (DataSpoke runs on schedule_tier) "
-            "or 'passive' (external pipeline; DataSpoke mirrors run history)."
+            "Ingestion mode: 'active-custom' (DataSpoke's in-house extractor runs on "
+            "schedule_tier, handling connectivity and auth) or 'passive' (external "
+            "pipeline or DataHub Managed Ingestion handles connectivity/auth out-of-band; "
+            "DataSpoke mirrors run history)."
         ),
     )
     platform: Platform = Field(
@@ -120,17 +122,21 @@ class CreateIngestionConfigRequest(BaseModel):
     )
     is_enabled: bool = Field(
         default=False,
-        description="Whether the ingestion config is enabled and scheduled to run (active mode only)",
+        description="Whether the ingestion config is enabled and scheduled to run (active-custom mode only)",
     )
     schedule_tier: str | None = Field(
         default=None,
-        description="Schedule tier for periodic active-mode runs: 'hourly', 'daily', or 'weekly'. Required when is_enabled is true.",
+        description=(
+            "Schedule tier for periodic active-custom-mode runs: 'hourly', 'daily', or 'weekly'. "
+            "Required when mode is 'active-custom' and is_enabled is true; "
+            "must not be set for passive mode."
+        ),
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "mode": "active",
+                "mode": "active-custom",
                 "platform": "postgres",
                 "locator": {"host": "db.example.com", "port": 5432},
                 "identifier": {"database": "mydb", "schema_name": "public", "table": "orders"},
@@ -155,9 +161,9 @@ class CreateIngestionConfigRequest(BaseModel):
     def validate_fields(self) -> "CreateIngestionConfigRequest":
         if self.mode == "passive" and self.schedule_tier is not None:
             raise ValueError("schedule_tier is not allowed for passive mode")
-        if self.mode == "active" and self.is_enabled and not self.schedule_tier:
+        if self.mode == "active-custom" and self.is_enabled and not self.schedule_tier:
             raise ValueError(
-                "schedule_tier is required when is_enabled is true and mode is active"
+                "schedule_tier is required when is_enabled is true and mode is active-custom"
             )
         # Pass only the persisted shape (username + secret_ref without force_overwrite)
         # so that CredentialAuth (extra="forbid") does not reject transient API fields.
@@ -176,8 +182,8 @@ class CreateIngestionConfigRequest(BaseModel):
 
 
 class PatchIngestionConfigRequest(BaseModel):
-    mode: Literal["active", "passive"] | None = Field(
-        default=None, description="Update the ingestion mode ('active' or 'passive')"
+    mode: Literal["active-custom", "passive"] | None = Field(
+        default=None, description="Update the ingestion mode ('active-custom' or 'passive')"
     )
     platform: Platform | None = Field(
         default=None,
@@ -214,10 +220,10 @@ class PatchIngestionConfigRequest(BaseModel):
     def validate_fields(self) -> "PatchIngestionConfigRequest":
         if self.mode == "passive" and self.schedule_tier is not None:
             raise ValueError("schedule_tier is not allowed for passive mode")
-        if self.mode == "active" and self.is_enabled is True and self.schedule_tier is None:
+        if self.mode == "active-custom" and self.is_enabled is True and self.schedule_tier is None:
             raise ValueError(
                 "schedule_tier must be provided in the same patch when setting "
-                "is_enabled to true and mode to active"
+                "is_enabled to true and mode to active-custom"
             )
         if self.mode is None and self.is_enabled is True and self.schedule_tier is None:
             raise ValueError(
@@ -257,8 +263,11 @@ class IngestionConfigResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the ingestion config")
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     mode: str = Field(
-        default="active",
-        description="Ingestion mode: 'active' (DataSpoke-run) or 'passive' (externally-run mirror)",
+        default="active-custom",
+        description=(
+            "Ingestion mode: 'active-custom' (DataSpoke's in-house extractor) or "
+            "'passive' (externally-run; DataSpoke mirrors run history)"
+        ),
     )
     platform: Platform = Field(description="Data platform, e.g. 'postgres'")
     locator: dict[str, Any] = Field(description="Infrastructure location configuration")

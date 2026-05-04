@@ -32,7 +32,7 @@ with DAG(
         "retry_delay": timedelta(seconds=10),
         "execution_timeout": timedelta(minutes=5),
     },
-    tags=["ingestion", "active", _TIER],
+    tags=["ingestion", "active-custom", _TIER],
 ) as dag:
     list_active = HttpOperator(
         task_id="list_active",

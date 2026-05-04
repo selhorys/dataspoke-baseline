@@ -63,7 +63,7 @@ class IngestionListActiveRequest(BaseModel):
 
 @router.post("/ingestion/list-active")
 async def ingestion_list_active(body: IngestionListActiveRequest) -> list[str]:
-    """Return dataset URNs with active-mode ingestion configs matching the given tier."""
+    """Return dataset URNs with active-custom-mode ingestion configs matching the given tier."""
     try:
         async with make_db_session() as db:
             from src.backend.ingestion.service import IngestionService

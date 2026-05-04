@@ -291,7 +291,8 @@ authors.
 | # | Aspect | Notes |
 |---|--------|-------|
 | 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"dataspoke-postgres-<run_id>"`); `type = BATCH_SCHEDULED` |
-| 2 | `DataProcessInstanceRelationships` | `relationships.entities = [<dataset_urn>]`; `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs |
+| 2a | `DataProcessInstanceRelationships` | `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs (DPI-to-DPI lineage; no dataset linkage on this aspect) |
+| 2b | `DataProcessInstanceOutput` | `outputs = [<dataset_urn>]` — the dataset(s) this DPI ingested into. This is what makes the DPI surface in DataHub's `dataset(urn).runs` GraphQL query, which is what DataSpoke's hourly poll consumes. |
 | 3 | `DataProcessInstanceRunEvent` (`status = STARTED`) | Emitted **before** any schema/property aspect work begins on the dataset |
 | 4 | `StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`, … | The actual ingested metadata. Authors emit whatever aspects are appropriate for their source — DPI does not constrain the metadata shape. |
 | 5 | `DataProcessInstanceRunEvent` (`status = COMPLETE`) | Emitted **after** all aspect work is finished. Carry `result.resultType = SUCCESS` for happy-path; `result.resultType = FAILURE` and `result.nativeResultType = <author-specific code>` for failures. |
@@ -319,7 +320,7 @@ script authors should mirror the same call sequence using the `acryl-datahub` Py
 **Authoring checklist** (self-verify before treating an ingestor as "done"):
 
 - [ ] DPI URN is deterministic per logical run (retries reuse the same URN)
-- [ ] `Properties` and `Relationships` aspects are emitted before the first `RunEvent`
+- [ ] `Properties`, `Relationships`, and `Output` aspects are emitted before the first `RunEvent`
 - [ ] STARTED `RunEvent` is emitted before any dataset aspect emission
 - [ ] Terminal `RunEvent` (COMPLETE/FAILED) is emitted after all aspect work, with `result.resultType` set
 - [ ] Failures emit a terminal event (do not let the run hang in STARTED)

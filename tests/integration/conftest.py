@@ -378,6 +378,66 @@ def module_dummy_data(request) -> None:
         _reset_pg_kafka()
 
 
+# ── DataHub actions pod guard ─────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def datahub_actions_pod_required() -> None:
+    """Skip (or fail) when the DataHub actions pod is absent.
+
+    Use as a parameter on tests that rely on DataHub Managed Ingestion execution.
+    Skip behaviour:
+      - kubectl not on PATH or cluster unreachable → skip (environment not set up for this test)
+      - kubectl reachable but no matching pod → skip (actions pod not deployed)
+      - kubectl exits with non-zero status (real error) → raise, not skip
+
+    spec: plan §test_uc1_passive_postgres_via_datahub_managed_ingestion
+    spec: TESTING.md §Spot vs Api-Wired Integration Tests — environment-missing guard
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-A",
+                "-l",
+                "app.kubernetes.io/name=acryl-datahub-actions",
+                "--no-headers",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        pytest.skip(
+            "kubectl not found; cannot verify DataHub actions pod. "
+            "Skipping Managed Ingestion test."
+        )
+        return
+    except subprocess.TimeoutExpired:
+        pytest.skip(
+            "kubectl timed out; cluster may be unreachable. "
+            "Skipping Managed Ingestion test."
+        )
+        return
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"kubectl exited with code {result.returncode}: {result.stderr.strip()}. "
+            "Fix the environment before running the Managed Ingestion test."
+        )
+
+    if not result.stdout.strip():
+        pytest.skip(
+            "No DataHub actions pod found "
+            "(kubectl get pods -A -l app.kubernetes.io/name=acryl-datahub-actions "
+            "returned no rows). Managed Ingestion executor is not running in this dev-env."
+        )
+
+
 # ── Airflow fixture ───────────────────────────────────────────────────────────
 
 

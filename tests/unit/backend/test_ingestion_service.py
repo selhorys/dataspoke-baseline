@@ -1,10 +1,11 @@
 """Unit tests for IngestionService (mocked infrastructure).
 
 spec: BACKEND.md §Ingestion Service (§Feature Services)
-spec: BACKEND.md §Active run pipeline L195-L204
+spec: BACKEND.md §Active run pipeline
+spec: BACKEND.md §Custom Ingestor Authoring Contract
+spec: USE_CASE_en.md §UC1
 """
 
-import re
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -12,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from src.backend.ingestion.service import IngestionService
-from src.shared.events import INGESTION_COMPLETE
+from src.shared.events import INGESTION_COMPLETE, INGESTION_FAIL
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from tests.unit.backend.conftest import (
     make_event_row,
@@ -34,7 +35,7 @@ def _make_config_row(
     identifier: dict | None = None,
     auth: dict | None = None,
     is_enabled: bool = False,
-    mode: str = "active",
+    mode: str = "active-custom",
     schedule_tier: str | None = "daily",
     workflow_dag_id: str | None = None,
     status: str = "OK",
@@ -101,7 +102,7 @@ async def test_upsert_config_creates_new(service, db):
     with patch("src.backend.ingestion.service.ensure_dataset_registered", new=AsyncMock()):
         result, created = await service.upsert_config(
             dataset_urn=_DATASET_URN,
-            mode="active",
+            mode="active-custom",
             platform="postgres",
             locator=_LOCATOR,
             identifier=_IDENTIFIER,
@@ -115,7 +116,7 @@ async def test_upsert_config_creates_new(service, db):
     # Behavioral: the returned record must carry the correct URN and platform
     assert result.dataset_urn == _DATASET_URN
     assert result.platform == "postgres"
-    assert result.mode == "active"
+    assert result.mode == "active-custom"
 
 
 async def test_upsert_config_updates_existing(service, db):
@@ -437,43 +438,70 @@ async def test_run_allows_dry_run_when_disabled(service, db):
     assert result.detail["dry_run"] is True
 
 
-async def test_list_passive_configs_excludes_disabled(service, db):
-    """list_passive_configs() WHERE clause filters on is_enabled=True.
+async def test_list_passive_configs_filter_predicates(db, datahub):
+    """list_passive_configs() WHERE clause must filter on mode='passive' AND is_enabled=True.
 
-    Verifies the compiled SQL — removing the is_enabled filter from the impl
-    must make this test fail.
+    Inspects the compiled SQLAlchemy statement captured from db.execute to verify
+    both predicates are present as binary expressions. Survives logically-equivalent
+    refactors (e.g. is_(True) vs == True) by walking the AST, not matching SQL text.
 
     spec: BACKEND.md §Ingestion passive status-sync — enumerate all configs with
     mode='passive' AND is_enabled=True.
-    spec: USE_CASE_en.md §UC1 — passive sync skips disabled configs (L140
-    "Passive configs with is_enabled=false are skipped by the hourly sync")
+    spec: USE_CASE_en.md §UC1 — passive sync skips disabled configs.
     """
-    from sqlalchemy import true
+    from sqlalchemy.sql.elements import BinaryExpression, False_, True_
+    from sqlalchemy.sql.visitors import iterate
 
-    # Capture the statement passed to db.execute by intercepting the call.
-    captured: list = []
-    result_mock = MagicMock()
-    result_mock.scalars.return_value.all.return_value = []
+    captured_stmts: list = []
 
-    async def _capture_and_return(stmt, *args, **kwargs):
-        captured.append(stmt)
-        return result_mock
+    async def capture_execute(stmt):
+        captured_stmts.append(stmt)
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = []
+        return result
 
-    db.execute = _capture_and_return
+    db.execute = capture_execute
+    service = IngestionService(datahub=datahub, db=db)
 
     await service.list_passive_configs()
 
-    assert captured, "db.execute was never called"
-    stmt = captured[0]
+    assert len(captured_stmts) == 1, (
+        f"list_passive_configs must execute exactly one query; got {len(captured_stmts)}"
+    )
+    stmt = captured_stmts[0]
+    where = stmt.whereclause
 
-    # Compile the statement with literal binds so the WHERE clause is fully visible.
-    compiled = stmt.compile(compile_kwargs={"literal_binds": True})
-    sql = str(compiled)
+    binaries = [n for n in iterate(where) if isinstance(n, BinaryExpression)]
 
-    # The WHERE clause must constrain is_enabled to true. Anchored regex avoids
-    # false-positives from is_enabled appearing in the SELECT column list.
-    assert re.search(r"is_enabled\s+(IS|=)\s+true", sql, re.IGNORECASE), (
-        f"Expected 'is_enabled IS true' (or '= true') in WHERE clause; got: {sql}"
+    # Normalise each binary into (column_name, value) regardless of operator shape.
+    # is_(True) produces a True_ singleton on the right; == produces a BindParameter.
+    def _extract_pairs(nodes):
+        pairs = set()
+        for b in nodes:
+            col = getattr(b.left, "key", None) or getattr(b.left, "name", None)
+            if col is None:
+                continue
+            if isinstance(b.right, True_):
+                pairs.add((col, True))
+            elif isinstance(b.right, False_):
+                pairs.add((col, False))
+            else:
+                val = getattr(b.right, "value", None)
+                if val is not None:
+                    pairs.add((col, val))
+        return pairs
+
+    pred_pairs = _extract_pairs(binaries)
+
+    assert ("mode", "passive") in pred_pairs, (
+        f"WHERE clause must filter on mode='passive'. "
+        f"Found predicates: {pred_pairs}. "
+        "spec: BACKEND.md §Ingestion passive status-sync"
+    )
+    assert ("is_enabled", True) in pred_pairs, (
+        f"WHERE clause must filter on is_enabled=True. "
+        f"Found predicates: {pred_pairs}. "
+        "spec: BACKEND.md §Ingestion passive status-sync"
     )
 
 
@@ -571,3 +599,406 @@ async def test_get_events_empty(service, db):
     events, total = await service.get_events(_DATASET_URN)
     assert total == 0
     assert events == []
+
+
+# ── Two-mode taxonomy: passive rejection + DPI emission contract ──────────────
+
+
+async def test_run_passive_mode_rejected_with_not_applicable(service, db):
+    """method/ingestion/run on a passive config raises ConflictError(INGESTION_NOT_APPLICABLE).
+
+    spec: BACKEND.md §Ingestion Service —
+        "method/run is rejected (409 INGESTION_NOT_APPLICABLE) for passive configs
+        because passive ingestion is run externally"
+    spec: USE_CASE_en.md §UC1 API Mapping —
+        "POST .../method/ingestion/run … passive configs return 409 INGESTION_NOT_APPLICABLE"
+    spec: USE_CASE_en.md §UC1 Case 2 —
+        "POST .../method/ingestion/run returns 409 INGESTION_NOT_APPLICABLE for this URN"
+    """
+    passive_config = _make_config_row(mode="passive", is_enabled=True, schedule_tier=None)
+    mock_scalar_query(db, passive_config)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.run(_DATASET_URN, dry_run=False)
+
+    assert exc_info.value.error_code == "INGESTION_NOT_APPLICABLE", (
+        f"Expected error_code='INGESTION_NOT_APPLICABLE' for passive run; "
+        f"got {exc_info.value.error_code!r}. "
+        "spec: BACKEND.md §Ingestion Service passive rejection"
+    )
+
+
+async def test_run_passive_mode_rejected_with_not_applicable_even_on_dry_run(service, db):
+    """Passive rejection fires regardless of dry_run flag.
+
+    spec: BACKEND.md §Ingestion Service —
+        "passive configs have no DataSpoke-side run pipeline;
+        the rejection must fire before the is_enabled guard"
+    spec: USE_CASE_en.md §UC1 API Mapping — INGESTION_NOT_APPLICABLE is unconditional
+    for passive mode (no dry_run exemption unlike INGESTION_DISABLED).
+    """
+    passive_config = _make_config_row(mode="passive", is_enabled=True, schedule_tier=None)
+    mock_scalar_query(db, passive_config)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await service.run(_DATASET_URN, dry_run=True)
+
+    assert exc_info.value.error_code == "INGESTION_NOT_APPLICABLE", (
+        f"Expected INGESTION_NOT_APPLICABLE even for dry_run=True on passive config; "
+        f"got {exc_info.value.error_code!r}."
+    )
+
+
+async def test_active_custom_run_emits_dpi_lifecycle(service, db):
+    """active-custom non-dry-run emits four DPI aspects in spec-mandated order.
+
+    spec: BACKEND.md §Custom Ingestor Authoring Contract —
+        Required aspects per run in order:
+          1. DataProcessInstanceProperties
+          2. DataProcessInstanceRelationships
+          3. DataProcessInstanceRunEvent(STARTED)  — BEFORE dataset aspect work
+          4. (dataset aspect work)
+          5. DataProcessInstanceRunEvent(COMPLETE/SUCCESS)  — AFTER dataset work
+
+    spec: BACKEND.md §Custom Ingestor Authoring Contract —
+        DPI URN convention: urn:li:dataProcessInstance:<platform>-<run_id>
+
+    spec: BACKEND.md §Custom Ingestor Authoring Contract —
+        "Ordering guarantee: the STARTED event must precede schema/property emission
+        for the dataset; the terminal event must follow all aspect work."
+    """
+    from datahub.metadata.schema_classes import (
+        DataProcessInstancePropertiesClass,
+        DataProcessInstanceRelationshipsClass,
+        DataProcessInstanceRunEventClass,
+        DataProcessRunStatusClass,
+        RunResultTypeClass,
+    )
+
+    from src.backend.ingestion.extractors import IngestionResult
+
+    config_row = _make_config_row(
+        platform="postgres",
+        mode="active-custom",
+        is_enabled=True,
+    )
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    emit_calls: list[tuple[str, object]] = []
+
+    async def _capture_emit(urn: str, aspect: object) -> None:
+        emit_calls.append((urn, aspect))
+
+    service._datahub.emit_aspect = _capture_emit
+
+    with (
+        patch(
+            "src.backend.ingestion.service.run_datahub_ingestion",
+            new=AsyncMock(
+                return_value=IngestionResult(entities_ingested=3, errors=[], warnings=[])
+            ),
+        ),
+        patch("src.backend.ingestion.service.mark_registered", new=AsyncMock()),
+    ):
+        result = await service.run(_DATASET_URN, dry_run=False)
+
+    assert result.status == "success"
+    run_id = result.run_id
+
+    expected_dpi_urn = f"urn:li:dataProcessInstance:postgres-{run_id}"
+
+    dpi_calls = [(urn, aspect) for urn, aspect in emit_calls if urn == expected_dpi_urn]
+    dataset_calls = [(urn, aspect) for urn, aspect in emit_calls if urn == _DATASET_URN]
+
+    assert len(dpi_calls) >= 4, (
+        f"Expected at least 4 emit calls against DPI URN {expected_dpi_urn!r}; "
+        f"got {len(dpi_calls)}. spec: BACKEND.md §Custom Ingestor Authoring Contract"
+    )
+
+    dpi_aspect_types = [type(aspect).__name__ for _, aspect in dpi_calls]
+
+    assert "DataProcessInstancePropertiesClass" in dpi_aspect_types, (
+        "DataProcessInstanceProperties must be emitted. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #1"
+    )
+    assert "DataProcessInstanceRelationshipsClass" in dpi_aspect_types, (
+        "DataProcessInstanceRelationships must be emitted. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #2"
+    )
+    assert "DataProcessInstanceRunEventClass" in dpi_aspect_types, (
+        "DataProcessInstanceRunEvent must be emitted. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract rows #3 and #5"
+    )
+
+    run_events = [
+        aspect
+        for _, aspect in dpi_calls
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+    ]
+    assert len(run_events) >= 2, (
+        f"Expected at least 2 DataProcessInstanceRunEvent aspects (STARTED + COMPLETE); "
+        f"got {len(run_events)}. spec: BACKEND.md §Custom Ingestor Authoring Contract"
+    )
+
+    started_events = [e for e in run_events if e.status == DataProcessRunStatusClass.STARTED]
+    complete_events = [e for e in run_events if e.status == DataProcessRunStatusClass.COMPLETE]
+
+    assert len(started_events) >= 1, (
+        "At least one STARTED RunEvent must be emitted. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #3"
+    )
+    assert len(complete_events) >= 1, (
+        "At least one COMPLETE RunEvent must be emitted on the happy path. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #5"
+    )
+
+    complete_event = complete_events[0]
+    assert complete_event.result is not None, (
+        "Terminal COMPLETE RunEvent must carry a result. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #5"
+    )
+    assert complete_event.result.type == RunResultTypeClass.SUCCESS, (
+        f"Terminal RunEvent result.type must be SUCCESS on happy path; "
+        f"got {complete_event.result.type!r}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #5"
+    )
+
+    started_index = next(
+        i
+        for i, (_, aspect) in enumerate(emit_calls)
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+        and aspect.status == DataProcessRunStatusClass.STARTED
+    )
+    complete_index = next(
+        i
+        for i, (_, aspect) in enumerate(emit_calls)
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+        and aspect.status == DataProcessRunStatusClass.COMPLETE
+    )
+    assert started_index < complete_index, (
+        "STARTED RunEvent must appear before COMPLETE RunEvent in the emit sequence. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract §Ordering guarantee"
+    )
+
+    properties_index = next(
+        (
+            i
+            for i, (_, aspect) in enumerate(emit_calls)
+            if isinstance(aspect, DataProcessInstancePropertiesClass)
+        ),
+        None,
+    )
+    assert properties_index is not None
+    assert properties_index < started_index, (
+        "DataProcessInstanceProperties must be emitted before the STARTED RunEvent. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract rows #1-3"
+    )
+
+    # spec: BACKEND.md §Custom Ingestor Authoring Contract row #2 —
+    # DataProcessInstanceRelationships must be emitted and must precede the STARTED RunEvent.
+    relationships_index = next(
+        (
+            i
+            for i, (urn, aspect) in enumerate(emit_calls)
+            if urn == expected_dpi_urn
+            and isinstance(aspect, DataProcessInstanceRelationshipsClass)
+        ),
+        None,
+    )
+    assert relationships_index is not None, (
+        "DataProcessInstanceRelationships must be emitted against the DPI URN. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #2"
+    )
+    assert relationships_index < started_index, (
+        "DataProcessInstanceRelationships must be emitted before the STARTED RunEvent. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract rows #2-3"
+    )
+
+
+async def test_active_custom_run_emits_dpi_failure_on_extractor_exception(service, db):
+    """When the extractor raises, a terminal FAILURE RunEvent is emitted and the exception re-raises.
+
+    spec: BACKEND.md §Custom Ingestor Authoring Contract —
+        "Failures emit a terminal event (do not let the run hang in STARTED)"
+    spec: BACKEND.md §Custom Ingestor Authoring Contract §Failure semantics —
+        "a failed run still emits the COMPLETE RunEvent, not a missing event"
+    spec: BACKEND.md §Active run pipeline —
+        "emit DataProcessInstanceRunEvent(COMPLETE | FAILED) carrying the run outcome"
+    """
+    from datahub.metadata.schema_classes import (
+        DataProcessInstanceRunEventClass,
+        DataProcessRunStatusClass,
+        RunResultTypeClass,
+    )
+
+    config_row = _make_config_row(
+        platform="postgres",
+        mode="active-custom",
+        is_enabled=True,
+    )
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    emit_calls: list[tuple[str, object]] = []
+
+    async def _capture_emit(urn: str, aspect: object) -> None:
+        emit_calls.append((urn, aspect))
+
+    service._datahub.emit_aspect = _capture_emit
+
+    extractor_error = RuntimeError("DB connection refused")
+
+    with (
+        patch(
+            "src.backend.ingestion.service.run_datahub_ingestion",
+            new=AsyncMock(side_effect=extractor_error),
+        ),
+        pytest.raises(RuntimeError, match="DB connection refused"),
+    ):
+        await service.run(_DATASET_URN, dry_run=False)
+
+    run_events = [
+        (urn, aspect)
+        for urn, aspect in emit_calls
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+    ]
+    complete_events = [
+        aspect
+        for _, aspect in run_events
+        if aspect.status == DataProcessRunStatusClass.COMPLETE
+    ]
+
+    assert len(complete_events) == 1, (
+        "A terminal COMPLETE RunEvent must be emitted even when the extractor raises. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract §Failure semantics"
+    )
+    assert complete_events[0].result is not None, (
+        "Terminal COMPLETE RunEvent on failure path must carry a result."
+    )
+    assert complete_events[0].result.type == RunResultTypeClass.FAILURE, (
+        f"Terminal RunEvent result.type must be FAILURE when extractor raises; "
+        f"got {complete_events[0].result.type!r}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #5"
+    )
+    # spec: BACKEND.md §Custom Ingestor Authoring Contract row #5 —
+    # nativeResultType is author-specific; the only constraint is that it is a non-empty string.
+    assert isinstance(complete_events[0].result.nativeResultType, str), (
+        "nativeResultType must be a string on failure path. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #5"
+    )
+    assert complete_events[0].result.nativeResultType, (
+        "nativeResultType must be non-empty on failure path. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #5"
+    )
+
+    # spec: BACKEND.md §Custom Ingestor Authoring Contract §Ordering guarantee —
+    # STARTED must precede COMPLETE; both must reference the same DPI URN.
+    started_run_events = [
+        (urn, aspect)
+        for urn, aspect in run_events
+        if aspect.status == DataProcessRunStatusClass.STARTED
+    ]
+    assert len(started_run_events) >= 1, (
+        "A STARTED RunEvent must be emitted before the COMPLETE RunEvent. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract row #3"
+    )
+    started_urn, _ = started_run_events[0]
+    complete_urn = next(
+        urn for urn, aspect in run_events if aspect.status == DataProcessRunStatusClass.COMPLETE
+    )
+    assert started_urn == complete_urn, (
+        f"STARTED and COMPLETE RunEvents must reference the same DPI URN; "
+        f"STARTED URN={started_urn!r}, COMPLETE URN={complete_urn!r}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract §Ordering guarantee"
+    )
+
+    started_index_fail = next(
+        i
+        for i, (_, aspect) in enumerate(emit_calls)
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+        and aspect.status == DataProcessRunStatusClass.STARTED
+    )
+    complete_index_fail = next(
+        i
+        for i, (_, aspect) in enumerate(emit_calls)
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+        and aspect.status == DataProcessRunStatusClass.COMPLETE
+    )
+    assert started_index_fail < complete_index_fail, (
+        "STARTED RunEvent must appear before COMPLETE RunEvent even on failure path. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract §Ordering guarantee"
+    )
+
+    added_event_types = [
+        getattr(call_args.args[0], "event_type", None)
+        for call_args in db.add.call_args_list
+        if hasattr(call_args.args[0] if call_args.args else None, "event_type")
+    ]
+    assert INGESTION_FAIL in added_event_types, (
+        f"Expected INGESTION.FAIL event row on extractor exception; got {added_event_types}. "
+        "spec: BACKEND.md §Active run pipeline"
+    )
+
+
+async def test_active_custom_dry_run_skips_dpi_emission(service, db):
+    """dry_run=True runs the extractor pre-flight but emits no DPI aspects.
+
+    spec: BACKEND.md §Ingestion Service —
+        "dry_run: true runs the extractor and returns the schema preview
+        without emitting any aspects"
+    spec: BACKEND.md §Active run pipeline —
+        "emit DataProcessInstanceRunEvent(STARTED) … (skipped on dry_run)"
+    spec: BACKEND.md §Active run pipeline —
+        "emit DataProcessInstanceRunEvent(COMPLETE | FAILED) … (skipped on dry_run)"
+    spec: BACKEND.md §Active run pipeline —
+        "record INGESTION.COMPLETE event (recorded for both dry-run and non-dry-run)"
+    """
+    from src.backend.ingestion.extractors import IngestionResult
+
+    config_row = _make_config_row(
+        platform="postgres",
+        mode="active-custom",
+        is_enabled=True,
+    )
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    emit_calls: list[tuple[str, object]] = []
+
+    async def _capture_emit(urn: str, aspect: object) -> None:
+        emit_calls.append((urn, aspect))
+
+    service._datahub.emit_aspect = _capture_emit
+
+    with patch(
+        "src.backend.ingestion.service.run_datahub_ingestion",
+        new=AsyncMock(
+            return_value=IngestionResult(entities_ingested=0, errors=[], warnings=[])
+        ),
+    ):
+        result = await service.run(_DATASET_URN, dry_run=True)
+
+    assert result.detail["dry_run"] is True
+
+    # spec: BACKEND.md §Ingestion Service — "dry_run: true runs the extractor and
+    # returns the schema preview without emitting any aspects"
+    # All DPI aspects (Properties, Relationships, Output, RunEvent) must be skipped.
+    emitted_dpi_urns = [
+        urn for urn, _aspect in emit_calls if urn.startswith("urn:li:dataProcessInstance:")
+    ]
+    assert not emitted_dpi_urns, (
+        f"dry-run must not emit any DPI aspects; leaked DPI URNs: {emitted_dpi_urns}. "
+        "spec: BACKEND.md §Ingestion Service — dry_run skips DPI emission entirely"
+    )
+
+    added_event_types = [
+        getattr(call_args.args[0], "event_type", None)
+        for call_args in db.add.call_args_list
+        if hasattr(call_args.args[0] if call_args.args else None, "event_type")
+    ]
+    assert INGESTION_COMPLETE in added_event_types, (
+        f"INGESTION.COMPLETE event row must be recorded even for dry_run=True; "
+        f"got {added_event_types}. "
+        "spec: BACKEND.md §Active run pipeline — dry-run event observability"
+    )

@@ -148,11 +148,11 @@ class TestIngestionSchemas:
         assert req.schedule_tier is None
 
     def test_active_mode_is_enabled_true_without_schedule_tier_raises(self) -> None:
-        # spec: BACKEND.md §Ingestion Service — active mode tied to schedule_tier
+        # spec: BACKEND.md §Ingestion Service — active-custom mode tied to schedule_tier
         # for tier-DAG dispatch.
         with pytest.raises(ValidationError, match="schedule_tier is required"):
             CreateIngestionConfigRequest(
-                mode="active",
+                mode="active-custom",
                 platform="postgres",
                 locator={"host": "localhost", "port": 5432},
                 identifier={"database": "testdb"},
