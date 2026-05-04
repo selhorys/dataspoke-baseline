@@ -107,7 +107,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 ## Claude Code Configuration
 
-**Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-from-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`
+**Skills**: `k8s-work`, `plan-doc`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `reviewer` (evaluator, opus), `test-reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

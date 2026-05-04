@@ -16,7 +16,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 Specs and harness documents accumulate implementation-level detail over time — verbatim code blocks, file-level directory trees, method signatures, and duplicate content across tiers. This skill audits target documents, identifies bloat, and trims them back to their intended abstraction level.
 
-**When to use**: After a development phase has added significant implementation, or when document line counts have grown noticeably. This skill complements `spec-sync-from-impl` (which ensures specs match code) and `spec-harmonize` (which propagates changes across specs). `spec-reduce` focuses on *removing excess detail* rather than adding missing content.
+**When to use**: After a development phase has added significant implementation, or when document line counts have grown noticeably. This skill complements `spec-sync-with-impl` (which reconciles spec and code in either direction) and `spec-harmonize` (which propagates changes across specs). `spec-reduce` focuses on *removing excess detail* rather than adding missing content.
 
 ---
 

@@ -36,7 +36,7 @@
       "Skill(prauto-check-status)",
       "Skill(spec-harmonize)",
       "Skill(spec-reduce)",
-      "Skill(spec-sync-from-impl)",
+      "Skill(spec-sync-with-impl)",
       "WebSearch",
       "WebFetch(domain:docs.python.org)",
       "WebFetch(domain:fastapi.tiangolo.com)",
