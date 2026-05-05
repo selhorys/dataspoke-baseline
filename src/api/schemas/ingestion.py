@@ -227,8 +227,13 @@ class PatchIngestionConfigRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_fields(self) -> "PatchIngestionConfigRequest":
-        if self.mode == "passive" and self.schedule_tier is not None:
-            raise ValueError("schedule_tier is not allowed for passive mode")
+        if self.mode == "passive":
+            if self.schedule_tier is not None:
+                raise ValueError("schedule_tier is not allowed for passive mode")
+            if self.locator is not None:
+                raise ValueError("locator is not allowed for passive mode")
+            if self.auth is not None:
+                raise ValueError("auth is not allowed for passive mode")
         if self.mode == "active-custom" and self.is_enabled is True and self.schedule_tier is None:
             raise ValueError(
                 "schedule_tier must be provided in the same patch when setting "

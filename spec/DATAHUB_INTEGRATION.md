@@ -136,9 +136,9 @@ emitter = DatahubRestEmitter(
 ```
 
 Read-only features (Governance) use `DataHubGraph` only. Features that write back (Ingestion
-Control active mode, Validation, Ontology Generation, Metadata Generation) additionally use
-`DatahubRestEmitter`. Redefined DataHub functions would use both clients to blend DataHub and
-DataSpoke data in a single API call.
+Control `active-custom` mode, Validation, Ontology Generation, Metadata Generation) additionally
+use `DatahubRestEmitter`. Redefined DataHub functions would use both clients to blend DataHub
+and DataSpoke data in a single API call.
 
 ### URN Construction
 

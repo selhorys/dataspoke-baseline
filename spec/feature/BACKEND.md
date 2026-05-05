@@ -258,16 +258,25 @@ readers can distinguish them; see [Event Catalogue](#event-catalogue)).
 
 **Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
 called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with
-`mode = passive` AND `is_enabled = true` → for each, query DataHub for `DataProcessInstance`
-runs of the dataset URN via the `dataset(urn).runs` GraphQL field → insert any new runs as
-rows in the unified `events` table with `event_type = INGESTION.COMPLETE` /
-`INGESTION.FAIL` (mirroring the `active-custom` path's event shape so clients see a uniform
-stream). The poll surfaces *any* DPI emitter — DataHub Managed Ingestion executions,
-custom acryl-datahub-SDK scripts, third-party pipelines — provided the emitter satisfies
-the [§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract). Passive
-configs with `is_enabled=false` are skipped. No aspects are emitted by DataSpoke; the
-registry's `datahub_registered` flag is reconciled by the existing `datahub-sync-daily`
-DAG.
+`mode = passive` AND `is_enabled = true` → for each, query DataHub on **two surfaces**
+and merge results:
+
+1. **`DataProcessInstance` runs** via the `dataset(urn).runs` GraphQL field — picks up
+   any DPI emitter that follows the [§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract)
+   (DataSpoke's own `active-custom` extractors, custom acryl-datahub-SDK scripts,
+   third-party pipelines). Each terminal `RunEvent` becomes one event row.
+2. **`Operation` time-series aspects** with `operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`
+   — covers DataHub Managed Ingestion's standard source plugins, which emit `Operation`
+   per run rather than DPI. Each ingestion-like Operation becomes one
+   `INGESTION.COMPLETE` event. `DELETE`/`DROP`/`UNKNOWN` are excluded — they don't
+   represent ingestion of new metadata.
+
+Both surfaces feed the same insert path: rows in the unified `events` table with
+`event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the `active-custom`
+path's event shape so clients see a uniform stream), deduplicated by
+`(entity_id, event_type, occurred_at)`. Passive configs with `is_enabled=false` are
+skipped. No aspects are emitted by DataSpoke; the registry's `datahub_registered`
+flag is reconciled by the existing `datahub-sync-daily` DAG.
 
 ### Custom Ingestor Authoring Contract
 
@@ -316,6 +325,14 @@ that have reached a terminal `RunEvent`. Out-of-order emission produces non-dete
 **Reference implementation**: see `src/backend/ingestion/service.py::_run_inner` and
 `src/backend/ingestion/extractors.py` for the canonical DPI emission pattern. External
 script authors should mirror the same call sequence using the `acryl-datahub` Python SDK.
+
+**Observation fallback (DataHub Managed Ingestion)**: as a courtesy to ingestors that
+emit `Operation` time-series aspects but no DPI — most notably DataHub Managed
+Ingestion's standard source plugins — DataSpoke's hourly poll *also* surfaces
+ingestion-like `Operation` aspects (`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`)
+as `INGESTION.COMPLETE` events. This is observation-only; it does not relax the
+contract above. Authors targeting full DataSpoke parity (terminal status, run
+identity, lineage to the producing job) must still emit DPI per the table.
 
 **Authoring checklist** (self-verify before treating an ingestor as "done"):
 
@@ -847,7 +864,6 @@ completes with reduced enrichment. All failures are logged at WARNING with `exc_
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|
-| LLM description enrichment | IngestionService (active mode) | Ingested without enriched description |
 | Source SQL execution | ValidationService | Rule skipped, marked as ERROR in `assertionRunEvent` |
 | ML validation model fit | ValidationService | Value recorded without validation verdict |
 | Redis cache write | ValidationService | Next read hits DB |

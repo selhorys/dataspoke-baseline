@@ -198,12 +198,16 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.o
 ```
 
 When the script runs and emits a DPI, the next hourly poll surfaces a row in
-`event/ingestion` exactly as in Case 2. **If the script does not emit a DPI**, the
-events list stays empty for that URN — the dataset still appears in `GET
-/spoke/common/ingestion`, the schema is still in DataHub, and the
+`event/ingestion` exactly as in Case 2. **If the script emits neither a DPI nor an
+ingestion-like `Operation` aspect (INSERT/UPDATE/CREATE/ALTER)**, the events list
+stays empty for that URN — the dataset still appears in `GET /spoke/common/ingestion`,
+the schema is still in DataHub, and the
 [`ingestion-freshness` metric](#uc5-governance) still tracks it via DataHub timestamps;
-only per-run drill-down via `event/ingestion` is unavailable. The DPI emission
-contract that script authors must follow is documented in
+only per-run drill-down via `event/ingestion` is unavailable. DataHub Managed
+Ingestion's standard source plugins emit `Operation` aspects automatically, so passive
+URNs ingested via Managed Ingestion are observable without any extra work. Custom
+scripts that want full event detail (terminal status, run identity) must follow the
+DPI emission contract in
 [BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)
 — the same contract that DataSpoke's own active-custom extractors satisfy.
 
@@ -720,7 +724,7 @@ defining new `measurement_query` types via the same `attr/conf` endpoint.
 
 | Metric ID | Definition |
 |---|---|
-| `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active mode; per a fixed window for passive). |
+| `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active-custom mode; per a fixed window for passive). |
 | `validation-score` | Percentage of validation rules with `assertion_result = SUCCESS` in the latest run, averaged across all datasets that have at least one rule. |
 
 **Result row shape.** Every measurement run persists one `attr/result` row carrying
