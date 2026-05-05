@@ -266,7 +266,7 @@ async def test_run_success(service, db, datahub, cache):
     with (
         patch("src.backend.validation.service.evaluate_rule", return_value=mock_eval),
         patch("src.backend.validation.service.register_assertion", return_value=None),
-        patch("src.backend.validation.service.report_result", return_value=None),
+        patch("src.backend.validation.service.report_result", return_value=True),
     ):
         mock_result2 = MagicMock()
         mock_result2.scalar_one_or_none.return_value = config_row
@@ -365,7 +365,7 @@ async def test_run_with_partition(service, db, datahub, cache):
     with (
         patch("src.backend.validation.service.evaluate_rule", return_value=mock_eval),
         patch("src.backend.validation.service.register_assertion", return_value=None),
-        patch("src.backend.validation.service.report_result", return_value=None),
+        patch("src.backend.validation.service.report_result", return_value=True),
     ):
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = config_row

@@ -57,14 +57,14 @@ def parse_duration_seconds(value: str) -> float:
 def evaluate_condition(actual_value: Any, condition: dict[str, Any]) -> tuple[bool, str]:
     """Evaluate a condition dict against an actual numeric value.
 
-    Supported condition types:
+    Operator type strings mirror the Open Assertions YAML spec (OAS):
     - between: {"type": "between", "min": X, "max": Y}
     - less_than: {"type": "less_than", "value": X}
-    - less_than_or_equal: {"type": "less_than_or_equal", "value": X}
+    - less_than_or_equal_to: {"type": "less_than_or_equal_to", "value": X}
     - greater_than: {"type": "greater_than", "value": X}
-    - greater_than_or_equal: {"type": "greater_than_or_equal", "value": X}
-    - equal: {"type": "equal", "value": X}
-    - not_equal: {"type": "not_equal", "value": X}
+    - greater_than_or_equal_to: {"type": "greater_than_or_equal_to", "value": X}
+    - equal_to: {"type": "equal_to", "value": X}
+    - not_equal_to: {"type": "not_equal_to", "value": X}
 
     Returns (passed, issue_message).
     """
@@ -86,37 +86,37 @@ def evaluate_condition(actual_value: Any, condition: dict[str, Any]) -> tuple[bo
             return True, ""
         return False, f"Value {actual} is not between {min_val} and {max_val}"
 
-    elif condition_type in ("less_than", "lt"):
+    elif condition_type == "less_than":
         threshold = float(condition["value"])
         if actual < threshold:
             return True, ""
         return False, f"Value {actual} is not less than {threshold}"
 
-    elif condition_type in ("less_than_or_equal", "lte"):
+    elif condition_type == "less_than_or_equal_to":
         threshold = float(condition["value"])
         if actual <= threshold:
             return True, ""
         return False, f"Value {actual} is not less than or equal to {threshold}"
 
-    elif condition_type in ("greater_than", "gt"):
+    elif condition_type == "greater_than":
         threshold = float(condition["value"])
         if actual > threshold:
             return True, ""
         return False, f"Value {actual} is not greater than {threshold}"
 
-    elif condition_type in ("greater_than_or_equal", "gte"):
+    elif condition_type == "greater_than_or_equal_to":
         threshold = float(condition["value"])
         if actual >= threshold:
             return True, ""
         return False, f"Value {actual} is not greater than or equal to {threshold}"
 
-    elif condition_type in ("equal", "eq"):
+    elif condition_type == "equal_to":
         threshold = float(condition["value"])
         if actual == threshold:
             return True, ""
         return False, f"Value {actual} does not equal {threshold}"
 
-    elif condition_type in ("not_equal", "neq"):
+    elif condition_type == "not_equal_to":
         threshold = float(condition["value"])
         if actual != threshold:
             return True, ""

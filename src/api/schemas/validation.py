@@ -1,5 +1,6 @@
 """Validation config CRUD, run, and result models."""
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -9,6 +10,57 @@ from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import AssertionResult
 
 _VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
+_FRESHNESS_VALID_SOURCES = frozenset({"datahub_operation", "datahub_profile", "query"})
+_VOLUME_VALID_SOURCES = frozenset({"datahub_profile", "query"})
+
+# Mirrors the canonical _IDENTIFIER_RE in src/backend/validation/timeseries.py.
+# Kept as a separate constant to avoid cross-layer imports (API schema → backend).
+_IDENTIFIER_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,62}\Z")
+
+
+def _validate_rules_source(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate the ``source`` field on freshness and volume rules.
+
+    Raises ValueError describing every invalid rule found.
+    """
+    errors: list[str] = []
+    for i, rule in enumerate(rules):
+        rule_type = rule.get("type", "")
+        source = rule.get("source")
+        if rule_type == "freshness":
+            if source is not None:
+                if source not in _FRESHNESS_VALID_SOURCES:
+                    errors.append(
+                        f"rules[{i}] (freshness): source must be one of "
+                        f"{sorted(_FRESHNESS_VALID_SOURCES)}, got {source!r}"
+                    )
+                elif source == "query":
+                    last_modified_field = rule.get("last_modified_field")
+                    if not last_modified_field:
+                        errors.append(
+                            f"rules[{i}] (freshness): last_modified_field is required"
+                            " when source='query'"
+                        )
+                    elif not _IDENTIFIER_RE.match(last_modified_field):
+                        errors.append(
+                            f"rules[{i}] (freshness): last_modified_field"
+                            f" {last_modified_field!r} is not a valid SQL identifier"
+                            r" (\A[A-Za-z_][A-Za-z0-9_]{0,62}\Z)"
+                        )
+        elif rule_type == "volume":
+            if source is not None and source not in _VOLUME_VALID_SOURCES:
+                errors.append(
+                    f"rules[{i}] (volume): source must be one of "
+                    f"{sorted(_VOLUME_VALID_SOURCES)}, got {source!r}"
+                )
+        elif source is not None:
+            errors.append(
+                f"rules[{i}] ({rule_type}): source is reserved for freshness/volume rules only"
+            )
+
+    if errors:
+        raise ValueError("; ".join(errors))
+    return rules
 
 
 class CreateValidationConfigRequest(BaseModel):
@@ -19,8 +71,13 @@ class CreateValidationConfigRequest(BaseModel):
             "**Common fields** (all types): `rule_id` (unique ID), `type`, "
             "`partition` (optional: `{\"field\": \"...\", \"order\": \"desc\"}`)\n\n"
             "**Structure by type:**\n"
-            "- **freshness**: `lookback_interval` (e.g. `\"24 hours\"`), `last_modified_field` (column name)\n"
-            "- **volume**: `metric` (`\"row_count\"`), `condition` (`{\"type\": \"between\", \"min\": N, \"max\": N}`)\n"
+            "- **freshness**: `lookback_interval` (e.g. `\"24 hours\"`), "
+            "`source` (optional: `\"datahub_operation\"` [default] | `\"datahub_profile\"` | `\"query\"`). "
+            "When `source=query`: `last_modified_field` (required, SQL identifier), "
+            "`filter` (optional SQL WHERE fragment).\n"
+            "- **volume**: `condition` (`{\"type\": \"between\", \"min\": N, \"max\": N}`), "
+            "`source` (optional: `\"datahub_profile\"` [default] | `\"query\"`). "
+            "When `source=query`: `filter` (optional SQL WHERE fragment).\n"
             "- **field**: `field` (column name), `metric` (`\"null_count\"`, `\"distinct_count\"`, etc.), "
             "`condition` (`{\"type\": \"less_than_or_equal_to\", \"value\": N}`)\n"
             "- **schema**: `fields` (list of `{\"field\": \"col\", \"type\": \"VARCHAR\"}`), "
@@ -42,14 +99,22 @@ class CreateValidationConfigRequest(BaseModel):
                     {
                         "rule_id": "r-fresh-001",
                         "type": "freshness",
+                        "source": "datahub_operation",
+                        "lookback_interval": "24 hours",
+                        "partition": {"field": "updated_at", "order": "desc"},
+                    },
+                    {
+                        "rule_id": "r-fresh-002",
+                        "type": "freshness",
+                        "source": "query",
                         "lookback_interval": "24 hours",
                         "last_modified_field": "updated_at",
-                        "partition": {"field": "updated_at", "order": "desc"},
+                        "filter": "tenant_id = 'imazon'",
                     },
                     {
                         "rule_id": "r-vol-001",
                         "type": "volume",
-                        "metric": "row_count",
+                        "source": "datahub_profile",
                         "condition": {"type": "between", "min": 10, "max": 10000},
                     },
                     {
@@ -102,6 +167,11 @@ class CreateValidationConfigRequest(BaseModel):
         }
     }
 
+    @field_validator("rules", mode="after")
+    @classmethod
+    def validate_rules_source(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _validate_rules_source(v)
+
     @field_validator("schedule_tier")
     @classmethod
     def validate_schedule_tier(cls, v: str | None) -> str | None:
@@ -121,11 +191,20 @@ class PatchValidationConfigRequest(BaseModel):
         default=None,
         description=(
             "Updated list of validation rules. Replaces the entire rule set.\n"
-            "Supported types: freshness, volume, field, schema, sql, custom."
+            "Supported types: freshness, volume, field, schema, sql, custom.\n"
+            "For freshness/volume rules, the optional `source` field controls the data source "
+            "(see CreateValidationConfigRequest for allowed values and extra required fields)."
         )
     )
     schedule_tier: str | None = Field(default=None, description="Updated schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.")
     is_enabled: bool | None = Field(default=None, description="Set to true to enable scheduling (schedule_tier must be provided in the same request), false to pause.")
+
+    @field_validator("rules", mode="after")
+    @classmethod
+    def validate_rules_source(cls, v: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+        if v is None:
+            return v
+        return _validate_rules_source(v)
 
     @field_validator("schedule_tier")
     @classmethod

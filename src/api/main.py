@@ -178,7 +178,16 @@ async def _handle_validation(request: Request, exc: PydanticValidationError) -> 
 
 
 async def _handle_datahub(request: Request, exc: DataHubUnavailableError) -> JSONResponse:
-    return _error_json(request, 502, exc.error_code, str(exc))
+    logger.warning(
+        "datahub_unavailable",
+        extra={"detail": str(exc), "path": request.url.path},
+    )
+    return _error_json(
+        request,
+        502,
+        exc.error_code,
+        "DataHub temporarily unavailable; please retry",
+    )
 
 
 async def _handle_storage(request: Request, exc: StorageUnavailableError) -> JSONResponse:

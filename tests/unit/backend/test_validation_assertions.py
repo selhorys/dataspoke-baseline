@@ -284,8 +284,10 @@ async def test_register_assertion_skips_when_already_exists(datahub):
     datahub.emit_assertion.assert_not_awaited()
 
 
-async def test_register_assertion_best_effort_on_failure(datahub):
-    """DataHub failure during register is swallowed — no exception raised."""
+async def test_register_assertion_propagates_on_get_failure(datahub):
+    """DataHub failure during get_assertion_info propagates so callers learn of outage."""
+    import pytest
+
     datahub.get_assertion_info = AsyncMock(side_effect=RuntimeError("GMS unavailable"))
     datahub.emit_assertion = AsyncMock()
 
@@ -293,14 +295,16 @@ async def test_register_assertion_best_effort_on_failure(datahub):
     rule = {"rule_id": _RULE_ID, "type": "freshness"}
     assertion_info = build_assertion_info(_DATASET_URN, rule)
 
-    # Must not raise
-    await register_assertion(datahub, assertion_urn, assertion_info)
+    with pytest.raises(RuntimeError, match="GMS unavailable"):
+        await register_assertion(datahub, assertion_urn, assertion_info)
 
     datahub.emit_assertion.assert_not_awaited()
 
 
-async def test_register_assertion_emit_failure_does_not_raise(datahub):
-    """emit_assertion failure is swallowed — best-effort contract."""
+async def test_register_assertion_propagates_on_emit_failure(datahub):
+    """emit_assertion failure propagates — definition errors must surface at upsert time."""
+    import pytest
+
     datahub.get_assertion_info = AsyncMock(return_value=None)
     datahub.emit_assertion = AsyncMock(side_effect=RuntimeError("emit failed"))
 
@@ -308,8 +312,8 @@ async def test_register_assertion_emit_failure_does_not_raise(datahub):
     rule = {"rule_id": _RULE_ID, "type": "freshness"}
     assertion_info = build_assertion_info(_DATASET_URN, rule)
 
-    # Must not raise
-    await register_assertion(datahub, assertion_urn, assertion_info)
+    with pytest.raises(RuntimeError, match="emit failed"):
+        await register_assertion(datahub, assertion_urn, assertion_info)
 
 
 # ── report_result ──────────────────────────────────────────────────────────────
@@ -342,15 +346,15 @@ async def test_report_result_failure_result(datahub):
     assert call_args[0][1].result.type == AssertionResultTypeClass.FAILURE
 
 
-async def test_report_result_best_effort_on_failure(datahub):
-    """DataHub failure during report is swallowed — no exception raised."""
+async def test_report_result_returns_false_on_failure(datahub):
+    """DataHub failure during report returns False — caller turns this into ERROR result."""
     datahub.emit_assertion = AsyncMock(side_effect=RuntimeError("GMS unavailable"))
 
     assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
     run_event = _make_run_event(result="SUCCESS")
 
-    # Must not raise
-    await report_result(datahub, assertion_urn, run_event)
+    result = await report_result(datahub, assertion_urn, run_event)
+    assert result is False
 
 
 async def test_report_result_uses_correct_assertion_urn(datahub):

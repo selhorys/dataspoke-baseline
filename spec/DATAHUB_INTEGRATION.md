@@ -409,6 +409,12 @@ spec is provided for this in the baseline contract.
 5. **Kafka consumer must commit offsets after processing** *(only if event-driven extensions
    are enabled — see [Event Subscription](#event-subscription-optional-not-used-by-baseline))* —
    use `enable.auto.commit=false` and commit after successful handling
+6. **Error responses for DataHub-availability faults must carry a generic message.**
+   When `DataHubUnavailableError` propagates to a 502/503 response, the body must NOT
+   include the inner exception text (GMS URLs, hostnames, endpoint paths, stack
+   traces) — these are logged server-side only. The user-facing `message` is a
+   stable, generic string; the underlying detail is correlated via the trace_id in
+   server logs.
 
 ### Circuit Breaker
 

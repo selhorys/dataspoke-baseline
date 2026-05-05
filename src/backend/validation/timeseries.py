@@ -1,12 +1,14 @@
 """SQL-based timeseries engine for validation rules.
 
 Supports executing SQL against PostgreSQL data sources to compute
-timeseries metrics for the sql_timeseries custom rule subtype.
+timeseries metrics for the sql_timeseries custom rule subtype and for the
+``source: query`` mode of freshness and volume rules.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -17,6 +19,27 @@ from src.shared.exceptions import EntityNotFoundError
 
 logger = logging.getLogger(__name__)
 
+# Canonical identifier regex — single source of truth for the validation package.
+# Anchored with \A/\Z (not ^/$) and capped at 63 chars (PostgreSQL NAMEDATALEN-1).
+_IDENTIFIER_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,62}\Z")
+
+
+def quote_table_ref(platform: str, identifier: dict[str, Any]) -> str:
+    """Build a quoted "schema"."table" reference for SQL execution.
+
+    Validates schema_name and table against _IDENTIFIER_RE (PostgreSQL identifier
+    rules, NAMEDATALEN=64). Raises ValueError on missing or malformed parts.
+    """
+    if platform != "postgres":
+        raise NotImplementedError(f"Table ref quoting not supported for {platform}")
+    schema = identifier.get("schema_name") or identifier.get("schema")
+    table = identifier.get("table")
+    if not schema or not _IDENTIFIER_RE.match(schema):
+        raise ValueError(f"invalid schema_name: {schema!r}")
+    if not table or not _IDENTIFIER_RE.match(table):
+        raise ValueError(f"invalid table: {table!r}")
+    return f'"{schema}"."{table}"'
+
 
 async def resolve_source_config(
     db: AsyncSession,
@@ -25,21 +48,9 @@ async def resolve_source_config(
 ) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     """Return (platform, locator, identifier, auth) for SQL execution.
 
-    Resolution order:
-    1. If rule contains a ``source`` dict with platform/locator/identifier/auth,
-       use it as an override.
-    2. Otherwise, look up the ingestion config for dataset_urn in the DB.
-    3. Raise EntityNotFoundError if neither source is available.
+    Looks up the ingestion config for dataset_urn in the DB.
+    Raises EntityNotFoundError if no ingestion config is available.
     """
-    source_override = rule.get("source")
-    if isinstance(source_override, dict) and source_override.get("platform"):
-        platform: str = source_override["platform"]
-        locator: dict[str, Any] = source_override.get("locator", {})
-        identifier: dict[str, Any] = source_override.get("identifier", {})
-        auth: dict[str, Any] | None = source_override.get("auth")
-        return platform, locator, identifier, auth
-
-    # Fall back to ingestion config
     result = await db.execute(
         select(IngestionConfig).where(IngestionConfig.dataset_urn == dataset_urn)
     )
@@ -67,6 +78,40 @@ async def execute_sql(
     raise NotImplementedError(f"SQL execution not supported for {platform}")
 
 
+def _resolve_postgresql_password(auth: dict[str, Any] | None) -> str:
+    """Resolve the plaintext password from auth, mirroring the ingestion path.
+
+    Handles the persisted reference shape ``{username, secret_ref: {name, key}}``.
+    Raises on resolution failure so callers turn it into an ERROR result.
+    """
+    if not auth:
+        return ""
+
+    secret_ref = auth.get("secret_ref")
+    if not secret_ref:
+        return ""
+
+    if not isinstance(secret_ref, dict):
+        raise ValueError(f"invalid secret_ref shape in auth: {type(secret_ref).__name__}")
+
+    name = secret_ref.get("name")
+    key = secret_ref.get("key")
+    if not name or not key:
+        raise ValueError("auth.secret_ref missing name or key")
+
+    from src.backend.ingestion.secret_resolver import (
+        SecretRefMalformed,
+        SecretRefNotFound,
+        SecretResolverUnavailable,
+        resolve_secret_ref,
+    )
+
+    try:
+        return resolve_secret_ref(f"k8s-secret/{name}/{key}")
+    except (SecretRefMalformed, SecretRefNotFound, SecretResolverUnavailable) as exc:
+        raise RuntimeError("secret resolution failed for auth credentials") from exc
+
+
 async def _execute_postgresql(
     locator: dict[str, Any],
     identifier: dict[str, Any],
@@ -80,7 +125,7 @@ async def _execute_postgresql(
     port = locator["port"]
     database = identifier.get("database", "")
     username = auth.get("username", "") if auth else ""
-    password = auth.get("password", auth.get("secret_ref", "")) if auth else ""
+    password = _resolve_postgresql_password(auth)
 
     conn = await asyncpg.connect(
         host=host, port=port, user=username, password=password, database=database,

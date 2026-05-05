@@ -417,7 +417,11 @@ validation range). The same `resolve_source_config` + `execute_sql` path also se
 **before returning success**. A DataHub error during registration surfaces as 502/503 —
 config save and DataHub assertion creation are coupled by design because DataHub is the
 SSOT for assertion definitions. Removing a rule from a config emits a tombstone (or no-op
-if absent); changing a rule's `type` derives a new URN and registers a fresh assertion.
+if absent); changing a rule's `type` re-emits the assertion at the **same URN** —
+DataHub atomically replaces the prior `assertionInfo` snapshot, so the new typed
+sub-aspect supersedes the old one. The URN is keyed by `(entity, rule_id)` only (per
+[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects)
+convention 3), so `type` changes do not fragment the assertion timeline.
 Registration is **not** lazy: silent best-effort registration during runs hides
 integration breakage.
 

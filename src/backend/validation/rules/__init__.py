@@ -74,7 +74,7 @@ async def evaluate_rule(
             validation=None,
             issues=[
                 {
-                    "msg": f"Unexpected error during evaluation: {exc}",
+                    "msg": f"evaluator failed: {type(exc).__name__}",
                     "type": "evaluation_error",
                 }
             ],

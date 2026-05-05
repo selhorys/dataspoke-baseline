@@ -117,18 +117,13 @@ def test_evaluate_condition_less_than_fails():
     assert "not less than" in msg
 
 
-def test_evaluate_condition_less_than_alias():
-    passed, _ = _evaluate_condition(5, {"type": "lt", "value": 10})
+def test_evaluate_condition_less_than_or_equal_to_passes_on_equal():
+    passed, _ = _evaluate_condition(10, {"type": "less_than_or_equal_to", "value": 10})
     assert passed is True
 
 
-def test_evaluate_condition_less_than_or_equal_passes_on_equal():
-    passed, _ = _evaluate_condition(10, {"type": "less_than_or_equal", "value": 10})
-    assert passed is True
-
-
-def test_evaluate_condition_less_than_or_equal_alias():
-    passed, _ = _evaluate_condition(9, {"type": "lte", "value": 10})
+def test_evaluate_condition_less_than_or_equal_to_passes_below():
+    passed, _ = _evaluate_condition(9, {"type": "less_than_or_equal_to", "value": 10})
     assert passed is True
 
 
@@ -143,49 +138,34 @@ def test_evaluate_condition_greater_than_fails():
     assert "not greater than" in msg
 
 
-def test_evaluate_condition_greater_than_alias():
-    passed, _ = _evaluate_condition(11, {"type": "gt", "value": 10})
+def test_evaluate_condition_greater_than_or_equal_to_passes_on_equal():
+    passed, _ = _evaluate_condition(10, {"type": "greater_than_or_equal_to", "value": 10})
     assert passed is True
 
 
-def test_evaluate_condition_greater_than_or_equal_passes_on_equal():
-    passed, _ = _evaluate_condition(10, {"type": "greater_than_or_equal", "value": 10})
+def test_evaluate_condition_greater_than_or_equal_to_passes_above():
+    passed, _ = _evaluate_condition(11, {"type": "greater_than_or_equal_to", "value": 10})
     assert passed is True
 
 
-def test_evaluate_condition_greater_than_or_equal_alias():
-    passed, _ = _evaluate_condition(10, {"type": "gte", "value": 10})
+def test_evaluate_condition_equal_to_passes():
+    passed, _ = _evaluate_condition(42.0, {"type": "equal_to", "value": 42})
     assert passed is True
 
 
-def test_evaluate_condition_equal_passes():
-    passed, _ = _evaluate_condition(42.0, {"type": "equal", "value": 42})
-    assert passed is True
-
-
-def test_evaluate_condition_equal_alias():
-    passed, _ = _evaluate_condition(42.0, {"type": "eq", "value": 42})
-    assert passed is True
-
-
-def test_evaluate_condition_equal_fails():
-    passed, msg = _evaluate_condition(41.0, {"type": "equal", "value": 42})
+def test_evaluate_condition_equal_to_fails():
+    passed, msg = _evaluate_condition(41.0, {"type": "equal_to", "value": 42})
     assert passed is False
     assert "does not equal" in msg
 
 
-def test_evaluate_condition_not_equal_passes():
-    passed, _ = _evaluate_condition(41.0, {"type": "not_equal", "value": 42})
+def test_evaluate_condition_not_equal_to_passes():
+    passed, _ = _evaluate_condition(41.0, {"type": "not_equal_to", "value": 42})
     assert passed is True
 
 
-def test_evaluate_condition_not_equal_alias():
-    passed, _ = _evaluate_condition(41.0, {"type": "neq", "value": 42})
-    assert passed is True
-
-
-def test_evaluate_condition_not_equal_fails():
-    passed, msg = _evaluate_condition(42.0, {"type": "not_equal", "value": 42})
+def test_evaluate_condition_not_equal_to_fails():
+    passed, msg = _evaluate_condition(42.0, {"type": "not_equal_to", "value": 42})
     assert passed is False
     assert "equals" in msg
 
@@ -312,15 +292,28 @@ async def test_evaluate_rule_unknown_type_falls_back_to_custom(datahub):
 
 
 async def test_evaluate_rule_exception_returns_error(datahub):
-    """If the underlying evaluator raises, evaluate_rule returns ERROR gracefully."""
-    datahub.get_timeseries = AsyncMock(side_effect=RuntimeError("DataHub down"))
+    """If the underlying evaluator raises, evaluate_rule returns ERROR gracefully.
+
+    Spec invariants (message-sanitization contract):
+    - issue msg must contain the exception class name (traceability)
+    - issue msg must NOT contain the exception's str() value (no-leak)
+    The exact prefix format is an impl/copy choice, not spec-mandated.
+    """
+    datahub.get_timeseries = AsyncMock(side_effect=RuntimeError("host=internal-db:5432 password=secret"))
 
     rule = {"rule_id": "fresh_r2", "type": "freshness", "lookback_interval": "24h"}
     result = await evaluate_rule(datahub, _DATASET_URN, rule, _PARTITION)
 
     assert result.assertion_result == "ERROR"
     assert result.rule_id == "fresh_r2"
-    assert any("Unexpected error" in i.get("msg", "") for i in result.issues)
+    msgs = [i.get("msg", "") for i in result.issues]
+    # Spec invariant: class name present for traceability
+    assert any("RuntimeError" in m for m in msgs)
+    # Sensitive detail must NOT appear in any issue message.
+    for m in msgs:
+        assert "internal-db" not in m
+        assert "password" not in m
+        assert "secret" not in m
 
 
 # ── _evaluate_freshness ────────────────────────────────────────────────────────

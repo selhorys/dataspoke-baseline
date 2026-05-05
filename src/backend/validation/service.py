@@ -177,6 +177,12 @@ class ValidationService:
         await self._db.commit()
         await self._db.refresh(existing)
 
+        for rule in rules:
+            rule_id = rule.get("rule_id", "")
+            assertion_urn = build_assertion_urn(dataset_urn, rule_id)
+            assertion_info = build_assertion_info(dataset_urn, rule)
+            await register_assertion(self._datahub, assertion_urn, assertion_info)
+
         event_type = VALIDATION_CONFIG_CREATE if created else VALIDATION_CONFIG_UPDATE
         await self._record_event(
             dataset_urn,
@@ -211,6 +217,13 @@ class ValidationService:
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
+
+        if "rules" in patch and patch["rules"] is not None:
+            for rule in patch["rules"]:
+                rule_id = rule.get("rule_id", "")
+                assertion_urn = build_assertion_urn(dataset_urn, rule_id)
+                assertion_info = build_assertion_info(dataset_urn, rule)
+                await register_assertion(self._datahub, assertion_urn, assertion_info)
 
         await self._record_event(
             dataset_urn,
@@ -433,9 +446,8 @@ class ValidationService:
                 self._datahub, dataset_urn, rule, resolved_partition, db=self._db
             )
 
-            # DataHub assertion registration and reporting (best-effort)
+            # Emit run event to DataHub (best-effort; failure surfaces as ERROR)
             assertion_urn = build_assertion_urn(dataset_urn, rule_id)
-            assertion_info = build_assertion_info(dataset_urn, rule)
             run_event = build_run_event(
                 assertion_urn=assertion_urn,
                 dataset_urn=dataset_urn,
@@ -444,8 +456,17 @@ class ValidationService:
                 values=evaluation.values,
                 partition=resolved_partition,
             )
-            await register_assertion(self._datahub, assertion_urn, assertion_info)
-            await report_result(self._datahub, assertion_urn, run_event)
+            emitted = await report_result(self._datahub, assertion_urn, run_event)
+            if not emitted:
+                evaluation = evaluation.__class__(
+                    rule_id=evaluation.rule_id,
+                    assertion_result="ERROR",
+                    values=evaluation.values,
+                    validation=evaluation.validation,
+                    issues=evaluation.issues
+                    + [{"type": "emit_failed", "msg": "DataHub assertionRunEvent emission failed"}],
+                    partition=evaluation.partition,
+                )
 
             # Persist result to PostgreSQL
             result_row = ValidationResult(

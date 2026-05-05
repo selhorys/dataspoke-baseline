@@ -20,27 +20,27 @@ _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.orders.daily
 
 
 @pytest.mark.asyncio
-async def test_resolve_source_config_uses_rule_source_override(db):
-    """Rule with explicit source dict uses rule's config, never queries DB."""
-    rule = {
-        "rule_id": "r1",
-        "source": {
-            "platform": "postgres",
-            "locator": {"host": "pg.example.com", "port": 5432},
-            "identifier": {"database": "imazon"},
-            "auth": {"username": "reader", "password": "secret"},
-        },
-    }
+async def test_resolve_source_config_ignores_rule_source_string(db):
+    """Rule with source as a string discriminator always resolves via IngestionConfig."""
+    ingestion_row = MagicMock()
+    ingestion_row.platform = "postgres"
+    ingestion_row.locator = {"host": "db.imazon.internal", "port": 5432}
+    ingestion_row.identifier = {"database": "imazon"}
+    ingestion_row.auth = None
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = ingestion_row
+    db.execute = AsyncMock(return_value=result_mock)
+
+    rule = {"rule_id": "r1", "source": "query"}
 
     platform, locator, identifier, auth = await resolve_source_config(
         db, _DATASET_URN, rule
     )
 
     assert platform == "postgres"
-    assert locator == {"host": "pg.example.com", "port": 5432}
-    assert identifier == {"database": "imazon"}
-    assert auth == {"username": "reader", "password": "secret"}
-    db.execute.assert_not_called()
+    assert locator["host"] == "db.imazon.internal"
+    db.execute.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -341,17 +341,32 @@ async def test_execute_timeseries_sql_extracts_only_declared_value_columns(db):
 
 @pytest.mark.asyncio
 async def test_execute_sql_postgresql_connect_kwargs():
-    """asyncpg.connect receives the correct host/port/user/password/database kwargs."""
+    """asyncpg.connect receives the correct host/port/user/password/database kwargs.
+
+    Auth uses the persisted secret_ref shape; resolve_secret_ref is mocked to return
+    the plaintext password so asyncpg receives the resolved credential.
+    """
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=[])
     connect_mock = AsyncMock(return_value=mock_conn)
 
-    with patch("asyncpg.connect", new=connect_mock):
+    auth = {
+        "username": "etl",
+        "secret_ref": {"name": "dataspoke-source-cred-imazon", "key": "password"},
+    }
+
+    with (
+        patch("asyncpg.connect", new=connect_mock),
+        patch(
+            "src.backend.ingestion.secret_resolver.resolve_secret_ref",
+            return_value="s3cret",
+        ),
+    ):
         await execute_sql(
             platform="postgres",
             locator={"host": "pg.imazon.internal", "port": 5433},
             identifier={"database": "imazon"},
-            auth={"username": "etl", "password": "s3cret"},
+            auth=auth,
             sql="SELECT 1",
         )
 
