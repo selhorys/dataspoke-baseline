@@ -30,12 +30,12 @@ _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.tit
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 
 # A URN that is known to NOT exist in the seeded DataHub instance
-# spec: USE_CASE_en.md L183-L187 — PUT for unknown URN returns 422 DATASET_NOT_IN_DATAHUB
+# spec: USE_CASE_en.md §UC2 — PUT for unknown URN returns 422 DATASET_NOT_IN_DATAHUB
 _UNKNOWN_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,nonexistent.table,DEV)"
 _ENCODED_UNKNOWN_URN = urllib.parse.quote(_UNKNOWN_URN, safe="")
 
-# Status enum is impl-defined; spec USE_CASE_en.md L196-L197 silent on enum values
-# (spec says status field exists but does not enumerate valid values)
+# Status enum is impl-defined; spec USE_CASE_en.md §UC2 §Run semantics is silent on
+# enum values (says status field exists but does not enumerate valid values)
 _VALID_STATUSES = {"success", "failure", "error"}
 
 
@@ -85,7 +85,7 @@ async def test_validation_conf_put_with_all_rule_types(
 
     After PUT, GET the config and assert each rule's rule_id and type is preserved
     by the round-trip.
-    # spec: USE_CASE_en.md §UC2 L168-L181 — six rule types supported
+    # spec: BACKEND.md §Validation Service — six DataHub assertion types supported
     # spec: F13 — rule_id and type must survive PUT→GET round-trip
     """
     base = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/validation/conf"
@@ -241,8 +241,10 @@ async def test_validation_run_dry_run(
 ) -> None:
     """POST method/validation/run with dry_run=true does NOT persist results.
 
-    # spec: USE_CASE_en.md §UC2 L205 — dry_run=true → no result write
-    # spec: USE_CASE_en.md L196-L197 — response: {run_id, status, total, passed, failed, errored}
+    # spec: USE_CASE_en.md §UC2 §Run semantics + API table — dry_run=true returns
+    #       the would-be summary without writing results
+    # spec: USE_CASE_en.md §UC2 §Run semantics — response: {run_id, status, total,
+    #       passed, failed, errored}
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/validation/conf"
     base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/validation/run"
@@ -269,7 +271,7 @@ async def test_validation_run_dry_run(
     )
 
     # Capture result count BEFORE dry run
-    # spec: USE_CASE_en.md L205 — dry_run must not persist results
+    # spec: USE_CASE_en.md §UC2 §Run semantics — dry_run must not persist results
     before_resp = await api_client.get(base_results, headers=admin_headers)
     assert before_resp.status_code == 200
     count_before = before_resp.json().get("total_count", 0)
@@ -283,7 +285,7 @@ async def test_validation_run_dry_run(
     assert run_resp.status_code == 200
     body = run_resp.json()
 
-    # spec: USE_CASE_en.md L196-L197 — run response shape
+    # spec: USE_CASE_en.md §UC2 §Run semantics — run response shape
     assert "run_id" in body
     assert "status" in body
     assert "total" in body
@@ -292,13 +294,13 @@ async def test_validation_run_dry_run(
     assert "errored" in body
 
     # F5: strengthened summary assertions
-    # Status enum is impl-defined; spec USE_CASE_en.md L196-L197 silent on enum values
+    # Status enum is impl-defined; spec USE_CASE_en.md §UC2 §Run semantics is silent on enum values
     assert body["status"].lower() in _VALID_STATUSES
-    # spec: USE_CASE_en.md L197 — run_id is a string
+    # spec: USE_CASE_en.md §UC2 §Run semantics — run_id is a string
     assert isinstance(body["run_id"], str) and body["run_id"]
 
     # F-R2.7: weak invariants on sub-counts
-    # spec: USE_CASE_en.md L196-L197 — counts must be non-negative
+    # spec: USE_CASE_en.md §UC2 §Run semantics — counts must be non-negative
     assert body["total"] >= 0
     assert body["passed"] >= 0
     assert body["failed"] >= 0
@@ -309,7 +311,7 @@ async def test_validation_run_dry_run(
     assert body["errored"] <= body["total"]
     # dry_run total == len(rules_payload): impl returns total=len(rules) without
     # executing; ties the response to the submitted config
-    # spec: USE_CASE_en.md L196-L197 — total reflects the rule count
+    # spec: USE_CASE_en.md §UC2 §Run semantics — total reflects the rule count
     assert body["total"] == len(rules_payload)
     # NOTE: arithmetic invariant total == passed + failed + errored is intentionally
     # NOT asserted here — dry_run returns total=len(rules) but passed=failed=errored=0
@@ -322,7 +324,7 @@ async def test_validation_run_dry_run(
     count_after = after_resp.json().get("total_count", 0)
     assert count_after == count_before, (
         f"dry_run persisted results: count went from {count_before} to {count_after} "
-        f"— violates USE_CASE_en.md §UC2 L205"
+        f"— violates USE_CASE_en.md §UC2 §Run semantics"
     )
 
     # Cleanup
@@ -336,13 +338,16 @@ async def test_validation_run_concurrent_returns_409(
 ) -> None:
     """Concurrent runs on the same dataset return 409 VALIDATION_RUNNING.
 
-    # spec: USE_CASE_en.md §UC2 L195-L196 — concurrent runs return 409 VALIDATION_RUNNING
-    # spec: API.md L581 — error_code: VALIDATION_RUNNING
+    # spec: USE_CASE_en.md §UC2 §Run semantics — concurrent runs return 409 VALIDATION_RUNNING
+    # spec: API.md §Application Error Codes — VALIDATION_RUNNING
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/validation/conf"
     base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/validation/run"
 
-    # Setup: create a config with at least one rule to give the run something to do
+    # Setup: create a config with at least one rule to give the run something to do.
+    # is_enabled=True is required so the run executes; with is_enabled=False the
+    # service short-circuits with VALIDATION_DISABLED before the SETNX guard can
+    # observe contention.
     await api_client.put(
         base_conf,
         headers=admin_headers,
@@ -354,8 +359,8 @@ async def test_validation_run_concurrent_returns_409(
                     "lookback_interval": "24 hours",
                 }
             ],
-            "schedule_tier": None,
-            "is_enabled": False,
+            "schedule_tier": "daily",
+            "is_enabled": True,
             "owner": "spot-test@imazon.com",
         },
     )
@@ -385,7 +390,7 @@ async def test_validation_run_concurrent_returns_409(
     )
 
     # Verify the 409 body contains the correct error_code
-    # spec: API.md L581 — VALIDATION_RUNNING error_code
+    # spec: API.md §Application Error Codes — VALIDATION_RUNNING error_code
     conflict_resp = next(r for r in results if isinstance(r, httpx.Response) and r.status_code == 409)
     conflict_body = conflict_resp.json()
     assert conflict_body.get("error_code") == "VALIDATION_RUNNING", (
@@ -403,8 +408,8 @@ async def test_validation_put_with_unknown_urn_returns_422(
 ) -> None:
     """PUT validation conf for a URN not in DataHub returns 422 DATASET_NOT_IN_DATAHUB.
 
-    # spec: USE_CASE_en.md §UC2 L183-L187 — PUT for unknown URN returns 422 DATASET_NOT_IN_DATAHUB
-    # spec: API.md L573 — error_code: DATASET_NOT_IN_DATAHUB
+    # spec: USE_CASE_en.md §UC2 — PUT for unknown URN returns 422 DATASET_NOT_IN_DATAHUB
+    # spec: API.md §Application Error Codes — DATASET_NOT_IN_DATAHUB
     """
     base = f"/api/v1/spoke/common/data/{_ENCODED_UNKNOWN_URN}/attr/validation/conf"
 
@@ -441,14 +446,15 @@ async def test_validation_run_emits_complete_event(
 ) -> None:
     """After a non-dry-run, GET event/validation and assert VALIDATION.COMPLETE event exists.
 
-    # spec: BACKEND.md L518 — VALIDATION.COMPLETE event emitted on successful run
-    # spec: USE_CASE_en.md §UC2 L205 — POST method/validation/run (non-dry-run)
+    # spec: BACKEND.md §Validation Service — VALIDATION.COMPLETE event emitted on successful run
+    # spec: USE_CASE_en.md §UC2 §Run semantics — POST method/validation/run (non-dry-run)
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/validation/conf"
     base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/validation/run"
     base_events = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/validation"
 
-    # Ensure config exists
+    # Ensure config exists. is_enabled=True is required for non-dry-run; with
+    # is_enabled=False the service rejects with VALIDATION_DISABLED.
     await api_client.put(
         base_conf,
         headers=admin_headers,
@@ -461,8 +467,8 @@ async def test_validation_run_emits_complete_event(
                     "condition": {"type": "between", "min": 1, "max": 100000},
                 }
             ],
-            "schedule_tier": None,
-            "is_enabled": False,
+            "schedule_tier": "daily",
+            "is_enabled": True,
             "owner": "spot-test@imazon.com",
         },
     )
@@ -482,15 +488,16 @@ async def test_validation_run_emits_complete_event(
 
     # F5: strengthened summary assertions for non-dry-run
     run_body = run_resp.json()
-    # spec: USE_CASE_en.md L197 — total == passed + failed + errored (non-dry-run)
+    # spec: USE_CASE_en.md §UC2 §Run semantics + BACKEND.md §Validation Service —
+    #       each rule yields SUCCESS|FAILURE|ERROR, so total == passed + failed + errored
     assert run_body["total"] == run_body["passed"] + run_body["failed"] + run_body["errored"]
-    # spec: USE_CASE_en.md L196-L197 — status ∈ {success, failure, error}
+    # spec: USE_CASE_en.md §UC2 §Run semantics — status ∈ {success, failure, error}
     assert run_body["status"].lower() in _VALID_STATUSES
-    # spec: USE_CASE_en.md L197 — run_id is a non-empty string
+    # spec: USE_CASE_en.md §UC2 §Run semantics — run_id is a non-empty string
     assert isinstance(run_body["run_id"], str) and run_body["run_id"]
 
     # Fetch events and assert VALIDATION.COMPLETE appears
-    # spec: BACKEND.md L518 — event_type == "VALIDATION.COMPLETE"
+    # spec: BACKEND.md §Validation Service — event_type == "VALIDATION.COMPLETE"
     # Use a high limit to ensure the new event is in the first page
     after_events_resp = await api_client.get(
         f"{base_events}?limit=100", headers=admin_headers

@@ -12,11 +12,11 @@ Concerns covered:
 - GET /spoke/dg/metric/{metric_id}/event — event list envelope
 
 Spec:
-- spec/USE_CASE_en.md §UC5 L640-L643 (baseline metric IDs)
-- spec/USE_CASE_en.md §UC5 L650-L651 (concurrent run → 409 METRIC_RUNNING)
-- spec/USE_CASE_en.md §UC5 L651-L653 (dry_run → no persist, no event)
-- spec/feature/BACKEND.md §Metrics Service L447-L459 (dataset_filter, breakdown shape)
-- spec/feature/BACKEND.md §Event Catalogue L521 (METRIC.RUN_COMPLETE + unresolved_urns)
+- spec/USE_CASE_en.md §UC5 §Baseline overview (baseline metric IDs)
+- spec/USE_CASE_en.md §UC5 §Run semantics (concurrent run → 409 METRIC_RUNNING)
+- spec/USE_CASE_en.md §UC5 §Run semantics (dry_run → no persist, no event)
+- spec/feature/BACKEND.md §Metrics Service (dataset_filter, breakdown shape)
+- spec/feature/BACKEND.md §Event Catalogue (METRIC.RUN_COMPLETE + unresolved_urns)
 """
 
 import asyncio
@@ -30,7 +30,7 @@ DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
 _TEST_METRIC_ID = "spot-test-freshness"
 
-# Spec: spec/USE_CASE_en.md §UC5 L640-L643 — baseline metric IDs seeded at startup
+# Spec: spec/USE_CASE_en.md §UC5 §Baseline overview — baseline metric IDs seeded at startup
 _BASELINE_METRIC_IDS = {"ingestion-freshness", "validation-score"}
 
 # Bounded URN used in run tests to minimise DataHub I/O
@@ -50,11 +50,11 @@ async def test_metric_list_paginated_envelope(
     The two baseline metric IDs ('ingestion-freshness', 'validation-score') are registered
     via PUT within this test to verify that once registered they appear in the list response.
 
-    Spec: spec/USE_CASE_en.md §UC5 L640-L643 — baseline ships with two supported metrics;
+    Spec: spec/USE_CASE_en.md §UC5 §Baseline overview — baseline ships with two supported metrics;
     organisations register them via PUT /spoke/dg/metric/{id}/attr/conf.
     """
     try:
-        # Register the two baseline metric definitions as the spec Imazon example shows (L677-L703)
+        # Register the two baseline metric definitions as the spec Imazon example shows
         for mid, title, theme, agg in [
             ("ingestion-freshness", "Ingestion freshness", "freshness", "ingestion-freshness"),
             ("validation-score", "Validation score", "quality", "validation-score"),
@@ -85,11 +85,11 @@ async def test_metric_list_paginated_envelope(
         assert "total_count" in body
         assert isinstance(body["metrics"], list)
 
-        # Spec: spec/USE_CASE_en.md §UC5 L640-L643 — both baseline definitions appear when registered
+        # Spec: spec/USE_CASE_en.md §UC5 §Baseline overview — both baseline definitions appear when registered
         returned_ids = {m["id"] for m in body["metrics"]}
         assert _BASELINE_METRIC_IDS.issubset(returned_ids), (
             f"Baseline metric IDs {_BASELINE_METRIC_IDS} not found in list response "
-            f"(got: {returned_ids}). Spec: spec/USE_CASE_en.md §UC5 L640-L643."
+            f"(got: {returned_ids}). Spec: spec/USE_CASE_en.md §UC5 §Baseline overview."
         )
     finally:
         # Guarantee teardown even if assertions fail above — prevents state leakage
@@ -252,9 +252,9 @@ async def test_metric_run(
     every dataset in DataHub.
 
     Spec:
-    - spec/feature/BACKEND.md §Metrics Service L457 — unified breakdown shape
+    - spec/feature/BACKEND.md §Metrics Service — unified breakdown shape
       {"dataset_count": int, "datasets": [{urn, category, detail}]}
-    - spec/feature/BACKEND.md §Event Catalogue L521 — METRIC.RUN_COMPLETE payload
+    - spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE payload
       carries unresolved_urns for any dataset_filter.dataset_urns entries that
       didn't resolve in DataHub.
     """
@@ -296,7 +296,7 @@ async def test_metric_run(
     assert "run_id" in run_body
 
     # ── Verify persisted result row with breakdown shape ──────────────────────
-    # Spec: spec/feature/BACKEND.md §Metrics Service L457 — breakdown shape
+    # Spec: spec/feature/BACKEND.md §Metrics Service — breakdown shape
     results_resp = await api_client.get(
         f"{base_results}?offset=0&limit=5",
         headers=admin_headers,
@@ -310,26 +310,26 @@ async def test_metric_run(
 
     result_row = results_body["results"][0]
     assert "breakdown" in result_row, (
-        "Result row missing 'breakdown'. Spec: spec/feature/BACKEND.md §Metrics Service L457."
+        "Result row missing 'breakdown'. Spec: spec/feature/BACKEND.md §Metrics Service."
     )
     breakdown = result_row["breakdown"]
     assert isinstance(breakdown, dict), "breakdown must be a dict."
     assert "dataset_count" in breakdown, (
-        "breakdown missing 'dataset_count'. Spec: spec/feature/BACKEND.md §Metrics Service L457."
+        "breakdown missing 'dataset_count'. Spec: spec/feature/BACKEND.md §Metrics Service."
     )
     assert isinstance(breakdown["dataset_count"], int), "dataset_count must be an int."
     assert "datasets" in breakdown, (
-        "breakdown missing 'datasets'. Spec: spec/feature/BACKEND.md §Metrics Service L457."
+        "breakdown missing 'datasets'. Spec: spec/feature/BACKEND.md §Metrics Service."
     )
     assert isinstance(breakdown["datasets"], list), "breakdown.datasets must be a list."
     # Each dataset entry must have urn, category, detail
     for entry in breakdown["datasets"]:
-        assert "urn" in entry, "dataset entry missing 'urn'. Spec: BACKEND.md §Metrics L457."
-        assert "category" in entry, "dataset entry missing 'category'. Spec: BACKEND.md §Metrics L457."
-        assert "detail" in entry, "dataset entry missing 'detail'. Spec: BACKEND.md §Metrics L457."
+        assert "urn" in entry, "dataset entry missing 'urn'. Spec: BACKEND.md §Metrics Service."
+        assert "category" in entry, "dataset entry missing 'category'. Spec: BACKEND.md §Metrics Service."
+        assert "detail" in entry, "dataset entry missing 'detail'. Spec: BACKEND.md §Metrics Service."
 
     # ── Verify METRIC.RUN_COMPLETE event with unresolved_urns key ────────────
-    # Spec: spec/feature/BACKEND.md §Event Catalogue L521
+    # Spec: spec/feature/BACKEND.md §Event Catalogue
     events_resp = await api_client.get(
         f"{base_events}?offset=0&limit=20",
         headers=admin_headers,
@@ -342,16 +342,16 @@ async def test_metric_run(
     ]
     assert len(run_complete_events) >= 1, (
         "Expected at least one METRIC.RUN_COMPLETE event after a successful run. "
-        "Spec: spec/feature/BACKEND.md §Event Catalogue L521."
+        "Spec: spec/feature/BACKEND.md §Event Catalogue."
     )
     # The event detail must carry the unresolved_urns key (even if [])
     event_detail = run_complete_events[0].get("detail", {})
     assert "unresolved_urns" in event_detail, (
         "METRIC.RUN_COMPLETE event detail must contain 'unresolved_urns' key. "
-        "Spec: spec/feature/BACKEND.md §Event Catalogue L521."
+        "Spec: spec/feature/BACKEND.md §Event Catalogue."
     )
     assert isinstance(event_detail["unresolved_urns"], list), (
-        "unresolved_urns must be a list. Spec: spec/feature/BACKEND.md §Event Catalogue L521."
+        "unresolved_urns must be a list. Spec: spec/feature/BACKEND.md §Event Catalogue."
     )
 
     # Cleanup
@@ -366,10 +366,10 @@ async def test_metric_run_unresolved_urns_in_event(
     """After a run with a dataset_urns entry that doesn't resolve in DataHub, the
     METRIC.RUN_COMPLETE event detail contains that URN in 'unresolved_urns'.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service L452 — entries that don't resolve
+    Spec: spec/feature/BACKEND.md §Metrics Service — entries that don't resolve
     in DataHub at run time are skipped and reported in the METRIC.RUN_COMPLETE event's
     unresolved_urns field.
-    Spec: spec/feature/BACKEND.md §Event Catalogue L521.
+    Spec: spec/feature/BACKEND.md §Event Catalogue.
     """
     _UNRESOLVED_METRIC_ID = "spot-test-unresolved-urns"
     # A syntactically valid URN that does not exist in DataHub dev-env
@@ -420,16 +420,16 @@ async def test_metric_run_unresolved_urns_in_event(
     ]
     assert len(run_complete_events) >= 1, (
         "Expected at least one METRIC.RUN_COMPLETE event. "
-        "Spec: spec/feature/BACKEND.md §Event Catalogue L521."
+        "Spec: spec/feature/BACKEND.md §Event Catalogue."
     )
     event_detail = run_complete_events[0].get("detail", {})
     assert "unresolved_urns" in event_detail, (
         "METRIC.RUN_COMPLETE event detail must contain 'unresolved_urns'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service L452 / §Event Catalogue L521."
+        "Spec: spec/feature/BACKEND.md §Metrics Service / §Event Catalogue."
     )
     assert _GHOST_URN in event_detail["unresolved_urns"], (
         f"Ghost URN '{_GHOST_URN}' must appear in unresolved_urns. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service L452."
+        "Spec: spec/feature/BACKEND.md §Metrics Service."
     )
 
     # Cleanup
@@ -443,7 +443,7 @@ async def test_metric_run_concurrent_returns_409(
 ) -> None:
     """Two concurrent POST .../method/run calls for the same metric → second returns 409 METRIC_RUNNING.
 
-    Spec: spec/USE_CASE_en.md §UC5 L650-L651 — 'runs are serialized per metric:
+    Spec: spec/USE_CASE_en.md §UC5 §Run semantics — 'runs are serialized per metric:
     a duplicate method/run while one is in flight returns 409 METRIC_RUNNING'.
     Spec: spec/feature/BACKEND.md §Concurrency Guards — Airflow DAG run conf-based
     dedup: 'metrics-{metric_id}'; API returns 409 Conflict with METRIC_RUNNING error code.
@@ -472,39 +472,46 @@ async def test_metric_run_concurrent_returns_409(
         },
     )
 
-    # Fire two concurrent POST run requests
+    # Fire 5 concurrent POST run requests so at least one observes the SETNX
+    # guard already held by another. Two-way concurrency can serialize on a fast
+    # host because Airflow trigger_and_wait may return before a sibling request
+    # acquires the lock.
     async with httpx.AsyncClient(
-        base_url=api_client.base_url, timeout=60.0
+        base_url=api_client.base_url, timeout=120.0
     ) as concurrent_client:
-        run1, run2 = await asyncio.gather(
-            concurrent_client.post(
+
+        async def _fire():
+            return await concurrent_client.post(
                 base_run,
                 headers=admin_headers,
                 json={"dry_run": False},
-            ),
-            concurrent_client.post(
-                base_run,
-                headers=admin_headers,
-                json={"dry_run": False},
-            ),
+            )
+
+        results = await asyncio.gather(
+            _fire(), _fire(), _fire(), _fire(), _fire(),
+            return_exceptions=True,
         )
 
-    status_codes = {run1.status_code, run2.status_code}
+    status_codes = [
+        r.status_code for r in results if isinstance(r, httpx.Response)
+    ]
     assert 200 in status_codes, (
         "At least one run must succeed (200). "
-        "Spec: spec/USE_CASE_en.md §UC5 L650-L651."
+        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
     )
     assert 409 in status_codes, (
-        "The second concurrent run must return 409 METRIC_RUNNING. "
-        "Spec: spec/USE_CASE_en.md §UC5 L650-L651."
+        f"At least one concurrent run must return 409 METRIC_RUNNING; got {status_codes}. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
     )
 
-    # Verify error code in the 409 response body
-    conflict_resp = run1 if run1.status_code == 409 else run2
+    # Verify error code in a 409 response body
+    conflict_resp = next(
+        r for r in results if isinstance(r, httpx.Response) and r.status_code == 409
+    )
     conflict_body = conflict_resp.json()
     assert conflict_body.get("error_code") == "METRIC_RUNNING", (
         f"Expected error_code='METRIC_RUNNING', got: {conflict_body.get('error_code')}. "
-        "Spec: spec/USE_CASE_en.md §UC5 L650-L651 / spec/feature/BACKEND.md §Concurrency Guards."
+        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics / spec/feature/BACKEND.md §Concurrency Guards."
     )
 
     # Cleanup
@@ -519,7 +526,7 @@ async def test_metric_run_dry_run_does_not_persist(
     """POST .../method/run with dry_run=true returns a result but does not write a result row
     or emit a METRIC.RUN_COMPLETE event.
 
-    Spec: spec/USE_CASE_en.md §UC5 L651-L653 — 'dry_run: true evaluates the query and
+    Spec: spec/USE_CASE_en.md §UC5 §Run semantics — 'dry_run: true evaluates the query and
     returns the would-be result without persisting to attr/result or emitting events'.
     """
     _DRY_RUN_METRIC_ID = "spot-test-dry-run"
@@ -557,7 +564,7 @@ async def test_metric_run_dry_run_does_not_persist(
     assert run_resp.json().get("status") == "success"
 
     # ── Dry-run must not persist a result row ─────────────────────────────────
-    # Spec: spec/USE_CASE_en.md §UC5 L651-L653
+    # Spec: spec/USE_CASE_en.md §UC5 §Run semantics
     results_resp = await api_client.get(
         f"{base_results}?offset=0&limit=1",
         headers=admin_headers,
@@ -565,11 +572,11 @@ async def test_metric_run_dry_run_does_not_persist(
     assert results_resp.status_code == 200
     assert results_resp.json()["results"] == [], (
         "Dry-run must not persist any result rows. "
-        "Spec: spec/USE_CASE_en.md §UC5 L651-L653."
+        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
     )
 
     # ── Dry-run must not emit a METRIC.RUN_COMPLETE event ────────────────────
-    # Spec: spec/USE_CASE_en.md §UC5 L651-L653 — 'without persisting to attr/result or emitting events'
+    # Spec: spec/USE_CASE_en.md §UC5 §Run semantics — 'without persisting to attr/result or emitting events'
     events_resp = await api_client.get(
         f"{base_events}?offset=0&limit=20",
         headers=admin_headers,
@@ -582,7 +589,7 @@ async def test_metric_run_dry_run_does_not_persist(
     ]
     assert len(run_complete_events) == 0, (
         "Dry-run must not emit any METRIC.RUN_COMPLETE events. "
-        "Spec: spec/USE_CASE_en.md §UC5 L651-L653."
+        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
     )
 
     await api_client.delete(base_conf, headers=admin_headers)

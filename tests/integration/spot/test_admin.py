@@ -170,7 +170,7 @@ async def test_internal_admin_datahub_sync_targeted(
         conf_path,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": pg_host, "port": pg_port},
             "identifier": {"database": pg_db, "schema_name": "catalog", "table": "title_master"},

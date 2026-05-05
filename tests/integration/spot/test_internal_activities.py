@@ -62,7 +62,7 @@ async def test_ingestion_list_active_hourly(
         conf_hourly,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
@@ -85,7 +85,7 @@ async def test_ingestion_list_active_hourly(
         conf_daily,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
@@ -147,7 +147,7 @@ async def test_ingestion_run_activity(
         conf_url,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {

@@ -440,7 +440,7 @@ def build_run_event(
         PartitionTypeClass.FULL_TABLE if not partition else PartitionTypeClass.PARTITION
     )
     partition_spec = PartitionSpecClass(
-        partition=str(partition) if partition else None,  # type: ignore[arg-type]
+        partition=str(partition) if partition else "FULL_TABLE_SNAPSHOT",
         type=partition_type,
     )
 

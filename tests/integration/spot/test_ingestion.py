@@ -60,7 +60,7 @@ async def test_ingestion_list_paginated_envelope(
 
     # Seed two distinct ingestion configs so the list has at least N=2 entries
     _common_payload = {
-        "mode": "active",
+        "mode": "active-custom",
         "platform": "postgres",
         "locator": {"host": _PG_HOST, "port": _PG_PORT},
         "auth": {
@@ -157,7 +157,7 @@ async def test_ingestion_conf_put_patch_delete(
         base,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
@@ -182,7 +182,7 @@ async def test_ingestion_conf_put_patch_delete(
     put_body = put_resp.json()
     assert put_body["dataset_urn"] == _TEST_URN
     assert put_body["platform"] == "postgres"
-    assert put_body["mode"] == "active"
+    assert put_body["mode"] == "active-custom"
     # spec: SECRET_RESOLUTION.md §Data Model — persisted/echoed shape is reference-only
     assert "password" not in put_body["auth"], (
         f"plaintext password leaked into PUT response: {put_body['auth']}"
@@ -225,7 +225,7 @@ async def test_ingestion_run_dry_run(
         base_conf,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
@@ -279,7 +279,7 @@ async def test_ingestion_events_list_envelope(
         base_conf,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {
@@ -332,7 +332,7 @@ async def test_ingestion_conf_put_secret_collision_returns_422(
         base_conf,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
@@ -356,7 +356,7 @@ async def test_ingestion_conf_put_secret_collision_returns_422(
             base_conf,
             headers=admin_headers,
             json={
-                "mode": "active",
+                "mode": "active-custom",
                 "platform": "postgres",
                 "locator": {"host": _PG_HOST, "port": _PG_PORT},
                 "identifier": {
@@ -400,7 +400,7 @@ async def test_ingestion_conf_put_invalid_secret_ref_prefix_returns_422(
         base_conf,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
@@ -441,7 +441,7 @@ async def test_ingestion_conf_put_reference_path_to_existing_secret(
         base_conf_1,
         headers=admin_headers,
         json={
-            "mode": "active",
+            "mode": "active-custom",
             "platform": "postgres",
             "locator": {"host": _PG_HOST, "port": _PG_PORT},
             "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
@@ -461,7 +461,7 @@ async def test_ingestion_conf_put_reference_path_to_existing_secret(
             base_conf_2,
             headers=admin_headers,
             json={
-                "mode": "active",
+                "mode": "active-custom",
                 "platform": "postgres",
                 "locator": {"host": _PG_HOST, "port": _PG_PORT},
                 "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
@@ -484,7 +484,7 @@ async def test_ingestion_conf_put_reference_path_to_existing_secret(
             base_conf_2,
             headers=admin_headers,
             json={
-                "mode": "active",
+                "mode": "active-custom",
                 "platform": "postgres",
                 "locator": {"host": _PG_HOST, "port": _PG_PORT},
                 "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},

@@ -165,6 +165,9 @@ async def test_uc1_active_custom_postgres(
         dry_run_body = dry_run_resp.json()
         assert "run_id" in dry_run_body, "Dry-run response must carry run_id"
         assert "status" in dry_run_body, "Dry-run response must carry status"
+        # Reject {"run_id": null, "status": null} — both fields must be usable
+        assert dry_run_body["run_id"], "run_id must be non-empty"
+        assert dry_run_body["status"], "status must be non-empty"
         _fail_tail = {"fail", "failed", "failure", "error", "errored"}
         assert dry_run_body["status"].lower() not in _fail_tail, (
             f"Dry-run against reachable Postgres unexpectedly returned fail status "
@@ -247,6 +250,12 @@ async def test_uc1_active_custom_postgres(
                         f"Case 1 active-custom run must produce INGESTION.COMPLETE; "
                         f"got {evt['event_type']!r}. "
                         "spec: USE_CASE_en.md §UC1 Case 1 — DataSpoke owns the extraction"
+                    )
+                    # spec: USE_CASE_en.md §UC1 Case 2 — INGESTION.COMPLETE rows
+                    # carry status: "success"; INGESTION.FAIL → status: "failure"
+                    assert evt.get("status") == "success", (
+                        f"INGESTION.COMPLETE event must carry status='success'; "
+                        f"got {evt.get('status')!r}"
                     )
                     break
             if found_dpi:
@@ -553,10 +562,19 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
         passive_events_count = 0
         deadline = time.time() + 60.0
         while time.time() < deadline:
-            sync_resp = await api_client.post(
-                "/internal/activities/ingestion/passive-sync",
-                headers=internal_headers,
-            )
+            # passive-sync internally does multiple DataHub GraphQL queries; while
+            # DataHub is still indexing the just-fired Managed Ingestion run those
+            # queries can briefly exceed the api_client default timeout. A single
+            # ReadTimeout in this poll is a transient hiccup, not a fatal failure —
+            # the outer deadline is the real boundary.
+            try:
+                sync_resp = await api_client.post(
+                    "/internal/activities/ingestion/passive-sync",
+                    headers=internal_headers,
+                )
+            except httpx.ReadTimeout:
+                await asyncio.sleep(1.0)
+                continue
             assert sync_resp.status_code in (200, 204), (
                 f"Internal passive-sync activity failed: {sync_resp.status_code}: "
                 f"{sync_resp.text}"
@@ -859,9 +877,13 @@ async def test_uc1_passive_kafka_via_external_script(
             )
             assert events_after_resp.status_code == 200
             events_after = events_after_resp.json()
+            # The DPI emitted in Step 4 carries RunResultTypeClass.SUCCESS, so per
+            # BACKEND.md §Custom Ingestor Authoring Contract the polled row MUST be
+            # INGESTION.COMPLETE — a regression that mapped SUCCESS→FAIL during the
+            # passive sync should fail this assertion.
             ingestion_events_after = [
                 e for e in events_after.get("events", [])
-                if e.get("event_type") in ("INGESTION.COMPLETE", "INGESTION.FAIL")
+                if e.get("event_type") == "INGESTION.COMPLETE"
                 and (e.get("detail") or {}).get("source") == "passive"
             ]
             if len(ingestion_events_after) > len(ingestion_events_before):
@@ -869,11 +891,18 @@ async def test_uc1_passive_kafka_via_external_script(
             await asyncio.sleep(1.0)
 
         assert len(ingestion_events_after) > len(ingestion_events_before), (
-            f"Expected at least one new INGESTION.COMPLETE/FAIL event with "
+            f"Expected at least one new INGESTION.COMPLETE event with "
             f"source='passive' within 30s; before={len(ingestion_events_before)}, "
             f"after={len(ingestion_events_after)}. "
             f"Events: {events_after.get('events', [])}. "
-            "spec: USE_CASE_en.md §UC1 Case 3"
+            "spec: USE_CASE_en.md §UC1 Case 3 + BACKEND.md §Custom Ingestor Authoring Contract"
+        )
+
+        # spec: USE_CASE_en.md §UC1 Case 2 — INGESTION.COMPLETE rows carry status="success"
+        new_evt = ingestion_events_after[-1]
+        assert new_evt.get("status") == "success", (
+            f"INGESTION.COMPLETE event must carry status='success'; "
+            f"got {new_evt.get('status')!r}"
         )
 
         # ── Step 7: Cross-dataset overview includes passive Kafka URN ─────────

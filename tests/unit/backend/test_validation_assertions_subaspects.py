@@ -391,7 +391,9 @@ def test_build_run_event_run_id_preserved():
 
 
 def test_build_run_event_partition_empty_is_full_table():
-    """DATAHUB_INTEGRATION.md convention 7 (partitionSpec): empty partition → FULL_TABLE."""
+    """DataHub `AssertionRunEvent.pdl` defaults `partitionSpec` to
+    `{type: FULL_TABLE, partition: "FULL_TABLE_SNAPSHOT"}` for non-partitioned
+    runs; an empty partition dict must produce that exact shape."""
     from datahub.metadata.schema_classes import PartitionTypeClass
 
     assertion_urn = build_assertion_urn(_DATASET_URN, "r1")
@@ -404,7 +406,9 @@ def test_build_run_event_partition_empty_is_full_table():
         partition={},
     )
     assert event.partitionSpec.type == PartitionTypeClass.FULL_TABLE
-    assert event.partitionSpec.partition is None
+    # PartitionSpec.partition is required (non-optional) per DataHub PDL; the
+    # documented default sentinel for full-table snapshots is "FULL_TABLE_SNAPSHOT".
+    assert event.partitionSpec.partition == "FULL_TABLE_SNAPSHOT"
 
 
 def test_build_run_event_partition_non_empty_is_partition_type():

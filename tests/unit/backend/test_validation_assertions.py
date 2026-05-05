@@ -231,7 +231,9 @@ def test_build_run_event_timestamp_is_recent():
 def test_build_run_event_empty_partition_uses_full_table():
     event = _make_run_event(partition={})
     assert event.partitionSpec.type == PartitionTypeClass.FULL_TABLE
-    assert event.partitionSpec.partition is None
+    # PartitionSpec.partition is required (non-optional) per DataHub PDL; the
+    # documented default sentinel for full-table snapshots is "FULL_TABLE_SNAPSHOT".
+    assert event.partitionSpec.partition == "FULL_TABLE_SNAPSHOT"
 
 
 def test_build_run_event_non_empty_partition_uses_partition_type():
