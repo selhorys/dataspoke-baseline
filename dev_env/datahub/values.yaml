@@ -50,9 +50,11 @@ datahub-gms:
     requests:
       cpu: "1000m"
       memory: "1536Mi"
+      ephemeral-storage: "4Gi"
     limits:
       cpu: "2000m"
       memory: "3Gi"
+      ephemeral-storage: "8Gi"
   # Relaxed probes: GMS depends on ES, Kafka, and MySQL.  On a single-node
   # dev cluster a transient ES restart can make /health unreachable for
   # 30-60 s.  failureThreshold × periodSeconds ≈ 2 min tolerance prevents
@@ -73,9 +75,11 @@ datahub-frontend:
     requests:
       cpu: "250m"
       memory: "512Mi"
+      ephemeral-storage: "4Gi"
     limits:
       cpu: "1000m"
       memory: "1Gi"
+      ephemeral-storage: "8Gi"
   livenessProbe:
     initialDelaySeconds: 60
     periodSeconds: 15
@@ -98,24 +102,30 @@ datahub-mae-consumer:
     requests:
       cpu: "250m"
       memory: "512Mi"
+      ephemeral-storage: "4Gi"
     limits:
       cpu: "1000m"
       memory: "1Gi"
+      ephemeral-storage: "8Gi"
 
 datahub-mce-consumer:
   resources:
     requests:
       cpu: "250m"
       memory: "512Mi"
+      ephemeral-storage: "4Gi"
     limits:
       cpu: "1000m"
       memory: "1Gi"
+      ephemeral-storage: "8Gi"
 
-datahub-actions:
+acryl-datahub-actions:
   resources:
     requests:
       cpu: "250m"
       memory: "256Mi"
+      ephemeral-storage: "2Gi"
     limits:
       cpu: "500m"
       memory: "512Mi"
+      ephemeral-storage: "4Gi"

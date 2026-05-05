@@ -236,7 +236,7 @@ def upgrade() -> None:
         ),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("dataset_filter", JSONB, nullable=False, server_default="'{}'::jsonb"),
+        sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column(
             "max_manual_queries_per_dataset",
             sa.Integer(),
@@ -452,8 +452,12 @@ def upgrade() -> None:
     # age may already be installed via the initdb hook; CREATE EXTENSION
     # IF NOT EXISTS is idempotent.
     op.execute("CREATE EXTENSION IF NOT EXISTS age")
-    # LOAD is session-scoped; required before any ag_catalog calls.
-    op.execute("LOAD 'age'")
+    # AGE registers its operator classes (graphid_ops, etc.) in ag_catalog.
+    # create_graph() generates CREATE INDEX statements without schema-qualifying
+    # those operator classes, so ag_catalog must be in search_path for the
+    # session running the migration. shared_preload_libraries='age' makes the
+    # extension available cluster-wide but does not modify search_path.
+    op.execute("SET search_path TO ag_catalog, public")
     # Create graph — wrapped in PL/pgSQL exception block to be idempotent.
     op.execute(
         """

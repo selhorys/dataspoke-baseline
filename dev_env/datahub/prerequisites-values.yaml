@@ -28,9 +28,11 @@ kafka:
       requests:
         cpu: "250m"
         memory: "1Gi"
+        ephemeral-storage: "2Gi"
       limits:
         cpu: "2000m"
         memory: "2Gi"
+        ephemeral-storage: "4Gi"
     extraConfig: |
       message.max.bytes=5242880
       default.replication.factor=1
@@ -97,9 +99,11 @@ opensearch:
     requests:
       cpu: "500m"
       memory: "2Gi"
+      ephemeral-storage: "2Gi"
     limits:
       cpu: "2000m"
       memory: "3Gi"
+      ephemeral-storage: "4Gi"
   # --- GKE Autopilot compatibility ---
   # Autopilot blocks privileged sysctl init containers that raise
   # vm.max_map_count. singleNode=true above already skips the mmapfs
@@ -125,9 +129,11 @@ mysql:
       requests:
         cpu: "250m"
         memory: "512Mi"
+        ephemeral-storage: "2Gi"
       limits:
         cpu: "1000m"
         memory: "1536Mi"
+        ephemeral-storage: "4Gi"
     persistence:
       enabled: true
       size: 10Gi

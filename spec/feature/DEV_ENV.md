@@ -223,7 +223,7 @@ Plain Kubernetes manifests (no Helm) in the `dataspoke-dummy-data-01` namespace.
 | Component | Image | Mem Limit | Storage | Service |
 |-----------|-------|-----------|---------|---------|
 | PostgreSQL | `postgres:15` | 512 Mi | 5 Gi PVC | `example-postgres:5432` |
-| Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 1 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
+| Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 4 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
 
 This Kafka instance is **separate** from DataHub's prerequisites Kafka. It simulates an external
 data source for ingestion testing. Like DataHub Kafka, it exposes an EXTERNAL listener (port 9094)
@@ -327,6 +327,24 @@ cluster capacity; sum of *requests* (~13 GiB) does not — pods rarely hit limit
 limits are set generously to absorb transient spikes (OpenSearch off-heap, `mysql_upgrade`, JVM
 GC, etc.).
 
+GKE Autopilot applies a **1 GiB ephemeral-storage request = 1 GiB limit** per container whenever
+the container spec omits `resources.{requests,limits}.ephemeral-storage`. Autopilot counts
+writable-layer writes, container stdout/stderr logs, emptyDir volume writes (including Airflow's
+default `/opt/airflow/logs` emptyDir), and projected-volume mounts against this limit. Chatty
+containers — those that produce sustained stdout or write temporary files to emptyDir — exhaust the
+1 GiB default within minutes and trigger pod eviction with the message
+`Pod ephemeral local storage usage exceeds the total limit of containers`. Explicit
+`ephemeral-storage` limits in the budget table below prevent this class of eviction on Autopilot.
+Low-log containers (dev-lock, redis, frontend, Airflow logGroomer sidecars) are left at the
+Autopilot default — they do not generate sustained log volume and the extra cluster reservation
+is not justified.
+
+Autopilot's resource webhook **forces `requests == limits` for ephemeral-storage** at admission
+time. Helm values that specify a higher `limits.ephemeral-storage` than `requests.ephemeral-storage`
+are silently normalized — the effective limit equals the request. The budget table below lists the
+configured limit; on Autopilot the running pod will show that same number for both fields. If
+operators need a higher effective limit on Autopilot, raise the request to match.
+
 ### Memory Budget (limits)
 
 | Component | Namespace | Mem Limit | Notes |
@@ -345,7 +363,7 @@ GC, etc.).
 | redis | dataspoke-01 | 512 Mi | |
 | dev-lock | dataspoke-01 | 64 Mi | |
 | example-postgres | dataspoke-dummy-data-01 | 512 Mi | |
-| example-kafka | dataspoke-dummy-data-01 | 1024 Mi | |
+| example-kafka | dataspoke-dummy-data-01 | 1024 Mi | 4 Gi PVC (bumped from 1 Gi — broker storage was undersized) |
 | **Total (limits)** | | **~25 Gi** | |
 
 ### CPU Budget (limits)
@@ -355,9 +373,40 @@ limits prevent starvation on constrained dev clusters. See
 `dev_env/datahub/prerequisites-values.yaml` and `helm-charts/dataspoke/values-dev.yaml` for
 per-component breakdown.
 
+### Ephemeral Storage Budget (limits)
+
+| Component | Namespace | Limit | Notes |
+|-----------|-----------|-------|-------|
+| datahub-gms | datahub-01 | 8 Gi | High-log: GMS emits continuous trace logs via Kafka listeners |
+| datahub-frontend | datahub-01 | 8 Gi | High-log: Play framework access log per request |
+| datahub-mae-consumer | datahub-01 | 8 Gi | High-log: processes every metadata aspect change event |
+| datahub-mce-consumer | datahub-01 | 8 Gi | High-log: processes every metadata change proposal |
+| datahub-actions | datahub-01 | 4 Gi | Medium-log: event-driven actions framework |
+| Kafka KRaft controller | datahub-01 | 4 Gi | Medium-log: broker + controller log segments accumulate in stdout |
+| OpenSearch | datahub-01 | 4 Gi | Medium-log: JVM GC + index recovery logs |
+| MySQL | datahub-01 | 4 Gi | Medium-log: slow-query and binary log references appear in stdout |
+| airflow-api-server | dataspoke-01 | 8 Gi | High-log: FastAPI/uvicorn access log per request |
+| airflow-scheduler | dataspoke-01 | 8 Gi | High-log: continuous heartbeat + task scheduling logs |
+| airflow-triggerer | dataspoke-01 | 8 Gi | High-log: continuous event-loop logs |
+| airflow-dag-processor | dataspoke-01 | 8 Gi | High-log: DAG parsing cycle emits one log line per DAG per interval |
+| dataspoke-api | dataspoke-01 | 4 Gi | Medium-log: FastAPI/uvicorn access log per request |
+| postgresql (dataspoke) | dataspoke-01 | 4 Gi | Medium-log: WAL and autovacuum progress in stdout |
+| example-kafka | dataspoke-dummy-data-01 | 4 Gi | Medium-log: KRaft broker logs |
+| example-postgres | dataspoke-dummy-data-01 | 4 Gi | Medium-log: WAL and checkpoint progress in stdout |
+
 ---
 
 ## Troubleshooting
+
+### Pod evicted: ephemeral local storage usage exceeds limit
+
+**Cause**: GKE Autopilot applies a 1 GiB ephemeral-storage default per container. Chatty
+containers (GMS, Airflow scheduler/triggerer/dag-processor, MAE/MCE consumers, etc.) exhaust this
+limit within minutes from stdout log accumulation and Airflow's default emptyDir log volume.
+**Fix**: Ensure the affected container has an explicit `ephemeral-storage` entry in its
+`resources.requests` and `resources.limits` blocks per the §Resource Budget §Ephemeral Storage
+Budget table above. If the evicted container is not in the table (i.e., is expected to be
+low-log), verify it is not writing unexpectedly large logs and add it to the table if needed.
 
 ### OpenSearch OOM-killed during startup
 

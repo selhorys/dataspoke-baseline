@@ -39,9 +39,11 @@ api:
     requests:
       cpu: 250m
       memory: 512Mi
+      ephemeral-storage: 2Gi
     limits:
       cpu: "1"
       memory: 1024Mi
+      ephemeral-storage: 4Gi
 event-consumer:
   enabled: false
 
@@ -64,9 +66,11 @@ postgresql:
       limits:
         memory: 4096Mi
         cpu: "2"
+        ephemeral-storage: 4Gi
       requests:
         memory: 2048Mi
         cpu: "1"
+        ephemeral-storage: 2Gi
     persistence:
       size: 10Gi
     # Apache AGE requires shared_preload_libraries so its C hooks load at
@@ -198,17 +202,21 @@ airflow:
       requests:
         cpu: 200m
         memory: 512Mi
+        ephemeral-storage: 4Gi
       limits:
         cpu: "2"
         memory: 1Gi
+        ephemeral-storage: 8Gi
   scheduler:
     resources:
       requests:
         cpu: 250m
         memory: 512Mi
+        ephemeral-storage: 4Gi
       limits:
         cpu: 500m
         memory: 1Gi
+        ephemeral-storage: 8Gi
     logGroomerSidecar:
       resources: &logGroomerResources
         requests:
@@ -222,9 +230,11 @@ airflow:
       requests:
         cpu: 200m
         memory: 512Mi
+        ephemeral-storage: 4Gi
       limits:
         cpu: 500m
         memory: 1Gi
+        ephemeral-storage: 8Gi
     logGroomerSidecar:
       resources: *logGroomerResources
   # dag-processor is a new standalone component in Airflow 3.x. The chart
@@ -234,9 +244,11 @@ airflow:
       requests:
         cpu: 200m
         memory: 512Mi
+        ephemeral-storage: 4Gi
       limits:
         cpu: 500m
         memory: 1Gi
+        ephemeral-storage: 8Gi
     logGroomerSidecar:
       resources: *logGroomerResources
   flower:
