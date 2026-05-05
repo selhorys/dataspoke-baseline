@@ -64,7 +64,8 @@ or endpoints — only the score-label and primary-action wording differ
 Validation"). The score is the server-provided `quality_score` field on
 the same DE-shared endpoints (computed and cached server-side; see
 [FRONTEND_DE §Validation](FRONTEND_DE.md#validation-uc2)); rule-type
-vocabulary is fixed.
+vocabulary and source-mode vocabulary (for `freshness` / `volume`) are
+fixed.
 
 ### Dataset detail (`/da/dataset/[urn]`)
 

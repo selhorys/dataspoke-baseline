@@ -205,12 +205,15 @@ are append-only — DataHub retains history.
 ### Assertion Aspects
 
 Assertions are stored on `assertion` entities (not `dataset` entities). DataSpoke's
-Validation feature (UC2) borrows the YAML field shape from DataHub's
+Validation feature (UC2) adopts the DataHub
 [Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)
-for portability of the on-disk grammar. The OAS itself is a *reference*, not a
-contract: the OSS `datahub assertions` CLI / compiler is deprecated in v1.5 and
-should not be called. DataSpoke writes both `assertionInfo` and `assertionRunEvent`
-aspects directly via MCP emission.
+YAML schema as the **binding contract** for its on-disk rule grammar (`type`,
+`condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`).
+DataSpoke extensions (`rule_id`, `source`, `partition`, `order`, `ml_validation`)
+are supersets — never replacements. Note: the OSS `datahub assertions` CLI /
+compiler is deprecated in v1.5 and is not invoked; DataSpoke writes both
+`assertionInfo` and `assertionRunEvent` aspects directly via MCP emission while
+keeping the YAML grammar OAS-conformant.
 
 Six `assertionInfo.type` values cover the primary data quality dimensions:
 

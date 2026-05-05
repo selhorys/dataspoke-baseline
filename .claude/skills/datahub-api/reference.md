@@ -253,7 +253,7 @@ Action handlers must be **idempotent** under async mode — they already should 
 
 OSS DataHub does **not** run assertions natively — the runner is DataHub Cloud only. DataSpoke owns execution: it computes the metric, decides pass / fail, and emits both the assertion definition (`assertionInfo`) and each run outcome (`assertionRunEvent`) directly via MCPs.
 
-**Open Assertions YAML is a schema reference, not a contract.** The `datahub assertions` CLI is deprecated in v1.5 (`metadata-ingestion/src/datahub/cli/specific/assertions_cli.py` prints a runtime deprecation warning and is slated for removal). DataSpoke borrows the YAML field names (`type`, `condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`) for portability of the on-disk grammar but writes assertions through the SDK, not the CLI or the compiler.
+**Open Assertions YAML is the binding schema for DataSpoke's on-disk rule grammar.** DataSpoke conforms to OAS field names (`type`, `condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`); DataSpoke-original additions (`rule_id`, `source`, `partition`, `order`, `ml_validation`) are supersets, not replacements. Note: the OSS `datahub assertions` CLI / compiler is deprecated in v1.5 (`metadata-ingestion/src/datahub/cli/specific/assertions_cli.py` prints a runtime deprecation warning and is slated for removal) — DataSpoke writes through the SDK / MCP instead, but the YAML schema OAS defines remains the contract.
 
 ### Mandatory conventions
 
