@@ -345,40 +345,94 @@ identity, lineage to the producing job) must still emit DPI per the table.
 ### Validation Service (`src/backend/validation/`)
 
 **Covers**: MANIFESTO §2.1 Validation (UC2). The six rule types and their semantics live
-in [USE_CASE §UC2](../USE_CASE_en.md#uc2-validation); the DataHub assertion-aspect mapping
-is in [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
-DataSpoke wraps DataHub's Open Assertions Spec and adds a DataSpoke-original extension
-`custom` type with `subtype: "sql_timeseries"` for partition-aware ML-validated checks.
+in [USE_CASE §UC2](../USE_CASE_en.md#uc2-validation); the DataHub assertion-aspect mapping,
+typed sub-aspect requirements, and emission conventions are in
+[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
+DataSpoke borrows the on-disk grammar from DataHub's Open Assertions YAML schema and adds
+a DataSpoke-original extension `custom` type with `subtype: "sql_timeseries"` for
+partition-aware ML-validated checks.
 
 #### Implementation
 
 CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule
-execution, assertion registration in DataHub, and result reporting. Config upsert registers
-the dataset URN in `dataset_registry` (requires the dataset to already exist in DataHub).
+execution, assertion registration in DataHub at config upsert, and run-time result
+reporting. Config upsert registers the dataset URN in `dataset_registry` (requires the
+dataset to already exist in DataHub).
 
 **Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema,
 SQL, custom. Each rule can specify partition and order variables (like SQL window
 functions) for determining the target partition.
 
+**Rule schema** (per entry in `rules[]`):
+
+```yaml
+- rule_id: <stable identifier within the config>      # required
+  type: freshness | volume | field | schema | sql | custom
+  source: <see "Source discriminator" below>          # freshness/volume only
+  # type-specific fields mirroring Open Assertions YAML:
+  # freshness:  lookback_interval, last_modified_field (when source=query), filter
+  # volume:     condition (operator + value/range), filter
+  # field:      field, condition or metric, exclude_nulls, failure_threshold
+  # schema:     condition (exact_match | contains), columns[]
+  # sql:        statement, condition
+  # custom:     subtype, plus subtype-specific fields
+  partition: { ... }                                   # optional partition variables
+  order: { ... }                                       # optional order variables (latest-partition resolution)
+  ml_validation: { ... }                               # optional, custom + sql_timeseries only
+```
+
+**Source discriminator** (`freshness` and `volume` only — other rule types have a single
+source path):
+
+| `type` | `source` value | Behaviour | Extra fields |
+|---|---|---|---|
+| `freshness` | `datahub_operation` *(default)* | Read latest `OperationClass.lastUpdatedTimestamp` from DataHub timeseries | — |
+| `freshness` | `datahub_profile` | Read latest `DatasetProfileClass.timestampMillis` | — |
+| `freshness` | `query` | `SELECT MAX(<last_modified_field>)` on the source platform via `resolve_source_config` + `execute_sql` | `last_modified_field` (required), `filter` (optional WHERE) |
+| `volume` | `datahub_profile` *(default)* | Read latest `DatasetProfileClass.rowCount` | — |
+| `volume` | `query` | `SELECT COUNT(*) [WHERE filter]` on the source platform | `filter` (optional) |
+
+The `datahub_*` sources require the source platform to have ingestion-time profiling /
+operation tracking enabled; otherwise the rule returns `FAILURE` with
+`issues=[{type: "no_data"}]`. The `query` source requires the dataset to have valid
+source credentials in `dataset_registry` (same path as `custom: sql_timeseries`).
+
 **Configuration model**: Per-dataset config stored in `validation_configs` with:
 - `schedule_tier` (TEXT): Schedule tier for periodic execution — `hourly`, `daily`, or
   `weekly` (required when `is_enabled=true`).
-- `rules` (JSONB): list of rule dicts compatible with DataHub's Open Assertions Spec,
-  extended with `rule_id`, `partition`, `order`, and (for custom type) `ml_validation`.
+- `rules` (JSONB): list of rule dicts per the schema above. Field names mirror the
+  DataHub Open Assertions YAML; DataSpoke extensions are `rule_id`, `source`,
+  `partition`, `order`, `ml_validation`.
 
 **SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with
 `subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets
 (PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value
 variables, and optional ML-based validation settings (model type, lookback window,
-validation range).
+validation range). The same `resolve_source_config` + `execute_sql` path also serves the
+`source: query` mode of freshness and volume.
+
+**Assertion registration timing.** `PUT/PATCH /attr/validation/conf` emits each rule's
+`assertionInfo` (with the matching typed sub-aspect — see
+[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects))
+**before returning success**. A DataHub error during registration surfaces as 502/503 —
+config save and DataHub assertion creation are coupled by design because DataHub is the
+SSOT for assertion definitions. Removing a rule from a config emits a tombstone (or no-op
+if absent); changing a rule's `type` derives a new URN and registers a fresh assertion.
+Registration is **not** lazy: silent best-effort registration during runs hides
+integration breakage.
 
 **Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated
 via tier-based Airflow DAGs): resolve target partition (manual → specified; cron → latest
 via partition/order variables) → compute metrics per rule for that partition (executing
-source SQL for `custom/sql_timeseries`, running `ml_validation` against historical records
-when configured) → register `assertionInfo` in DataHub if absent → report each rule's
-`assertionRunEvent` (SUCCESS/FAILURE/ERROR) → persist to `validation_results` → record
-`VALIDATION.COMPLETE` event.
+source SQL for `source: query` and `custom/sql_timeseries`, running `ml_validation`
+against historical records when configured) → emit each rule's `assertionRunEvent`
+(`SUCCESS` / `FAILURE` / `ERROR`) — all rules in one run share the same `runId` →
+persist to `validation_results` → record `VALIDATION.COMPLETE` event.
+
+**Run-event emission is best-effort but not silent.** A DataHub error while emitting
+`assertionRunEvent` produces an `ERROR` result on the affected rule (visible in the run
+summary and `validation_results` row), never a swallowed log warning. The local result is
+still persisted; the event can be re-emitted manually via a recovery path.
 
 **Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
 raises `409 VALIDATION_DISABLED`. Dry-run is permitted regardless of `is_enabled`.

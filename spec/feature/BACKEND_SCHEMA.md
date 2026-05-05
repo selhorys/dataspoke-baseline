@@ -79,7 +79,7 @@ Stores per-dataset validation configuration (assertion rules + schedule).
 |--------|------|-------------|
 | `id` | `UUID` PK | Config identifier |
 | `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `rules` | `JSONB` | JSON list of assertion rules (DataHub Open Assertions Spec compatible, extended with `rule_id`, `partition`, `order`, `ml_validation`) |
+| `rules` | `JSONB` | JSON list of validation rules. Field names mirror the DataHub Open Assertions YAML schema (`type`, `condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`); DataSpoke extensions: `rule_id` (required, stable), `source` (freshness/volume — `datahub_operation`/`datahub_profile`/`query`; see [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)), `partition`, `order`, `ml_validation` (custom only) |
 | `is_enabled` | `BOOLEAN` | Enable Airflow tier-based periodic execution (default false) |
 | `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
 | `owner` | `TEXT` | Owner user ID |

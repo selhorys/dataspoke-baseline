@@ -115,6 +115,18 @@ in that case. Rule type vocabulary is fixed: `freshness`, `volume`,
 `field`, `schema`, `sql`, `custom` (with optional `subtype: "sql_timeseries"`
 for the partition-aware ML extension).
 
+For `freshness` and `volume` rules, the rule builder exposes a **Source**
+dropdown selecting how the metric is sourced — `datahub_operation` (freshness
+default; reads `OperationClass`), `datahub_profile` (reads `DatasetProfileClass`,
+freshness uses `timestampMillis`, volume uses `rowCount` — also volume's
+default), or `query` (executes against the source platform). Selecting
+`query` reveals `last_modified_field` (freshness only, required) and
+`filter` (optional WHERE clause). Other rule types do not show this
+dropdown. See
+[BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)
+for source semantics and the `no_data` failure mode when DataHub-resident
+profile/operation aspects are missing.
+
 ```
 ┌──────────────────────────────────────────────────────┐
 │  ← orders.line_items   Score 4/6   [Run Now]         │

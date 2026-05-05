@@ -245,6 +245,63 @@ Action handlers must be **idempotent** under async mode — they already should 
 
 ---
 
+## Known Pattern D — DataSpoke Validation Authoring (Custom + Typed Assertions)
+
+**Question**: How do I push DataSpoke-run validation results into DataHub so they appear in the native assertion UI alongside any DataHub-emitted assertions?
+
+### Scope
+
+OSS DataHub does **not** run assertions natively — the runner is DataHub Cloud only. DataSpoke owns execution: it computes the metric, decides pass / fail, and emits both the assertion definition (`assertionInfo`) and each run outcome (`assertionRunEvent`) directly via MCPs.
+
+**Open Assertions YAML is a schema reference, not a contract.** The `datahub assertions` CLI is deprecated in v1.5 (`metadata-ingestion/src/datahub/cli/specific/assertions_cli.py` prints a runtime deprecation warning and is slated for removal). DataSpoke borrows the YAML field names (`type`, `condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`) for portability of the on-disk grammar but writes assertions through the SDK, not the CLI or the compiler.
+
+### Mandatory conventions
+
+| Concern | Requirement |
+|---|---|
+| URN | `urn:li:assertion:<datahub_guid({"entity": dataset_urn, "rule": rule_id})>` — deterministic across re-runs so re-emit is idempotent |
+| `assertionInfo.type` | One of `FRESHNESS` / `VOLUME` / `FIELD` / `DATA_SCHEMA` / `SQL` / `CUSTOM`. Note: the schema type is **`DATA_SCHEMA`**, not `SCHEMA` (PDL reserved-word workaround — see `AssertionType.pdl`) |
+| Typed sub-aspect | **Required**. Setting `type=...` alone leaves the assertion blank in DataHub's UI and renders empty `assertionInfo.{freshness,volume,…}Assertion` over GraphQL. Populate the matching sub-aspect — see table below |
+| `assertionInfo.source` | `AssertionSourceClass(type=AssertionSourceTypeClass.EXTERNAL)`. EXTERNAL marks "DataSpoke runs this, DataHub stores results" — DataHub will not attempt to execute it |
+| `assertionInfo.lastUpdated` | `AuditStampClass(time=ts_ms, actor=<urn of dataspoke service user>)` |
+| `assertionRunEvent.runId` | A workflow execution ID (Airflow run UUID is fine — plain string, no URN). All rules in one validation run **must share the same runId** for timeline grouping in DataHub |
+| `assertionRunEvent.partitionSpec` | `PartitionTypeClass.PARTITION` with serialized partition dict for partitioned runs; `FULL_TABLE` otherwise |
+| `assertionRunEvent.result.nativeResults` | `map[string,string]` of computed metric → string value. Numeric values must be stringified; `None` becomes `"null"` |
+
+### Typed sub-aspects (one per `assertionInfo.type`)
+
+| `type` | Required field on `AssertionInfoClass` | SDK class | Key fields |
+|---|---|---|---|
+| `FRESHNESS` | `freshnessAssertion` | `FreshnessAssertionInfoClass` | `type=DATASET_CHANGE`, `entityUrn`, `schedule` (`FreshnessAssertionScheduleClass`), optional `filter` |
+| `VOLUME` | `volumeAssertion` | `VolumeAssertionInfoClass` | `type=ROW_COUNT_TOTAL`/`ROW_COUNT_CHANGE`/`INCREMENTING_SEGMENT_*`, `entityUrn`, `rowCountTotal` or `rowCountChange` |
+| `FIELD` | `fieldAssertion` | `FieldAssertionInfoClass` | `type=FIELD_VALUES` or `FIELD_METRIC`, `entityUrn`, `fieldValuesAssertion` or `fieldMetricAssertion` |
+| `DATA_SCHEMA` | `schemaAssertion` | `SchemaAssertionInfoClass` | `entityUrn`, `compatibility=EXACT_MATCH`/`SUPERSET`/`SUBSET`, `schema.fields[]` |
+| `SQL` | `sqlAssertion` | `SqlAssertionInfoClass` | `type=METRIC` or `METRIC_CHANGE`, `entityUrn`, `statement`, `operator`, `parameters` |
+| `CUSTOM` | `customAssertion` | `CustomAssertionInfoClass` | `type=<your_subtype>` (e.g. `"sql_timeseries"`), `entity=<dataset_urn>`, optional `field`, optional `logic` |
+
+### Reference Files
+
+| File | Purpose |
+|---|---|
+| `metadata-models/.../assertion/AssertionInfo.pdl` | Top-level aspect — `type` + sub-aspect union |
+| `metadata-models/.../assertion/{Freshness,Volume,Field,Schema,Sql,Custom}AssertionInfo.pdl` | Typed sub-aspect schemas |
+| `metadata-models/.../assertion/AssertionRunEvent.pdl` | Run-event aspect with `result` + `partitionSpec` |
+| `metadata-ingestion/src/datahub/emitter/mcp_builder.py` (`datahub_guid`) | URN GUID derivation |
+| `docs/assertions/open-assertions-spec.md` | YAML schema reference (CLI is deprecated; do not call) |
+
+### Anti-patterns
+
+| Pattern | Why it's wrong |
+|---|---|
+| `assertionInfo.type=FRESHNESS` with `freshnessAssertion=None` | Assertion has no detail in UI; GraphQL `assertionInfo.freshnessAssertion` returns null. Equivalent to a write-only stub |
+| `source.type=NATIVE` for DataSpoke-run checks | Tells DataHub it owns execution; the Cloud runner is the only thing that should claim NATIVE |
+| Best-effort error swallowing on `emit_mcp` for assertion **definitions** | Hides integration breakage. Definition emission must propagate failures (502/503 on the upsert API) so users learn DataHub is unhealthy at config-save time, not weeks later when they wonder where the assertions went |
+| Best-effort silence on `emit_mcp` for assertion **run events** | Should surface as `ERROR` on the affected rule in the run summary, not buried in logs |
+| Calling `datahub assertions upsert -f …` from any scaffolded code | Deprecated CLI path; will be removed |
+| `runId = uuid.uuid4()` regenerated per rule emit within a single run | Breaks "all rules of one run share a runId" grouping in DataHub assertion timeline |
+
+---
+
 ## Note — "Smart DataHub" / AI Auto-Documentation Is Not in OSS
 
 AI-driven auto-documentation and intelligent SQL-parsing features (sometimes marketed as "Smart DataHub") are **DataHub Cloud / Acryl-hosted** offerings and are **not present in the OSS `ref/github/datahub/` v1.5.0.2 source**. There is no public SDK, GraphQL, or REST surface in OSS for:

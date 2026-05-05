@@ -205,24 +205,51 @@ are append-only — DataHub retains history.
 ### Assertion Aspects
 
 Assertions are stored on `assertion` entities (not `dataset` entities). DataSpoke's
-Validation feature (UC2) builds on DataHub's
-[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec),
-which defines six `assertionInfo.type` values covering the primary data quality
-dimensions:
+Validation feature (UC2) borrows the YAML field shape from DataHub's
+[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)
+for portability of the on-disk grammar. The OAS itself is a *reference*, not a
+contract: the OSS `datahub assertions` CLI / compiler is deprecated in v1.5 and
+should not be called. DataSpoke writes both `assertionInfo` and `assertionRunEvent`
+aspects directly via MCP emission.
 
-| `assertionInfo.type` | Quality dimension | DataSpoke `rules[].type` | Notes |
-|---|---|---|---|
-| `FRESHNESS` | Timeliness | `freshness` | Native |
-| `VOLUME` | Completeness | `volume` | Native |
-| `FIELD` | Accuracy / validity | `field` | Native |
-| `SCHEMA` | Conformance | `schema` | Native |
-| `SQL` | Custom SQL | `sql` | Native |
-| `CUSTOM` | Anything else | `custom` | DataSpoke uses `subtype: "sql_timeseries"` for partition-aware SQL with optional ML-based anomaly detection |
+Six `assertionInfo.type` values cover the primary data quality dimensions:
 
-DataSpoke registers each rule's `assertionInfo` once at config upsert and reports
-execution outcomes via `assertionRunEvent` (`SUCCESS` / `FAILURE` / `ERROR`), so
-DataSpoke-managed checks appear in DataHub's native assertion UI alongside DataHub-native
-assertions.
+| `assertionInfo.type` | Quality dimension | DataSpoke `rules[].type` | Required typed sub-aspect (SDK class) | Notes |
+|---|---|---|---|---|
+| `FRESHNESS` | Timeliness | `freshness` | `freshnessAssertion` (`FreshnessAssertionInfoClass`) | Native |
+| `VOLUME` | Completeness | `volume` | `volumeAssertion` (`VolumeAssertionInfoClass`) | Native |
+| `FIELD` | Accuracy / validity | `field` | `fieldAssertion` (`FieldAssertionInfoClass`) — `FIELD_VALUES` or `FIELD_METRIC` | Native |
+| `DATA_SCHEMA` | Conformance | `schema` | `schemaAssertion` (`SchemaAssertionInfoClass`) | PDL constant is `DATA_SCHEMA` (not `SCHEMA` — reserved-word workaround) |
+| `SQL` | Custom SQL | `sql` | `sqlAssertion` (`SqlAssertionInfoClass`) | Native |
+| `CUSTOM` | Anything else | `custom` | `customAssertion` (`CustomAssertionInfoClass`) — `entity=<dataset_urn>`, `type=<subtype>` | DataSpoke uses `subtype: "sql_timeseries"` for partition-aware SQL with optional ML-based anomaly detection |
+
+Mandatory conventions (see also
+[datahub-api skill §Pattern D](../.claude/skills/datahub-api/reference.md#known-pattern-d--dataspoke-validation-authoring-custom--typed-assertions)):
+
+1. **Typed sub-aspect required.** Setting `assertionInfo.type=…` alone with no
+   matching sub-aspect leaves the assertion blank in DataHub's UI and returns
+   `null` from `assertionInfo.{freshness,volume,…}Assertion` over GraphQL. The
+   sub-aspect carries the actual check definition (entity URN, schedule, field,
+   compatibility, statement, etc.).
+2. **`source.type = EXTERNAL`** on every DataSpoke-emitted `AssertionInfo`.
+   Marks "DataSpoke runs this, DataHub stores results"; DataHub will not try to
+   execute it. Never use `NATIVE` (reserved for the DataHub Cloud runner).
+3. **Deterministic URN.** `urn:li:assertion:<datahub_guid({"entity": dataset_urn, "rule": rule_id})>`,
+   so re-emit on config edit is idempotent.
+4. **`lastUpdated` audit stamp.** Populate `AssertionInfoClass.lastUpdated` with
+   the DataSpoke service-user URN; otherwise the DataHub UI history card shows
+   "unknown actor".
+5. **Shared `runId` per validation run.** All rules in one run write the same
+   `assertionRunEvent.runId` so the DataHub timeline groups them correctly.
+6. **Registration timing.** `assertionInfo` is emitted at config upsert
+   (`PUT/PATCH /attr/validation/conf`), not lazily on first run — see
+   [BACKEND §Validation Service](feature/BACKEND.md#validation-service-srcbackendvalidation).
+   A DataHub error during registration surfaces as 502/503; DataHub is the SSOT
+   for assertion definitions and config save is coupled to its availability by
+   design.
+7. **Run-event emission is best-effort but not silent.** Failures of
+   `assertionRunEvent` emission produce an `ERROR` result on the affected rule
+   (visible in the run summary), never a swallowed log warning.
 
 | Aspect | SDK Class | Entity Type | REST Write Path |
 |--------|----------|-------------|----------------|
