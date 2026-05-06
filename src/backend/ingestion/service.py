@@ -42,6 +42,18 @@ from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 logger = logging.getLogger(__name__)
 
+_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
+
+
+def _derive_workflow_dag_id(mode: str | None, schedule_tier: str | None) -> str | None:
+    """Map (mode, schedule_tier) → Airflow DAG ID. active-custom only.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id
+    """
+    if mode == "active-custom" and schedule_tier in _VALID_TIERS:
+        return f"ingestion-active-{schedule_tier}"
+    return None
+
 
 class IngestionConfigRecord(BaseModel):
     """Value object mirroring the ORM IngestionConfig."""
@@ -139,6 +151,7 @@ class IngestionService:
             existing.auth = auth
             existing.is_enabled = is_enabled
             existing.schedule_tier = schedule_tier
+            existing.workflow_dag_id = _derive_workflow_dag_id(mode, schedule_tier)
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
             created = False
@@ -152,6 +165,7 @@ class IngestionService:
                 auth=auth,
                 is_enabled=is_enabled,
                 schedule_tier=schedule_tier,
+                workflow_dag_id=_derive_workflow_dag_id(mode, schedule_tier),
             )
             self._db.add(existing)
             created = True
@@ -202,6 +216,7 @@ class IngestionService:
             row.is_enabled = patch["is_enabled"]
         if "schedule_tier" in patch:
             row.schedule_tier = patch["schedule_tier"]
+        row.workflow_dag_id = _derive_workflow_dag_id(row.mode, row.schedule_tier)
         row.updated_at = datetime.now(tz=UTC)
 
         self._db.add(row)
@@ -218,6 +233,7 @@ class IngestionService:
                 "fields_changed": list(patch.keys()),
                 "is_enabled": row.is_enabled,
                 "schedule_tier": row.schedule_tier,
+                "workflow_dag_id": row.workflow_dag_id,
             },
         )
 

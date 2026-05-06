@@ -13,11 +13,21 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 from datahub.metadata.schema_classes import (
+    ArrayTypeClass,
+    BooleanTypeClass,
+    BytesTypeClass,
     DatasetPropertiesClass,
+    DateTypeClass,
+    MapTypeClass,
+    NullTypeClass,
+    NumberTypeClass,
     OtherSchemaClass,
     SchemaFieldClass,
+    SchemaFieldDataTypeClass,
     SchemaMetadataClass,
     StatusClass,
+    StringTypeClass,
+    TimeTypeClass,
 )
 from pydantic import BaseModel
 
@@ -38,39 +48,39 @@ SUPPORTED_PLATFORMS: frozenset[str] = frozenset(p.value for p in Platform)
 
 # ── Type mappings ─────────────────────────────────────────────────────────────
 
-_PG_TO_DATAHUB_TYPE: dict[str, str] = {
-    "integer": "NUMBER",
-    "bigint": "NUMBER",
-    "smallint": "NUMBER",
-    "numeric": "NUMBER",
-    "real": "NUMBER",
-    "double precision": "NUMBER",
-    "boolean": "BOOLEAN",
-    "text": "STRING",
-    "character varying": "STRING",
-    "character": "STRING",
-    "varchar": "STRING",
-    "char": "STRING",
-    "date": "DATE",
-    "timestamp with time zone": "TIME",
-    "timestamp without time zone": "TIME",
-    "time with time zone": "TIME",
-    "time without time zone": "TIME",
-    "jsonb": "STRING",
-    "json": "STRING",
-    "uuid": "STRING",
-    "bytea": "BYTES",
-    "ARRAY": "ARRAY",
+_PG_TO_DATAHUB_TYPE: dict[str, object] = {
+    "integer": NumberTypeClass(),
+    "bigint": NumberTypeClass(),
+    "smallint": NumberTypeClass(),
+    "numeric": NumberTypeClass(),
+    "real": NumberTypeClass(),
+    "double precision": NumberTypeClass(),
+    "boolean": BooleanTypeClass(),
+    "text": StringTypeClass(),
+    "character varying": StringTypeClass(),
+    "character": StringTypeClass(),
+    "varchar": StringTypeClass(),
+    "char": StringTypeClass(),
+    "date": DateTypeClass(),
+    "timestamp with time zone": TimeTypeClass(),
+    "timestamp without time zone": TimeTypeClass(),
+    "time with time zone": TimeTypeClass(),
+    "time without time zone": TimeTypeClass(),
+    "jsonb": StringTypeClass(),
+    "json": StringTypeClass(),
+    "uuid": StringTypeClass(),
+    "bytea": BytesTypeClass(),
+    "ARRAY": ArrayTypeClass(),
 }
 
-_JSON_TO_DATAHUB_TYPE: dict[str, str] = {
-    "str": "STRING",
-    "int": "NUMBER",
-    "float": "NUMBER",
-    "bool": "BOOLEAN",
-    "list": "ARRAY",
-    "dict": "MAP",
-    "NoneType": "NULL",
+_JSON_TO_DATAHUB_TYPE: dict[str, object] = {
+    "str": StringTypeClass(),
+    "int": NumberTypeClass(),
+    "float": NumberTypeClass(),
+    "bool": BooleanTypeClass(),
+    "list": ArrayTypeClass(),
+    "dict": MapTypeClass(),
+    "NoneType": NullTypeClass(),
 }
 
 
@@ -177,11 +187,19 @@ async def _extract_postgresql(
         where = " AND ".join(conditions)
         rows = await conn.fetch(
             f"""
-            SELECT table_schema, table_name, column_name, data_type,
-                   ordinal_position, is_nullable
-            FROM information_schema.columns
+            SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
+                   c.ordinal_position, c.is_nullable,
+                   col_description(
+                       format('%I.%I', c.table_schema, c.table_name)::regclass,
+                       c.ordinal_position
+                   ) AS column_comment,
+                   obj_description(
+                       format('%I.%I', c.table_schema, c.table_name)::regclass,
+                       'pg_class'
+                   ) AS table_comment
+            FROM information_schema.columns c
             WHERE {where}
-            ORDER BY table_schema, table_name, ordinal_position
+            ORDER BY c.table_schema, c.table_name, c.ordinal_position
             """,
             *params,
         )
@@ -210,11 +228,17 @@ async def _extract_postgresql(
             SchemaFieldClass(
                 fieldPath=col["column_name"],
                 nativeDataType=col["data_type"],
-                type={"type": {"type": _PG_TO_DATAHUB_TYPE.get(col["data_type"], "STRING")}},
+                type=SchemaFieldDataTypeClass(
+                    type=_PG_TO_DATAHUB_TYPE.get(col["data_type"], StringTypeClass()),
+                ),
                 nullable=col["is_nullable"] == "YES",
+                description=col.get("column_comment"),
             )
             for col in columns
         ]
+
+        table_comment = columns[0].get("table_comment") if columns else None
+        description = table_comment or f"Ingested by DataSpoke: {database}.{s}.{t}"
 
         if not dry_run:
             try:
@@ -224,7 +248,7 @@ async def _extract_postgresql(
                     DatasetPropertiesClass(
                         name=f"{s}.{t}",
                         qualifiedName=f"{database}.{s}.{t}",
-                        description=f"Ingested by DataSpoke: {database}.{s}.{t}",
+                        description=description,
                         customProperties={
                             "source": "dataspoke-ingestion",
                             "database": database,
@@ -296,7 +320,9 @@ async def _extract_kafka(
         SchemaFieldClass(
             fieldPath=name,
             nativeDataType=py_type,
-            type={"type": {"type": _JSON_TO_DATAHUB_TYPE.get(py_type, "STRING")}},
+            type=SchemaFieldDataTypeClass(
+                type=_JSON_TO_DATAHUB_TYPE.get(py_type, StringTypeClass()),
+            ),
             nullable=True,
         )
         for name, py_type in field_types.items()

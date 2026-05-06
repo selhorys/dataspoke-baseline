@@ -137,6 +137,11 @@ async def test_uc1_active_custom_postgres(
         )
         assert put_body["platform"] == "postgres"
         assert put_body["schedule_tier"] == "daily"
+        assert put_body["workflow_dag_id"] == "ingestion-active-daily", (
+            f"active-custom + daily must surface workflow_dag_id='ingestion-active-daily'; "
+            f"got {put_body.get('workflow_dag_id')!r}. "
+            "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+        )
         assert put_body["is_enabled"] is False
         assert put_body["identifier"]["table"] == "title_master"
         # spec: SECRET_RESOLUTION.md §Vault-write flow — password stripped from response
@@ -200,6 +205,12 @@ async def test_uc1_active_custom_postgres(
         )
         assert enable_resp.status_code == 200, (
             f"PATCH is_enabled=true failed: {enable_resp.status_code} {enable_resp.text}"
+        )
+        enable_body = enable_resp.json()
+        assert enable_body["workflow_dag_id"] == "ingestion-active-daily", (
+            f"PATCH is_enabled=true must preserve workflow_dag_id='ingestion-active-daily'; "
+            f"got {enable_body.get('workflow_dag_id')!r}. "
+            "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
         )
 
         enabled_run_resp = await api_client.post(
@@ -266,6 +277,107 @@ async def test_uc1_active_custom_postgres(
             f"Expected an INGESTION.COMPLETE event/ingestion row with run_id={run_id!r} "
             f"within 30s. Events returned: {(event_body or {}).get('events', [])}. "
             "spec: BACKEND.md §Active run pipeline — INGESTION.COMPLETE event recorded"
+        )
+
+        # ── Step 5b: Assert DataHub aspects carry PG comments + typed fields ──
+        # spec: BACKEND.md §Ingestion Service — PG comment ingestion.
+        # spec: DATAHUB_INTEGRATION.md §datasetProperties — description from ingestion.
+        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed union fix.
+        # spec: BACKEND.md §Active run pipeline lines 246-257 — a non-dry-run completing
+        # with INGESTION.COMPLETE must have emitted both aspects in full.
+        datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
+        datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+
+        if not datahub_gms_url:
+            pytest.skip("DATASPOKE_DATAHUB_GMS_URL not set; skipping aspect verification")
+
+        gms_headers: dict[str, str] = {}
+        if datahub_token:
+            gms_headers["Authorization"] = f"Bearer {datahub_token}"
+
+        encoded_active_urn = urllib.parse.quote(_ACTIVE_URN, safe="")
+
+        # datasetProperties — description must start with seeded COMMENT ON TABLE text.
+        # spec: TESTING.md §Imazon Dummy-Data Reference — seed in 01_catalog.sql:
+        #   COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — ...'
+        props_resp = httpx.get(
+            f"{datahub_gms_url}/aspects/{encoded_active_urn}"
+            "?aspect=datasetProperties&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert props_resp.status_code == 200, (
+            f"GMS GET datasetProperties failed: {props_resp.status_code} {props_resp.text}"
+        )
+        dp_description = (
+            props_resp.json()
+            .get("aspect", {})
+            .get("com.linkedin.dataset.DatasetProperties", {})
+            .get("description", "")
+        )
+        assert dp_description.startswith("Master record for each book title"), (
+            f"datasetProperties.description must begin with seeded COMMENT ON TABLE text "
+            f"after UC1 active-custom run; got {dp_description!r}. "
+            "spec: BACKEND.md §Ingestion Service — PG comment ingestion. "
+            "spec: USE_CASE_en.md §UC1 Case 1"
+        )
+
+        # schemaMetadata — at least one NumberType field (page_count: integer) and
+        # one StringType field (title: character varying).
+        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed union fix.
+        schema_resp = httpx.get(
+            f"{datahub_gms_url}/aspects/{encoded_active_urn}"
+            "?aspect=schemaMetadata&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert schema_resp.status_code == 200, (
+            f"GMS GET schemaMetadata failed: {schema_resp.status_code} {schema_resp.text}"
+        )
+        fields_raw = (
+            schema_resp.json()
+            .get("aspect", {})
+            .get("com.linkedin.schema.SchemaMetadata", {})
+            .get("fields", [])
+        )
+        assert fields_raw, (
+            "schemaMetadata.fields must be non-empty after UC1 active-custom run. "
+            "spec: BACKEND.md §Active run pipeline — aspects emitted per discovered dataset."
+        )
+        fields_by_path = {f.get("fieldPath"): f for f in fields_raw}
+
+        # page_count (integer) → NumberType
+        assert "page_count" in fields_by_path, (
+            f"Expected 'page_count' field in schemaMetadata; got {list(fields_by_path.keys())}. "
+            "spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master schema"
+        )
+        pc_type = (
+            fields_by_path["page_count"]
+            .get("type", {})
+            .get("type", {})
+            .get("com.linkedin.schema.NumberType")
+        )
+        assert pc_type is not None, (
+            f"page_count (integer) must have type.type=NumberType after UC1 run; "
+            f"got type={fields_by_path['page_count'].get('type')!r}. "
+            "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
+        )
+
+        # title (character varying) → StringType
+        assert "title" in fields_by_path, (
+            f"Expected 'title' field in schemaMetadata; got {list(fields_by_path.keys())}. "
+            "spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master schema"
+        )
+        title_type = (
+            fields_by_path["title"]
+            .get("type", {})
+            .get("type", {})
+            .get("com.linkedin.schema.StringType")
+        )
+        assert title_type is not None, (
+            f"title (character varying) must have type.type=StringType after UC1 run; "
+            f"got type={fields_by_path['title'].get('type')!r}. "
+            "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
         )
 
         # Restore to disabled state
@@ -366,7 +478,14 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
                     "username": _PG_USER,
                     "password": _PG_PASSWORD,
                     "schema_pattern": {"allow": ["catalog"]},
-                    "table_pattern": {"allow": ["editions"]},
+                    "table_pattern": {"allow": [".*editions"]},
+                    # .*editions anchors the prefix so re.match against the lowercased
+                    # FQN example_db.catalog.editions succeeds.
+                    # spec: feature/BACKEND.md §Ingestion Service — PG comment ingestion
+                    "env": "DEV",
+                    # env must match DataSpoke's URN env so Managed Ingestion writes to
+                    # the same URN that DataSpoke registered.
+                    # spec: DATAHUB_INTEGRATION.md §dataset URN env discriminator
                     "include_tables": True,
                     "include_views": False,
                 },
@@ -599,6 +718,112 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
             f"within 60s (before={events_before_count}, after={passive_events_count}); "
             f"got events: {(events_body or {}).get('events', [])}. "
             "spec: USE_CASE_en.md §UC1 Case 2 — passive sync writes event rows"
+        )
+
+        # ── Step 6b: Verify Managed Ingestion actually wrote dataset-level aspects ──
+        # Without this, the test passes vacuously when Managed Ingestion's filter
+        # excludes the table — DataSpoke's passive-sync still surfaces the DPI,
+        # but no real metadata flowed.
+        # spec: feature/BACKEND.md §Custom Ingestor Authoring Contract;
+        #       DATAHUB_INTEGRATION.md §datasetProperties + §schemaMetadata typed-union shape.
+        dataset_urn_enc = urllib.parse.quote(_PASSIVE_PG_URN, safe="")
+        gms_headers = {"Authorization": f"Bearer {datahub_token}"} if datahub_token else {}
+        gms_dataset_resp = httpx.get(
+            f"{datahub_gms_url}/openapi/v3/entity/dataset/{dataset_urn_enc}",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert gms_dataset_resp.status_code == 200, (
+            f"GMS GET /openapi/v3/entity/dataset/{_PASSIVE_PG_URN!r} failed: "
+            f"{gms_dataset_resp.status_code} {gms_dataset_resp.text}"
+        )
+        gms_dataset = gms_dataset_resp.json()
+
+        # Description must come from the seeded PG COMMENT ON TABLE.
+        # spec: feature/BACKEND.md §Ingestion Service — PG comment ingestion
+        # spec: TESTING.md §Imazon Dummy-Data Reference — seed in 01_catalog.sql:
+        #   COMMENT ON TABLE catalog.editions IS 'Per-format edition rows for each book title...'
+        table_desc = (
+            gms_dataset.get("datasetProperties", {})
+            .get("value", {})
+            .get("description", "")
+        )
+        assert table_desc.startswith("Per-format edition rows"), (
+            f"datasetProperties.description must come from seeded PG COMMENT ON TABLE; "
+            f"got {table_desc!r}. Likely cause: Managed Ingestion's table_pattern filtered "
+            f"the table out, or env mismatch wrote to a different URN. "
+            f"spec: feature/BACKEND.md §Ingestion Service — PG comment ingestion"
+        )
+
+        # Each field must have a typed PDL union (not RecordType/Struct fallback).
+        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed-union shape
+        fields = (
+            gms_dataset.get("schemaMetadata", {})
+            .get("value", {})
+            .get("fields", [])
+        )
+        assert fields, "schemaMetadata.fields must be non-empty after Managed Ingestion run"
+        typed_unions = {
+            list(f.get("type", {}).get("type", {}).keys())[0]
+            for f in fields
+            if f.get("type", {}).get("type")
+        }
+        assert "com.linkedin.schema.RecordType" not in typed_unions, (
+            f"All fields fell back to RecordType (Struct) — Managed Ingestion did not write "
+            f"properly typed schemaMetadata. Got typed_unions={typed_unions}. "
+            f"spec: DATAHUB_INTEGRATION.md §schemaMetadata"
+        )
+        # Per-column type assertions — mirrors Step 5b pattern.
+        # editions columns per 01_catalog.sql:105-113: integer/varchar/numeric/date/boolean/timestamp.
+        # spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union
+        fields_by_path = {f["fieldPath"]: f for f in fields if f.get("fieldPath")}
+
+        assert "release_date" in fields_by_path, "schemaMetadata.fields missing 'release_date'"
+        release_date_type = fields_by_path["release_date"].get("type", {}).get("type", {}).get("com.linkedin.schema.DateType")
+        assert release_date_type is not None, (
+            f"editions.release_date must surface as DateType in DataHub; got "
+            f"{list(fields_by_path['release_date'].get('type', {}).get('type', {}).keys())}. "
+            f"spec: DATAHUB_INTEGRATION.md §schemaMetadata"
+        )
+
+        assert "is_active" in fields_by_path, "schemaMetadata.fields missing 'is_active'"
+        is_active_type = fields_by_path["is_active"].get("type", {}).get("type", {}).get("com.linkedin.schema.BooleanType")
+        assert is_active_type is not None, (
+            f"editions.is_active must surface as BooleanType in DataHub; got "
+            f"{list(fields_by_path['is_active'].get('type', {}).get('type', {}).keys())}. "
+            f"spec: DATAHUB_INTEGRATION.md §schemaMetadata"
+        )
+
+        assert "price" in fields_by_path, "schemaMetadata.fields missing 'price'"
+        price_type = fields_by_path["price"].get("type", {}).get("type", {}).get("com.linkedin.schema.NumberType")
+        assert price_type is not None, (
+            f"editions.price (numeric) must surface as NumberType; got "
+            f"{list(fields_by_path['price'].get('type', {}).get('type', {}).keys())}. "
+            f"spec: DATAHUB_INTEGRATION.md §schemaMetadata"
+        )
+
+        assert "format" in fields_by_path, "schemaMetadata.fields missing 'format'"
+        format_type = fields_by_path["format"].get("type", {}).get("type", {}).get("com.linkedin.schema.StringType")
+        assert format_type is not None, (
+            f"editions.format (varchar) must surface as StringType; got "
+            f"{list(fields_by_path['format'].get('type', {}).get('type', {}).keys())}. "
+            f"spec: DATAHUB_INTEGRATION.md §schemaMetadata"
+        )
+
+        # At least 6 of 7 fields must carry a description from a seeded PG COMMENT ON COLUMN.
+        # 01_catalog.sql:160-166 seeds 7 COMMENT ON COLUMN statements for editions.
+        # Allow one to be lost across DataHub's aspect-update timing edge cases.
+        # spec: feature/BACKEND.md §Ingestion Service — PG comment ingestion
+        fields_with_desc = [
+            f for f in fields
+            if f.get("description") and len(f["description"]) > 0
+        ]
+        assert len(fields_with_desc) >= 6, (
+            f"editions has 7 seeded COMMENT ON COLUMN statements (01_catalog.sql:160-166); "
+            f"expected at least 6 fields to surface their description after Managed Ingestion. "
+            f"Got {len(fields_with_desc)} of {len(fields)}: "
+            f"{[(f.get('fieldPath'), f.get('description')) for f in fields]}. "
+            f"spec: feature/BACKEND.md §Ingestion Service — PG comment ingestion"
         )
 
         # ── Step 8: Cross-dataset overview includes passive URN ───────────────

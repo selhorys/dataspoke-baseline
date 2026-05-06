@@ -1002,3 +1002,196 @@ async def test_active_custom_dry_run_skips_dpi_emission(service, db):
         f"got {added_event_types}. "
         "spec: BACKEND.md §Active run pipeline — dry-run event observability"
     )
+
+
+# ── workflow_dag_id derivation ────────────────────────────────────────────────
+
+
+async def test_upsert_active_custom_daily_sets_workflow_dag_id(service, db):
+    """upsert_config active-custom + daily sets workflow_dag_id='ingestion-active-daily'.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — 'Airflow DAG ID of the assigned
+    periodic DAG (active-custom mode only)'. Tier DAG IDs follow the pattern
+    ingestion-active-{tier} derived from the DAG files in src/workflows/dags/.
+    """
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    with patch("src.backend.ingestion.service.ensure_dataset_registered", new=AsyncMock()):
+        result, created = await service.upsert_config(
+            dataset_urn=_DATASET_URN,
+            mode="active-custom",
+            platform="postgres",
+            locator=_LOCATOR,
+            identifier=_IDENTIFIER,
+            auth=_AUTH,
+            is_enabled=True,
+            schedule_tier="daily",
+        )
+
+    assert created is True
+    assert result.workflow_dag_id == "ingestion-active-daily", (
+        f"active-custom + daily must produce workflow_dag_id='ingestion-active-daily'; "
+        f"got {result.workflow_dag_id!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+
+
+@pytest.mark.parametrize(
+    "schedule_tier,expected_dag_id",
+    [
+        ("hourly", "ingestion-active-hourly"),
+        ("daily", "ingestion-active-daily"),
+        ("weekly", "ingestion-active-weekly"),
+    ],
+)
+async def test_upsert_active_custom_each_tier_sets_matching_dag(
+    service, db, schedule_tier, expected_dag_id
+):
+    """upsert_config active-custom sets workflow_dag_id matching the schedule_tier.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — tier DAG IDs are
+    ingestion-active-{tier}. Parametrized over all three valid tiers.
+    """
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    with patch("src.backend.ingestion.service.ensure_dataset_registered", new=AsyncMock()):
+        result, _ = await service.upsert_config(
+            dataset_urn=_DATASET_URN,
+            mode="active-custom",
+            platform="postgres",
+            locator=_LOCATOR,
+            identifier=_IDENTIFIER,
+            auth=_AUTH,
+            is_enabled=True,
+            schedule_tier=schedule_tier,
+        )
+
+    assert result.workflow_dag_id == expected_dag_id, (
+        f"active-custom + schedule_tier={schedule_tier!r} must produce "
+        f"workflow_dag_id={expected_dag_id!r}; got {result.workflow_dag_id!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+
+
+async def test_upsert_passive_leaves_workflow_dag_id_null(service, db):
+    """upsert_config passive mode leaves workflow_dag_id=None.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — 'active-custom mode only';
+    passive configs must not carry a DAG ID.
+    """
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    with patch("src.backend.ingestion.service.ensure_dataset_registered", new=AsyncMock()):
+        result, created = await service.upsert_config(
+            dataset_urn=_DATASET_URN,
+            mode="passive",
+            platform="postgres",
+            locator=None,
+            identifier=_IDENTIFIER,
+            auth=None,
+            is_enabled=True,
+            schedule_tier=None,
+        )
+
+    assert created is True
+    assert result.workflow_dag_id is None, (
+        f"passive config must have workflow_dag_id=None; "
+        f"got {result.workflow_dag_id!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+
+
+async def test_patch_schedule_tier_updates_workflow_dag_id(service, db):
+    """PATCH schedule_tier from daily to hourly updates workflow_dag_id accordingly.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — derivation is re-evaluated
+    on every patch_config call using the final (post-patch) row state.
+    """
+    existing_row = _make_config_row(
+        mode="active-custom",
+        schedule_tier="daily",
+        workflow_dag_id="ingestion-active-daily",
+    )
+    mock_scalar_query(db, existing_row)
+    mock_db_refresh(db)
+
+    result = await service.patch_config(_DATASET_URN, {"schedule_tier": "hourly"})
+
+    assert existing_row.schedule_tier == "hourly"
+    assert existing_row.workflow_dag_id == "ingestion-active-hourly", (
+        f"PATCH schedule_tier='hourly' must update workflow_dag_id to "
+        f"'ingestion-active-hourly'; got {existing_row.workflow_dag_id!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+    assert result.workflow_dag_id == "ingestion-active-hourly", (
+        f"Returned record must reflect the updated workflow_dag_id; "
+        f"got {result.workflow_dag_id!r}."
+    )
+
+
+async def test_patch_mode_to_passive_clears_workflow_dag_id(service, db):
+    """PATCH mode from active-custom to passive clears workflow_dag_id to None.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — 'active-custom mode only';
+    switching to passive must null out the DAG ID.
+    """
+    existing_row = _make_config_row(
+        mode="active-custom",
+        schedule_tier="daily",
+        workflow_dag_id="ingestion-active-daily",
+    )
+    mock_scalar_query(db, existing_row)
+    mock_db_refresh(db)
+
+    result = await service.patch_config(_DATASET_URN, {"mode": "passive"})
+
+    assert existing_row.mode == "passive"
+    assert existing_row.workflow_dag_id is None, (
+        f"PATCH mode='passive' must clear workflow_dag_id to None; "
+        f"got {existing_row.workflow_dag_id!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+    assert result.workflow_dag_id is None, (
+        f"Returned record must carry workflow_dag_id=None after mode switch to passive; "
+        f"got {result.workflow_dag_id!r}."
+    )
+
+
+async def test_patch_active_custom_with_null_schedule_tier_keeps_dag_id_null(service, db):
+    """active-custom row with schedule_tier=None: patching mode='active-custom' keeps dag_id null.
+
+    This exercises the case where an active-custom config was stored without a valid
+    schedule_tier (e.g., created with schedule_tier=None before tier was required).
+    _derive_workflow_dag_id(mode='active-custom', schedule_tier=None) must return None
+    because None is not in _VALID_TIERS.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — tier must be one of
+    {hourly, daily, weekly}; None schedule_tier must not produce a DAG ID.
+
+    Note: the public upsert API accepts schedule_tier=None for active-custom (the
+    schema column is nullable), so this row state is reachable without bypassing
+    the API layer.
+    """
+    existing_row = _make_config_row(
+        mode="active-custom",
+        schedule_tier=None,
+        workflow_dag_id=None,
+    )
+    mock_scalar_query(db, existing_row)
+    mock_db_refresh(db)
+
+    # PATCH mode back to active-custom (no-op change) — workflow_dag_id must remain null
+    result = await service.patch_config(_DATASET_URN, {"mode": "active-custom"})
+
+    assert existing_row.workflow_dag_id is None, (
+        f"active-custom + schedule_tier=None must keep workflow_dag_id=None; "
+        f"got {existing_row.workflow_dag_id!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+    assert result.workflow_dag_id is None, (
+        f"Returned record must carry workflow_dag_id=None when schedule_tier is None; "
+        f"got {result.workflow_dag_id!r}."
+    )

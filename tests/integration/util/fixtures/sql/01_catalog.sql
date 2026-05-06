@@ -79,6 +79,28 @@ INSERT INTO catalog.title_master (isbn, title, subtitle, author_name, genre_code
 ('9780000000029', 'Biohack',                  'Optimizing Human 2.0',      'Tom Harwick',      'NF-SELF', 'Summit Books',      '2025-03-01', 230, 260, 16.99, 'The science of self-improvement at the cellular level.'),
 ('9780000000030', 'The Infinite Library',     NULL,                        'Marcus Chen',      'FIC-SCI', 'Imazon Press',      '2025-04-10', 410, 460, 18.99, 'A library that contains every book ever written — and some that shouldn''t exist.');
 
+-- COMMENTS for DataHub ingestion to surface as descriptions
+COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — one row per (ISBN, edition_id) combination. Source of truth for title, author, publisher, and pricing reference data. Used by UC1 (ingestion) and UC4 (metadata generation).';
+
+COMMENT ON COLUMN catalog.title_master.isbn IS 'ISBN-13 identifier for the book. Combined with edition_id forms the natural key.';
+COMMENT ON COLUMN catalog.title_master.edition_id IS 'Edition sequence number (1, 2, 3, ...) for revisions of the same ISBN.';
+COMMENT ON COLUMN catalog.title_master.title IS 'Primary title of the book as it appears on the cover.';
+COMMENT ON COLUMN catalog.title_master.subtitle IS 'Optional subtitle. NULL when the cover shows no subtitle.';
+COMMENT ON COLUMN catalog.title_master.author_name IS 'Primary author display name. Multi-author works show only the lead author here.';
+COMMENT ON COLUMN catalog.title_master.genre_code IS 'Foreign key into catalog.genre_hierarchy. Two-level taxonomy (e.g., FIC-THR for Fiction → Thriller).';
+COMMENT ON COLUMN catalog.title_master.publisher IS 'Publishing house name. NULL for self-published or unknown.';
+COMMENT ON COLUMN catalog.title_master.publish_date IS 'First publication date for this edition.';
+COMMENT ON COLUMN catalog.title_master.language IS 'ISO 639-1 two-letter language code with optional region (e.g., en, en-US, ko).';
+COMMENT ON COLUMN catalog.title_master.page_count IS 'Total page count for the print edition. NULL for audio-only or unknown.';
+COMMENT ON COLUMN catalog.title_master.weight_grams IS 'Physical weight in grams for shipping calculation. NULL for digital editions.';
+COMMENT ON COLUMN catalog.title_master.list_price IS 'Manufacturer suggested retail price in the title currency. Excludes tax.';
+COMMENT ON COLUMN catalog.title_master.currency IS 'ISO 4217 currency code for list_price. Defaults to USD.';
+COMMENT ON COLUMN catalog.title_master.is_active IS 'Whether this title is currently sellable. Inactive titles are kept for historical analytics.';
+COMMENT ON COLUMN catalog.title_master.created_at IS 'Row creation timestamp (UTC). Backfilled to publish_date for historical imports.';
+COMMENT ON COLUMN catalog.title_master.updated_at IS 'Last mutation timestamp (UTC). Driven by application-layer triggers, not DB triggers.';
+COMMENT ON COLUMN catalog.title_master.description IS 'Marketing blurb or back-cover description. Plain text, no markup.';
+COMMENT ON COLUMN catalog.title_master.cover_url IS 'Public URL to the cover image asset. NULL when artwork is not yet uploaded.';
+
 -- Editions (~40 rows) — multiple formats per title
 CREATE TABLE catalog.editions (
     edition_id  SERIAL PRIMARY KEY,
@@ -131,3 +153,14 @@ INSERT INTO catalog.editions (isbn, format, price, release_date) VALUES
 ('9780000000027', 'Paperback',  14.99, '2025-02-14'),
 ('9780000000028', 'Hardcover',  10.99, '2025-01-20'),
 ('9780000000030', 'Hardcover',  28.99, '2025-04-10');
+
+-- COMMENTS for catalog.editions — UC1 Case 2 (DataHub Managed Ingestion target)
+COMMENT ON TABLE catalog.editions IS 'Per-format edition rows for each book title. One row per (ISBN, format) combination — captures Hardcover/Paperback/eBook/Audiobook variants and their release dates.';
+
+COMMENT ON COLUMN catalog.editions.edition_id IS 'Synthetic primary key. Sequence value, not meaningful outside this table.';
+COMMENT ON COLUMN catalog.editions.isbn IS 'ISBN-13 of the parent title in catalog.title_master. Multiple editions share the same ISBN with different formats.';
+COMMENT ON COLUMN catalog.editions.format IS 'Physical or digital format. Constrained to {Hardcover, Paperback, eBook, Audiobook}.';
+COMMENT ON COLUMN catalog.editions.price IS 'Edition-specific list price in the title currency. Hardcover and Audiobook typically priced higher than Paperback/eBook.';
+COMMENT ON COLUMN catalog.editions.release_date IS 'Release date for this edition. May differ from the title''s original publish_date for later format releases.';
+COMMENT ON COLUMN catalog.editions.is_active IS 'Whether this edition is currently in print/available. Out-of-print editions are kept for historical sales analytics.';
+COMMENT ON COLUMN catalog.editions.created_at IS 'Row creation timestamp (UTC). Backfilled to release_date for historical imports.';

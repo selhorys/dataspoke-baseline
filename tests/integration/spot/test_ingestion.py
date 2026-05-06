@@ -8,10 +8,14 @@ Concerns covered:
 - DELETE /data/{urn}/attr/ingestion/conf — remove config (204)
 - POST /data/{urn}/method/ingestion/run — dry_run=true triggers without writing
 - GET /data/{urn}/event/ingestion — event list returns paginated envelope
+- PG comment ingestion — table/column COMMENT ON statements flow through to DataHub aspects
+- Typed schema field types — extractor emits SchemaFieldDataTypeClass wrappers, not bare strings
 """
 # spec: API.md §Standard Envelope
 # spec: BACKEND.md §Ingestion Service
+# spec: DATAHUB_INTEGRATION.md §datasetProperties, §schemaMetadata
 
+import asyncio
 import os
 import urllib.parse
 import uuid
@@ -314,6 +318,56 @@ async def test_ingestion_events_list_envelope(
 
 
 @pytest.mark.asyncio
+async def test_ingestion_conf_put_active_custom_daily_workflow_dag_id(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT active-custom + schedule_tier='daily' surfaces workflow_dag_id in the response.
+
+    spec: feature/BACKEND_SCHEMA.md §workflow_dag_id — 'Airflow DAG ID of the assigned
+    periodic DAG (active-custom mode only)'. Tier DAG IDs follow the pattern
+    ingestion-active-{tier}.
+    """
+    base = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
+
+    put_resp = await api_client.put(
+        base,
+        headers=admin_headers,
+        json={
+            "mode": "active-custom",
+            "platform": "postgres",
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {
+                "database": _PG_DB,
+                "schema_name": "catalog",
+                "table": "title_master",
+            },
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": _VAULT_NAME,
+                    "key": _VAULT_KEY,
+                    "force_overwrite": True,
+                },
+            },
+            "is_enabled": False,
+            "schedule_tier": "daily",
+        },
+    )
+    assert put_resp.status_code in (200, 201), put_resp.text
+    put_body = put_resp.json()
+    assert put_body["workflow_dag_id"] == "ingestion-active-daily", (
+        f"active-custom + daily must surface workflow_dag_id='ingestion-active-daily'; "
+        f"got {put_body.get('workflow_dag_id')!r}. "
+        "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+    )
+
+    # Cleanup
+    await api_client.delete(base, headers=admin_headers)
+
+
+@pytest.mark.asyncio
 async def test_ingestion_conf_put_secret_collision_returns_422(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
@@ -501,3 +555,226 @@ async def test_ingestion_conf_put_reference_path_to_existing_secret(
     finally:
         await api_client.delete(base_conf_1, headers=admin_headers)
         await api_client.delete(base_conf_2, headers=admin_headers)
+
+
+# ── PG comment ingestion + typed schema field types ───────────────────────────
+#
+# Seed data: tests/integration/util/fixtures/sql/01_catalog.sql has
+#   COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — ...'
+#   COMMENT ON COLUMN catalog.title_master.isbn IS 'ISBN-13 identifier ...'
+#   COMMENT ON COLUMN catalog.title_master.page_count IS '...'   (integer column)
+#   COMMENT ON COLUMN catalog.title_master.title IS '...'        (character varying column)
+#
+# These assertions verify both features end-to-end via a real DataHub GMS query.
+# Reset is handled by the module-level DUMMY_DATA_DATAHUB_SCHEMAS constant above.
+
+_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
+_DATAHUB_TOKEN = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+
+_ACTIVE_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+_ACTIVE_ENCODED = urllib.parse.quote(_ACTIVE_URN, safe="")
+_VAULT_NAME_SPOT_TYPED = "dataspoke-source-cred-spot-typed-schema"
+_VAULT_KEY_SPOT_TYPED = "password"
+
+
+@pytest.mark.asyncio
+async def test_ingestion_pg_comments_and_typed_fields_in_datahub(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Active-custom run for catalog.title_master emits PG comments and typed field
+    types to DataHub.
+
+    Two concerns verified together (one real run is expensive):
+    1. PG comment ingestion — COMMENT ON TABLE flows to datasetProperties.description;
+       COMMENT ON COLUMN isbn flows to schemaMetadata fields[isbn].description.
+    2. Typed PDL union fix — at least one NumberType field (page_count: integer)
+       and one StringType field (title: character varying) are present, proving
+       the extractor emits SchemaFieldDataTypeClass wrappers rather than bare
+       strings that caused every column to appear as 'Struct' in DataHub.
+
+    spec: BACKEND.md §Ingestion Service — PG comment ingestion.
+    spec: BACKEND.md §Custom Ingestor Authoring Contract — SchemaMetadata aspect.
+    spec: DATAHUB_INTEGRATION.md §datasetProperties — description from ingestion.
+    spec: DATAHUB_INTEGRATION.md §schemaMetadata — fields[].type typed union fix.
+    spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master (UC1 primary).
+    """
+    if not _DATAHUB_GMS_URL:
+        pytest.skip("DATASPOKE_DATAHUB_GMS_URL not set; skipping DataHub aspect assertions")
+
+    base_conf = f"/api/v1/spoke/common/data/{_ACTIVE_ENCODED}/attr/ingestion/conf"
+    base_run = f"/api/v1/spoke/common/data/{_ACTIVE_ENCODED}/method/ingestion/run"
+    base_events = f"/api/v1/spoke/common/data/{_ACTIVE_ENCODED}/event/ingestion"
+
+    try:
+        # ── PUT active-custom config and enable ───────────────────────────────
+        put_resp = await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "mode": "active-custom",
+                "platform": "postgres",
+                "locator": {"host": _PG_HOST, "port": _PG_PORT},
+                "identifier": {
+                    "database": _PG_DB,
+                    "schema_name": "catalog",
+                    "table": "title_master",
+                },
+                "auth": {
+                    "username": _PG_USER,
+                    "password": _PG_PASSWORD,
+                    "secret_ref": {
+                        "name": _VAULT_NAME_SPOT_TYPED,
+                        "key": _VAULT_KEY_SPOT_TYPED,
+                        "force_overwrite": True,
+                    },
+                },
+                "is_enabled": True,
+                "schedule_tier": "daily",
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT active-custom conf failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        # ── Trigger real run (dry_run=false) ──────────────────────────────────
+        run_resp = await api_client.post(
+            base_run,
+            headers=admin_headers,
+            json={"dry_run": False},
+        )
+        assert run_resp.status_code == 200, (
+            f"POST ingestion run failed: {run_resp.status_code} {run_resp.text}"
+        )
+        run_id = run_resp.json()["run_id"]
+
+        # ── Poll until INGESTION.COMPLETE event appears (cap 30s) ─────────────
+        # spec: BACKEND.md §Active run pipeline — INGESTION.COMPLETE event recorded
+        # spec: feedback_no_increase_timeout — bounded polls, not sleep.
+        found_complete = False
+        deadline = asyncio.get_event_loop().time() + 30.0
+        while asyncio.get_event_loop().time() < deadline:
+            events_resp = await api_client.get(
+                base_events + "?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z",
+                headers=admin_headers,
+            )
+            assert events_resp.status_code == 200
+            for evt in events_resp.json().get("events", []):
+                detail = evt.get("detail") or {}
+                if detail.get("run_id") == run_id:
+                    assert evt["event_type"] == "INGESTION.COMPLETE", (
+                        f"Run must produce INGESTION.COMPLETE; got {evt['event_type']!r}"
+                    )
+                    found_complete = True
+                    break
+            if found_complete:
+                break
+            await asyncio.sleep(1.0)
+
+        assert found_complete, (
+            f"INGESTION.COMPLETE event with run_id={run_id!r} not found within 30s. "
+            "spec: BACKEND.md §Active run pipeline"
+        )
+
+        # ── Query DataHub for datasetProperties aspect ────────────────────────
+        # spec: DATAHUB_INTEGRATION.md §datasetProperties — read via GET /aspects?urn=...
+        gms_headers: dict[str, str] = {}
+        if _DATAHUB_TOKEN:
+            gms_headers["Authorization"] = f"Bearer {_DATAHUB_TOKEN}"
+
+        encoded_urn = urllib.parse.quote(_ACTIVE_URN, safe="")
+        props_resp = httpx.get(
+            f"{_DATAHUB_GMS_URL}/aspects/{encoded_urn}?aspect=datasetProperties&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert props_resp.status_code == 200, (
+            f"GET datasetProperties from DataHub GMS returned {props_resp.status_code}: "
+            f"{props_resp.text}"
+        )
+        props_body = props_resp.json()
+        description = (
+            props_body.get("aspect", {})
+            .get("com.linkedin.dataset.DatasetProperties", {})
+            .get("description", "")
+        )
+        assert description.startswith("Master record for each book title"), (
+            f"datasetProperties.description must begin with seeded COMMENT ON TABLE text; "
+            f"got {description!r}. "
+            "spec: BACKEND.md §Ingestion Service — PG comment ingestion. "
+            "If this fails after a fresh run, the old aspect may still be cached in DataHub "
+            "from the pre-comment seed — run --reset-all before retrying."
+        )
+
+        # ── Query DataHub for schemaMetadata aspect ───────────────────────────
+        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — read via GET /aspects?urn=...
+        schema_resp = httpx.get(
+            f"{_DATAHUB_GMS_URL}/aspects/{encoded_urn}?aspect=schemaMetadata&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert schema_resp.status_code == 200, (
+            f"GET schemaMetadata from DataHub GMS returned {schema_resp.status_code}: "
+            f"{schema_resp.text}"
+        )
+        schema_body = schema_resp.json()
+        fields_raw = (
+            schema_body.get("aspect", {})
+            .get("com.linkedin.schema.SchemaMetadata", {})
+            .get("fields", [])
+        )
+        assert fields_raw, "schemaMetadata.fields must be non-empty after ingestion run"
+
+        # ── Assert isbn field description (PG column comment) ─────────────────
+        # spec: BACKEND.md §Ingestion Service — column comments → field descriptions.
+        # 01_catalog.sql: COMMENT ON COLUMN catalog.title_master.isbn IS 'ISBN-13 identifier...'
+        fields_by_path = {f.get("fieldPath"): f for f in fields_raw}
+        assert "isbn" in fields_by_path, (
+            f"Expected 'isbn' field in schemaMetadata; got {list(fields_by_path.keys())}"
+        )
+        isbn_field = fields_by_path["isbn"]
+        isbn_description = isbn_field.get("description", "")
+        assert isbn_description.startswith("ISBN-13 identifier"), (
+            f"isbn field description must start with seeded COMMENT ON COLUMN text; "
+            f"got {isbn_description!r}. "
+            "spec: BACKEND.md §Ingestion Service — PG comment ingestion."
+        )
+
+        # ── Assert typed field types (NumberType for page_count, StringType for title)
+        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — fields[].type typed union fix.
+        # page_count is INTEGER → must surface as NumberType (not Struct/RecordType).
+        assert "page_count" in fields_by_path, (
+            f"Expected 'page_count' field; got {list(fields_by_path.keys())}"
+        )
+        page_count_field = fields_by_path["page_count"]
+        page_count_type = (
+            page_count_field.get("type", {})
+            .get("type", {})
+            .get("com.linkedin.schema.NumberType")
+        )
+        assert page_count_type is not None, (
+            f"page_count (integer) must have type.type=NumberType; "
+            f"got type={page_count_field.get('type')!r}. "
+            "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
+        )
+
+        # title is character varying → must surface as StringType.
+        assert "title" in fields_by_path, (
+            f"Expected 'title' field; got {list(fields_by_path.keys())}"
+        )
+        title_field = fields_by_path["title"]
+        title_type = (
+            title_field.get("type", {})
+            .get("type", {})
+            .get("com.linkedin.schema.StringType")
+        )
+        assert title_type is not None, (
+            f"title (character varying) must have type.type=StringType; "
+            f"got type={title_field.get('type')!r}. "
+            "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
+        )
+
+    finally:
+        # Disable and clean up the conf row.
+        # Do NOT soft-delete the dataset in DataHub; --reset-all handles teardown.
+        await api_client.delete(base_conf, headers=admin_headers)
