@@ -296,7 +296,7 @@ Ingestion, custom acryl-datahub-SDK scripts, or any pipeline that emits
 `method/ingestion/run` applies to `active-custom` only and returns
 `409 INGESTION_NOT_APPLICABLE` for `passive`. See
 [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)
-and [BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract).
+and [DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|

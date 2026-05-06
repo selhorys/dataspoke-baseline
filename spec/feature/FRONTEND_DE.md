@@ -42,7 +42,7 @@ returns `409 INGESTION_NOT_APPLICABLE`), and surfaces a "Configure ingestion in 
 deep link (`http://datahub.<INGRESS_DOMAIN>/ingestion`) as a convenience. Passive
 `event/ingestion` history is populated by the hourly `ingestion-passive-hourly` DAG
 observing whatever ingestor emits `DataProcessInstance` records — see
-[BACKEND §Custom Ingestor Authoring Contract](BACKEND.md#custom-ingestor-authoring-contract).
+[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide).
 
 ```
 ┌────────────────────────────────────────────────┐
