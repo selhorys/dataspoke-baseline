@@ -687,7 +687,7 @@ async def test_active_custom_run_emits_dpi_lifecycle(service, db):
 
     emit_calls: list[tuple[str, object]] = []
 
-    async def _capture_emit(urn: str, aspect: object) -> None:
+    async def _capture_emit(urn: str, aspect: object, **kwargs: object) -> None:
         emit_calls.append((urn, aspect))
 
     service._datahub.emit_aspect = _capture_emit
@@ -842,7 +842,7 @@ async def test_active_custom_run_emits_dpi_failure_on_extractor_exception(servic
 
     emit_calls: list[tuple[str, object]] = []
 
-    async def _capture_emit(urn: str, aspect: object) -> None:
+    async def _capture_emit(urn: str, aspect: object, **kwargs: object) -> None:
         emit_calls.append((urn, aspect))
 
     service._datahub.emit_aspect = _capture_emit
@@ -1157,6 +1157,199 @@ async def test_patch_mode_to_passive_clears_workflow_dag_id(service, db):
     assert result.workflow_dag_id is None, (
         f"Returned record must carry workflow_dag_id=None after mode switch to passive; "
         f"got {result.workflow_dag_id!r}."
+    )
+
+
+# ── systemMetadata emission on DPI aspects ────────────────────────────────────
+
+
+async def test_active_custom_run_emits_systemmetadata_on_dpi_aspects(service, db):
+    """Happy path: every DPI-targeting emit carries system_metadata with
+    runId starting with 'dataspoke-postgres-'.
+
+    The STARTED emit and the terminal COMPLETE emit (happy path) must carry the
+    same runId — the single sysmeta object is reused for all aspects in a run.
+
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "every aspect emission targeting a dataset URN within a custom ingestor
+        run MUST carry a non-default systemMetadata"
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "The same sysmeta object is reused for all aspects in a single run
+        (Properties, Relationships, Output, and all RunEvents on the DPI)"
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "runId='dataspoke-{platform}-{run_id}', matching the DPI URN suffix
+        <platform>-<run_id>, so dataset aspects and the DPI cross-reference cleanly"
+    spec: USE_CASE_en.md §UC1 Case 1 — active-custom run emits DPI lifecycle
+    """
+    from datahub.metadata.schema_classes import (
+        DataProcessInstanceRunEventClass,
+        DataProcessRunStatusClass,
+        SystemMetadataClass,
+    )
+
+    from src.backend.ingestion.extractors import IngestionResult
+
+    config_row = _make_config_row(
+        platform="postgres",
+        mode="active-custom",
+        is_enabled=True,
+    )
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    emit_calls: list[tuple[str, object, object | None]] = []
+
+    async def _capture_emit(urn: str, aspect: object, **kwargs: object) -> None:
+        emit_calls.append((urn, aspect, kwargs.get("system_metadata")))
+
+    service._datahub.emit_aspect = _capture_emit
+
+    with (
+        patch(
+            "src.backend.ingestion.service.run_datahub_ingestion",
+            new=AsyncMock(
+                return_value=IngestionResult(entities_ingested=3, errors=[], warnings=[])
+            ),
+        ),
+        patch("src.backend.ingestion.service.mark_registered", new=AsyncMock()),
+    ):
+        result = await service.run(_DATASET_URN, dry_run=False)
+
+    assert result.status == "success"
+    run_id = result.run_id
+    expected_dpi_urn = f"urn:li:dataProcessInstance:postgres-{run_id}"
+
+    dpi_calls = [(urn, aspect, sm) for urn, aspect, sm in emit_calls if urn == expected_dpi_urn]
+    assert len(dpi_calls) >= 4, (
+        f"Expected at least 4 DPI emit calls; got {len(dpi_calls)}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract"
+    )
+
+    expected_run_id = f"dataspoke-postgres-{run_id}"
+
+    for i, (urn, aspect, sysmeta) in enumerate(dpi_calls):
+        assert sysmeta is not None, (
+            f"DPI emit call #{i} (aspect={type(aspect).__name__}) must carry "
+            f"system_metadata; got None. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert isinstance(sysmeta, SystemMetadataClass), (
+            f"DPI emit call #{i} system_metadata must be SystemMetadataClass; "
+            f"got {type(sysmeta).__name__!r}"
+        )
+        assert sysmeta.runId.startswith("dataspoke-postgres-"), (
+            f"DPI emit call #{i} system_metadata.runId must start with 'dataspoke-postgres-'; "
+            f"got {sysmeta.runId!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+
+    # The STARTED and terminal COMPLETE (success path) emit must carry the same runId.
+    # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+    #     "The same sysmeta object is reused for all aspects in a single run"
+    run_events_with_meta = [
+        (aspect, sm)
+        for _, aspect, sm in dpi_calls
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+    ]
+    started_run_ids = [
+        sm.runId
+        for aspect, sm in run_events_with_meta
+        if aspect.status == DataProcessRunStatusClass.STARTED and sm is not None
+    ]
+    complete_run_ids = [
+        sm.runId
+        for aspect, sm in run_events_with_meta
+        if aspect.status == DataProcessRunStatusClass.COMPLETE and sm is not None
+    ]
+
+    assert started_run_ids, "At least one STARTED RunEvent with system_metadata must exist"
+    assert complete_run_ids, "At least one COMPLETE RunEvent with system_metadata must exist"
+
+    assert started_run_ids[0] == complete_run_ids[0], (
+        f"STARTED and terminal COMPLETE RunEvent must carry the same runId; "
+        f"STARTED runId={started_run_ids[0]!r}, COMPLETE runId={complete_run_ids[0]!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+    )
+    assert started_run_ids[0] == expected_run_id, (
+        f"STARTED RunEvent runId must equal {expected_run_id!r}; "
+        f"got {started_run_ids[0]!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+    )
+
+
+async def test_active_custom_run_failure_path_emits_systemmetadata_on_terminal_dpi(service, db):
+    """Failure path: the terminal COMPLETE (FAILURE) DPI emit also carries system_metadata
+    with runId matching 'dataspoke-postgres-<run_id>'.
+
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "The same sysmeta object is reused for all aspects in a single run …
+        and all RunEvents on the DPI"
+    spec: BACKEND.md §Custom Ingestor Authoring Contract §Failure semantics —
+        "a failed run still emits the COMPLETE RunEvent"
+    """
+    from datahub.metadata.schema_classes import (
+        DataProcessInstanceRunEventClass,
+        DataProcessRunStatusClass,
+        RunResultTypeClass,
+        SystemMetadataClass,
+    )
+
+    config_row = _make_config_row(
+        platform="postgres",
+        mode="active-custom",
+        is_enabled=True,
+    )
+    mock_scalar_query(db, config_row)
+    mock_db_refresh(db)
+
+    emit_calls: list[tuple[str, object, object | None]] = []
+
+    async def _capture_emit(urn: str, aspect: object, **kwargs: object) -> None:
+        emit_calls.append((urn, aspect, kwargs.get("system_metadata")))
+
+    service._datahub.emit_aspect = _capture_emit
+
+    extractor_error = RuntimeError("DB connection refused")
+
+    with (
+        patch(
+            "src.backend.ingestion.service.run_datahub_ingestion",
+            new=AsyncMock(side_effect=extractor_error),
+        ),
+        pytest.raises(RuntimeError, match="DB connection refused"),
+    ):
+        await service.run(_DATASET_URN, dry_run=False)
+
+    # The failure-path COMPLETE emit is fired from within the except block.
+    # It must still carry system_metadata with the run's dataspoke-postgres- prefix.
+    # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement
+    failure_complete_events = [
+        (aspect, sm)
+        for _, aspect, sm in emit_calls
+        if isinstance(aspect, DataProcessInstanceRunEventClass)
+        and aspect.status == DataProcessRunStatusClass.COMPLETE
+        and getattr(getattr(aspect, "result", None), "type", None) == RunResultTypeClass.FAILURE
+    ]
+
+    assert len(failure_complete_events) == 1, (
+        f"Expected exactly one failure-path COMPLETE RunEvent; "
+        f"got {len(failure_complete_events)}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract §Failure semantics"
+    )
+
+    _, sm = failure_complete_events[0]
+    assert sm is not None, (
+        "Failure-path COMPLETE RunEvent must carry system_metadata; got None. "
+        "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+    )
+    assert isinstance(sm, SystemMetadataClass), (
+        f"Failure-path COMPLETE RunEvent system_metadata must be SystemMetadataClass; "
+        f"got {type(sm).__name__!r}"
+    )
+    assert sm.runId.startswith("dataspoke-postgres-"), (
+        f"Failure-path COMPLETE RunEvent system_metadata.runId must start with "
+        f"'dataspoke-postgres-'; got {sm.runId!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
     )
 
 

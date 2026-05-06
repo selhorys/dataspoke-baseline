@@ -6,12 +6,13 @@
 2. [Goals & Non-Goals](#goals--non-goals)
 3. [Integration Model](#integration-model)
 4. [Aspect Reference](#aspect-reference)
-5. [SDK Patterns](#sdk-patterns)
-6. [GraphQL Patterns](#graphql-patterns)
-7. [Event Subscription](#event-subscription)
-8. [Error Handling & Resilience](#error-handling--resilience)
-9. [Configuration](#configuration)
-10. [Open Questions](#open-questions)
+5. [Custom Ingestor Guide](#custom-ingestor-guide)
+6. [SDK Patterns](#sdk-patterns)
+7. [GraphQL Patterns](#graphql-patterns)
+8. [Event Subscription](#event-subscription)
+9. [Error Handling & Resilience](#error-handling--resilience)
+10. [Configuration](#configuration)
+11. [Open Questions](#open-questions)
 
 ## Overview
 
@@ -300,8 +301,7 @@ set server-side, matching the per-dataset config caps.
 
 Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
 `mode: active-custom` configs only (Status, DatasetProperties, SchemaMetadata, plus
-per-run DataProcessInstance aspects per the
-[Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract));
+per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-ingestor-guide));
 `passive` mode reads `DataProcessInstance` run history out-of-band via the
 `ingestion-passive-hourly` DAG and writes no aspects.*
 
@@ -325,6 +325,102 @@ per-run DataProcessInstance aspects per the
 | `dataProductProperties` | — | — | R | W (create / modify / split / retitle on approval) | R |
 | `queryProperties` | — | — | R (per-dataset cap, MANUAL + SYSTEM-with-joins) | — | — |
 | `querySubjects` | — | — | R (joins-first sort key) | — | — |
+
+## Custom Ingestor Guide
+
+**Audience**: anyone writing an ingestor that emits dataset metadata to DataHub —
+in-house custom extractors, external scripts using `acryl-datahub`, or third-party
+pipelines. This guide describes the generic DataHub-side contract (aspects to
+emit, ordering, identity). DataSpoke-side consumption (how DataSpoke turns these
+emissions into `event/ingestion` rows) is documented in
+[BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract).
+
+**Why this contract exists**: DataHub's `DataProcessInstance` (DPI) is the universal
+"this is an ingestion run" entity. Without DPI emission, runs are invisible to any
+DataHub consumer that wants per-run drill-down (DataSpoke's hourly poll, the DataHub
+UI's run history, downstream lineage tools). Without correct `systemMetadata`,
+DataHub's `dataset.lastIngested` field stays `null` and the UI's "Synced X ago from
+\<Platform\>" badge does not render.
+
+### DPI emission contract — required aspects per run
+
+In the listed order:
+
+| # | Aspect | Notes |
+|---|--------|-------|
+| 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"<author>-<platform>-<run_id>"`); `type = BATCH_SCHEDULED` |
+| 2a | `DataProcessInstanceRelationships` | `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs (DPI-to-DPI lineage; no dataset linkage on this aspect) |
+| 2b | `DataProcessInstanceOutput` | `outputs = [<dataset_urn>]` — the dataset(s) this DPI ingested into. This is what makes the DPI surface in DataHub's `dataset(urn).runs` GraphQL query. |
+| 3 | `DataProcessInstanceRunEvent` (`status = STARTED`) | Emitted **before** any schema/property aspect work begins on the dataset |
+| 4 | `StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`, … | The actual ingested metadata. Emit whatever aspects are appropriate for the source — DPI does not constrain the metadata shape. |
+| 5 | `DataProcessInstanceRunEvent` (`status = COMPLETE`) | Emitted **after** all aspect work is finished. Carry `result.resultType = SUCCESS` for happy-path; `result.resultType = FAILURE` and `result.nativeResultType = <author-specific code>` for failures. |
+
+### DPI URN convention
+
+`urn:li:dataProcessInstance:<deterministic-id>`. Recommend `<platform>-<run_id>` so
+retries on the same logical run remain addressable.
+
+### Failure semantics
+
+A failed run still emits the COMPLETE `RunEvent`, not a missing event. A run that
+emits STARTED but never emits a terminal `RunEvent` is treated as in-flight by
+consumers (and never surfaced) until a terminal event arrives or a human cleans it
+up via DataHub's UI.
+
+### Ordering guarantee
+
+The STARTED event must precede schema/property emission on the dataset; the
+terminal event must follow all aspect work. Out-of-order emission produces
+non-deterministic ordering for any consumer that polls run history.
+
+### systemMetadata requirement
+
+DataHub's `dataset.lastIngested` GraphQL field is computed by scanning each
+aspect's `systemMetadata.runId`. Any aspect whose `runId` equals
+`"no-run-id-provided"` (the default sentinel set when no `systemMetadata` is
+supplied to `MetadataChangeProposalWrapper`) is excluded from the computation.
+When all aspects carry the default sentinel, `lastIngested` stays `null`.
+
+**Contract**: every aspect emission within a custom-ingestor run MUST carry a
+non-default `systemMetadata`. Reuse the same `sysmeta` for all aspects of a run
+(DPI lifecycle aspects + dataset aspects):
+
+```python
+import time
+from datahub.metadata.schema_classes import SystemMetadataClass
+
+sysmeta = SystemMetadataClass(
+    runId=f"<author>-{platform}-{run_id}",   # non-default, unique per run
+    lastObserved=int(time.time() * 1000),    # epoch ms
+)
+await datahub_client.emit_aspect(dataset_urn, aspect, system_metadata=sysmeta)
+```
+
+### Authoring checklist
+
+Self-verify before treating an ingestor as "done":
+
+- [ ] DPI URN is deterministic per logical run (retries reuse the same URN)
+- [ ] `Properties`, `Relationships`, and `Output` aspects are emitted before the first `RunEvent`
+- [ ] STARTED `RunEvent` is emitted before any dataset aspect emission
+- [ ] Terminal `RunEvent` (COMPLETE/FAILED) is emitted after all aspect work, with `result.resultType` set
+- [ ] Failures emit a terminal event (do not let the run hang in STARTED)
+- [ ] Every emit carries non-default `systemMetadata.runId`
+
+### Conventions adopted by DataSpoke
+
+DataSpoke's in-house extractors implement this contract with these specific
+choices, useful as a reference template:
+
+- `runId = "dataspoke-{platform}-{run_id}"`, with `run_id = uuid4()` per
+  `IngestionService._run_inner` invocation.
+- DPI URN = `urn:li:dataProcessInstance:{platform}-{run_id}`, matching the
+  `runId` suffix so dataset aspects and the DPI cross-reference cleanly.
+- One `SystemMetadataClass` instance per run, reused across all 11 emissions
+  (5 DPI + 3 dataset for postgres, 5 DPI + 3 dataset for kafka).
+
+Reference implementation: `src/backend/ingestion/service.py::_run_inner`,
+`src/backend/ingestion/extractors.py`.
 
 ## SDK Patterns
 

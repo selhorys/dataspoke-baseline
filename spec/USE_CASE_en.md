@@ -79,7 +79,7 @@ Two ingestion modes are supported:
   DAG, which polls DataHub for `DataProcessInstance` records and writes one row per
   run to `event/ingestion`. Whatever the external ingestor is, **it must emit a
   `DataProcessInstance` per run** for runs to surface in DataSpoke's events
-  ([BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)).
+  ([DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
 
 The same DPI emission contract applies in both modes — DataSpoke's own active-custom
 extractors emit DPI just as external passive ingestors must, so observation behavior is
@@ -208,7 +208,7 @@ Ingestion's standard source plugins emit `Operation` aspects automatically, so p
 URNs ingested via Managed Ingestion are observable without any extra work. Custom
 scripts that want full event detail (terminal status, run identity) must follow the
 DPI emission contract in
-[BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)
+[DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)
 — the same contract that DataSpoke's own active-custom extractors satisfy.
 
 #### Cross-dataset overview

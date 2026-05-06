@@ -193,8 +193,9 @@ not from aspects.
 [USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control); DataHub aspect reads/writes are
 catalogued in [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
 The DPI emission contract that all ingestors (in-house and external) must satisfy lives
-below in [§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract). This
-section describes the implementation only.
+in [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide);
+DataSpoke-side consumption (event/ingestion mapping, observation fallback) is
+[below](#custom-ingestor-authoring-contract). This section describes the implementation only.
 
 **Supported platforms** (in-house extractor module per platform; applies to `active-custom`
 mode — `passive` mode is platform-agnostic since DataSpoke does not run the extractor):
@@ -208,8 +209,8 @@ mode — `passive` mode is platform-agnostic since DataSpoke does not run the ex
 **Aspects emitted** (non-dry-run, per discovered dataset, by the `active-custom` extractor):
 `StatusClass(removed=False)`, `DatasetPropertiesClass`, `SchemaMetadataClass`, plus
 `DataProcessInstance` start + complete `RunEvent` aspects per run (see
-[§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract)). `dry_run: true`
-runs the extractor and returns the schema preview without emitting any aspects.
+[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
+`dry_run: true` runs the extractor and returns the schema preview without emitting any aspects.
 
 #### Implementation
 
@@ -246,7 +247,7 @@ run time the extractor calls the resolver; failures surface as `IngestionResult(
 **Active-custom run pipeline** (`IngestionService.run()`): load config → connect to source via
 `locator`/`auth` → emit `DataProcessInstanceRunEvent(STARTED)` against a deterministic DPI
 URN derived from `run_id` (skipped on `dry_run`; see
-[§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract)) → discover schema
+[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)) → discover schema
 via `identifier` → emit `StatusClass` + `DatasetPropertiesClass` + `SchemaMetadataClass` to
 DataHub (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as
 failure) → emit `DataProcessInstanceRunEvent(COMPLETE | FAILED)` carrying the run outcome
@@ -262,7 +263,7 @@ called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with
 and merge results:
 
 1. **`DataProcessInstance` runs** via the `dataset(urn).runs` GraphQL field — picks up
-   any DPI emitter that follows the [§Custom Ingestor Authoring Contract](#custom-ingestor-authoring-contract)
+   any DPI emitter that follows the [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)
    (DataSpoke's own `active-custom` extractors, custom acryl-datahub-SDK scripts,
    third-party pipelines). Each terminal `RunEvent` becomes one event row.
 2. **`Operation` time-series aspects** with `operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`
@@ -280,67 +281,38 @@ flag is reconciled by the existing `datahub-sync-daily` DAG.
 
 ### Custom Ingestor Authoring Contract
 
-**Audience**: anyone writing an ingestor that produces metadata for a dataset registered
-in DataSpoke. This contract is binding for (a) DataSpoke's own in-house `active-custom`
-extractors, (b) any future in-house extractor added to
-`src/backend/ingestion/extractors.py`, and (c) any external script or pipeline ingesting
-into a dataset that is registered in DataSpoke as `mode: passive`.
+The generic authoring contract — required aspects, ordering, failure semantics, URN
+convention, `systemMetadata` requirements, and the authoring checklist — lives in
+[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide).
+That guide is generic across all DataHub-targeting ingestors. This section covers
+DataSpoke-side **consumption** only.
 
-**Why this contract exists**: DataHub's `DataProcessInstance` (DPI) is the universal
-"this is an ingestion run" entity. DataSpoke's hourly poll surfaces runs as
-`event/ingestion` rows by querying `dataset(urn).runs` GraphQL. Without DPI emission,
-runs are invisible to DataSpoke's observation surface — the dataset still appears in
-`GET /spoke/common/ingestion` and the `ingestion-freshness` metric still works via
-DataHub's dataset timestamps, but per-run drill-down is unavailable. Making DPI emission
-a project-wide MUST gives one observation contract that serves both in-house and external
-authors.
+**DataSpoke's role**: the `ingestion-passive-hourly` DAG queries `dataset(urn).runs`
+GraphQL hourly. Each terminal `RunEvent` becomes one row in the dataset's local
+`event/ingestion` timeline — `result.resultType = SUCCESS` maps to
+`INGESTION.COMPLETE`, `FAILURE` maps to `INGESTION.FAIL`. A run that emits STARTED
+but never terminal is treated as in-flight (never surfaced) until a terminal event
+arrives or a human cleans it up via DataHub's UI.
 
-**Required aspects per run** (in the listed order):
+**Observation fallback (Managed Ingestion)**: DataSpoke's poll *also* surfaces
+ingestion-like `Operation` aspects (`operationType ∈ {INSERT, UPDATE, CREATE,
+ALTER}`) as `INGESTION.COMPLETE` events. This covers ingestors that emit `Operation`
+but no DPI — most notably DataHub Managed Ingestion's standard source plugins. It
+does not relax the DPI contract; authors targeting full DataSpoke parity (terminal
+status, run identity, lineage to the producing job) must still emit DPI.
 
-| # | Aspect | Notes |
-|---|--------|-------|
-| 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"dataspoke-postgres-<run_id>"`); `type = BATCH_SCHEDULED` |
-| 2a | `DataProcessInstanceRelationships` | `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs (DPI-to-DPI lineage; no dataset linkage on this aspect) |
-| 2b | `DataProcessInstanceOutput` | `outputs = [<dataset_urn>]` — the dataset(s) this DPI ingested into. This is what makes the DPI surface in DataHub's `dataset(urn).runs` GraphQL query, which is what DataSpoke's hourly poll consumes. |
-| 3 | `DataProcessInstanceRunEvent` (`status = STARTED`) | Emitted **before** any schema/property aspect work begins on the dataset |
-| 4 | `StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`, … | The actual ingested metadata. Authors emit whatever aspects are appropriate for their source — DPI does not constrain the metadata shape. |
-| 5 | `DataProcessInstanceRunEvent` (`status = COMPLETE`) | Emitted **after** all aspect work is finished. Carry `result.resultType = SUCCESS` for happy-path; `result.resultType = FAILURE` and `result.nativeResultType = <author-specific code>` for failures. |
+**DataSpoke's own conventions** (one example of how an in-house ingestor populates
+the generic contract):
 
-**DPI URN convention**: `urn:li:dataProcessInstance:<deterministic-id>`. Recommend
-`<platform>-<run_id>` so retries on the same logical run remain addressable. DataSpoke's
-in-house extractors derive `run_id` as `uuid4()` per `IngestionService._run_inner`
-invocation.
+- `runId = "dataspoke-{platform}-{run_id}"`, with `run_id = uuid4()` per
+  `IngestionService._run_inner` invocation.
+- DPI URN = `urn:li:dataProcessInstance:{platform}-{run_id}`, matching the
+  `runId` suffix so dataset aspects and the DPI cross-reference cleanly.
 
-**Failure semantics**: a failed run still emits the COMPLETE `RunEvent`, not a missing
-event. DataSpoke's hourly poll maps `result.resultType = FAILURE` to an `INGESTION.FAIL`
-row in `event/ingestion`. A run that emits STARTED but never emits COMPLETE/FAILED is
-treated as in-flight (and never surfaced) until a terminal `RunEvent` arrives or a
-human cleans it up via DataHub's UI.
-
-**Ordering guarantee**: the STARTED event must precede schema/property emission for the
-dataset; the terminal event must follow all aspect work. The poll only surfaces runs
-that have reached a terminal `RunEvent`. Out-of-order emission produces non-deterministic
-`event/ingestion` ordering.
-
-**Reference implementation**: see `src/backend/ingestion/service.py::_run_inner` and
-`src/backend/ingestion/extractors.py` for the canonical DPI emission pattern. External
-script authors should mirror the same call sequence using the `acryl-datahub` Python SDK.
-
-**Observation fallback (DataHub Managed Ingestion)**: as a courtesy to ingestors that
-emit `Operation` time-series aspects but no DPI — most notably DataHub Managed
-Ingestion's standard source plugins — DataSpoke's hourly poll *also* surfaces
-ingestion-like `Operation` aspects (`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`)
-as `INGESTION.COMPLETE` events. This is observation-only; it does not relax the
-contract above. Authors targeting full DataSpoke parity (terminal status, run
-identity, lineage to the producing job) must still emit DPI per the table.
-
-**Authoring checklist** (self-verify before treating an ingestor as "done"):
-
-- [ ] DPI URN is deterministic per logical run (retries reuse the same URN)
-- [ ] `Properties`, `Relationships`, and `Output` aspects are emitted before the first `RunEvent`
-- [ ] STARTED `RunEvent` is emitted before any dataset aspect emission
-- [ ] Terminal `RunEvent` (COMPLETE/FAILED) is emitted after all aspect work, with `result.resultType` set
-- [ ] Failures emit a terminal event (do not let the run hang in STARTED)
+**Reference implementation**: `src/backend/ingestion/service.py::_run_inner` and
+`src/backend/ingestion/extractors.py`. Authors building a new in-house extractor or
+external script should mirror the same emit sequence using the `acryl-datahub`
+Python SDK.
 
 ### Validation Service (`src/backend/validation/`)
 

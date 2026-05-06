@@ -39,6 +39,7 @@ async def test_unsupported_source_returns_error():
         identifier={},
         auth=None,
         dataset_urn="urn:li:dataset:x",
+        run_id="test-run-id",
         dry_run=False,
     )
     assert result.entities_ingested == 0
@@ -56,6 +57,7 @@ async def test_not_yet_implemented_source_returns_warning():
         identifier={"database": "db"},
         auth=_auth,
         dataset_urn="urn:li:dataset:x",
+        run_id="test-run-id",
     )
     assert result.entities_ingested == 0
     assert result.errors == []
@@ -100,6 +102,7 @@ async def test_postgresql_dry_run_discovers_but_does_not_emit():
             identifier={"database": "testdb", "schema_name": "public", "table": "users"},
             auth=_auth,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,testdb.public.users,PROD)",
+            run_id="test-run-id",
             dry_run=True,
         )
 
@@ -138,6 +141,7 @@ async def test_postgresql_run_emits_three_aspects():
             identifier={"database": "testdb"},
             auth=_auth,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,testdb.public.users,PROD)",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -173,6 +177,7 @@ async def test_postgresql_connection_failure_returns_error():
             identifier={"database": "testdb"},
             auth=_auth,
             dataset_urn="urn:li:dataset:x",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -202,6 +207,7 @@ async def test_postgresql_resolver_not_found_returns_error_result():
             identifier={"database": "testdb"},
             auth=_auth,
             dataset_urn="urn:li:dataset:x",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -231,6 +237,7 @@ async def test_postgresql_resolver_unavailable_returns_error_result():
             identifier={"database": "testdb"},
             auth=_auth,
             dataset_urn="urn:li:dataset:x",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -260,6 +267,7 @@ async def test_kafka_dry_run_discovers_but_does_not_emit():
             identifier={"topic": "orders", "cluster": "test"},
             auth=None,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:kafka,test.orders,PROD)",
+            run_id="test-run-id",
             dry_run=True,
         )
 
@@ -286,6 +294,7 @@ async def test_kafka_run_emits_three_aspects():
             identifier={"topic": "orders"},
             auth=None,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:kafka,test.orders,PROD)",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -341,6 +350,7 @@ async def _run_pg_dry(mock_rows: list[dict]) -> object:
             identifier={"database": "example_db", "schema_name": "catalog", "table": "title_master"},
             auth=_AUTH,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -461,6 +471,7 @@ async def _run_pg_and_get_dataset_properties_description(table_comment: str | No
             identifier={"database": "example_db", "schema_name": "catalog", "table": "title_master"},
             auth=_AUTH,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -547,6 +558,7 @@ async def test_kafka_extractor_emits_typed_schema_field_types() -> None:
             identifier={"topic": "imazon.orders.events", "cluster": "example_kafka"},
             auth=None,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)",
+            run_id="test-run-id",
             dry_run=False,
         )
 
@@ -582,6 +594,166 @@ async def test_kafka_extractor_emits_typed_schema_field_types() -> None:
         )
 
 
+# ── systemMetadata runId emission ────────────────────────────────────────────
+
+
+async def test_postgres_extractor_emits_systemmetadata_with_dataspoke_runid() -> None:
+    """Every dataset-aspect emit from the PostgreSQL extractor carries a
+    SystemMetadataClass with runId='dataspoke-postgres-<run_id>'.
+
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "every aspect emission targeting a dataset URN within a custom ingestor
+        run MUST carry a non-default systemMetadata"
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "DataSpoke uses runId='dataspoke-{platform}-{run_id}'"
+    spec: BACKEND.md §Custom Ingestor Authoring Contract — status, DatasetProperties,
+        SchemaMetadata all pass system_metadata=sysmeta per run.
+    """
+    from datahub.metadata.schema_classes import SystemMetadataClass
+
+    datahub = AsyncMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [
+        {
+            "table_schema": "catalog",
+            "table_name": "title_master",
+            "column_name": "isbn",
+            "data_type": "character varying",
+            "ordinal_position": 1,
+            "is_nullable": "NO",
+            "column_comment": None,
+            "table_comment": None,
+        }
+    ]
+
+    run_id = "test-run-id"
+    with (
+        patch("src.backend.ingestion.extractors.asyncpg") as mock_asyncpg,
+        patch("src.backend.ingestion.extractors.resolve_secret_ref", return_value="p"),
+    ):
+        mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
+        result = await run_datahub_ingestion(
+            datahub=datahub,
+            platform="postgres",
+            locator={"host": "localhost", "port": 5432},
+            identifier={"database": "example_db", "schema_name": "catalog", "table": "title_master"},
+            auth={"username": "u", "secret_ref": {"name": "dataspoke-source-cred-test", "key": "password"}},
+            dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+            run_id=run_id,
+            dry_run=False,
+        )
+
+    assert result.errors == [], f"Unexpected errors: {result.errors}"
+
+    emit_calls = datahub.emit_aspect.call_args_list
+    assert len(emit_calls) >= 3, (
+        f"Expected at least 3 emit calls (Status, DatasetProperties, SchemaMetadata); "
+        f"got {len(emit_calls)}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract"
+    )
+
+    expected_run_id = f"dataspoke-postgres-{run_id}"
+    for i, call in enumerate(emit_calls):
+        sysmeta = call.kwargs.get("system_metadata")
+        assert sysmeta is not None, (
+            f"emit call #{i} must carry system_metadata kwarg; got None. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert isinstance(sysmeta, SystemMetadataClass), (
+            f"emit call #{i} system_metadata must be SystemMetadataClass; "
+            f"got {type(sysmeta).__name__!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert sysmeta.runId == expected_run_id, (
+            f"emit call #{i} system_metadata.runId must be {expected_run_id!r}; "
+            f"got {sysmeta.runId!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — "
+            "runId='dataspoke-{platform}-{run_id}'"
+        )
+        assert isinstance(sysmeta.lastObserved, int), (
+            f"emit call #{i} system_metadata.lastObserved must be int (epoch-ms); "
+            f"got {type(sysmeta.lastObserved).__name__!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert sysmeta.lastObserved > 0, (
+            f"emit call #{i} system_metadata.lastObserved must be > 0; "
+            f"got {sysmeta.lastObserved!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+
+
+async def test_kafka_extractor_emits_systemmetadata_with_dataspoke_runid() -> None:
+    """Every dataset-aspect emit from the Kafka extractor carries a
+    SystemMetadataClass with runId='dataspoke-kafka-<run_id>'.
+
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "every aspect emission targeting a dataset URN within a custom ingestor
+        run MUST carry a non-default systemMetadata"
+    spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        "DataSpoke uses runId='dataspoke-{platform}-{run_id}'"
+    spec: BACKEND.md §Custom Ingestor Authoring Contract — status, DatasetProperties,
+        SchemaMetadata all pass system_metadata=sysmeta per run.
+    """
+    from datahub.metadata.schema_classes import SystemMetadataClass
+
+    datahub = AsyncMock()
+    run_id = "test-run-id"
+    sample_messages = [{"order_id": "ORD-001", "amount": 42.5}]
+
+    with patch(
+        "src.backend.ingestion.extractors._poll_kafka_messages",
+        return_value=sample_messages,
+    ):
+        result = await run_datahub_ingestion(
+            datahub=datahub,
+            platform="kafka",
+            locator={"bootstrap_servers": "kafka:9092"},
+            identifier={"topic": "imazon.orders.events", "cluster": "example_kafka"},
+            auth=None,
+            dataset_urn="urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)",
+            run_id=run_id,
+            dry_run=False,
+        )
+
+    assert result.errors == [], f"Unexpected errors: {result.errors}"
+
+    emit_calls = datahub.emit_aspect.call_args_list
+    assert len(emit_calls) >= 3, (
+        f"Expected at least 3 emit calls (Status, DatasetProperties, SchemaMetadata); "
+        f"got {len(emit_calls)}. "
+        "spec: BACKEND.md §Custom Ingestor Authoring Contract"
+    )
+
+    expected_run_id = f"dataspoke-kafka-{run_id}"
+    for i, call in enumerate(emit_calls):
+        sysmeta = call.kwargs.get("system_metadata")
+        assert sysmeta is not None, (
+            f"emit call #{i} must carry system_metadata kwarg; got None. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert isinstance(sysmeta, SystemMetadataClass), (
+            f"emit call #{i} system_metadata must be SystemMetadataClass; "
+            f"got {type(sysmeta).__name__!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert sysmeta.runId == expected_run_id, (
+            f"emit call #{i} system_metadata.runId must be {expected_run_id!r}; "
+            f"got {sysmeta.runId!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — "
+            "runId='dataspoke-{platform}-{run_id}'"
+        )
+        assert isinstance(sysmeta.lastObserved, int), (
+            f"emit call #{i} system_metadata.lastObserved must be int (epoch-ms); "
+            f"got {type(sysmeta.lastObserved).__name__!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert sysmeta.lastObserved > 0, (
+            f"emit call #{i} system_metadata.lastObserved must be > 0; "
+            f"got {sysmeta.lastObserved!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+
+
 async def test_kafka_extractor_unknown_python_type_falls_back_to_string() -> None:
     """A value whose type.__name__ is not in _JSON_TO_DATAHUB_TYPE falls back to StringTypeClass.
 
@@ -607,6 +779,7 @@ async def test_kafka_extractor_unknown_python_type_falls_back_to_string() -> Non
             identifier={"topic": "imazon.orders.events", "cluster": "example_kafka"},
             auth=None,
             dataset_urn="urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)",
+            run_id="test-run-id",
             dry_run=False,
         )
 

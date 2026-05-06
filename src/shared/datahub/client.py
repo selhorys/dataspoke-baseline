@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
+from datahub.metadata.schema_classes import SystemMetadataClass
 
 from src.shared.config import (
     CIRCUIT_BREAKER_RESET_MS,
@@ -201,13 +202,31 @@ class DataHubClient:
 
         return await self._with_retry(_fetch)
 
-    async def emit_aspect(self, urn: str, aspect: Any) -> None:
-        mcp = MetadataChangeProposalWrapper(entityUrn=urn, aspect=aspect)
+    async def emit_aspect(
+        self,
+        urn: str,
+        aspect: Any,
+        system_metadata: SystemMetadataClass | None = None,
+    ) -> None:
+        mcp = MetadataChangeProposalWrapper(
+            entityUrn=urn,
+            aspect=aspect,
+            systemMetadata=system_metadata,
+        )
         await self._with_retry(self._emitter.emit_mcp, mcp)
 
-    async def emit_assertion(self, assertion_urn: str, aspect: Any) -> None:
+    async def emit_assertion(
+        self,
+        assertion_urn: str,
+        aspect: Any,
+        system_metadata: SystemMetadataClass | None = None,
+    ) -> None:
         """Emit an aspect to an assertion entity."""
-        mcp = MetadataChangeProposalWrapper(entityUrn=assertion_urn, aspect=aspect)
+        mcp = MetadataChangeProposalWrapper(
+            entityUrn=assertion_urn,
+            aspect=aspect,
+            systemMetadata=system_metadata,
+        )
         await self._with_retry(self._emitter.emit_mcp, mcp)
 
     async def get_assertion_info(self, assertion_urn: str) -> Any | None:

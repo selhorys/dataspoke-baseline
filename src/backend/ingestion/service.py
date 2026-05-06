@@ -20,6 +20,7 @@ from datahub.metadata.schema_classes import (
     DataProcessRunStatusClass,
     DataProcessTypeClass,
     RunResultTypeClass,
+    SystemMetadataClass,
 )
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -379,6 +380,10 @@ class IngestionService:
 
         dpi_urn = f"urn:li:dataProcessInstance:{config.platform}-{run_id}"
         start_ms = int(time.time() * 1000)
+        sysmeta = SystemMetadataClass(
+            runId=f"dataspoke-{config.platform}-{run_id}",
+            lastObserved=start_ms,
+        )
 
         if not dry_run:
             await self._datahub.emit_aspect(
@@ -388,6 +393,7 @@ class IngestionService:
                     type=DataProcessTypeClass.BATCH_SCHEDULED,
                     created=AuditStampClass(time=start_ms, actor="urn:li:corpuser:dataspoke"),
                 ),
+                system_metadata=sysmeta,
             )
             await self._datahub.emit_aspect(
                 dpi_urn,
@@ -395,10 +401,12 @@ class IngestionService:
                     upstreamInstances=[],
                     parentTemplate=None,
                 ),
+                system_metadata=sysmeta,
             )
             await self._datahub.emit_aspect(
                 dpi_urn,
                 DataProcessInstanceOutputClass(outputs=[dataset_urn]),
+                system_metadata=sysmeta,
             )
             await self._datahub.emit_aspect(
                 dpi_urn,
@@ -406,6 +414,7 @@ class IngestionService:
                     status=DataProcessRunStatusClass.STARTED,
                     timestampMillis=start_ms,
                 ),
+                system_metadata=sysmeta,
             )
 
         try:
@@ -417,6 +426,7 @@ class IngestionService:
                 auth=config.auth,
                 dataset_urn=dataset_urn,
                 dry_run=dry_run,
+                run_id=run_id,
             )
 
             errors = ingestion_result.errors
@@ -447,6 +457,7 @@ class IngestionService:
                             ),
                             durationMillis=end_ms - start_ms,
                         ),
+                        system_metadata=sysmeta,
                     )
                 except Exception:
                     # Best-effort terminal emission; never let the failure path raise its own error.
@@ -477,6 +488,7 @@ class IngestionService:
                     ),
                     durationMillis=end_ms - start_ms,
                 ),
+                system_metadata=sysmeta,
             )
 
         detail: dict[str, Any] = {

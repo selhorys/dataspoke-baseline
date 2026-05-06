@@ -93,7 +93,7 @@ DataSpoke는 두 모드를 모두 지원한다.
   실행마다 한 행씩 `event/ingestion`에 기록한다.
   외부 인제스터가 무엇이든 **실행마다 `DataProcessInstance`를 emit해야**
   DataSpoke 이벤트에 노출된다
-  ([BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)).
+  ([DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
 
 DPI emission 계약은 두 모드에 동일하게 적용된다.
 DataSpoke의 active-custom 추출기도 외부 passive 인제스터와 똑같이 DPI를 emit하므로,
@@ -222,7 +222,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.o
 [`ingestion-freshness` 메트릭](#uc5-governance)도 DataHub 타임스탬프로 추적한다.
 다만 `event/ingestion`을 통한 실행 단위 드릴다운은 불가능해진다.
 스크립트 작성자가 따라야 할 DPI emission 계약은
-[BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract)에 정의되어 있다.
+[DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)에 정의되어 있다.
 DataSpoke의 active-custom 추출기도 동일한 계약을 따른다.
 
 #### 크로스 데이터셋 오버뷰

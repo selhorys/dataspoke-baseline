@@ -638,6 +638,12 @@ async def test_ingestion_pg_comments_and_typed_fields_in_datahub(
         )
 
         # ── Trigger real run (dry_run=false) ──────────────────────────────────
+        # Capture run_start_ms before the run so lastIngested.time comparison is bounded.
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        #     lastObserved is set to int(time.time()*1000) at run time; the assertion
+        #     uses this baseline to verify freshness, not wall-clock equality.
+        import time as _time
+        run_start_ms = int(_time.time() * 1000)
         run_resp = await api_client.post(
             base_run,
             headers=admin_headers,
@@ -772,6 +778,71 @@ async def test_ingestion_pg_comments_and_typed_fields_in_datahub(
             f"title (character varying) must have type.type=StringType; "
             f"got type={title_field.get('type')!r}. "
             "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
+        )
+
+        # ── Assert dataset.lastIngested via GraphQL ───────────────────────────
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        #     "dataset.lastIngested stays null" when runId is the default sentinel;
+        #     after a DataSpoke active-custom run with a non-default runId, the field
+        #     must be non-null and the UI badge must be able to render.
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        #     runId='dataspoke-{platform}-{run_id}' convention.
+        gql_headers = {}
+        if _DATAHUB_TOKEN:
+            gql_headers["Authorization"] = f"Bearer {_DATAHUB_TOKEN}"
+        gql_headers["Content-Type"] = "application/json"
+
+        last_ingested_resp = httpx.post(
+            f"{_DATAHUB_GMS_URL}/api/graphql",
+            headers=gql_headers,
+            json={
+                "query": (
+                    "query getLastIngested($urn: String!) { "
+                    "dataset(urn: $urn) { lastIngested } "
+                    "}"
+                ),
+                "variables": {"urn": _ACTIVE_URN},
+            },
+            timeout=10.0,
+        )
+        assert last_ingested_resp.status_code == 200, last_ingested_resp.text
+        last_ingested_ms = (
+            last_ingested_resp.json().get("data", {}).get("dataset", {}).get("lastIngested")
+        )
+        assert last_ingested_ms is not None, (
+            "dataset.lastIngested must be non-null after active-custom run; "
+            "the UI badge depends on this. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+        assert last_ingested_ms >= run_start_ms, (
+            f"lastIngested ({last_ingested_ms}) must be >= run start ({run_start_ms}). "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — "
+            "lastObserved is epoch-ms of the run"
+        )
+
+        # Verify runId via the openapi v3 endpoint — dataset.lastIngested is a scalar Long
+        # and does not expose runId; schemaMetadata.systemMetadata carries it instead.
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        #     runId='dataspoke-{platform}-{run_id}'
+        dataset_urn_enc = urllib.parse.quote(_ACTIVE_URN, safe="")
+        sysmeta_resp = httpx.get(
+            f"{_DATAHUB_GMS_URL}/openapi/v3/entity/dataset/{dataset_urn_enc}"
+            "?systemMetadata=true&aspects=schemaMetadata",
+            headers=gms_headers,
+            timeout=10.0,
+        )
+        assert sysmeta_resp.status_code == 200, sysmeta_resp.text
+        schema_runId = (
+            sysmeta_resp.json()
+            .get("schemaMetadata", {})
+            .get("systemMetadata", {})
+            .get("runId")
+        )
+        assert schema_runId is not None and schema_runId.startswith("dataspoke-postgres-"), (
+            f"schemaMetadata.systemMetadata.runId must start with 'dataspoke-postgres-'; "
+            f"got {schema_runId!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — "
+            "runId='dataspoke-{platform}-{run_id}'"
         )
 
     finally:

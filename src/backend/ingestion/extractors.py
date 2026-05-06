@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -27,6 +28,7 @@ from datahub.metadata.schema_classes import (
     SchemaMetadataClass,
     StatusClass,
     StringTypeClass,
+    SystemMetadataClass,
     TimeTypeClass,
 )
 from pydantic import BaseModel
@@ -149,6 +151,7 @@ async def _extract_postgresql(
     dataset_urn: str,
     dry_run: bool,
     platform: str,
+    run_id: str,
 ) -> IngestionResult:
     """Connect to PostgreSQL, discover columns, emit schema to DataHub."""
     host = locator["host"]
@@ -219,6 +222,10 @@ async def _extract_postgresql(
 
     entities_ingested = 0
     errors: list[str] = []
+    sysmeta = SystemMetadataClass(
+        runId=f"dataspoke-{platform}-{run_id}",
+        lastObserved=int(time.time() * 1000),
+    )
 
     for (s, t), columns in tables.items():
         # Build the URN for this specific table
@@ -242,7 +249,7 @@ async def _extract_postgresql(
 
         if not dry_run:
             try:
-                await datahub.emit_aspect(table_urn, StatusClass(removed=False))
+                await datahub.emit_aspect(table_urn, StatusClass(removed=False), system_metadata=sysmeta)
                 await datahub.emit_aspect(
                     table_urn,
                     DatasetPropertiesClass(
@@ -255,6 +262,7 @@ async def _extract_postgresql(
                             "schema": s,
                         },
                     ),
+                    system_metadata=sysmeta,
                 )
                 await datahub.emit_aspect(
                     table_urn,
@@ -266,6 +274,7 @@ async def _extract_postgresql(
                         platformSchema=OtherSchemaClass(rawSchema=""),
                         fields=fields,
                     ),
+                    system_metadata=sysmeta,
                 )
             except Exception as exc:
                 errors.append(f"Failed to emit aspects for {s}.{t}: {exc}")
@@ -286,6 +295,7 @@ async def _extract_kafka(
     dataset_urn: str,
     dry_run: bool,
     platform: str,
+    run_id: str,
 ) -> IngestionResult:
     """Consume sample messages from a Kafka topic, infer schema, emit to DataHub."""
     bootstrap_servers = locator["bootstrap_servers"]
@@ -329,8 +339,12 @@ async def _extract_kafka(
     ]
 
     if not dry_run:
+        sysmeta = SystemMetadataClass(
+            runId=f"dataspoke-{platform}-{run_id}",
+            lastObserved=int(time.time() * 1000),
+        )
         try:
-            await datahub.emit_aspect(dataset_urn, StatusClass(removed=False))
+            await datahub.emit_aspect(dataset_urn, StatusClass(removed=False), system_metadata=sysmeta)
             await datahub.emit_aspect(
                 dataset_urn,
                 DatasetPropertiesClass(
@@ -342,6 +356,7 @@ async def _extract_kafka(
                         "cluster": cluster,
                     },
                 ),
+                system_metadata=sysmeta,
             )
             await datahub.emit_aspect(
                 dataset_urn,
@@ -353,6 +368,7 @@ async def _extract_kafka(
                     platformSchema=OtherSchemaClass(rawSchema=""),
                     fields=fields,
                 ),
+                system_metadata=sysmeta,
             )
         except Exception as exc:
             errors.append(f"Failed to emit aspects for topic {topic}: {exc}")
@@ -413,6 +429,7 @@ async def run_datahub_ingestion(
     identifier: dict[str, Any],
     auth: dict[str, Any] | None,
     dataset_urn: str,
+    run_id: str,
     dry_run: bool = False,
 ) -> IngestionResult:
     """Extract metadata from a data source and emit aspects to DataHub.
@@ -425,10 +442,10 @@ async def run_datahub_ingestion(
     )
 
     if platform == Platform.POSTGRESQL.value:
-        return await _extract_postgresql(datahub, locator, identifier, auth, dataset_urn, dry_run, platform=platform)
+        return await _extract_postgresql(datahub, locator, identifier, auth, dataset_urn, dry_run, platform=platform, run_id=run_id)
 
     if platform == Platform.KAFKA.value:
-        return await _extract_kafka(datahub, locator, identifier, dataset_urn, dry_run, platform=platform)
+        return await _extract_kafka(datahub, locator, identifier, dataset_urn, dry_run, platform=platform, run_id=run_id)
 
     if platform in SUPPORTED_PLATFORMS:
         return IngestionResult(
