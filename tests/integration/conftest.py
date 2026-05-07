@@ -202,17 +202,13 @@ async def _bootstrap_schema(db_url: str) -> None:
     from src.shared.config import EMBEDDING_DIMENSION
     from src.shared.db.models import Base
 
-    engine = create_async_engine(
-        db_url, poolclass=sa_pool.NullPool, isolation_level="AUTOCOMMIT"
-    )
+    engine = create_async_engine(db_url, poolclass=sa_pool.NullPool, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS dataspoke"))
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS age"))
-            await conn.execute(
-                text('SET search_path = ag_catalog, "$user", public, pg_catalog')
-            )
+            await conn.execute(text('SET search_path = ag_catalog, "$user", public, pg_catalog'))
             await conn.execute(
                 text(
                     """
@@ -333,12 +329,15 @@ def module_dummy_data(request) -> None:
     """Autouse module-scoped fixture for selective dummy-data reset.
 
     Test modules declare dependencies via module-level constants:
-        DUMMY_DATA_SCHEMAS: frozenset[str]         — PostgreSQL schemas to reset
-        DUMMY_DATA_TOPICS: frozenset[str]           — Kafka topics to reset
-        DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str]  — DataHub datasets to ingest
+        DUMMY_DATA_SCHEMAS: frozenset[str]          — PostgreSQL schemas to reset
+        DUMMY_DATA_TOPICS: frozenset[str]            — Kafka topics to reset
+        DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str]   — DataHub PG datasets to ingest
+        DUMMY_DATA_DATAHUB_TOPICS: frozenset[str]    — DataHub Kafka topics to ingest
 
     DUMMY_DATA_DATAHUB_SCHEMAS implies the corresponding DUMMY_DATA_SCHEMAS
     (DataHub discovery requires the PG tables to exist).
+    DUMMY_DATA_DATAHUB_TOPICS implies the corresponding DUMMY_DATA_TOPICS
+    (DataHub Kafka registration requires the topics to exist in Kafka).
 
     Modules that declare no constants are no-ops.
     """
@@ -348,10 +347,15 @@ def module_dummy_data(request) -> None:
     schemas = getattr(request.module, "DUMMY_DATA_SCHEMAS", None)
     topics = getattr(request.module, "DUMMY_DATA_TOPICS", None)
     datahub_schemas = getattr(request.module, "DUMMY_DATA_DATAHUB_SCHEMAS", None)
+    datahub_topics = getattr(request.module, "DUMMY_DATA_DATAHUB_TOPICS", None)
 
     # DataHub ingest requires PG tables for schema discovery.
     if datahub_schemas:
         schemas = (schemas or frozenset()) | datahub_schemas
+
+    # DataHub Kafka registration requires the topics to exist in Kafka.
+    if datahub_topics:
+        topics = (topics or frozenset()) | datahub_topics
 
     has_pg_kafka = bool(schemas or topics)
 
@@ -362,14 +366,16 @@ def module_dummy_data(request) -> None:
             kafka.reset_topics(topics)
 
     def _ingest_datahub():
-        if datahub_schemas:
-            from tests.integration.util import datahub
+        from tests.integration.util import datahub
 
+        if datahub_schemas:
             asyncio.run(datahub.ingest_pg_datasets(schemas=datahub_schemas))
+        if datahub_topics:
+            asyncio.run(datahub.ingest_kafka_datasets(topics=datahub_topics))
 
     if has_pg_kafka:
         _reset_pg_kafka()
-    if datahub_schemas:
+    if datahub_schemas or datahub_topics:
         _ingest_datahub()
 
     yield  # type: ignore[misc]
@@ -413,14 +419,12 @@ def datahub_actions_pod_required() -> None:
         )
     except FileNotFoundError:
         pytest.skip(
-            "kubectl not found; cannot verify DataHub actions pod. "
-            "Skipping Managed Ingestion test."
+            "kubectl not found; cannot verify DataHub actions pod. Skipping Managed Ingestion test."
         )
         return
     except subprocess.TimeoutExpired:
         pytest.skip(
-            "kubectl timed out; cluster may be unreachable. "
-            "Skipping Managed Ingestion test."
+            "kubectl timed out; cluster may be unreachable. Skipping Managed Ingestion test."
         )
         return
 

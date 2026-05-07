@@ -36,6 +36,7 @@ from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
+    DatasetProfileClass,
     DatasetPropertiesClass,
     OperationClass,
     OperationTypeClass,
@@ -88,6 +89,7 @@ async def _mark_registry_registered(urns: list[str]) -> None:
         )
     finally:
         await conn.close()
+
 
 TARGET_SCHEMAS: frozenset[str] = frozenset(
     {
@@ -345,6 +347,29 @@ def _build_schema_fields(columns: list[dict]) -> list[SchemaFieldClass]:  # type
     return fields
 
 
+async def _fetch_row_counts(
+    schemas: frozenset[str],
+) -> dict[tuple[str, str], int]:
+    """Return {(schema, table): n_live_tup} from pg_stat_all_tables."""
+    conn = await asyncpg.connect(
+        host=_pg_host,
+        port=_pg_port,
+        user=_pg_user,
+        password=_pg_password,
+        database=_pg_db,
+    )
+    try:
+        rows = await conn.fetch(
+            "SELECT schemaname, tablename, n_live_tup "
+            "FROM pg_stat_all_tables "
+            "WHERE schemaname = ANY($1::text[])",
+            sorted(schemas),
+        )
+    finally:
+        await conn.close()
+    return {(r["schemaname"], r["tablename"]): r["n_live_tup"] for r in rows}
+
+
 async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
     """Discover tables and emit metadata to DataHub. Returns count ingested.
 
@@ -357,6 +382,9 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
     if not datasets:
         print("  No tables found in example-postgres. Run postgres.reset_all() first.")
         return 0
+
+    effective_schemas = schemas if schemas is not None else TARGET_SCHEMAS
+    row_counts = await _fetch_row_counts(effective_schemas)
 
     emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
@@ -417,6 +445,18 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
+        # 5. DatasetProfile (enables row-count validation checks)
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=DatasetProfileClass(
+                    timestampMillis=now_ms,
+                    rowCount=row_counts.get((schema, table), 0),
+                    columnCount=len(columns),
+                ),
+            )
+        )
+
     await _mark_registry_registered(list(datasets.keys()))
 
     print(
@@ -441,26 +481,28 @@ _JSON_TO_DATAHUB_TYPE: dict[str, str] = {
 }
 
 
-def _discover_kafka_topics() -> dict[str, list[dict]]:  # type: ignore[type-arg]
-    """Return {urn: [field_dicts]} by scanning JSONL fixture files.
+def _discover_kafka_topics() -> dict[str, tuple[list[dict], int]]:  # type: ignore[type-arg]
+    """Return {urn: ([field_dicts], message_count)} by scanning JSONL fixture files.
 
     Unions all keys across all messages in each topic's JSONL file, inferring
-    field types from the first non-null occurrence.
+    field types from the first non-null occurrence.  Message count is the
+    number of non-empty lines in the JSONL file.
     """
     from tests.integration.util.kafka import ALL_TOPICS
 
     _kafka_fixtures_dir = Path(__file__).parent / "fixtures" / "kafka"
-    datasets: dict[str, list[dict]] = {}  # type: ignore[type-arg]
+    datasets: dict[str, tuple[list[dict], int]] = {}  # type: ignore[type-arg]
 
     for topic, jsonl_file in ALL_TOPICS.items():
         urn = _make_kafka_urn(topic)
-        # Union all keys, keep first non-null type per key
         field_types: dict[str, str] = {}
         fixture_path = _kafka_fixtures_dir / jsonl_file
+        message_count = 0
         for line in fixture_path.read_text().splitlines():
             line = line.strip()
             if not line:
                 continue
+            message_count += 1
             msg = json.loads(line)
             for key, value in msg.items():
                 if key not in field_types and value is not None:
@@ -476,7 +518,7 @@ def _discover_kafka_topics() -> dict[str, list[dict]]:  # type: ignore[type-arg]
                     "nullable": True,
                 }
             )
-        datasets[urn] = fields
+        datasets[urn] = (fields, message_count)
 
     return datasets
 
@@ -503,21 +545,36 @@ def _build_kafka_schema_fields(
 # ---------------------------------------------------------------------------
 
 
-async def ingest_kafka_datasets() -> int:
+async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
     """Discover Kafka topics from JSONL fixtures and emit metadata to DataHub.
+
+    Args:
+        topics: Optional set of bare topic names (the part after ``<instance>.``)
+                to ingest.  When provided, only matching topics are registered.
+                Defaults to all discovered topics.
 
     Returns count of datasets ingested.
     """
     token = _get_token()
-    datasets = _discover_kafka_topics()
+    all_datasets = _discover_kafka_topics()
+
+    if topics is not None:
+        datasets = {
+            urn: payload
+            for urn, payload in all_datasets.items()
+            # URN format: urn:li:dataset:(urn:li:dataPlatform:kafka,{instance}.{topic},{ENV})
+            if urn.split(",")[1].split(".", 1)[1] in topics
+        }
+    else:
+        datasets = all_datasets
+
     if not datasets:
         print("  No Kafka topics found in fixtures.")
         return 0
 
     emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
-    for urn, fields in datasets.items():
-        # Extract topic name from URN
+    for urn, (fields, message_count) in datasets.items():
         # URN format: urn:li:dataset:(urn:li:dataPlatform:kafka,{instance}.{topic},{ENV})
         topic = urn.split(",")[1].split(".", 1)[1]
 
@@ -557,11 +614,34 @@ async def ingest_kafka_datasets() -> int:
             )
         )
 
+        now_ms = int(time.time() * 1000)
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=OperationClass(
+                    timestampMillis=now_ms,
+                    lastUpdatedTimestamp=now_ms,
+                    operationType=OperationTypeClass.INSERT,
+                ),
+            )
+        )
+
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=DatasetProfileClass(
+                    timestampMillis=now_ms,
+                    rowCount=message_count,
+                    columnCount=len(fields),
+                ),
+            )
+        )
+
     await _mark_registry_registered(list(datasets.keys()))
 
     print(
         f"  Ingested {len(datasets)} Kafka datasets "
-        f"({sum(len(f) for f in datasets.values())} fields)."
+        f"({sum(len(payload[0]) for payload in datasets.values())} fields)."
     )
     return len(datasets)
 
