@@ -126,8 +126,9 @@ async def test_uc1_passive_kafka_via_external_script(
         ]
 
         # ── Step 4: Simulate external script — emit DPI lifecycle ─────────────
-        # Mimics what a script following the Custom Ingestor Authoring Contract does.
-        # spec: BACKEND.md §Custom Ingestor Authoring Contract — Required aspects per run:
+        # Mimics what a script following the Custom Ingestor Guide does.
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §DPI emission contract —
+        # Required aspects per run:
         #   1. DataProcessInstanceProperties
         #   2. DataProcessInstanceRelationships
         #   3. DataProcessInstanceRunEvent(STARTED)
@@ -138,7 +139,7 @@ async def test_uc1_passive_kafka_via_external_script(
         dh_client = DataHubClient(gms_url=datahub_gms_url, token=datahub_token)
 
         test_run_uuid = uuid.uuid4().hex[:12]
-        # spec: BACKEND.md §Custom Ingestor Authoring Contract §DPI URN convention:
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §DPI URN convention:
         #     "urn:li:dataProcessInstance:<deterministic-id>. Recommend <platform>-<run_id>"
         dpi_urn = f"urn:li:dataProcessInstance:external-kafka-{test_run_uuid}"
         now_ms = int(time.time() * 1000)
@@ -174,7 +175,7 @@ async def test_uc1_passive_kafka_via_external_script(
             lastObserved=now_ms,
         )
 
-        # spec: BACKEND.md §Custom Ingestor Authoring Contract — schemaMetadata.fields must
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide — schemaMetadata.fields must
         #     reflect the topic's payload shape so the DataHub UI surfaces columns. Mirrors
         #     the active-custom Kafka extractor in src/backend/ingestion/extractors.py:329-339,
         #     keyed off the orders.jsonl fixture in tests/integration/util/fixtures/kafka/.
@@ -301,7 +302,7 @@ async def test_uc1_passive_kafka_via_external_script(
             assert events_after_resp.status_code == 200
             events_after = events_after_resp.json()
             # The DPI emitted in Step 4 carries RunResultTypeClass.SUCCESS, so per
-            # BACKEND.md §Custom Ingestor Authoring Contract the polled row MUST be
+            # DATAHUB_INTEGRATION.md §Custom Ingestor Guide the polled row MUST be
             # INGESTION.COMPLETE — a regression that mapped SUCCESS→FAIL during the
             # passive sync should fail this assertion.
             ingestion_events_after = [
@@ -319,7 +320,7 @@ async def test_uc1_passive_kafka_via_external_script(
             f"source='passive' within 30s; before={len(ingestion_events_before)}, "
             f"after={len(ingestion_events_after)}. "
             f"Events: {events_after.get('events', [])}. "
-            "spec: USE_CASE_en.md §UC1 Case 3 + BACKEND.md §Custom Ingestor Authoring Contract"
+            "spec: USE_CASE_en.md §UC1 Case 3 + DATAHUB_INTEGRATION.md §Custom Ingestor Guide"
         )
 
         # spec: USE_CASE_en.md §UC1 Case 2 — INGESTION.COMPLETE rows carry status="success"
@@ -328,7 +329,7 @@ async def test_uc1_passive_kafka_via_external_script(
             f"INGESTION.COMPLETE event must carry status='success'; got {new_evt.get('status')!r}"
         )
 
-        # ── Step 6b: Verify external script honoured Custom Ingestor Authoring Contract ─
+        # ── Step 6b: Verify external script honoured Custom Ingestor Guide ───
         # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement
         # Without these assertions the simulation can drift back to fields=[] / no sysmeta
         # without breaking the event-row check, while silently breaking the DataHub UI
@@ -389,7 +390,7 @@ async def test_uc1_passive_kafka_via_external_script(
         )
         assert len(sm_fields) > 0, (
             "schemaMetadata.fields must be non-empty so the DataHub UI shows columns; "
-            "external script must mirror BACKEND.md §Custom Ingestor Authoring Contract."
+            "external script must mirror DATAHUB_INTEGRATION.md §Custom Ingestor Guide."
         )
         field_paths = {f.get("fieldPath") for f in sm_fields}
         assert {"event_id", "order_id", "event_type", "timestamp"}.issubset(field_paths), (
@@ -414,7 +415,7 @@ async def test_uc1_passive_kafka_via_external_script(
         # Hard-delete the simulated DPI from DataHub via OpenAPI v3 so subsequent runs
         # don't observe stale DPI records. The frontend GraphQL `deleteEntity` mutation
         # is not exposed on GMS metadata service — must use OpenAPI v3 DELETE.
-        # spec: BACKEND.md §Custom Ingestor Authoring Contract — DPI URN is deterministic.
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide — DPI URN is deterministic.
         if datahub_gms_url and dpi_urn:
             dpi_urn_enc = urllib.parse.quote(dpi_urn, safe="")
             dh_headers = {"Authorization": f"Bearer {datahub_token}"} if datahub_token else {}

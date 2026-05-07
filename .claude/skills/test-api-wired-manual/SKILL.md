@@ -16,8 +16,8 @@ allowed-tools: Bash(*), Read, Edit, Glob, Grep, AskUserQuestion, Skill(dev-env)
 
 A guided manual harness for `tests/integration/api_wired/test_*.py`. Drives one
 scenario end-to-end via curl, pausing for human approval before every external
-mutation. Faithful to `spec/TESTING.md §Manual API testing` — but the source of
-truth for steps, payloads, and assertions is the test file itself, not this
+mutation. Faithful to `spec/TESTING.md §Manual REST API Testing` — but the source
+of truth for steps, payloads, and assertions is the test file itself, not this
 skill.
 
 Use when:

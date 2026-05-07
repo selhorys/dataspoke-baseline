@@ -210,6 +210,9 @@ mode — `passive` mode is platform-agnostic since DataSpoke does not run the ex
 `StatusClass(removed=False)`, `DatasetPropertiesClass`, `SchemaMetadataClass`, plus
 `DataProcessInstance` start + complete `RunEvent` aspects per run (see
 [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
+For postgres, `DatasetProperties.description` is sourced from the PG `obj_description()`
+COMMENT and each `SchemaField.description` from `col_description()`; when no COMMENT is
+set, the dataset description falls back to `"Ingested by DataSpoke: {database}.{schema}.{table}"`.
 `dry_run: true` runs the extractor and returns the schema preview without emitting any aspects.
 
 #### Implementation
@@ -224,6 +227,12 @@ Ingestion config model: see
 `locator`/`identifier`/`auth` (JSONB connection details; `locator`/`auth` are
 `active-custom`-only), `is_enabled`/`schedule_tier` (`schedule_tier` is `active-custom`-only),
 `status` (DAG verification outcome).
+
+**`workflow_dag_id` derivation**: for `mode='active-custom'` configs with a valid
+`schedule_tier` (`hourly` / `daily` / `weekly`), `workflow_dag_id` is set to
+`ingestion-active-{schedule_tier}` on every upsert/PATCH so the periodic tier DAG can
+fetch its dataset list deterministically. `passive` mode and missing/invalid tiers leave
+it `null`.
 
 **Mode is mutable post-creation** via PATCH. Switching `active-custom` → `passive` is
 allowed and takes effect on the next periodic tier sweep; previously-scheduled

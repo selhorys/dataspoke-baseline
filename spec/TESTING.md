@@ -50,7 +50,8 @@ Tests live under `tests/` at the repo root, mirroring `src/`:
   - `spot/` — compact, independent tests of Python classes/functions or REST endpoints. The set
     must cover all integration scope on its own (api-wired removable without losing coverage).
   - `api_wired/` — REST-only tests that implement the five `USE_CASE_en.md` user stories
-    end-to-end. One file per UC, steps mirror the user-story narrative.
+    end-to-end. One or more files per UC named `test_uc{n}_<slug>.py`, covering the UC's
+    scenarios; steps mirror the user-story narrative.
   - `util/` — dummy-data reset/ingest utilities with `fixtures/sql/` and `fixtures/kafka/`.
   - `conftest.py` — root fixtures: infra, lock, dummy-data lifecycle.
 - `tests/e2e/` — Playwright end-to-end tests
@@ -144,10 +145,12 @@ Test modules declare dependencies via module-level constants:
 DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog", "orders"])
 DUMMY_DATA_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
+DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
 ```
 
-`DUMMY_DATA_DATAHUB_SCHEMAS` triggers DataHub ingestion for those schemas (auto-includes them
-in PG reset). Modules with no constants are no-ops.
+`DUMMY_DATA_DATAHUB_SCHEMAS` triggers DataHub PG ingestion for those schemas (auto-includes
+them in PG reset). `DUMMY_DATA_DATAHUB_TOPICS` triggers DataHub Kafka registration for those
+topics (auto-includes them in Kafka reset). Modules with no constants are no-ops.
 
 ### Prerequisites
 
@@ -227,7 +230,9 @@ infrastructure.
 ### Api-wired integration tests (`tests/integration/api_wired/`)
 
 Each test implements one of the five **`USE_CASE_en.md` user stories** end-to-end through the
-public REST API. There is exactly one file per UC -- `test_uc{1..5}_<slug>.py`.
+public REST API. Files are named `test_uc{1..5}_<slug>.py`; a UC may be split across multiple
+files when the user story has independent scenarios (e.g., `test_uc1_active_custom_postgres.py`
+and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
 
 - **REST only**: test logic uses `httpx.AsyncClient` against `http://app.<INGRESS_IP>.nip.io/`.
   No direct imports of `src/backend`, `src/workflows`, or peripheral SDK clients in the test
@@ -282,6 +287,10 @@ runs causes competing Airflow load and flaky timing.
 
 Interactive endpoint testing with `curl` against the test-mode server. Useful for exploratory
 testing and verifying features before writing automated tests.
+
+> For a guided harness that walks an existing api-wired test scenario step-by-step (extracts
+> requests from the test file, pauses for approval before each mutation, probes side effects),
+> use the `/test-api-wired-manual` skill.
 
 ### Setup
 
