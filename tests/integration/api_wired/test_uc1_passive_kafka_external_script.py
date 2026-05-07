@@ -144,6 +144,7 @@ async def test_uc1_passive_kafka_via_external_script(
         now_ms = int(time.time() * 1000)
 
         from datahub.metadata.schema_classes import (
+            ArrayTypeClass,
             AuditStampClass,
             DataProcessInstanceOutputClass,
             DataProcessInstancePropertiesClass,
@@ -153,11 +154,48 @@ async def test_uc1_passive_kafka_via_external_script(
             DataProcessRunStatusClass,
             DataProcessTypeClass,
             DatasetPropertiesClass,
+            NumberTypeClass,
             OtherSchemaClass,
             RunResultTypeClass,
+            SchemaFieldClass,
+            SchemaFieldDataTypeClass,
             SchemaMetadataClass,
             StatusClass,
+            StringTypeClass,
+            SystemMetadataClass,
         )
+
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
+        #     every aspect must carry runId='dataspoke-{platform}-{run_id}' and lastObserved
+        #     so DataHub computes dataset.lastIngested and renders the
+        #     "Synced X ago from <Platform>" UI badge.
+        sysmeta = SystemMetadataClass(
+            runId=f"dataspoke-kafka-{test_run_uuid}",
+            lastObserved=now_ms,
+        )
+
+        # spec: BACKEND.md §Custom Ingestor Authoring Contract — schemaMetadata.fields must
+        #     reflect the topic's payload shape so the DataHub UI surfaces columns. Mirrors
+        #     the active-custom Kafka extractor in src/backend/ingestion/extractors.py:329-339,
+        #     keyed off the orders.jsonl fixture in tests/integration/util/fixtures/kafka/.
+        kafka_fields = [
+            SchemaFieldClass(
+                fieldPath=fp, nativeDataType=native, nullable=True,
+                type=SchemaFieldDataTypeClass(type=type_cls),
+            )
+            for fp, native, type_cls in (
+                ("event_id", "str", StringTypeClass()),
+                ("order_id", "str", StringTypeClass()),
+                ("event_type", "str", StringTypeClass()),
+                ("timestamp", "str", StringTypeClass()),
+                ("items", "list", ArrayTypeClass()),
+                ("total", "float", NumberTypeClass()),
+                ("warehouse", "str", StringTypeClass()),
+                ("carrier", "str", StringTypeClass()),
+                ("tracking", "str", StringTypeClass()),
+                ("signed_by", "str", StringTypeClass()),
+            )
+        ]
 
         # 1. Properties
         await dh_client.emit_aspect(
@@ -167,6 +205,7 @@ async def test_uc1_passive_kafka_via_external_script(
                 type=DataProcessTypeClass.BATCH_SCHEDULED,
                 created=AuditStampClass(time=now_ms, actor="urn:li:corpuser:external-script"),
             ),
+            system_metadata=sysmeta,
         )
         # 2. Relationships
         await dh_client.emit_aspect(
@@ -175,11 +214,13 @@ async def test_uc1_passive_kafka_via_external_script(
                 upstreamInstances=[],
                 parentTemplate=None,
             ),
+            system_metadata=sysmeta,
         )
         # 2b. Output relationship (dataset this run produced)
         await dh_client.emit_aspect(
             dpi_urn,
             DataProcessInstanceOutputClass(outputs=[_PASSIVE_KAFKA_URN]),
+            system_metadata=sysmeta,
         )
         # 3. STARTED — before any dataset aspect work
         await dh_client.emit_aspect(
@@ -188,9 +229,12 @@ async def test_uc1_passive_kafka_via_external_script(
                 status=DataProcessRunStatusClass.STARTED,
                 timestampMillis=now_ms,
             ),
+            system_metadata=sysmeta,
         )
         # 4. Dataset aspects (Status + DatasetProperties + SchemaMetadata)
-        await dh_client.emit_aspect(_PASSIVE_KAFKA_URN, StatusClass(removed=False))
+        await dh_client.emit_aspect(
+            _PASSIVE_KAFKA_URN, StatusClass(removed=False), system_metadata=sysmeta,
+        )
         await dh_client.emit_aspect(
             _PASSIVE_KAFKA_URN,
             DatasetPropertiesClass(
@@ -198,6 +242,7 @@ async def test_uc1_passive_kafka_via_external_script(
                 description="Order state-change events from external Kafka topic",
                 customProperties={"source": "uc1-external-script-test"},
             ),
+            system_metadata=sysmeta,
         )
         await dh_client.emit_aspect(
             _PASSIVE_KAFKA_URN,
@@ -207,8 +252,9 @@ async def test_uc1_passive_kafka_via_external_script(
                 version=0,
                 hash="",
                 platformSchema=OtherSchemaClass(rawSchema=""),
-                fields=[],
+                fields=kafka_fields,
             ),
+            system_metadata=sysmeta,
         )
         # 5. COMPLETE/SUCCESS — after all aspect work
         end_ms = int(time.time() * 1000)
@@ -223,6 +269,7 @@ async def test_uc1_passive_kafka_via_external_script(
                 ),
                 durationMillis=end_ms - now_ms,
             ),
+            system_metadata=sysmeta,
         )
 
         # ── Step 5: Trigger sync_passive_status (with bounded retry) ────────
@@ -279,6 +326,74 @@ async def test_uc1_passive_kafka_via_external_script(
         new_evt = ingestion_events_after[-1]
         assert new_evt.get("status") == "success", (
             f"INGESTION.COMPLETE event must carry status='success'; got {new_evt.get('status')!r}"
+        )
+
+        # ── Step 6b: Verify external script honoured Custom Ingestor Authoring Contract ─
+        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement
+        # Without these assertions the simulation can drift back to fields=[] / no sysmeta
+        # without breaking the event-row check, while silently breaking the DataHub UI
+        # ("Synced from Kafka" badge missing, no columns shown).
+        kafka_urn_enc = urllib.parse.quote(_PASSIVE_KAFKA_URN, safe="")
+        gms_headers: dict[str, str] = {}
+        if datahub_token:
+            gms_headers["Authorization"] = f"Bearer {datahub_token}"
+
+        sysmeta_resp = httpx.get(
+            f"{datahub_gms_url}/openapi/v3/entity/dataset/{kafka_urn_enc}"
+            "?systemMetadata=true&aspects=schemaMetadata",
+            headers=gms_headers,
+            timeout=10.0,
+        )
+        assert sysmeta_resp.status_code == 200, sysmeta_resp.text
+        schema_runId = (
+            sysmeta_resp.json().get("schemaMetadata", {}).get("systemMetadata", {}).get("runId")
+        )
+        assert schema_runId is not None and schema_runId.startswith("dataspoke-kafka-"), (
+            f"schemaMetadata.systemMetadata.runId must start with 'dataspoke-kafka-'; "
+            f"got {schema_runId!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+
+        gql_lastingested = httpx.post(
+            f"{datahub_gms_url}/api/graphql",
+            headers={**gms_headers, "Content-Type": "application/json"},
+            json={
+                "query": (
+                    "query getLastIngested($urn: String!) { dataset(urn: $urn) { lastIngested } }"
+                ),
+                "variables": {"urn": _PASSIVE_KAFKA_URN},
+            },
+            timeout=10.0,
+        )
+        assert gql_lastingested.status_code == 200, gql_lastingested.text
+        last_ingested_ms = (
+            gql_lastingested.json().get("data", {}).get("dataset", {}).get("lastIngested")
+        )
+        assert last_ingested_ms is not None, (
+            "dataset.lastIngested must be non-null after external-script run; "
+            "the 'Synced X ago from Kafka' UI badge depends on this. "
+            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
+        )
+
+        schema_resp = httpx.get(
+            f"{datahub_gms_url}/aspects/{kafka_urn_enc}?aspect=schemaMetadata&version=0",
+            headers=gms_headers,
+            timeout=10.0,
+        )
+        assert schema_resp.status_code == 200, schema_resp.text
+        sm_fields = (
+            schema_resp.json()
+            .get("aspect", {})
+            .get("com.linkedin.schema.SchemaMetadata", {})
+            .get("fields", [])
+        )
+        assert len(sm_fields) > 0, (
+            "schemaMetadata.fields must be non-empty so the DataHub UI shows columns; "
+            "external script must mirror BACKEND.md §Custom Ingestor Authoring Contract."
+        )
+        field_paths = {f.get("fieldPath") for f in sm_fields}
+        assert {"event_id", "order_id", "event_type", "timestamp"}.issubset(field_paths), (
+            f"orders.events schema must expose core event fields; got {sorted(field_paths)}"
         )
 
         # ── Step 7: Cross-dataset overview includes passive Kafka URN ─────────
