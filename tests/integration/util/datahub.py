@@ -36,6 +36,7 @@ from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
+    AssertionInfoClass,
     DatasetProfileClass,
     DatasetPropertiesClass,
     OperationClass,
@@ -324,6 +325,44 @@ def reset_datasets() -> int:
         )
 
     print(f"  Soft-deleted {len(urns)} datasets.")
+    return len(urns)
+
+
+def reset_assertions() -> int:
+    """Soft-delete DataSpoke-emitted assertion entities.
+
+    Why: register_assertion() is "skip if exists" by URN. Stale assertions from
+    prior test runs would silently freeze rule bodies across runs, masking
+    spec drift. The validation DELETE conf endpoint only removes the dataspoke
+    DB row — DataHub assertion entities are not tombstoned by that path.
+
+    Identifies DataSpoke assertions via assertionInfo.customProperties.dataspoke_rule_type
+    (set by build_assertion_info in src/backend/validation/assertions.py).
+    """
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
+
+    urns: list[str] = []
+    for urn in graph.get_urns_by_filter(entity_types=["assertion"]):
+        info = graph.get_aspect(entity_urn=urn, aspect_type=AssertionInfoClass)
+        if info is None:
+            continue
+        if info.customProperties and "dataspoke_rule_type" in info.customProperties:
+            urns.append(urn)
+
+    if not urns:
+        return 0
+
+    for urn in urns:
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=StatusClass(removed=True),
+            )
+        )
+
+    print(f"  Soft-deleted {len(urns)} assertions.")
     return len(urns)
 
 
@@ -665,6 +704,7 @@ async def reset_and_ingest(
         A (deleted, ingested) tuple with the respective counts.
     """
     deleted = reset_datasets()
+    reset_assertions()
     pg_count = await ingest_pg_datasets(schemas=schemas)
     kafka_count = await ingest_kafka_datasets()
     return deleted, pg_count + kafka_count
