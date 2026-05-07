@@ -23,6 +23,23 @@ spec:
       {{- with .Values.api.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.api.migrate.enabled }}
+      initContainers:
+        - name: alembic-migrate
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          command: ["python", "-m", "alembic", "upgrade", "head"]
+          envFrom:
+            {{- if .Values.config.createConfigMap }}
+            - configMapRef:
+                name: {{ include "dataspoke.fullname" . }}-app-config
+            {{- end }}
+            {{- if .Values.secrets.createSecret }}
+            - secretRef:
+                name: {{ include "dataspoke.fullname" . }}-secrets
+            {{- end }}
+          resources: {{- toYaml .Values.api.migrate.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: api
           image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"

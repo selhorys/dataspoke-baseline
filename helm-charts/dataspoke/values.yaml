@@ -87,6 +87,18 @@ api:
       ephemeral-storage: 4Gi
   secretReader:
     enabled: true
+  migrate:
+    # Set to false if migrations are managed externally (e.g. CI job, Flyway).
+    enabled: true
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+        ephemeral-storage: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+        ephemeral-storage: 512Mi
 
 event-consumer:
   # Optional Kafka consumer for DataHub MCL/MCP events. Disabled by default —

@@ -20,6 +20,8 @@ COPY --from=builder /build/.venv /build/.venv
 
 WORKDIR /app
 COPY src/ ./src/
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
 
 EXPOSE 8002
 
