@@ -274,3 +274,89 @@ async def test_run_all_rules_share_same_run_id_in_datahub(
     assert len(set(captured_run_ids)) == 1, (
         "Convention 5: all rules in one run must share the same runId"
     )
+
+
+# ── 61. Custom sql_timeseries assertion round-trip ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_custom_sql_timeseries_assertion_round_trip(
+    datahub_client,
+) -> None:
+    """DATAHUB_INTEGRATION.md convention 1: custom sql_timeseries assertion round-trips correctly.
+
+    build_assertion_info for a custom/sql_timeseries rule must produce an AssertionInfoClass
+    with customAssertion.type == 'sql_timeseries' and source.type == EXTERNAL.
+    After emission to DataHub the fetched aspect must carry the same customAssertion shape.
+
+    spec: DATAHUB_INTEGRATION.md L228 — CUSTOM rules require customAssertion sub-aspect;
+          customAssertion.type == subtype string
+    spec: DATAHUB_INTEGRATION.md L238-L240 — source.type must be EXTERNAL
+    """
+    from datahub.metadata.schema_classes import AssertionSourceTypeClass
+
+    from src.backend.validation.assertions import (
+        build_assertion_info,
+        build_assertion_urn,
+    )
+
+    rule = {
+        "rule_id": "spot-custom-ts-rt-001",
+        "type": "custom",
+        "subtype": "sql_timeseries",
+        "description": "Daily fulfillment volume series for anomaly detection",
+        "sql": (
+            "SELECT summary_date AS day, row_count "
+            "FROM orders.daily_fulfillment_summary"
+        ),
+        "partition": ["day"],
+        "order": ["day"],
+        "values": ["row_count"],
+        "ml_validation": {
+            "targets": ["row_count"],
+            "model": "range",
+            "lookback_partitions": 30,
+        },
+    }
+
+    assertion_urn = build_assertion_urn(_TEST_URN, rule["rule_id"])
+    assertion_info = build_assertion_info(_TEST_URN, rule)
+
+    # Verify build_assertion_info produces the correct sub-aspect before emission
+    # spec: DATAHUB_INTEGRATION.md L228 — CUSTOM rules require customAssertion sub-aspect
+    assert assertion_info.customAssertion is not None, (
+        "spec: DATAHUB_INTEGRATION.md L228 — build_assertion_info must produce "
+        "customAssertion for custom/sql_timeseries rule"
+    )
+    assert assertion_info.customAssertion.type == "sql_timeseries", (
+        "spec: DATAHUB_INTEGRATION.md L228 — customAssertion.type must equal the subtype string"
+    )
+    assert assertion_info.customAssertion.entity == _TEST_URN, (
+        "spec: DATAHUB_INTEGRATION.md L233-L237 — customAssertion.entity must be dataset URN"
+    )
+
+    # Emit to DataHub and round-trip
+    await datahub_client.emit_assertion(assertion_urn, assertion_info)
+
+    fetched = await datahub_client.get_assertion_info(assertion_urn)
+    assert fetched is not None, "assertionInfo must exist in DataHub after emission"
+
+    # spec: DATAHUB_INTEGRATION.md L228 — round-tripped customAssertion sub-aspect
+    assert fetched.customAssertion is not None, (
+        "spec: DATAHUB_INTEGRATION.md L228 — customAssertion must be non-null after round-trip"
+    )
+    assert fetched.customAssertion.type == "sql_timeseries", (
+        "spec: DATAHUB_INTEGRATION.md L228 — customAssertion.type must equal 'sql_timeseries' "
+        "after round-trip"
+    )
+    assert fetched.customAssertion.entity == _TEST_URN, (
+        "spec: DATAHUB_INTEGRATION.md L233-L237 — customAssertion.entity must be dataset URN "
+        "after round-trip"
+    )
+
+    # spec: DATAHUB_INTEGRATION.md L238-L240 — source.type must be EXTERNAL
+    assert fetched.source is not None, (
+        "spec: DATAHUB_INTEGRATION.md L238-L240 — source must be set after round-trip"
+    )
+    assert fetched.source.type == AssertionSourceTypeClass.EXTERNAL, (
+        "spec: DATAHUB_INTEGRATION.md L238-L240 — source.type must be EXTERNAL after round-trip"
+    )
