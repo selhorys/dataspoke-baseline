@@ -26,6 +26,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,7 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
     AssertionInfoClass,
+    DatasetFieldProfileClass,
     DatasetProfileClass,
     DatasetPropertiesClass,
     OperationClass,
@@ -409,6 +411,51 @@ async def _fetch_row_counts(
     return {(r["schemaname"], r["relname"]): r["n_live_tup"] for r in rows}
 
 
+def _quote_ident(ident: str) -> str:
+    """Return a double-quoted PostgreSQL identifier, asserting safe characters."""
+    assert re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident), (
+        f"Identifier contains unsafe characters: {ident!r}"
+    )
+    return f'"{ident}"'
+
+
+async def _fetch_null_counts(
+    datasets: dict[str, list[dict]],  # type: ignore[type-arg]
+) -> dict[tuple[str, str], dict[str, int]]:
+    """Return {(schema, table): {column_name: null_count}} for all discovered tables.
+
+    Issues one round-trip per table using COUNT(*) FILTER (WHERE col IS NULL).
+    """
+    conn = await asyncpg.connect(
+        host=_pg_host,
+        port=_pg_port,
+        user=_pg_user,
+        password=_pg_password,
+        database=_pg_db,
+    )
+    result: dict[tuple[str, str], dict[str, int]] = {}
+    try:
+        for columns in datasets.values():
+            if not columns:
+                continue
+            schema = columns[0]["schema"]
+            table = columns[0]["table"]
+            col_exprs = ", ".join(
+                f"COUNT(*) FILTER (WHERE {_quote_ident(col['name'])} IS NULL) "
+                f"AS {_quote_ident(col['name'])}"
+                for col in columns
+            )
+            sql = (
+                f"SELECT {col_exprs} "
+                f"FROM {_quote_ident(schema)}.{_quote_ident(table)}"
+            )
+            row = await conn.fetchrow(sql)
+            result[(schema, table)] = {col["name"]: row[col["name"]] for col in columns}
+    finally:
+        await conn.close()
+    return result
+
+
 async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
     """Discover tables and emit metadata to DataHub. Returns count ingested.
 
@@ -424,6 +471,7 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
 
     effective_schemas = schemas if schemas is not None else TARGET_SCHEMAS
     row_counts = await _fetch_row_counts(effective_schemas)
+    null_counts = await _fetch_null_counts(datasets)
 
     emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
@@ -484,14 +532,29 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
-        # 5. DatasetProfile (enables row-count validation checks)
+        # 5. DatasetProfile (enables row-count and field-metric validation checks)
+        row_count = row_counts.get((schema, table), 0)
+        table_null_counts = null_counts.get((schema, table), {})
+        field_profiles = [
+            DatasetFieldProfileClass(
+                fieldPath=col["name"],
+                nullCount=table_null_counts.get(col["name"]),
+                nullProportion=(
+                    table_null_counts[col["name"]] / row_count
+                    if row_count > 0 and col["name"] in table_null_counts
+                    else None
+                ),
+            )
+            for col in columns
+        ]
         emitter.emit_mcp(
             MetadataChangeProposalWrapper(
                 entityUrn=urn,
                 aspect=DatasetProfileClass(
                     timestampMillis=now_ms,
-                    rowCount=row_counts.get((schema, table), 0),
+                    rowCount=row_count,
                     columnCount=len(columns),
+                    fieldProfiles=field_profiles,
                 ),
             )
         )
