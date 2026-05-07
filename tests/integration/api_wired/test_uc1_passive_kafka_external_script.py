@@ -411,31 +411,20 @@ async def test_uc1_passive_kafka_via_external_script(
 
     finally:
         # ── Step 8: Cleanup ──────────────────────────────────────────────────
-        # Delete the simulated DPI from DataHub to leave a clean state.
-        # spec: BACKEND.md §Custom Ingestor Authoring Contract — DPI URN is deterministic;
-        # delete it explicitly so subsequent runs don't observe stale DPI records.
+        # Hard-delete the simulated DPI from DataHub via OpenAPI v3 so subsequent runs
+        # don't observe stale DPI records. The frontend GraphQL `deleteEntity` mutation
+        # is not exposed on GMS metadata service — must use OpenAPI v3 DELETE.
+        # spec: BACKEND.md §Custom Ingestor Authoring Contract — DPI URN is deterministic.
         if datahub_gms_url and dpi_urn:
-            dh_headers = (
-                {"Authorization": f"Bearer {datahub_token}", "Content-Type": "application/json"}
-                if datahub_token
-                else {"Content-Type": "application/json"}
-            )
-            delete_entity_mutation = """
-            mutation deleteEntity($urn: String!, $soft: Boolean!) {
-                deleteEntity(urn: $urn, soft: $soft)
-            }
-            """
+            dpi_urn_enc = urllib.parse.quote(dpi_urn, safe="")
+            dh_headers = {"Authorization": f"Bearer {datahub_token}"} if datahub_token else {}
             try:
-                httpx.post(
-                    f"{datahub_gms_url}/api/graphql",
+                httpx.delete(
+                    f"{datahub_gms_url}/openapi/v3/entity/dataprocessinstance/{dpi_urn_enc}",
                     headers=dh_headers,
-                    json={
-                        "query": delete_entity_mutation,
-                        "variables": {"urn": dpi_urn, "soft": False},
-                    },
                     timeout=10.0,
                 )
-            except Exception:
+            except (httpx.ConnectError, httpx.ReadTimeout):
                 pass
 
         # Delete DataSpoke passive conf
