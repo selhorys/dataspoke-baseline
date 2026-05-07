@@ -33,7 +33,10 @@ def require_server() -> None:
     if test_mode.lower() != "true":
         pytest.fail(
             "DATASPOKE_TEST_MODE is not set to 'true'. "
-            "Run: source dev_env/.env && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/ "
+            "Run: set -a && source dev_env/.env && set +a && "
+            "DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/ "
+            "(set -a is required — dev_env/.env has no `export` prefixes, so a bare "
+            "`source` does not propagate vars to the pytest subprocess) "
             "or start the server with: ./dev_env/dataspoke-test-mode.sh --skip-build"
         )
 
