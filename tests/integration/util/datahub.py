@@ -360,14 +360,14 @@ async def _fetch_row_counts(
     )
     try:
         rows = await conn.fetch(
-            "SELECT schemaname, tablename, n_live_tup "
+            "SELECT schemaname, relname, n_live_tup "
             "FROM pg_stat_all_tables "
             "WHERE schemaname = ANY($1::text[])",
             sorted(schemas),
         )
     finally:
         await conn.close()
-    return {(r["schemaname"], r["tablename"]): r["n_live_tup"] for r in rows}
+    return {(r["schemaname"], r["relname"]): r["n_live_tup"] for r in rows}
 
 
 async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
