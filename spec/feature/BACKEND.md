@@ -331,7 +331,9 @@ typed sub-aspect requirements, and emission conventions are in
 [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
 DataSpoke borrows the on-disk grammar from DataHub's Open Assertions YAML schema and adds
 a DataSpoke-original extension `custom` type with `subtype: "sql_timeseries"` for
-partition-aware ML-validated checks.
+partition-aware ML-validated checks. For the user-facing rule authoring reference
+(envelope, DataSpoke extensions, per-type DataHub-aspect crosswalk), see
+[VALIDATION_RULES.md](VALIDATION_RULES.md).
 
 #### Implementation
 

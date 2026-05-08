@@ -215,9 +215,17 @@ def create_app() -> FastAPI:
         {
             "name": "common/validation",
             "description": (
-                "Validation config CRUD, run, and result queries. Requires common auth. "
-                "See spec/feature/BACKEND.md §Validation Service for rule types, "
-                "partition semantics, and DataHub assertion mapping."
+                "Validation config CRUD, run, result queries, and event reports. "
+                "Requires common auth.\n\n"
+                "Rule JSON is a DataSpoke envelope (`is_enabled`, `schedule_tier`, "
+                "`owner`, `rules[]`) wrapping rules whose field names mostly mirror "
+                "DataHub's Assertion model. The full request body shape and an example "
+                "live on the `PUT/PATCH …/attr/validation/conf` endpoints below.\n\n"
+                "**Where to look:**\n"
+                "- Rule authoring (envelope, DataSpoke extensions, per-type "
+                "DataHub-aspect crosswalk) — `spec/feature/VALIDATION_RULES.md`.\n"
+                "- DataHub field meanings and allowed operator/metric/compatibility "
+                "values — see the DataHub Assertion Entity link below."
             ),
             "externalDocs": {
                 "description": (

@@ -214,7 +214,10 @@ DataSpoke extensions (`rule_id`, `source`, `partition`, `order`, `ml_validation`
 are supersets — never replacements. Note: the OSS `datahub assertions` CLI /
 compiler is deprecated in v1.5 and is not invoked; DataSpoke writes both
 `assertionInfo` and `assertionRunEvent` aspects directly via MCP emission while
-keeping the YAML grammar OAS-conformant.
+keeping the YAML grammar OAS-conformant. For the DataSpoke-side authoring view (envelope
++ extensions + per-type crosswalk; DataHub field semantics still live on the
+[DataHub Assertion Entity page](https://datahubproject.io/docs/generated/metamodel/entities/assertion)),
+see [feature/VALIDATION_RULES.md](feature/VALIDATION_RULES.md).
 
 Six `assertionInfo.type` values cover the primary data quality dimensions:
 
