@@ -6,7 +6,7 @@ Spec sources:
 """
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from datahub.metadata.schema_classes import (
@@ -15,6 +15,7 @@ from datahub.metadata.schema_classes import (
     CalendarIntervalClass,
     FieldAssertionTypeClass,
     FieldMetricTypeClass,
+    StatusClass,
 )
 
 from src.backend.validation.assertions import (
@@ -441,8 +442,8 @@ async def test_register_assertion_propagates_emit_failure(datahub):
     """DATAHUB_INTEGRATION.md convention 6 + Pattern D anti-pattern: emit failure must propagate (no swallow)."""
     from src.shared.exceptions import DataHubUnavailableError
 
-    datahub.get_assertion_info = AsyncMock(return_value=None)
     datahub.emit_assertion = AsyncMock(side_effect=DataHubUnavailableError("GMS down"))
+    datahub.emit_aspect = AsyncMock()
 
     assertion_urn = build_assertion_urn(_DATASET_URN, "r1")
     rule = {"rule_id": "r1", "type": "freshness"}
@@ -452,24 +453,39 @@ async def test_register_assertion_propagates_emit_failure(datahub):
         await register_assertion(datahub, assertion_urn, assertion_info)
 
 
-async def test_register_assertion_idempotent_when_already_exists(datahub):
-    """Calling register_assertion when the URN already exists must not raise.
+async def test_register_assertion_resurrects_soft_deleted(datahub):
+    """register_assertion emits assertionInfo + status(removed=False) on every call.
 
-    Spec invariant: re-emit on config edit is idempotent (DATAHUB_INTEGRATION
-    convention 3). Whether the impl skips the emit or relies on DataHub's
-    upsert idempotency is impl detail; only the no-error contract is observable.
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DataSpoke is
+    authoritative for assertion lifecycle. An out-of-band soft-delete applied directly
+    in DataHub (status.removed=true) is reverted on the next PUT/PATCH by emitting
+    assertionInfo followed by StatusClass(removed=False). The impl must not inspect
+    the current status before emitting.
+
+    Precondition: get_aspect returns status(removed=True) to simulate a prior soft-delete
+    state visible to any impl that would inspect it before emitting.
     """
-    existing = MagicMock()
-    datahub.get_assertion_info = AsyncMock(return_value=existing)
     datahub.emit_assertion = AsyncMock()
+    datahub.emit_aspect = AsyncMock()
+    datahub.get_aspect = AsyncMock(return_value=StatusClass(removed=True))
 
     assertion_urn = build_assertion_urn(_DATASET_URN, "r1")
     rule = {"rule_id": "r1", "type": "freshness"}
     assertion_info = build_assertion_info(_DATASET_URN, rule)
 
-    # Should not raise:
     await register_assertion(datahub, assertion_urn, assertion_info)
-    await register_assertion(datahub, assertion_urn, assertion_info)
+
+    datahub.emit_assertion.assert_awaited_once_with(assertion_urn, assertion_info)
+    datahub.emit_aspect.assert_awaited_once()
+
+    aspect_urn, aspect_obj = datahub.emit_aspect.call_args[0]
+    assert aspect_urn == assertion_urn
+    assert isinstance(aspect_obj, StatusClass), (
+        "spec: DATAHUB_INTEGRATION.md convention 3 — emit_aspect must carry StatusClass"
+    )
+    assert aspect_obj.removed is False, (
+        "spec: DATAHUB_INTEGRATION.md convention 3 — status.removed must be False to resurrect"
+    )
 
 
 async def test_report_result_returns_true_on_success(datahub):

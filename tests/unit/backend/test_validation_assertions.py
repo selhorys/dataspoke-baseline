@@ -1,13 +1,14 @@
 """Unit tests for validation assertion bridge (mocked DataHub)."""
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from datahub.metadata.schema_classes import (
     AssertionResultTypeClass,
     AssertionRunStatusClass,
     AssertionTypeClass,
     PartitionTypeClass,
+    StatusClass,
 )
 
 from src.backend.validation.assertions import (
@@ -257,10 +258,23 @@ def test_build_run_event_empty_values_produces_no_native_results():
 # ── register_assertion ─────────────────────────────────────────────────────────
 
 
-async def test_register_assertion_emits_when_not_exists(datahub):
-    """When assertion doesn't exist, emit_assertion is called once."""
-    datahub.get_assertion_info = AsyncMock(return_value=None)
+async def test_register_assertion_emits_even_when_already_exists(datahub):
+    """register_assertion emits assertionInfo and status(removed=False) unconditionally.
+
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DataSpoke is
+    authoritative; out-of-band soft-deletes revert on the next PUT/PATCH. The impl
+    must not skip emission when assertionInfo already exists in DataHub.
+
+    Precondition: get_assertion_info returns a non-None value (existing assertion),
+    and get_aspect returns status(removed=True) (soft-deleted state). Both emit_assertion
+    and emit_aspect(StatusClass(removed=False)) must still be called.
+    """
+    from unittest.mock import MagicMock
+
     datahub.emit_assertion = AsyncMock()
+    datahub.emit_aspect = AsyncMock()
+    datahub.get_assertion_info = AsyncMock(return_value=MagicMock())
+    datahub.get_aspect = AsyncMock(return_value=StatusClass(removed=True))
 
     assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
     rule = {"rule_id": _RULE_ID, "type": "freshness"}
@@ -269,46 +283,21 @@ async def test_register_assertion_emits_when_not_exists(datahub):
     await register_assertion(datahub, assertion_urn, assertion_info)
 
     datahub.emit_assertion.assert_awaited_once_with(assertion_urn, assertion_info)
-
-
-async def test_register_assertion_skips_when_already_exists(datahub):
-    """When assertion already exists in DataHub, emit_assertion is NOT called."""
-    existing_info = MagicMock()
-    datahub.get_assertion_info = AsyncMock(return_value=existing_info)
-    datahub.emit_assertion = AsyncMock()
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    assertion_info = build_assertion_info(_DATASET_URN, rule)
-
-    await register_assertion(datahub, assertion_urn, assertion_info)
-
-    datahub.emit_assertion.assert_not_awaited()
-
-
-async def test_register_assertion_propagates_on_get_failure(datahub):
-    """DataHub failure during get_assertion_info propagates so callers learn of outage."""
-    import pytest
-
-    datahub.get_assertion_info = AsyncMock(side_effect=RuntimeError("GMS unavailable"))
-    datahub.emit_assertion = AsyncMock()
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    assertion_info = build_assertion_info(_DATASET_URN, rule)
-
-    with pytest.raises(RuntimeError, match="GMS unavailable"):
-        await register_assertion(datahub, assertion_urn, assertion_info)
-
-    datahub.emit_assertion.assert_not_awaited()
+    emitted_status = datahub.emit_aspect.call_args[0][1]
+    assert isinstance(emitted_status, StatusClass)
+    assert emitted_status.removed is False
 
 
 async def test_register_assertion_propagates_on_emit_failure(datahub):
-    """emit_assertion failure propagates — definition errors must surface at upsert time."""
+    """emit_assertion failure propagates — definition errors must surface at upsert time.
+
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 6 — DataHub
+    errors during registration surface as 502/503; callers learn of outage immediately.
+    """
     import pytest
 
-    datahub.get_assertion_info = AsyncMock(return_value=None)
     datahub.emit_assertion = AsyncMock(side_effect=RuntimeError("emit failed"))
+    datahub.emit_aspect = AsyncMock()
 
     assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
     rule = {"rule_id": _RULE_ID, "type": "freshness"}
@@ -316,6 +305,38 @@ async def test_register_assertion_propagates_on_emit_failure(datahub):
 
     with pytest.raises(RuntimeError, match="emit failed"):
         await register_assertion(datahub, assertion_urn, assertion_info)
+
+
+async def test_register_assertion_emits_status_removed_false_companion(datahub):
+    """register_assertion performs exactly 2 emit ops per call.
+
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — emitting
+    status(removed=False) alongside assertionInfo. Order is unconstrained by spec;
+    both must be observed by DataHub before the next config-edit cycle.
+    """
+    datahub.emit_assertion = AsyncMock()
+    datahub.emit_aspect = AsyncMock()
+
+    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
+    rule = {"rule_id": _RULE_ID, "type": "freshness"}
+    assertion_info = build_assertion_info(_DATASET_URN, rule)
+
+    await register_assertion(datahub, assertion_urn, assertion_info)
+
+    assert datahub.emit_assertion.await_count == 1, (
+        "spec: DATAHUB_INTEGRATION.md convention 3 — exactly 1 emit_assertion call per register"
+    )
+    assert datahub.emit_aspect.await_count == 1, (
+        "spec: DATAHUB_INTEGRATION.md convention 3 — exactly 1 emit_aspect call per register"
+    )
+    emit_urn, emit_info = datahub.emit_assertion.call_args[0]
+    assert emit_urn == assertion_urn
+    assert emit_info is assertion_info
+
+    aspect_urn, aspect_obj = datahub.emit_aspect.call_args[0]
+    assert aspect_urn == assertion_urn
+    assert isinstance(aspect_obj, StatusClass)
+    assert aspect_obj.removed is False
 
 
 # ── report_result ──────────────────────────────────────────────────────────────

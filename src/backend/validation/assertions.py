@@ -42,6 +42,7 @@ from datahub.metadata.schema_classes import (
     SchemaFieldSpecClass,
     SqlAssertionInfoClass,
     SqlAssertionTypeClass,
+    StatusClass,
     VolumeAssertionInfoClass,
     VolumeAssertionTypeClass,
 )
@@ -460,16 +461,15 @@ async def register_assertion(
     assertion_urn: str,
     assertion_info: AssertionInfoClass,
 ) -> None:
-    """Emit assertion definition to DataHub if it does not already exist.
+    """Always emits assertionInfo + status(removed=False).
 
-    Lets DataHubClient exceptions propagate after retries so callers learn
-    of DataHub availability issues at config-save time rather than silently.
-    The "skip if exists" check ensures idempotency on re-upsert.
+    The deterministic URN makes re-emit idempotent at the DataHub layer;
+    explicit status(removed=False) resurrects any prior soft-deleted assertion.
+    DataHubClient exceptions propagate so callers learn of DataHub availability
+    issues at config-save time rather than silently.
     """
-    existing = await datahub.get_assertion_info(assertion_urn)
-    if existing is not None:
-        return
     await datahub.emit_assertion(assertion_urn, assertion_info)
+    await datahub.emit_aspect(assertion_urn, StatusClass(removed=False))
 
 
 async def report_result(

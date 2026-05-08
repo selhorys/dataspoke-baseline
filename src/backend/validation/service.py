@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from datahub.metadata.schema_classes import StatusClass
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -247,6 +248,13 @@ class ValidationService:
             raise EntityNotFoundError("config", dataset_urn)
 
         config_id = str(row.id)
+        for rule in row.rules or []:
+            rule_id = rule.get("rule_id", "")
+            if not rule_id:
+                continue
+            assertion_urn = build_assertion_urn(dataset_urn, rule_id)
+            await self._datahub.emit_aspect(assertion_urn, StatusClass(removed=True))
+
         await self._db.delete(row)
         await self._db.commit()
 

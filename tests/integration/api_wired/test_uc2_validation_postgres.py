@@ -801,6 +801,164 @@ async def test_uc2_pg_disabled_config_run_gates(
 
 
 @pytest.mark.asyncio
+async def test_uc2_pg_resurrect_after_soft_delete(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    datahub_client,
+) -> None:
+    """UC2 regression: soft-deleted assertion is resurrected by re-PUT; DELETE tombstones it.
+
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DataSpoke is authoritative
+    for assertion lifecycle. Out-of-band soft-deletes revert on the next config PUT/PATCH.
+    DELETE /validation/conf is symmetric — it emits status(removed=True) to all owned URNs.
+
+    Dataset: reviews.user_ratings_legacy (same fixture as test_uc2_pg_user_ratings_legacy_*).
+    Rule: r-resurrect-null (field / null_count <= 20) — single rule for minimal setup.
+    """
+    from datahub.metadata.schema_classes import StatusClass
+
+    base_conf = f"/api/v1/spoke/common/data/{_PG_USER_RATINGS_LEGACY_ENCODED}/attr/validation/conf"
+    rule_id = "r-resurrect-null"
+    assertion_urn = build_assertion_urn(_PG_USER_RATINGS_LEGACY_URN, rule_id)
+
+    try:
+        # ── Step 1: PUT validation/conf with one field rule ────────────────────
+        # spec: USE_CASE_en.md §UC2 lines 234-260 — rule registration PUT endpoint
+        # A field/null_count rule does not require a source DB connection at registration time.
+        put_resp = await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "owner": "de-lead@imazon.com",
+                "rules": [
+                    {
+                        "rule_id": rule_id,
+                        "type": "field",
+                        "field": "rating_score",
+                        "metric": "null_count",
+                        "condition": {"type": "less_than_or_equal_to", "value": 20},
+                    },
+                ],
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"Initial PUT validation/conf failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        # ── Step 2: Assert assertion and status are visible in DataHub after initial PUT ──
+        # spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 —
+        # deterministic URN must exist after PUT; status(removed=False) must also be emitted
+        # on the initial PUT (not just on re-PUT).
+        info_after_put = await datahub_client.get_assertion_info(assertion_urn)
+        assert info_after_put is not None, (
+            f"spec: DATAHUB_INTEGRATION.md convention 3 — assertion URN {assertion_urn} "
+            f"must exist in DataHub after initial PUT"
+        )
+        status_after_put = await datahub_client.get_aspect(assertion_urn, StatusClass)
+        assert status_after_put is not None and status_after_put.removed is False, (
+            f"spec: DATAHUB_INTEGRATION.md convention 3 — initial PUT must emit "
+            f"status(removed=False); got: {status_after_put}"
+        )
+
+        # ── Step 3: Soft-delete the assertion directly via DataHub ─────────────
+        # Simulates an out-of-band DataHub admin action (UI, direct API call, or
+        # any tooling that writes status.removed=true without going through DataSpoke).
+        # spec: DATAHUB_INTEGRATION.md convention 3 — DataSpoke must revert this on next PUT.
+        await datahub_client.emit_aspect(assertion_urn, StatusClass(removed=True))
+
+        # ── Step 4: Verify the soft-delete took effect ─────────────────────────
+        # DataHub filters soft-deleted entities from query results; allow brief propagation.
+        deadline = time.monotonic() + 10.0
+        soft_deleted = False
+        while time.monotonic() < deadline:
+            status_resp = await datahub_client.get_aspect(assertion_urn, StatusClass)
+            if status_resp is not None and getattr(status_resp, "removed", False) is True:
+                soft_deleted = True
+                break
+            await asyncio.sleep(0.3)
+        assert soft_deleted, (
+            "Precondition: direct DataHub soft-delete must have taken effect "
+            f"within 10s for {assertion_urn}"
+        )
+
+        # ── Step 5: Re-PUT validation/conf (same dataset, same rule_id, same body) ──
+        # spec: DATAHUB_INTEGRATION.md convention 3 — re-emit on PUT resurrects soft-deleted.
+        reput_resp = await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "owner": "de-lead@imazon.com",
+                "rules": [
+                    {
+                        "rule_id": rule_id,
+                        "type": "field",
+                        "field": "rating_score",
+                        "metric": "null_count",
+                        "condition": {"type": "less_than_or_equal_to", "value": 20},
+                    },
+                ],
+            },
+        )
+        assert reput_resp.status_code in (200, 201), (
+            f"Re-PUT validation/conf failed: {reput_resp.status_code} {reput_resp.text}"
+        )
+
+        # ── Step 6: Assert resurrection — status.removed=False ────────────────
+        # spec: DATAHUB_INTEGRATION.md convention 3 — status(removed=False) emitted alongside
+        # assertionInfo on every PUT/PATCH; out-of-band tombstone is reverted.
+        deadline = time.monotonic() + 10.0
+        resurrected = False
+        while time.monotonic() < deadline:
+            status_resp = await datahub_client.get_aspect(assertion_urn, StatusClass)
+            if status_resp is not None and getattr(status_resp, "removed", True) is False:
+                resurrected = True
+                break
+            await asyncio.sleep(0.3)
+        assert resurrected, (
+            f"spec: DATAHUB_INTEGRATION.md convention 3 — assertion {assertion_urn} "
+            f"must have status.removed=False after re-PUT (resurrection failed)"
+        )
+
+        info_after_reput = await datahub_client.get_assertion_info(assertion_urn)
+        assert info_after_reput is not None, (
+            f"spec: DATAHUB_INTEGRATION.md convention 3 — assertionInfo must be present "
+            f"after re-PUT for URN {assertion_urn}"
+        )
+
+        # ── Step 7: DELETE validation/conf ────────────────────────────────────
+        # spec: DATAHUB_INTEGRATION.md convention 3 — DELETE is symmetric: emits
+        # status(removed=True) to all owned assertion URNs before removing the DB row.
+        del_resp = await api_client.delete(base_conf, headers=admin_headers)
+        assert del_resp.status_code in (200, 204), (
+            f"DELETE validation/conf failed: {del_resp.status_code} {del_resp.text}"
+        )
+
+        # ── Step 8: Assert post-DELETE tombstone ──────────────────────────────
+        # spec: DATAHUB_INTEGRATION.md convention 3 — DELETE emits status(removed=True);
+        # assertion must be invisible (tombstoned) in DataHub after DELETE.
+        deadline = time.monotonic() + 10.0
+        tombstoned = False
+        while time.monotonic() < deadline:
+            status_resp = await datahub_client.get_aspect(assertion_urn, StatusClass)
+            if status_resp is not None and getattr(status_resp, "removed", False) is True:
+                tombstoned = True
+                break
+            await asyncio.sleep(0.3)
+        assert tombstoned, (
+            f"spec: DATAHUB_INTEGRATION.md convention 3 — assertion {assertion_urn} "
+            f"must have status.removed=True after DELETE /validation/conf"
+        )
+
+    finally:
+        # Cleanup: remove validation conf regardless of test outcome (idempotent delete is safe).
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
 async def test_uc2_pg_unknown_urn_returns_422(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],

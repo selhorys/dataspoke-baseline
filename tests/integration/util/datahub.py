@@ -331,15 +331,11 @@ def reset_datasets() -> int:
 
 
 def reset_assertions() -> int:
-    """Soft-delete DataSpoke-emitted assertion entities.
-
-    Why: register_assertion() is "skip if exists" by URN. Stale assertions from
-    prior test runs would silently freeze rule bodies across runs, masking
-    spec drift. The validation DELETE conf endpoint only removes the dataspoke
-    DB row — DataHub assertion entities are not tombstoned by that path.
+    """Soft-delete DataSpoke-emitted assertion entities left over from crashed or aborted test runs.
 
     Identifies DataSpoke assertions via assertionInfo.customProperties.dataspoke_rule_type
-    (set by build_assertion_info in src/backend/validation/assertions.py).
+    (set by build_assertion_info in src/backend/validation/assertions.py). Only assertions
+    carrying that custom property are touched; all others are left in place.
     """
     token = _get_token()
     graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))

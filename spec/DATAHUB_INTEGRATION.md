@@ -238,8 +238,13 @@ Mandatory conventions (see also
 2. **`source.type = EXTERNAL`** on every DataSpoke-emitted `AssertionInfo`.
    Marks "DataSpoke runs this, DataHub stores results"; DataHub will not try to
    execute it. Never use `NATIVE` (reserved for the DataHub Cloud runner).
-3. **Deterministic URN.** `urn:li:assertion:<datahub_guid({"entity": dataset_urn, "rule": rule_id})>`,
-   so re-emit on config edit is idempotent.
+3. **Deterministic URN.** `urn:li:assertion:<datahub_guid({"entity": dataset_urn, "rule": rule_id})>`.
+   Re-emit on config edit (PUT/PATCH) is idempotent and resurrects any prior soft-deleted assertion by
+   emitting `status(removed=False)` alongside `assertionInfo`. DELETE /validation/conf is symmetric —
+   it emits `status(removed=True)` to all assertion URNs derived from the config's rules.
+   DataSpoke is authoritative for assertion lifecycle: out-of-band tombstones applied directly in DataHub
+   (e.g., a DataHub UI admin setting `status.removed=true`) will be reverted on the next config PUT/PATCH.
+   Operators who want to durably hide a DataSpoke assertion must use DELETE /attr/validation/conf.
 4. **`lastUpdated` audit stamp.** Populate `AssertionInfoClass.lastUpdated` with
    the DataSpoke service-user URN; otherwise the DataHub UI history card shows
    "unknown actor".

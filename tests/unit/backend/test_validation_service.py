@@ -186,6 +186,98 @@ async def test_delete_config_not_found(service, db):
     assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
+async def test_delete_config_emits_status_removed_true_to_datahub(service, db, datahub):
+    """delete_config emits StatusClass(removed=True) to DataHub for every rule's assertion URN.
+
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DELETE /validation/conf
+    is symmetric; it emits status(removed=True) to all assertion URNs derived from the
+    config's rules before removing the DB row.
+    spec: feature/BACKEND.md §Validation Service — delete_config tombstones DataHub assertions.
+    """
+    from datahub.metadata.schema_classes import StatusClass
+
+    from src.backend.validation.assertions import build_assertion_urn
+
+    rule_ids = ["r-delete-a", "r-delete-b", "r-delete-c"]
+    row = _make_config_row(
+        rules=[{"rule_id": rid, "type": "freshness"} for rid in rule_ids],
+    )
+    mock_scalar_query(db, row)
+
+    datahub.emit_aspect = AsyncMock()
+
+    await service.delete_config(_DATASET_URN)
+
+    assert datahub.emit_aspect.await_count == 3, (
+        "spec: DATAHUB_INTEGRATION.md convention 3 — one emit_aspect per rule"
+    )
+
+    emitted_urns = [c[0][0] for c in datahub.emit_aspect.call_args_list]
+    emitted_statuses = [c[0][1] for c in datahub.emit_aspect.call_args_list]
+
+    for rule_id in rule_ids:
+        expected_urn = build_assertion_urn(_DATASET_URN, rule_id)
+        assert expected_urn in emitted_urns, (
+            f"spec: DATAHUB_INTEGRATION.md convention 3 — "
+            f"assertion URN for {rule_id!r} must be tombstoned on DELETE"
+        )
+
+    for status_obj in emitted_statuses:
+        assert isinstance(status_obj, StatusClass), (
+            "spec: DATAHUB_INTEGRATION.md convention 3 — emitted aspect must be StatusClass"
+        )
+        assert status_obj.removed is True, (
+            "spec: DATAHUB_INTEGRATION.md convention 3 — status.removed must be True on DELETE"
+        )
+
+
+async def test_delete_config_propagates_datahub_failure(service, db, datahub):
+    """delete_config raises when DataHub emit fails, and leaves the DB row intact.
+
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DataHub emit
+    precedes DB delete. A DataHub failure during DELETE must not silently leave
+    zombie assertion entities visible in DataHub while the DB row is gone.
+    spec: feature/BACKEND.md §Validation Service — DataHub is SSOT; DB delete is
+    coupled to DataHub availability by design.
+    """
+    row = _make_config_row(
+        rules=[{"rule_id": "r-fail-emit", "type": "freshness"}],
+    )
+    mock_scalar_query(db, row)
+
+    datahub.emit_aspect = AsyncMock(side_effect=RuntimeError("DataHub unavailable"))
+
+    with pytest.raises(RuntimeError, match="DataHub unavailable"):
+        await service.delete_config(_DATASET_URN)
+
+    db.delete.assert_not_awaited(), (
+        "spec: DATAHUB_INTEGRATION.md convention 3 — DB row must not be deleted when DataHub fails"
+    )
+
+
+async def test_delete_config_skips_rules_without_rule_id(service, db, datahub):
+    """Rules missing rule_id produce no emit_aspect call.
+
+    spec: feature/BACKEND.md §Validation Service — rules without rule_id are
+    ignored during DELETE to avoid emitting to a malformed/empty assertion URN.
+    """
+    row = _make_config_row(
+        rules=[
+            {"rule_id": "", "type": "freshness"},
+            {"type": "volume"},
+        ],
+    )
+    mock_scalar_query(db, row)
+
+    datahub.emit_aspect = AsyncMock()
+
+    await service.delete_config(_DATASET_URN)
+
+    datahub.emit_aspect.assert_not_awaited(), (
+        "spec: feature/BACKEND.md §Validation Service — rules without rule_id must be skipped"
+    )
+
+
 # ── list_configs ─────────────────────────────────────────────────────────────
 
 
