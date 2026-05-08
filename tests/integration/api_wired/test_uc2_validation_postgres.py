@@ -1,9 +1,7 @@
 """UC2 — Validation: spec-conformance through public REST API (Postgres path).
 
-Black-box complement to tests/integration/api_wired/spoke/common/data/test_validation_apiwired.py
-which covers narrow OAS-binding invariants with mocks. This file exercises the hardened
-spec end-to-end through real DataHub on two Imazon PG datasets, covering 5 of 6 rule types
-and 3 of 4 source-discriminator paths.
+End-to-end UC2 user-story coverage through real DataHub on two Imazon PG datasets,
+covering 5 of 6 rule types and 3 of 4 source-discriminator paths.
 
 Spec sources:
   - spec/DATAHUB_INTEGRATION.md §Assertion Aspects (Mandatory conventions 1-7)
