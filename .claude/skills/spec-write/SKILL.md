@@ -1,6 +1,6 @@
 ---
-name: plan-doc
-description: Write specification or planning documents in spec/ following the project hierarchy. Use when the user asks to design, spec out, or document a DataSpoke feature, component, architectural decision, or implementation plan.
+name: spec-write
+description: Author timeless specification documents under spec/ (top-level or spec/feature/<FEATURE>.md) following the project hierarchy, naming conventions, and templates. Use when the user asks to write, design, or document a DataSpoke feature, component, or architectural decision as a reference spec. Do NOT use for implementation plans — those live in GitHub issues/PRs and are produced by native Plan mode or PRauto.
 argument-hint: <topic>
 allowed-tools: Read, Write, Edit
 ---

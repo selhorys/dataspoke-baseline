@@ -245,7 +245,7 @@ Wait for the user's reply. Do not apply changes until they answer.
 1. Group decisions by side (spec edits, impl edits, flagged-only).
 2. **For each spec edit**: prefer surgical `Edit` over full rewrites. For high-level specs (priority 1–3) and `CLAUDE.md`, show the diff preview to the user one more time before writing.
 3. **For each light impl edit**: apply with `Edit`.
-4. **For each substantial impl change**: do not edit. Output a clearly labeled "needs implementation workflow" section listing the gaps, the relevant spec excerpts, and the recommended generator agent (`backend`, `workflow`, `frontend`, `test`, `k8s-helm`). Suggest the user start with `/plan-doc` if the spec itself needs sharpening before generation.
+4. **For each substantial impl change**: do not edit. Output a clearly labeled "needs implementation workflow" section listing the gaps, the relevant spec excerpts, and the recommended generator agent (`backend`, `workflow`, `frontend`, `test`, `k8s-helm`). Suggest the user start with `/spec-write` if the spec itself needs sharpening before generation.
 5. Re-read modified files to verify consistency. Report which gaps were closed, which were left flagged, and which were routed to the implementation workflow.
 
 ---

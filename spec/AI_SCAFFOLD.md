@@ -64,7 +64,7 @@ They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explic
 | Skill | Purpose |
 |-------|---------|
 | `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `dev_env/.env` |
-| `plan-doc` | Write specification or planning documents in `spec/` following the project hierarchy and naming conventions |
+| `spec-write` | Author timeless specification documents in `spec/` (top-level or `spec/feature/<FEATURE>.md`) following the project hierarchy, naming conventions, and templates. Not for implementation plans |
 | `datahub-api` | Reference and coding guide for DataHub integration in backend development. Covers entities, aspects, lineage, URNs, ingestion/emission, GraphQL, REST, and the `acryl-datahub` SDK. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
@@ -202,7 +202,7 @@ requirements.
 
 1. **Revise the manifesto** — adjust or add features; decide which user-group routes
    (`/spoke/de/`, `/spoke/da/`, `/spoke/dg/`) host organization-specific extensions
-2. **Run `/plan-doc`** — update architectural specs, then baseline and spoke feature specs
+2. **Run `/spec-write`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/dev-env install`** — bring up the DataHub environment
 4. **Implement features** using the plan → approve → generate → evaluate workflow:
    Plan mode → approve → `backend` → `reviewer` → `workflow` → `reviewer` → `test` →
@@ -219,7 +219,7 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    the agent.
 
 2. **Spec as the source of truth** — All naming and feature taxonomy derive from
-   `MANIFESTO_en.md`. The `plan-doc` skill routes new documents to the correct tier
+   `MANIFESTO_en.md`. The `spec-write` skill routes new documents to the correct tier
    automatically.
 
 3. **Capability-driven organization** — Features are organized by MANIFESTO capability

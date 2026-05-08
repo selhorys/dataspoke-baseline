@@ -123,7 +123,7 @@ See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full scaffold reference
 Fork this repository and adapt:
 
 1. Revise `spec/MANIFESTO_*.md` -- redefine user groups, features, and product identity
-2. Run `/plan-doc` -- update architecture and author feature specs
+2. Run `/spec-write` -- update architecture and author feature specs
 3. Run `/dev-env install` -- bring up the local environment
 4. Use the implementation workflow above
 
