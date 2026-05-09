@@ -213,19 +213,6 @@ class TestValidationSchemas:
         assert req.description == "Daily row count check"
         assert req.variables == ["row_cnt", "null_rate"]
 
-    def test_conf_response_has_is_removed(self) -> None:
-        # spec: VALIDATION.md §Rule Configuration — is_removed present in response
-        now = datetime.now(tz=UTC)
-        resp = ValidationConfResponse(
-            dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,DEV)",
-            description="check",
-            variables=["row_cnt"],
-            is_removed=False,
-            created_at=now,
-            updated_at=now,
-        )
-        assert resp.is_removed is False
-
     def test_list_response_has_items(self) -> None:
         # spec: VALIDATION.md §API Surface — cross-dataset list
         resp = ValidationListResponse()

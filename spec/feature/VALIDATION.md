@@ -104,9 +104,11 @@ Notes:
   the keys silently fall outside the current schema. Pipelines should treat a
   `variables` edit as a versioning event.
 - `DELETE` performs a soft delete by emitting `status.removed = true` on the assertion
-  URN. A subsequent `PUT` resurrects the assertion (clears `removed`) and overwrites
-  `assertionInfo`. This follows the existing soft-delete resurrection pattern
-  (introduced in commit `3c0df3a`).
+  URN. After `DELETE`, `GET conf` returns `404` — the resource view treats a
+  soft-deleted rule as absent. The cross-dataset list at `/spoke/common/validation`
+  continues to surface deleted rows under `?removed=true`. A subsequent `PUT`
+  resurrects the assertion (clears `removed`) and overwrites `assertionInfo`. This
+  follows the existing soft-delete resurrection pattern.
 
 ## Validation Result
 

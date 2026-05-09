@@ -105,7 +105,10 @@ class ValidationService:
 
     async def get_config(self, dataset_urn: str) -> ValidationConfigRecord | None:
         result = await self._db.execute(
-            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
+            select(ValidationConfig).where(
+                ValidationConfig.dataset_urn == dataset_urn,
+                ValidationConfig.is_removed.is_(False),
+            )
         )
         row = result.scalar_one_or_none()
         return _config_from_row(row) if row is not None else None

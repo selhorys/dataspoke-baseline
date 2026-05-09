@@ -166,7 +166,6 @@ class ValidationConfResponse(SingleResponse):
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     description: str = Field(description="Free-form description")
     variables: list[str] = Field(description="Declared variable names")
-    is_removed: bool = Field(description="True after DELETE; False after PUT resurrection")
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 

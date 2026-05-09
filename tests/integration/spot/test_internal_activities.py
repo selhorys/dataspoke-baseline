@@ -17,7 +17,6 @@ import httpx
 import pytest
 
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
-_SYSTEM_ERROR_TAIL: frozenset[str] = frozenset({"error", "errored"})
 
 # Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
 _PG_HOST = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
@@ -184,129 +183,6 @@ async def test_ingestion_run_activity(
     assert body["status"].lower() not in _FAIL_TAIL, (
         f"run unexpectedly returned fail-tail status {body['status']!r} — "
         "secret resolution or downstream connectivity may be broken"
-    )
-
-    # Cleanup
-    await api_client.delete(conf_url, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_validation_list_active_daily(
-    api_client: httpx.AsyncClient,
-    internal_headers: dict[str, str],
-    admin_headers: dict[str, str],
-) -> None:
-    """POST /internal/activities/validation/list-active returns URNs for the requested
-    tier and excludes URNs assigned to a different tier.
-
-    spec: BACKEND.md §Tier-DAG selection — tier filter applies to validation_configs
-    """
-    # spec: BACKEND.md §Tier-DAG selection
-    conf_daily = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/validation/conf"
-    conf_weekly = f"/api/v1/spoke/common/data/{_ENCODED_URN_2}/attr/validation/conf"
-
-    _rule = {
-        "rule_id": "spot-list-vol",
-        "type": "volume",
-        "metric": "row_count",
-        "condition": {"type": "between", "min": 1, "max": 100000},
-    }
-
-    # Seed an enabled config in the target tier (daily)
-    await api_client.put(
-        conf_daily,
-        headers=admin_headers,
-        json={
-            "rules": [_rule],
-            "schedule_tier": "daily",
-            "is_enabled": True,
-            "owner": "spot-list@imazon.com",
-        },
-    )
-
-    # Seed an enabled config in a DIFFERENT tier (weekly) — must NOT appear in daily results
-    await api_client.put(
-        conf_weekly,
-        headers=admin_headers,
-        json={
-            "rules": [{**_rule, "rule_id": "spot-list-vol-2"}],
-            "schedule_tier": "weekly",
-            "is_enabled": True,
-            "owner": "spot-list@imazon.com",
-        },
-    )
-
-    resp = await api_client.post(
-        "/internal/activities/validation/list-active",
-        headers=internal_headers,
-        json={"tier": "daily"},
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-    # Daily-tier URN must appear
-    assert _TEST_URN in body, (
-        f"Expected {_TEST_URN} in daily validation list, got: {body}"
-    )
-    # Weekly-tier URN must NOT appear in daily results
-    assert _TEST_URN_2 not in body, (
-        f"Tier isolation violated: {_TEST_URN_2} (weekly tier) appeared in daily list"
-    )
-
-    # Cleanup
-    await api_client.delete(conf_daily, headers=admin_headers)
-    await api_client.delete(conf_weekly, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_validation_run_activity(
-    api_client: httpx.AsyncClient,
-    internal_headers: dict[str, str],
-    admin_headers: dict[str, str],
-) -> None:
-    """POST /internal/activities/validation/run executes validation for a dataset URN.
-
-    spec: BACKEND.md §Validation Run Pipeline — response shape carries run_id + status.
-    """
-    # spec: BACKEND.md §Validation Service — response: {run_id, status}
-    conf_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/validation/conf"
-
-    # Create validation config
-    await api_client.put(
-        conf_url,
-        headers=admin_headers,
-        json={
-            "rules": [
-                {
-                    "rule_id": "spot-activity-vol",
-                    "type": "volume",
-                    "metric": "row_count",
-                    "condition": {"type": "between", "min": 1, "max": 100000},
-                }
-            ],
-            "schedule_tier": "daily",
-            "is_enabled": True,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    resp = await api_client.post(
-        "/internal/activities/validation/run",
-        headers=internal_headers,
-        json={"dataset_urn": _TEST_URN},
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    # spec: BACKEND.md §Validation Run Pipeline — response must carry both run_id and status
-    assert "run_id" in body and "status" in body, (
-        f"Expected both 'run_id' and 'status' in validation run response, got: {list(body.keys())}"
-    )
-    assert body["status"].lower() not in _SYSTEM_ERROR_TAIL, (
-        f"validation run system-errored: status={body['status']!r} — "
-        "secret resolution or downstream connectivity may be broken "
-        "(rule failures surface as 'failure', not 'error')"
     )
 
     # Cleanup

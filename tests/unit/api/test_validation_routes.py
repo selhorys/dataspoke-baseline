@@ -156,7 +156,6 @@ async def test_get_conf_200_when_present(client, mock_svc: AsyncMock) -> None:
     data = resp.json()
     assert data["dataset_urn"] == _VALID_URN
     assert data["variables"] == ["row_cnt", "col1_mean"]
-    assert data["is_removed"] is False
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ Concerns covered:
   actualAggValue == score; nativeResults["score"] round-trips.
 - GET result historical: ~10 rows with distinct data_time; from/until filters correctly;
   last-write-wins on duplicate data_time.
-- DELETE → DataHub status.removed == True; GET conf returns 404 / is_removed=true.
+- DELETE → DataHub status.removed == True; subsequent GET conf returns 404.
 - PUT-after-DELETE → assertion resurrected (status.removed=False);
   same URN reused; assertionInfo overwritten with new description.
 - Out-of-band tombstone reverted on next PUT.
@@ -106,7 +106,6 @@ async def test_put_conf_emits_assertion_info_to_datahub(
     assert get_resp.status_code == 200
     data = get_resp.json()
     assert data["variables"] == variables
-    assert data["is_removed"] is False
 
     # Verify assertionInfo landed in DataHub at the deterministic URN
     assertion_urn = build_assertion_urn(_DATASET_URN)
@@ -249,8 +248,9 @@ async def test_get_result_historical_filter_and_last_write_wins(
     until_dt = (base_date + timedelta(days=5)).isoformat()
 
     resp = await api_client.get(
-        f"{_RESULT_URL}?from={from_dt}&until={until_dt}&limit=100",
+        _RESULT_URL,
         headers=admin_headers,
+        params={"from": from_dt, "until": until_dt, "limit": 100},
     )
     assert resp.status_code == 200
     payload = resp.json()
@@ -260,8 +260,12 @@ async def test_get_result_historical_filter_and_last_write_wins(
 
     # Verify last-write-wins for day 0: fetch with from=day0 to include it
     resp2 = await api_client.get(
-        f"{_RESULT_URL}?from={base_date.isoformat()}&until={(base_date + timedelta(days=1)).isoformat()}",
+        _RESULT_URL,
         headers=admin_headers,
+        params={
+            "from": base_date.isoformat(),
+            "until": (base_date + timedelta(days=1)).isoformat(),
+        },
     )
     assert resp2.status_code == 200
     day0_results = resp2.json()["results"]
@@ -349,7 +353,6 @@ async def test_put_after_delete_resurrects_assertion(
     second_data = resp.json()
 
     assert second_data["description"] == new_description
-    assert second_data["is_removed"] is False
     assert "null_rate" in second_data["variables"]
 
     # Verify GET conf shows it again

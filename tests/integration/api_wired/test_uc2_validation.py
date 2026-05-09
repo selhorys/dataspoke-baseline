@@ -79,7 +79,6 @@ async def test_uc2_passive_result_store(
         )
         conf_data = put_resp.json()
         assert conf_data["variables"] == ["row_cnt", "fill_rate", "anomaly_score"]
-        assert conf_data["is_removed"] is False
 
         # ── Step 2: Pipeline POSTs 3 days of results ─────────────────────────
         # UC2 narrative: "Each night, the validation task runs after the partition
@@ -241,7 +240,6 @@ async def test_uc2_passive_result_store(
         )
         resurrected = get_after_resurrect.json()
         assert resurrected["description"] == "Reinstated quality check with extended variables"
-        assert resurrected["is_removed"] is False
         assert "null_rate" in resurrected["variables"]
 
     finally:
