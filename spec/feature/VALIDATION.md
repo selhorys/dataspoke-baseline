@@ -137,7 +137,7 @@ The pipeline POSTs results as it produces partitions. The body is small.
   silently (a result with partial coverage is a legitimate signal, e.g. when one
   measurement failed to compute).
 - `score` MUST satisfy `0.0 ≤ score ≤ 1.0`; otherwise `422 INVALID_SCORE`.
-- `data_time` MUST parse as RFC 3339; otherwise `400 INVALID_PARAMETER`.
+- `data_time` MUST parse as RFC 3339; otherwise `422 INVALID_PARAMETER`.
 
 ### Duplicate `data_time` policy
 
@@ -257,8 +257,12 @@ Key choices, with rationale:
 
 ### `status` (versioned aspect)
 
-Emitted on DELETE: `status.removed = true`. Emitted on PUT-after-DELETE:
-`status.removed = false` (resurrection).
+Emitted alongside `assertionInfo` on every PUT/PATCH: `status.removed = false`.
+This both clears any prior soft-delete (PUT-after-DELETE resurrection) and
+reverts out-of-band tombstones — DataSpoke is authoritative for the assertion
+lifecycle, so a DataHub-UI admin manually setting `status.removed = true` is
+overwritten on the next config save. To durably hide a DataSpoke assertion,
+use `DELETE /attr/validation/conf`. Emitted on DELETE: `status.removed = true`.
 
 ### What does NOT need to be emitted
 

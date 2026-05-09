@@ -219,17 +219,18 @@ def create_app() -> FastAPI:
         {
             "name": "common/validation",
             "description": (
-                "Validation config CRUD, run, result queries, and event reports. "
+                "Passive validation result store. DataSpoke runs no rule logic — "
+                "external pipelines compute results and POST them, and DataSpoke "
+                "stores the configuration plus the result timeseries and emits the "
+                "matching DataHub assertion aspects on the pipeline's behalf. "
                 "Requires common auth.\n\n"
-                "Rule JSON is a DataSpoke envelope (`is_enabled`, `schedule_tier`, "
-                "`owner`, `rules[]`) wrapping rules whose field names mostly mirror "
-                "DataHub's Assertion model. The full request body shape and an example "
-                "live on the `PUT/PATCH …/attr/validation/conf` endpoints below.\n\n"
-                "**Where to look:**\n"
-                "- Rule authoring (envelope, DataSpoke extensions, per-type "
-                "DataHub-aspect crosswalk) — `spec/feature/VALIDATION_RULES.md`.\n"
-                "- DataHub field meanings and allowed operator/metric/compatibility "
-                "values — see the DataHub Assertion Entity link below."
+                "One slot per dataset. Configuration is `description` + declared "
+                "`variables[]` (each name matches `[a-z][a-z0-9_]{0,99}`, 1–200 "
+                "entries). Each `POST .../attr/validation/result` carries "
+                "`{data_time, score, variables}`. The historical GET serves the "
+                "result timeseries as a baseline cache.\n\n"
+                "**Where to look:** `spec/feature/VALIDATION.md` (philosophy, scope, "
+                "API surface, configuration / result shapes, DataHub aspect mapping)."
             ),
             "externalDocs": {
                 "description": (
