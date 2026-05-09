@@ -139,8 +139,6 @@ for current method signatures.
 
 | Pattern | TTL | Purpose |
 |---------|-----|---------|
-| `validation:{dataset_urn}:result` | 60s | Latest validation run result cache |
-| `validation:dry_run:{hash}` | 60s | Online Verifier dry-run cache for coding agents |
 | `quality:{dataset_urn}:score` | 300s | Cached `QualityScore` aggregation for dataset attr-get |
 | `ontogen:node:{node_id}` | 300s | Ontology Generation node lookup cache |
 | `ontogen:edge:{edge_id}` | 300s | Ontology Generation edge lookup cache |
@@ -325,104 +323,80 @@ Python SDK.
 
 ### Validation Service (`src/backend/validation/`)
 
-**Covers**: MANIFESTO §2.1 Validation (UC2). The six rule types and their semantics live
-in [USE_CASE §UC2](../USE_CASE_en.md#uc2-validation); the DataHub assertion-aspect mapping,
-typed sub-aspect requirements, and emission conventions are in
+**Covers**: MANIFESTO §2.1 Validation (UC2). The full feature contract — philosophy,
+scope, API surface, configuration / result shapes, DataHub aspect mapping, and the
+single-rule-per-dataset rationale — lives in
+[`spec/feature/VALIDATION.md`](VALIDATION.md). The DataHub assertion-aspect emission
+conventions are in
 [DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects).
-DataSpoke borrows the on-disk grammar from DataHub's Open Assertions YAML schema and adds
-a DataSpoke-original extension `custom` type with `subtype: "sql_timeseries"` for
-partition-aware ML-validated checks. For the user-facing rule authoring reference
-(envelope, DataSpoke extensions, per-type DataHub-aspect crosswalk), see
-[VALIDATION_RULES.md](VALIDATION_RULES.md).
+
+DataSpoke is a **passive result store**: external pipelines run validation logic and
+POST results; DataSpoke stores the configuration + results in PostgreSQL and emits the
+matching DataHub aspects (`assertionInfo`, `assertionRunEvent`, `status`) on the
+pipeline's behalf.
 
 #### Implementation
 
-CRUD for validation configurations (PostgreSQL: `validation_configs`). Partition-aware rule
-execution, assertion registration in DataHub at config upsert, and run-time result
-reporting. Config upsert registers the dataset URN in `dataset_registry` (requires the
-dataset to already exist in DataHub).
+`ValidationService` is thin, stateless, and built on the shared DataHub emitter and
+PostgreSQL session. It exposes two responsibility areas — configuration CRUD and result
+ingest/query — surfaced through the routes below.
 
-**Supported rule types**: All 6 DataHub assertion types — freshness, volume, field, schema,
-SQL, custom. Each rule can specify partition and order variables (like SQL window
-functions) for determining the target partition.
+**Configuration CRUD** — `GET/PUT/PATCH/DELETE /attr/validation/conf`.
 
-**Rule schema** (per entry in `rules[]`):
+- `PUT`/`PATCH` validates the body against the conf shape (`description ≤ 2,000` chars,
+  `variables` list ≤ 200 entries, each entry matching `[a-z][a-z0-9_]{0,99}`, unique
+  within the rule). The dataset must already exist in DataHub or the request is rejected
+  with `422 DATASET_NOT_IN_DATAHUB`. On success the service:
+  1. upserts the row in `validation_configs` (`dataset_urn` PK; clears `is_removed`),
+  2. emits `assertionInfo` to DataHub with `type = CUSTOM`, `source.type = EXTERNAL`,
+     `customAssertion.type = "DATASPOKE_VALIDATION"`,
+     `customAssertion.entity = <dataset_urn>`, and
+     `customAssertion.logic = "<comma-joined declared variable names>"`,
+  3. emits `status.removed = false` together with `assertionInfo` to clear any prior
+     soft-delete and resurrect the assertion at the same deterministic URN
+     (`urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`).
+- `DELETE` performs a soft-delete: marks the row `is_removed = true` in
+  `validation_configs` and emits `status.removed = true` to DataHub. The deterministic
+  URN is preserved so a later `PUT` resurrects the same assertion.
+- A DataHub error during `assertionInfo` / `status` emission surfaces as `502` or `503`
+  per the DataHub error envelope — config save and DataHub assertion lifecycle are
+  coupled by design because DataHub is the SSOT for assertion definitions.
 
-```yaml
-- rule_id: <stable identifier within the config>      # required
-  type: freshness | volume | field | schema | sql | custom
-  source: <see "Source discriminator" below>          # freshness/volume only
-  # type-specific fields mirroring Open Assertions YAML:
-  # freshness:  lookback_interval, last_modified_field (when source=query), filter
-  # volume:     condition (operator + value/range), filter
-  # field:      field, condition or metric, exclude_nulls, failure_threshold
-  # schema:     condition (exact_match | contains), columns[]
-  # sql:        statement, condition
-  # custom:     subtype, plus subtype-specific fields
-  partition: { ... }                                   # optional partition variables
-  order: { ... }                                       # optional order variables (latest-partition resolution)
-  ml_validation: { ... }                               # optional, custom + sql_timeseries only
-```
+**Result ingest and query** — `POST/GET /attr/validation/result`.
 
-**Source discriminator** (`freshness` and `volume` only — other rule types have a single
-source path):
+- `POST` validates `data_time` (RFC 3339 → `400 INVALID_PARAMETER` if not),
+  `score ∈ [0.0, 1.0]` (else `422 INVALID_SCORE`), and `variables` keys ⊆ the conf's
+  declared `variables` (else `422 UNKNOWN_VARIABLE` listing the offending names).
+  Missing declared keys are accepted silently — partial coverage is a legitimate signal.
+  On success the service:
+  1. inserts the row in `validation_results` (`dataset_urn`, `data_time`, `score`,
+     `variables` JSONB, `ingestion_time = now()`),
+  2. emits `assertionRunEvent` to DataHub with `timestampMillis = data_time` (epoch ms,
+     UTC), `runId = uuid4()`, `result.type = SUCCESS` if `score == 1.0` else `FAILURE`,
+     `result.actualAggValue = score`, `result.nativeResults` populated as
+     `Map<string,string>` with `repr(float)` of each variable plus `"score"` itself,
+     `runtimeContext.ingestion_time = now()`.
+- `GET` filters `validation_results` by `data_time ∈ [from, until)` (server cap
+  `limit ≤ 10,000`, default `1,000`); when multiple rows share a `data_time`, returns
+  the most recent (last-write-wins) — see VALIDATION.md §Duplicate `data_time` policy.
 
-| `type` | `source` value | Behaviour | Extra fields |
-|---|---|---|---|
-| `freshness` | `datahub_operation` *(default)* | Read latest `OperationClass.lastUpdatedTimestamp` from DataHub timeseries | — |
-| `freshness` | `datahub_profile` | Read latest `DatasetProfileClass.timestampMillis` | — |
-| `freshness` | `query` | `SELECT MAX(<last_modified_field>)` on the source platform via `resolve_source_config` + `execute_sql` | `last_modified_field` (required), `filter` (optional WHERE) |
-| `volume` | `datahub_profile` *(default)* | Read latest `DatasetProfileClass.rowCount` | — |
-| `volume` | `query` | `SELECT COUNT(*) [WHERE filter]` on the source platform | `filter` (optional) |
-
-The `datahub_*` sources require the source platform to have ingestion-time profiling /
-operation tracking enabled; otherwise the rule returns `FAILURE` with
-`issues=[{type: "no_data"}]`. The `query` source requires the dataset to have valid
-source credentials in `dataset_registry` (same path as `custom: sql_timeseries`).
-
-**Configuration model**: Per-dataset config stored in `validation_configs` with:
-- `schedule_tier` (TEXT): Schedule tier for periodic execution — `hourly`, `daily`, or
-  `weekly` (required when `is_enabled=true`).
-- `rules` (JSONB): list of rule dicts per the schema above. Field names mirror the
-  DataHub Open Assertions YAML; DataSpoke extensions are `rule_id`, `source`,
-  `partition`, `order`, `ml_validation`.
-
-**SQL-Based Timeseries Engine** (`timeseries.py`): The `custom` type with
-`subtype: "sql_timeseries"` enables DataSpoke-original validation for SQL-runnable datasets
-(PostgreSQL, Trino, Snowflake). Defines data manipulation SQL, partition/order/value
-variables, and optional ML-based validation settings (model type, lookback window,
-validation range). The same `resolve_source_config` + `execute_sql` path also serves the
-`source: query` mode of freshness and volume.
-
-**Assertion registration timing.** `PUT/PATCH /attr/validation/conf` emits each rule's
-`assertionInfo` (with the matching typed sub-aspect — see
-[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects))
-**before returning success**. A DataHub error during registration surfaces as 502/503 —
-config save and DataHub assertion creation are coupled by design because DataHub is the
-SSOT for assertion definitions. Removing a rule from a config emits a tombstone (or no-op
-if absent); changing a rule's `type` re-emits the assertion at the **same URN** —
-DataHub atomically replaces the prior `assertionInfo` snapshot, so the new typed
-sub-aspect supersedes the old one. The URN is keyed by `(entity, rule_id)` only (per
-[DATAHUB_INTEGRATION §Assertion Aspects](../DATAHUB_INTEGRATION.md#assertion-aspects)
-convention 3), so `type` changes do not fragment the assertion timeline.
-Registration is **not** lazy: silent best-effort registration during runs hides
-integration breakage.
-
-**Validation Run Pipeline** (ad-hoc runs execute directly; periodic runs are orchestrated
-via tier-based Airflow DAGs): resolve target partition (manual → specified; cron → latest
-via partition/order variables) → compute metrics per rule for that partition (executing
-source SQL for `source: query` and `custom/sql_timeseries`, running `ml_validation`
-against historical records when configured) → emit each rule's `assertionRunEvent`
-(`SUCCESS` / `FAILURE` / `ERROR`) — all rules in one run share the same `runId` →
-persist to `validation_results` → record `VALIDATION.COMPLETE` event.
+**Append-only timeseries.** Multiple POSTs with the same `data_time` are stored as
+distinct rows and emit distinct `assertionRunEvent` entries; this matches DataHub's
+timeseries aspect being fundamentally append-only. The GET endpoint collapses duplicates
+on read.
 
 **Run-event emission is best-effort but not silent.** A DataHub error while emitting
-`assertionRunEvent` produces an `ERROR` result on the affected rule (visible in the run
-summary and `validation_results` row), never a swallowed log warning. The local result is
-still persisted; the event can be re-emitted manually via a recovery path.
+`assertionRunEvent` keeps the row in `validation_results` (the local store remains the
+source of truth for the historical-baseline cache) but returns `502/503` to the caller
+so the pipeline can decide whether to retry.
 
-**Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
-raises `409 VALIDATION_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
+**Trigger surface.** The data pipeline is the trigger — it computes the result and
+POSTs it.
+
+**Multi-rule scope-out.** Teams that need multiple distinct checks per dataset (separate
+freshness / volume / field assertions, per-column validators, multi-team ownership) use
+DataHub's native assertion APIs directly; DataSpoke is the opinionated single-rule
+shortcut for the 80% case, not the only path.
 
 ### Metadata Generation Service (`src/backend/metagen/`)
 
@@ -640,10 +614,11 @@ per-dataset entry shape:
 ```
 
 `category` is a machine-readable classification (e.g. `fresh`, `stale`,
-`rules_passing`, `rules_failing`). `detail` is optional, type-specific metadata
-(e.g. `{"last_event_at": "..."}` for ingestion-freshness, `{"rule_id": "fresh_daily",
-"failed": 1, "total": 4}` for validation-score). Time-range queries on `attr/result` use
-the breakdown to answer per-dataset historical questions without re-running the metric.
+`passing`, `failing`). `detail` is optional, type-specific metadata
+(e.g. `{"last_event_at": "..."}` for ingestion-freshness,
+`{"latest_data_time": "...", "score": 1.0}` for validation-score). Time-range queries on
+`attr/result` use the breakdown to answer per-dataset historical questions without
+re-running the metric.
 
 **Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
 raises `409 METRIC_DISABLED`. This check is enforced both in `MetricsService._run_inner()`
@@ -701,7 +676,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METAGEN`, `ME
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
 | `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | `POST method/ingestion/run` succeeds / errors |
-| `VALIDATION` (`dataset`) | `COMPLETE` | `POST method/validation/run` succeeds |
+| `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`dataset`) | `COMPLETE` | `POST method/metagen/run` succeeds |
 | `METAGEN` (`dataset`) | `APPROVE` / `REJECT` | `PATCH attr/metagen/result/{id}` with `verdict: "approve"\|"reject"` |
 | `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds; payload carries `unresolved_urns` for any `dataset_filter.dataset_urns` entries that didn't resolve in DataHub |
@@ -749,9 +724,6 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ingestion-active-daily` | `ingestion_active_daily.py` | Airflow schedule | `@daily` |
 | `ingestion-active-weekly` | `ingestion_active_weekly.py` | Airflow schedule | `@weekly` |
 | `ingestion-passive-hourly` | `ingestion_passive_hourly.py` | Airflow schedule | `@hourly` |
-| `validation-hourly` | `validation_hourly.py` | Airflow schedule | `@hourly` |
-| `validation-daily` | `validation_daily.py` | Airflow schedule | `@daily` |
-| `validation-weekly` | `validation_weekly.py` | Airflow schedule | `@weekly` |
 | `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
 | `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
@@ -767,10 +739,10 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
 
 > **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
-> (`ingestion`, `validation`, `metrics`, `metagen`), the periodic DAG that runs at
-> a given tier fetches only the configs whose `schedule_tier` matches the DAG's
-> tier. For `ontogen`, only the tier listed on the singleton conf runs at that
-> tier (the other two tier DAGs short-circuit when triggered).
+> (`ingestion`, `metrics`, `metagen`), the periodic DAG that runs at a given tier
+> fetches only the configs whose `schedule_tier` matches the DAG's tier. For
+> `ontogen`, only the tier listed on the singleton conf runs at that tier (the other
+> two tier DAGs short-circuit when triggered).
 
 ### DataHub Sync
 
@@ -805,7 +777,6 @@ smoke check by `dataspoke-test-mode.sh` and by the test fixture
 | Flow | Redis Key | TTL |
 |------|-----------|-----|
 | `ingestion` | `ingestion:running:{dataset_urn}` | 1 hour |
-| `validation` | `validation:running:{dataset_urn}` | 1 hour |
 
 **Airflow DAG run conf-based dedup** (for Airflow-orchestrated DAGs):
 
@@ -832,8 +803,8 @@ daily, weekly). Each DAG fetches the dataset list for its tier at execution time
 (`POST /internal/activities/ingestion/list-active`), then uses dynamic task mapping
 (`expand()`) to run ingestion for each dataset in parallel (`max_active_runs`: 5).
 
-> **Scaling assumption**: ingestion and validation activity endpoints execute
-> synchronously inside the API process; Airflow is scheduler + fan-out, not worker.
+> **Scaling assumption**: ingestion activity endpoints execute synchronously inside
+> the API process; Airflow is scheduler + fan-out, not worker.
 > Combined with LocalExecutor (~1 CPU / 2 Gi), the baseline scales by *smearing across
 > tiers* — operators move heavy datasets to `daily`/`weekly` and reserve `hourly` for
 > genuinely time-sensitive pipelines. Holds for tens to low-hundreds of datasets with a
@@ -889,11 +860,11 @@ failures.
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `VALIDATION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `VALIDATION_DISABLED`, `GENERATION_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `GENERATION_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |
-| `PreconditionFailedError` | 422 | `DATASET_NOT_IN_DATAHUB`, `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
+| `PreconditionFailedError` | 422 | `DATASET_NOT_IN_DATAHUB`, `ONTOGEN_TRIPLE_DEPENDENCY_PENDING`, `UNKNOWN_VARIABLE`, `INVALID_SCORE` |
 
 Error response format matches [API](../API.md#error-catalogue). Exception hierarchy is
 defined in `src/shared/exceptions.py`.
@@ -905,9 +876,7 @@ completes with reduced enrichment. All failures are logged at WARNING with `exc_
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|
-| Source SQL execution | ValidationService | Rule skipped, marked as ERROR in `assertionRunEvent` |
-| ML validation model fit | ValidationService | Value recorded without validation verdict |
-| Redis cache write | ValidationService | Next read hits DB |
+| `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
 | pgvector similarity search | MetagenService | No alternative suggestions |
 | LLM dataset classification | OntogenService | Dataset excluded from classification |
 | LLM cross-data MD synthesis | MetagenService | `cross_data.md` action list empty for the run |
@@ -932,7 +901,6 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `CIRCUIT_BREAKER_RESET_MS` | 60000 | Time before probe attempt |
 | `BULK_BATCH_SIZE` | 100 | DataHub bulk scan batch size |
 | `BULK_BATCH_DELAY_MS` | 100 | Delay between bulk batches |
-| `VALIDATION_RESULT_CACHE_TTL` | 60 | Validation result Redis cache TTL (seconds) |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Below this -> pending human review |
 

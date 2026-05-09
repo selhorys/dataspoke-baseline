@@ -93,7 +93,7 @@ The configuration is a small, fixed-shape document.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `description` | `string` | yes | Free-form. Surfaced in the DataHub assertion detail UI. ≤ 2,000 chars. |
-| `variables` | `list[string]` | yes | Variable names this rule will report. Each name MUST match `\A[a-z][a-z0-9_]{0,62}\Z`, MUST be unique within the rule, and there MUST be ≥ 1 entry. Hard cap **64** entries. |
+| `variables` | `list[string]` | yes | Variable names this rule will report. Each name MUST match `\A[a-z][a-z0-9_]{0,99}\Z`, MUST be unique within the rule, and there MUST be ≥ 1 entry. Hard cap **200** entries. |
 
 Notes:
 
@@ -202,18 +202,18 @@ assertionInfo:
   description: <conf.description>
   source:
     type: EXTERNAL
-  customAssertionInfo:
+  customAssertion:
     type: "DATASPOKE_VALIDATION"        # Quality-tab categorization label
     entity: <dataset_urn>
     logic: "row_cnt, col1_mean, col2_null_cnt"   # comma-separated variable names
 ```
 
-- `customAssertionInfo.logic` is free-form text per
+- `customAssertion.logic` is free-form text per
   [`CustomAssertionInfo.pdl`](../../ref/github/datahub/metadata-models/src/main/pegasus/com/linkedin/assertion/CustomAssertionInfo.pdl);
   DataSpoke fills it with the comma-separated list of declared variable names from the
   conf, joined with `", "`. The DataHub UI surfaces `logic` verbatim in the assertion
   detail view, so users read the declared variable schema as a plain list without
-  DataSpoke needing custom UI. The variable-name regex (`[a-z][a-z0-9_]{0,62}`) excludes
+  DataSpoke needing custom UI. The variable-name regex (`[a-z][a-z0-9_]{0,99}`) excludes
   commas, so parsing on read is unambiguous: split on `,` and strip whitespace around
   each token.
 - A `structuredProperties` aspect is **not** used in v1 — sticking with the plain

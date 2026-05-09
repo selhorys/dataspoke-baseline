@@ -43,7 +43,7 @@ pipelines that Imazon already operates. DataSpoke covers both modes.
 | # | MANIFESTO Feature | Use Case |
 |---|---|---|
 | UC1 | Ingestion Control | [Active-Custom and Passive Ingestion](#uc1-ingestion-control) |
-| UC2 | Validation | [Rule Registration, Scheduled and Dry-Run](#uc2-validation) |
+| UC2 | Validation | [Single-rule Slot, Pipeline-Posted Results, Historical Baseline](#uc2-validation) |
 | UC3 | Ontology Generation | [Node, Edge, and Triple Inference Across Imazon Datasets](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [Description and MD Doc Proposals](#uc4-metadata-generation) |
 | UC5 | Governance | [Ingestion Freshness and Validation Score](#uc5-governance) |
@@ -233,108 +233,109 @@ DataSpoke. This keeps DataSpoke's extractor surface small and consistent with th
 
 ## UC2: Validation
 
-**MANIFESTO §2.1 feature**: *Validation — registration, execution, and management of
-validation rules. Supports dry-run, point-in-time historical validation, and real-time
-APIs.*
+**MANIFESTO §2.1 feature**: *Validation — one validation slot per dataset (description +
+declared variable names) plus ingestion of pipeline-emitted timeseries results.
+Validation logic lives in the data pipeline; DataSpoke stores the configuration and the
+result timeseries, emits the matching DataHub assertion aspects, and serves historical
+results as a baseline cache.*
 
 ### User Story
 
 > *As a* data team member,
-> *I want to* register rules per dataset, run them on schedule or on demand, dry-run
-> them from a coding agent before shipping a pipeline, and query historical results,
-> *so that* data quality is observable and verifiable without building bespoke checks.
+> *I want to* configure one validation rule per dataset (a free-form description and the
+> set of variables my pipeline will report), have my pipeline POST results to DataSpoke
+> after each partition write, and query historical results as a baseline for future runs,
+> *so that* data quality results are centralized and surfaced in DataHub without
+> DataSpoke needing production-engine credentials.
 
-A `validation/conf` carries a `rules` array — each rule selects a `type` from the
-catalogue below. The first five types map 1-to-1 to the assertion types in DataHub's
-[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)
-and are reported back as `assertionRunEvent` aspects, so DataSpoke-managed checks
-appear in DataHub's native assertion UI. The sixth (`custom`) is a DataSpoke extension.
+A `validation/conf` is a small fixed-shape document — a free-form `description` and a
+list of `variables` (named scalars the pipeline will report). The configuration carries
+**no** rule logic; the data pipeline runs the check, computes a `score` (0..1) plus
+the named variables, and POSTs them. DataSpoke stores the result, emits a DataHub
+`assertionRunEvent`, and serves the historical timeseries.
 
-| `type` | Quality dimension | Example check |
-|---|---|---|
-| `freshness` | Timeliness | Table updated within the last 24 hours |
-| `volume` | Completeness | Row count between 1,000 and 100,000 |
-| `field` | Accuracy / validity | Column `email` matches a regex pattern |
-| `schema` | Conformance | Required columns exist with expected types |
-| `sql` | Custom SQL | A SELECT that returns rows on violation |
-| `custom` | DataSpoke extension | Partition-aware SQL with optional ML-based anomaly detection (set `subtype: "sql_timeseries"` to detect e.g. today's row count vs the day-of-week baseline) |
+Teams that need multiple distinct checks per dataset (separate freshness / volume /
+field assertions, per-column validators, multi-team ownership) use **DataHub's native
+assertion APIs** directly — DataSpoke is the opinionated single-rule shortcut for the
+80% case, not the only path. See [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)
+for the full contract.
 
-**Conf pre-condition.** PUT `validation/conf` requires the dataset to already exist
-in DataHub — registering rules for a URN that DataHub doesn't track returns
+**Conf pre-condition.** PUT `validation/conf` requires the dataset to already exist in
+DataHub — configuring a slot for a URN that DataHub doesn't track returns
 `422 DATASET_NOT_IN_DATAHUB`. Unlike ingestion (which can create the dataset),
-validation always operates on a dataset DataHub already knows about; this keeps
-validation aligned with DataHub-as-SSOT.
+validation always operates on a dataset DataHub already knows about.
 
-**Result row shape.** Every `method/run` records one `attr/result` row **per rule
-per run**, carrying `rule_id`, `assertion_result` (`SUCCESS` / `FAILURE` / `ERROR`),
-`run_id`, and the partition the rule evaluated against. Time-range queries on
-`attr/result` therefore answer per-rule, per-partition history without re-running
-validation.
+**Result row shape.** Each pipeline `POST .../attr/validation/result` writes one
+timeseries row keyed by `data_time` (typically the partition timestamp) with `score`
+and a map of named variables. Multiple POSTs with the same `data_time` are
+**append-only**: each becomes a distinct `assertionRunEvent` row in DataHub, and the
+GET endpoint returns the most recent (last-write-wins) per distinct `data_time`.
 
-**Run semantics.** Runs are serialized per dataset: a duplicate `method/run` while
-one is in flight returns `409 VALIDATION_RUNNING`. The synchronous response carries
-`{run_id, status, total, passed, failed, errored}` so callers can decide their next
-step without polling `event/validation`.
+**Soft-delete + resurrect.** `DELETE .../attr/validation/conf` emits
+`status.removed = true` on the assertion URN; a subsequent `PUT` resurrects the same
+deterministic URN (clears `removed`, overwrites `assertionInfo`).
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Register / read / update / remove the rule set (DataHub Open Assertions Spec compatible). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` |
-| `POST /spoke/common/data/{urn}/method/validation/run` | Manual run; `dry_run: true` for the Online Verifier (no result write). Concurrent runs on the same dataset return `409 VALIDATION_RUNNING`. Response: `{run_id, status, total, passed, failed, errored}` |
-| `GET /spoke/common/data/{urn}/attr/validation/result?from=…&to=…&partition=…` | Historical results — one row per rule per run (`rule_id`, `assertion_result`, `run_id`, partition) |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / soft-delete the validation slot (`description` + `variables`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` |
+| `POST /spoke/common/data/{urn}/attr/validation/result` | Append a result `{data_time, score, variables}`. Unknown variable keys → `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` → `422 INVALID_SCORE` |
+| `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | Historical results filtered by `data_time` (RFC 3339, `from` inclusive, `until` exclusive). Default `limit=1000`, server cap `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | Per-dataset validation event history |
-| `GET /spoke/common/validation` | Cross-dataset list with conf + latest result |
+| `GET /spoke/common/validation` | Cross-dataset list with conf (description + variable names) + latest result (data_time, score) |
 
 ### Imazon Example
 
-The orders team registers four rules on `orders.line_items` — one per rule type the
-team needs:
+The orders team configures one validation slot on `orders.line_items` declaring the
+variables their daily quality task will report:
 
 ```http
 PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)/attr/validation/conf
 ```
 ```json
 {
-  "is_enabled": true,
-  "schedule_tier": "daily",
-  "rules": [
-    {"rule_id": "fresh_daily", "type": "freshness", "max_age": "24h"},
-    {"rule_id": "daily_volume", "type": "volume",
-     "comparison": "ratio", "threshold": 0.8, "window": "7d",
-     "partition": "event_date"},
-    {"rule_id": "qty_positive", "type": "field", "column": "quantity",
-     "condition": "between", "min": 1, "max": 100},
-    {"rule_id": "qty_anomaly", "type": "custom", "subtype": "sql_timeseries",
-     "value_sql": "SELECT sum(quantity) FROM orders.line_items WHERE event_date = :partition",
-     "partition": "event_date",
-     "ml_validation": {"model": "day_of_week", "lookback": "8w"}}
-  ]
+  "description": "Daily fitness check: row count, quantity sanity, key column nulls",
+  "variables": ["row_cnt", "qty_negative_cnt", "qty_total", "user_id_null_cnt"]
 }
 ```
 
-**Scheduled run.** The daily Airflow validation DAG executes all four rules and writes
-`assertionRunEvent` aspects to DataHub plus rows to `validation_results`.
-
-**Dry-run from a coding agent.** While a developer ships a new fulfillment pipeline, an
-AI coding agent calls:
+**Pipeline-emitted result.** The same Airflow DAG that writes the daily partition runs
+the team's quality task immediately after, computes the four variables, and POSTs:
 
 ```http
-POST .../method/validation/run    { "dry_run": true, "partition": {"event_date": "2026-04-25"} }
+POST .../attr/validation/result
+```
+```json
+{
+  "data_time": "2026-05-08T00:00:00Z",
+  "score": 1.0,
+  "variables": {
+    "row_cnt": 12480.0,
+    "qty_negative_cnt": 0.0,
+    "qty_total": 38712.0,
+    "user_id_null_cnt": 0.0
+  }
+}
 ```
 
-to verify the rules pass against yesterday's data before merging.
+The result appears in the DataHub Quality tab as an `assertionRunEvent` timestamped to
+`data_time`. A failed score (anything `< 1.0`) flips the assertion to `FAILURE` in
+DataHub's UI; the raw score is preserved in `actualAggValue` for partial-success
+semantics later.
 
-**Historical query.** A week later, an analyst checks last week's results:
+**Historical baseline cache.** Tomorrow's quality task computes today's row-count
+anomaly against a 14-day rolling baseline. Instead of re-aggregating
+`orders.line_items`, it issues:
 
 ```http
-GET .../attr/validation/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:00Z
 ```
+
+and uses the prior `row_cnt` series directly.
 
 **Cross-dataset overview.** Ops teams browse `GET /spoke/common/validation` to see
-per-dataset latest pass/fail.
-
-When `is_enabled=false`, non-dry-run calls to `method/validation/run` return `409 VALIDATION_DISABLED`. Dry-run (`dry_run: true`) is always permitted regardless of `is_enabled`.
+per-dataset description, variable count, and latest score.
 
 ---
 
@@ -725,7 +726,7 @@ defining new `measurement_query` types via the same `attr/conf` endpoint.
 | Metric ID | Definition |
 |---|---|
 | `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active-custom mode; per a fixed window for passive). |
-| `validation-score` | Percentage of validation rules with `assertion_result = SUCCESS` in the latest run, averaged across all datasets that have at least one rule. |
+| `validation-score` | Percentage of datasets whose latest `attr/validation/result` row has `score == 1.0`, among datasets that have a validation conf. |
 
 **Result row shape.** Every measurement run persists one `attr/result` row carrying
 both an aggregate `value` and a per-dataset `breakdown` — which datasets contributed
@@ -781,7 +782,7 @@ PUT /api/v1/spoke/dg/metric/validation-score/attr/conf
 {
   "title": "Validation score",
   "theme": "quality",
-  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_rules_passing"},
+  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_datasets_passing"},
   "schedule_tier": "hourly",
   "is_enabled": true
 }

@@ -101,7 +101,7 @@ computational layer on top.
 | Role | Responsibility |
 |------|---------------|
 | **DataHub** | Persist metadata aspects, emit change events, serve GraphQL queries |
-| **DataSpoke** | Assertion-based validation, semantic search, ontology proposals, enrichment, metrics |
+| **DataSpoke** | Validation result store + historical-result cache for external pipelines, semantic search, ontology proposals, enrichment, metrics |
 
 Integration channels (read, write, event) and their SDK patterns are defined in
 [`DATAHUB_INTEGRATION.md`](DATAHUB_INTEGRATION.md).
@@ -185,7 +185,7 @@ schema including pgvector tables) in
 | Feature | Capabilities |
 |---------|-------------|
 | Ingestion Control | `active-custom` and `passive` ingestion modes — DataSpoke either runs an in-house extractor on a tier schedule or observes externally-ingested datasets via `DataProcessInstance` polling; single control surface for lifecycle management |
-| Validation | DataHub assertion management (Open Assertions Spec + DataSpoke extensions), partition-aware rule execution, SQL-based timeseries validation, real-time Online Verifier for coding agents |
+| Validation | One validation slot per dataset (description + declared variable names) emitted as DataHub `assertionInfo`; ingestion of pipeline-emitted timeseries results emitted as `assertionRunEvent`; historical-result query (`from`/`until`) for use as a baseline cache. |
 | Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from DataHub aspects (canonical + UC4-approved editable variants) and DataHub Query entities (highlighted MANUAL + auto-discovered SYSTEM joins, capped per-dataset); persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontogen API with independent review queues per result type |
 | Metadata Generation | Per-dataset proposals for documentation fields — table description, column descriptions, and dataProduct cross-data MDs (create/modify/split/retitle actions); review queue with field-level approve/edit/reject; approved writes go to editable DataHub aspects |
 | Governance | Metric aggregation (pure aggregation over DataHub metadata + DataSpoke results), per-dataset breakdown, trend analysis, and a multi-perspective overview (metric values, blind spots, ontology graph, medallion layers, ownership topology) |
@@ -200,7 +200,7 @@ DataHub is deployed and managed separately. DataSpoke interacts through three ch
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
 | Python SDK (read) | DataHub → DataSpoke | Query metadata aspects, ingestion run history, assertion results, dataProduct entities |
-| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, assertion definitions and `assertionRunEvent`, glossary term attachments (per approved ontology node) and glossary-term relationships (per approved ontology triple), editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `dataProductProperties` |
+| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, validation `assertionInfo` (on conf upsert) + `assertionRunEvent` (per pipeline-posted result) + `status` (on soft-delete / resurrection), glossary term attachments (per approved ontology node) and glossary-term relationships (per approved ontology triple), editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `dataProductProperties` |
 | Kafka events *(optional)* | DataHub → DataSpoke | Available for future event-driven extensions; not consumed by baseline UC1–UC5 flows |
 
 For SDK entry points, aspect catalog, error handling, and configuration, see
@@ -211,9 +211,9 @@ For SDK entry points, aspect catalog, error handling, and configuration, see
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
-| Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, validation, embedding sync, metrics collection) |
-| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, quality rules/results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector), **graph queries** (Apache AGE) |
-| Cache | Redis | Validation result caching for AI agent loops, API response caching, rate limiting |
+| Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, embedding sync, metrics collection). Validation results originate in the data pipeline, not in DataSpoke's Airflow. |
+| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, validation configs (description + declared variables) and pipeline-posted results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector), **graph queries** (Apache AGE) |
+| Cache | Redis | API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
 
 ---
@@ -226,21 +226,22 @@ the cross-cutting flow that ties the features together.
 | UC | Trigger surface | Implementation entry | DataHub side-effect |
 |---|---|---|---|
 | UC1 Ingestion Control | Airflow tier DAG (`active-custom` mode) or hourly `ingestion-passive-hourly` DAG (`passive` mode); manual `POST .../method/ingestion/run` (`active-custom` only) | `IngestionService` | `active-custom`: emits `Status` + `DatasetProperties` + `SchemaMetadata` + `DataProcessInstance` aspects. `passive`: no aspect writes; mirrors externally-emitted `DataProcessInstance` run history into `event/ingestion`. |
-| UC2 Validation | Airflow tier DAG; manual `POST .../method/validation/run` (`dry_run` powers the Online Verifier) | `ValidationService` | Registers `assertionInfo` at config upsert; reports `assertionRunEvent` per rule per run (all rules of one run share `runId`). |
+| UC2 Validation | External pipeline `POST .../attr/validation/result` after each partition write; `PUT/PATCH/DELETE .../attr/validation/conf` for configuration | `ValidationService` (config + result store; runs no validation logic) | Emits `assertionInfo` on conf upsert; emits `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emits `status.removed` on DELETE / resurrection. |
 | UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | On node approval: glossary term attached to member datasets. On triple approval: glossary-term relationship between subject and object terms. |
 | UC4 Metadata Generation | Airflow tier DAG; manual `POST .../method/metagen/run` | `MetagenService` | On reviewer approval only: writes to editable aspects (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`) — never to non-editable counterparts. |
 | UC5 Governance | Airflow tier DAG; manual `POST /spoke/dg/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
 
 Cross-cutting invariants:
 
-- All five use cases are schedule-driven via Airflow tier DAGs (`hourly` / `daily` /
-  `weekly`) plus on-demand `POST .../method/run`. None subscribe to Kafka events in the
-  baseline (the Kafka consumer pattern is reserved for organisation-specific extensions).
+- UC1, UC3, UC4, UC5 are schedule-driven via Airflow tier DAGs (`hourly` / `daily` /
+  `weekly`) plus on-demand `POST .../method/run`. UC2 is pipeline-driven — the data
+  pipeline computes results and POSTs them to `attr/validation/result`. The Kafka
+  consumer pattern is reserved for organisation-specific extensions.
 - All `dataset_filter`-bearing features (UC3 ontogen conf, UC5 metric definitions) share
   the same `tags` / `glossary_terms` / `dataset_urns` shape; unresolved `dataset_urns`
   surface on the corresponding `RUN_COMPLETE` event's `unresolved_urns` field.
-- All `method/run` actions are guarded by per-resource concurrency locks
-  (`409 *_RUNNING`), and reviewer triples gate on dependency status
+- All `method/run` actions (UC1, UC3, UC4, UC5) are guarded by per-resource concurrency
+  locks (`409 *_RUNNING`), and reviewer triples gate on dependency status
   (`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`).
 
 ---
@@ -254,7 +255,7 @@ route tiers are reserved for organization-specific extensions and have no baseli
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|------------------|----------------|
 | Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/validation/` | Assertion Config Manager, Partition-Aware Executor, SQL Timeseries Engine, Online Verifier | Airflow (tier-based periodic DAGs), Redis (concurrency guard + dry-run cache), DataHub SDK, PostgreSQL |
+| Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/attr/validation/{conf,result}`, `/spoke/common/data/{urn}/event/validation` | Validation Config Manager (PUT/PATCH/DELETE conf → `assertionInfo` / `status`), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
 | Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector + Apache AGE), Airflow (tier-based periodic DAG) |
 | Metadata Generation | UC4 | `/spoke/common/metagen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/metagen/` | Metadata Generation Service, Source-Code Analyzer, dataProduct Composer, Review Queue (field-level + action-level) | LLM API, PostgreSQL, DataHub SDK (read + approved writes to editable aspects only) |
 | Governance | UC5 | `/spoke/dg/metric/`, `/spoke/dg/overview/` | Metrics Aggregator (pure aggregation, no source-DB reads), Per-Dataset Breakdown, Overview Composer (metric values, blind spots, ontology graph, medallion layers, ownership topology) | Airflow (tier-based periodic DAGs), PostgreSQL, DataHub GraphQL |
@@ -269,9 +270,9 @@ route tiers are reserved for organization-specific extensions and have no baseli
 
 | Concern | Infrastructure | Consumers |
 |---------|----------------|-----------|
-| Airflow DAGs | Airflow | Periodic active ingestion (UC1), passive ingestion status sync (UC1, hourly), validation (UC2), ontology re-inference (UC3), metadata generation (UC4), governance metrics (UC5) |
-| PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE) | Ingestion configs/runs, validation rules/results, ontology seeds + nodes + edges + triples + embeddings, metadata generation proposals + review state, governance metric results |
-| Redis Caching | Redis | Validation dry-run cache (Online Verifier for AI coding loops), API response cache, rate limiting, JWT refresh-token revocation list |
+| Airflow DAGs | Airflow | Periodic active ingestion (UC1), passive ingestion status sync (UC1, hourly), ontology re-inference (UC3), metadata generation (UC4), governance metrics (UC5). Validation (UC2) is **not** scheduled by DataSpoke — pipelines POST results directly. |
+| PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE) | Ingestion configs/runs, validation configs (description + declared variables) and pipeline-posted results (data_time, score, variables), ontology seeds + nodes + edges + triples + embeddings, metadata generation proposals + review state, governance metric results |
+| Redis Caching | Redis | API response cache, rate limiting, JWT refresh-token revocation list |
 | Kafka Event Consumers *(optional)* | Kafka (shared with DataHub) | Reserved for future event-driven cross-feature triggers; not used by baseline UC1–UC5 flows, which are schedule-driven via Airflow |
 
 ---
@@ -458,6 +459,5 @@ The repository is organized by deployment concern and application layer. Key top
 | DataHub as external dependency | Enterprises have existing installations; sidecar pattern enables independent lifecycle |
 | Three-tier URI segmentation | `/spoke/common/` for baseline shared features, `/spoke/dg/` for governance, `/spoke/[de\|da]/` reserved for organization-specific extensions, `/hub/` for DataHub pass-through — extensibility without forking the baseline |
 | Ontology Generation as a first-class feature | Metadata Generation (UC4) and Governance (UC5) both consume the node / triple graph; making Ontology Generation (UC3) a standalone feature avoids duplication and ensures consistency across consumers |
-| Validation as DataHub assertion layer | UC2 uses DataHub's native assertion framework; DataSpoke adds partition-aware execution, SQL-based timeseries rules, and a dry-run Online Verifier for coding agents rather than a bespoke scoring engine |
+| Validation as a passive result store | Validation logic belongs in the data pipeline (right credentials, right scale, right environment). DataSpoke contributes a centralized schema-disciplined result store, a historical-result baseline cache, and DataHub assertion emission on the pipeline's behalf. Teams that need multiple distinct checks per dataset use DataHub's native assertion APIs directly. See [`spec/feature/VALIDATION.md`](feature/VALIDATION.md). |
 | LLM as external service | Model-agnostic; swap providers without code changes; no GPU infrastructure required |
-| Redis for validation caching | AI agents in tight coding loops need sub-second validation responses |

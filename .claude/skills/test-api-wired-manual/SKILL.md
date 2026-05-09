@@ -144,8 +144,9 @@ Pick probes based on the route + method, not from a hardcoded map:
 | `POST .../method/ingestion/run` expected 4xx | `events_by_run_id <urn> <ts_window>` (expect empty) |
 | `POST /internal/activities/ingestion/passive-sync` | `events_passive_count <urn>` (expect growth from snapshot) |
 | `POST /internal/activities/ingestion/datahub-sync` | `db_row dataset_registry <urn>` |
-| `POST .../attr/validation/conf` | `db_row validation_configs <urn>`, `gms_aspect <assertion_urn> assertionInfo` |
-| `POST .../method/validation/run` | `db_row validation_results <urn>`, GMS assertion run event |
+| `PUT/PATCH .../attr/validation/conf` | `db_row validation_configs <urn>`, `gms_aspect <assertion_urn> assertionInfo`, `gms_aspect <assertion_urn> status` (cleared on PUT-after-DELETE resurrect) |
+| `DELETE .../attr/validation/conf` | `db_row validation_configs <urn>` `is_removed=true`, `gms_aspect <assertion_urn> status.removed=true` |
+| `POST .../attr/validation/result` | `db_row validation_results <urn> <data_time>`, `gms_assertion_run_event <assertion_urn> timestampMillis=data_time` |
 | `POST .../attr/metagen/conf` | `db_row metagen_configs <urn>` |
 | any GraphQL mutation against `${GMS}` | parse mutation name → describe expected entity URN side-effect |
 

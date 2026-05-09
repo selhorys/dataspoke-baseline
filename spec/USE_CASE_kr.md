@@ -51,7 +51,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 | # | MANIFESTO 기능 | 유스케이스 |
 |---|---|---|
 | UC1 | Ingestion Control | [Active-custom과 Passive 인제스천](#uc1-ingestion-control) |
-| UC2 | Validation | [규칙 등록, 스케줄·Dry-Run 실행](#uc2-validation) |
+| UC2 | Validation | [단일 슬롯, 파이프라인이 POST하는 결과, 과거 베이스라인](#uc2-validation) |
 | UC3 | Ontology Generation | [Imazon 데이터셋 전반의 노드·엣지·트리플 추론](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [설명·MD 문서 제안](#uc4-metadata-generation) |
 | UC5 | Governance | [인제스천 신선도와 검증 점수](#uc5-governance) |
@@ -249,112 +249,104 @@ DataSpoke 인제스천의 책임은 **소스 연결, 스키마 디스커버리, 
 ## UC2: Validation
 
 **MANIFESTO §2.1 기능**:
-*Validation — 검증 규칙의 등록·실행·관리.
-Dry-run 검증, 시점 과거 데이터 검증, 실시간 API를 지원한다.*
+*Validation — 데이터셋당 한 개의 검증 슬롯(설명 + 변수 이름 목록)과,
+파이프라인이 산출한 시계열 결과의 적재. 검증 로직은 데이터 파이프라인이 수행하고,
+DataSpoke는 설정과 결과 시계열을 저장하며 DataHub assertion aspect를 emit하고
+과거 결과를 베이스라인 캐시로 제공한다.*
 
 ### User Story
 
 > *데이터 팀원으로서*,
-> *데이터셋별로 규칙을 등록하고, 스케줄 또는 온디맨드로 실행하고,
-> 코딩 에이전트가 파이프라인 배포 전에 dry-run으로 검증하고,
-> 과거 결과를 조회하고 싶다*,
-> *그래서* 직접 만든 점검 없이도
-> 데이터 품질이 관찰·검증 가능하도록 한다.
+> *데이터셋당 한 개의 검증 규칙(자유 형식 설명과 파이프라인이 보고할 변수 이름
+> 목록)을 구성하고, 파티션 작성 후 파이프라인이 결과를 DataSpoke로 POST하고,
+> 과거 결과를 베이스라인으로 조회하고 싶다*,
+> *그래서* 데이터 품질 결과가 한 곳에 모이고 DataHub에서 보이도록 하면서도,
+> DataSpoke가 운영용 자격증명을 가질 필요가 없도록 한다.
 
-`validation/conf`는 `rules` 배열을 담으며, 각 규칙은 아래 카탈로그에서 `type`을
-선택한다. 앞의 다섯 타입은 DataHub
-[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)의
-assertion 타입과 1:1 매핑되며 `assertionRunEvent` aspect로 보고되어, DataSpoke가
-관리하는 검증이 DataHub 네이티브 assertion UI에 그대로 노출된다.
-여섯 번째(`custom`)는 DataSpoke 확장이다.
+`validation/conf`는 자유 형식 `description`과 변수 이름 목록(`variables`)으로 이루어진
+작은 고정 문서다. 설정에는 **규칙 로직이 없다**. 데이터 파이프라인이 점검을 수행하고,
+`score`(0..1)와 명명된 변수 값을 계산해 POST한다. DataSpoke는 결과를 저장하고
+DataHub에 `assertionRunEvent`를 emit하며, 과거 시계열을 조회 가능하게 제공한다.
 
-| `type` | 품질 차원 | 예시 |
-|---|---|---|
-| `freshness` | 신선도(Timeliness) | 최근 24시간 내 테이블이 갱신되었는가 |
-| `volume` | 완전성(Completeness) | 행 수가 1,000~100,000 사이인가 |
-| `field` | 정확성/유효성(Accuracy/Validity) | `email` 컬럼이 정규식과 일치하는가 |
-| `schema` | 적합성(Conformance) | 필수 컬럼이 예상 타입으로 존재하는가 |
-| `sql` | 커스텀 SQL | 위반 시 행을 반환하는 임의 SELECT |
-| `custom` | DataSpoke 확장 | 파티션 인식 SQL과 (선택적) 과거 데이터 기반 ML 이상 탐지 (`subtype: "sql_timeseries"`로 예: 오늘의 행 수와 요일별 베이스라인 비교) |
+데이터셋당 여러 개의 점검(별도의 freshness/volume/field assertion, 컬럼 단위 검증,
+다중 팀 소유 등)이 필요한 팀은 **DataHub의 native assertion API**를 직접 사용한다 —
+DataSpoke는 80% 케이스를 위한 의견 있는 단일 슬롯 단축 경로일 뿐, 유일한 경로가 아니다.
+전체 계약은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md) 참조.
 
-**Conf 사전 조건.** PUT `validation/conf`는 데이터셋이 이미 DataHub에 존재하는
-경우에만 허용된다 — DataHub가 모르는 URN에 규칙을 등록하면
-`422 DATASET_NOT_IN_DATAHUB`을 반환한다. 인제스천(필요 시 데이터셋을 생성)과 달리
-검증은 항상 DataHub가 이미 추적하는 데이터셋에 대해서만 동작하며, 이는
-DataHub-as-SSOT 원칙과 정렬된다.
+**Conf 사전 조건.** PUT `validation/conf`는 데이터셋이 이미 DataHub에 존재해야 한다 —
+DataHub가 모르는 URN에 슬롯을 구성하면 `422 DATASET_NOT_IN_DATAHUB`을 반환한다.
+인제스천(필요 시 데이터셋을 생성)과 달리, 검증은 항상 DataHub가 이미 추적하는
+데이터셋에 대해서만 동작한다.
 
-**Result 행 형태.** 모든 `method/run`은 `attr/result`에 **규칙당·실행당 한 행**을
-남기며, 각 행은 `rule_id`, `assertion_result`(`SUCCESS` / `FAILURE` / `ERROR`),
-`run_id`, 그리고 해당 규칙이 평가한 파티션을 담는다. 따라서 `attr/result` 시간
-범위 조회만으로 규칙별·파티션별 이력에 답할 수 있다 — 검증을 다시 실행할 필요
-없다.
+**Result 행 형태.** 파이프라인의 각 `POST .../attr/validation/result`는
+`data_time`(보통 파티션 타임스탬프)을 키로 한 행을 기록하며 `score`와 명명된 변수
+맵을 담는다. 같은 `data_time`에 대한 다중 POST는 **append-only**이다 — 각 POST가
+DataHub의 별도 `assertionRunEvent` 행이 되며, GET 엔드포인트는 동일 `data_time`별로
+가장 최근 결과(last-write-wins)를 반환한다.
 
-**실행 시맨틱.** 동일 데이터셋의 실행은 직렬화된다: 실행 중에 `method/run`을 다시
-부르면 `409 VALIDATION_RUNNING`을 반환한다. 동기 응답은
-`{run_id, status, total, passed, failed, errored}`를 담아, 호출자가
-`event/validation`을 폴링하지 않고도 다음 단계를 결정할 수 있게 한다.
+**Soft-delete + 부활.** `DELETE .../attr/validation/conf`는 assertion URN에
+`status.removed = true`를 emit한다. 이후 `PUT`은 동일 결정적 URN을 부활시키며
+(`removed`를 해제하고 `assertionInfo`를 덮어쓴다).
 
 ### API Mapping
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 규칙 세트 등록·읽기·갱신·삭제 (DataHub Open Assertions Spec 호환). DataHub에 없는 URN에 PUT하면 `422 DATASET_NOT_IN_DATAHUB` |
-| `POST /spoke/common/data/{urn}/method/validation/run` | 수동 실행; `dry_run: true`는 Online Verifier(결과 미기록)용. 동일 데이터셋 동시 실행은 `409 VALIDATION_RUNNING`. 응답: `{run_id, status, total, passed, failed, errored}` |
-| `GET /spoke/common/data/{urn}/attr/validation/result?from=…&to=…&partition=…` | 과거 결과 — 규칙당·실행당 한 행 (`rule_id`, `assertion_result`, `run_id`, 파티션) |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 검증 슬롯의 읽기 / 생성·교체 / 부분 갱신 / soft-delete (`description` + `variables`). DataHub에 없는 URN에 PUT하면 `422 DATASET_NOT_IN_DATAHUB` |
+| `POST /spoke/common/data/{urn}/attr/validation/result` | 결과 `{data_time, score, variables}`를 추가. 미선언 변수 키는 `422 UNKNOWN_VARIABLE`; `score`가 `[0,1]` 범위를 벗어나면 `422 INVALID_SCORE` |
+| `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | `data_time`을 기준으로 한 과거 결과 (RFC 3339, `from` 포함, `until` 미포함). 기본 `limit=1000`, 서버 상한 `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | 데이터셋별 검증 이벤트 이력 |
-| `GET /spoke/common/validation` | 설정과 최신 결과를 담은 크로스 데이터셋 리스트 |
+| `GET /spoke/common/validation` | 설정(설명 + 변수 이름 목록)과 최신 결과(data_time, score)를 담은 크로스 데이터셋 리스트 |
 
 ### Imazon 예시
 
-주문 팀이 `orders.line_items`에 네 가지 규칙을 등록한다 — 팀이 필요로 하는
-각 룰 타입을 하나씩 사용한다:
+주문 팀이 `orders.line_items`에 검증 슬롯을 한 개 구성하고, 일간 품질 태스크가
+보고할 변수 이름을 선언한다:
 
 ```http
 PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)/attr/validation/conf
 ```
 ```json
 {
-  "is_enabled": true,
-  "schedule_tier": "daily",
-  "rules": [
-    {"rule_id": "fresh_daily", "type": "freshness", "max_age": "24h"},
-    {"rule_id": "daily_volume", "type": "volume",
-     "comparison": "ratio", "threshold": 0.8, "window": "7d",
-     "partition": "event_date"},
-    {"rule_id": "qty_positive", "type": "field", "column": "quantity",
-     "condition": "between", "min": 1, "max": 100},
-    {"rule_id": "qty_anomaly", "type": "custom", "subtype": "sql_timeseries",
-     "value_sql": "SELECT sum(quantity) FROM orders.line_items WHERE event_date = :partition",
-     "partition": "event_date",
-     "ml_validation": {"model": "day_of_week", "lookback": "8w"}}
-  ]
+  "description": "일간 fitness check: 행 수, 수량 sanity, 핵심 컬럼 null 수",
+  "variables": ["row_cnt", "qty_negative_cnt", "qty_total", "user_id_null_cnt"]
 }
 ```
 
-**스케줄 실행.**
-일간 Airflow 검증 DAG이 네 규칙을 모두 실행하고
-DataHub에 `assertionRunEvent` aspect를,
-`validation_results`에 행을 기록한다.
-
-**코딩 에이전트의 dry-run.**
-신규 배송 파이프라인을 배포하는 중에 AI 코딩 에이전트가 호출한다:
+**파이프라인이 emit하는 결과.** 일간 파티션을 작성하는 동일 Airflow DAG이 직후
+팀의 품질 태스크를 실행해 네 변수를 계산하고 POST한다:
 
 ```http
-POST .../method/validation/run    { "dry_run": true, "partition": {"event_date": "2026-04-25"} }
+POST .../attr/validation/result
+```
+```json
+{
+  "data_time": "2026-05-08T00:00:00Z",
+  "score": 1.0,
+  "variables": {
+    "row_cnt": 12480.0,
+    "qty_negative_cnt": 0.0,
+    "qty_total": 38712.0,
+    "user_id_null_cnt": 0.0
+  }
+}
 ```
 
-머지 전에 어제 데이터로 규칙이 통과하는지 확인하는 용도다.
+결과는 DataHub Quality 탭에 `data_time`을 기준으로 timestamp된
+`assertionRunEvent`로 노출된다. `score < 1.0`이면 DataHub UI에서 assertion이
+`FAILURE`로 표시된다. 원본 score는 partial-success 시맨틱을 위해
+`actualAggValue`에 보존된다.
 
-**과거 데이터 조회.**
-1주일 후 분석가가 지난주 결과를 본다:
+**과거 데이터 베이스라인 캐시.** 다음 날의 품질 태스크는 14일 롤링 베이스라인 대비
+오늘의 행 수 anomaly를 계산한다. `orders.line_items`를 다시 집계하는 대신 다음을
+호출해 과거 `row_cnt` 시계열을 그대로 사용한다:
 
 ```http
-GET .../attr/validation/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:00Z
 ```
 
-**크로스 데이터셋 오버뷰.**
-운영팀이 `GET /spoke/common/validation`에서
-데이터셋별 최신 통과/실패를 본다.
+**크로스 데이터셋 오버뷰.** 운영팀이 `GET /spoke/common/validation`에서
+데이터셋별 description, 변수 개수, 최신 score를 본다.
 
 ---
 
@@ -740,7 +732,7 @@ GET .../event/metagen
 | 메트릭 ID | 정의 |
 |---|---|
 | `ingestion-freshness` | 활성화된 인제스천 설정 중 마지막 성공 `event/ingestion`이 신선도 윈도우 안에 들어오는 비율 (active는 `schedule_tier` 기준; passive는 고정 윈도우 기준). |
-| `validation-score` | 최신 실행에서 `assertion_result = SUCCESS`인 검증 규칙의 비율. 규칙이 하나라도 있는 데이터셋 전반에 걸쳐 평균. |
+| `validation-score` | 최신 `attr/validation/result` 행의 `score == 1.0`인 데이터셋 비율. 검증 conf가 있는 데이터셋만 분모에 포함. |
 
 **Result 행 형태.** 모든 측정 실행은 `attr/result`에 한 행을 남기며, 각 행은
 집계 `value`와 함께 데이터셋별 `breakdown`(어떤 데이터셋이 어떤 부분 값에
@@ -796,7 +788,7 @@ PUT /api/v1/spoke/dg/metric/validation-score/attr/conf
 {
   "title": "검증 점수",
   "theme": "quality",
-  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_rules_passing"},
+  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_datasets_passing"},
   "schedule_tier": "hourly",
   "is_enabled": true
 }

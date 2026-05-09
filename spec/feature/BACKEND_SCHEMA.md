@@ -63,7 +63,7 @@ Tracks dataset URNs referenced by DataSpoke configs and whether they exist in Da
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-- **Creation**: lazy, via `ensure_dataset_registered()` on ingestion/validation config upsert.
+- **Creation**: lazy, via `ensure_dataset_registered()` on ingestion config upsert. Validation config upsert checks the registry but does not create rows — `validation_configs` references `dataset_urn` directly, and the validation precondition gate (`422 DATASET_NOT_IN_DATAHUB`) reads from this registry.
 - **Updates**: `mark_registered()` called from `IngestionService.run()` on successful non-dry-run;
   `mark_unregistered()` reserved for DataHub sync.
 - **DataHub sync**: bidirectional reconciliation against DataHub via
@@ -73,36 +73,37 @@ Tracks dataset URNs referenced by DataSpoke configs and whether they exist in Da
 
 #### `validation_configs`
 
-Stores per-dataset validation configuration (assertion rules + schedule).
+Stores the single validation slot per dataset (passive result-store model — see
+[`spec/feature/VALIDATION.md`](VALIDATION.md)). One row per dataset.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Config identifier |
-| `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `rules` | `JSONB` | JSON list of validation rules. Field names mirror the DataHub Open Assertions YAML schema (`type`, `condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`); DataSpoke extensions: `rule_id` (required, stable), `source` (freshness/volume — `datahub_operation`/`datahub_profile`/`query`; see [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)), `partition`, `order`, `ml_validation` (custom only) |
-| `is_enabled` | `BOOLEAN` | Enable Airflow tier-based periodic execution (default false) |
-| `schedule_tier` | `TEXT` NULL | Schedule tier — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
-| `owner` | `TEXT` | Owner user ID |
+| `dataset_urn` | `TEXT` PK | Target dataset URN (unique — at most one validation slot per dataset) |
+| `description` | `TEXT` | Free-form description (≤ 2,000 chars; surfaced in DataHub assertion detail UI) |
+| `variables` | `TEXT[]` | Declared variable names the pipeline will report. Each entry matches `[a-z][a-z0-9_]{0,99}`, unique within the row, 1..200 entries. Joined as `customAssertion.logic` on DataHub emit |
+| `is_removed` | `BOOLEAN` | Mirror of DataHub `status.removed` for query convenience. `true` after `DELETE`; `false` after a subsequent `PUT` resurrection |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 #### `validation_results`
 
-Per-rule, per-partition results from validation runs.
-Also reported to DataHub as `assertionRunEvent`.
+Pipeline-emitted timeseries results (one row per `POST /attr/validation/result`).
+Also emitted to DataHub as `assertionRunEvent`. Append-only.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Result identifier |
-| `dataset_urn` | `TEXT` | Target dataset |
-| `rule_id` | `TEXT` | Rule identifier from config |
-| `partition` | `JSONB` | Target partition (e.g., `{"load_date": "2025-03-10"}`) |
-| `values` | `JSONB` | Computed values for the partition (e.g., `{"row_count": 48230, "null_rate": 0.003}`) |
-| `validation` | `JSONB` NULL | ML validation verdicts per target (e.g., `{"null_rate": true}`) |
-| `assertion_result` | `TEXT` | `SUCCESS`, `FAILURE`, or `ERROR` |
-| `issues` | `JSONB` | Array of rule-specific issue objects |
-| `run_id` | `UUID` | Airflow DAG run ID |
-| `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
+| `id` | `UUID` PK | Row identifier |
+| `dataset_urn` | `TEXT` | Target dataset (FK shape; matches `validation_configs.dataset_urn`) |
+| `data_time` | `TIMESTAMPTZ` | Time the underlying data is for (typically the partition timestamp). Maps to `assertionRunEvent.timestampMillis` and is the timeseries axis for `GET ?from=&until=` |
+| `score` | `DOUBLE PRECISION` | `0.0 ≤ score ≤ 1.0` (CHECK constraint). `1.0` = pass, `0.0` = fail; intermediate values reserved for partial-success semantics |
+| `variables` | `JSONB` | Map of variable name → numeric value. Keys must be a subset of `validation_configs.variables` (validated at the service layer; `422 UNKNOWN_VARIABLE` on violation) |
+| `ingestion_time` | `TIMESTAMPTZ` | Server-side `now()` when the row was accepted (audit trail; preserved separately from `data_time`) |
+
+Indexes: `(dataset_urn, data_time DESC)` to serve the historical-baseline GET.
+
+Multiple rows may share `(dataset_urn, data_time)` — append-only matches DataHub's
+timeseries aspect semantics. The GET endpoint collapses duplicates with last-write-wins
+per distinct `data_time`.
 
 #### `metagen_configs`
 
@@ -240,7 +241,7 @@ Governance metric definitions.
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
 | `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
-| `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_rules_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}}`; `dataset_filter` dimensions OR-ed; `{}` = all datasets |
+| `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_datasets_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}}`; `dataset_filter` dimensions OR-ed; `{}` = all datasets |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -314,7 +315,7 @@ Singleton configuration for the multi-perspective overview visualization.
 
 | Table | Index | Purpose |
 |-------|-------|---------|
-| `validation_results` | `(dataset_urn, measured_at DESC)` | Time-range queries on results |
+| `validation_results` | `(dataset_urn, data_time DESC)` | Time-range queries on results (historical-baseline GET) |
 | `metagen_results` | `(dataset_urn, generated_at DESC)` | Time-range queries on results |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |

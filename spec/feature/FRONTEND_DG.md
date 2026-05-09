@@ -41,8 +41,9 @@ exposes all three. URN format is validated at `PUT/PATCH` time
 in the `METRIC.RUN_COMPLETE` event's `unresolved_urns` field.
 
 Baseline metrics: `ingestion-freshness`, `validation-score`. Aggregations
-ship with `pct_fresh` and `pct_rules_passing`; unsupported aggregations
-return `422 INVALID_PARAMETER`.
+ship with `pct_fresh` and `pct_datasets_passing` (% of datasets whose latest
+`attr/validation/result.score == 1.0`); unsupported aggregations return
+`422 INVALID_PARAMETER`.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -51,10 +52,10 @@ return `422 INVALID_PARAMETER`.
 │  ingestion-freshness:  92%  ↑     validation: 87% ↑  │
 │                                                      │
 │  Per-dataset breakdown (overview.metrics[*].breakdown)│
-│    catalog.books         fresh ✓   validation 96%    │
-│    orders.line_items     fresh ✓   validation 72%    │
-│    customers.profiles    fresh ✓   validation 91%    │
-│    orders.shipments      fresh ✗   validation —      │
+│    catalog.books         fresh ✓   score 1.00 ✓      │
+│    orders.line_items     fresh ✓   score 0.75 ✗      │
+│    customers.profiles    fresh ✓   score 1.00 ✓      │
+│    orders.shipments      fresh ✗   score   —         │
 │                                                      │
 │  Blind spots (overview.blind_spots[])                │
 │    publishers.feed_raw                               │

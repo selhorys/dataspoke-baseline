@@ -15,8 +15,8 @@ A Baseline Product for an Omnipotent Data Catalog
 - **Self-Purification**: The data catalog inspects and cleans its own state based on the ontology.
   For example, it detects and reports errors in data documentation, or proposes data documentation
   generatively.
-- **Online Verifier**: The data catalog exposes APIs to register and execute data validation rules
-  in real time, enabling coding agents to complete a closed loop for data pipeline development.
+- **Online Quality Ledger**: The data catalog exposes APIs for data-quality tasks in the
+  data pipeline to report or cache results.
 
 ### Custom Data Catalogs in the Era of Vibe Coding
 
@@ -42,7 +42,7 @@ product to start that vibe coding from is not a bad thing either.
 This project aims to develop the following two core artifacts:
 
 - **Baseline Product** — A foundational data catalog implementation with self-organization,
-  self-purification, and online verification capabilities.
+  self-purification, and an online quality ledger.
 - **Productized Scaffold** — A framework for custom development, comprising specs, a development
   environment, coding-agent utilities, and more.
 
@@ -58,9 +58,8 @@ organization's specialized extension as a spoke on a wheel.
 
 - **Ingestion Control**: Convenience functions for configuring, controlling, and managing data
   ingestion in one place.
-- **Validation**: Registration, execution, and management of validation rules, including
-  time-series rules. Supports dry-run validation, point-in-time historical validation, and
-  real-time APIs.
+- **Validation**: Configurable storage of final and intermediate results of validation, used
+  by data-quality tasks in the data pipeline.
 - **Ontology Generation**: Beyond baseline data documentation (e.g. table descriptions), analyzes
   source code (GitHub), SQL logs, external documents, and more to autonomously construct an
   ontology, maintained in a graph DB and a vector DB.

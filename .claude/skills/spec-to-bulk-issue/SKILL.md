@@ -65,7 +65,7 @@ Only Stub and Missing components become issue candidates.
 Group related components into cohesive issues (5–20 issues total). Grouping principles:
 - One issue per service module (e.g. `src/backend/validation/` = one issue)
 - Shared infrastructure can be grouped (e.g. all 4 infra clients in one issue)
-- Split large concerns (e.g. validation scoring vs. anomaly detection)
+- Split large concerns (e.g. ontogen node inference vs. triple composition)
 - Each issue should be independently implementable given its dependencies
 
 ### Step 5 — Dependency ordering

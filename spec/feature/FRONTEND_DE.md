@@ -103,44 +103,46 @@ observing whatever ingestor emits `DataProcessInstance` records — see
 | Page | Read | Write |
 |---|---|---|
 | `/de/validation` | `GET /spoke/common/validation` | — |
-| `/de/validation/[urn]` | `GET .../attr/validation/conf`, `GET .../attr/validation/result?latest=true` (per-rule), `GET .../attr/validation/result?from&to` (timeline), `GET .../event/validation` | `PUT/PATCH/DELETE .../attr/validation/conf` (fields: `rules[]`, `is_enabled`, `schedule_tier`); `POST .../method/validation/run` (`{partition?, dry_run?}`) |
+| `/de/validation/[urn]` | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until` (timeseries), `GET .../event/validation` | `PUT/PATCH/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`) |
 
-The "Quality Score" displayed in the list and detail header is the
-server-provided `quality_score` field on `GET /spoke/common/dataset` rows
-and `GET /spoke/common/data/{urn}` (computed and cached server-side as
-`passed_rules / total_rules`; see
-[BACKEND §Dataset Service](BACKEND.md#dataset-service-srcbackenddataset)).
-The score is omitted when no validation results exist; the UI renders "—"
-in that case. Rule type vocabulary is fixed: `freshness`, `volume`,
-`field`, `schema`, `sql`, `custom` (with optional `subtype: "sql_timeseries"`
-for the partition-aware ML extension).
-
-For `freshness` and `volume` rules, the rule builder exposes a **Source**
-dropdown selecting how the metric is sourced — `datahub_operation` (freshness
-default; reads `OperationClass`), `datahub_profile` (reads `DatasetProfileClass`,
-freshness uses `timestampMillis`, volume uses `rowCount` — also volume's
-default), or `query` (executes against the source platform). Selecting
-`query` reveals `last_modified_field` (freshness only, required) and
-`filter` (optional WHERE clause). Other rule types do not show this
-dropdown. See
+Each dataset has one validation slot. The data pipeline runs the validation logic
+and POSTs results to `attr/validation/result`. Teams that need multiple distinct
+checks per dataset use DataHub's native assertion APIs directly. See
+[`spec/feature/VALIDATION.md`](VALIDATION.md) for the full contract and
 [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)
-for source semantics and the `no_data` failure mode when DataHub-resident
-profile/operation aspects are missing.
+for the service surface.
+
+The list page shows one row per dataset with a validation slot — columns:
+dataset, description, declared variable count, latest `data_time`, latest
+`score`. The "Quality Score" header on the list/detail uses the server-provided
+`quality_score` field (see
+[BACKEND §Dataset Service](BACKEND.md#dataset-service-srcbackenddataset)); the UI
+renders "—" until the first result row arrives.
+
+The detail page is a single editor for `description` (free-form, ≤ 2,000 chars)
+plus a variables list (add / remove / rename, each name matching
+`[a-z][a-z0-9_]{0,99}`, 1..200 entries). Saving issues `PUT/PATCH .../attr/validation/conf`.
+The historical timeseries panel plots `score` and a per-variable chart over
+`data_time` from `GET .../attr/validation/result?from=&until=`. The event log
+consumes `GET .../event/validation` (one entry per accepted result POST).
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ← orders.line_items   Score 4/6   [Run Now]         │
+│  ← orders.line_items     Latest score 1.0            │
 ├──────────────────────────────────────────────────────┤
-│  Per-rule (attr/validation/result?latest=true)       │
-│    freshness  fresh_daily        ✓ SUCCESS           │
-│    volume     daily_volume       ✓ SUCCESS           │
-│    field      qty_positive       ✗ FAILURE  (12 rows)│
-│    schema     required_columns   ✓ SUCCESS           │
-│    sql        order_total_match  ✗ FAILURE  ( 1 row) │
-│    custom     qty_anomaly        ✓ SUCCESS           │
+│  Description (attr/validation/conf.description)      │
+│    [editable textarea, ≤ 2,000 chars]                │
 │                                                      │
-│  Timeline (attr/validation/result?from&to)           │
-│    [Recharts line chart of pass-rate]                │
+│  Variables (attr/validation/conf.variables[])        │
+│    row_cnt              [rename] [×]                 │
+│    qty_negative_cnt     [rename] [×]                 │
+│    qty_total            [rename] [×]                 │
+│    user_id_null_cnt     [rename] [×]      [+ Add]    │
+│                                                      │
+│  Historical timeseries                               │
+│    (attr/validation/result?from=…&until=…)           │
+│    [Recharts: score line chart]                      │
+│    [Recharts: per-variable line charts (toggle)]     │
 │                                                      │
 │  event/validation (latest 5)                         │
 └──────────────────────────────────────────────────────┘

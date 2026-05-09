@@ -385,7 +385,7 @@ Validation, UC3 Ontology Generation, UC4 Metadata Generation, UC5 Governance.
 | `catalog.title_master` | 30 | UC1, UC3 | ~18 cols, composite PK |
 | `catalog.editions` | 40 | UC1, UC3 | Edition/format variants |
 | `orders.order_items` | 80 | UC1, UC3 | Multi-hop join path (PL/SQL lineage + ontology edges) |
-| `orders.daily_fulfillment_summary` | 30 | UC2 | 1 anomalous low-volume day (Jan 15) — time-series validation |
+| `orders.daily_fulfillment_summary` | 30 | UC2 | 1 anomalous low-volume day (Jan 15) — pipeline POSTs daily row counts; historical-baseline GET surfaces the outlier |
 | `orders.raw_events` | 100 | UC2 | Lifecycle event stream |
 | `orders.eu_purchase_history` | 30 | UC1 | EU shipping/payment columns (PII-shaped test data) |
 | `customers.eu_profiles` | 20 | UC1 | EU profile columns (PII-shaped test data) |
@@ -413,9 +413,11 @@ via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMet
   reserved as test surface for future PII classification features
 - **UC1**: `order_items -> editions -> title_master -> genre_hierarchy` full referential
   integrity — reserved as test surface for future multi-hop lineage extraction
-- **UC2**: `user_ratings_legacy` has 30% NULL `rating_score` — tests data quality detection
-- **UC2**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15) — tests time-series
-  anomaly detection / predictive SLA
+- **UC2**: `user_ratings_legacy` has 30% NULL `rating_score` — pipeline computes
+  `null_rate_rating_score` and POSTs it; result-store contract tested end-to-end
+- **UC2**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15) — pipeline POSTs
+  daily `row_cnt`; tomorrow's task GETs the prior 30-day series via the historical-baseline
+  endpoint and detects the outlier without re-aggregating
 - **UC3**: BOOK concept has PRINT variant (`title_master`, `editions`, `book_stock`) and
   DIGITAL variant (`digital_catalog`, `ebook_assets`, `listing_items`) — tests cross-variant
   ontology construction

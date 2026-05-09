@@ -27,8 +27,9 @@ follow.
    project.** All metadata that *can* live in DataHub *must* live in DataHub; DataSpoke
    computes on top without duplicating what DataHub already persists. DataSpoke's PostgreSQL
    storage is reserved for state DataHub does not model natively (validation result timeseries
-   for ML training data, the ontology graph, metadata-generation proposal history,
-   dataset/metric registries) and always references DataHub URNs as the canonical identifier.
+   served as the historical-baseline cache, the ontology graph, metadata-generation proposal
+   history, dataset/metric registries) and always references DataHub URNs as the canonical
+   identifier.
 2. **Write to editable aspects, never to connector-owned aspects** — DataHub maintains paired
    aspects for descriptions: a non-editable one populated by ingestion connectors and an
    editable counterpart for human/agent edits. DataSpoke writes only to the editable aspect.
@@ -109,7 +110,7 @@ Each MANIFESTO feature has a clear integration direction:
 |---------|----|-----------|-------------------|
 | Ingestion Control (`active-custom`) | UC1 | **Write** | Emit dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. Applies to `mode: active-custom` configs only. |
 | Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes by DataSpoke. |
-| Validation | UC2 | **Read + Write** | Query profiles, operations, lineage; register `assertionInfo`, emit `assertionRunEvent` |
+| Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; UC4-approved editable variants (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`); and DataHub Query entities (`queryProperties` + `querySubjects`) — both highlighted (`source = MANUAL`) and auto-discovered joins (`source = SYSTEM`, `len(querySubjects) ≥ 2`), capped per dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
 | Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities. Tag / glossary-term proposals are future scope and not part of the baseline. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
@@ -206,67 +207,59 @@ are append-only — DataHub retains history.
 ### Assertion Aspects
 
 Assertions are stored on `assertion` entities (not `dataset` entities). DataSpoke's
-Validation feature (UC2) adopts the DataHub
-[Open Assertions Spec](https://datahubproject.io/docs/assertions/open-assertions-spec)
-YAML schema as the **binding contract** for its on-disk rule grammar (`type`,
-`condition`, `last_modified_field`, `filter`, `failure_threshold`, `schedule`).
-DataSpoke extensions (`rule_id`, `source`, `partition`, `order`, `ml_validation`)
-are supersets — never replacements. Note: the OSS `datahub assertions` CLI /
-compiler is deprecated in v1.5 and is not invoked; DataSpoke writes both
-`assertionInfo` and `assertionRunEvent` aspects directly via MCP emission while
-keeping the YAML grammar OAS-conformant. For the DataSpoke-side authoring view (envelope
-+ extensions + per-type crosswalk; DataHub field semantics still live on the
-[DataHub Assertion Entity page](https://datahubproject.io/docs/generated/metamodel/entities/assertion)),
-see [feature/VALIDATION_RULES.md](feature/VALIDATION_RULES.md).
+Validation feature (UC2) is a **passive result store** — external pipelines compute
+results and POST them; DataSpoke writes three aspects:
+`assertionInfo` (versioned, on `PUT/PATCH /attr/validation/conf`),
+`assertionRunEvent` (timeseries, per `POST /attr/validation/result`), and `status`
+(versioned, on `DELETE` and on resurrection via `PUT`-after-`DELETE`). The full
+contract — URN derivation, aspect contents, `customAssertion.logic` format,
+`result.type` mapping, `nativeResults` serialization, and intentionally omitted
+aspects — lives in [`spec/feature/VALIDATION.md` §DataHub Aspect Mapping](feature/VALIDATION.md#datahub-aspect-mapping).
 
-Six `assertionInfo.type` values cover the primary data quality dimensions:
+Mandatory conventions for the DataSpoke emission path:
 
-| `assertionInfo.type` | Quality dimension | DataSpoke `rules[].type` | Required typed sub-aspect (SDK class) | Notes |
-|---|---|---|---|---|
-| `FRESHNESS` | Timeliness | `freshness` | `freshnessAssertion` (`FreshnessAssertionInfoClass`) | Native |
-| `VOLUME` | Completeness | `volume` | `volumeAssertion` (`VolumeAssertionInfoClass`) | Native |
-| `FIELD` | Accuracy / validity | `field` | `fieldAssertion` (`FieldAssertionInfoClass`) — `FIELD_VALUES` or `FIELD_METRIC` | Native |
-| `DATA_SCHEMA` | Conformance | `schema` | `schemaAssertion` (`SchemaAssertionInfoClass`) | PDL constant is `DATA_SCHEMA` (not `SCHEMA` — reserved-word workaround) |
-| `SQL` | Custom SQL | `sql` | `sqlAssertion` (`SqlAssertionInfoClass`) | Native |
-| `CUSTOM` | Anything else | `custom` | `customAssertion` (`CustomAssertionInfoClass`) — `entity=<dataset_urn>`, `type=<subtype>` | DataSpoke uses `subtype: "sql_timeseries"` for partition-aware SQL with optional ML-based anomaly detection |
-
-Mandatory conventions (see also
-[datahub-api skill §Pattern D](../.claude/skills/datahub-api/reference.md#known-pattern-d--dataspoke-validation-authoring-custom--typed-assertions)):
-
-1. **Typed sub-aspect required.** Setting `assertionInfo.type=…` alone with no
-   matching sub-aspect leaves the assertion blank in DataHub's UI and returns
-   `null` from `assertionInfo.{freshness,volume,…}Assertion` over GraphQL. The
-   sub-aspect carries the actual check definition (entity URN, schedule, field,
-   compatibility, statement, etc.).
-2. **`source.type = EXTERNAL`** on every DataSpoke-emitted `AssertionInfo`.
-   Marks "DataSpoke runs this, DataHub stores results"; DataHub will not try to
-   execute it. Never use `NATIVE` (reserved for the DataHub Cloud runner).
-3. **Deterministic URN.** `urn:li:assertion:<datahub_guid({"entity": dataset_urn, "rule": rule_id})>`.
-   Re-emit on config edit (PUT/PATCH) is idempotent and resurrects any prior soft-deleted assertion by
-   emitting `status(removed=False)` alongside `assertionInfo`. DELETE /validation/conf is symmetric —
-   it emits `status(removed=True)` to all assertion URNs derived from the config's rules.
-   DataSpoke is authoritative for assertion lifecycle: out-of-band tombstones applied directly in DataHub
-   (e.g., a DataHub UI admin setting `status.removed=true`) will be reverted on the next config PUT/PATCH.
-   Operators who want to durably hide a DataSpoke assertion must use DELETE /attr/validation/conf.
+1. **`assertionInfo.type = CUSTOM`.** The `customAssertion` sub-aspect carries
+   `type: "DATASPOKE_VALIDATION"` (Quality-tab categorization label),
+   `entity: <dataset_urn>`, and `logic: "<comma-joined variable names>"`.
+   Variable names follow the regex `[a-z][a-z0-9_]{0,99}` so `,` is unambiguous
+   on read.
+2. **`source.type = EXTERNAL`.** Marks "the data pipeline runs this, DataHub
+   stores results". `NATIVE` is reserved for the DataHub Cloud runner.
+3. **Deterministic URN.**
+   `urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`.
+   Recomputable from `dataset_urn` alone — one slot per dataset. PUT/PATCH is
+   idempotent. The soft-delete / resurrection cycle reuses the same URN: `DELETE`
+   emits `status.removed = true`; subsequent `PUT` emits `status.removed = false`
+   together with `assertionInfo`. DataSpoke is authoritative for the assertion
+   lifecycle — out-of-band tombstones (e.g. a DataHub UI admin manually setting
+   `status.removed=true`) are reverted on the next config PUT/PATCH. Operators
+   who want to durably hide a DataSpoke assertion use `DELETE /attr/validation/conf`.
 4. **`lastUpdated` audit stamp.** Populate `AssertionInfoClass.lastUpdated` with
    the DataSpoke service-user URN; otherwise the DataHub UI history card shows
    "unknown actor".
-5. **Shared `runId` per validation run.** All rules in one run write the same
-   `assertionRunEvent.runId` so the DataHub timeline groups them correctly.
-6. **Registration timing.** `assertionInfo` is emitted at config upsert
-   (`PUT/PATCH /attr/validation/conf`), not lazily on first run — see
-   [BACKEND §Validation Service](feature/BACKEND.md#validation-service-srcbackendvalidation).
-   A DataHub error during registration surfaces as 502/503; DataHub is the SSOT
-   for assertion definitions and config save is coupled to its availability by
-   design.
-7. **Run-event emission is best-effort but not silent.** Failures of
-   `assertionRunEvent` emission produce an `ERROR` result on the affected rule
-   (visible in the run summary), never a swallowed log warning.
+5. **`assertionRunEvent.timestampMillis = data_time`.** The pipeline-supplied
+   `data_time` is the timeseries axis — it aligns DataHub's chart axis with the
+   user mental model ("when the data is for"). Server ingest time is preserved
+   separately in `runtimeContext.ingestion_time` for audit.
+6. **`result.type` mapping.** `SUCCESS` if `score == 1.0`, `FAILURE` otherwise.
+   The raw `score` is preserved in `actualAggValue` and `nativeResults["score"]`
+   so partial-success semantics can be introduced later without losing fidelity.
+7. **`nativeResults` carries variables.** `Map<string,string>` of variable name →
+   `repr(float)` (round-trip safe under IEEE 754); parsed back as float on read.
+8. **Append-only timeseries.** Multiple POSTs with the same `data_time` become
+   distinct `assertionRunEvent` rows; the GET endpoint returns
+   last-write-wins per distinct `data_time`. This matches DataHub's
+   timeseries aspect being fundamentally append-only.
+9. **Registration timing.** `assertionInfo` is emitted at config upsert
+   (`PUT/PATCH /attr/validation/conf`). A DataHub error during registration
+   surfaces as 502/503; DataHub is the SSOT for assertion definitions and config
+   save is coupled to its availability by design.
 
 | Aspect | SDK Class | Entity Type | REST Write Path |
 |--------|----------|-------------|----------------|
 | `assertionInfo` | `AssertionInfoClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 | `assertionRunEvent` | `AssertionRunEventClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
+| `status` | `StatusClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 
 ### Data Product Aspects
 
@@ -323,10 +316,10 @@ per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-inge
 | `globalTags` | W | — | R | — *(future scope)* | R |
 | `glossaryTerms` | — | — | R + W (term per approved node, attached to member datasets; glossary-term relationships per approved triple) | — *(future scope)* | R |
 | `upstreamLineage` | W | R | R | R | R |
-| `status` | W | — | — | — | — |
-| `deprecation` | — | R | — | — | — |
-| `datasetProfile` | — | R | — | — | R |
-| `operation` | — | R | — | — | R |
+| `status` | W | W (assertion entity, on DELETE / resurrect) | — | — | — |
+| `deprecation` | — | — | — | — | — |
+| `datasetProfile` | — | — | — | — | R |
+| `operation` | — | — | — | — | R |
 | `datasetUsageStatistics` | — | — | R | R | R |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | — | W | — | — | R |

@@ -98,7 +98,7 @@ that violate the project's review model:
 | Action | Allowed in workspace | API call |
 |---|---|---|
 | Approve / reject ontogen node, edge, triple | DG only | `POST /spoke/common/ontogen/result/{node\|edge\|triple}/{id}/method/review` |
-| Trigger ontogen / ingestion / validation / metagen / metric runs | DE, DA, DG | `POST /spoke/.../method/run` |
+| Trigger ontogen / ingestion / metagen / metric runs | DE, DA, DG | `POST /spoke/.../method/run` |
 | Edit `attr/conf` for any feature | DE, DA, DG | `PUT/PATCH/DELETE /spoke/.../attr/conf` |
 | Approve metagen result fields | DE, DA, DG | `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` |
 

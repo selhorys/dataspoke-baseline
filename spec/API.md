@@ -243,12 +243,12 @@ configurations.
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Control | UC1 |
 | `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly — `active-custom` configs only (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING`; rejected with `409 INGESTION_DISABLED` when the conf is disabled and `dry_run` is not true; rejected with `409 INGESTION_NOT_APPLICABLE` for `passive` configs (passive ingestion is run externally) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports (success/failure notices) | Ingestion Control | UC1 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration for dataset | Validation | UC2, UC5 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description` + declared `variables`) | Validation | UC2, UC5 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Remove validation configuration | Validation | UC2, UC5 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get assertion result history (timeseries; `?from=…&to=…` for time range; optional `partition` filter) | Validation | UC2, UC5 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/validation/run` | Trigger manual or dry-run validation (optional `partition` and `dry_run` in body; dry-run powers the Online Verifier for coding agents); concurrent runs return `409 VALIDATION_RUNNING`. Rejected with `409 VALIDATION_DISABLED` when the conf is disabled and `dry_run` is not true | Validation | UC2 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Soft-delete the validation slot — emits DataHub `status.removed = true`. A subsequent `PUT` resurrects the same assertion URN | Validation | UC2, UC5 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a pipeline-emitted result `{data_time, score, variables}`. Unknown variable keys return `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` returns `422 INVALID_SCORE` | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get historical results (timeseries on `data_time`; `?from=…&until=…&limit=…`, default `limit=1000`, server cap `10000`) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, schedule_tier, status) | Metadata Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace metadata generation configuration | Metadata Generation | UC4 |
@@ -306,21 +306,24 @@ and [DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-
 
 A cross-dataset list view of validation attributes. Each row combines dataset identity
 with the validation attributes stored under `common/data/{dataset_urn}/attr/validation/*`
-(`conf` and latest `result`). Useful for quality dashboards and bulk rule management.
+(`conf` — description and declared variable names — and the latest `result` —
+`data_time` and `score`). Useful for quality dashboards and per-dataset overviews.
 
-DataSpoke validation is a convenience and customization layer on top of DataHub's native
-assertion framework and the Open Assertions Spec — wrapping all six assertion types and
-adding DataSpoke-original extensions (partition awareness, ML-based anomaly detection).
-Design framework, assertion type catalogue, and comparison with DataHub native assertions:
-see [BACKEND §Validation Service](feature/BACKEND.md#validation-service-srcbackendvalidation)
-and [DATAHUB_INTEGRATION §Assertion Aspects](DATAHUB_INTEGRATION.md#assertion-aspects).
+DataSpoke is a passive result store for one validation slot per dataset. Data pipelines
+run the checks and POST results; DataSpoke stores them, emits DataHub assertion aspects,
+and serves the historical timeseries as a baseline cache. Teams that need multiple
+distinct checks per dataset use DataHub's native assertion APIs directly. Full contract:
+see [`spec/feature/VALIDATION.md`](feature/VALIDATION.md). Backend service surface:
+[BACKEND §Validation Service](feature/BACKEND.md#validation-service-srcbackendvalidation).
+DataHub aspect mapping: [DATAHUB_INTEGRATION §Assertion Aspects](DATAHUB_INTEGRATION.md#assertion-aspects).
 
-Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
-surface: `attr/validation/{conf,result}`, `method/validation/run`, `event/validation`.
+Per-dataset detail and result writes live on the canonical `data/{dataset_urn}` surface:
+`attr/validation/{conf,result}` and `event/validation`. Pipelines POST results to
+`attr/validation/result` after each partition write.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf and latest result) (paginated, filterable) | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, filterable) | Validation | UC2, UC5 |
 
 #### Metadata Generation (`/spoke/common/metagen`)
 
@@ -440,8 +443,8 @@ Airflow DAGs, and automation.
 ### Internal Activities (`/internal/activities`)
 
 Cluster-internal activity endpoints invoked by Airflow DAGs (HttpOperator → in-cluster API
-DNS) to drive long-running domain workflows (ingestion, validation, ontogen, metagen, metric
-runs). Gated by the same `X-Internal-Token` header. The per-domain route shapes are not
+DNS) to drive long-running domain workflows (ingestion, ontogen, metagen, metric runs).
+Gated by the same `X-Internal-Token` header. The per-domain route shapes are not
 catalogued in this spec — they are an implementation detail of the workflow boundary and live
 with the relevant feature service in [BACKEND.md](feature/BACKEND.md). External clients must
 not call these routes; they are not exposed through ingress.
@@ -621,14 +624,14 @@ response, matching the success envelope.
 | `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
 | `EDGE_NOT_FOUND` | 404 | Ontology edge ID not found |
 | `TRIPLE_NOT_FOUND` | 404 | Ontology triple ID not found |
-| `CONFIG_NOT_FOUND` | 404 | Ingestion config or validation config not found |
+| `CONFIG_NOT_FOUND` | 404 | Ingestion or validation configuration not found |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
 | `INGESTION_DISABLED` | 409 | Ingestion conf has `is_enabled=false`; non-dry-run rejected |
 | `INGESTION_NOT_APPLICABLE` | 409 | `method/ingestion/run` called against a `passive`-mode conf; passive ingestion is run externally and has no DataSpoke-side run pipeline |
 | `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
-| `VALIDATION_RUNNING` | 409 | A validation run is already in progress for this config |
-| `VALIDATION_DISABLED` | 409 | Validation conf has `is_enabled=false`; non-dry-run rejected |
+| `UNKNOWN_VARIABLE` | 422 | `POST .../attr/validation/result` body carries `variables` keys not declared in the dataset's `attr/validation/conf.variables` |
+| `INVALID_SCORE` | 422 | `POST .../attr/validation/result` body has `score` outside `[0.0, 1.0]` |
 | `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
 | `GENERATION_DISABLED` | 409 | Metagen conf has `is_enabled=false`; non-dry-run rejected |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |

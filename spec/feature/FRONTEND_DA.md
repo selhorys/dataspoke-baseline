@@ -58,14 +58,12 @@ Approval (`POST .../method/review`) is not exposed here — see
 
 Same data sources as DE: `GET /spoke/common/validation` (list) and
 `GET /spoke/common/data/{urn}/attr/validation/{conf,result}` plus
-`/event/validation`. Run via `POST .../method/validation/run`. No new fields
-or endpoints — only the score-label and primary-action wording differ
-("Fitness Score" / "Check Fitness" instead of "Quality Score" / "Run
-Validation"). The score is the server-provided `quality_score` field on
-the same DE-shared endpoints (computed and cached server-side; see
-[FRONTEND_DE §Validation](FRONTEND_DE.md#validation-uc2)); rule-type
-vocabulary and source-mode vocabulary (for `freshness` / `volume`) are
-fixed.
+`/event/validation`. The data pipeline POSTs results to `attr/validation/result`.
+Only the score-label wording differs from DE ("Fitness Score" instead of "Quality
+Score"); the surface is otherwise identical to
+[FRONTEND_DE §Validation](FRONTEND_DE.md#validation-uc2): a single editor for
+`description` + `variables[]` and a historical timeseries view of `score` and
+per-variable values over `data_time`.
 
 ### Dataset detail (`/da/dataset/[urn]`)
 
