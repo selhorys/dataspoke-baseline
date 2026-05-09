@@ -160,11 +160,16 @@ kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
 # ---------------------------------------------------------------------------
 if [[ -n "$DOMAIN" ]]; then
   info "Verifying Airflow DAGs..."
-  if curl -sf -X POST "http://app.${DOMAIN}/internal/admin/dags/verify" -o /dev/null; then
+  INTERNAL_TOKEN="$(kubectl exec -n "${NS}" deploy/dataspoke-api -c api -- printenv DATASPOKE_INTERNAL_TOKEN 2>/dev/null || true)"
+  if [[ -z "$INTERNAL_TOKEN" ]]; then
+    warn "Could not read DATASPOKE_INTERNAL_TOKEN from dataspoke-api pod — skipping verification."
+  elif curl -sf -X POST "http://app.${DOMAIN}/internal/admin/dags/verify" \
+        -H "X-Internal-Token: ${INTERNAL_TOKEN}" -o /dev/null; then
     info "Airflow DAGs verified."
   else
     warn "Failed to verify Airflow DAGs — Airflow may not be ready. Retry with:"
-    echo "    curl -X POST http://app.${DOMAIN}/internal/admin/dags/verify"
+    echo "    TOKEN=\$(kubectl exec -n ${NS} deploy/dataspoke-api -c api -- printenv DATASPOKE_INTERNAL_TOKEN)"
+    echo "    curl -X POST http://app.${DOMAIN}/internal/admin/dags/verify -H \"X-Internal-Token: \$TOKEN\""
   fi
 fi
 
