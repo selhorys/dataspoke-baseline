@@ -4,12 +4,16 @@ All api-wired tests hit the in-cluster API via nginx-ingress.
 Prerequisites: `./dev_env/dataspoke-test-mode.sh --skip-build` must be running.
 """
 
+import asyncio
 import os
 from collections.abc import AsyncGenerator
 
 import httpx
 import pytest
 import pytest_asyncio
+
+from tests.integration.util import datahub as datahub_util
+from tests.integration.util import dataspoke_db
 
 
 def _ingress_url() -> str:
@@ -117,3 +121,24 @@ def internal_headers() -> dict[str, str]:
     """Session-scoped X-Internal-Token header dict for internal routes."""
     token = os.environ["DATASPOKE_INTERNAL_TOKEN"]
     return {"X-Internal-Token": token}
+
+
+@pytest.fixture(autouse=True)
+def purge_urns(request: pytest.FixtureRequest) -> None:
+    """Hard-purge DataSpoke state for URNs declared by the test module.
+
+    A test module opts in by declaring `URNS_TO_PURGE: list[str]` at module
+    level. For each URN we:
+      1. Hard-delete rows from every `dataspoke.*` operational table.
+      2. Hard-delete every DataSpoke-emitted DataHub assertion attached to it
+         (including its assertionRunEvent timeseries).
+
+    Lets a single test re-run cleanly after an aborted prior run without
+    requiring a full `reset-all`.
+    """
+    urns: list[str] = getattr(request.module, "URNS_TO_PURGE", [])
+    if not urns:
+        return
+    for urn in urns:
+        asyncio.run(dataspoke_db.purge_urn(urn))
+        datahub_util.hard_delete_dataspoke_assertions_for_dataset(urn)

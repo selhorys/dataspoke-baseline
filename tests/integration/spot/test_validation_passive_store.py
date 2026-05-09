@@ -172,13 +172,23 @@ async def test_post_result_emits_assertion_run_event(
     # assertionRunEvent is a TIMESERIES aspect — must use get_latest_timeseries_value,
     # not get_aspect (which raises TypeError for timeseries aspects).
     # ref: datahub ingestion/graph/client.py:354-357
+    # Poll briefly: DataHub timeseries goes through Elasticsearch and is
+    # eventually-consistent; a freshly-emitted aspect can take a couple of
+    # seconds to become queryable.
+    import time as _time
     assertion_urn = build_assertion_urn(_DATASET_URN)
     graph = _make_datahub_graph()
-    run_event = graph.get_latest_timeseries_value(
-        entity_urn=assertion_urn,
-        aspect_type=AssertionRunEventClass,
-        filter_criteria_map={},
-    )
+    deadline = _time.monotonic() + 15.0
+    run_event = None
+    while _time.monotonic() < deadline:
+        run_event = graph.get_latest_timeseries_value(
+            entity_urn=assertion_urn,
+            aspect_type=AssertionRunEventClass,
+            filter_criteria_map={},
+        )
+        if run_event is not None and run_event.timestampMillis == _epoch_ms(data_time):
+            break
+        _time.sleep(0.5)
     if run_event is None:
         pytest.fail(f"assertionRunEvent not found in DataHub at URN {assertion_urn}")
     expected_ms = _epoch_ms(data_time)

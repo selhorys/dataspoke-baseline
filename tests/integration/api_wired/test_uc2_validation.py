@@ -40,6 +40,9 @@ _CONF_URL = f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/conf"
 _RESULT_URL = f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/result"
 _VALIDATION_LIST_URL = "/api/v1/spoke/common/validation"
 
+# Consumed by the api-wired `purge_urns` autouse fixture (see conftest.py).
+URNS_TO_PURGE: list[str] = [_DATASET_URN]
+
 
 @pytest.mark.asyncio
 async def test_uc2_passive_result_store(
@@ -127,8 +130,11 @@ async def test_uc2_passive_result_store(
         from_dt = day_0.isoformat()
         until_dt = (day_2 + timedelta(days=1)).isoformat()  # exclusive upper bound
 
+        # Pass as `params=` so httpx URL-encodes the timezone `+` to `%2B`.
+        # An inline f-string in the URL would let the server decode `+` as a space.
         get_resp = await api_client.get(
-            f"{_RESULT_URL}?from={from_dt}&until={until_dt}&limit=10",
+            _RESULT_URL,
+            params={"from": from_dt, "until": until_dt, "limit": 10},
             headers=admin_headers,
         )
         assert get_resp.status_code == 200, (

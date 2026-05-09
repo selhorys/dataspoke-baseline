@@ -137,12 +137,15 @@ class ValidationService:
         existing = result.scalar_one_or_none()
 
         if existing:
+            was_soft_deleted = existing.is_removed
             existing.description = description
             existing.variables = variables
             existing.is_removed = False
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
-            created = False
+            # A soft-deleted rule is consumer-absent (GET returns 404 per
+            # spec §Rule Configuration), so resurrecting it via PUT is a create.
+            created = was_soft_deleted
         else:
             existing = ValidationConfig(
                 dataset_urn=dataset_urn,

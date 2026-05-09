@@ -292,76 +292,212 @@ async def discover_tables(
 
 
 def reset_datasets() -> int:
-    """Soft-delete all example_db and example_kafka datasets from DataHub.
+    """Hard-delete all example_db and example_kafka datasets from DataHub.
 
-    Returns total count deleted across both platforms.
+    Also hard-deletes any DataProcessInstance entities that produced one of
+    those datasets (UC1 ingestion runs), since DPIs are useless once the
+    dataset they reference is gone.
+
+    Hard-delete (vs. the prior soft-delete) wipes both versioned aspects
+    (datasetProperties, schemaMetadata, status, etc.) and timeseries aspects
+    (datasetProfile, datasetUsageStatistics, run events) in one pass — leaving
+    no stale history for the next test run to trip over.
+
+    Returns total count deleted (datasets + DPIs).
     """
     token = _get_token()
     graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
-    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
-    urns: list[str] = []
+    dataset_urns: list[str] = []
 
     # PostgreSQL datasets
     pg_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{PG_PLATFORM},{PG_INSTANCE}."
     for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=PG_PLATFORM):
         if u.startswith(pg_prefix):
-            urns.append(u)
+            dataset_urns.append(u)
 
     # Kafka datasets
     kafka_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{KAFKA_PLATFORM},{_kafka_instance}."
     for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=KAFKA_PLATFORM):
         if u.startswith(kafka_prefix):
-            urns.append(u)
+            dataset_urns.append(u)
 
-    if not urns:
+    if not dataset_urns:
         print("  No existing dummy-data datasets to delete.")
         return 0
 
-    for urn in urns:
-        emitter.emit_mcp(
-            MetadataChangeProposalWrapper(
-                entityUrn=urn,
-                aspect=StatusClass(removed=True),
-            )
-        )
+    # Discover DPIs that produced any of these datasets, so they vanish
+    # alongside the datasets they reference.
+    dpi_urns: set[str] = set()
+    for dataset_urn in dataset_urns:
+        for rel in graph.get_related_entities(
+            entity_urn=dataset_urn,
+            relationship_types=["Produces"],
+            direction=DataHubGraph.RelationshipDirection.INCOMING,
+        ):
+            if rel.urn.startswith("urn:li:dataProcessInstance:"):
+                dpi_urns.add(rel.urn)
 
-    print(f"  Soft-deleted {len(urns)} datasets.")
-    return len(urns)
+    for urn in dataset_urns:
+        graph.hard_delete_entity(urn)
+    for urn in dpi_urns:
+        graph.hard_delete_entity(urn)
+
+    if dpi_urns:
+        print(f"  Hard-deleted {len(dataset_urns)} datasets and {len(dpi_urns)} DPIs.")
+    else:
+        print(f"  Hard-deleted {len(dataset_urns)} datasets.")
+    return len(dataset_urns) + len(dpi_urns)
+
+
+_DATASPOKE_ASSERTION_MARKER = "DATASPOKE_VALIDATION"
+
+
+def _list_urns_incl_soft_deleted(entity_type: str) -> list[str]:
+    """Return every URN of an entity type, including soft-deleted ones.
+
+    `DataHubGraph.get_urns_by_filter` uses the search index, which by default
+    excludes entities with `status.removed = true`. That means a soft-deleted
+    DataSpoke assertion or container slips past the cleanup sweep and
+    accumulates as an orphan in MySQL. This helper hits the OpenAPI search
+    endpoint with `includeSoftDeleted=true` so cleanup actually finds it.
+    """
+    token = _get_token()
+    urns: list[str] = []
+    start = 0
+    page_size = 100
+    while True:
+        resp = requests.post(
+            f"{_gms_url}/entities?action=searchAcrossEntities",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "X-RestLi-Protocol-Version": "2.0.0",
+            },
+            json={
+                "input": "*",
+                "entities": [entity_type],
+                "start": start,
+                "count": page_size,
+                "searchFlags": {"includeSoftDeleted": True},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        page = [e["entity"] for e in resp.json().get("value", {}).get("entities", [])]
+        urns.extend(page)
+        if len(page) < page_size:
+            break
+        start += page_size
+    return urns
 
 
 def reset_assertions() -> int:
-    """Soft-delete DataSpoke-emitted assertion entities left over from crashed or aborted test runs.
+    """Hard-delete DataSpoke-emitted assertion entities left over from prior runs.
 
-    Identifies DataSpoke assertions via assertionInfo.customProperties.dataspoke_rule_type
-    (set by build_assertion_info in src/backend/validation/assertions.py). Only assertions
-    carrying that custom property are touched; all others are left in place.
+    Identifies DataSpoke assertions via `assertionInfo.customAssertion.type ==
+    "DATASPOKE_VALIDATION"` (set by `build_assertion_info` in
+    src/backend/validation/assertions.py). Only assertions carrying that marker
+    are touched; all others are left in place.
+
+    Enumerates via the soft-deleted-aware helper so an assertion that was
+    soft-deleted by a prior test's `finally` block doesn't slip past the sweep.
     """
     token = _get_token()
     graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
-    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
     urns: list[str] = []
-    for urn in graph.get_urns_by_filter(entity_types=["assertion"]):
+    for urn in _list_urns_incl_soft_deleted("assertion"):
         info = graph.get_aspect(entity_urn=urn, aspect_type=AssertionInfoClass)
         if info is None:
             continue
-        if info.customProperties and "dataspoke_rule_type" in info.customProperties:
+        custom = getattr(info, "customAssertion", None)
+        if custom is not None and getattr(custom, "type", None) == _DATASPOKE_ASSERTION_MARKER:
             urns.append(urn)
 
     if not urns:
+        print("  Hard-deleted 0 assertions.")
         return 0
 
     for urn in urns:
-        emitter.emit_mcp(
-            MetadataChangeProposalWrapper(
-                entityUrn=urn,
-                aspect=StatusClass(removed=True),
-            )
-        )
+        graph.hard_delete_entity(urn)
 
-    print(f"  Soft-deleted {len(urns)} assertions.")
+    print(f"  Hard-deleted {len(urns)} assertions.")
     return len(urns)
+
+
+def reset_containers() -> int:
+    """Hard-delete stale postgres/kafka containers from prior runs.
+
+    The PG/Kafka ingest path here doesn't emit container aspects, so any
+    container whose `containerProperties.customProperties.platform` matches
+    `postgres` or `kafka` is residue from an older ingestion shape.
+    """
+    from datahub.metadata.schema_classes import ContainerPropertiesClass
+
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+
+    deleted = 0
+    for urn in _list_urns_incl_soft_deleted("container"):
+        props = graph.get_aspect(entity_urn=urn, aspect_type=ContainerPropertiesClass)
+        if props is None:
+            continue
+        custom = props.customProperties or {}
+        if custom.get("platform") in (PG_PLATFORM, KAFKA_PLATFORM):
+            graph.hard_delete_entity(urn)
+            deleted += 1
+    print(f"  Hard-deleted {deleted} containers.")
+    return deleted
+
+
+def reset_glossary_terms() -> int:
+    """Hard-delete every glossary term in dev-env DataHub.
+
+    DataSpoke ontogen is the only glossary-term emitter, so a non-empty term
+    set after reset-all is always residue from a prior run. This includes the
+    body-less placeholder terms that ontogen emits via the `GlossaryTerms`
+    association on a dataset (the term URN appears in the index even when no
+    `GlossaryTermInfo` aspect was ever set).
+    """
+    deleted = 0
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    for urn in _list_urns_incl_soft_deleted("glossaryTerm"):
+        graph.hard_delete_entity(urn)
+        deleted += 1
+    print(f"  Hard-deleted {deleted} glossary terms.")
+    return deleted
+
+
+def hard_delete_dataspoke_assertions_for_dataset(dataset_urn: str) -> int:
+    """Hard-delete every DataSpoke-emitted assertion attached to one dataset URN.
+
+    Used by the api-wired `purge_urns` conftest fixture so a per-test purge
+    clears DataHub-side state (versioned aspects + timeseries run events) in
+    addition to the operational DB.
+    """
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+
+    related = graph.get_related_entities(
+        entity_urn=dataset_urn,
+        relationship_types=["Asserts"],
+        direction=DataHubGraph.RelationshipDirection.INCOMING,
+    )
+
+    deleted = 0
+    for rel in related:
+        urn = rel.urn
+        info = graph.get_aspect(entity_urn=urn, aspect_type=AssertionInfoClass)
+        if info is None:
+            continue
+        custom = getattr(info, "customAssertion", None)
+        if custom is None or getattr(custom, "type", None) != _DATASPOKE_ASSERTION_MARKER:
+            continue
+        graph.hard_delete_entity(urn)
+        deleted += 1
+    return deleted
 
 
 # ---------------------------------------------------------------------------
@@ -764,6 +900,8 @@ async def reset_and_ingest(
     """
     deleted = reset_datasets()
     reset_assertions()
+    reset_containers()
+    reset_glossary_terms()
     pg_count = await ingest_pg_datasets(schemas=schemas)
     kafka_count = await ingest_kafka_datasets()
     return deleted, pg_count + kafka_count
