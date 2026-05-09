@@ -158,8 +158,10 @@ consumes `GET .../event/validation` (one entry per accepted result POST).
 
 `targets[]` is drawn from `dataset.description`, `column.description`,
 `cross_data.md`. Approval writes only to the editable DataHub aspects
-(`editableDatasetProperties`, `editableSchemaMetadata.editableSchemaFieldInfo`,
-`dataProductProperties`); the confirm dialog labels the destination aspect.
+(`editableDatasetProperties`, `editableSchemaMetadata.editableSchemaFieldInfo`)
+and to `documentInfo` on `document` entities (with `Status.removed=true` for
+`cross_data.md` delete actions); the confirm dialog labels the destination
+aspect.
 
 ```
 ┌──────────────────────────────────────────────────────┐

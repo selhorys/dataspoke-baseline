@@ -111,8 +111,8 @@ Each MANIFESTO feature has a clear integration direction:
 | Ingestion Control (`active-custom`) | UC1 | **Write** | Emit dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. Applies to `mode: active-custom` configs only. |
 | Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
-| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; UC4-approved editable variants (`editableDatasetProperties`, `editableSchemaMetadata`, `dataProductProperties`); and DataHub Query entities (`queryProperties` + `querySubjects`) — both highlighted (`source = MANUAL`) and auto-discovered joins (`source = SYSTEM`, `len(querySubjects) ≥ 2`), capped per dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
-| Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / split / retitle `dataProduct` entities. Tag / glossary-term proposals are future scope and not part of the baseline. |
+| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; UC4-approved editable variants (`editableDatasetProperties`, `editableSchemaMetadata`, `documentInfo` on `document` entities whose `relatedAssets` reference the in-scope dataset); and DataHub Query entities (`queryProperties` + `querySubjects`) — both highlighted (`source = MANUAL`) and auto-discovered joins (`source = SYSTEM`, `len(querySubjects) ≥ 2`), capped per dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
+| Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / delete `document` entities (Markdown body in `documentInfo.contents.text`, `relatedAssets` listing the involved datasets). Tag / glossary-term proposals are future scope and not part of the baseline. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
@@ -261,17 +261,60 @@ Mandatory conventions for the DataSpoke emission path:
 | `assertionRunEvent` | `AssertionRunEventClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 | `status` | `StatusClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 
-### Data Product Aspects
+### Document Aspects
 
-Data products group related datasets under a topic-level concept. UC4 (Metadata
-Generation) `cross_data.md` proposals may create, modify, split, or retitle
-`dataProduct` entities to organize cross-dataset documentation. The generator chooses
-a descriptive title (a topic phrase) for new data products — the URN is **not** keyed
-off any UC3 node, edge, or triple ID.
+DataHub's `document` entity (URN `urn:li:document:<id>`, server-assigned) is a
+knowledge-base entity for prose attached to data assets — Markdown notes,
+runbooks, design memos, and ingested third-party docs (Confluence, Notion, Slack).
+DataSpoke uses it as the home for **cross-data documentation**: UC4 (Metadata
+Generation) `cross_data.md` proposals create, modify, or delete `document` entities
+whose `relatedAssets` list the involved datasets, and UC3 (Ontology Generation)
+reads documents whose `relatedAssets` overlap an in-scope dataset as evidence.
+
+The generator chooses a descriptive title (a topic phrase) for new documents — the
+URN is server-assigned and not keyed off any UC3 node, edge, or triple ID.
+
+#### `documentInfo` aspect fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `title` | optional string | Document title (searchable, autocomplete-enabled) |
+| `source` | optional `DocumentSource` | `{sourceType: NATIVE \| EXTERNAL, externalUrl?, externalId?}`. DataSpoke-authored documents emit `NATIVE`; ingested third-party documents arrive as `EXTERNAL` with the source URL/ID populated by the ingestion connector |
+| `status` | enum `DocumentStatus` | `published \| unpublished` (do not confuse with the separate `Status` aspect used for soft-delete) |
+| `contents.text` | string | Document body. **DataSpoke convention:** treated as Markdown; the DataHub UI renders it as Markdown |
+| `created` | `AuditStamp` | Creation actor + timestamp |
+| `lastModified` | `AuditStamp` | Last-edit actor + timestamp |
+| `relatedAssets[]` | optional array of URN | Outbound links to data assets (datasets, dashboards, etc.) — see entityType whitelist below |
+| `relatedDocuments[]` | optional array of document URN | Outbound links to other documents |
+| `parentDocument` | optional document URN | Hierarchical parent (doc-to-doc only) |
+
+#### DataSpoke conventions
+
+- **Body format.** `documentInfo.contents.text` is Markdown by convention.
+- **Provenance.** DataSpoke-authored documents emit `documentInfo.source.sourceType = NATIVE`; `externalUrl` and `externalId` stay unset.
+- **Soft-delete.** Document deletion uses the regular `Status` aspect with `removed = true` on the document URN. DataSpoke never hard-deletes documents.
+- **Discovery.** Find documents that reference a given dataset via the GraphQL `searchAcrossEntities` query, filtering on `entityType: DOCUMENT` and `relatedAssets` containing the dataset URN. Sort by `lastModified` descending and apply a per-dataset cap when feeding documents to the LLM as evidence.
+
+#### Aspect reference
 
 | Aspect | SDK Class | Entity Type | Key Fields | REST Write Path |
 |--------|----------|-------------|------------|----------------|
-| `dataProductProperties` | `DataProductPropertiesClass` | `dataProduct` | `name`, `description` (Markdown), `assets[]` (dataset URNs) | `POST /openapi/v3/entity/dataproduct` |
+| `documentInfo` | `DocumentInfoClass` | `document` | `title`, `contents.text` (Markdown), `relatedAssets[]`, `source` (`NATIVE` for DataSpoke-authored), `status` (`published`), `created`, `lastModified` | `POST /openapi/v3/entity/document` |
+| `status` | `StatusClass` | `document` | `removed` (bool, used for soft-delete) | `POST /openapi/v3/entity/document` |
+
+#### `relatedAssets` entityType whitelist
+
+A `relatedAssets[].asset` URN must point at one of the entity types accepted by
+the `document` entity registry — see
+[`RelatedAsset.pdl`](https://github.com/datahub-project/datahub/blob/v1.5.0.2/metadata-models/src/main/pegasus/com/linkedin/knowledge/RelatedAsset.pdl)
+in the DataHub source for the authoritative list. DataSpoke populates
+`relatedAssets` with dataset URNs in the baseline.
+
+#### Linkage caveats
+
+- The relationship is non-exclusive: many documents can reference the same dataset, and one document can reference many datasets.
+- Hierarchy is doc-to-doc only via `parentDocument`; documents cannot declare a parent of any other entity type.
+- `relatedAssets` carries no edge label beyond "related" — the relationship type is implicit in the document's body.
 
 ### Query Aspects
 
@@ -323,7 +366,7 @@ per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-inge
 | `datasetUsageStatistics` | — | — | R | R | R |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | — | W | — | — | R |
-| `dataProductProperties` | — | — | R | W (create / modify / split / retitle on approval) | R |
+| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | W (create / modify / delete on approval; delete via `Status.removed=true`) | R |
 | `queryProperties` | — | — | R (per-dataset cap, MANUAL + SYSTEM-with-joins) | — | — |
 | `querySubjects` | — | — | R (joins-first sort key) | — | — |
 

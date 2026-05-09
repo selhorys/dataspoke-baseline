@@ -1,9 +1,10 @@
 """Metadata Generation request/response schemas — UC4."""
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 
@@ -12,6 +13,107 @@ _BoundedFieldEntry = Annotated[str, StringConstraints(max_length=512)]
 
 _VALID_TARGETS = frozenset({"dataset.description", "column.description", "cross_data.md"})
 _VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
+
+_DOCUMENT_URN_PREFIX = "urn:li:document:"
+_DATASET_URN_PREFIX = "urn:li:dataset:"
+_URN_MAX_LEN = 500
+
+_RE_DOCUMENT_URN = re.compile(r"^urn:li:document:.+$")
+_RE_DATASET_URN = re.compile(r"^urn:li:dataset:.+$")
+
+# ── Cross-data action ─────────────────────────────────────────────────────────
+
+
+class CrossDataAction(BaseModel):
+    """One cross_data.md action proposal item.
+
+    Field constraints by action type:
+      create  — title, body, related_assets (non-empty) required; document_urn must be absent/null
+      modify  — document_urn, body required; related_assets optional; title must be absent/null
+      delete  — document_urn required; title, body, related_assets must be absent/null
+
+    URN constraints:
+      document_urn must match ^urn:li:document: and be ≤ 500 chars.
+      Each related_assets item must match ^urn:li:dataset:.
+    """
+
+    action_id: str = Field(description="Unique identifier for this action within the proposal")
+    action: Literal["create", "modify", "delete"] = Field(description="Document action type")
+    confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="LLM confidence score (0–1)",
+    )
+    title: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Document title — required for 'create'",
+    )
+    body: str | None = Field(
+        default=None,
+        max_length=50_000,
+        description="Document body (Markdown) — required for 'create' and 'modify'",
+    )
+    related_assets: list[str] | None = Field(
+        default=None,
+        description=(
+            "Dataset URNs to link as relatedAssets — required (non-empty) for 'create'; "
+            "optional for 'modify'; unused for 'delete'"
+        ),
+    )
+    document_urn: str | None = Field(
+        default=None,
+        max_length=_URN_MAX_LEN,
+        description=(
+            "Existing document URN (urn:li:document:*) — required for 'modify' and 'delete'"
+        ),
+    )
+
+    @field_validator("document_urn", mode="after")
+    @classmethod
+    def _validate_document_urn_format(cls, v: str | None) -> str | None:
+        if v is not None and not _RE_DOCUMENT_URN.match(v):
+            raise ValueError(f"document_urn must match ^urn:li:document: — got {v!r}")
+        return v
+
+    @field_validator("related_assets", mode="after")
+    @classmethod
+    def _validate_related_assets_urns(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        bad = [u for u in v if not _RE_DATASET_URN.match(u)]
+        if bad:
+            raise ValueError(
+                f"All related_assets items must match ^urn:li:dataset: — invalid: {bad}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_action_fields(self) -> "CrossDataAction":
+        action = self.action
+        if action == "create":
+            if not self.title:
+                raise ValueError("'title' is required for action='create'")
+            if not self.body:
+                raise ValueError("'body' is required for action='create'")
+            if self.related_assets is None:
+                raise ValueError("'related_assets' is required for action='create'")
+            if self.related_assets == []:
+                raise ValueError(
+                    "'related_assets' must be non-empty for action='create' — "
+                    "a cross-data document with no dataset links has no purpose"
+                )
+        elif action == "modify":
+            if not self.document_urn:
+                raise ValueError("'document_urn' is required for action='modify'")
+            if not self.body:
+                raise ValueError("'body' is required for action='modify'")
+        elif action == "delete":
+            if not self.document_urn:
+                raise ValueError("'document_urn' is required for action='delete'")
+        return self
+
 
 # ── Conf ──────────────────────────────────────────────────────────────────────
 
@@ -46,9 +148,7 @@ class MetagenConfPutRequest(BaseModel):
     def validate_targets(cls, v: list[str]) -> list[str]:
         invalid = [t for t in v if t not in _VALID_TARGETS]
         if invalid:
-            raise ValueError(
-                f"Invalid targets: {invalid}. Allowed: {sorted(_VALID_TARGETS)}"
-            )
+            raise ValueError(f"Invalid targets: {invalid}. Allowed: {sorted(_VALID_TARGETS)}")
         return v
 
     @field_validator("schedule_tier")
@@ -73,9 +173,7 @@ class MetagenConfPatchRequest(BaseModel):
             return v
         invalid = [t for t in v if t not in _VALID_TARGETS]
         if invalid:
-            raise ValueError(
-                f"Invalid targets: {invalid}. Allowed: {sorted(_VALID_TARGETS)}"
-            )
+            raise ValueError(f"Invalid targets: {invalid}. Allowed: {sorted(_VALID_TARGETS)}")
         return v
 
     @field_validator("schedule_tier")
@@ -109,9 +207,7 @@ class MetagenConfResponse(SingleResponse):
 class MetagenResultResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the metagen result")
     dataset_urn: str = Field(description="DataHub URN of the dataset")
-    proposals: dict[str, Any] = Field(
-        description="LLM-proposed metadata per target field"
-    )
+    proposals: dict[str, Any] = Field(description="LLM-proposed metadata per target field")
     field_status: dict[str, Any] = Field(
         description="Per-field review status: pending, approved, or rejected"
     )

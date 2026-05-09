@@ -2,6 +2,7 @@
 
 Spec: spec/feature/BACKEND.md §Metadata Generation Service
       spec/DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects
+          §Document Aspects
 """
 
 import logging
@@ -10,11 +11,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.metagen.cross_data import apply_actions
+from src.api.schemas.metagen import CrossDataAction
+from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET, apply_actions
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import DatasetNodeMap, Event, MetagenConfig, MetagenResult
@@ -55,8 +57,7 @@ def _validate_metagen_schedule_tier(tier: str | None) -> None:
     if tier is not None and tier not in _VALID_SCHEDULE_TIERS:
         raise PreconditionFailedError(
             "INVALID_PARAMETER",
-            f"schedule_tier must be one of {sorted(_VALID_SCHEDULE_TIERS)} or null, "
-            f"got {tier!r}",
+            f"schedule_tier must be one of {sorted(_VALID_SCHEDULE_TIERS)} or null, got {tier!r}",
         )
 
 
@@ -223,9 +224,7 @@ class MetagenService:
         )
         return _config_from_row(existing), created
 
-    async def patch_config(
-        self, dataset_urn: str, patch: dict[str, Any]
-    ) -> MetagenConfigRecord:
+    async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> MetagenConfigRecord:
         """Partial config update.  Emits METAGEN.CONFIG_UPDATE."""
         # Fix #9: validate enum fields if present in patch
         if "targets" in patch and patch["targets"] is not None:
@@ -408,7 +407,7 @@ class MetagenService:
         3. Gather DataHub evidence (non-editable aspects + schema + lineage).
         4. Resolve node membership from dataset_node_map (UC3 integration).
         5. Build LLM prompt per target; call LLM.
-        6. For cross_data.md: inspect existing dataProduct entities.
+        6. For cross_data.md: inspect existing related document entities.
         7. Persist MetagenResult with all fields in ``pending`` status.
         8. Emit METAGEN.COMPLETE.
 
@@ -458,22 +457,24 @@ class MetagenService:
 
         # Step 3: Node membership (UC3 integration)
         node_map = (
-            await self._db.execute(
-                select(DatasetNodeMap).where(
-                    DatasetNodeMap.dataset_urn == dataset_urn,
-                    DatasetNodeMap.status == "approved",
+            (
+                await self._db.execute(
+                    select(DatasetNodeMap).where(
+                        DatasetNodeMap.dataset_urn == dataset_urn,
+                        DatasetNodeMap.status == "approved",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         evidence["ontogen_node_ids"] = [m.node_id for m in node_map]
 
         # Step 4+5: Call LLM per target
         proposals: dict[str, Any] = {}
         for target in config.targets:
             try:
-                proposals[target] = await self._propose_target(
-                    target, dataset_urn, evidence
-                )
+                proposals[target] = await self._propose_target(target, dataset_urn, evidence)
             except Exception:
                 logger.warning(
                     "metagen_proposal_failed",
@@ -702,33 +703,38 @@ class MetagenService:
             )
             evidence.setdefault("upstream_urns", [])
 
-        # If cross_data.md is a target, gather existing dataProduct entities
+        # If cross_data.md is a target, gather existing related documents
         if "cross_data.md" in targets:
             try:
-                evidence["data_products"] = await self._gather_data_products(dataset_urn)
+                evidence["related_documents"] = await self._find_related_documents(dataset_urn)
             except Exception:
                 logger.warning(
-                    "metagen_evidence_data_products_failed",
+                    "metagen_evidence_related_documents_failed",
                     extra={"dataset_urn": dataset_urn},
                     exc_info=True,
                 )
-                evidence["data_products"] = []
+                evidence["related_documents"] = []
 
         return evidence
 
-    async def _gather_data_products(self, dataset_urn: str) -> list[dict[str, Any]]:
-        """Find dataProduct entities whose assets include *dataset_urn*."""
+    async def _find_related_documents(self, dataset_urn: str) -> list[dict[str, Any]]:
+        """Find document entities whose relatedAssets include *dataset_urn*.
+
+        Uses searchAcrossEntities with a relatedAssets filter. Results are
+        sorted by lastModified descending and capped at 10.
+        """
         gql = """
-        query searchDataProducts($input: SearchInput!) {
-            search(input: $input) {
+        query searchDocumentsByRelatedAsset($input: SearchAcrossEntitiesInput!) {
+            searchAcrossEntities(input: $input) {
                 searchResults {
                     entity {
                         urn
-                        ... on DataProduct {
-                            properties {
-                                name
-                                description
-                                assets { urn }
+                        ... on Document {
+                            info {
+                                title
+                                contents { text }
+                                relatedAssets { asset { urn } }
+                                lastModified { time }
                             }
                         }
                     }
@@ -738,35 +744,45 @@ class MetagenService:
         """
         variables: dict[str, Any] = {
             "input": {
-                "type": "DATA_PRODUCT",
+                "types": ["DOCUMENT"],
                 "query": "*",
                 "start": 0,
-                "count": 50,
+                "count": DOCUMENT_EVIDENCE_CAP_PER_DATASET * 5,
+                "orFilters": [{"and": [{"field": "relatedAssets", "values": [dataset_urn]}]}],
             }
         }
         try:
             result = await self._datahub._with_retry(
                 self._datahub._graph.execute_graphql, gql, variables=variables
             )
-            search_results = (result or {}).get("search", {}).get("searchResults", [])
-            out: list[dict[str, Any]] = []
+            search_results = (result or {}).get("searchAcrossEntities", {}).get("searchResults", [])
+            docs: list[dict[str, Any]] = []
             for item in search_results:
                 entity = item.get("entity") or {}
-                props = entity.get("properties") or {}
-                asset_urns = [a["urn"] for a in (props.get("assets") or []) if a.get("urn")]
-                if dataset_urn in asset_urns:
-                    out.append(
-                        {
-                            "urn": entity.get("urn", ""),
-                            "name": props.get("name", ""),
-                            "description": props.get("description", ""),
-                            "assets": asset_urns,
-                        }
-                    )
-            return out
+                info = entity.get("info") or {}
+                contents = info.get("contents") or {}
+                related_raw = info.get("relatedAssets") or []
+                related_assets = [
+                    r["asset"]["urn"]
+                    for r in related_raw
+                    if r.get("asset") and r["asset"].get("urn")
+                ]
+                last_modified_ms: int = (info.get("lastModified") or {}).get("time") or 0
+                docs.append(
+                    {
+                        "urn": entity.get("urn", ""),
+                        "title": info.get("title", ""),
+                        "body": contents.get("text", ""),
+                        "related_assets": related_assets,
+                        "last_modified": last_modified_ms,
+                    }
+                )
+            # Sort by lastModified descending, cap at constant
+            docs.sort(key=lambda d: -(d.get("last_modified") or 0))
+            return docs[:DOCUMENT_EVIDENCE_CAP_PER_DATASET]
         except Exception:
             logger.warning(
-                "metagen_data_products_search_failed",
+                "metagen_related_documents_search_failed",
                 extra={"dataset_urn": dataset_urn},
                 exc_info=True,
             )
@@ -802,9 +818,7 @@ class MetagenService:
         name = evidence.get("dataset_name", "")
         current_desc = evidence.get("description", "")
         fields = evidence.get("schema_fields", [])
-        field_summary = ", ".join(
-            f.get("fieldPath", "") for f in fields[:20]
-        )
+        field_summary = ", ".join(f.get("fieldPath", "") for f in fields[:20])
         node_ids = evidence.get("ontogen_node_ids", [])
 
         prompt = (
@@ -817,17 +831,14 @@ class MetagenService:
         )
         return await self._llm.complete(prompt)
 
-    async def _propose_column_descriptions(
-        self, evidence: dict[str, Any]
-    ) -> dict[str, str]:
+    async def _propose_column_descriptions(self, evidence: dict[str, Any]) -> dict[str, str]:
         name = evidence.get("dataset_name", "")
         schema_fields = evidence.get("schema_fields", [])
         if not schema_fields:
             return {}
 
         field_lines = "\n".join(
-            f"  - {f['fieldPath']} ({f.get('nativeDataType', '')}): "
-            f"{f.get('description', '')}"
+            f"  - {f['fieldPath']} ({f.get('nativeDataType', '')}): {f.get('description', '')}"
             for f in schema_fields[:40]
         )
         prompt = (
@@ -848,36 +859,71 @@ class MetagenService:
         dataset_urn: str,
         evidence: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Propose cross-dataset dataProduct actions."""
-        data_products = evidence.get("data_products", [])
+        """Propose cross-dataset document actions for cross_data.md.
+
+        The raw LLM response is validated through CrossDataAction before being
+        stored in metagen_results.proposals.  Invalid individual actions are
+        dropped with a WARNING rather than failing the entire proposal.
+        """
+        related_docs = evidence.get("related_documents", [])
         dataset_name = evidence.get("dataset_name", dataset_urn)
 
-        dp_summary = "\n".join(
-            f"  - URN: {dp['urn']}  Name: {dp['name']}  "
-            f"Assets: {dp.get('assets', [])}"
-            for dp in data_products
+        doc_summary = "\n".join(
+            f"  - URN: {doc['urn']}  Title: {doc.get('title', '')}  "
+            f"Related assets: {doc.get('related_assets', [])}\n"
+            f"    Body (excerpt): {doc.get('body', '')[:200]}"
+            for doc in related_docs
         )
 
         prompt = (
             f"Dataset: {dataset_name} ({dataset_urn})\n"
-            f"Existing data products intersecting this dataset:\n{dp_summary or '(none)'}\n\n"
-            "Propose a list of data product actions to organize documentation for this dataset. "
+            f"Existing documents referencing this dataset:\n{doc_summary or '(none)'}\n\n"
+            "Propose a list of document actions to organize cross-data documentation "
+            "for this dataset. "
             "Return a JSON array of action objects. Each object must have:\n"
-            '  action_id (str, unique), action (one of: "create", "modify", "split", "retitle"),\n'
-            "  and action-specific fields "
-            "(title, description, urn, new_title, split_into, assets).\n"
+            '  action_id (str, unique), action (one of: "create", "modify", "delete"),\n'
+            "  confidence (float 0–1),\n"
+            "  and action-specific fields:\n"
+            "    create: title (str, ≤300 chars), body (str, Markdown, ≤50000 chars), "
+            "related_assets (non-empty list of urn:li:dataset:* URNs)\n"
+            "    modify: document_urn (urn:li:document:* URN), body (str, Markdown, ≤50000 chars), "
+            "related_assets (list of urn:li:dataset:* URNs, optional)\n"
+            "    delete: document_urn (urn:li:document:* URN)\n"
             "Return ONLY the JSON array."
         )
-        result = await self._llm.complete_json(prompt)
-        if isinstance(result, list):
-            return list(result)
-        # LLM may return {"actions": [...]} wrapper
-        if isinstance(result, dict):
+        raw_result = await self._llm.complete_json(prompt)
+
+        # Normalise LLM output to a list
+        raw_list: list[Any]
+        if isinstance(raw_result, list):
+            raw_list = raw_result
+        elif isinstance(raw_result, dict):
+            raw_list = []
             for key in ("actions", "proposals", "items"):
-                val = result.get(key)
+                val = raw_result.get(key)
                 if isinstance(val, list):
-                    return list(val)
-        return []
+                    raw_list = val
+                    break
+        else:
+            raw_list = []
+
+        # Validate each item through the schema — drop invalid ones.
+        validated: list[dict[str, Any]] = []
+        _adapter: TypeAdapter[CrossDataAction] = TypeAdapter(CrossDataAction)
+        for idx, item in enumerate(raw_list):
+            try:
+                action = _adapter.validate_python(item)
+                validated.append(action.model_dump())
+            except ValidationError as exc:
+                logger.warning(
+                    "metagen_cross_data_llm_action_invalid",
+                    extra={
+                        "dataset_urn": dataset_urn,
+                        "index": idx,
+                        "error": str(exc),
+                    },
+                )
+        return validated
 
     async def _apply_approved_fields(
         self,
@@ -900,12 +946,12 @@ class MetagenService:
                 if isinstance(val, str):
                     dataset_desc = val
             elif field_path.startswith("column.description."):
-                fp = field_path[len("column.description."):]
+                fp = field_path[len("column.description.") :]
                 col_proposals = proposals.get("column.description") or {}
                 if isinstance(col_proposals, dict) and fp in col_proposals:
                     column_descs[fp] = str(col_proposals[fp])
             elif field_path.startswith("cross_data.md."):
-                action_id = field_path[len("cross_data.md."):]
+                action_id = field_path[len("cross_data.md.") :]
                 cross_data_action_ids.append(action_id)
 
         # Write dataset.description
@@ -952,9 +998,7 @@ class MetagenService:
                         for fp, desc in column_descs.items()
                     ]
 
-                editable_schema = EditableSchemaMetadataClass(
-                    editableSchemaFieldInfo=merged_fields
-                )
+                editable_schema = EditableSchemaMetadataClass(editableSchemaFieldInfo=merged_fields)
                 await self._datahub.emit_aspect(dataset_urn, editable_schema)
             except Exception:
                 logger.warning(
@@ -969,13 +1013,39 @@ class MetagenService:
             if not isinstance(cross_data_proposals, list):
                 cross_data_proposals = []
 
-            approved_actions = [
-                a for a in cross_data_proposals
-                if a.get("action_id") in cross_data_action_ids
-            ]
+            # Defense-in-depth: re-validate proposals from mutable JSONB before dispatch.
+            _action_id_set = set(cross_data_action_ids)
+            approved_actions: list[dict[str, Any]] = []
+            _adapter: TypeAdapter[CrossDataAction] = TypeAdapter(CrossDataAction)
+            for raw_action in cross_data_proposals:
+                if not isinstance(raw_action, dict):
+                    continue
+                if raw_action.get("action_id") not in _action_id_set:
+                    continue
+                try:
+                    action = _adapter.validate_python(raw_action)
+                    approved_actions.append(action.model_dump())
+                except ValidationError as exc:
+                    logger.warning(
+                        "metagen_apply_cross_data_revalidation_failed",
+                        extra={
+                            "dataset_urn": dataset_urn,
+                            "action_id": raw_action.get("action_id"),
+                            "error": str(exc),
+                        },
+                    )
+
             if approved_actions:
                 try:
-                    await apply_actions(approved_actions, self._datahub)
+                    outcomes = await apply_actions(approved_actions, datahub=self._datahub)
+                    logger.info(
+                        "metagen_apply_cross_data_complete",
+                        extra={
+                            "dataset_urn": dataset_urn,
+                            "action_ids": cross_data_action_ids,
+                            "outcomes": outcomes,
+                        },
+                    )
                 except Exception:
                     logger.warning(
                         "metagen_apply_cross_data_failed",

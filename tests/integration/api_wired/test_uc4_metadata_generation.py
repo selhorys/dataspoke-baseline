@@ -9,15 +9,27 @@ Tests in this module:
   - test_uc4_review_partial_and_reject: Seed a metagen_results row via raw SQL;
     first PATCH approves a field subset, second PATCH rejects cross_data action;
     verify field_status transitions.
+  - test_uc4_review_approves_cross_data_create_action: Seed a metagen_results row with
+    a cross_data.md create action; PATCH approves it; verify field_status flip to approved.
 
 Note: Concurrent-run 409 GENERATION_RUNNING coverage lives in
 `tests/integration/spot/test_metagen.py`; UC4 narrative scope does not require it.
+
+proposals shape per spec/feature/BACKEND_SCHEMA.md §metagen_results:
+  - dataset.description → str
+  - column.description → dict[fieldPath, str]  (stored flat; field_status uses
+    column.description.{fieldPath} keys)
+  - cross_data.md → list[{action_id, action: create|modify|delete, ...}]
+    Individual actions are referenced in field_status / PATCH fields as
+    cross_data.md.<action_id>.
+    spec: BACKEND_SCHEMA.md L134; BACKEND.md §Cross-data MD action types
 """
 # spec: USE_CASE_en.md §UC4
 
 import json
 import urllib.parse
 import uuid
+from typing import Any
 
 import httpx
 import pytest
@@ -25,9 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # UC4 dataset: catalog.title_master — Imazon primary catalog table
 # spec: TESTING.md §Imazon Dummy-Data Reference — inventory.book_stock/catalog.title_master UC4
-_TEST_URN = (
-    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-)
+_TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 
 
@@ -40,7 +50,7 @@ async def _seed_pending_metagen_result(
     session: AsyncSession,
     *,
     dataset_urn: str,
-    proposals: dict[str, str],
+    proposals: dict[str, Any],
     field_status: dict[str, str],
 ) -> str:
     """Insert a pending metagen_results row via raw SQL; return the result_id."""
@@ -68,16 +78,11 @@ async def _seed_pending_metagen_result(
     return result_id
 
 
-async def _delete_metagen_result(
-    session: AsyncSession, result_id: str, dataset_urn: str
-) -> None:
+async def _delete_metagen_result(session: AsyncSession, result_id: str, dataset_urn: str) -> None:
     from sqlalchemy import text
 
     await session.execute(
-        text(
-            "DELETE FROM dataspoke.metagen_results"
-            " WHERE id = :id AND dataset_urn = :urn"
-        ),
+        text("DELETE FROM dataspoke.metagen_results WHERE id = :id AND dataset_urn = :urn"),
         {"id": result_id, "urn": dataset_urn},
     )
     await session.commit()
@@ -214,7 +219,10 @@ async def test_uc4_review_partial_and_reject(
 
     Steps mirror USE_CASE_en.md §UC4 L594-L615:
       a. Seed a metagen_results row with proposals for dataset.description,
-         column.description.*, and cross_data.md.a1
+         column.description.*, and cross_data.md (list of action dicts keyed by action_id).
+         field_status uses flat cross_data.md.<action_id> keys per
+         spec/feature/BACKEND_SCHEMA.md §metagen_results and
+         spec/feature/BACKEND.md §Cross-data MD action types.
       b. First PATCH approves a subset of fields → those flip to 'approved',
          others stay 'pending'
       c. Second PATCH rejects cross_data.md.a1 → that field flips to 'rejected'
@@ -242,15 +250,39 @@ async def test_uc4_review_partial_and_reject(
         # spec: TESTING.md §Api-Wired Integration Tests — "Setup/teardown fixtures may
         # use tests.integration.util and may execute raw SQL against async_session for
         # setup/teardown only; the test itself stays REST-only."
-        proposals = {
+        #
+        # proposals shape per spec/feature/BACKEND_SCHEMA.md §metagen_results L134:
+        #   cross_data.md stores an ordered list of action dicts;
+        #   column.description stores a dict keyed by fieldPath (not flat top-level keys).
+        #   field_status is always flat-keyed: cross_data.md.<action_id> and
+        #   column.description.<fieldPath> are the PATCH field-reference format.
+        #   spec: BACKEND.md §Cross-data MD action types (create row)
+        proposals: dict[str, Any] = {
             "dataset.description": "Master catalog of every title Imazon offers.",
-            "column.description.book_id": "Stable, opaque identifier for a book.",
-            "column.description.title": "Display title shown to customers.",
-            "column.description.author": "Free-text author / creator name.",
-            "cross_data.md.a1": (
-                "`orders.order_items.book_id` joins to `catalog.title_master.book_id`."
-            ),
+            "column.description": {
+                "book_id": "Stable, opaque identifier for a book.",
+                "title": "Display title shown to customers.",
+                "author": "Free-text author / creator name.",
+            },
+            "cross_data.md": [
+                {
+                    "action_id": "a1",
+                    "action": "create",
+                    "title": "How orders reference books",
+                    "body": (
+                        "`orders.order_items.book_id` joins to `catalog.title_master.book_id`."
+                    ),
+                    "related_assets": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,orders.order_items,PROD)",
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.title_master,PROD)",
+                    ],
+                    "confidence": 0.81,
+                }
+            ],
         }
+        # field_status keys are the PATCH field-reference format (flat):
+        #   cross_data.md.<action_id> and column.description.<fieldPath>
+        # spec: BACKEND_SCHEMA.md §metagen_results L135
         field_status = {
             "dataset.description": "pending",
             "column.description.book_id": "pending",
@@ -266,8 +298,7 @@ async def test_uc4_review_partial_and_reject(
         )
         encoded_result_id = urllib.parse.quote(result_id, safe="")
         patch_url = (
-            f"/api/v1/spoke/common/data/{_ENCODED_URN}"
-            f"/attr/metagen/result/{encoded_result_id}"
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
         )
 
         # ── Step b: First PATCH — approve a subset of fields ─────────────────
@@ -362,6 +393,124 @@ async def test_uc4_review_partial_and_reject(
 
     finally:
         # ── Step d: Cleanup ───────────────────────────────────────────────────
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_uc4_review_approves_cross_data_create_action(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """UC4 invariant: approving a cross_data.md action flips its field_status to 'approved'.
+
+    Seeds a metagen_results row whose proposals['cross_data.md'] carries one 'create'
+    action (spec shape: list of action dicts) and whose field_status has the flat
+    cross_data.md.a1 key in 'pending' state.
+
+    PATCH with verdict=approve + fields=['cross_data.md.a1'] must:
+      - return HTTP 200
+      - set field_status['cross_data.md.a1'] == 'approved'
+
+    Note on DataHub emission: on approval the service calls apply_actions() which
+    attempts to emit a documentInfo MCP.  In test-mode the DataHub client is real
+    (not stubbed — see spec/TESTING.md §Test-Mode Stubs).  If DataHub is unreachable
+    the apply_actions() call is logged as a warning and swallowed (best-effort per
+    _apply_approved_fields implementation); field_status is committed first, so the
+    assertion on field_status['cross_data.md.a1'] == 'approved' is authoritative
+    regardless of whether the DataHub emit succeeded.
+
+    spec: USE_CASE_en.md §UC4 L594-L615
+    spec: BACKEND.md §Cross-data MD action types (create row)
+    spec: BACKEND_SCHEMA.md §metagen_results L134-L135
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    result_id: str | None = None
+
+    try:
+        # Ensure metagen conf exists for the URN
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["cross_data.md"],
+                "schedule_tier": "weekly",
+                "is_enabled": False,
+                "owner": "uc4-api-wired@imazon.com",
+            },
+        )
+
+        # ── Seed a pending metagen_results row with a cross_data.md create action ──
+        # proposals['cross_data.md'] is a list of action dicts per
+        # spec/feature/BACKEND_SCHEMA.md §metagen_results L134.
+        # spec: BACKEND.md §Cross-data MD action types — create requires title, body,
+        # and related_assets (≥1 urn:li:dataset: URN).
+        proposals: dict[str, Any] = {
+            "cross_data.md": [
+                {
+                    "action_id": "a1",
+                    "action": "create",
+                    "title": "How orders reference books",
+                    "body": (
+                        "`orders.order_items.book_id` joins to `catalog.title_master.book_id`."
+                    ),
+                    "related_assets": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,orders.order_items,PROD)",
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.title_master,PROD)",
+                    ],
+                    "confidence": 0.81,
+                }
+            ]
+        }
+        # field_status key is the PATCH field-reference format:
+        # cross_data.md.<action_id> per spec/feature/BACKEND_SCHEMA.md L135
+        field_status = {"cross_data.md.a1": "pending"}
+
+        result_id = await _seed_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals=proposals,
+            field_status=field_status,
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        # ── PATCH: approve the cross_data.md.a1 action ───────────────────────
+        # spec: USE_CASE_en.md §UC4 L594-L607 — verdict=approve + fields=[action ref]
+        # flips that action's field_status entry to 'approved'.
+        # The PATCH field reference cross_data.md.<action_id> is the stable PATCH
+        # address for an individual action per BACKEND_SCHEMA.md L134.
+        approve_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "approve",
+                "fields": ["cross_data.md.a1"],
+                "reason": "Cross-data join document approved.",
+            },
+        )
+        assert approve_resp.status_code == 200, (
+            f"PATCH approve cross_data.md.a1 failed: {approve_resp.status_code} {approve_resp.text}"
+        )
+        approve_body = approve_resp.json()
+        assert approve_body["id"] == result_id
+
+        # The approved action's field_status must flip to 'approved'
+        # spec: USE_CASE_en.md §UC4 L594-L607
+        # spec: BACKEND.md §Approval flow — verdict=approve + fields=[...] approves
+        # only the listed field paths / cross-data action IDs
+        assert approve_body["field_status"].get("cross_data.md.a1") == "approved", (
+            f"field_status['cross_data.md.a1'] should be 'approved' after PATCH; "
+            f"got {approve_body['field_status'].get('cross_data.md.a1')!r}. "
+            "spec: BACKEND.md §Approval flow; BACKEND_SCHEMA.md §metagen_results L135"
+        )
+
+    finally:
         if result_id is not None:
             await _delete_metagen_result(async_session, result_id, _TEST_URN)
         await api_client.delete(base_conf, headers=admin_headers)

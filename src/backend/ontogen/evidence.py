@@ -4,7 +4,9 @@ For each dataset, this module fetches:
   - Canonical aspects (schemaMetadata, datasetProperties, globalTags,
     glossaryTerms, upstreamLineage, usageStats)
   - UC4-approved editable aspects (editableDatasetProperties.description,
-    editableSchemaMetadata, dataProductProperties on intersecting dataProducts)
+    editableSchemaMetadata)
+  - Document entities whose relatedAssets reference the dataset
+    (capped at _DOCUMENT_EVIDENCE_CAP_PER_DATASET)
   - Bounded DataHub Query lists (MANUAL up to max_manual_queries_per_dataset;
     SYSTEM multi-asset joins up to max_system_queries_per_dataset)
 
@@ -12,16 +14,21 @@ All DataHub failures are best-effort — a failure returns reduced evidence and
 logs a WARNING.  The inference pipeline continues with the available data.
 
 Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+      spec/DATAHUB_INTEGRATION.md §Document Aspects
       spec/DATAHUB_INTEGRATION.md §Query Aspects
 """
 
 import logging
 from typing import Any
 
+from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import OntogenConfig
 
 logger = logging.getLogger(__name__)
+
+# Alias for use within this module; canonical definition lives in metagen/cross_data.py
+_DOCUMENT_EVIDENCE_CAP_PER_DATASET = DOCUMENT_EVIDENCE_CAP_PER_DATASET
 
 
 async def gather_evidence(
@@ -44,6 +51,7 @@ async def gather_evidence(
     - usage_stats (dict) — from ``datasetUsageStatistics`` (latest timeseries)
     - editable_description (str | None) — from ``editableDatasetProperties``
     - editable_field_descriptions (list[dict]) — approved column descs
+    - related_documents (list[dict]) — documents whose relatedAssets reference this dataset
     - queries (list[dict]) — MANUAL + SYSTEM queries (capped)
     """
     evidence: dict[str, Any] = {}
@@ -128,9 +136,7 @@ async def gather_evidence(
         upstream_lineage = await datahub.get_aspect(dataset_urn, UpstreamLineageClass)
         if upstream_lineage and hasattr(upstream_lineage, "upstreams"):
             evidence["upstream_urns"] = [
-                str(u.dataset)
-                for u in upstream_lineage.upstreams
-                if hasattr(u, "dataset")
+                str(u.dataset) for u in upstream_lineage.upstreams if hasattr(u, "dataset")
             ]
         else:
             evidence["upstream_urns"] = []
@@ -198,6 +204,18 @@ async def gather_evidence(
         )
         evidence.setdefault("editable_field_descriptions", [])
 
+    # ── Document entities whose relatedAssets include this dataset ────────
+
+    try:
+        evidence["related_documents"] = await _fetch_documents_for_dataset(dataset_urn, datahub)
+    except Exception:
+        logger.warning(
+            "ontogen_evidence_documents_failed",
+            extra={"dataset_urn": dataset_urn},
+            exc_info=True,
+        )
+        evidence.setdefault("related_documents", [])
+
     # ── DataHub Query entities ────────────────────────────────────────────
 
     max_manual = conf.max_manual_queries_per_dataset
@@ -240,6 +258,76 @@ async def gather_evidence(
         evidence["queries"] = queries
 
     return evidence
+
+
+async def _fetch_documents_for_dataset(
+    dataset_urn: str,
+    datahub: DataHubClient,
+) -> list[dict[str, Any]]:
+    """Fetch document entities whose relatedAssets include *dataset_urn*.
+
+    Uses GraphQL ``searchAcrossEntities`` with a ``relatedAssets`` filter.
+    Results are sorted by lastModified descending and capped at
+    ``_DOCUMENT_EVIDENCE_CAP_PER_DATASET``.
+
+    Each entry has: {urn, title, body, related_assets}.
+
+    Best-effort — caller must wrap in try/except.
+    """
+    gql = """
+    query searchDocumentsByRelatedAsset($input: SearchAcrossEntitiesInput!) {
+        searchAcrossEntities(input: $input) {
+            searchResults {
+                entity {
+                    urn
+                    ... on Document {
+                        info {
+                            title
+                            contents { text }
+                            relatedAssets { asset { urn } }
+                            lastModified { time }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    """
+    variables: dict[str, Any] = {
+        "input": {
+            "types": ["DOCUMENT"],
+            "query": "*",
+            "start": 0,
+            "count": _DOCUMENT_EVIDENCE_CAP_PER_DATASET * 5,
+            "orFilters": [{"and": [{"field": "relatedAssets", "values": [dataset_urn]}]}],
+        }
+    }
+
+    result = await datahub._with_retry(datahub._graph.execute_graphql, gql, variables=variables)
+    search_results = (result or {}).get("searchAcrossEntities", {}).get("searchResults", [])
+    docs: list[dict[str, Any]] = []
+    for item in search_results:
+        entity = item.get("entity") or {}
+        info = entity.get("info") or {}
+        contents = info.get("contents") or {}
+        related_raw = info.get("relatedAssets") or []
+        related_assets = [
+            r["asset"]["urn"] for r in related_raw if r.get("asset") and r["asset"].get("urn")
+        ]
+        last_modified_ms: int = (info.get("lastModified") or {}).get("time") or 0
+        docs.append(
+            {
+                "urn": entity.get("urn", ""),
+                "title": info.get("title", ""),
+                "body": contents.get("text", ""),
+                "related_assets": related_assets,
+                "last_modified": last_modified_ms,
+            }
+        )
+
+    # Sort by lastModified descending and cap
+    docs.sort(key=lambda d: -(d.get("last_modified") or 0))
+    return docs[:_DOCUMENT_EVIDENCE_CAP_PER_DATASET]
 
 
 async def _fetch_queries(
@@ -289,9 +377,7 @@ async def _fetch_queries(
     }
 
     # DataHubClient wraps execute_graphql
-    result = await datahub._with_retry(
-        datahub._graph.execute_graphql, gql, variables=variables
-    )
+    result = await datahub._with_retry(datahub._graph.execute_graphql, gql, variables=variables)
 
     queries_data = (result or {}).get("listQueries", {}).get("queries", [])
     out: list[dict[str, Any]] = []

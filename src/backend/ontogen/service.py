@@ -1,7 +1,7 @@
 """Ontology Generation service — UC3 triple ontology pipeline.
 
 Spec: spec/feature/BACKEND.md §Ontology Generation Service
-      spec/DATAHUB_INTEGRATION.md §Aspect Reference (glossaryTerms, dataProductProperties)
+      spec/DATAHUB_INTEGRATION.md §Aspect Reference (glossaryTerms, documentInfo)
 """
 
 import logging
@@ -124,8 +124,7 @@ def _validate_schedule_tier(tier: str | None) -> None:
 
         raise PreconditionFailedError(
             "INVALID_PARAMETER",
-            f"schedule_tier must be one of {sorted(_VALID_SCHEDULE_TIERS)} or null, "
-            f"got {tier!r}",
+            f"schedule_tier must be one of {sorted(_VALID_SCHEDULE_TIERS)} or null, got {tier!r}",
         )
 
 
@@ -267,9 +266,7 @@ class OntogenService:
 
     async def get_conf(self) -> OntogenConfig:
         """Return the singleton conf row, creating defaults if absent."""
-        result = await self._db.execute(
-            select(OntogenConfig).where(OntogenConfig.id == 1)
-        )
+        result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
         row = result.scalar_one_or_none()
         if row is None:
             row = OntogenConfig(
@@ -297,9 +294,7 @@ class OntogenService:
         _validate_dataset_filter(dataset_filter)
         _validate_schedule_tier(conf.get("schedule_tier"))
 
-        result = await self._db.execute(
-            select(OntogenConfig).where(OntogenConfig.id == 1)
-        )
+        result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
         existing = result.scalar_one_or_none()
         created = existing is None
 
@@ -310,12 +305,8 @@ class OntogenService:
         existing.is_enabled = conf.get("is_enabled", False)
         existing.schedule_tier = conf.get("schedule_tier")
         existing.dataset_filter = dataset_filter
-        existing.max_manual_queries_per_dataset = conf.get(
-            "max_manual_queries_per_dataset", 20
-        )
-        existing.max_system_queries_per_dataset = conf.get(
-            "max_system_queries_per_dataset", 10
-        )
+        existing.max_manual_queries_per_dataset = conf.get("max_manual_queries_per_dataset", 20)
+        existing.max_system_queries_per_dataset = conf.get("max_system_queries_per_dataset", 10)
         existing.default_run_prompt = conf.get("default_run_prompt")
         existing.updated_at = datetime.now(tz=UTC)
 
@@ -379,9 +370,7 @@ class OntogenService:
         """
         from src.shared.events import ONTOGEN_CONFIG_DELETE
 
-        result = await self._db.execute(
-            select(OntogenConfig).where(OntogenConfig.id == 1)
-        )
+        result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
         row = result.scalar_one_or_none()
         if row is not None:
             await self._db.delete(row)
@@ -396,17 +385,13 @@ class OntogenService:
 
     # ── Seed CRUD ─────────────────────────────────────────────────────────────
 
-    async def list_seeds(
-        self, offset: int = 0, limit: int = 20
-    ) -> tuple[list[SeedPreview], int]:
+    async def list_seeds(self, offset: int = 0, limit: int = 20) -> tuple[list[SeedPreview], int]:
         """Return paginated seed previews sorted by updated_at desc."""
         base = select(OntogenSeed).where(OntogenSeed.status == "active")
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = (
-            base.order_by(OntogenSeed.updated_at.desc()).offset(offset).limit(limit)
-        )
+        rows_q = base.order_by(OntogenSeed.updated_at.desc()).offset(offset).limit(limit)
         rows = (await self._db.execute(rows_q)).scalars().all()
 
         previews = [
@@ -440,9 +425,7 @@ class OntogenService:
             seed_uuid = uuid.UUID(seed_id)
         except ValueError:
             raise EntityNotFoundError("seed", seed_id)
-        result = await self._db.execute(
-            select(OntogenSeed).where(OntogenSeed.id == seed_uuid)
-        )
+        result = await self._db.execute(select(OntogenSeed).where(OntogenSeed.id == seed_uuid))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("seed", seed_id)
@@ -564,34 +547,36 @@ class OntogenService:
 
         # Step 5: Load active seeds
         seed_rows = (
-            await self._db.execute(
-                select(OntogenSeed).where(OntogenSeed.status == "active")
-            )
-        ).scalars().all()
+            (await self._db.execute(select(OntogenSeed).where(OntogenSeed.status == "active")))
+            .scalars()
+            .all()
+        )
         seeds_md = "\n\n---\n\n".join(r.body_md for r in seed_rows)
 
         # Step 6: Build prompt (with per-run nonce for prompt-injection hardening)
         run_nonce = secrets.token_hex(8)
-        prompt = build_run_prompt(
-            seeds_md, evidence_per_dataset, effective_prompt, nonce=run_nonce
-        )
+        prompt = build_run_prompt(seeds_md, evidence_per_dataset, effective_prompt, nonce=run_nonce)
 
         # Step 7: Load approved nodes/edges for reuse
         approved_nodes = (
-            await self._db.execute(
-                select(OntogenNode).where(OntogenNode.status == "approved")
-            )
-        ).scalars().all()
+            (await self._db.execute(select(OntogenNode).where(OntogenNode.status == "approved")))
+            .scalars()
+            .all()
+        )
         approved_edges = (
-            await self._db.execute(
-                select(OntogenEdge).where(OntogenEdge.status == "approved")
-            )
-        ).scalars().all()
+            (await self._db.execute(select(OntogenEdge).where(OntogenEdge.status == "approved")))
+            .scalars()
+            .all()
+        )
         approved_triples = (
-            await self._db.execute(
-                select(OntogenTriple).where(OntogenTriple.status == "approved")
+            (
+                await self._db.execute(
+                    select(OntogenTriple).where(OntogenTriple.status == "approved")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         existing_node_ids: set[str] = {n.id for n in approved_nodes}
         existing_edge_ids: set[str] = {e.id for e in approved_edges}
@@ -808,9 +793,7 @@ class OntogenService:
 
             # Fix #12: compact evidence JSONB
             _node_evidence: dict[str, Any] = {
-                "datasets": [
-                    u[:1024] for u in (n.get("dataset_urns") or [])
-                ],
+                "datasets": [u[:1024] for u in (n.get("dataset_urns") or [])],
                 "run_at": n.get("run_at", ""),
             }
 
@@ -822,9 +805,7 @@ class OntogenService:
                 continue
 
             existing = (
-                await self._db.execute(
-                    select(OntogenNode).where(OntogenNode.id == node_id)
-                )
+                await self._db.execute(select(OntogenNode).where(OntogenNode.id == node_id))
             ).scalar_one_or_none()
 
             if existing is None:
@@ -878,9 +859,7 @@ class OntogenService:
             _edge_evidence: dict[str, Any] = {"run_at": e.get("run_at", "")}
 
             existing_edge: OntogenEdge | None = (
-                await self._db.execute(
-                    select(OntogenEdge).where(OntogenEdge.id == edge_id)
-                )
+                await self._db.execute(select(OntogenEdge).where(OntogenEdge.id == edge_id))
             ).scalar_one_or_none()
 
             if existing_edge is None:
@@ -916,9 +895,7 @@ class OntogenService:
                 )
             ).scalar_one_or_none()
             edge_row = (
-                await self._db.execute(
-                    select(OntogenEdge).where(OntogenEdge.id == t["edge_id"])
-                )
+                await self._db.execute(select(OntogenEdge).where(OntogenEdge.id == t["edge_id"]))
             ).scalar_one_or_none()
 
             if not subj_row or not obj_row or not edge_row:
@@ -934,9 +911,7 @@ class OntogenService:
                 continue
 
             existing_triple = (
-                await self._db.execute(
-                    select(OntogenTriple).where(OntogenTriple.id == t["id"])
-                )
+                await self._db.execute(select(OntogenTriple).where(OntogenTriple.id == t["id"]))
             ).scalar_one_or_none()
 
             if existing_triple is None:
@@ -1034,15 +1009,14 @@ class OntogenService:
             # Return ORM row freshly from DB (cache just signals hot path)
             pass
 
-        result = await self._db.execute(
-            select(OntogenNode).where(OntogenNode.id == node_id)
-        )
+        result = await self._db.execute(select(OntogenNode).where(OntogenNode.id == node_id))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("node", node_id)
 
         try:
             import json
+
             await self._cache.set(
                 f"ontogen:node:{node_id}",
                 json.dumps({"id": node_id, "status": row.status}),
@@ -1074,8 +1048,13 @@ class OntogenService:
         from src.shared.events import NODE_PREFIX
 
         return await self._list_events(
-            "node", node_id, NODE_PREFIX, offset, limit,
-            from_dt=from_dt, to_dt=to_dt,
+            "node",
+            node_id,
+            NODE_PREFIX,
+            offset,
+            limit,
+            from_dt=from_dt,
+            to_dt=to_dt,
         )
 
     # ── Edge reads ────────────────────────────────────────────────────────────
@@ -1096,9 +1075,7 @@ class OntogenService:
         return list(rows), total
 
     async def get_edge(self, edge_id: str) -> OntogenEdge:
-        result = await self._db.execute(
-            select(OntogenEdge).where(OntogenEdge.id == edge_id)
-        )
+        result = await self._db.execute(select(OntogenEdge).where(OntogenEdge.id == edge_id))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("edge", edge_id)
@@ -1123,8 +1100,13 @@ class OntogenService:
         from src.shared.events import EDGE_PREFIX
 
         return await self._list_events(
-            "edge", edge_id, EDGE_PREFIX, offset, limit,
-            from_dt=from_dt, to_dt=to_dt,
+            "edge",
+            edge_id,
+            EDGE_PREFIX,
+            offset,
+            limit,
+            from_dt=from_dt,
+            to_dt=to_dt,
         )
 
     # ── Triple reads ──────────────────────────────────────────────────────────
@@ -1145,9 +1127,7 @@ class OntogenService:
         return list(rows), total
 
     async def get_triple(self, triple_id: str) -> OntogenTriple:
-        result = await self._db.execute(
-            select(OntogenTriple).where(OntogenTriple.id == triple_id)
-        )
+        result = await self._db.execute(select(OntogenTriple).where(OntogenTriple.id == triple_id))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("triple", triple_id)
@@ -1175,8 +1155,13 @@ class OntogenService:
         from src.shared.events import TRIPLE_PREFIX
 
         return await self._list_events(
-            "triple", triple_id, TRIPLE_PREFIX, offset, limit,
-            from_dt=from_dt, to_dt=to_dt,
+            "triple",
+            triple_id,
+            TRIPLE_PREFIX,
+            offset,
+            limit,
+            from_dt=from_dt,
+            to_dt=to_dt,
         )
 
     # ── Reviews ───────────────────────────────────────────────────────────────
@@ -1201,6 +1186,7 @@ class OntogenService:
         # Fix #9: validate verdict
         if verdict not in ("approve", "reject"):
             from src.shared.exceptions import PreconditionFailedError as _PE
+
             raise _PE(
                 "INVALID_PARAMETER",
                 f"verdict must be 'approve' or 'reject', got {verdict!r}",
@@ -1217,10 +1203,14 @@ class OntogenService:
 
             # Fix #2: set status='approved' on all DatasetNodeMap rows for this node
             maps = (
-                await self._db.execute(
-                    select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
+                (
+                    await self._db.execute(
+                        select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for dm in maps:
                 dm.status = "approved"
                 self._db.add(dm)
@@ -1239,10 +1229,14 @@ class OntogenService:
 
             # Fix #2: set status='rejected' on all DatasetNodeMap rows for this node
             maps = (
-                await self._db.execute(
-                    select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
+                (
+                    await self._db.execute(
+                        select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for dm in maps:
                 dm.status = "rejected"
                 self._db.add(dm)
@@ -1251,9 +1245,7 @@ class OntogenService:
             await self._db.refresh(row)
             event_type = NODE_REJECT
 
-        await self._record_review_event(
-            "node", node_id, event_type, verdict, reason
-        )
+        await self._record_review_event("node", node_id, event_type, verdict, reason)
         # Invalidate cache
         try:
             await self._cache.delete(f"ontogen:node:{node_id}")
@@ -1277,6 +1269,7 @@ class OntogenService:
         # Fix #9: validate verdict
         if verdict not in ("approve", "reject"):
             from src.shared.exceptions import PreconditionFailedError as _PE
+
             raise _PE(
                 "INVALID_PARAMETER",
                 f"verdict must be 'approve' or 'reject', got {verdict!r}",
@@ -1294,9 +1287,7 @@ class OntogenService:
         await self._db.commit()
         await self._db.refresh(row)
 
-        await self._record_review_event(
-            "edge", edge_id, event_type, verdict, reason
-        )
+        await self._record_review_event("edge", edge_id, event_type, verdict, reason)
         try:
             await self._cache.delete(f"ontogen:edge:{edge_id}")
         except Exception:
@@ -1323,6 +1314,7 @@ class OntogenService:
         # Fix #9: validate verdict
         if verdict not in ("approve", "reject"):
             from src.shared.exceptions import PreconditionFailedError as _PE
+
             raise _PE(
                 "INVALID_PARAMETER",
                 f"verdict must be 'approve' or 'reject', got {verdict!r}",
@@ -1336,9 +1328,7 @@ class OntogenService:
                 )
             ).scalar_one_or_none()
             edge_row = (
-                await self._db.execute(
-                    select(OntogenEdge).where(OntogenEdge.id == row.edge_id)
-                )
+                await self._db.execute(select(OntogenEdge).where(OntogenEdge.id == row.edge_id))
             ).scalar_one_or_none()
             obj_row = (
                 await self._db.execute(
@@ -1394,9 +1384,7 @@ class OntogenService:
             await self._db.refresh(row)
             event_type = TRIPLE_REJECT
 
-        await self._record_review_event(
-            "triple", triple_id, event_type, verdict, reason
-        )
+        await self._record_review_event("triple", triple_id, event_type, verdict, reason)
         try:
             await self._cache.delete(f"ontogen:triple:{triple_id}")
         except Exception:
@@ -1460,9 +1448,7 @@ class OntogenService:
 
         return sorted(urn_set), unresolved
 
-    async def _refresh_node_embeddings(
-        self, nodes_to_upsert: list[dict[str, Any]]
-    ) -> None:
+    async def _refresh_node_embeddings(self, nodes_to_upsert: list[dict[str, Any]]) -> None:
         """Embed and upsert node_embeddings for new/changed nodes (best-effort)."""
         for n in nodes_to_upsert:
             if n.get("is_reuse"):
@@ -1568,16 +1554,18 @@ class OntogenService:
                 existing_map.status = status
                 self._db.add(existing_map)
 
-    async def _attach_node_glossary_term(
-        self, node_id: str, glossary_urn: str
-    ) -> None:
+    async def _attach_node_glossary_term(self, node_id: str, glossary_urn: str) -> None:
         """Attach *glossary_urn* to each member dataset in dataset_node_map (best-effort)."""
         try:
             maps = (
-                await self._db.execute(
-                    select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
+                (
+                    await self._db.execute(
+                        select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             for dm in maps:
                 dataset_urn = dm.dataset_urn
@@ -1588,9 +1576,7 @@ class OntogenService:
                         GlossaryTermsClass,
                     )
 
-                    existing = await self._datahub.get_aspect(
-                        dataset_urn, GlossaryTermsClass
-                    )
+                    existing = await self._datahub.get_aspect(dataset_urn, GlossaryTermsClass)
                     existing_terms = list(existing.terms) if existing else []
                     # Avoid duplicates
                     existing_urns = {str(t.urn) for t in existing_terms}
@@ -1644,9 +1630,7 @@ class OntogenService:
                     GlossaryRelatedTermsClass,
                 )
 
-                related = GlossaryRelatedTermsClass(
-                    isRelatedTerms=[obj_term_urn]
-                )
+                related = GlossaryRelatedTermsClass(isRelatedTerms=[obj_term_urn])
                 await self._datahub.emit_aspect(subj_term_urn, related)
             except (ImportError, AttributeError):
                 logger.warning(
@@ -1679,8 +1663,13 @@ class OntogenService:
     ) -> tuple[list[dict[str, Any]], int]:
         """Public method for listing events — used by routers."""
         return await self._list_events(
-            entity_type, entity_id, event_prefix, offset, limit,
-            from_dt=from_dt, to_dt=to_dt,
+            entity_type,
+            entity_id,
+            event_prefix,
+            offset,
+            limit,
+            from_dt=from_dt,
+            to_dt=to_dt,
         )
 
     async def _list_events(
@@ -1706,9 +1695,7 @@ class OntogenService:
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = (
-            base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
-        )
+        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
         rows = (await self._db.execute(rows_q)).scalars().all()
         events = [
             {
@@ -1794,10 +1781,7 @@ async def _search_node_embeddings(
             rows = result.fetchall()
 
         # Reuse VectorHit; store node_id in dataset_urn field for consistency
-        return [
-            VectorHit(dataset_urn=row.node_id, score=float(row.score))
-            for row in rows
-        ]
+        return [VectorHit(dataset_urn=row.node_id, score=float(row.score)) for row in rows]
     except Exception:
         logger.warning("ontogen_node_embedding_search_error", exc_info=True)
         return []

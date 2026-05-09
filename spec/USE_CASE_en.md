@@ -377,7 +377,8 @@ implementation reads DataHub aspects only (schemas, descriptions, tags, lineage,
 usage), plus the **UC4-approved editable variants** —
 `editableDatasetProperties.description`,
 `editableSchemaMetadata.editableSchemaFieldInfo[].description`, and
-`dataProductProperties.description` on `dataProduct` entities — and **Query
+`documentInfo.contents.text` on `document` entities whose `relatedAssets`
+reference an in-scope dataset (Markdown body by convention) — and **Query
 entities** (DataHub's "Queries" feature: `queryProperties` + `querySubjects` aspects)
 covering both the human-curated **highlighted** queries (`source = MANUAL`) and the
 crawler-discovered **auto-discovered** queries (`source = SYSTEM`, restricted to
@@ -495,9 +496,10 @@ the per-book row. Prefer business-friendly names over table names.
 **Inputs.** Per the conf, DataSpoke reads DataHub aspects (`schemaMetadata`,
 `datasetProperties`, `upstreamLineage`, `usageStats`) for the three OLTP tables, plus
 the UC4-approved editable variants (`editableDatasetProperties`,
-`editableSchemaMetadata`) where present and `dataProductProperties` on existing
-`dataProduct` entities, plus DataHub Query entities scoped to each dataset — up to
-20 MANUAL (highlighted) and up to 10 SYSTEM (auto-discovered, joins only), sorted
+`editableSchemaMetadata`) where present and `documentInfo.contents.text` on
+`document` entities whose `relatedAssets` reference one of the in-scope datasets
+(Markdown body), plus DataHub Query entities scoped to each dataset — up to 20
+MANUAL (highlighted) and up to 10 SYSTEM (auto-discovered, joins only), sorted
 joins-first. The seed shapes naming choices.
 
 **Inferred output.** Three nodes, two edges, two triples — all `pending_review`:
@@ -586,23 +588,23 @@ the UI renders Markdown.
 |---|---|---|---|
 | Per-data | Table description | Markdown | `editableDatasetProperties.description` |
 | Per-data | Column description | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (keyed by `fieldPath`) |
-| Cross-data | Cross-data documentation | Markdown | `dataProductProperties.description` on `dataProduct` entities (whose `assets` list the related datasets); the generator may propose create / modify / split / retitle actions — see Design decision below |
+| Cross-data | Cross-data documentation | Markdown | `documentInfo.contents.text` on `document` entities (whose `relatedAssets` list the related datasets); the generator may propose create / modify / delete actions — see Design decision below |
 
 Future scope (mentioned, not modelled here): proposals for `domains` and `globalTags`.
 
 > *(Design decision)* `cross_data.md` proposals are not keyed off a UC3 node. The
-> doc generator reads existing `dataProduct` entities (their titles and bodies) as
-> input context and decides itself what to propose. A single `cross_data.md` proposal
-> is a **list of actions**, each one of:
-> - **create** — a new `dataProduct` with a generator-chosen descriptive title (a topic
->   phrase) and body, when an uncovered topic is identified and existing data products
->   are fine as-is;
-> - **modify** — replace the body of an existing `dataProduct` while keeping its title
->   and URN;
-> - **split** — delete one existing `dataProduct` and create two or more replacements
->   when the generator concludes a single document mixes separable topics;
-> - **retitle** — change the title (and URN) of an existing `dataProduct`, optionally
->   alongside new creations.
+> doc generator reads existing `document` entities whose `relatedAssets` overlap the
+> in-scope dataset (their titles and bodies) as input context and decides itself
+> what to propose. A single `cross_data.md` proposal is a **list of actions**, each
+> one of:
+> - **create** — a new `document` with a generator-chosen descriptive title (a topic
+>   phrase), Markdown body in `documentInfo.contents.text`, and `relatedAssets`
+>   listing the dataset URNs the topic spans, when an uncovered topic is identified
+>   and existing documents are fine as-is;
+> - **modify** — replace `documentInfo.contents.text` on an existing `document` (and
+>   optionally extend `relatedAssets`) while keeping its title and URN;
+> - **delete** — soft-delete an existing `document` via `status.removed = true` when
+>   its topic is fully absorbed into a new replacement.
 >
 > Each action carries a stable `action_id` in the result payload. The reviewer
 > approves, edits, or rejects each action individually via the same PATCH mechanism
@@ -664,12 +666,15 @@ column.description proposals (markdown):
   price     — "List price in USD, two decimal places."
 
 cross_data.md actions:
-  Existing dataProducts considered: (none)
+  Existing documents considered: (none)
   Proposed:
     - action_id: a1
       action:    create
       title:     "How orders reference books"
       body:      "`orders.line_items.book_id` joins to `catalog.books.book_id` ..."
+      related_assets:
+        - urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)
+        - urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)
       confidence: 0.81
 ```
 

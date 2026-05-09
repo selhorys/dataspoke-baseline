@@ -1,193 +1,328 @@
-"""Cross-data MD action resolution — create/modify/split/retitle dataProduct entities.
+"""Cross-data MD action resolution — create/modify/delete document entities.
 
 Called by MetagenService.review_result() when cross_data.md field paths are approved.
 
 Spec: spec/feature/BACKEND.md §Metadata Generation Service §Cross-data MD action types
-      spec/DATAHUB_INTEGRATION.md §Data Product Aspects
+      spec/DATAHUB_INTEGRATION.md §Document Aspects
 """
 
 import logging
-import re
-import unicodedata
+import time
 from typing import Any
+from uuid import uuid4
 
+import datahub.emitter.mce_builder as _mce_builder
+from pydantic import ValidationError
+
+from src.api.schemas.metagen import CrossDataAction
 from src.shared.datahub.client import DataHubClient
+from src.shared.exceptions import DataHubUnavailableError
 
 logger = logging.getLogger(__name__)
 
+# DataSpoke actor URN used in AuditStamp fields
+_DATASPOKE_ACTOR_URN = "urn:li:corpuser:dataspoke"
 
-def _title_to_urn_slug(title: str) -> str:
-    """Convert a data product title to a URL-safe slug for use in a URN."""
-    normalized = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
-    slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-")
-    slug = re.sub(r"-+", "-", slug)
-    return slug or "data-product"
+# Maximum number of documents fetched per dataset for evidence / evidence cap.
+# Shared with ontogen/evidence.py (which imports this constant).
+DOCUMENT_EVIDENCE_CAP_PER_DATASET: int = 10
+
+# URN constraints
+_DOCUMENT_URN_PREFIX = "urn:li:document:"
+_URN_MAX_LEN = 500
+
+# Use SDK-provided factory when available; fall back to a manual URN otherwise.
+_sdk_make_document_urn = getattr(_mce_builder, "make_document_urn", None)
 
 
-def _make_data_product_urn(title: str) -> str:
-    """Generate a DataHub dataProduct URN from a title."""
-    slug = _title_to_urn_slug(title)
-    return f"urn:li:dataProduct:{slug}"
+def _new_document_urn() -> str:
+    if _sdk_make_document_urn is not None:
+        result: str = _sdk_make_document_urn(uuid4().hex)
+        return result
+    return f"urn:li:document:{uuid4().hex}"
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _validate_document_urn(urn: str) -> None:
+    """Assert that *urn* looks like a valid, non-overlong document URN.
+
+    Raises ValueError for empty, overlong, or wrong-prefix URNs.
+    This is the first guard called by modify_document and delete_document.
+    """
+    if not urn:
+        raise ValueError("document_urn must be non-empty")
+    if len(urn) > _URN_MAX_LEN:
+        raise ValueError(f"document_urn exceeds maximum length of {_URN_MAX_LEN} chars: {urn!r}")
+    if not urn.startswith(_DOCUMENT_URN_PREFIX):
+        raise ValueError(f"document_urn must start with {_DOCUMENT_URN_PREFIX!r} — got {urn!r}")
+
+
+async def create_document(
+    title: str,
+    body_markdown: str,
+    related_dataset_urns: list[str],
+    *,
+    datahub: DataHubClient,
+) -> str:
+    """Emit a new document entity (NATIVE source). Return the new urn:li:document:<id>."""
+    from datahub.metadata.schema_classes import (
+        AuditStampClass,
+        DocumentContentsClass,
+        DocumentInfoClass,
+        DocumentSourceClass,
+        DocumentStatusClass,
+        RelatedAssetClass,
+    )
+
+    urn = _new_document_urn()
+    now = _now_ms()
+    audit = AuditStampClass(time=now, actor=_DATASPOKE_ACTOR_URN)
+
+    info = DocumentInfoClass(
+        title=title,
+        contents=DocumentContentsClass(text=body_markdown),
+        relatedAssets=[RelatedAssetClass(asset=u) for u in related_dataset_urns],
+        source=DocumentSourceClass(sourceType="NATIVE"),
+        status=DocumentStatusClass(state="PUBLISHED"),
+        created=audit,
+        lastModified=audit,
+    )
+    await datahub.emit_aspect(urn, info)
+    logger.info("metagen_cross_data_create_document", extra={"urn": urn, "title": title})
+    return urn
+
+
+async def modify_document(
+    document_urn: str,
+    body_markdown: str,
+    related_dataset_urns: list[str] | None,
+    *,
+    datahub: DataHubClient,
+) -> None:
+    """Replace documentInfo.contents.text. Preserve URN, title, source, created.
+
+    If related_dataset_urns is not None, replace relatedAssets too.
+
+    Raises ValueError when:
+    - document_urn fails format/length validation
+    - the target document does not exist in DataHub
+    - the document's source.sourceType is not "NATIVE"
+    """
+    from datahub.metadata.schema_classes import (
+        AuditStampClass,
+        DocumentContentsClass,
+        DocumentInfoClass,
+        DocumentStatusClass,
+        RelatedAssetClass,
+    )
+
+    _validate_document_urn(document_urn)
+
+    existing = await datahub.get_aspect(document_urn, DocumentInfoClass)
+
+    if existing is None:
+        raise ValueError(f"Refusing to modify missing document {document_urn!r}")
+
+    source = getattr(existing, "source", None)
+    source_type: str = getattr(source, "sourceType", "") if source else ""
+    if source_type != "NATIVE":
+        raise ValueError(
+            f"Refusing to modify non-NATIVE document {document_urn!r} (sourceType={source_type!r})"
+        )
+
+    now = _now_ms()
+    audit_now = AuditStampClass(time=now, actor=_DATASPOKE_ACTOR_URN)
+
+    # Preserve fields from existing aspect
+    title: str | None = getattr(existing, "title", None)
+    created = getattr(existing, "created", None) or audit_now
+
+    new_related: list[RelatedAssetClass] | None
+    if related_dataset_urns is not None:
+        new_related = [RelatedAssetClass(asset=u) for u in related_dataset_urns]
+    else:
+        existing_related = getattr(existing, "relatedAssets", None)
+        new_related = existing_related
+
+    info = DocumentInfoClass(
+        title=title,
+        contents=DocumentContentsClass(text=body_markdown),
+        relatedAssets=new_related,
+        source=source,
+        status=DocumentStatusClass(state="PUBLISHED"),
+        created=created,
+        lastModified=audit_now,
+    )
+    await datahub.emit_aspect(document_urn, info)
+    logger.info("metagen_cross_data_modify_document", extra={"urn": document_urn})
+
+
+async def delete_document(document_urn: str, *, datahub: DataHubClient) -> None:
+    """Soft-delete via StatusClass(removed=True).
+
+    Raises ValueError when:
+    - document_urn fails format/length validation
+    - the target document does not exist in DataHub
+    - the document's source.sourceType is not "NATIVE"
+    """
+    from datahub.metadata.schema_classes import DocumentInfoClass, StatusClass
+
+    _validate_document_urn(document_urn)
+
+    existing = await datahub.get_aspect(document_urn, DocumentInfoClass)
+
+    if existing is None:
+        raise ValueError(f"Refusing to delete missing document {document_urn!r}")
+
+    source = getattr(existing, "source", None)
+    source_type: str = getattr(source, "sourceType", "") if source else ""
+    if source_type != "NATIVE":
+        raise ValueError(
+            f"Refusing to delete non-NATIVE document {document_urn!r} (sourceType={source_type!r})"
+        )
+
+    await datahub.emit_aspect(document_urn, StatusClass(removed=True))
+    logger.info("metagen_cross_data_delete_document", extra={"urn": document_urn})
 
 
 async def apply_actions(
-    approved_actions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    *,
     datahub: DataHubClient,
-) -> None:
-    """Apply a list of approved cross_data.md actions to DataHub.
+) -> list[dict[str, Any]]:
+    """Dispatch each action dict to the corresponding document helper.
 
-    Parameters
-    ----------
-    approved_actions:
-        Each dict has at minimum ``action`` (str), ``action_id`` (str),
-        and action-specific fields (``title``, ``description``, ``urn``,
-        ``new_title``, ``split_into``, etc.).
-    datahub:
-        DataHubClient for DataHub writes.
+    Each action dict is validated via CrossDataAction at the top of the
+    dispatch loop; a ValidationError produces a per-action failed outcome
+    rather than crashing the whole run.
 
-    Per-action behaviour (spec §Cross-data MD action types):
-      create   → new dataProduct with generator-chosen URN derived from title
-      modify   → replace body of existing dataProduct
-      split    → Status(removed=True) on original, create replacements
-      retitle  → status-remove original URN, create new URN with new title
-
-    All DataHub write failures are raised to the caller.
+    Returns a list of per-action outcome dicts:
+      - create → {action_id, action, urn}
+      - modify/delete → {action_id, action, success: bool, error?: str}
     """
-    for action_spec in approved_actions:
-        action_type = action_spec.get("action", "")
+    outcomes: list[dict[str, Any]] = []
 
-        if action_type == "create":
-            await _apply_create(action_spec, datahub)
-        elif action_type == "modify":
-            await _apply_modify(action_spec, datahub)
-        elif action_type == "split":
-            await _apply_split(action_spec, datahub)
-        elif action_type == "retitle":
-            await _apply_retitle(action_spec, datahub)
+    for raw in actions:
+        # Defense-in-depth: re-validate through typed model before dispatching.
+        # action_id may not be present on malformed dicts — extract before validation.
+        action_id: str = raw.get("action_id", "") if isinstance(raw, dict) else ""
+
+        try:
+            action_spec = CrossDataAction.model_validate(raw)
+        except ValidationError as exc:
+            logger.warning(
+                "metagen_cross_data_apply_validation_failed",
+                extra={"action_id": action_id, "error": str(exc)},
+            )
+            outcomes.append(
+                {
+                    "action_id": action_id,
+                    "action": raw.get("action", "") if isinstance(raw, dict) else "",
+                    "success": False,
+                    "error": f"Schema validation failed: {exc}",
+                }
+            )
+            continue
+
+        if action_spec.action == "create":
+            try:
+                urn = await create_document(
+                    title=action_spec.title or "Untitled Document",
+                    body_markdown=action_spec.body or "",
+                    related_dataset_urns=action_spec.related_assets or [],
+                    datahub=datahub,
+                )
+                outcomes.append(
+                    {"action_id": action_spec.action_id, "action": "create", "urn": urn}
+                )
+            except (DataHubUnavailableError, ValueError) as exc:
+                logger.warning(
+                    "metagen_cross_data_apply_create_failed",
+                    extra={"action_id": action_spec.action_id},
+                    exc_info=True,
+                )
+                outcomes.append(
+                    {
+                        "action_id": action_spec.action_id,
+                        "action": "create",
+                        "success": False,
+                        "error": str(exc),
+                    }
+                )
+
+        elif action_spec.action == "modify":
+            try:
+                await modify_document(
+                    document_urn=action_spec.document_urn or "",
+                    body_markdown=action_spec.body or "",
+                    related_dataset_urns=action_spec.related_assets,
+                    datahub=datahub,
+                )
+                outcomes.append(
+                    {"action_id": action_spec.action_id, "action": "modify", "success": True}
+                )
+            except (DataHubUnavailableError, ValueError) as exc:
+                logger.warning(
+                    "metagen_cross_data_apply_modify_failed",
+                    extra={
+                        "action_id": action_spec.action_id,
+                        "urn": action_spec.document_urn,
+                    },
+                    exc_info=True,
+                )
+                outcomes.append(
+                    {
+                        "action_id": action_spec.action_id,
+                        "action": "modify",
+                        "success": False,
+                        "error": str(exc),
+                    }
+                )
+
+        elif action_spec.action == "delete":
+            try:
+                await delete_document(
+                    document_urn=action_spec.document_urn or "",
+                    datahub=datahub,
+                )
+                outcomes.append(
+                    {"action_id": action_spec.action_id, "action": "delete", "success": True}
+                )
+            except (DataHubUnavailableError, ValueError) as exc:
+                logger.warning(
+                    "metagen_cross_data_apply_delete_failed",
+                    extra={
+                        "action_id": action_spec.action_id,
+                        "urn": action_spec.document_urn,
+                    },
+                    exc_info=True,
+                )
+                outcomes.append(
+                    {
+                        "action_id": action_spec.action_id,
+                        "action": "delete",
+                        "success": False,
+                        "error": str(exc),
+                    }
+                )
+
         else:
+            # CrossDataAction.action is a Literal["create","modify","delete"] so this
+            # branch is unreachable after model_validate, but kept for safety.
             logger.warning(
                 "metagen_cross_data_unknown_action",
-                extra={"action": action_type, "action_id": action_spec.get("action_id")},
+                extra={"action": action_spec.action, "action_id": action_spec.action_id},
+            )
+            outcomes.append(
+                {
+                    "action_id": action_spec.action_id,
+                    "action": action_spec.action,
+                    "success": False,
+                    "error": f"Unknown action type: {action_spec.action!r}",
+                }
             )
 
-
-def _wrap_assets(asset_urns: list[str]) -> list[Any]:
-    """Convert a list of URN strings to DataProductAssociationClass instances."""
-    from datahub.metadata.schema_classes import DataProductAssociationClass
-
-    return [DataProductAssociationClass(destinationUrn=urn) for urn in asset_urns]
-
-
-async def _apply_create(action_spec: dict[str, Any], datahub: DataHubClient) -> None:
-    """Create a new dataProduct entity."""
-    from datahub.metadata.schema_classes import DataProductPropertiesClass
-
-    title = action_spec.get("title", "Untitled Data Product")
-    description = action_spec.get("description", "")
-    asset_urns: list[str] = action_spec.get("assets", [])
-
-    urn = _make_data_product_urn(title)
-    props = DataProductPropertiesClass(
-        name=title,
-        description=description,
-        assets=_wrap_assets(asset_urns),
-    )
-    await datahub.emit_aspect(urn, props)
-    logger.info(
-        "metagen_cross_data_create",
-        extra={"urn": urn, "title": title},
-    )
-
-
-async def _apply_modify(action_spec: dict[str, Any], datahub: DataHubClient) -> None:
-    """Replace description of an existing dataProduct."""
-    from datahub.metadata.schema_classes import DataProductPropertiesClass
-
-    existing_urn = action_spec.get("urn", "")
-    description = action_spec.get("description", "")
-
-    if not existing_urn:
-        logger.warning("metagen_cross_data_modify_missing_urn", extra={"spec": action_spec})
-        return
-
-    # Preserve existing name and assets
-    existing = await datahub.get_aspect(existing_urn, DataProductPropertiesClass)
-    name = getattr(existing, "name", "") if existing else ""
-    existing_assets = getattr(existing, "assets", []) if existing else []
-
-    props = DataProductPropertiesClass(
-        name=name,
-        description=description,
-        assets=existing_assets,  # already DataProductAssociationClass instances
-    )
-    await datahub.emit_aspect(existing_urn, props)
-    logger.info("metagen_cross_data_modify", extra={"urn": existing_urn})
-
-
-async def _apply_split(action_spec: dict[str, Any], datahub: DataHubClient) -> None:
-    """Mark original dataProduct removed and create replacement dataProducts."""
-    from datahub.metadata.schema_classes import DataProductPropertiesClass, StatusClass
-
-    original_urn = action_spec.get("urn", "")
-    split_into: list[dict[str, Any]] = action_spec.get("split_into", [])
-
-    if original_urn:
-        # Mark original as removed
-        try:
-            await datahub.emit_aspect(original_urn, StatusClass(removed=True))
-        except Exception:
-            logger.warning(
-                "metagen_cross_data_split_remove_original_failed",
-                extra={"original_urn": original_urn},
-                exc_info=True,
-            )
-
-    for replacement in split_into:
-        title = replacement.get("title", "Untitled")
-        description = replacement.get("description", "")
-        asset_urns_split: list[str] = replacement.get("assets", [])
-        new_urn = _make_data_product_urn(title)
-        props = DataProductPropertiesClass(
-            name=title,
-            description=description,
-            assets=_wrap_assets(asset_urns_split),
-        )
-        await datahub.emit_aspect(new_urn, props)
-        logger.info(
-            "metagen_cross_data_split_create",
-            extra={"original_urn": original_urn, "new_urn": new_urn},
-        )
-
-
-async def _apply_retitle(action_spec: dict[str, Any], datahub: DataHubClient) -> None:
-    """Remove old title URN and create new URN with updated title."""
-    from datahub.metadata.schema_classes import DataProductPropertiesClass, StatusClass
-
-    original_urn = action_spec.get("urn", "")
-    new_title = action_spec.get("new_title", "")
-    description = action_spec.get("description", "")
-
-    if original_urn:
-        try:
-            await datahub.emit_aspect(original_urn, StatusClass(removed=True))
-        except Exception:
-            logger.warning(
-                "metagen_cross_data_retitle_remove_original_failed",
-                extra={"original_urn": original_urn},
-                exc_info=True,
-            )
-
-    if new_title:
-        new_urn = _make_data_product_urn(new_title)
-        # Preserve existing assets if available
-        asset_urns_retitle: list[str] = action_spec.get("assets", [])
-        props = DataProductPropertiesClass(
-            name=new_title,
-            description=description,
-            assets=_wrap_assets(asset_urns_retitle),
-        )
-        await datahub.emit_aspect(new_urn, props)
-        logger.info(
-            "metagen_cross_data_retitle",
-            extra={"original_urn": original_urn, "new_urn": new_urn, "new_title": new_title},
-        )
+    return outcomes

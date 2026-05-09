@@ -155,20 +155,15 @@ Rules:
                     q_name = _cap(str(q.get("name") or ""))
                     q_stmt = _cap(str(q.get("statement", ""))[:200])
                     subjects = q.get("subjects", [])
-                    parts.append(
-                        f"  - [{q_name}] subjects={subjects}  SQL: {q_stmt!r}"
-                    )
+                    parts.append(f"  - [{q_name}] subjects={subjects}  SQL: {q_stmt!r}")
 
             # UC4-approved editable descriptions
             if evidence.get("editable_description"):
                 parts.append(
-                    f"Approved dataset description: "
-                    f"{_cap(str(evidence['editable_description']))}"
+                    f"Approved dataset description: {_cap(str(evidence['editable_description']))}"
                 )
 
-            editable_fields: list[dict[str, Any]] = evidence.get(
-                "editable_field_descriptions", []
-            )
+            editable_fields: list[dict[str, Any]] = evidence.get("editable_field_descriptions", [])
             if editable_fields:
                 parts.append("Approved column descriptions:")
                 for ef in editable_fields[:20]:

@@ -11,6 +11,8 @@ Concerns covered:
 - PATCH /spoke/common/ontogen/attr/seed/{seed_id} — replace seed body
 - DELETE /spoke/common/ontogen/attr/seed/{seed_id} — retire seed (204)
 - POST /spoke/common/ontogen/method/run — trigger run (dry_run query param)
+- POST /spoke/common/ontogen/method/run — dry-run with seeded documents exercises
+    _fetch_documents_for_dataset evidence path (document relatedAssets filter)
 - GET /spoke/common/ontogen/result/node — list nodes (envelope)
 - GET /spoke/common/ontogen/result/edge — list edges (envelope)
 - GET /spoke/common/ontogen/result/triple — list triples (envelope)
@@ -33,6 +35,8 @@ Spec traceability:
 - spec/feature/BACKEND.md §Approval flow (node/edge/triple review)
 - spec/feature/BACKEND_SCHEMA.md §Graph (ontogen_triples → AGE)
 - spec/feature/BACKEND_SCHEMA.md §node_embeddings (pgvector)
+- spec/USE_CASE_en.md §UC3 §Inputs — document evidence read path
+- spec/DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery filter
 """
 
 import uuid
@@ -231,6 +235,140 @@ async def test_ontogen_run_dry_run(
 
 
 @pytest.mark.asyncio
+async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """A dry-run inference reads documents whose relatedAssets reference an in-scope dataset.
+
+    Spec: USE_CASE_en.md §UC3 §Inputs — 'documentInfo.contents.text on document entities
+    whose relatedAssets reference an in-scope dataset (Markdown body by convention)'
+    Spec: DATAHUB_INTEGRATION.md §Document Aspects — Discovery via searchAcrossEntities
+    filtering on relatedAssets; cap at DOCUMENT_EVIDENCE_CAP_PER_DATASET.
+
+    Steps:
+      1. Seed two NATIVE documents whose relatedAssets include a known dev-env dataset URN.
+      2. PUT ontogen conf with dataset_filter narrowed to that dataset URN.
+      3. POST ?dry_run=true — assert the run completes without error (200, dry_run=True).
+      4. Assert our dataset URN does NOT appear in unresolved_urns (evidence-gathering
+         succeeded for that dataset, i.e. _fetch_documents_for_dataset did not raise).
+      5. Cleanup: hard-delete both documents, restore conf to disabled.
+
+    The stub LLM (DATASPOKE_TEST_MODE=true) returns no nodes/edges/triples, so we cannot
+    assert ontology output.  The absence of our dataset URN from unresolved_urns is the
+    proxy proof that the evidence path reached the document-fetch step without error.
+    """
+    from tests.integration.util.datahub import (
+        get_datahub_token,
+        hard_delete_document,
+        seed_native_document,
+    )
+
+    # ── Dataset URN — catalog.title_master is the canonical UC3 test dataset ──
+    # spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master is UC1, UC3
+    dataset_urn = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    )
+
+    suffix = uuid.uuid4().hex[:12]
+    doc1_id = f"spot-doc1-{suffix}"
+    doc2_id = f"spot-doc2-{suffix}"
+    doc1_urn: str | None = None
+    doc2_urn: str | None = None
+
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    try:
+        # ── Step 1: Seed two NATIVE documents whose relatedAssets include dataset_urn ──
+        # spec: DATAHUB_INTEGRATION.md §Document Aspects — NATIVE source, relatedAssets shape
+        token = get_datahub_token()
+        doc1_urn = seed_native_document(
+            document_id=doc1_id,
+            title="Spot test doc 1 — catalog context",
+            body_markdown="# Catalog Context\n\nDataspoke spot test seed document 1.",
+            related_dataset_urns=[dataset_urn],
+            token=token,
+        )
+        doc2_urn = seed_native_document(
+            document_id=doc2_id,
+            title="Spot test doc 2 — title master notes",
+            body_markdown="# Title Master Notes\n\nDataspoke spot test seed document 2.",
+            related_dataset_urns=[dataset_urn],
+            token=token,
+        )
+
+        # ── Step 2: PUT ontogen conf narrowed to our dataset URN ─────────────────
+        # spec: USE_CASE_en.md §UC3 L392-L398 — dataset_filter.dataset_urns narrows scope
+        conf_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"dataset_urns": [dataset_urn]},
+                "max_manual_queries_per_dataset": 5,
+                "max_system_queries_per_dataset": 5,
+            },
+        )
+        assert conf_resp.status_code in (200, 201), (
+            f"PUT ontogen conf failed: {conf_resp.status_code} {conf_resp.text}"
+        )
+
+        # ── Step 3: POST dry-run — must complete without error ─────────────────────
+        # spec: USE_CASE_en.md §UC3 L415-L416 — dry_run=true evaluates without persisting
+        # spec: DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery path
+        dry_run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            headers=admin_headers,
+        )
+        assert dry_run_resp.status_code == 200, (
+            f"POST dry-run failed: {dry_run_resp.status_code} {dry_run_resp.text}. "
+            "spec: USE_CASE_en.md §UC3 §Run semantics — dry-run must succeed when document "
+            "evidence is present (regression guard for _fetch_documents_for_dataset)"
+        )
+        body = dry_run_resp.json()
+
+        # ── Step 4: Assert OntogenRunSummary shape and evidence success ───────────
+        # spec: USE_CASE_en.md §UC3 — OntogenRunSummary: status, dry_run, unresolved_urns, counts
+        assert "status" in body and isinstance(body["status"], str), (
+            "OntogenRunSummary missing 'status'. spec: USE_CASE_en.md §UC3 §Run semantics"
+        )
+        assert body.get("dry_run") is True, (
+            "OntogenRunSummary dry_run must be True. spec: USE_CASE_en.md §UC3 §Run semantics"
+        )
+        assert isinstance(body.get("unresolved_urns"), list), (
+            "OntogenRunSummary missing 'unresolved_urns'. spec: USE_CASE_en.md §UC3"
+        )
+        assert isinstance(body.get("counts"), dict), (
+            "OntogenRunSummary missing 'counts'. spec: USE_CASE_en.md §UC3"
+        )
+        # The dataset_filter pins to our dataset_urn; if evidence-gathering succeeded it
+        # must NOT appear in unresolved_urns (which lists URNs that were skipped).
+        # spec: USE_CASE_en.md §UC3 L396 — "entries that don't resolve … are skipped and
+        # reported in the run-complete event's unresolved_urns field"
+        assert dataset_urn not in body["unresolved_urns"], (
+            f"dataset_urn {dataset_urn!r} found in unresolved_urns — evidence-gathering failed. "
+            "spec: USE_CASE_en.md §UC3 §dataset_filter — seeded documents with matching "
+            "relatedAssets must not cause the dataset to be unresolvable. "
+            "Regression: _fetch_documents_for_dataset may have raised or returned wrong filter."
+        )
+
+    finally:
+        # ── Step 5: Cleanup — hard-delete documents, restore conf ─────────────────
+        if doc1_urn is not None:
+            try:
+                hard_delete_document(document_urn=doc1_urn, token=token)
+            except Exception:
+                pass
+        if doc2_urn is not None:
+            try:
+                hard_delete_document(document_urn=doc2_urn, token=token)
+            except Exception:
+                pass
+        await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})
+
+
+@pytest.mark.asyncio
 async def test_ontogen_list_nodes_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
@@ -300,9 +438,7 @@ async def test_ontogen_list_triples_envelope(
 # left behind by prior sessions, and cleans up afterwards.
 
 
-async def _insert_pending_node(
-    session: AsyncSession, node_id: str, name: str
-) -> None:
+async def _insert_pending_node(session: AsyncSession, node_id: str, name: str) -> None:
     from src.shared.db.models import OntogenNode
 
     session.add(
@@ -318,9 +454,7 @@ async def _insert_pending_node(
     await session.commit()
 
 
-async def _insert_pending_edge(
-    session: AsyncSession, edge_id: str, label: str
-) -> None:
+async def _insert_pending_edge(session: AsyncSession, edge_id: str, label: str) -> None:
     from src.shared.db.models import OntogenEdge
 
     session.add(
@@ -480,5 +614,3 @@ async def test_ontogen_triple_review_dependency_order(
         await _delete_row(async_session, OntogenNode, subj_id)
         await _delete_row(async_session, OntogenNode, obj_id)
         await _delete_row(async_session, OntogenEdge, edge_id)
-
-

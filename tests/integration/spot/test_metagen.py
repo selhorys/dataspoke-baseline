@@ -17,7 +17,6 @@ Spec traceability:
 """
 
 import urllib.parse
-import uuid
 
 import httpx
 import pytest
@@ -249,7 +248,9 @@ async def _insert_pending_metagen_result(
     returning non-empty proposals.
     Spec: spec/feature/BACKEND.md L289-L299 (approve writes DataHub editable aspects).
     """
+    import json
     import uuid as _uuid
+
     from sqlalchemy import text
 
     result_id = _uuid.uuid4()
@@ -257,7 +258,6 @@ async def _insert_pending_metagen_result(
     _proposals = proposals or {"dataset.description": "Seeded test description."}
     _field_status = field_status or {"dataset.description": "pending"}
 
-    import json
     await session.execute(
         text(
             "INSERT INTO dataspoke.metagen_results"
@@ -280,6 +280,7 @@ async def _insert_pending_metagen_result(
 async def _delete_metagen_result(session, result_id: str, dataset_urn: str) -> None:
     """Clean up a seeded metagen_results row."""
     from sqlalchemy import text
+
     await session.execute(
         text("DELETE FROM dataspoke.metagen_results WHERE id = :id AND dataset_urn = :urn"),
         {"id": result_id, "urn": dataset_urn},

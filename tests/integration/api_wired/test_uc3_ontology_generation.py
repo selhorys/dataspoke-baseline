@@ -9,6 +9,9 @@ Tests in this module:
   - test_uc3_review_in_dependency_order: Seed pending rows via raw SQL, attempt triple
     approve before deps (expect 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING), then approve
     nodes → edge → triple in dependency order.
+  - test_uc3_run_dry_run_with_seeded_documents: Seed two NATIVE document entities whose
+    relatedAssets reference an in-scope dataset, POST dry-run, assert evidence-gathering
+    succeeds (dataset URN absent from unresolved_urns).
 """
 # spec: USE_CASE_en.md §UC3
 
@@ -216,9 +219,7 @@ async def test_uc3_run_and_list(
         list_seed_resp = await api_client.get(seed_url, headers=admin_headers)
         assert list_seed_resp.status_code == 200
         seeds_by_id = {s["seed_id"]: s for s in list_seed_resp.json()["seeds"]}
-        assert seed_id in seeds_by_id, (
-            f"seed_id {seed_id!r} not found in seed list after POST"
-        )
+        assert seed_id in seeds_by_id, f"seed_id {seed_id!r} not found in seed list after POST"
         seed_entry = seeds_by_id[seed_id]
         assert "preview" in seed_entry, (
             "seed list entry missing 'preview'. spec: USE_CASE_en.md §UC3 L362"
@@ -407,3 +408,164 @@ async def test_uc3_review_in_dependency_order(
         await _delete_node(async_session, subj_id)
         await _delete_node(async_session, obj_id)
         await _delete_edge(async_session, edge_id)
+
+
+@pytest.mark.asyncio
+async def test_uc3_run_dry_run_with_seeded_documents(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,  # noqa: ARG001
+) -> None:
+    """Documents whose relatedAssets reference an in-scope dataset are visible to UC3.
+
+    Spec: USE_CASE_en.md §UC3 §Inputs — 'documentInfo.contents.text on document entities
+    whose relatedAssets reference an in-scope dataset (Markdown body by convention)'
+    Spec: DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery via
+    searchAcrossEntities; DOCUMENT_EVIDENCE_CAP_PER_DATASET=10.
+
+    Steps mirror USE_CASE_en.md §UC3 §Inputs narrative:
+      a. Seed two NATIVE document entities whose relatedAssets include the target dataset URN.
+      b. PUT ontogen conf with dataset_filter narrowed to that dataset URN.
+      c. POST ?dry_run=true — assert 200, dry_run=True, unresolved_urns shape.
+      d. Assert the seeded dataset URN does NOT appear in unresolved_urns — evidence-gathering
+         completed successfully (proxy: _fetch_documents_for_dataset did not raise or skip).
+      e. Cleanup: hard-delete both documents, restore conf to disabled.
+
+    The stub LLM (DATASPOKE_TEST_MODE=true) returns no nodes/edges/triples; we assert on
+    the response shape and unresolved_urns only — not on ontology output.
+    If the api-wired tier uses a real LLM, `counts` shape assertions still hold: counts
+    values must be integers >= 0 regardless of LLM output.
+    """
+    # Setup/teardown uses tests.integration.util — test body uses only REST.
+    # spec: TESTING.md §Api-Wired Integration Tests — "Setup/teardown fixtures may use
+    # tests.integration.util; the test itself stays REST-only."
+    from tests.integration.util.datahub import (
+        get_datahub_token,
+        hard_delete_document,
+        seed_native_document,
+    )
+
+    # ── Dataset URN — catalog.title_master is the canonical UC3 test dataset ──
+    # spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master is UC1, UC3
+    dataset_urn = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    )
+
+    suffix = uuid.uuid4().hex[:12]
+    doc1_id = f"uc3-doc1-{suffix}"
+    doc2_id = f"uc3-doc2-{suffix}"
+    doc1_urn: str | None = None
+    doc2_urn: str | None = None
+    token: str = ""
+
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    try:
+        # ── Step a: Seed two NATIVE documents referencing the target dataset ──────
+        # spec: DATAHUB_INTEGRATION.md §Document Aspects — NATIVE source, relatedAssets shape
+        # spec: USE_CASE_en.md §UC3 §Inputs — document bodies are Markdown by convention
+        token = get_datahub_token()
+        doc1_urn = seed_native_document(
+            document_id=doc1_id,
+            title="UC3 api-wired doc 1 — catalog overview",
+            body_markdown=(
+                "# Catalog Overview\n\n"
+                "Imazon title_master holds one row per book title. "
+                "Used by UC3 api-wired integration test."
+            ),
+            related_dataset_urns=[dataset_urn],
+            token=token,
+        )
+        doc2_urn = seed_native_document(
+            document_id=doc2_id,
+            title="UC3 api-wired doc 2 — editorial notes",
+            body_markdown=(
+                "# Editorial Notes\n\n"
+                "Imazon catalog editorial metadata. "
+                "Used by UC3 api-wired integration test."
+            ),
+            related_dataset_urns=[dataset_urn],
+            token=token,
+        )
+
+        # ── Step b: PUT ontogen conf narrowed to our dataset URN ─────────────────
+        # spec: USE_CASE_en.md §UC3 L392-L398 — dataset_filter.dataset_urns narrows scope;
+        # URN format validated at PUT/PATCH time; unresolvable entries skipped at run time.
+        put_conf_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"dataset_urns": [dataset_urn]},
+                "max_manual_queries_per_dataset": 5,
+                "max_system_queries_per_dataset": 5,
+            },
+        )
+        assert put_conf_resp.status_code in (200, 201), (
+            f"PUT ontogen conf failed: {put_conf_resp.status_code} {put_conf_resp.text}. "
+            "spec: USE_CASE_en.md §UC3 — conf PUT returns 200/201"
+        )
+
+        # ── Step c: POST dry-run — must return 200 with correct response shape ────
+        # spec: USE_CASE_en.md §UC3 L415-L416 — dry_run=true evaluates without persisting
+        # spec: DATAHUB_INTEGRATION.md §Document Aspects — discovery via relatedAssets filter
+        dry_run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            headers=admin_headers,
+        )
+        assert dry_run_resp.status_code == 200, (
+            f"POST dry-run failed: {dry_run_resp.status_code} {dry_run_resp.text}. "
+            "spec: USE_CASE_en.md §UC3 — dry-run with document evidence present must succeed "
+            "(regression guard: _fetch_documents_for_dataset must not raise on real documents)"
+        )
+        body = dry_run_resp.json()
+
+        # ── Step d: Assert OntogenRunSummary shape ────────────────────────────────
+        # spec: USE_CASE_en.md §UC3 — OntogenRunSummary: status, dry_run, unresolved_urns, counts
+        assert "status" in body and isinstance(body["status"], str), (
+            "OntogenRunSummary missing 'status' (str). spec: USE_CASE_en.md §UC3"
+        )
+        assert body.get("dry_run") is True, (
+            "OntogenRunSummary dry_run must be True. spec: USE_CASE_en.md §UC3"
+        )
+        assert isinstance(body.get("unresolved_urns"), list), (
+            "OntogenRunSummary missing 'unresolved_urns' (list). spec: USE_CASE_en.md §UC3"
+        )
+        assert isinstance(body.get("counts"), dict), (
+            "OntogenRunSummary missing 'counts' (dict). spec: USE_CASE_en.md §UC3"
+        )
+        # counts values must be non-negative integers regardless of LLM output
+        # spec: USE_CASE_en.md §UC3 — counts: nodes, edges, triples (shape check only)
+        for key, value in body["counts"].items():
+            assert isinstance(value, int) and value >= 0, (
+                f"OntogenRunSummary counts[{key!r}] must be non-negative int; got {value!r}. "
+                "spec: USE_CASE_en.md §UC3"
+            )
+
+        # The dataset_filter pins to our dataset_urn. If evidence-gathering succeeded,
+        # the dataset must NOT be listed in unresolved_urns.
+        # spec: USE_CASE_en.md §UC3 L396 — "entries that don't resolve in DataHub at run time
+        # are skipped and reported in the run-complete event's unresolved_urns field"
+        assert dataset_urn not in body["unresolved_urns"], (
+            f"dataset_urn {dataset_urn!r} found in unresolved_urns — evidence-gathering "
+            "including document fetch failed for the seeded dataset. "
+            "spec: USE_CASE_en.md §UC3 §Inputs — documents with matching relatedAssets "
+            "must be discoverable by _fetch_documents_for_dataset without error."
+        )
+
+    finally:
+        # ── Step e: Cleanup — hard-delete documents, restore conf ─────────────────
+        # spec: DATAHUB_INTEGRATION.md §Document Aspects — DataSpoke uses Status.removed for
+        # soft-delete in production; hard-delete is test-only.
+        if doc1_urn is not None and token:
+            try:
+                hard_delete_document(document_urn=doc1_urn, token=token)
+            except Exception:
+                pass
+        if doc2_urn is not None and token:
+            try:
+                hard_delete_document(document_urn=doc2_urn, token=token)
+            except Exception:
+                pass
+        await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})

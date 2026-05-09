@@ -388,7 +388,8 @@ graph DB와 vector DB에 유지한다.*
 사용량)와 **UC4에서 승인된 editable 변형** —
 `editableDatasetProperties.description`,
 `editableSchemaMetadata.editableSchemaFieldInfo[].description`,
-`dataProduct` 엔티티의 `dataProductProperties.description` — 그리고 DataHub의
+스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
+`documentInfo.contents.text`(관례상 Markdown 본문) — 그리고 DataHub의
 **Query 엔티티**(Queries 기능: `queryProperties`+`querySubjects` aspect) — 사람이
 하이라이트한 highlighted 쿼리(`source = MANUAL`)와 크롤러가 자동 수집한 쿼리
 (`source = SYSTEM`, 노이즈 차단을 위해 다중 자산 조인으로 제한)를 모두 포함 — 만
@@ -501,9 +502,10 @@ Imazon은 온라인 서점이다. *order*를 헤더 개념으로, *order line*�
 
 **입력.** 위 conf에 따라 DataSpoke는 세 OLTP 테이블에 대한 DataHub aspect
 (`schemaMetadata`, `datasetProperties`, `upstreamLineage`, `usageStats`)와, UC4에서
-승인된 editable 변형(`editableDatasetProperties`, `editableSchemaMetadata`,
-존재하는 `dataProduct` 엔티티의 `dataProductProperties`), 그리고 각 데이터셋에
-연결된 DataHub Query 엔티티 — MANUAL(highlighted) 최대 20건과 SYSTEM(자동 수집,
+승인된 editable 변형(`editableDatasetProperties`, `editableSchemaMetadata`)
+및 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
+`documentInfo.contents.text`(Markdown 본문), 그리고 각 데이터셋에 연결된
+DataHub Query 엔티티 — MANUAL(highlighted) 최대 20건과 SYSTEM(자동 수집,
 조인만) 최대 10건, 조인 우선 정렬 — 을 읽는다. seed가 명명 선택을 안내한다.
 
 **추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 모두 `pending_review`:
@@ -592,23 +594,25 @@ UI는 Markdown으로 렌더링한다.
 |---|---|---|---|
 | Per-data | 테이블 설명 | Markdown | `editableDatasetProperties.description` |
 | Per-data | 컬럼 설명 | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (`fieldPath` 키) |
-| Cross-data | 크로스 데이터 문서 | Markdown | `dataProduct` 엔티티(`assets`에 관련 데이터셋들을 담음)의 `dataProductProperties.description`. 생성기가 생성·수정·분리·제목 변경 액션을 제안할 수 있다 — 아래 설계 결정 참조 |
+| Cross-data | 크로스 데이터 문서 | Markdown | `relatedAssets`에 관련 데이터셋 URN들을 담은 `document` 엔티티의 `documentInfo.contents.text`. 생성기가 생성·수정·삭제 액션을 제안할 수 있다 — 아래 설계 결정 참조 |
 
 향후 범위(언급만, 여기서는 모델링하지 않음):
 `domains`와 `globalTags` 제안.
 
 > *(설계 결정)* `cross_data.md` 제안은 UC3 노드를 키로 삼지 않는다.
-> 문서 생성기는 기존 `dataProduct` 엔티티(제목과 본문)를 입력 컨텍스트로 읽고,
-> 무엇을 제안할지 스스로 결정한다.
+> 문서 생성기는 스코프 데이터셋을 `relatedAssets`로 참조하는 기존 `document`
+> 엔티티(제목과 본문)를 입력 컨텍스트로 읽고, 무엇을 제안할지 스스로 결정한다.
 > 하나의 `cross_data.md` 제안은 **액션 묶음**이며, 각 액션은 다음 중 하나다:
-> - **생성(create)** — 누락된 주제를 발견했고 기존 데이터 프로덕트는 그대로 둬도
->   괜찮다고 판단되면, 생성기가 정한 서술적 제목(주제 구문)과 본문을 가진
->   `dataProduct`를 새로 만든다.
-> - **수정(modify)** — 기존 `dataProduct`의 제목·URN은 유지한 채 본문만 교체한다.
-> - **분리(split)** — 기존 `dataProduct` 하나가 분리 가능한 여러 주제를 섞어 다룬다고
->   판단되면, 해당 데이터 프로덕트를 제거하고 둘 이상의 대체 데이터 프로덕트를 만든다.
-> - **제목 변경(retitle)** — 기존 `dataProduct`의 제목(과 URN) 변경을 제안한다.
->   신규 생성과 함께 제안할 수도 있다.
+> - **생성(create)** — 누락된 주제를 발견했고 기존 문서들은 그대로 둬도 괜찮다고
+>   판단되면, 생성기가 정한 서술적 제목(주제 구문)과 Markdown 본문
+>   (`documentInfo.contents.text`), 그리고 주제가 걸쳐 있는 데이터셋 URN들을 담은
+>   `relatedAssets`를 가진 `document`를 새로 만든다.
+>   `documentInfo.source.sourceType = NATIVE`.
+> - **수정(modify)** — 기존 `document`의 제목·URN은 유지한 채
+>   `documentInfo.contents.text`를 교체한다. 주제가 더 많은 데이터셋을 다루게 되면
+>   `relatedAssets`를 확장할 수 있다.
+> - **삭제(delete)** — 주제가 새 대체 문서로 완전히 흡수된 경우, 기존 `document`를
+>   `Status.removed = true`로 소프트 삭제한다. 하드 삭제는 하지 않는다.
 >
 > 각 액션은 result 페이로드 안에 안정적인 `action_id`를 가진다. 리뷰어는 각 액션을
 > 필드별 제안과 동일한 PATCH 메커니즘으로 개별 승인·편집·거부하며, `fields` 배열은
@@ -669,12 +673,15 @@ column.description 제안(markdown):
   price     — "USD 정가, 소수점 두 자리."
 
 cross_data.md actions:
-  검토한 기존 dataProduct: (없음)
+  검토한 기존 document: (없음)
   제안:
     - action_id: a1
       action:    create
       title:     "주문이 도서를 어떻게 참조하는가"
       body:      "`orders.line_items.book_id`는 `catalog.books.book_id`와 조인된다 ..."
+      related_assets:
+        - urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)
+        - urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)
       confidence: 0.81
 ```
 

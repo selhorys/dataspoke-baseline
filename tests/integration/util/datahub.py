@@ -38,12 +38,18 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
     AssertionInfoClass,
+    AuditStampClass,
     DatasetFieldProfileClass,
     DatasetProfileClass,
     DatasetPropertiesClass,
+    DocumentContentsClass,
+    DocumentInfoClass,
+    DocumentSourceClass,
+    DocumentStatusClass,
     OperationClass,
     OperationTypeClass,
     OtherSchemaClass,
+    RelatedAssetClass,
     SchemaFieldClass,
     SchemaMetadataClass,
     StatusClass,
@@ -219,6 +225,23 @@ def _get_token() -> str | None:
     return _token
 
 
+def get_datahub_token() -> str:
+    """Return a valid DataHub token for integration-test helpers.
+
+    Raises RuntimeError if no token could be obtained (DataHub unreachable).
+    Use this to supply the ``token`` argument to ``seed_native_document`` /
+    ``soft_delete_document`` / ``hard_delete_document`` inside test bodies
+    that do not receive the ``datahub_client`` fixture directly.
+    """
+    tok = _get_token()
+    if not tok:
+        raise RuntimeError(
+            "Cannot obtain a DataHub token. "
+            "Ensure DATASPOKE_DATAHUB_TOKEN is set or the DataHub frontend is reachable."
+        )
+    return tok
+
+
 # ---------------------------------------------------------------------------
 # URN helpers
 # ---------------------------------------------------------------------------
@@ -232,6 +255,72 @@ def _make_pg_urn(schema: str, table: str) -> str:
 
 def _make_kafka_urn(topic: str) -> str:
     return f"urn:li:dataset:(urn:li:dataPlatform:{KAFKA_PLATFORM},{_kafka_instance}.{topic},{ENV})"
+
+
+# ---------------------------------------------------------------------------
+# Document entity helpers (integration-test seeding and cleanup)
+# ---------------------------------------------------------------------------
+
+_DATASPOKE_ACTOR_URN = "urn:li:corpuser:dataspoke"
+
+
+def seed_native_document(
+    *,
+    document_id: str,
+    title: str,
+    body_markdown: str,
+    related_dataset_urns: list[str],
+    token: str,
+) -> str:
+    """Emit a NATIVE document entity for integration-test seeding. Returns the URN.
+
+    Spec: spec/DATAHUB_INTEGRATION.md §Document Aspects.
+    Sets documentInfo with title, contents.text=body_markdown, relatedAssets,
+    source=NATIVE, status=PUBLISHED, created=now, lastModified=now.
+
+    The caller supplies a deterministic ``document_id`` (e.g. a uuid hex prefix)
+    so that cleanup via ``soft_delete_document`` / ``hard_delete_document`` is
+    unambiguous even when the test aborts mid-run.
+    """
+    urn = f"urn:li:document:{document_id}"
+    now_ms = int(time.time() * 1000)
+    audit = AuditStampClass(time=now_ms, actor=_DATASPOKE_ACTOR_URN)
+
+    info = DocumentInfoClass(
+        title=title,
+        contents=DocumentContentsClass(text=body_markdown),
+        relatedAssets=[RelatedAssetClass(asset=u) for u in related_dataset_urns],
+        source=DocumentSourceClass(sourceType="NATIVE"),
+        status=DocumentStatusClass(state="PUBLISHED"),
+        created=audit,
+        lastModified=audit,
+    )
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    graph.emit_mcp(MetadataChangeProposalWrapper(entityUrn=urn, aspect=info))
+    return urn
+
+
+def soft_delete_document(*, document_urn: str, token: str) -> None:
+    """Emit StatusClass(removed=True) on the document URN. Idempotent.
+
+    Spec: spec/DATAHUB_INTEGRATION.md §Document Aspects — DataSpoke never
+    hard-deletes documents; soft-delete uses Status.removed=true.
+    """
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    graph.emit_mcp(
+        MetadataChangeProposalWrapper(entityUrn=document_urn, aspect=StatusClass(removed=True))
+    )
+
+
+def hard_delete_document(*, document_urn: str, token: str) -> None:
+    """Wipe the entity from DataHub via SDK hard-delete (test cleanup only).
+
+    Use in test teardown only — spec/DATAHUB_INTEGRATION.md states DataSpoke
+    never hard-deletes documents in production. Hard-delete is used here so
+    that repeated test runs start from a clean baseline.
+    """
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    graph.hard_delete_entity(document_urn)
 
 
 # ---------------------------------------------------------------------------
@@ -577,10 +666,7 @@ async def _fetch_null_counts(
                 f"AS {_quote_ident(col['name'])}"
                 for col in columns
             )
-            sql = (
-                f"SELECT {col_exprs} "
-                f"FROM {_quote_ident(schema)}.{_quote_ident(table)}"
-            )
+            sql = f"SELECT {col_exprs} FROM {_quote_ident(schema)}.{_quote_ident(table)}"
             row = await conn.fetchrow(sql)
             result[(schema, table)] = {col["name"]: row[col["name"]] for col in columns}
     finally:

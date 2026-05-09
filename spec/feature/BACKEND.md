@@ -415,25 +415,25 @@ PATCH.
 |-------|-------|----------------------|
 | `dataset.description` | Per-data | `editableDatasetProperties.description` |
 | `column.description` | Per-data, one entry per column | `editableSchemaMetadata.editableSchemaFieldInfo[].description` keyed by `fieldPath` |
-| `cross_data.md` | Cross-data | `dataProductProperties.description` on `dataProduct` entities — the proposal carries a list of actions (see below) |
+| `cross_data.md` | Cross-data | `documentInfo.contents.text` (Markdown) on `document` entities whose `relatedAssets` list the involved dataset URNs — the proposal carries a list of actions (see below) |
 
 Future scope: proposals for `domains` and `globalTags`.
 
 **Generation Pipeline** (Airflow DAG): read non-editable description aspects + schema +
 lineage as context → resolve node membership via the Ontology Generation service → LLM
 analysis to draft per-field proposals for the configured `targets` → for `cross_data.md`,
-read existing `dataProduct` entities (titles + bodies) and decide what to propose →
-produce a `metagen_results` row in PostgreSQL with status `pending_review`.
+read existing `document` entities whose `relatedAssets` overlap the in-scope dataset
+(titles + bodies + relatedAssets list) and decide what to propose → produce a
+`metagen_results` row in PostgreSQL with status `pending_review`.
 
 **Cross-data MD action types**. A single `cross_data.md` proposal carries an ordered list
 of actions, each independently approvable:
 
 | Action | Effect on DataHub |
 |--------|-------------------|
-| `create` | New `dataProduct` with a generator-chosen descriptive title (topic phrase) and Markdown body. |
-| `modify` | Replace the body of an existing `dataProduct`; URN and title preserved. |
-| `split` | Delete one existing `dataProduct` and create two or more replacements. |
-| `retitle` | Change the title (and URN) of an existing `dataProduct`, optionally alongside new creations. |
+| `create` | New `document` with a generator-chosen descriptive title (topic phrase), Markdown body in `documentInfo.contents.text`, and `relatedAssets` listing the involved dataset URNs (at least one — a cross-data document with no related datasets has no purpose). `documentInfo.source.sourceType = NATIVE`. |
+| `modify` | Replace `documentInfo.contents.text` on an existing `document`; URN and title preserved. `relatedAssets` may be extended when the topic now covers additional datasets. |
+| `delete` | Soft-delete an existing `document` via `Status.removed = true` when its topic is fully absorbed into a new replacement. No hard delete. |
 
 **Approval flow**. `PATCH /attr/metagen/result/{result_id}` with
 `{verdict, fields, reason}`:
@@ -509,12 +509,13 @@ or manual `POST /method/run`):
      `glossaryTerms`, `upstreamLineage`, `usageStats`.
    - **UC4-approved editable**: `editableDatasetProperties.description`,
      `editableSchemaMetadata.editableSchemaFieldInfo[].description`, and
-     `dataProductProperties.description` on `dataProduct` entities whose `assets`
-     intersect the in-scope datasets. DataSpoke writes these aspects only after a
-     UC4 reviewer approves the proposal (UC4 `field_status='approved'`); draft
-     states (`pending` / `edited`) stay in `metagen_results.proposals` and are
-     never written to DataHub. UC3 therefore reads DataHub directly with no JOIN
-     against `metagen_results` — *presence* is the approval signal.
+     `documentInfo.contents.text` on `document` entities whose `relatedAssets`
+     reference an in-scope dataset (Markdown body, capped per dataset). DataSpoke
+     writes these aspects only after a UC4 reviewer approves the proposal
+     (UC4 `field_status='approved'`); draft states (`pending` / `edited`) stay in
+     `metagen_results.proposals` and are never written to DataHub. UC3 therefore
+     reads DataHub directly with no JOIN against `metagen_results` — *presence*
+     is the approval signal.
    - **Query entities** (DataHub Queries feature, `queryProperties` +
      `querySubjects` aspects). For each in-scope dataset, call `listQueries`
      filtered by entity URN, twice:
