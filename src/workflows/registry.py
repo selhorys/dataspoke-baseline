@@ -9,7 +9,6 @@ INGESTION_ACTIVE_DAG_IDS: tuple[str, ...] = tuple(
     f"ingestion-active-{tier}" for tier in TIERS
 )
 INGESTION_PASSIVE_DAG_IDS: tuple[str, ...] = ("ingestion-passive-hourly",)
-VALIDATION_DAG_IDS: tuple[str, ...] = tuple(f"validation-{tier}" for tier in TIERS)
 METRICS_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metrics-{tier}" for tier in TIERS)
 METAGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metagen-{tier}" for tier in TIERS)
 ONTOGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"ontogen-{tier}" for tier in TIERS)
@@ -20,7 +19,6 @@ SYNC_DAG_IDS: tuple[str, ...] = ("datahub-sync-daily",)
 ALL_DAG_IDS: frozenset[str] = frozenset(
     INGESTION_ACTIVE_DAG_IDS
     + INGESTION_PASSIVE_DAG_IDS
-    + VALIDATION_DAG_IDS
     + METRICS_TIER_DAG_IDS
     + METAGEN_TIER_DAG_IDS
     + ONTOGEN_TIER_DAG_IDS

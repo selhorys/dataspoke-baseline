@@ -1,6 +1,6 @@
-"""Cross-dataset validation list view — /spoke/common/validation.
+"""Cross-dataset validation list view — GET /spoke/common/validation.
 
-Per-dataset operations (attr CRUD, result, method/run, event) live under the
+Per-dataset operations (attr CRUD, result, event) live under the
 canonical /spoke/common/data/{dataset_urn}/... surface.
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query
 from src.api.auth.dependencies import require_common
 from src.api.dependencies import get_validation_service
 from src.api.schemas.common import parse_sort
-from src.api.schemas.validation import ValidationConfigListResponse, ValidationConfigResponse
+from src.api.schemas.validation import ValidationListItem, ValidationListResponse
 from src.backend.validation.service import ValidationService
 from src.shared.db.models import ValidationConfig
 
@@ -23,25 +23,29 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=ValidationConfigListResponse)
-async def get_validation_list(
+@router.get("", response_model=ValidationListResponse)
+async def get_validation(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
-    is_enabled_filter: bool | None = Query(default=None, alias="status"),
+    removed: bool | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),
-) -> ValidationConfigListResponse:
-    """List validation attributes across datasets (paginated, filterable by status).
+) -> ValidationListResponse:
+    """List validation attributes across datasets (paginated, filterable by removed status).
 
-    Each row aggregates the per-dataset attr/validation/* (conf and latest result).
+    Each row aggregates per-dataset attr/validation/* (conf description + variable count
+    + latest result data_time and score).  Default ordering: updated_at DESC.
     """
-    order_by = parse_sort(sort, {"created_at": ValidationConfig.created_at}, None)
-    configs, total_count = await service.list_configs(
-        offset=offset, limit=limit, is_enabled_filter=is_enabled_filter, order_by=order_by
+    order_by = parse_sort(sort, {"updated_at": ValidationConfig.updated_at}, None)
+    items, total_count = await service.list_configs(
+        offset=offset,
+        limit=limit,
+        removed_filter=removed,
+        order_by=order_by,
     )
-    return ValidationConfigListResponse(
+    return ValidationListResponse(
         offset=offset,
         limit=limit,
         total_count=total_count,
-        configs=[ValidationConfigResponse.model_validate(c) for c in configs],
+        items=[ValidationListItem.model_validate(item) for item in items],
     )

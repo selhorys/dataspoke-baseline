@@ -64,13 +64,14 @@ from src.api.schemas.ontogen import (
 )
 from src.api.schemas.overview import OverviewResponse, PatchOverviewRequest
 from src.api.schemas.validation import (
-    CreateValidationConfigRequest,
-    PatchValidationConfigRequest,
-    RunValidationRequest,
-    ValidationConfigListResponse,
-    ValidationConfigResponse,
+    PatchValidationConfRequest,
+    PostValidationResultRequest,
+    PutValidationConfRequest,
+    ValidationConfResponse,
+    ValidationListItem,
+    ValidationListResponse,
     ValidationResultListResponse,
-    ValidationResultResponse,
+    ValidationResultRow,
 )
 
 __all__ = [
@@ -136,11 +137,12 @@ __all__ = [
     "OverviewResponse",
     "PatchOverviewRequest",
     # validation
-    "CreateValidationConfigRequest",
-    "PatchValidationConfigRequest",
-    "RunValidationRequest",
-    "ValidationConfigListResponse",
-    "ValidationConfigResponse",
+    "PatchValidationConfRequest",
+    "PostValidationResultRequest",
+    "PutValidationConfRequest",
+    "ValidationConfResponse",
+    "ValidationListItem",
+    "ValidationListResponse",
     "ValidationResultListResponse",
-    "ValidationResultResponse",
+    "ValidationResultRow",
 ]

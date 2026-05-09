@@ -7,14 +7,15 @@ Exception-to-HTTP mapping (per spec/feature/BACKEND.md §Error Handling):
 
   EntityNotFoundError   → 404  DATASET_NOT_FOUND | CONFIG_NOT_FOUND | METRIC_NOT_FOUND
                                  | NODE_NOT_FOUND | EDGE_NOT_FOUND | TRIPLE_NOT_FOUND
-  ConflictError         → 409  DUPLICATE_CONFIG | INGESTION_RUNNING | VALIDATION_RUNNING
+  ConflictError         → 409  DUPLICATE_CONFIG | INGESTION_RUNNING
                                  | GENERATION_RUNNING | METRIC_RUNNING | ONTOGEN_RUNNING
-                                 | INGESTION_DISABLED | VALIDATION_DISABLED
+                                 | INGESTION_DISABLED | INGESTION_NOT_APPLICABLE
                                  | GENERATION_DISABLED | METRIC_DISABLED | ONTOGEN_DISABLED
   DataHubUnavailableError → 502  DATAHUB_UNAVAILABLE
   StorageUnavailableError → 503  STORAGE_UNAVAILABLE
   ValidationError (Pydantic) → 422  INVALID_PARAMETER | INVALID_DATASET_URN
   PreconditionFailedError → 422  DATASET_NOT_IN_DATAHUB | ONTOGEN_TRIPLE_DEPENDENCY_PENDING
+                                   | UNKNOWN_VARIABLE | INVALID_SCORE
 
 Convention: entity_type strings passed to EntityNotFoundError must be lowercase
 singular nouns (e.g. "dataset", "config", "metric", "node", "edge", "triple") —
@@ -61,13 +62,11 @@ class ConflictError(DataSpokeError):
     Valid error_code values:
       DUPLICATE_CONFIG         — attempt to create a config that already exists
       INGESTION_RUNNING        — concurrent active ingestion run for the dataset
-      VALIDATION_RUNNING       — concurrent validation run for the dataset
       GENERATION_RUNNING       — concurrent metadata-generation run for the dataset
       METRIC_RUNNING           — concurrent metric measurement
       ONTOGEN_RUNNING          — ontogen singleton inference already in progress
       INGESTION_DISABLED       — ingestion conf has is_enabled=false; only dry-run permitted
       INGESTION_NOT_APPLICABLE — method/run called on a passive config; run externally
-      VALIDATION_DISABLED      — validation conf has is_enabled=false; only dry-run permitted
       GENERATION_DISABLED      — metagen conf has is_enabled=false; only dry-run permitted
       METRIC_DISABLED          — metric definition has is_enabled=false; only dry-run permitted
       ONTOGEN_DISABLED         — ontogen conf has is_enabled=false; only dry-run permitted
@@ -85,10 +84,14 @@ class PreconditionFailedError(DataSpokeError):
       DATASET_NOT_IN_DATAHUB            — dataset URN not registered in DataHub
       ONTOGEN_TRIPLE_DEPENDENCY_PENDING — triple approval attempted when endpoint
                                           nodes or edge are not yet approved
+      UNKNOWN_VARIABLE                  — result POST carries variable keys not declared
+                                          in the dataset's validation conf
+      INVALID_SCORE                     — result POST has score outside [0.0, 1.0]
     """
 
-    def __init__(self, error_code: str, message: str = "") -> None:
+    def __init__(self, error_code: str, message: str = "", detail: dict | None = None) -> None:
         self.error_code = error_code
+        self.detail = detail or {}
         super().__init__(message)
 
 

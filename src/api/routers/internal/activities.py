@@ -34,7 +34,6 @@ router = APIRouter(
     prefix="/internal/activities",
     tags=[
         "internal/activities/ingestion",
-        "internal/activities/validation",
         "internal/activities/metagen",
         "internal/activities/metrics",
         "internal/activities/ontogen",
@@ -112,55 +111,6 @@ async def ingestion_passive_sync() -> dict[str, object]:
             return {"status": "ok"}
     except DataSpokeError as exc:
         return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
-
-
-# ── /validation ───────────────────────────────────────────────────────────────
-
-
-class ValidationListActiveRequest(BaseModel):
-    tier: str
-
-
-@router.post("/validation/list-active")
-async def validation_list_active(body: ValidationListActiveRequest) -> list[str]:
-    """Return dataset URNs with is_enabled validation configs matching the given tier."""
-    try:
-        async with make_db_session() as db:
-            from src.backend.validation.service import ValidationService
-
-            datahub = make_datahub()
-            cache = make_cache()
-            service = ValidationService(datahub=datahub, db=db, cache=cache)
-            return await service.list_active_for_tier(body.tier)
-    except DataSpokeError as exc:
-        return _error_response(exc)  # type: ignore[return-value]
-
-
-class ValidationRunRequest(BaseModel):
-    dataset_urn: str
-
-
-@router.post("/validation/run")
-async def validation_run(body: ValidationRunRequest) -> dict[str, object]:
-    """Execute validation pipeline for a single dataset."""
-    datahub = make_datahub()
-    cache = make_cache()
-    try:
-        async with make_db_session() as db:
-            from src.backend.validation.service import ValidationService
-
-            service = ValidationService(datahub=datahub, db=db, cache=cache)
-            summary = await service.run(body.dataset_urn)
-            return {
-                "run_id": summary.run_id,
-                "status": summary.status,
-                "total": summary.total,
-                "passed": summary.passed,
-                "failed": summary.failed,
-                "errored": summary.errored,
-            }
-    except DataSpokeError as exc:
-        return _error_response(exc)  # type: ignore[return-value]
 
 
 # ── /metagen ──────────────────────────────────────────────────────────────────

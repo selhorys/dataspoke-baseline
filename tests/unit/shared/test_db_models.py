@@ -98,9 +98,10 @@ def test_all_models_use_dataspoke_schema() -> None:
 
 
 def test_uuid_primary_keys() -> None:
+    # spec: BACKEND_SCHEMA.md — UUID PKs on result/config/event tables.
+    # ValidationConfig PK is TEXT (dataset_urn), not UUID — see test_validation_config_text_pk.
     uuid_pk_models = [
         IngestionConfig,
-        ValidationConfig,
         ValidationResult,
         MetagenConfig,
         MetagenResult,
@@ -116,12 +117,33 @@ def test_uuid_primary_keys() -> None:
 
 
 def test_text_primary_keys() -> None:
-    text_pk_models = [MetricDefinition, DepartmentMapping, OntogenNode, OntogenEdge, OntogenTriple]
+    # spec: BACKEND_SCHEMA.md — TEXT PKs on definition/mapping tables + ValidationConfig
+    text_pk_models = [
+        MetricDefinition,
+        DepartmentMapping,
+        OntogenNode,
+        OntogenEdge,
+        OntogenTriple,
+        ValidationConfig,  # PK = dataset_urn (TEXT) per new passive result-store schema
+    ]
     for model in text_pk_models:
         mapper = inspect(model)
         pk_cols = mapper.primary_key
         assert len(pk_cols) == 1, f"{model.__name__} should have single PK"
         assert str(pk_cols[0].type) == "TEXT", f"{model.__name__} PK should be TEXT"
+
+
+def test_validation_config_text_pk() -> None:
+    """ValidationConfig PK is dataset_urn (TEXT) — one row per dataset.
+
+    spec: VALIDATION.md §Rule Configuration — one validation slot per dataset;
+    spec: BACKEND_SCHEMA.md §validation_configs.
+    """
+    mapper = inspect(ValidationConfig)
+    pk_cols = mapper.primary_key
+    assert len(pk_cols) == 1
+    assert pk_cols[0].name == "dataset_urn"
+    assert str(pk_cols[0].type) == "TEXT"
 
 
 def test_integer_primary_key_singleton_models() -> None:
@@ -148,14 +170,13 @@ def test_node_embedding_text_pk() -> None:
 
 
 def test_jsonb_columns() -> None:
+    # spec: BACKEND_SCHEMA.md — JSONB columns per table.
     jsonb_checks = [
         (IngestionConfig, "locator"),
         (IngestionConfig, "identifier"),
         (IngestionConfig, "auth"),
-        (ValidationConfig, "rules"),
-        (ValidationResult, "partition"),
-        (ValidationResult, "values"),
-        (ValidationResult, "issues"),
+        # ValidationConfig: no JSONB column — variables is ARRAY(Text)
+        (ValidationResult, "variables"),  # measured variable values
         (MetagenConfig, "targets"),
         (MetagenResult, "proposals"),
         (MetagenResult, "field_status"),
@@ -174,12 +195,29 @@ def test_jsonb_columns() -> None:
 
 
 def test_is_enabled_column_on_config_models() -> None:
-    """All mutable config models use is_enabled (not is_active)."""
-    enabled_models = [IngestionConfig, ValidationConfig, MetagenConfig, MetricDefinition, OntogenConfig]
+    """Mutable config models that have lifecycle scheduling use is_enabled (not is_active).
+
+    spec: BACKEND_SCHEMA.md — is_enabled present on IngestionConfig, MetagenConfig,
+    MetricDefinition, OntogenConfig. ValidationConfig uses is_removed (soft-delete) instead.
+    """
+    enabled_models = [IngestionConfig, MetagenConfig, MetricDefinition, OntogenConfig]
     for model in enabled_models:
         col_names = {col.name for col in model.__table__.columns}
         assert "is_enabled" in col_names, f"{model.__name__} missing is_enabled column"
         assert "is_active" not in col_names, f"{model.__name__} has obsolete is_active column"
+
+
+def test_validation_config_is_removed_column() -> None:
+    """ValidationConfig uses is_removed for soft-delete (not is_enabled).
+
+    spec: VALIDATION.md §Rule Configuration — DELETE performs a soft delete;
+    PUT-after-DELETE resurrects the assertion.
+    spec: BACKEND_SCHEMA.md §validation_configs.
+    """
+    col_names = {col.name for col in ValidationConfig.__table__.columns}
+    assert "is_removed" in col_names, "ValidationConfig missing is_removed column"
+    assert "is_enabled" not in col_names, "ValidationConfig should not have is_enabled"
+    assert "is_active" not in col_names, "ValidationConfig should not have is_active"
 
 
 def test_timestamptz_columns() -> None:
@@ -325,9 +363,9 @@ def test_metagen_result_has_field_status_column() -> None:
 
 
 def test_indexes_exist() -> None:
+    # spec: BACKEND_SCHEMA.md §indexes — required indexes per table.
     expected_indexes = {
-        "ix_validation_results_urn_measured",
-        "ix_validation_results_run_id",
+        "ix_validation_results_urn_data_time",  # (dataset_urn, data_time DESC) for LWW collapse
         "ix_metagen_results_urn_generated",
         "ix_metric_results_metric_measured",
         "ix_events_entity_occurred",
@@ -343,6 +381,45 @@ def test_indexes_exist() -> None:
     assert expected_indexes.issubset(actual_indexes), (
         f"Missing indexes: {expected_indexes - actual_indexes}"
     )
+
+
+def test_validation_config_columns() -> None:
+    """ValidationConfig must have the passive result-store columns.
+
+    spec: VALIDATION.md §Rule Configuration — description, variables, is_removed;
+    spec: BACKEND_SCHEMA.md §validation_configs.
+    """
+    col_names = {col.name for col in ValidationConfig.__table__.columns}
+    # New passive-store schema
+    assert "dataset_urn" in col_names, "ValidationConfig missing dataset_urn (PK)"
+    assert "description" in col_names, "ValidationConfig missing description"
+    assert "variables" in col_names, "ValidationConfig missing variables"
+    assert "is_removed" in col_names, "ValidationConfig missing is_removed"
+    assert "created_at" in col_names
+    assert "updated_at" in col_names
+    # Old columns must be gone
+    assert "rules" not in col_names, "ValidationConfig has stale rules column"
+    assert "owner" not in col_names, "ValidationConfig has stale owner column"
+
+
+def test_validation_result_columns() -> None:
+    """ValidationResult must have the passive result-store columns.
+
+    spec: VALIDATION.md §Validation Result — data_time, score, variables, ingestion_time;
+    spec: BACKEND_SCHEMA.md §validation_results.
+    """
+    col_names = {col.name for col in ValidationResult.__table__.columns}
+    assert "id" in col_names, "ValidationResult missing id (UUID PK)"
+    assert "dataset_urn" in col_names, "ValidationResult missing dataset_urn"
+    assert "data_time" in col_names, "ValidationResult missing data_time"
+    assert "score" in col_names, "ValidationResult missing score"
+    assert "variables" in col_names, "ValidationResult missing variables"
+    assert "ingestion_time" in col_names, "ValidationResult missing ingestion_time"
+    # Old columns must be gone
+    assert "partition" not in col_names, "ValidationResult has stale partition column"
+    assert "values" not in col_names, "ValidationResult has stale values column"
+    assert "issues" not in col_names, "ValidationResult has stale issues column"
+    assert "run_id" not in col_names, "ValidationResult has stale run_id column"
 
 
 def test_base_metadata_tables_match_expected_set() -> None:

@@ -1,13 +1,10 @@
-"""Validation service — config CRUD, assertion-layer run pipeline, results, and events."""
+"""Validation service — passive result-store model."""
 
-import json
 import logging
-import secrets
-import uuid
+import math
 from datetime import UTC, datetime
 from typing import Any
 
-from datahub.metadata.schema_classes import StatusClass
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,97 +15,75 @@ from src.backend.validation.assertions import (
     build_run_event,
     register_assertion,
     report_result,
+    tombstone_assertion,
 )
-from src.backend.validation.rules import RuleEvaluation, evaluate_rule
-from src.shared.cache.client import RedisClient
-from src.shared.config import VALIDATION_RESULT_CACHE_TTL
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.db.registry import ensure_dataset_registered
 from src.shared.events import (
-    VALIDATION_COMPLETE,
     VALIDATION_CONFIG_CREATE,
     VALIDATION_CONFIG_DELETE,
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
+    VALIDATION_RESULT_RECORDED,
 )
-from src.shared.exceptions import ConflictError, EntityNotFoundError
+from src.shared.exceptions import (
+    DataHubUnavailableError,
+    EntityNotFoundError,
+    PreconditionFailedError,
+)
 
 logger = logging.getLogger(__name__)
+
+_RESULT_LIMIT_DEFAULT = 1000
+_RESULT_LIMIT_CAP = 10_000
 
 
 # ── Value objects ─────────────────────────────────────────────────────────────
 
 
 class ValidationConfigRecord(BaseModel):
-    """Value object mirroring the ORM ValidationConfig."""
+    """Value object for a validation configuration row."""
 
-    id: str
     dataset_urn: str
-    rules: list[dict[str, Any]]
-    schedule_tier: str | None = None
-    is_enabled: bool = False
-    owner: str
+    description: str
+    variables: list[str]
+    is_removed: bool
     created_at: datetime
     updated_at: datetime
 
 
 class ValidationResultRecord(BaseModel):
-    """Value object mirroring the ORM ValidationResult (per-rule result)."""
+    """Value object for a single result row (collapsed last-write-wins)."""
 
-    id: str
+    data_time: datetime
+    score: float
+    variables: dict[str, Any]
+
+
+class ValidationListItem(BaseModel):
+    """Value object for the cross-dataset list view."""
+
     dataset_urn: str
-    rule_id: str
-    partition: dict[str, Any]
-    values: dict[str, Any]
-    validation: dict[str, bool] | None = None
-    assertion_result: str
-    issues: list[dict[str, Any]] = []
-    run_id: str
-    measured_at: datetime
-
-
-class ValidationRunSummary(BaseModel):
-    """Summary of a full validation run across all rules."""
-
-    run_id: str
-    status: str  # "success" | "failure" | "error"
-    total: int
-    passed: int
-    failed: int
-    errored: int
-    results: list[ValidationResultRecord] = []
+    description: str
+    variable_count: int
+    latest_data_time: datetime | None
+    latest_score: float | None
+    is_removed: bool
+    updated_at: datetime
 
 
 # ── ORM row converters ────────────────────────────────────────────────────────
 
 
 def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
-    rules = row.rules if isinstance(row.rules, list) else []
     return ValidationConfigRecord(
-        id=str(row.id),
         dataset_urn=row.dataset_urn,
-        rules=rules,
-        schedule_tier=row.schedule_tier,
-        is_enabled=row.is_enabled,
-        owner=row.owner,
+        description=row.description,
+        variables=list(row.variables) if row.variables else [],
+        is_removed=row.is_removed,
         created_at=row.created_at,
         updated_at=row.updated_at,
-    )
-
-
-def _result_from_row(row: ValidationResult) -> ValidationResultRecord:
-    return ValidationResultRecord(
-        id=str(row.id),
-        dataset_urn=row.dataset_urn,
-        rule_id=row.rule_id,
-        partition=row.partition,
-        values=row.values,
-        validation=row.validation,
-        assertion_result=row.assertion_result,
-        issues=row.issues if isinstance(row.issues, list) else [],
-        run_id=str(row.run_id),
-        measured_at=row.measured_at,
     )
 
 
@@ -116,17 +91,15 @@ def _result_from_row(row: ValidationResult) -> ValidationResultRecord:
 
 
 class ValidationService:
-    """Config CRUD, assertion-layer run pipeline, results query, and event recording."""
+    """Config CRUD, result recording, historical query, and event log."""
 
     def __init__(
         self,
         datahub: DataHubClient,
         db: AsyncSession,
-        cache: RedisClient,
     ) -> None:
         self._datahub = datahub
         self._db = db
-        self._cache = cache
 
     # ── Config CRUD ──────────────────────────────────────────────────────────
 
@@ -135,18 +108,22 @@ class ValidationService:
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
         row = result.scalar_one_or_none()
-        if row is None:
-            return None
-        return _config_from_row(row)
+        return _config_from_row(row) if row is not None else None
 
     async def upsert_config(
         self,
         dataset_urn: str,
-        rules: list[dict[str, Any]],
-        schedule_tier: str | None,
-        is_enabled: bool,
-        owner: str,
+        description: str,
+        variables: list[str],
     ) -> tuple[ValidationConfigRecord, bool]:
+        """Create or replace the validation configuration for a dataset.
+
+        Precondition: dataset must be registered in DataHub
+        (``dataset_registry.datahub_registered=true``).
+
+        DB write is committed first, then assertionInfo + status(removed=False)
+        emitted to DataHub. On DataHub failure the exception propagates (502/503).
+        """
         await ensure_dataset_registered(
             self._db, self._datahub, dataset_urn, require_in_datahub=True
         )
@@ -157,20 +134,18 @@ class ValidationService:
         existing = result.scalar_one_or_none()
 
         if existing:
-            existing.rules = rules
-            existing.schedule_tier = schedule_tier
-            existing.is_enabled = is_enabled
-            existing.owner = owner
+            existing.description = description
+            existing.variables = variables
+            existing.is_removed = False
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
             created = False
         else:
             existing = ValidationConfig(
                 dataset_urn=dataset_urn,
-                rules=rules,
-                schedule_tier=schedule_tier,
-                is_enabled=is_enabled,
-                owner=owner,
+                description=description,
+                variables=variables,
+                is_removed=False,
             )
             self._db.add(existing)
             created = True
@@ -178,28 +153,26 @@ class ValidationService:
         await self._db.commit()
         await self._db.refresh(existing)
 
-        for rule in rules:
-            rule_id = rule.get("rule_id", "")
-            assertion_urn = build_assertion_urn(dataset_urn, rule_id)
-            assertion_info = build_assertion_info(dataset_urn, rule)
-            await register_assertion(self._datahub, assertion_urn, assertion_info)
+        assertion_urn = build_assertion_urn(dataset_urn)
+        info = build_assertion_info(dataset_urn, description, variables)
+        await register_assertion(self._datahub, assertion_urn, info)
 
         event_type = VALIDATION_CONFIG_CREATE if created else VALIDATION_CONFIG_UPDATE
         await self._record_event(
             dataset_urn,
             event_type,
             "success",
-            {
-                "operation": "PUT",
-                "config_id": str(existing.id),
-                "rule_count": len(rules),
-                "is_enabled": existing.is_enabled,
-            },
+            {"operation": "PUT", "variable_count": len(variables)},
         )
 
         return _config_from_row(existing), created
 
-    async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> ValidationConfigRecord:
+    async def patch_config(
+        self,
+        dataset_urn: str,
+        patch: dict[str, Any],
+    ) -> ValidationConfigRecord:
+        """Partially update the validation configuration."""
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
@@ -207,39 +180,31 @@ class ValidationService:
         if row is None:
             raise EntityNotFoundError("config", dataset_urn)
 
-        if "rules" in patch and patch["rules"] is not None:
-            row.rules = patch["rules"]
-        if "schedule_tier" in patch:
-            row.schedule_tier = patch["schedule_tier"]
-        if "is_enabled" in patch and patch["is_enabled"] is not None:
-            row.is_enabled = patch["is_enabled"]
-        row.updated_at = datetime.now(tz=UTC)
+        if "description" in patch and patch["description"] is not None:
+            row.description = patch["description"]
+        if "variables" in patch and patch["variables"] is not None:
+            row.variables = patch["variables"]
 
+        row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
 
-        if "rules" in patch and patch["rules"] is not None:
-            for rule in patch["rules"]:
-                rule_id = rule.get("rule_id", "")
-                assertion_urn = build_assertion_urn(dataset_urn, rule_id)
-                assertion_info = build_assertion_info(dataset_urn, rule)
-                await register_assertion(self._datahub, assertion_urn, assertion_info)
+        assertion_urn = build_assertion_urn(dataset_urn)
+        info = build_assertion_info(dataset_urn, row.description, list(row.variables))
+        await register_assertion(self._datahub, assertion_urn, info)
 
         await self._record_event(
             dataset_urn,
             VALIDATION_CONFIG_UPDATE,
             "success",
-            {
-                "operation": "PATCH",
-                "config_id": str(row.id),
-                "fields_changed": list(patch.keys()),
-            },
+            {"operation": "PATCH", "fields_changed": list(patch.keys())},
         )
 
         return _config_from_row(row)
 
     async def delete_config(self, dataset_urn: str) -> None:
+        """Soft-delete: set is_removed=True and emit status(removed=True) to DataHub."""
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
@@ -247,359 +212,250 @@ class ValidationService:
         if row is None:
             raise EntityNotFoundError("config", dataset_urn)
 
-        config_id = str(row.id)
-        for rule in row.rules or []:
-            rule_id = rule.get("rule_id", "")
-            if not rule_id:
-                continue
-            assertion_urn = build_assertion_urn(dataset_urn, rule_id)
-            await self._datahub.emit_aspect(assertion_urn, StatusClass(removed=True))
-
-        await self._db.delete(row)
+        row.is_removed = True
+        row.updated_at = datetime.now(tz=UTC)
+        self._db.add(row)
         await self._db.commit()
+
+        assertion_urn = build_assertion_urn(dataset_urn)
+        await tombstone_assertion(self._datahub, assertion_urn)
 
         await self._record_event(
             dataset_urn,
             VALIDATION_CONFIG_DELETE,
             "success",
-            {"operation": "DELETE", "config_id": config_id},
+            {"operation": "DELETE"},
         )
-
-    async def list_active_for_tier(self, tier: str) -> list[str]:
-        """Return dataset URNs where is_enabled=True and schedule_tier matches.
-
-        Used by the validation-{hourly,daily,weekly} DAGs.
-        """
-        result = await self._db.execute(
-            select(ValidationConfig.dataset_urn).where(
-                ValidationConfig.is_enabled.is_(True),
-                ValidationConfig.schedule_tier == tier,
-            )
-        )
-        return list(result.scalars().all())
-
-    async def list_configs(
-        self,
-        offset: int = 0,
-        limit: int = 20,
-        is_enabled_filter: bool | None = None,
-        order_by: Any = None,
-    ) -> tuple[list[ValidationConfigRecord], int]:
-        base = select(ValidationConfig)
-        if is_enabled_filter is not None:
-            base = base.where(ValidationConfig.is_enabled == is_enabled_filter)
-
-        count_q = select(func.count()).select_from(base.subquery())
-        total_count = (await self._db.execute(count_q)).scalar() or 0
-
-        default_order = ValidationConfig.created_at.desc()
-        rows_q = (
-            base.order_by(order_by if order_by is not None else default_order)
-            .offset(offset)
-            .limit(limit)
-        )
-        result = await self._db.execute(rows_q)
-        rows = result.scalars().all()
-
-        return [_config_from_row(r) for r in rows], total_count
 
     # ── Results ──────────────────────────────────────────────────────────────
+
+    async def record_result(
+        self,
+        dataset_urn: str,
+        data_time: datetime,
+        score: float,
+        variables: dict[str, float],
+    ) -> ValidationResultRecord:
+        """Validate and persist a pipeline-emitted result, then emit to DataHub.
+
+        Validation:
+        - score must be in [0.0, 1.0]; else PreconditionFailedError(INVALID_SCORE)
+        - variable keys must be a subset of conf.variables; else
+          PreconditionFailedError(UNKNOWN_VARIABLE)
+
+        The row is inserted regardless of DataHub emit success (local store is
+        the historical-baseline cache).  On emit failure the DataHubUnavailableError
+        is re-raised so the API layer can return 502/503.
+        VALIDATION.RESULT_RECORDED is only recorded after a successful emit.
+        """
+        if not math.isfinite(score) or score < 0.0 or score > 1.0:
+            raise PreconditionFailedError(
+                "INVALID_SCORE",
+                f"score must be in [0.0, 1.0], got {score}",
+                detail={"score": score if math.isfinite(score) else repr(score)},
+            )
+
+        config_result = await self._db.execute(
+            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
+        )
+        config_row = config_result.scalar_one_or_none()
+        if config_row is None:
+            raise EntityNotFoundError("config", dataset_urn)
+
+        declared = set(config_row.variables or [])
+        unknown = sorted(k for k in variables if k not in declared)
+        if unknown:
+            raise PreconditionFailedError(
+                "UNKNOWN_VARIABLE",
+                f"unknown variable keys: {unknown}",
+                detail={"unknown": unknown},
+            )
+
+        row = ValidationResult(
+            dataset_urn=dataset_urn,
+            data_time=data_time,
+            score=score,
+            variables=variables,
+            ingestion_time=datetime.now(tz=UTC),
+        )
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+
+        assertion_urn = build_assertion_urn(dataset_urn)
+        run_event = build_run_event(
+            assertion_urn=assertion_urn,
+            dataset_urn=dataset_urn,
+            data_time=data_time,
+            score=score,
+            variables=variables,
+        )
+
+        emitted = await report_result(self._datahub, assertion_urn, run_event)
+        if not emitted:
+            raise DataHubUnavailableError(
+                f"assertionRunEvent emit failed for {assertion_urn}"
+            )
+
+        await self._record_event(
+            dataset_urn,
+            VALIDATION_RESULT_RECORDED,
+            "success",
+            {
+                "data_time": data_time.isoformat(),
+                "score": score,
+                "variable_count": len(variables),
+            },
+        )
+
+        return ValidationResultRecord(
+            data_time=row.data_time,
+            score=row.score,
+            variables=dict(row.variables) if row.variables else {},
+        )
 
     async def get_results(
         self,
         dataset_urn: str,
         from_dt: datetime | None = None,
-        to_dt: datetime | None = None,
-        partition_filter: dict[str, Any] | None = None,
-        offset: int = 0,
-        limit: int = 20,
-        order_by: Any = None,
+        until_dt: datetime | None = None,
+        limit: int = _RESULT_LIMIT_DEFAULT,
     ) -> tuple[list[ValidationResultRecord], int]:
-        base = select(ValidationResult).where(ValidationResult.dataset_urn == dataset_urn)
+        """Return collapsed (last-write-wins per data_time) historical results.
+
+        Returns a tuple of (collapsed_rows, total_count) where total_count is
+        the number of underlying rows in the window BEFORE de-duplication/collapse.
+        limit is clamped to [1, 10000] server-side.
+        """
+        effective_limit = max(1, min(limit, _RESULT_LIMIT_CAP))
+
+        # Pre-collapse count: total raw rows in the window (no de-dup)
+        count_q = select(func.count()).where(
+            ValidationResult.dataset_urn == dataset_urn
+        )
+        if from_dt is not None:
+            count_q = count_q.where(ValidationResult.data_time >= from_dt)
+        if until_dt is not None:
+            count_q = count_q.where(ValidationResult.data_time < until_dt)
+        total_count: int = (await self._db.execute(count_q)).scalar() or 0
+
+        sub = (
+            select(
+                ValidationResult.data_time,
+                ValidationResult.score,
+                ValidationResult.variables,
+                func.row_number()
+                .over(
+                    partition_by=ValidationResult.data_time,
+                    order_by=ValidationResult.ingestion_time.desc(),
+                )
+                .label("rn"),
+            )
+            .where(ValidationResult.dataset_urn == dataset_urn)
+        )
 
         if from_dt is not None:
-            base = base.where(ValidationResult.measured_at >= from_dt)
-        if to_dt is not None:
-            base = base.where(ValidationResult.measured_at <= to_dt)
-        if partition_filter is not None:
-            base = base.where(ValidationResult.partition.contains(partition_filter))
+            sub = sub.where(ValidationResult.data_time >= from_dt)
+        if until_dt is not None:
+            sub = sub.where(ValidationResult.data_time < until_dt)
+
+        sub = sub.subquery()
+
+        rows_q = (
+            select(sub.c.data_time, sub.c.score, sub.c.variables)
+            .where(sub.c.rn == 1)
+            .order_by(sub.c.data_time.desc())
+            .limit(effective_limit)
+        )
+
+        result = await self._db.execute(rows_q)
+        rows = result.all()
+
+        collapsed = [
+            ValidationResultRecord(
+                data_time=r.data_time,
+                score=r.score,
+                variables=dict(r.variables) if r.variables else {},
+            )
+            for r in rows
+        ]
+        return collapsed, total_count
+
+    async def list_configs(
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        removed_filter: bool | None = None,
+        order_by: Any = None,
+    ) -> tuple[list[ValidationListItem], int]:
+        """List configs with latest result joined per dataset.
+
+        Each row contains dataset_urn, description, variable_count,
+        latest_data_time, latest_score, is_removed, updated_at.
+        """
+        base = select(ValidationConfig)
+        if removed_filter is not None:
+            base = base.where(ValidationConfig.is_removed == removed_filter)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
-        default_order = ValidationResult.measured_at.desc()
-        rows_q = (
+        default_order = ValidationConfig.updated_at.desc()
+        config_q = (
             base.order_by(order_by if order_by is not None else default_order)
             .offset(offset)
             .limit(limit)
         )
-        result = await self._db.execute(rows_q)
-        rows = result.scalars().all()
+        config_result = await self._db.execute(config_q)
+        config_rows = config_result.scalars().all()
 
-        return [_result_from_row(r) for r in rows], total_count
+        if not config_rows:
+            return [], total_count
 
-    # ── Run pipeline ──────────────────────────────────────────────────────────
+        urns = [r.dataset_urn for r in config_rows]
 
-    async def run(
-        self,
-        dataset_urn: str,
-        partition: dict[str, Any] | None = None,
-        run_id: str | None = None,
-        dry_run: bool = False,
-    ) -> ValidationRunSummary:
-        """Execute all rules for a dataset with a Redis SETNX concurrency guard.
-
-        Raises ConflictError("VALIDATION_RUNNING") when the lock is already held.
-        The lock is released via CAS in the finally block.
-
-        Pipeline per rule:
-        1. Acquire Redis SETNX guard.
-        2. Publish progress to Redis pub/sub.
-        3. Evaluate rule via evaluate_rule().
-        4. Build assertion URN, info, and run event.
-        5. Register assertion in DataHub (best-effort).
-        6. Report result to DataHub (best-effort).
-        7. Persist ValidationResult row to PostgreSQL.
-        8. Publish rule_result to Redis pub/sub.
-        9. Publish summary to Redis pub/sub.
-        10. Cache summary in Redis.
-        11. Record VALIDATION.COMPLETE event.
-
-        If ``dry_run`` is True, validate that the config exists and return a
-        success summary without executing any rules.
-        """
-        lock_key = f"validation:running:{dataset_urn}"
-        lock_token: str | None = None
-
-        lock_token = secrets.token_urlsafe(16)
-        acquired = await self._cache.set_nx(lock_key, lock_token, ttl_seconds=3600)
-        if not acquired:
-            raise ConflictError(
-                "VALIDATION_RUNNING",
-                f"Validation is already running for {dataset_urn}",
-            )
-
-        try:
-            return await self._run_inner(
-                dataset_urn, partition=partition, run_id=run_id, dry_run=dry_run
-            )
-        finally:
-            await self._cache.delete_if_value(lock_key, lock_token)
-
-    async def _run_inner(
-        self,
-        dataset_urn: str,
-        partition: dict[str, Any] | None = None,
-        run_id: str | None = None,
-        dry_run: bool = False,
-    ) -> ValidationRunSummary:
-        """Inner validation run logic (called inside the SETNX guard)."""
-        config = await self.get_config(dataset_urn)
-        if config is None:
-            raise EntityNotFoundError("config", dataset_urn)
-
-        if not config.is_enabled and not dry_run:
-            raise ConflictError(
-                "VALIDATION_DISABLED",
-                f"Validation is disabled for {dataset_urn}; only dry-run is permitted",
-            )
-
-        if dry_run:
-            return ValidationRunSummary(
-                run_id=run_id or str(uuid.uuid4()),
-                status="success",
-                total=len(config.rules),
-                passed=0,
-                failed=0,
-                errored=0,
-                results=[],
-            )
-
-        if run_id is None:
-            run_id = str(uuid.uuid4())
-
-        resolved_partition: dict[str, Any] = partition if partition else {}
-        rules: list[dict[str, Any]] = config.rules
-
-        result_records: list[ValidationResultRecord] = []
-        passed = 0
-        failed = 0
-        errored = 0
-
-        for rule in rules:
-            rule_id = rule.get("rule_id", str(uuid.uuid4()))
-
-            # Publish progress
-            try:
-                await self._cache.publish(
-                    f"ws:validation:{dataset_urn}",
-                    json.dumps(
-                        {
-                            "type": "progress",
-                            "run_id": run_id,
-                            "rule_id": rule_id,
-                            "status": "running",
-                        }
-                    ),
+        latest_sub = (
+            select(
+                ValidationResult.dataset_urn,
+                ValidationResult.data_time,
+                ValidationResult.score,
+                func.row_number()
+                .over(
+                    partition_by=ValidationResult.dataset_urn,
+                    order_by=ValidationResult.data_time.desc(),
                 )
-            except Exception:
-                logger.warning(
-                    "validation_pubsub_progress_failed",
-                    exc_info=True,
-                    extra={"dataset_urn": dataset_urn, "rule_id": rule_id},
-                )
-
-            # Evaluate rule
-            evaluation: RuleEvaluation = await evaluate_rule(
-                self._datahub, dataset_urn, rule, resolved_partition, db=self._db
+                .label("rn"),
             )
-
-            # Emit run event to DataHub (best-effort; failure surfaces as ERROR)
-            assertion_urn = build_assertion_urn(dataset_urn, rule_id)
-            run_event = build_run_event(
-                assertion_urn=assertion_urn,
-                dataset_urn=dataset_urn,
-                run_id=run_id,
-                result=evaluation.assertion_result,
-                values=evaluation.values,
-                partition=resolved_partition,
-            )
-            emitted = await report_result(self._datahub, assertion_urn, run_event)
-            if not emitted:
-                evaluation = evaluation.__class__(
-                    rule_id=evaluation.rule_id,
-                    assertion_result="ERROR",
-                    values=evaluation.values,
-                    validation=evaluation.validation,
-                    issues=evaluation.issues
-                    + [{"type": "emit_failed", "msg": "DataHub assertionRunEvent emission failed"}],
-                    partition=evaluation.partition,
-                )
-
-            # Persist result to PostgreSQL
-            result_row = ValidationResult(
-                dataset_urn=dataset_urn,
-                rule_id=rule_id,
-                partition=resolved_partition,
-                values=evaluation.values,
-                validation=evaluation.validation,
-                assertion_result=evaluation.assertion_result,
-                issues=evaluation.issues,
-                run_id=uuid.UUID(run_id),
-                measured_at=datetime.now(tz=UTC),
-            )
-            self._db.add(result_row)
-            await self._db.commit()
-            await self._db.refresh(result_row)
-
-            record = _result_from_row(result_row)
-            result_records.append(record)
-
-            # Count outcomes
-            if evaluation.assertion_result == "SUCCESS":
-                passed += 1
-            elif evaluation.assertion_result == "FAILURE":
-                failed += 1
-            else:
-                errored += 1
-
-            # Publish rule result
-            try:
-                await self._cache.publish(
-                    f"ws:validation:{dataset_urn}",
-                    json.dumps(
-                        {
-                            "type": "rule_result",
-                            "run_id": run_id,
-                            "rule_id": rule_id,
-                            "assertion_result": evaluation.assertion_result,
-                            "issues": evaluation.issues,
-                        }
-                    ),
-                )
-            except Exception:
-                logger.warning(
-                    "validation_pubsub_rule_result_failed",
-                    exc_info=True,
-                    extra={"dataset_urn": dataset_urn, "rule_id": rule_id},
-                )
-
-        total = len(rules)
-        overall_status = (
-            "success" if failed == 0 and errored == 0 else ("error" if errored > 0 else "failure")
+            .where(ValidationResult.dataset_urn.in_(urns))
+            .subquery()
         )
+        latest_q = select(
+            latest_sub.c.dataset_urn,
+            latest_sub.c.data_time,
+            latest_sub.c.score,
+        ).where(latest_sub.c.rn == 1)
 
-        summary = ValidationRunSummary(
-            run_id=run_id,
-            status=overall_status,
-            total=total,
-            passed=passed,
-            failed=failed,
-            errored=errored,
-            results=result_records,
-        )
+        latest_result = await self._db.execute(latest_q)
+        latest_by_urn: dict[str, tuple[datetime, float]] = {}
+        for r in latest_result.all():
+            latest_by_urn[r.dataset_urn] = (r.data_time, r.score)
 
-        # Publish summary
-        try:
-            await self._cache.publish(
-                f"ws:validation:{dataset_urn}",
-                json.dumps(
-                    {
-                        "type": "summary",
-                        "run_id": run_id,
-                        "status": overall_status,
-                        "total": total,
-                        "passed": passed,
-                        "failed": failed,
-                        "errored": errored,
-                    }
-                ),
-            )
-        except Exception:
-            logger.warning(
-                "validation_pubsub_summary_failed",
-                exc_info=True,
-                extra={"dataset_urn": dataset_urn},
+        items: list[ValidationListItem] = []
+        for row in config_rows:
+            latest = latest_by_urn.get(row.dataset_urn)
+            items.append(
+                ValidationListItem(
+                    dataset_urn=row.dataset_urn,
+                    description=row.description,
+                    variable_count=len(row.variables) if row.variables else 0,
+                    latest_data_time=latest[0] if latest else None,
+                    latest_score=latest[1] if latest else None,
+                    is_removed=row.is_removed,
+                    updated_at=row.updated_at,
+                )
             )
 
-        # Cache summary
-        try:
-            await self._cache.set(
-                f"validation:{dataset_urn}:result",
-                json.dumps(
-                    {
-                        "run_id": run_id,
-                        "status": overall_status,
-                        "total": total,
-                        "passed": passed,
-                        "failed": failed,
-                        "errored": errored,
-                    }
-                ),
-                ttl_seconds=VALIDATION_RESULT_CACHE_TTL,
-            )
-        except Exception:
-            logger.warning(
-                "validation_cache_failed",
-                exc_info=True,
-                extra={"dataset_urn": dataset_urn},
-            )
-
-        # Record event
-        await self._record_event(
-            dataset_urn,
-            VALIDATION_COMPLETE,
-            overall_status,
-            {
-                "run_id": run_id,
-                "total": total,
-                "passed": passed,
-                "failed": failed,
-                "errored": errored,
-            },
-        )
-
-        return summary
+        return items, total_count
 
     # ── Events ────────────────────────────────────────────────────────────────
 
@@ -635,7 +491,7 @@ class ValidationService:
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
-        events = [
+        return [
             {
                 "id": str(row.id),
                 "entity_type": row.entity_type,
@@ -646,8 +502,7 @@ class ValidationService:
                 "occurred_at": row.occurred_at,
             }
             for row in rows
-        ]
-        return events, total_count
+        ], total_count
 
     async def _record_event(
         self,
@@ -666,21 +521,3 @@ class ValidationService:
         )
         self._db.add(event)
         await self._db.commit()
-
-
-# ── Standalone helpers ────────────────────────────────────────────────────────
-
-
-async def run_validation_with_lock(
-    service: ValidationService,
-    cache: RedisClient,
-    dataset_urn: str,
-    partition: dict[str, Any] | None = None,
-    dry_run: bool = False,
-) -> ValidationRunSummary:
-    """Run validation with a Redis concurrency guard.
-
-    Delegates directly to ``service.run()`` which self-guards via its own CAS
-    lock.  The ``cache`` argument is kept for backward compatibility.
-    """
-    return await service.run(dataset_urn, partition=partition, dry_run=dry_run)

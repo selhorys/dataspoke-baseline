@@ -77,11 +77,10 @@ async def get_ingestion_service(
 async def get_validation_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
-    cache: RedisClient = Depends(get_redis),
 ) -> "ValidationService":
     from src.backend.validation.service import ValidationService
 
-    return ValidationService(datahub=datahub, db=db, cache=cache)
+    return ValidationService(datahub=datahub, db=db)
 
 
 async def get_metagen_service(

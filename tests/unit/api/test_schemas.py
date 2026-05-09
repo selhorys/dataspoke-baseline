@@ -31,9 +31,9 @@ from src.api.schemas.ontogen import (
 )
 from src.api.schemas.overview import OverviewResponse
 from src.api.schemas.validation import (
-    CreateValidationConfigRequest,
-    ValidationConfigListResponse,
-    ValidationConfigResponse,
+    PutValidationConfRequest,
+    ValidationConfResponse,
+    ValidationListResponse,
 )
 
 
@@ -198,41 +198,38 @@ class TestIngestionSchemas:
 
 
 class TestValidationSchemas:
-    def test_create_request(self) -> None:
-        req = CreateValidationConfigRequest(
-            rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
-            owner="admin",
-        )
-        assert req.schedule_tier is None
+    """Passive result-store validation schema smoke tests.
 
-    def test_create_request_with_schedule(self) -> None:
-        req = CreateValidationConfigRequest(
-            rules=[],
-            schedule_tier="daily",
-            owner="admin",
-        )
-        assert req.schedule_tier == "daily"
+    spec: VALIDATION.md §Rule Configuration, §Validation Result.
+    Full constraint tests are in tests/unit/api/test_validation_schemas.py.
+    """
 
-    def test_config_response_round_trip(self) -> None:
+    def test_put_request_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — description + variables required
+        req = PutValidationConfRequest(
+            description="Daily row count check",
+            variables=["row_cnt", "null_rate"],
+        )
+        assert req.description == "Daily row count check"
+        assert req.variables == ["row_cnt", "null_rate"]
+
+    def test_conf_response_has_is_removed(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — is_removed present in response
         now = datetime.now(tz=UTC)
-        resp = ValidationConfigResponse(
-            id="1",
-            dataset_urn="urn:li:dataset:test",
-            rules=[{"rule_id": "r1", "type": "volume"}],
-            schedule_tier=None,
-            is_enabled=False,
-            owner="admin",
+        resp = ValidationConfResponse(
+            dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,DEV)",
+            description="check",
+            variables=["row_cnt"],
+            is_removed=False,
             created_at=now,
             updated_at=now,
         )
-        data = resp.model_dump()
-        parsed = ValidationConfigResponse.model_validate(data)
-        assert parsed.id == "1"
-        assert parsed.rules[0]["rule_id"] == "r1"
+        assert resp.is_removed is False
 
-    def test_list_response(self) -> None:
-        resp = ValidationConfigListResponse()
-        assert resp.configs == []
+    def test_list_response_has_items(self) -> None:
+        # spec: VALIDATION.md §API Surface — cross-dataset list
+        resp = ValidationListResponse()
+        assert resp.items == []
 
 
 class TestMetagenSchemas:

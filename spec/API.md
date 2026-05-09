@@ -593,6 +593,14 @@ All errors follow the standard envelope:
 The `resp_time` (ISO 8601 UTC, millisecond precision) is included on every error
 response, matching the success envelope.
 
+A small set of errors carry an additional `detail` object with structured,
+machine-readable context about the failure. Currently emitted by:
+
+- `UNKNOWN_VARIABLE` → `detail.unknown: string[]` lists offending variable keys.
+- `INVALID_SCORE` → `detail.score` echoes the rejected value (JSON number when finite, otherwise a string like `"nan"` since JSON has no NaN/Inf).
+
+Clients should treat `detail` as optional; absent for errors that don't need it.
+
 ### HTTP Status Codes
 
 | Status | When used |

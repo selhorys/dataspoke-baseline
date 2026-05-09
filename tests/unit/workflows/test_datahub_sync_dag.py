@@ -4,7 +4,7 @@ Tests cover:
 - datahub-sync-daily is registered in _EXPECTED_DAGS in admin.py
 - The DAG file exists in the dags/ directory
 - The DAG file contains the correct dag_id string and expected structural markers
-- ALL_DAG_IDS exactly matches the 21 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue
+- ALL_DAG_IDS exactly matches the 17 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue
 
 Note: airflow is not installed in the unit-test Python environment
 (it runs in-cluster only). These tests verify the DAG file at the
@@ -19,15 +19,16 @@ from pathlib import Path
 _DAGS_DIR = Path(__file__).resolve().parents[3] / "src" / "workflows" / "dags"
 _DAG_ID = "datahub-sync-daily"
 
-# Exact set of 21 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue.
+# Exact set of 17 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue.
+# Validation no longer has scheduled DAGs — DataSpoke validation is a passive
+# result-store; external pipelines POST results on their own schedule.
 # 4 ingestion (3 active tier + 1 passive hourly)
-# 3 validation (hourly/daily/weekly)
 # 3 metrics tier (hourly/daily/weekly)
 # 3 metagen tier (hourly/daily/weekly)
 # 3 ontogen tier (hourly/daily/weekly)
 # 3 on-demand (metagen, metrics, ontogen)
 # 1 sync (datahub-sync-daily)
-# Total = 21
+# Total = 17
 _EXPECTED_ALL_DAG_IDS: frozenset[str] = frozenset({
     # Ingestion — active scheduled tiers
     "ingestion-active-hourly",
@@ -35,10 +36,6 @@ _EXPECTED_ALL_DAG_IDS: frozenset[str] = frozenset({
     "ingestion-active-weekly",
     # Ingestion — passive sync
     "ingestion-passive-hourly",
-    # Validation — scheduled tiers
-    "validation-hourly",
-    "validation-daily",
-    "validation-weekly",
     # Metrics — scheduled tiers
     "metrics-hourly",
     "metrics-daily",

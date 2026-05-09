@@ -118,16 +118,20 @@ def _error_json(
     error_code: str,
     message: str,
     headers: dict[str, str] | None = None,
+    detail: dict[str, object] | None = None,
 ) -> JSONResponse:
     trace_id = request.headers.get(_TRACE_HEADER, "")
+    body: dict[str, object] = {
+        "error_code": error_code,
+        "message": message,
+        "trace_id": trace_id,
+        "resp_time": _resp_time(),
+    }
+    if detail:
+        body["detail"] = detail
     return JSONResponse(
         status_code=status,
-        content={
-            "error_code": error_code,
-            "message": message,
-            "trace_id": trace_id,
-            "resp_time": _resp_time(),
-        },
+        content=body,
         headers=headers,
     )
 
@@ -160,7 +164,7 @@ async def _handle_conflict(request: Request, exc: ConflictError) -> JSONResponse
 
 
 async def _handle_precondition(request: Request, exc: PreconditionFailedError) -> JSONResponse:
-    return _error_json(request, 422, exc.error_code, str(exc))
+    return _error_json(request, 422, exc.error_code, str(exc), detail=exc.detail or None)
 
 
 async def _handle_invalid_dataset_urn(

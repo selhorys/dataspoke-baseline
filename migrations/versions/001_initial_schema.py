@@ -72,15 +72,16 @@ def upgrade() -> None:
     # ── validation_configs ───────────────────────────────────────────────
     op.create_table(
         "validation_configs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("dataset_urn", sa.Text(), nullable=False),
-        sa.Column("rules", JSONB, nullable=False),
-        sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column("owner", sa.Text(), nullable=False),
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("variables", sa.ARRAY(sa.Text()), nullable=False),
+        sa.Column("is_removed", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("dataset_urn"),
+        sa.CheckConstraint(
+            "array_length(variables, 1) BETWEEN 1 AND 200",
+            name="ck_validation_configs_variables_length",
+        ),
         schema=SCHEMA,
     )
 
@@ -89,26 +90,20 @@ def upgrade() -> None:
         "validation_results",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("dataset_urn", sa.Text(), nullable=False),
-        sa.Column("rule_id", sa.Text(), nullable=False),
-        sa.Column("partition", JSONB, nullable=False),
-        sa.Column("values", JSONB, nullable=False),
-        sa.Column("validation", JSONB, nullable=True),
-        sa.Column("assertion_result", sa.Text(), nullable=False),
-        sa.Column("issues", JSONB, nullable=False),
-        sa.Column("run_id", UUID(as_uuid=True), nullable=False),
-        sa.Column("measured_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("data_time", TIMESTAMPTZ, nullable=False),
+        sa.Column("score", sa.Float(), nullable=False),
+        sa.Column("variables", JSONB, nullable=False),
+        sa.Column("ingestion_time", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "score BETWEEN 0.0 AND 1.0",
+            name="ck_validation_results_score_range",
+        ),
         schema=SCHEMA,
     )
     op.create_index(
-        "ix_validation_results_urn_measured",
+        "ix_validation_results_urn_data_time",
         "validation_results",
-        ["dataset_urn", sa.text("measured_at DESC")],
-        schema=SCHEMA,
-    )
-    op.create_index(
-        "ix_validation_results_run_id",
-        "validation_results",
-        ["run_id"],
+        ["dataset_urn", sa.text("data_time DESC")],
         schema=SCHEMA,
     )
 

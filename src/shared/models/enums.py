@@ -8,25 +8,10 @@ class IngestionConfigStatus(StrEnum):
     ERROR = "ERROR"
 
 
-class AssertionResult(StrEnum):
-    SUCCESS = "SUCCESS"
-    FAILURE = "FAILURE"
-    ERROR = "ERROR"
-
-
 class MetricTheme(StrEnum):
     QUALITY = "quality"
     GOVERNANCE = "governance"
     FRESHNESS = "freshness"
-
-
-class ValidationRuleType(StrEnum):
-    FRESHNESS = "freshness"
-    VOLUME = "volume"
-    FIELD = "field"
-    SCHEMA = "schema"
-    SQL = "sql"
-    CUSTOM = "custom"
 
 
 class EventStatus(StrEnum):

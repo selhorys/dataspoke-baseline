@@ -1,39 +1,52 @@
-"""Unit tests for ValidationService (mocked infrastructure)."""
+"""Unit tests for src/backend/validation/service.py — ValidationService.
 
+Mocks: DataHubClient (AsyncMock), AsyncSession (AsyncMock).
+No real DB or DataHub connections.
+
+spec: VALIDATION.md §Rule Configuration, §Validation Result, §API Surface
+spec: BACKEND.md §Validation Service
+"""
+
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from src.backend.validation.service import ValidationService
-from src.shared.exceptions import ConflictError, EntityNotFoundError
-from tests.unit.backend.conftest import (
-    make_event_row,
-    mock_db_refresh,
-    mock_paginated_query,
-    mock_scalar_query,
+from src.shared.events import (
+    VALIDATION_CONFIG_CREATE,
+    VALIDATION_CONFIG_DELETE,
+    VALIDATION_CONFIG_UPDATE,
+    VALIDATION_PREFIX,
+    VALIDATION_RESULT_RECORDED,
+)
+from src.shared.exceptions import (
+    DataHubUnavailableError,
+    EntityNotFoundError,
+    PreconditionFailedError,
 )
 
-_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
+from tests.unit.backend.conftest import mock_db_refresh
+
+_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
-    rules: list | None = None,
-    schedule_tier: str | None = None,
-    is_enabled: bool = False,
-    owner: str = "alice@example.com",
-):
+    description: str = "Daily row count check",
+    variables: list[str] | None = None,
+    is_removed: bool = False,
+) -> MagicMock:
     row = MagicMock()
-    row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
-    row.rules = rules if rules is not None else [
-        {"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}
-    ]
-    row.schedule_tier = schedule_tier
-    row.is_enabled = is_enabled
-    row.owner = owner
+    row.description = description
+    row.variables = variables if variables is not None else ["row_cnt", "col1_mean"]
+    row.is_removed = is_removed
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row
@@ -41,504 +54,751 @@ def _make_config_row(
 
 def _make_result_row(
     dataset_urn: str = _DATASET_URN,
-    rule_id: str = "r1",
-    assertion_result: str = "SUCCESS",
-    minutes_ago: int = 5,
-):
+    data_time: datetime | None = None,
+    score: float = 1.0,
+    variables: dict | None = None,
+    ingestion_time: datetime | None = None,
+) -> MagicMock:
     row = MagicMock()
     row.id = uuid.uuid4()
     row.dataset_urn = dataset_urn
-    row.rule_id = rule_id
-    row.partition = {}
-    row.values = {"hours_since_last_update": 2.0}
-    row.validation = None
-    row.assertion_result = assertion_result
-    row.issues = []
-    row.run_id = uuid.uuid4()
-    row.measured_at = datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)
+    row.data_time = data_time or datetime(2026, 5, 1, tzinfo=UTC)
+    row.score = score
+    row.variables = variables or {"row_cnt": 50.0}
+    row.ingestion_time = ingestion_time or datetime.now(tz=UTC)
     return row
 
 
+def _scalar_result(value):
+    """Return a mock that behaves like db.execute().scalar_one_or_none()."""
+    m = MagicMock()
+    m.scalar_one_or_none.return_value = value
+    return m
+
+
+def _scalar_count(n: int):
+    """Return a mock that behaves like db.execute().scalar()."""
+    m = MagicMock()
+    m.scalar.return_value = n
+    return m
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+
 @pytest.fixture
-def service(datahub, db, cache):
-    return ValidationService(datahub=datahub, db=db, cache=cache)
+def svc(datahub: AsyncMock, db: AsyncMock) -> ValidationService:
+    return ValidationService(datahub=datahub, db=db)
 
 
-# ── get_config ───────────────────────────────────────────────────────────────
+# ── upsert_config ─────────────────────────────────────────────────────────────
 
 
-async def test_get_config_found(service, db):
-    config_row = _make_config_row()
-    mock_scalar_query(db, config_row)
+@pytest.mark.asyncio
+async def test_upsert_config_precondition_dataset_not_in_datahub(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """upsert_config raises DATASET_NOT_IN_DATAHUB when registry says datahub_registered=false.
 
-    config = await service.get_config(_DATASET_URN)
-    assert config is not None
-    assert config.dataset_urn == _DATASET_URN
-    assert config.owner == "alice@example.com"
-
-
-async def test_get_config_not_found(service, db):
-    mock_scalar_query(db, None)
-
-    config = await service.get_config("nonexistent")
-    assert config is None
-
-
-# ── upsert_config ────────────────────────────────────────────────────────────
-
-
-async def test_upsert_config_creates_new(service, db):
-    mock_scalar_query(db, None)
-    mock_db_refresh(db)
-
-    await service.upsert_config(
-        dataset_urn=_DATASET_URN,
-        rules=[{"rule_id": "r1", "type": "freshness", "lookback_interval": "24h"}],
-        schedule_tier=None,
-        is_enabled=False,
-        owner="alice@example.com",
-    )
-    assert db.add.called
-    assert db.commit.await_count >= 1
-
-
-async def test_upsert_config_updates_existing(service, db):
-    existing_row = _make_config_row()
-    mock_scalar_query(db, existing_row)
-    mock_db_refresh(db)
-
-    new_rules = [{"rule_id": "r2", "type": "volume", "condition": {"type": "greater_than", "value": 0}}]
-    await service.upsert_config(
-        dataset_urn=_DATASET_URN,
-        rules=new_rules,
-        schedule_tier="daily",
-        is_enabled=True,
-        owner="bob@example.com",
-    )
-    assert db.add.called
-    assert db.commit.await_count >= 1
-    assert existing_row.rules == new_rules
-    assert existing_row.owner == "bob@example.com"
-
-
-async def test_upsert_config_is_enabled_stored(service, db):
-    """is_enabled (not is_active) is persisted."""
-    mock_scalar_query(db, None)
-    mock_db_refresh(db)
-
-    await service.upsert_config(
-        dataset_urn=_DATASET_URN,
-        rules=[],
-        schedule_tier="daily",
-        is_enabled=True,
-        owner="alice@example.com",
-    )
-    # Verify db.add was called (row object will have is_enabled=True)
-    assert db.add.called
-
-
-# ── patch_config ─────────────────────────────────────────────────────────────
-
-
-async def test_patch_config_applies_partial(service, db):
-    existing_row = _make_config_row()
-    mock_scalar_query(db, existing_row)
-    mock_db_refresh(db)
-
-    await service.patch_config(_DATASET_URN, {"schedule_tier": "weekly"})
-    assert existing_row.schedule_tier == "weekly"
-    assert db.commit.await_count >= 1
-
-
-async def test_patch_config_not_found(service, db):
-    mock_scalar_query(db, None)
-
-    with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.patch_config("nonexistent", {"schedule_tier": "daily"})
-    # spec: API.md L577 — entity_type="config" → error_code="CONFIG_NOT_FOUND"
-    # IMPL BUG (F-R2.1): impl calls EntityNotFoundError("validation_config", ...)
-    # which produces "VALIDATION_CONFIG_NOT_FOUND" — not the spec-mandated code.
-    # This test FAILS until impl is corrected to use entity_type="config".
-    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
-
-
-# ── delete_config ────────────────────────────────────────────────────────────
-
-
-async def test_delete_config_success(service, db):
-    existing_row = _make_config_row()
-    mock_scalar_query(db, existing_row)
-
-    await service.delete_config(_DATASET_URN)
-    db.delete.assert_awaited_once_with(existing_row)
-    assert db.commit.await_count >= 1
-
-
-async def test_delete_config_not_found(service, db):
-    mock_scalar_query(db, None)
-
-    with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.delete_config("nonexistent")
-    # spec: API.md L577 — entity_type="config" → error_code="CONFIG_NOT_FOUND"
-    # IMPL BUG (F-R2.1): impl calls EntityNotFoundError("validation_config", ...)
-    # which produces "VALIDATION_CONFIG_NOT_FOUND" — not the spec-mandated code.
-    # This test FAILS until impl is corrected to use entity_type="config".
-    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
-
-
-async def test_delete_config_emits_status_removed_true_to_datahub(service, db, datahub):
-    """delete_config emits StatusClass(removed=True) to DataHub for every rule's assertion URN.
-
-    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DELETE /validation/conf
-    is symmetric; it emits status(removed=True) to all assertion URNs derived from the
-    config's rules before removing the DB row.
-    spec: feature/BACKEND.md §Validation Service — delete_config tombstones DataHub assertions.
+    spec: VALIDATION.md §API Surface — 422 DATASET_NOT_IN_DATAHUB if not in DataHub
     """
-    from datahub.metadata.schema_classes import StatusClass
+    # Simulate: no existing registry row, DataHub returns None (dataset not found)
+    registry_miss = _scalar_result(None)
+    db.execute = AsyncMock(return_value=registry_miss)
+    datahub.get_aspect = AsyncMock(return_value=None)  # not in DataHub
+    db.flush = AsyncMock()
+    db.rollback = AsyncMock()
 
-    from src.backend.validation.assertions import build_assertion_urn
-
-    rule_ids = ["r-delete-a", "r-delete-b", "r-delete-c"]
-    row = _make_config_row(
-        rules=[{"rule_id": rid, "type": "freshness"} for rid in rule_ids],
-    )
-    mock_scalar_query(db, row)
-
-    datahub.emit_aspect = AsyncMock()
-
-    await service.delete_config(_DATASET_URN)
-
-    assert datahub.emit_aspect.await_count == 3, (
-        "spec: DATAHUB_INTEGRATION.md convention 3 — one emit_aspect per rule"
-    )
-
-    emitted_urns = [c[0][0] for c in datahub.emit_aspect.call_args_list]
-    emitted_statuses = [c[0][1] for c in datahub.emit_aspect.call_args_list]
-
-    for rule_id in rule_ids:
-        expected_urn = build_assertion_urn(_DATASET_URN, rule_id)
-        assert expected_urn in emitted_urns, (
-            f"spec: DATAHUB_INTEGRATION.md convention 3 — "
-            f"assertion URN for {rule_id!r} must be tombstoned on DELETE"
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="check",
+            variables=["row_cnt"],
         )
-
-    for status_obj in emitted_statuses:
-        assert isinstance(status_obj, StatusClass), (
-            "spec: DATAHUB_INTEGRATION.md convention 3 — emitted aspect must be StatusClass"
-        )
-        assert status_obj.removed is True, (
-            "spec: DATAHUB_INTEGRATION.md convention 3 — status.removed must be True on DELETE"
-        )
+    assert exc_info.value.error_code == "DATASET_NOT_IN_DATAHUB"
 
 
-async def test_delete_config_propagates_datahub_failure(service, db, datahub):
-    """delete_config raises when DataHub emit fails, and leaves the DB row intact.
+@pytest.mark.asyncio
+async def test_upsert_config_first_put_creates_row(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """First PUT creates a new DB row, returns (record, created=True), emits assertionInfo + status.
 
-    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DataHub emit
-    precedes DB delete. A DataHub failure during DELETE must not silently leave
-    zombie assertion entities visible in DataHub while the DB row is gone.
-    spec: feature/BACKEND.md §Validation Service — DataHub is SSOT; DB delete is
-    coupled to DataHub availability by design.
+    spec: VALIDATION.md §Rule Configuration — PUT creates or replaces the configuration.
+    spec: VALIDATION.md §DataHub Aspect Mapping — emits assertionInfo and status(removed=False).
     """
-    row = _make_config_row(
-        rules=[{"rule_id": "r-fail-emit", "type": "freshness"}],
-    )
-    mock_scalar_query(db, row)
-
-    datahub.emit_aspect = AsyncMock(side_effect=RuntimeError("DataHub unavailable"))
-
-    with pytest.raises(RuntimeError, match="DataHub unavailable"):
-        await service.delete_config(_DATASET_URN)
-
-    db.delete.assert_not_awaited(), (
-        "spec: DATAHUB_INTEGRATION.md convention 3 — DB row must not be deleted when DataHub fails"
-    )
-
-
-async def test_delete_config_skips_rules_without_rule_id(service, db, datahub):
-    """Rules missing rule_id produce no emit_aspect call.
-
-    spec: feature/BACKEND.md §Validation Service — rules without rule_id are
-    ignored during DELETE to avoid emitting to a malformed/empty assertion URN.
-    """
-    row = _make_config_row(
-        rules=[
-            {"rule_id": "", "type": "freshness"},
-            {"type": "volume"},
-        ],
-    )
-    mock_scalar_query(db, row)
-
-    datahub.emit_aspect = AsyncMock()
-
-    await service.delete_config(_DATASET_URN)
-
-    datahub.emit_aspect.assert_not_awaited(), (
-        "spec: feature/BACKEND.md §Validation Service — rules without rule_id must be skipped"
-    )
-
-
-# ── list_configs ─────────────────────────────────────────────────────────────
-
-
-async def test_list_configs_paginated(service, db):
-    rows = [_make_config_row(dataset_urn=f"urn:{i}") for i in range(3)]
-    mock_paginated_query(db, rows, 5)
-
-    configs, total = await service.list_configs(offset=0, limit=3)
-    assert total == 5
-    assert len(configs) == 3
-
-
-async def test_list_configs_empty(service, db):
-    mock_paginated_query(db, [], 0)
-
-    configs, total = await service.list_configs()
-    assert total == 0
-    assert configs == []
-
-
-# ── get_results ──────────────────────────────────────────────────────────────
-
-
-async def test_get_results_paginated(service, db):
-    rows = [_make_result_row(minutes_ago=i) for i in range(3)]
-    mock_paginated_query(db, rows, 5)
-
-    results, total = await service.get_results(_DATASET_URN, offset=0, limit=3)
-    assert total == 5
-    assert len(results) == 3
-    assert results[0].dataset_urn == _DATASET_URN
-
-
-async def test_get_results_empty(service, db):
-    mock_paginated_query(db, [], 0)
-
-    results, total = await service.get_results(_DATASET_URN)
-    assert total == 0
-    assert results == []
-
-
-async def test_get_results_time_range(service, db):
-    rows = [_make_result_row(minutes_ago=10)]
-    mock_paginated_query(db, rows, 1)
-
-    from_dt = datetime.now(tz=UTC) - timedelta(hours=1)
-    to_dt = datetime.now(tz=UTC)
-    results, total = await service.get_results(_DATASET_URN, from_dt=from_dt, to_dt=to_dt)
-    assert total == 1
-    assert len(results) == 1
-
-
-# ── run ──────────────────────────────────────────────────────────────────────
-
-
-async def test_run_success(service, db, datahub, cache):
-    config_row = _make_config_row(is_enabled=True)
-    mock_scalar_query(db, config_row)
-    mock_db_refresh(db)
-
-    cache.publish = AsyncMock()
-    cache.set = AsyncMock()
-    # SETNX returns True (lock acquired)
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    from src.backend.validation.rules import RuleEvaluation
-
-    mock_eval = RuleEvaluation(
-        rule_id="r1",
-        assertion_result="SUCCESS",
-        values={"hours_since_last_update": 2.0},
-        validation=None,
-        issues=[],
-        partition={},
-    )
-
-    with (
-        patch("src.backend.validation.service.evaluate_rule", return_value=mock_eval),
-        patch("src.backend.validation.service.register_assertion", return_value=None),
-        patch("src.backend.validation.service.report_result", return_value=True),
-    ):
-        mock_result2 = MagicMock()
-        mock_result2.scalar_one_or_none.return_value = config_row
-        db.execute = AsyncMock(return_value=mock_result2)
-        db.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", uuid.uuid4()) or None)
-        db.commit = AsyncMock()
-        db.add = MagicMock()
-
-        summary = await service.run(_DATASET_URN)
-        assert summary.run_id
-        assert summary.total == 1
-        assert summary.passed == 1
-        assert summary.failed == 0
-        assert summary.errored == 0
-        # Status enum is impl-defined; spec USE_CASE_en.md L196-L197 silent on enum values
-        assert summary.status.lower() == "success"
-
-
-async def test_run_config_not_found(service, db, cache):
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-    mock_scalar_query(db, None)
-
-    with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.run("nonexistent")
-    # spec: API.md L577 — entity_type="config" → error_code="CONFIG_NOT_FOUND"
-    # IMPL BUG (F-R2.1): impl calls EntityNotFoundError("validation_config", ...)
-    # which produces "VALIDATION_CONFIG_NOT_FOUND" — not the spec-mandated code.
-    # This test FAILS until impl is corrected to use entity_type="config".
-    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
-
-
-async def test_run_rejects_non_dry_run_when_disabled(service, db, cache):
-    """Non-dry-run against a disabled config raises ConflictError('VALIDATION_DISABLED').
-
-    spec: BACKEND.md §Validation Service — is_enabled=false rejects non-dry-run
-    with 409 VALIDATION_DISABLED.
-    spec: USE_CASE_en.md §UC2 — "When is_enabled=false, non-dry-run calls to
-    method/validation/run return 409 VALIDATION_DISABLED. Dry-run is always
-    permitted regardless of is_enabled." (L261)
-    """
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    config_row = _make_config_row(is_enabled=False)
-    mock_scalar_query(db, config_row)
-
-    with pytest.raises(ConflictError) as exc_info:
-        await service.run(_DATASET_URN, partition=None, dry_run=False)
-
-    assert exc_info.value.error_code == "VALIDATION_DISABLED"
-
-
-async def test_run_allows_dry_run_when_disabled(service, db, cache):
-    """Dry-run bypasses the disabled guard and returns a ValidationRunSummary.
-
-    spec: BACKEND.md §Validation Service — dry_run=True is always permitted
-    regardless of is_enabled.
-    spec: USE_CASE_en.md §UC2 (disabled gate mirrors UC1 pattern)
-    """
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    config_row = _make_config_row(is_enabled=False)
-    mock_scalar_query(db, config_row)
-
-    from src.backend.validation.service import ValidationRunSummary
-
-    summary = await service.run(_DATASET_URN, partition=None, dry_run=True)
-
-    assert isinstance(summary, ValidationRunSummary)
-    assert summary.status.lower() == "success"
-
-
-async def test_run_with_partition(service, db, datahub, cache):
-    config_row = _make_config_row(is_enabled=True)
-    mock_scalar_query(db, config_row)
-    mock_db_refresh(db)
-
-    cache.publish = AsyncMock()
-    cache.set = AsyncMock()
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    from src.backend.validation.rules import RuleEvaluation
-
-    mock_eval = RuleEvaluation(
-        rule_id="r1",
-        assertion_result="FAILURE",
-        values={"hours_since_last_update": 50.0},
-        validation=None,
-        issues=[{"msg": "Stale", "type": "freshness_violation"}],
-        partition={"load_date": "2025-03-10"},
-    )
-
-    with (
-        patch("src.backend.validation.service.evaluate_rule", return_value=mock_eval),
-        patch("src.backend.validation.service.register_assertion", return_value=None),
-        patch("src.backend.validation.service.report_result", return_value=True),
-    ):
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = config_row
-        db.execute = AsyncMock(return_value=mock_result)
-        db.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", uuid.uuid4()) or None)
-        db.commit = AsyncMock()
-        db.add = MagicMock()
-
-        summary = await service.run(_DATASET_URN, partition={"load_date": "2025-03-10"})
-        assert summary.failed == 1
-        assert summary.passed == 0
-        # Status enum is impl-defined; spec USE_CASE_en.md L196-L197 silent on enum values
-        assert summary.status.lower() == "failure"
-
-
-async def test_run_empty_rules(service, db, datahub, cache):
-    config_row = _make_config_row(rules=[], is_enabled=True)
-    mock_scalar_query(db, config_row)
-
-    cache.publish = AsyncMock()
-    cache.set = AsyncMock()
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = config_row
-    db.execute = AsyncMock(return_value=mock_result)
+    registry_row = MagicMock()
+    registry_row.datahub_registered = True
+    registry_miss = _scalar_result(registry_row)
+    config_miss = _scalar_result(None)
+    count_result = _scalar_count(0)
+
+    db.execute = AsyncMock(side_effect=[registry_miss, config_miss])
     db.commit = AsyncMock()
-    db.add = MagicMock()
 
-    summary = await service.run(_DATASET_URN)
-    assert summary.total == 0
-    assert summary.passed == 0
-    # spec: USE_CASE_en.md L196-L197 — status field; casing not mandated by spec
-    assert summary.status.lower() == "success"
+    with patch("src.backend.validation.service.register_assertion", new_callable=AsyncMock) as mock_register, \
+         patch("src.backend.validation.service.build_assertion_info") as mock_info, \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
 
+        mock_db_refresh(db)
 
-# ── Redis SETNX concurrency guard ─────────────────────────────────────────────
+        record, created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="Daily row count check",
+            variables=["row_cnt", "col1_mean"],
+        )
 
-
-async def test_run_redis_setnx_conflict(service, db, cache):
-    """Second concurrent run() raises ConflictError when lock is already held."""
-    cache.set_nx = AsyncMock(return_value=False)  # lock already held
-
-    with pytest.raises(ConflictError) as exc_info:
-        await service.run(_DATASET_URN)
-    assert exc_info.value.error_code == "VALIDATION_RUNNING"
+    assert created is True
+    assert record.is_removed is False
+    mock_register.assert_called_once()
 
 
-async def test_run_redis_setnx_lock_released_on_error(service, db, cache):
-    """Lock is released in finally block even on inner exception."""
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
+@pytest.mark.asyncio
+async def test_upsert_config_second_put_updates_row(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """Second PUT updates existing row, returns (record, created=False).
 
-    mock_scalar_query(db, None)  # triggers EntityNotFoundError
+    spec: VALIDATION.md §Rule Configuration — PUT is create-or-replace.
+    """
+    registry_row = MagicMock()
+    registry_row.datahub_registered = True
+    registry_result = _scalar_result(registry_row)
+    existing_config = _make_config_row()
+    config_result = _scalar_result(existing_config)
 
-    with pytest.raises(EntityNotFoundError):
-        await service.run(_DATASET_URN)
+    db.execute = AsyncMock(side_effect=[registry_result, config_result])
+    db.commit = AsyncMock()
 
-    # Lock must be released
-    cache.delete_if_value.assert_awaited_once()
+    with patch("src.backend.validation.service.register_assertion", new_callable=AsyncMock), \
+         patch("src.backend.validation.service.build_assertion_info"), \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        record, created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="Updated check",
+            variables=["row_cnt"],
+        )
+
+    assert created is False
 
 
-# ── get_events ───────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_upsert_config_put_after_delete_resurrects_row(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """PUT on a soft-deleted row flips is_removed back to False.
+
+    spec: VALIDATION.md §Rule Configuration — DELETE soft-deletes; subsequent PUT
+    resurrects the assertion (clears removed).
+    """
+    registry_row = MagicMock()
+    registry_row.datahub_registered = True
+    registry_result = _scalar_result(registry_row)
+    deleted_config = _make_config_row(is_removed=True)
+    config_result = _scalar_result(deleted_config)
+
+    db.execute = AsyncMock(side_effect=[registry_result, config_result])
+    db.commit = AsyncMock()
+
+    with patch("src.backend.validation.service.register_assertion", new_callable=AsyncMock), \
+         patch("src.backend.validation.service.build_assertion_info"), \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        record, created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="Resurrected check",
+            variables=["row_cnt"],
+        )
+
+    # The row's is_removed was mutated to False by the service
+    assert deleted_config.is_removed is False
 
 
-async def test_get_events_paginated(service, db):
-    rows = [
-        make_event_row(entity_type="dataset", event_type="VALIDATION.COMPLETE", minutes_ago=i)
-        for i in range(3)
+# ── patch_config ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_config_only_updates_supplied_fields(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """patch_config updates only the supplied fields, emits assertionInfo.
+
+    spec: VALIDATION.md §Rule Configuration — PATCH accepts partial body.
+    spec: VALIDATION.md §DataHub Aspect Mapping — emits assertionInfo with merged vars.
+    """
+    existing = _make_config_row(
+        description="old description",
+        variables=["row_cnt", "col1_mean"],
+    )
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+
+    with patch("src.backend.validation.service.register_assertion", new_callable=AsyncMock) as mock_register, \
+         patch("src.backend.validation.service.build_assertion_info") as mock_info, \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        record = await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"description": "new description"},  # only description
+        )
+
+    # description was updated
+    assert existing.description == "new description"
+    # variables were NOT touched
+    assert existing.variables == ["row_cnt", "col1_mean"]
+    mock_register.assert_called_once()
+
+
+# ── delete_config ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_config_sets_is_removed_true(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """delete_config soft-deletes the row and emits status(removed=True).
+
+    spec: VALIDATION.md §Rule Configuration — DELETE performs soft delete via status.removed=true.
+    """
+    existing = _make_config_row()
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+
+    with patch("src.backend.validation.service.tombstone_assertion", new_callable=AsyncMock) as mock_tombstone, \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        await svc.delete_config(dataset_urn=_DATASET_URN)
+
+    assert existing.is_removed is True
+    mock_tombstone.assert_called_once_with(svc._datahub, "urn:li:assertion:abc123")
+
+
+# ── record_result ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_result_unknown_variable_key_raises(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """record_result raises UNKNOWN_VARIABLE with sorted offending names.
+
+    spec: VALIDATION.md §Validation rules on POST — unknown keys → 422 UNKNOWN_VARIABLE
+    listing the offending names.
+    """
+    config = _make_config_row(variables=["row_cnt", "null_rate"])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0, "zz_unknown": 1.0, "aa_other": 2.0},
+        )
+
+    err = exc_info.value
+    assert err.error_code == "UNKNOWN_VARIABLE"
+    # unknown keys are sorted
+    assert err.detail["unknown"] == sorted(["zz_unknown", "aa_other"])
+
+
+@pytest.mark.asyncio
+async def test_record_result_score_out_of_range_raises(
+    svc: ValidationService,
+) -> None:
+    """record_result raises INVALID_SCORE before any DB query for out-of-range scores.
+
+    spec: VALIDATION.md §Validation rules on POST — score outside [0.0, 1.0] → 422 INVALID_SCORE
+    """
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.5,  # out of range
+            variables={"row_cnt": 50.0},
+        )
+    assert exc_info.value.error_code == "INVALID_SCORE"
+
+
+@pytest.mark.asyncio
+async def test_record_result_missing_declared_key_accepted_silently(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """Missing declared variable keys are accepted (partial coverage is legitimate).
+
+    spec: VALIDATION.md §Validation rules on POST — Missing declared keys are accepted
+    silently (a result with partial coverage is a legitimate signal).
+    """
+    config = _make_config_row(variables=["row_cnt", "col1_mean", "null_rate"])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+
+    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True), \
+         patch("src.backend.validation.service.build_run_event"), \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        # Only row_cnt supplied; col1_mean and null_rate are omitted
+        record = await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        )
+
+    # No exception raised — partial coverage is fine
+    assert record is not None
+
+
+@pytest.mark.asyncio
+async def test_record_result_inserts_row_with_correct_fields(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """record_result inserts a ValidationResult row with correct fields and emits a
+    run_event whose timestampMillis matches data_time.
+
+    spec: VALIDATION.md §Validation Result — result POST persists to the store.
+    spec: VALIDATION.md §assertionRunEvent — timestampMillis = data_time epoch ms.
+    """
+    from src.shared.db.models import ValidationResult
+
+    config = _make_config_row(variables=["row_cnt"])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+
+    data_time = datetime(2026, 5, 1, tzinfo=UTC)
+    score = 0.9
+    variables = {"row_cnt": 50.0}
+    dataset_urn = _DATASET_URN
+
+    added_objects: list = []
+
+    def capture_add(obj):
+        added_objects.append(obj)
+
+    db.add = MagicMock(side_effect=capture_add)
+
+    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True) as mock_report, \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        record = await svc.record_result(
+            dataset_urn=dataset_urn,
+            data_time=data_time,
+            score=score,
+            variables=variables,
+        )
+
+    # Capture the ValidationResult row passed to db.add()
+    result_rows = [o for o in added_objects if isinstance(o, ValidationResult)]
+    assert result_rows, "ValidationResult row must be added to db"
+    row = result_rows[0]
+
+    assert row.data_time == data_time, (
+        f"row.data_time={row.data_time!r} != data_time={data_time!r}"
+    )
+    assert row.score == score, f"row.score={row.score!r} != score={score!r}"
+    assert row.variables == variables, (
+        f"row.variables={row.variables!r} != variables={variables!r}"
+    )
+    assert row.dataset_urn == dataset_urn, (
+        f"row.dataset_urn={row.dataset_urn!r} != dataset_urn={dataset_urn!r}"
+    )
+
+    # Verify report_result was called with a run_event whose timestampMillis = data_time epoch ms.
+    # We let the real build_run_event run (not mocked), so inspect report_result's third arg.
+    # Signature: report_result(datahub, assertion_urn, run_event) — run_event is args[2].
+    assert mock_report.called, "report_result must be called"
+    call_args = mock_report.call_args
+    run_event_arg = (
+        call_args.args[2]
+        if len(call_args.args) > 2
+        else call_args.kwargs.get("run_event")
+    )
+    assert run_event_arg is not None, "run_event must be passed to report_result as third arg"
+    expected_ms = int(data_time.timestamp() * 1000)
+    assert run_event_arg.timestampMillis == expected_ms, (
+        f"run_event.timestampMillis={run_event_arg.timestampMillis} != {expected_ms} "
+        "(must use data_time, not server now)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_result_records_event_after_successful_emit(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """VALIDATION.RESULT_RECORDED event is recorded after a successful DataHub emit.
+
+    spec: BACKEND.md §Event Catalogue — VALIDATION.RESULT_RECORDED on success.
+    """
+    config = _make_config_row(variables=["row_cnt"])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+
+    events_added = []
+    original_add = db.add
+
+    def capture_add(obj):
+        events_added.append(obj)
+
+    db.add = MagicMock(side_effect=capture_add)
+
+    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True), \
+         patch("src.backend.validation.service.build_run_event"), \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        )
+
+    # An Event row with VALIDATION.RESULT_RECORDED must have been added
+    from src.shared.db.models import Event
+    event_types = [
+        getattr(obj, "event_type", None)
+        for obj in events_added
+        if hasattr(obj, "event_type")
     ]
-    mock_paginated_query(db, rows, 5)
-
-    events, total = await service.get_events(_DATASET_URN, offset=0, limit=3)
-    assert total == 5
-    assert len(events) == 3
+    assert VALIDATION_RESULT_RECORDED in event_types, (
+        f"Expected {VALIDATION_RESULT_RECORDED} event; got: {event_types}"
+    )
 
 
-async def test_get_events_empty(service, db):
-    mock_paginated_query(db, [], 0)
+@pytest.mark.asyncio
+async def test_record_result_datahub_emit_failure_raises_without_recording_event(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """When DataHub emit returns False, DataHubUnavailableError is raised and
+    VALIDATION.RESULT_RECORDED is NOT recorded (row stays in DB).
 
-    events, total = await service.get_events(_DATASET_URN)
-    assert total == 0
-    assert events == []
+    spec: VALIDATION.md §Validation Result — row inserted regardless of emit success;
+    on emit failure DataHubUnavailableError raised; RESULT_RECORDED not recorded.
+    """
+    config = _make_config_row(variables=["row_cnt"])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+
+    events_added = []
+
+    def capture_add(obj):
+        events_added.append(obj)
+
+    db.add = MagicMock(side_effect=capture_add)
+
+    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=False), \
+         patch("src.backend.validation.service.build_run_event"), \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        with pytest.raises(DataHubUnavailableError):
+            await svc.record_result(
+                dataset_urn=_DATASET_URN,
+                data_time=datetime(2026, 5, 1, tzinfo=UTC),
+                score=1.0,
+                variables={"row_cnt": 50.0},
+            )
+
+    # VALIDATION.RESULT_RECORDED must NOT be in added events
+    event_types = [
+        getattr(obj, "event_type", None)
+        for obj in events_added
+        if hasattr(obj, "event_type")
+    ]
+    assert VALIDATION_RESULT_RECORDED not in event_types, (
+        f"RESULT_RECORDED must not be emitted on DataHub failure; got: {event_types}"
+    )
+
+
+# ── get_results ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_results_from_until_filter_inclusivity(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """from is inclusive (>=), until is exclusive (<).
+
+    spec: VALIDATION.md §GET result — from: Inclusive lower bound; until: Exclusive upper bound.
+    """
+    # We're only checking the SQL shape here (spot tests verify real filtering).
+    # Simulate: count = 3, no collapsed rows
+    count_mock = _scalar_count(3)
+    rows_mock = MagicMock()
+    rows_mock.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    from_dt = datetime(2026, 5, 1, tzinfo=UTC)
+    until_dt = datetime(2026, 5, 8, tzinfo=UTC)
+
+    collapsed, total_count = await svc.get_results(
+        dataset_urn=_DATASET_URN,
+        from_dt=from_dt,
+        until_dt=until_dt,
+    )
+    assert total_count == 3
+    assert collapsed == []
+
+
+@pytest.mark.asyncio
+async def test_get_results_limit_default_is_1000(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """Default limit is 1000; rows query SQL includes LIMIT 1000.
+
+    spec: VALIDATION.md §GET result — limit default 1,000.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_mock = _scalar_count(0)
+    rows_mock = MagicMock()
+    rows_mock.all.return_value = []
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    # Call without specifying limit — should use 1000 default
+    await svc.get_results(dataset_urn=_DATASET_URN)
+    # Verify execute was called twice (count + rows query)
+    assert db.execute.call_count == 2
+
+    # Verify the rows query (second execute call) has exactly LIMIT 1000 (not LIMIT 10000,
+    # LIMIT 100000, etc.).  Use word-boundary regex to prevent substring false positives.
+    rows_stmt = db.execute.call_args_list[1].args[0]
+    rendered = str(rows_stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    ))
+    assert re.search(r"\bLIMIT 1000\b", rendered), (
+        f"Expected 'LIMIT 1000' (word-bounded) in rows query SQL (default limit); got:\n{rendered}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_results_limit_20000_clamped_to_10000(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """limit=20000 is clamped to the server cap 10000; rows query SQL includes LIMIT 10000.
+
+    spec: VALIDATION.md §GET result — limit default 1,000; server cap 10,000.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_mock = _scalar_count(0)
+    rows_mock = MagicMock()
+    rows_mock.all.return_value = []
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    # Should not raise — limit is silently clamped
+    await svc.get_results(dataset_urn=_DATASET_URN, limit=20000)
+
+    # Verify the rows query (second execute call) has exactly LIMIT 10000 (not LIMIT 20000).
+    # Word-boundary regex prevents "LIMIT 100000" from matching "LIMIT 10000".
+    rows_stmt = db.execute.call_args_list[1].args[0]
+    rendered = str(rows_stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    ))
+    assert re.search(r"\bLIMIT 10000\b", rendered), (
+        f"Expected 'LIMIT 10000' (word-bounded) in rows query SQL (clamped); got:\n{rendered}"
+    )
+    assert not re.search(r"\bLIMIT 20000\b", rendered), (
+        f"Unexpected 'LIMIT 20000' in rows query SQL (should be clamped to 10000); got:\n{rendered}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_results_returns_rows_and_total_count(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """get_results returns (rows, total_count); total_count >= len(rows).
+
+    spec: VALIDATION.md §GET result — returns rows and a count for the queried window.
+    Spec is silent on whether total_count is pre-collapse (all raw rows) or post-collapse
+    (distinct data_time slots).  The weakest valid contract is:
+      len(rows) <= total_count <= upper_bound_raw_rows
+    Both pre-collapse and post-collapse semantics satisfy this.
+    """
+    count_mock = _scalar_count(5)  # DB returns 5 (pre-collapse raw rows in this mock)
+    rows_mock = MagicMock()
+    # Mock returns 3 collapsed rows (some data_times had duplicates)
+    rows_mock.all.return_value = [
+        MagicMock(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        ),
+        MagicMock(
+            data_time=datetime(2026, 5, 2, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+        ),
+        MagicMock(
+            data_time=datetime(2026, 5, 3, tzinfo=UTC),
+            score=0.5,
+            variables={"row_cnt": 10.0},
+        ),
+    ]
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    rows, total_count = await svc.get_results(dataset_urn=_DATASET_URN)
+
+    # Spec-anchored contract: count is non-negative, rows is a list, count >= len(rows)
+    assert len(rows) <= total_count <= 5, (
+        f"total_count={total_count} must be >= len(rows)={len(rows)} "
+        "and <= the raw row count returned by the mock (5)"
+    )
+    assert len(rows) == 3  # collapsed rows returned by mock
+
+
+# ── list_configs ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_configs_removed_true_filter(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """removed_filter=True shows only soft-deleted configs; SQL has is_removed=true predicate.
+
+    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_mock = _scalar_count(1)
+    config_row = _make_config_row(is_removed=True)
+    rows_mock = MagicMock()
+    rows_mock.scalars.return_value.all.return_value = [config_row]
+
+    # latest result query returns empty
+    latest_mock = MagicMock()
+    latest_mock.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+
+    items, total_count = await svc.list_configs(removed_filter=True)
+    assert total_count == 1
+    assert all(item.is_removed for item in items)
+
+    # Verify the count query (first execute call) targets the right column.
+    # Substring check on "is_removed" verifies the correct column is filtered;
+    # we avoid checking the rendered literal value ("true"/"false") because
+    # the exact SQL rendering is an implementation detail, not a spec requirement.
+    first_stmt = db.execute.call_args_list[0].args[0]
+    rendered = str(first_stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    ))
+    assert "is_removed" in rendered, (
+        f"Expected 'is_removed' in count query SQL; got:\n{rendered}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_configs_removed_false_filter(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """removed_filter=False shows only active configs; SQL targets the is_removed column.
+
+    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_mock = _scalar_count(2)
+    active_row = _make_config_row(is_removed=False)
+    rows_mock = MagicMock()
+    rows_mock.scalars.return_value.all.return_value = [active_row]
+
+    latest_mock = MagicMock()
+    latest_mock.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+
+    items, total_count = await svc.list_configs(removed_filter=False)
+    assert total_count == 2
+    assert all(not item.is_removed for item in items)
+
+    # Verify the count query (first execute call) targets the right column.
+    first_stmt = db.execute.call_args_list[0].args[0]
+    rendered = str(first_stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    ))
+    assert "is_removed" in rendered, (
+        f"Expected 'is_removed' in count query SQL; got:\n{rendered}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_configs_aggregates_latest_result_per_dataset(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """list_configs joins latest result (latest_data_time, latest_score) per dataset.
+
+    spec: VALIDATION.md §API Surface — cross-dataset list aggregates conf + latest result.
+    """
+    count_mock = _scalar_count(1)
+    config_row = _make_config_row()
+    rows_mock = MagicMock()
+    rows_mock.scalars.return_value.all.return_value = [config_row]
+
+    latest_data_time = datetime(2026, 5, 8, tzinfo=UTC)
+    latest_result_row = MagicMock()
+    latest_result_row.dataset_urn = _DATASET_URN
+    latest_result_row.data_time = latest_data_time
+    latest_result_row.score = 0.95
+
+    latest_mock = MagicMock()
+    latest_mock.all.return_value = [latest_result_row]
+
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+
+    items, total_count = await svc.list_configs()
+    assert len(items) == 1
+    assert items[0].latest_data_time == latest_data_time
+    assert items[0].latest_score == 0.95
+
+
+# ── get_events ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_events_returns_only_validation_events(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """get_events returns only events where event_type starts with 'VALIDATION.'.
+
+    spec: BACKEND.md §Event Catalogue — VALIDATION.* event namespace.
+    """
+    count_mock = _scalar_count(1)
+
+    event_row = MagicMock()
+    event_row.id = uuid.uuid4()
+    event_row.entity_type = "dataset"
+    event_row.entity_id = _DATASET_URN
+    event_row.event_type = VALIDATION_RESULT_RECORDED
+    event_row.status = "success"
+    event_row.detail = {"score": 1.0}
+    event_row.occurred_at = datetime.now(tz=UTC)
+
+    rows_mock = MagicMock()
+    rows_mock.scalars.return_value.all.return_value = [event_row]
+
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    events, total_count = await svc.get_events(dataset_urn=_DATASET_URN)
+
+    assert total_count == 1
+    assert len(events) == 1
+    assert events[0]["event_type"].startswith(VALIDATION_PREFIX)

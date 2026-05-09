@@ -1,399 +1,229 @@
-"""Unit tests for validation assertion bridge (mocked DataHub)."""
+"""Pure builder tests for src/backend/validation/assertions.py.
+
+No DB, no DataHub — only inspects the constructed aspect objects.
+
+spec: VALIDATION.md §DataHub Aspect Mapping
+spec: VALIDATION.md §Assertion URN
+"""
 
 import time
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime
 
+import pytest
 from datahub.metadata.schema_classes import (
     AssertionResultTypeClass,
     AssertionRunStatusClass,
+    AssertionSourceTypeClass,
     AssertionTypeClass,
-    PartitionTypeClass,
-    StatusClass,
 )
 
 from src.backend.validation.assertions import (
     build_assertion_info,
     build_assertion_urn,
     build_run_event,
-    register_assertion,
-    report_result,
 )
 
-_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,imazon.orders.daily_fulfillment_summary,DEV)"
-_RULE_ID = "freshness_rule_1"
 
-
-# ── build_assertion_urn ────────────────────────────────────────────────────────
-
-
-def test_build_assertion_urn_format():
-    """Returned URN must have the urn:li:assertion: prefix."""
-    urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    assert urn.startswith("urn:li:assertion:")
-
-
-def test_build_assertion_urn_deterministic():
-    """Same inputs always produce the same URN."""
-    urn1 = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    urn2 = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    assert urn1 == urn2
-
-
-def test_build_assertion_urn_different_rule_ids():
-    """Different rule_ids produce different URNs."""
-    urn1 = build_assertion_urn(_DATASET_URN, "rule_a")
-    urn2 = build_assertion_urn(_DATASET_URN, "rule_b")
-    assert urn1 != urn2
-
-
-def test_build_assertion_urn_different_dataset_urns():
-    """Different dataset URNs produce different assertion URNs."""
-    urn1 = build_assertion_urn("urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t1,DEV)", _RULE_ID)
-    urn2 = build_assertion_urn("urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t2,DEV)", _RULE_ID)
-    assert urn1 != urn2
-
-
-def test_build_assertion_urn_consistent_across_calls():
-    """URN is stable — same result on 10 consecutive calls."""
-    urns = [build_assertion_urn(_DATASET_URN, _RULE_ID) for _ in range(10)]
-    assert len(set(urns)) == 1
-
-
-# ── build_assertion_info ───────────────────────────────────────────────────────
-
-
-def test_build_assertion_info_freshness_type():
-    rule = {"rule_id": _RULE_ID, "type": "freshness", "lookback_interval": "24h"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.FRESHNESS
-
-
-def test_build_assertion_info_volume_type():
-    rule = {
-        "rule_id": "vol_r1",
-        "type": "volume",
-        "condition": {"type": "greater_than", "value": 100},
-    }
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.VOLUME
-
-
-def test_build_assertion_info_field_type():
-    rule = {
-        "rule_id": "field_r1",
-        "type": "field",
-        "field": "rating_score",
-        "metric": "null_proportion",
-    }
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.FIELD
-
-
-def test_build_assertion_info_schema_type():
-    rule = {"rule_id": "schema_r1", "type": "schema", "expected_fields": []}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.DATA_SCHEMA
-
-
-def test_build_assertion_info_sql_type():
-    rule = {"rule_id": "sql_r1", "type": "sql", "query": "SELECT 1"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.SQL
-
-
-def test_build_assertion_info_custom_type():
-    rule = {"rule_id": "cust_r1", "type": "custom"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.CUSTOM
-
-
-def test_build_assertion_info_unknown_type_falls_back_to_custom():
-    """Unknown rule type falls back to CUSTOM assertion type."""
-    rule = {"rule_id": "unknown_r1", "type": "nonexistent"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.type == AssertionTypeClass.CUSTOM
-
-
-def test_build_assertion_info_source_type_is_external():
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    from datahub.metadata.schema_classes import AssertionSourceTypeClass
-    assert info.source.type == AssertionSourceTypeClass.EXTERNAL
-
-
-def test_build_assertion_info_custom_properties_contain_rule_id():
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.customProperties["dataspoke_rule_id"] == _RULE_ID
-
-
-def test_build_assertion_info_custom_properties_contain_rule_type():
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.customProperties["dataspoke_rule_type"] == "freshness"
-
-
-def test_build_assertion_info_description_uses_provided():
-    rule = {"rule_id": _RULE_ID, "type": "freshness", "description": "My custom description"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert info.description == "My custom description"
-
-
-def test_build_assertion_info_description_defaults_when_absent():
-    rule = {"rule_id": _RULE_ID, "type": "volume"}
-    info = build_assertion_info(_DATASET_URN, rule)
-    assert "volume" in info.description.lower()
-
-
-# ── build_run_event ────────────────────────────────────────────────────────────
-
-
-def _make_run_event(
-    result: str = "SUCCESS",
-    values: dict | None = None,
-    partition: dict | None = None,
-) -> object:
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    # Use sentinel: None means "use defaults", empty dict means "empty values"
-    resolved_values = {"hours_since_last_update": 2.0} if values is None else values
-    return build_run_event(
-        assertion_urn=assertion_urn,
-        dataset_urn=_DATASET_URN,
-        run_id="test-run-1",
-        result=result,
-        values=resolved_values,
-        partition=partition if partition is not None else {},
-    )
-
-
-def test_build_run_event_success_result_type():
-    event = _make_run_event(result="SUCCESS")
-    assert event.result.type == AssertionResultTypeClass.SUCCESS
-
-
-def test_build_run_event_failure_result_type():
-    event = _make_run_event(result="FAILURE")
-    assert event.result.type == AssertionResultTypeClass.FAILURE
-
-
-def test_build_run_event_error_result_type():
-    event = _make_run_event(result="ERROR")
-    assert event.result.type == AssertionResultTypeClass.ERROR
-
-
-def test_build_run_event_unknown_result_falls_back_to_error():
-    """Unrecognized result string falls back to ERROR."""
-    event = _make_run_event(result="UNKNOWN_RESULT")
-    assert event.result.type == AssertionResultTypeClass.ERROR
-
-
-def test_build_run_event_status_is_complete():
-    event = _make_run_event()
-    assert event.status == AssertionRunStatusClass.COMPLETE
-
-
-def test_build_run_event_assertion_urn_matches():
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    event = build_run_event(
-        assertion_urn=assertion_urn,
-        dataset_urn=_DATASET_URN,
-        run_id="run-xyz",
-        result="SUCCESS",
-        values={},
-        partition={},
-    )
-    assert event.assertionUrn == assertion_urn
-
-
-def test_build_run_event_assertee_urn_matches_dataset():
-    event = _make_run_event()
-    assert event.asserteeUrn == _DATASET_URN
-
-
-def test_build_run_event_run_id_preserved():
-    event = build_run_event(
-        assertion_urn=build_assertion_urn(_DATASET_URN, _RULE_ID),
-        dataset_urn=_DATASET_URN,
-        run_id="specific-run-id",
-        result="SUCCESS",
-        values={},
-        partition={},
-    )
-    assert event.runId == "specific-run-id"
-
-
-def test_build_run_event_timestamp_is_recent():
-    before = int(time.time() * 1000)
-    event = _make_run_event()
-    after = int(time.time() * 1000)
-    assert before <= event.timestampMillis <= after
-
-
-def test_build_run_event_empty_partition_uses_full_table():
-    event = _make_run_event(partition={})
-    assert event.partitionSpec.type == PartitionTypeClass.FULL_TABLE
-    # PartitionSpec.partition is required (non-optional) per DataHub PDL; the
-    # documented default sentinel for full-table snapshots is "FULL_TABLE_SNAPSHOT".
-    assert event.partitionSpec.partition == "FULL_TABLE_SNAPSHOT"
-
-
-def test_build_run_event_non_empty_partition_uses_partition_type():
-    event = _make_run_event(partition={"load_date": "2025-03-10"})
-    assert event.partitionSpec.type == PartitionTypeClass.PARTITION
-    assert event.partitionSpec.partition is not None
-
-
-def test_build_run_event_values_serialized_as_string_map():
-    event = _make_run_event(values={"hours_since_last_update": 2.5, "extra": True})
-    assert event.result.nativeResults is not None
-    assert event.result.nativeResults["hours_since_last_update"] == "2.5"
-    assert event.result.nativeResults["extra"] == "True"
-
-
-def test_build_run_event_empty_values_produces_no_native_results():
-    event = _make_run_event(values={})
-    assert event.result.nativeResults is None
-
-
-# ── register_assertion ─────────────────────────────────────────────────────────
-
-
-async def test_register_assertion_emits_even_when_already_exists(datahub):
-    """register_assertion emits assertionInfo and status(removed=False) unconditionally.
-
-    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — DataSpoke is
-    authoritative; out-of-band soft-deletes revert on the next PUT/PATCH. The impl
-    must not skip emission when assertionInfo already exists in DataHub.
-
-    Precondition: get_assertion_info returns a non-None value (existing assertion),
-    and get_aspect returns status(removed=True) (soft-deleted state). Both emit_assertion
-    and emit_aspect(StatusClass(removed=False)) must still be called.
-    """
-    from unittest.mock import MagicMock
-
-    datahub.emit_assertion = AsyncMock()
-    datahub.emit_aspect = AsyncMock()
-    datahub.get_assertion_info = AsyncMock(return_value=MagicMock())
-    datahub.get_aspect = AsyncMock(return_value=StatusClass(removed=True))
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    assertion_info = build_assertion_info(_DATASET_URN, rule)
-
-    await register_assertion(datahub, assertion_urn, assertion_info)
-
-    datahub.emit_assertion.assert_awaited_once_with(assertion_urn, assertion_info)
-    emitted_status = datahub.emit_aspect.call_args[0][1]
-    assert isinstance(emitted_status, StatusClass)
-    assert emitted_status.removed is False
-
-
-async def test_register_assertion_propagates_on_emit_failure(datahub):
-    """emit_assertion failure propagates — definition errors must surface at upsert time.
-
-    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 6 — DataHub
-    errors during registration surface as 502/503; callers learn of outage immediately.
-    """
-    import pytest
-
-    datahub.emit_assertion = AsyncMock(side_effect=RuntimeError("emit failed"))
-    datahub.emit_aspect = AsyncMock()
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    assertion_info = build_assertion_info(_DATASET_URN, rule)
-
-    with pytest.raises(RuntimeError, match="emit failed"):
-        await register_assertion(datahub, assertion_urn, assertion_info)
-
-
-async def test_register_assertion_emits_status_removed_false_companion(datahub):
-    """register_assertion performs exactly 2 emit ops per call.
-
-    spec: DATAHUB_INTEGRATION.md §Assertion Aspects, convention 3 — emitting
-    status(removed=False) alongside assertionInfo. Order is unconstrained by spec;
-    both must be observed by DataHub before the next config-edit cycle.
-    """
-    datahub.emit_assertion = AsyncMock()
-    datahub.emit_aspect = AsyncMock()
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    rule = {"rule_id": _RULE_ID, "type": "freshness"}
-    assertion_info = build_assertion_info(_DATASET_URN, rule)
-
-    await register_assertion(datahub, assertion_urn, assertion_info)
-
-    assert datahub.emit_assertion.await_count == 1, (
-        "spec: DATAHUB_INTEGRATION.md convention 3 — exactly 1 emit_assertion call per register"
-    )
-    assert datahub.emit_aspect.await_count == 1, (
-        "spec: DATAHUB_INTEGRATION.md convention 3 — exactly 1 emit_aspect call per register"
-    )
-    emit_urn, emit_info = datahub.emit_assertion.call_args[0]
-    assert emit_urn == assertion_urn
-    assert emit_info is assertion_info
-
-    aspect_urn, aspect_obj = datahub.emit_aspect.call_args[0]
-    assert aspect_urn == assertion_urn
-    assert isinstance(aspect_obj, StatusClass)
-    assert aspect_obj.removed is False
-
-
-# ── report_result ──────────────────────────────────────────────────────────────
-
-
-async def test_report_result_calls_emit_assertion(datahub):
-    """report_result calls emit_assertion with the run event."""
-    datahub.emit_assertion = AsyncMock()
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    run_event = _make_run_event(result="SUCCESS")
-
-    await report_result(datahub, assertion_urn, run_event)
-
-    datahub.emit_assertion.assert_awaited_once_with(assertion_urn, run_event)
-
-
-async def test_report_result_failure_result(datahub):
-    """report_result also works for FAILURE result events."""
-    datahub.emit_assertion = AsyncMock()
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    run_event = _make_run_event(result="FAILURE")
-
-    await report_result(datahub, assertion_urn, run_event)
-
-    datahub.emit_assertion.assert_awaited_once()
-    call_args = datahub.emit_assertion.call_args
-    assert call_args[0][0] == assertion_urn
-    assert call_args[0][1].result.type == AssertionResultTypeClass.FAILURE
-
-
-async def test_report_result_returns_false_on_failure(datahub):
-    """DataHub failure during report returns False — caller turns this into ERROR result."""
-    datahub.emit_assertion = AsyncMock(side_effect=RuntimeError("GMS unavailable"))
-
-    assertion_urn = build_assertion_urn(_DATASET_URN, _RULE_ID)
-    run_event = _make_run_event(result="SUCCESS")
-
-    result = await report_result(datahub, assertion_urn, run_event)
-    assert result is False
-
-
-async def test_report_result_uses_correct_assertion_urn(datahub):
-    """emit_assertion is called with the exact assertion_urn passed in."""
-    datahub.emit_assertion = AsyncMock()
-
-    urn_a = build_assertion_urn(_DATASET_URN, "rule_a")
-    urn_b = build_assertion_urn(_DATASET_URN, "rule_b")
-    run_event = _make_run_event()
-
-    await report_result(datahub, urn_a, run_event)
-    await report_result(datahub, urn_b, run_event)
-
-    assert datahub.emit_assertion.await_count == 2
-    first_call_urn = datahub.emit_assertion.call_args_list[0][0][0]
-    second_call_urn = datahub.emit_assertion.call_args_list[1][0][0]
-    assert first_call_urn == urn_a
-    assert second_call_urn == urn_b
-    assert first_call_urn != second_call_urn
+# ── build_assertion_urn ───────────────────────────────────────────────────────
+
+
+class TestBuildAssertionUrn:
+    def test_same_dataset_urn_produces_same_assertion_urn(self) -> None:
+        # spec: VALIDATION.md §Assertion URN — deterministic; recomputable from dataset_urn alone
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+        assert build_assertion_urn(urn) == build_assertion_urn(urn)
+
+    def test_different_dataset_urns_produce_different_assertion_urns(self) -> None:
+        # spec: VALIDATION.md §Assertion URN — uniqueness: different datasets → different URNs
+        urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tableA,DEV)"
+        urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tableB,DEV)"
+        assert build_assertion_urn(urn_a) != build_assertion_urn(urn_b)
+
+    def test_assertion_urn_format(self) -> None:
+        # spec: VALIDATION.md §Assertion URN — starts with urn:li:assertion: followed by a GUID.
+        # We do NOT pin the exact hash format (e.g. MD5 32-hex) here — that would tie the
+        # test to datahub_guid's internal implementation. Determinism is already covered by
+        # test_same_dataset_urn_produces_same_assertion_urn.
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,DEV)"
+        assertion_urn = build_assertion_urn(urn)
+        assert assertion_urn.startswith("urn:li:assertion:"), (
+            f"URN must start with urn:li:assertion:, got: {assertion_urn!r}"
+        )
+        assert len(assertion_urn) > len("urn:li:assertion:"), (
+            f"URN has no GUID suffix: {assertion_urn!r}"
+        )
+
+
+# ── build_assertion_info ──────────────────────────────────────────────────────
+
+
+_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+_VARIABLES = ["row_cnt", "col1_mean", "col2_null_cnt"]
+_DESCRIPTION = "Daily row count plus key column means and null counts"
+
+
+class TestBuildAssertionInfo:
+    def setup_method(self) -> None:
+        self.info = build_assertion_info(_DATASET_URN, _DESCRIPTION, _VARIABLES)
+
+    def test_type_is_custom(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — type: CUSTOM
+        assert self.info.type == AssertionTypeClass.CUSTOM
+
+    def test_source_type_is_external(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — source.type: EXTERNAL
+        assert self.info.source is not None
+        assert self.info.source.type == AssertionSourceTypeClass.EXTERNAL
+
+    def test_custom_assertion_type(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — customAssertion.type = "DATASPOKE_VALIDATION"
+        assert self.info.customAssertion is not None
+        assert self.info.customAssertion.type == "DATASPOKE_VALIDATION"
+
+    def test_custom_assertion_entity(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — customAssertion.entity = dataset_urn
+        assert self.info.customAssertion.entity == _DATASET_URN
+
+    def test_custom_assertion_logic_is_comma_joined_variables(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — customAssertion.logic = ", ".join(variables)
+        expected = "row_cnt, col1_mean, col2_null_cnt"
+        assert self.info.customAssertion.logic == expected
+
+    def test_description_is_propagated(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — description = conf.description
+        assert self.info.description == _DESCRIPTION
+
+    def test_last_updated_actor_is_dataspoke(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — lastUpdated.actor = urn:li:corpuser:dataspoke
+        assert self.info.lastUpdated is not None
+        assert self.info.lastUpdated.actor == "urn:li:corpuser:dataspoke"
+
+    def test_last_updated_time_is_recent(self) -> None:
+        # spec: VALIDATION.md §assertionInfo — lastUpdated.time is recent (≤ 5s ago)
+        now_ms = int(time.time() * 1000)
+        assert self.info.lastUpdated.time is not None
+        age_ms = now_ms - self.info.lastUpdated.time
+        assert 0 <= age_ms <= 5000, f"lastUpdated.time is {age_ms}ms old"
+
+
+# ── build_run_event ───────────────────────────────────────────────────────────
+
+
+class TestBuildRunEvent:
+    _ASSERTION_URN = "urn:li:assertion:abc123" + "0" * 26
+
+    def _build(
+        self,
+        *,
+        score: float,
+        data_time: datetime,
+        variables: dict | None = None,
+    ):
+        return build_run_event(
+            assertion_urn=self._ASSERTION_URN,
+            dataset_urn=_DATASET_URN,
+            data_time=data_time,
+            score=score,
+            variables=variables or {"row_cnt": 50.0, "col1_mean": 31.1, "col2_null_cnt": 15.0},
+        )
+
+    def test_timestamp_millis_uses_data_time_not_server_now(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — timestampMillis = data_time epoch ms
+        # Use a data_time from a past year: its epoch_ms is far smaller than current epoch.
+        past_time = datetime(2020, 1, 1, tzinfo=UTC)
+        event = self._build(score=1.0, data_time=past_time)
+        expected_ms = int(past_time.timestamp() * 1000)
+        assert event.timestampMillis == expected_ms, (
+            f"timestampMillis {event.timestampMillis} != expected {expected_ms}; "
+            "must use data_time, not server now()"
+        )
+        # Also verify it's far in the past (not server now)
+        current_ms = int(time.time() * 1000)
+        assert event.timestampMillis < current_ms - 100_000_000, (
+            "timestampMillis looks like server now, not data_time"
+        )
+
+    def test_score_1_0_produces_success_result(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — result.type = SUCCESS if score == 1.0
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=1.0, data_time=data_time)
+        assert event.result is not None
+        assert event.result.type == AssertionResultTypeClass.SUCCESS
+
+    def test_score_0_5_produces_failure_result(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — result.type = FAILURE if score != 1.0
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=0.5, data_time=data_time)
+        assert event.result.type == AssertionResultTypeClass.FAILURE
+
+    def test_score_0_0_produces_failure_result(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — result.type = FAILURE if score != 1.0
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=0.0, data_time=data_time)
+        assert event.result.type == AssertionResultTypeClass.FAILURE
+
+    def test_score_just_under_one_produces_failure_result(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — result.type = SUCCESS if score == 1.0 else FAILURE.
+        # Locks in the strict-equality contract: even 0.9999999999 is FAILURE, not SUCCESS.
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=0.9999999999, data_time=data_time)
+        assert event.result.type == AssertionResultTypeClass.FAILURE, (
+            "score 0.9999999999 must produce FAILURE; SUCCESS requires score == 1.0 exactly"
+        )
+
+    def test_actual_agg_value_equals_score(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — result.actualAggValue = score
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=0.75, data_time=data_time)
+        assert event.result.actualAggValue == 0.75
+
+    def test_native_results_contains_all_variables_plus_score(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — nativeResults includes each variable + "score"
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        vars_in = {"row_cnt": 50.0, "col1_mean": 31.1}
+        event = build_run_event(
+            assertion_urn=self._ASSERTION_URN,
+            dataset_urn=_DATASET_URN,
+            data_time=data_time,
+            score=0.9,
+            variables=vars_in,
+        )
+        assert event.result is not None
+        native = event.result.nativeResults
+        assert native is not None
+        assert "row_cnt" in native
+        assert "col1_mean" in native
+        assert "score" in native
+
+    def test_native_results_values_are_repr_float_strings(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — nativeResults values = repr(float(...))
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = build_run_event(
+            assertion_urn=self._ASSERTION_URN,
+            dataset_urn=_DATASET_URN,
+            data_time=data_time,
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        )
+        native = event.result.nativeResults
+        assert native["row_cnt"] == repr(float(50.0))
+        assert native["score"] == repr(float(1.0))
+
+    def test_runtime_context_ingestion_time_is_recent_epoch_ms_string(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — runtimeContext["ingestion_time"] is server now
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=1.0, data_time=data_time)
+        assert event.runtimeContext is not None
+        ingestion_time_str = event.runtimeContext.get("ingestion_time")
+        assert ingestion_time_str is not None
+        ingestion_ms = int(ingestion_time_str)
+        current_ms = int(time.time() * 1000)
+        assert abs(current_ms - ingestion_ms) <= 5000, (
+            f"ingestion_time {ingestion_ms} is not recent (delta={current_ms - ingestion_ms}ms)"
+        )
+
+    def test_status_is_complete(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — status = COMPLETE
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=1.0, data_time=data_time)
+        assert event.status == AssertionRunStatusClass.COMPLETE

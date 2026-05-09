@@ -10,6 +10,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    ARRAY,
     Boolean,
     CheckConstraint,
     Float,
@@ -90,16 +91,17 @@ class DatasetRegistry(Base):
 class ValidationConfig(Base):
     __tablename__ = "validation_configs"
     __table_args__ = (
-        UniqueConstraint("dataset_urn"),
+        CheckConstraint(
+            "array_length(variables, 1) BETWEEN 1 AND 200",
+            name="ck_validation_configs_variables_length",
+        ),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    rules: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
-    schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    variables: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    is_removed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -114,21 +116,20 @@ class ValidationConfig(Base):
 class ValidationResult(Base):
     __tablename__ = "validation_results"
     __table_args__ = (
-        Index("ix_validation_results_urn_measured", "dataset_urn", desc("measured_at")),
-        Index("ix_validation_results_run_id", "run_id"),
+        CheckConstraint(
+            "score BETWEEN 0.0 AND 1.0",
+            name="ck_validation_results_score_range",
+        ),
+        Index("ix_validation_results_urn_data_time", "dataset_urn", desc("data_time")),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    rule_id: Mapped[str] = mapped_column(Text, nullable=False)
-    partition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    values: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    validation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    assertion_result: Mapped[str] = mapped_column(Text, nullable=False)
-    issues: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
-    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    measured_at: Mapped[datetime] = mapped_column(
+    data_time: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    variables: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    ingestion_time: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
 
