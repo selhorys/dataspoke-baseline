@@ -155,10 +155,11 @@ clean for the common case (idempotent retry from the pipeline).
 ```
 GET .../attr/validation/result?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:00Z
 → [
-    { "data_time": "2026-05-01T00:00:00Z", "score": 1.0,
-      "variables": {"row_cnt": 48.0, "col1_mean": 30.4, "col2_null_cnt": 12.0} },
-    { "data_time": "2026-05-02T00:00:00Z", ... },
+    { "data_time": "2026-05-07T00:00:00Z", "score": 1.0,
+      "variables": {"row_cnt": 51.0, "col1_mean": 31.1, "col2_null_cnt": 9.0} },
+    { "data_time": "2026-05-06T00:00:00Z", ... },
     ...
+    { "data_time": "2026-05-01T00:00:00Z", ... }
   ]
 ```
 
@@ -167,6 +168,10 @@ GET .../attr/validation/result?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:
 | `from` | none | Inclusive lower bound (RFC 3339). Filters on `data_time`. |
 | `until` | none | Exclusive upper bound (RFC 3339). Filters on `data_time`. |
 | `limit` | 1,000 | Max rows returned. Server cap **10,000**. |
+
+Rows are ordered by `data_time` **descending** (newest first) so the most recent
+partition appears at the head of the response — the common case for baseline
+queries that always want the latest sample at index 0.
 
 ### Cache use case
 

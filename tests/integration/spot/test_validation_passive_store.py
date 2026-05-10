@@ -8,6 +8,8 @@ Concerns covered:
   type == CUSTOM, customAssertion.entity == dataset_urn,
   customAssertion.logic == comma-joined variable names,
   source.type == EXTERNAL.
+- PATCH conf → assertionInfo re-emitted to DataHub with patched description
+  and updated customAssertion.logic; type/source unchanged.
 - POST result → assertionRunEvent in DataHub; timestampMillis = data_time epoch ms;
   actualAggValue == score; nativeResults["score"] round-trips.
 - GET result historical: ~10 rows with distinct data_time; from/until filters correctly;
@@ -132,6 +134,81 @@ async def test_put_conf_emits_assertion_info_to_datahub(
 
 
 @pytest.mark.asyncio
+async def test_patch_conf_reemits_assertion_info_to_datahub(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH conf re-emits assertionInfo to DataHub with patched description and
+    updated customAssertion.logic. type/source remain CUSTOM/EXTERNAL.
+
+    spec: VALIDATION.md §API Surface — PATCH partially updates the configuration.
+    spec: VALIDATION.md §DataHub Aspect Mapping — assertionInfo is versioned and
+    emitted on every PUT and PATCH.
+    """
+    # Seed: PUT initial conf so PATCH has something to update.
+    initial_resp = await api_client.put(
+        _CONF_URL,
+        headers=admin_headers,
+        json={
+            "description": "Initial description before patch",
+            "variables": ["row_cnt", "fill_rate"],
+        },
+    )
+    assert initial_resp.status_code in (200, 201), f"Seed PUT failed: {initial_resp.text}"
+
+    # PATCH both description and variables — every PATCH re-emits assertionInfo.
+    patched_description = "Patched description with extra variables"
+    patched_variables = ["row_cnt", "fill_rate", "anomaly_score"]
+    patch_resp = await api_client.patch(
+        _CONF_URL,
+        headers=admin_headers,
+        json={"description": patched_description, "variables": patched_variables},
+    )
+    assert patch_resp.status_code == 200, f"PATCH conf failed: {patch_resp.text}"
+    body = patch_resp.json()
+    assert body["description"] == patched_description
+    assert body["variables"] == patched_variables
+
+    # GET conf round-trips the patched values via API.
+    get_resp = await api_client.get(_CONF_URL, headers=admin_headers)
+    assert get_resp.status_code == 200
+    fetched = get_resp.json()
+    assert fetched["description"] == patched_description
+    assert fetched["variables"] == patched_variables
+
+    # Verify DataHub assertionInfo at the deterministic URN reflects the patch:
+    # description matches; logic is the comma-joined patched variables;
+    # type/source are unchanged (CUSTOM/EXTERNAL).
+    assertion_urn = build_assertion_urn(_DATASET_URN)
+    graph = _make_datahub_graph()
+    info = graph.get_aspect(entity_urn=assertion_urn, aspect_type=AssertionInfoClass)
+    assert info is not None, (
+        f"assertionInfo not found in DataHub at URN {assertion_urn} after PATCH"
+    )
+    assert info.description == patched_description, (
+        f"Expected DataHub description={patched_description!r} after PATCH, "
+        f"got {info.description!r}"
+    )
+    assert info.type == AssertionTypeClass.CUSTOM, (
+        f"PATCH must not change assertion type; expected CUSTOM, got {info.type!r}"
+    )
+    assert info.source is not None
+    assert info.source.type == AssertionSourceTypeClass.EXTERNAL, (
+        f"PATCH must not change source.type; expected EXTERNAL, got {info.source.type!r}"
+    )
+    assert info.customAssertion is not None
+    expected_logic = "row_cnt, fill_rate, anomaly_score"
+    assert info.customAssertion.logic == expected_logic, (
+        f"Expected customAssertion.logic={expected_logic!r} after variables PATCH, "
+        f"got {info.customAssertion.logic!r}"
+    )
+    assert info.customAssertion.entity == _DATASET_URN, (
+        f"PATCH must not change customAssertion.entity; expected {_DATASET_URN!r}, "
+        f"got {info.customAssertion.entity!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_post_result_emits_assertion_run_event(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
@@ -213,9 +290,11 @@ async def test_get_result_historical_filter_and_last_write_wins(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET result: from/until filters correctly; last-write-wins on duplicate data_time.
+    """GET result: from/until filters correctly; rows in descending data_time order;
+    last-write-wins on duplicate data_time.
 
-    spec: VALIDATION.md §GET result — from inclusive, until exclusive.
+    spec: VALIDATION.md §GET result — from inclusive, until exclusive; rows ordered
+    by data_time descending (newest first).
     spec: VALIDATION.md §Duplicate data_time policy — last-write-wins on read.
     """
     # Ensure conf exists
@@ -265,8 +344,15 @@ async def test_get_result_historical_filter_and_last_write_wins(
     assert resp.status_code == 200
     payload = resp.json()
     results = payload["results"]
-    # Expect exactly 3 rows: days 2, 3, 4
+    # Expect exactly 3 rows: days 2, 3, 4 returned in descending data_time order
     assert len(results) == 3, f"Expected 3 rows for days 2-4, got {len(results)}: {results}"
+    returned_dates = [r["data_time"][:10] for r in results]
+    expected_descending = [
+        (base_date + timedelta(days=i)).strftime("%Y-%m-%d") for i in (4, 3, 2)
+    ]
+    assert returned_dates == expected_descending, (
+        f"Expected descending data_time order {expected_descending}, got {returned_dates}"
+    )
 
     # Verify last-write-wins for day 0: fetch with from=day0 to include it
     resp2 = await api_client.get(
