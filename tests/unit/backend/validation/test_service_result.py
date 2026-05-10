@@ -386,3 +386,124 @@ async def test_get_results_returns_rows_and_total_count(
         "and <= the raw row count returned by the mock (5)"
     )
     assert len(rows) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_results_returned_in_descending_data_time_order(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """get_results returns rows ordered by data_time DESC (newest first).
+
+    spec: VALIDATION.md §GET result — "Rows are ordered by data_time descending
+    (newest first) so the most recent partition appears at the head of the response."
+    """
+    # The service receives rows from the DB in whatever order the DB returns them.
+    # The DB query applies ORDER BY data_time DESC; mock the rows already in that
+    # order (as a real DB would return them) and assert the returned list is strictly
+    # descending — verifying the *consumer-visible contract*, not SQL internals.
+    dt_newest = datetime(2026, 5, 10, tzinfo=UTC)
+    dt_mid    = datetime(2026, 5, 8,  tzinfo=UTC)
+    dt_oldest = datetime(2026, 5, 5,  tzinfo=UTC)
+
+    count_mock = _scalar_count(3)
+    rows_mock = MagicMock()
+    rows_mock.all.return_value = [
+        MagicMock(data_time=dt_newest, score=0.9, variables={"row_cnt": 51.0}),
+        MagicMock(data_time=dt_mid,    score=0.7, variables={"row_cnt": 42.0}),
+        MagicMock(data_time=dt_oldest, score=1.0, variables={"row_cnt": 50.0}),
+    ]
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    results, total_count = await svc.get_results(dataset_urn=_DATASET_URN)
+
+    assert total_count == 3
+    assert len(results) == 3
+
+    # spec: VALIDATION.md §GET result — newest first
+    data_times = [r.data_time for r in results]
+    for i in range(len(data_times) - 1):
+        assert data_times[i] > data_times[i + 1], (
+            f"Expected descending order at index {i}: "
+            f"{data_times[i]!r} must be > {data_times[i + 1]!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_record_result_duplicate_data_time_both_calls_succeed_and_emit_event(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """Two POSTs with the same data_time are each accepted (append-only) and each emits
+    VALIDATION.RESULT_RECORDED.
+
+    spec: VALIDATION.md §Duplicate data_time policy — "Multiple POSTs with the same
+    data_time are append-only: each becomes a distinct assertionRunEvent row."
+    The service does not deduplicate on write; last-write-wins is a read-time concern.
+    Both calls must succeed, and both must emit the RESULT_RECORDED event.
+    """
+    config = _make_config_row(variables=["row_cnt"])
+    db.commit = AsyncMock()
+
+    events_added: list = []
+
+    def capture_add(obj):
+        events_added.append(obj)
+
+    db.add = MagicMock(side_effect=capture_add)
+
+    shared_data_time = datetime(2026, 5, 8, tzinfo=UTC)
+
+    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True), \
+         patch("src.backend.validation.service.build_run_event"), \
+         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
+
+        mock_db_refresh(db)
+
+        # First call: score=1.0 (pass)
+        db.execute = AsyncMock(return_value=_scalar_result(config))
+        result_1 = await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=shared_data_time,
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        )
+
+        # Second call: same data_time, different score (fail)
+        db.execute = AsyncMock(return_value=_scalar_result(config))
+        result_2 = await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=shared_data_time,
+            score=0.0,
+            variables={"row_cnt": 20.0},
+        )
+
+    assert result_1 is not None, "First POST must return a result record"
+    assert result_2 is not None, "Second POST must return a result record"
+    assert result_1.data_time == shared_data_time
+    assert result_2.data_time == shared_data_time
+
+    # spec: VALIDATION.md §Duplicate data_time policy — each POST is a distinct row.
+    # The two records must carry their own input scores; if the impl mistakenly
+    # returned a cached/shared record, scores would collide.
+    assert result_1.score == 1.0, f"result_1.score must equal first POST's input; got {result_1.score!r}"
+    assert result_2.score == 0.0, f"result_2.score must equal second POST's input; got {result_2.score!r}"
+
+    # Two distinct ValidationResult rows must have been added — one per POST.
+    from src.shared.db.models import ValidationResult
+    inserted_results = [obj for obj in events_added if isinstance(obj, ValidationResult)]
+    assert len(inserted_results) == 2, (
+        f"Expected 2 ValidationResult rows (one per POST); got {len(inserted_results)}. "
+        "spec: VALIDATION.md §Duplicate data_time policy — append-only, distinct rows."
+    )
+
+    # spec: BACKEND.md §Event Catalogue — VALIDATION.RESULT_RECORDED must be emitted
+    # for each accepted POST.
+    event_types = [
+        getattr(obj, "event_type", None)
+        for obj in events_added
+        if hasattr(obj, "event_type")
+    ]
+    result_recorded_count = event_types.count(VALIDATION_RESULT_RECORDED)
+    assert result_recorded_count == 2, (
+        f"Expected 2 RESULT_RECORDED events (one per POST), got {result_recorded_count}; "
+        f"all event_types: {event_types}"
+    )

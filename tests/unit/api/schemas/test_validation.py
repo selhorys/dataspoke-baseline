@@ -171,6 +171,26 @@ class TestPatchValidationConfRequest:
         assert req.description == "Updated daily check"
         assert req.variables == ["row_cnt", "col1_mean"]
 
+    def test_variables_max_200_enforced(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "Hard cap 200 entries."
+        # PATCH shares the same variable constraint as PUT.  201 entries must be rejected.
+        vars_201 = [f"v{i:03}" for i in range(201)]
+        with pytest.raises(ValidationError, match=r"200|exceed|too_many"):
+            PatchValidationConfRequest(variables=vars_201)
+
+    def test_variables_exactly_200_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — hard cap 200 (boundary: 200 is valid)
+        vars_200 = [f"v{i:03}" for i in range(200)]
+        req = PatchValidationConfRequest(variables=vars_200)
+        assert len(req.variables) == 200
+
+    def test_variables_unicode_rejected(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — variable names MUST match
+        # \A[a-z][a-z0-9_]{0,99}\Z.  Non-ASCII characters (é, ï, etc.) fall outside
+        # the allowed character class and must be rejected.
+        with pytest.raises(ValidationError):
+            PatchValidationConfRequest(variables=["café", "naïve"])
+
 
 # ── POST /attr/validation/result ─────────────────────────────────────────────
 

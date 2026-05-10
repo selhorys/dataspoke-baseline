@@ -211,7 +211,7 @@ class ValidationListItem(BaseModel):
 class ValidationListResponse(PaginatedResponse):
     """Response for GET /spoke/common/validation."""
 
-    items: list[ValidationListItem] = Field(
+    validations: list[ValidationListItem] = Field(
         default=[],
         description="Cross-dataset validation list, each row aggregates conf + latest result",
     )

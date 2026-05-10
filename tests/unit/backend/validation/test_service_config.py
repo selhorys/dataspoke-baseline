@@ -309,6 +309,82 @@ async def test_list_configs_aggregates_latest_result_per_dataset(
     assert items[0].latest_score == 0.95
 
 
+_DATASET_URN_B = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.reviews.user_ratings,DEV)"
+
+
+@pytest.mark.asyncio
+async def test_list_configs_aggregates_correct_latest_per_dataset_across_multiple_datasets(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """list_configs attributes each latest_data_time/latest_score to the correct dataset
+    when configs for ≥2 datasets are returned in the same query.
+
+    spec: VALIDATION.md §API Surface — cross-dataset list aggregates conf + latest result.
+    The join must partition by dataset_urn so dataset A's latest result is not attributed
+    to dataset B (no row crossover).
+    """
+    count_mock = _scalar_count(2)
+
+    config_a = _make_config_row(dataset_urn=_DATASET_URN)
+    config_b = _make_config_row(
+        dataset_urn=_DATASET_URN_B,
+        description="Rating score null-rate check",
+    )
+    rows_mock = MagicMock()
+    rows_mock.scalars.return_value.all.return_value = [config_a, config_b]
+
+    # Dataset A: most-recent result is May 10 with score 0.8
+    dt_a = datetime(2026, 5, 10, tzinfo=UTC)
+    score_a = 0.8
+    latest_a = MagicMock()
+    latest_a.dataset_urn = _DATASET_URN
+    latest_a.data_time = dt_a
+    latest_a.score = score_a
+
+    # Dataset B: most-recent result is May 7 with score 0.5
+    dt_b = datetime(2026, 5, 7, tzinfo=UTC)
+    score_b = 0.5
+    latest_b = MagicMock()
+    latest_b.dataset_urn = _DATASET_URN_B
+    latest_b.data_time = dt_b
+    latest_b.score = score_b
+
+    latest_mock = MagicMock()
+    latest_mock.all.return_value = [latest_a, latest_b]
+
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+
+    items, total_count = await svc.list_configs()
+
+    assert total_count == 2
+    assert len(items) == 2
+
+    # Build a lookup by dataset_urn to assert without depending on list order
+    by_urn = {item.dataset_urn: item for item in items}
+
+    assert _DATASET_URN in by_urn, "Dataset A must appear in the list"
+    assert _DATASET_URN_B in by_urn, "Dataset B must appear in the list"
+
+    # spec: VALIDATION.md §API Surface — each item carries its own dataset's latest result
+    item_a = by_urn[_DATASET_URN]
+    assert item_a.latest_data_time == dt_a, (
+        f"Dataset A latest_data_time={item_a.latest_data_time!r} "
+        f"must equal its own result dt_a={dt_a!r} (no row crossover)"
+    )
+    assert item_a.latest_score == score_a, (
+        f"Dataset A latest_score={item_a.latest_score!r} must equal {score_a!r}"
+    )
+
+    item_b = by_urn[_DATASET_URN_B]
+    assert item_b.latest_data_time == dt_b, (
+        f"Dataset B latest_data_time={item_b.latest_data_time!r} "
+        f"must equal its own result dt_b={dt_b!r} (no row crossover)"
+    )
+    assert item_b.latest_score == score_b, (
+        f"Dataset B latest_score={item_b.latest_score!r} must equal {score_b!r}"
+    )
+
+
 # ── get_events ────────────────────────────────────────────────────────────────
 
 

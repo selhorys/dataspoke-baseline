@@ -213,10 +213,11 @@ class TestValidationSchemas:
         assert req.description == "Daily row count check"
         assert req.variables == ["row_cnt", "null_rate"]
 
-    def test_list_response_has_items(self) -> None:
+    def test_list_response_default_empty(self) -> None:
         # spec: VALIDATION.md §API Surface — cross-dataset list
+        # spec: API.md §Standard Response Envelope — content key named after the resource
         resp = ValidationListResponse()
-        assert resp.items == []
+        assert resp.validations == []
 
 
 class TestMetagenSchemas:

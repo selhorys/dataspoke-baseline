@@ -515,6 +515,156 @@ async def test_url_with_encoded_parens_decoded_correctly(
     )
 
 
+# ── Resurrection: PUT after soft-delete returns 201 ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resurrection_via_put_after_delete_returns_201_at_route_layer(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PUT on a soft-deleted (absent) config returns HTTP 201 (resurrection = create).
+
+    spec: API.md §HTTP status table — 201 is for "PUT targeting a new resource".
+    spec: VALIDATION.md §Rule Configuration — after DELETE, GET conf returns 404
+    (the resource view treats a soft-deleted rule as absent). A subsequent PUT
+    therefore targets an absent resource → 201. The service signals resurrection
+    by returning created=True (same flag as first-time creation).
+    spec: USE_CASE_en.md §UC2 — soft-delete + PUT resurrects the same assertion URN.
+    """
+    from src.backend.validation.service import ValidationConfigRecord
+
+    mock_svc.upsert_config = AsyncMock(
+        return_value=(
+            ValidationConfigRecord(
+                dataset_urn=_VALID_URN,
+                description="Resurrected daily row count check",
+                variables=["row_cnt"],
+                is_removed=False,
+                created_at=datetime.now(tz=UTC),
+                updated_at=datetime.now(tz=UTC),
+            ),
+            True,  # created=True — service returns True for both new creation AND resurrection
+        )
+    )
+
+    resp = await client.put(
+        _CONF_URL,
+        json={
+            "description": "Resurrected daily row count check",
+            "variables": ["row_cnt"],
+        },
+        headers=auth_headers(["de"]),
+    )
+
+    # spec: USE_CASE_en.md §UC2 — resurrection returns 201, not 200
+    assert resp.status_code == 201, (
+        f"Expected HTTP 201 for PUT-after-delete (resurrection), got {resp.status_code}: {resp.text}"
+    )
+
+
+# ── GET /spoke/common/validation — removed filter response content ─────────────
+
+
+@pytest.mark.asyncio
+async def test_get_validation_list_removed_true_returns_only_removed_items(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /spoke/common/validation?removed=true returns only soft-deleted items.
+
+    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
+    Tests that ?removed=true both (a) forwards removed_filter=True to the service AND
+    (b) the response items all carry is_removed=True.
+    """
+    from src.backend.validation.service import ValidationListItem
+
+    removed_item = ValidationListItem(
+        dataset_urn=_VALID_URN,
+        description="Deleted check",
+        variable_count=1,
+        latest_data_time=None,
+        latest_score=None,
+        is_removed=True,
+        updated_at=datetime.now(tz=UTC),
+    )
+    mock_svc.list_configs = AsyncMock(return_value=([removed_item], 1))
+
+    resp = await client.get(
+        f"{_VALIDATION_BASE}?removed=true",
+        headers=auth_headers(["de"]),
+    )
+    assert resp.status_code == 200
+
+    # spec: VALIDATION.md §Rule Configuration — removed flag forwarded correctly
+    call_kwargs = mock_svc.list_configs.call_args.kwargs
+    assert call_kwargs.get("removed_filter") is True, (
+        f"removed_filter must be True; got {call_kwargs!r}"
+    )
+
+    # spec: API.md §Standard Response Envelope — collection responses use a content key
+    # named after the resource (e.g., `validations`) plus pagination metadata.
+    data = resp.json()
+    assert isinstance(data, dict), f"Response must be the standard list envelope dict; got {type(data).__name__}"
+    assert "validations" in data and "total_count" in data, (
+        f"Response must carry 'validations' (resource-named content key) and 'total_count'; "
+        f"got keys: {list(data.keys())}. spec: API.md §Standard Response Envelope"
+    )
+    items = data["validations"]
+    assert len(items) >= 1, "Response must contain at least the removed item"
+    assert all(item.get("is_removed") is True for item in items), (
+        f"All items must have is_removed=True; got: {items}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_validation_list_removed_false_returns_only_active_items(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /spoke/common/validation?removed=false returns only active (non-deleted) items.
+
+    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
+    Tests that ?removed=false both (a) forwards removed_filter=False to the service AND
+    (b) the response items all carry is_removed=False.
+    """
+    from src.backend.validation.service import ValidationListItem
+
+    active_item = ValidationListItem(
+        dataset_urn=_VALID_URN,
+        description="Active daily row count check",
+        variable_count=2,
+        latest_data_time=datetime(2026, 5, 8, tzinfo=UTC),
+        latest_score=1.0,
+        is_removed=False,
+        updated_at=datetime.now(tz=UTC),
+    )
+    mock_svc.list_configs = AsyncMock(return_value=([active_item], 1))
+
+    resp = await client.get(
+        f"{_VALIDATION_BASE}?removed=false",
+        headers=auth_headers(["de"]),
+    )
+    assert resp.status_code == 200
+
+    # spec: VALIDATION.md §Rule Configuration — removed flag forwarded correctly
+    call_kwargs = mock_svc.list_configs.call_args.kwargs
+    assert call_kwargs.get("removed_filter") is False, (
+        f"removed_filter must be False; got {call_kwargs!r}"
+    )
+
+    # spec: API.md §Standard Response Envelope — collection responses use a content key
+    # named after the resource (e.g., `validations`) plus pagination metadata.
+    data = resp.json()
+    assert isinstance(data, dict), f"Response must be the standard list envelope dict; got {type(data).__name__}"
+    assert "validations" in data and "total_count" in data, (
+        f"Response must carry 'validations' (resource-named content key) and 'total_count'; "
+        f"got keys: {list(data.keys())}. spec: API.md §Standard Response Envelope"
+    )
+    items = data["validations"]
+    assert len(items) >= 1, "Response must contain at least the active item"
+    assert all(item.get("is_removed") is False for item in items), (
+        f"All items must have is_removed=False; got: {items}"
+    )
+
+
 # ── Real service score validation (F14) ──────────────────────────────────────
 # These tests use a real ValidationService (not mocked) so the service-layer
 # INVALID_SCORE check is exercised end-to-end through the HTTP layer.

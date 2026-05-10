@@ -47,5 +47,5 @@ async def get_validation(
         offset=offset,
         limit=limit,
         total_count=total_count,
-        items=[ValidationListItem.model_validate(item) for item in items],
+        validations=[ValidationListItem.model_validate(item) for item in items],
     )

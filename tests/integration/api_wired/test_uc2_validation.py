@@ -204,7 +204,7 @@ async def test_uc2_passive_result_store(
         assert list_resp.status_code == 200, (
             f"Step 4: GET /validation expected 200, got {list_resp.status_code}: {list_resp.text}"
         )
-        items = list_resp.json()["items"]
+        items = list_resp.json()["validations"]
         by_urn = {i["dataset_urn"]: i for i in items}
         assert _PG_URN in by_urn, (
             f"Step 4: postgres dataset not found in cross-dataset list; got: {list(by_urn)}"
@@ -252,7 +252,7 @@ async def test_uc2_passive_result_store(
             headers=admin_headers,
         )
         assert list_removed_resp.status_code == 200
-        removed_urns = [i["dataset_urn"] for i in list_removed_resp.json()["items"]]
+        removed_urns = [i["dataset_urn"] for i in list_removed_resp.json()["validations"]]
         assert _PG_URN in removed_urns, (
             f"Step 5: ?removed=true should include postgres dataset; got: {removed_urns}"
         )
@@ -263,7 +263,7 @@ async def test_uc2_passive_result_store(
             headers=admin_headers,
         )
         assert list_active_resp.status_code == 200
-        active_urns = [i["dataset_urn"] for i in list_active_resp.json()["items"]]
+        active_urns = [i["dataset_urn"] for i in list_active_resp.json()["validations"]]
         assert _PG_URN not in active_urns, (
             f"Step 5: ?removed=false must NOT include deleted postgres dataset; got: {active_urns}"
         )
