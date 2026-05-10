@@ -1,7 +1,7 @@
 """Unit tests for MetagenService cross_data-specific methods.
 
 Covers:
-  _find_related_documents — GraphQL filter shape (orFilters, types=DOCUMENT, count cap)
+  fetch_related_documents — GraphQL filter shape (orFilters, types=DOCUMENT, count cap)
   _propose_cross_data — LLM output validation; invalid actions dropped with WARNING
   _apply_approved_fields — re-validates proposals from JSONB before dispatching
 
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET
+from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET, fetch_related_documents
 from src.backend.metagen.service import MetagenService
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)"
@@ -31,15 +31,14 @@ def svc(datahub: AsyncMock, db: AsyncMock, cache: AsyncMock, llm: AsyncMock) -> 
     return MetagenService(datahub=datahub, db=db, llm=llm, cache=cache)
 
 
-# ── _find_related_documents ───────────────────────────────────────────────────
+# ── fetch_related_documents ───────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_find_related_documents_uses_document_type_filter(
-    svc: MetagenService,
     datahub: AsyncMock,
 ) -> None:
-    """_find_related_documents sends types=['DOCUMENT'] and orFilters with relatedAssets.
+    """fetch_related_documents sends types=['DOCUMENT'] and orFilters with relatedAssets.
 
     Spec: DATAHUB_INTEGRATION.md §Document Aspects — searchAcrossEntities must
     filter by types=['DOCUMENT'] and use orFilters containing relatedAssets field
@@ -48,7 +47,7 @@ async def test_find_related_documents_uses_document_type_filter(
     # Return empty results — we are only inspecting the query shape.
     datahub._with_retry = AsyncMock(return_value={"searchAcrossEntities": {"searchResults": []}})
 
-    await svc._find_related_documents(_DATASET_URN)
+    await fetch_related_documents(_DATASET_URN, datahub)
 
     assert datahub._with_retry.call_count == 1
     # The variables dict is passed as a keyword arg to _with_retry

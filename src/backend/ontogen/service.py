@@ -1,7 +1,7 @@
 """Ontology Generation service — UC3 triple ontology pipeline.
 
 Spec: spec/feature/BACKEND.md §Ontology Generation Service
-      spec/DATAHUB_INTEGRATION.md §Aspect Reference (glossaryTerms, documentInfo)
+      spec/DATAHUB_INTEGRATION.md §Read vs Write Boundary
 """
 
 import logging
@@ -47,12 +47,10 @@ from src.shared.events import (
 )
 from src.shared.exceptions import (
     ConflictError,
-    DataSpokeError,
     EntityNotFoundError,
     InvalidDatasetUrnError,
     PreconditionFailedError,
 )
-from src.shared.graph.client import AgeGraph
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import PgVectorManager, VectorHit
 
@@ -242,7 +240,6 @@ class OntogenService:
     - db: AsyncSession
     - cache: RedisClient
     - llm: LLMClient
-    - age: AgeGraph
     - vector: PgVectorManager
     """
 
@@ -252,14 +249,12 @@ class OntogenService:
         db: AsyncSession,
         cache: RedisClient,
         llm: LLMClient,
-        age: AgeGraph,
         vector: PgVectorManager,
     ) -> None:
         self._datahub = datahub
         self._db = db
         self._cache = cache
         self._llm = llm
-        self._age = age
         self._vector = vector
 
     # ── Singleton conf CRUD ───────────────────────────────────────────────────
@@ -273,8 +268,6 @@ class OntogenService:
                 id=1,
                 is_enabled=False,
                 dataset_filter={},
-                max_manual_queries_per_dataset=20,
-                max_system_queries_per_dataset=10,
             )
             self._db.add(row)
             await self._db.commit()
@@ -305,8 +298,6 @@ class OntogenService:
         existing.is_enabled = conf.get("is_enabled", False)
         existing.schedule_tier = conf.get("schedule_tier")
         existing.dataset_filter = dataset_filter
-        existing.max_manual_queries_per_dataset = conf.get("max_manual_queries_per_dataset", 20)
-        existing.max_system_queries_per_dataset = conf.get("max_system_queries_per_dataset", 10)
         existing.default_run_prompt = conf.get("default_run_prompt")
         existing.updated_at = datetime.now(tz=UTC)
 
@@ -340,8 +331,6 @@ class OntogenService:
             "is_enabled",
             "schedule_tier",
             "dataset_filter",
-            "max_manual_queries_per_dataset",
-            "max_system_queries_per_dataset",
             "default_run_prompt",
         ):
             if field_name in partial and partial[field_name] is not None:
@@ -537,7 +526,7 @@ class OntogenService:
         evidence_per_dataset: dict[str, dict[str, Any]] = {}
         for urn in dataset_urns:
             try:
-                evidence_per_dataset[urn] = await gather_evidence(urn, self._datahub, conf)
+                evidence_per_dataset[urn] = await gather_evidence(urn, self._datahub)
             except Exception:
                 logger.warning(
                     "ontogen_evidence_gather_failed",
@@ -940,22 +929,6 @@ class OntogenService:
                 self._db.add(orm_triple)
                 triples_added += 1
 
-                # Materialise in AGE if triple is auto-approved
-                if t["status"] == "approved":
-                    try:
-                        await self._age.materialize_triple(
-                            subject_id=t["subject_node_id"],
-                            edge_id=t["edge_id"],
-                            object_id=t["object_node_id"],
-                            edge_label=edge_row.label,
-                        )
-                    except DataSpokeError:
-                        logger.warning(
-                            "ontogen_age_materialise_failed",
-                            extra={"triple_id": t["id"]},
-                            exc_info=True,
-                        )
-
         await self._db.commit()
 
         # Step 10 (cont): Refresh node embeddings for new/changed nodes
@@ -1034,7 +1007,6 @@ class OntogenService:
             "node_id": node_id,
             "confidence_score": row.confidence_score,
             "evidence": row.evidence,
-            "glossary_term_urn": row.glossary_term_urn,
         }
 
     async def list_node_events(
@@ -1174,10 +1146,7 @@ class OntogenService:
     ) -> OntogenNode:
         """Approve or reject a node.
 
-        On approval:
-          - Write ``glossaryTerms`` aspect to each member dataset in
-            ``dataset_node_map`` (best-effort).
-          - Set ``glossary_term_urn`` on the node row.
+        On approval: status mutation and dataset_node_map status update only.
         On reject: status mutation only.
         Emits NODE.APPROVE or NODE.REJECT.
         """
@@ -1194,10 +1163,6 @@ class OntogenService:
 
         if verdict == "approve":
             row.status = "approved"
-            # Fix #3: validate node_id slug before constructing glossary URN
-            _assert_node_id(node_id)
-            glossary_urn = f"urn:li:glossaryTerm:{node_id}"
-            row.glossary_term_urn = glossary_urn
             row.updated_at = datetime.now(tz=UTC)
             self._db.add(row)
 
@@ -1217,9 +1182,6 @@ class OntogenService:
 
             await self._db.commit()
             await self._db.refresh(row)
-
-            # Best-effort: attach glossary term to member datasets
-            await self._attach_node_glossary_term(node_id, glossary_urn)
 
             event_type = NODE_APPROVE
         else:
@@ -1305,8 +1267,6 @@ class OntogenService:
 
         On approval: requires both endpoint nodes and the edge to be approved;
         otherwise raises PreconditionFailedError(ONTOGEN_TRIPLE_DEPENDENCY_PENDING).
-        On approval: materialise AGE edge (best-effort); emit glossary-term
-        relationship between subject and object terms (best-effort).
         Emits TRIPLE.APPROVE or TRIPLE.REJECT.
         """
         row = await self.get_triple(triple_id)
@@ -1352,28 +1312,6 @@ class OntogenService:
             self._db.add(row)
             await self._db.commit()
             await self._db.refresh(row)
-
-            # Best-effort AGE materialisation
-            try:
-                await self._age.materialize_triple(
-                    subject_id=row.subject_node_id,
-                    edge_id=row.edge_id,
-                    object_id=row.object_node_id,
-                    edge_label=edge_row.label if edge_row else row.edge_id,
-                )
-            except DataSpokeError:
-                logger.warning(
-                    "ontogen_age_materialise_failed_review",
-                    extra={"triple_id": triple_id},
-                    exc_info=True,
-                )
-
-            # Best-effort: glossary-term relationship between subject and object
-            await self._emit_glossary_term_relationship(
-                row.subject_node_id,
-                row.object_node_id,
-                edge_row.label if edge_row else row.edge_id,
-            )
 
             event_type = TRIPLE_APPROVE
         else:
@@ -1553,103 +1491,6 @@ class OntogenService:
                 existing_map.confidence_score = confidence
                 existing_map.status = status
                 self._db.add(existing_map)
-
-    async def _attach_node_glossary_term(self, node_id: str, glossary_urn: str) -> None:
-        """Attach *glossary_urn* to each member dataset in dataset_node_map (best-effort)."""
-        try:
-            maps = (
-                (
-                    await self._db.execute(
-                        select(DatasetNodeMap).where(DatasetNodeMap.node_id == node_id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-            for dm in maps:
-                dataset_urn = dm.dataset_urn
-                try:
-                    from datahub.metadata.schema_classes import (
-                        AuditStampClass,
-                        GlossaryTermAssociationClass,
-                        GlossaryTermsClass,
-                    )
-
-                    existing = await self._datahub.get_aspect(dataset_urn, GlossaryTermsClass)
-                    existing_terms = list(existing.terms) if existing else []
-                    # Avoid duplicates
-                    existing_urns = {str(t.urn) for t in existing_terms}
-                    if glossary_urn not in existing_urns:
-                        new_term = GlossaryTermAssociationClass(urn=glossary_urn)
-                        audit = AuditStampClass(
-                            time=int(datetime.now(tz=UTC).timestamp() * 1000),
-                            actor="urn:li:corpuser:datahub",
-                        )
-                        new_terms = GlossaryTermsClass(
-                            terms=existing_terms + [new_term],
-                            auditStamp=audit,
-                        )
-                        await self._datahub.emit_aspect(dataset_urn, new_terms)
-                except Exception:
-                    logger.warning(
-                        "ontogen_glossary_term_attach_failed",
-                        extra={"dataset_urn": dataset_urn, "node_id": node_id},
-                        exc_info=True,
-                    )
-        except Exception:
-            logger.warning(
-                "ontogen_attach_glossary_term_failed",
-                extra={"node_id": node_id},
-                exc_info=True,
-            )
-
-    async def _emit_glossary_term_relationship(
-        self,
-        subject_node_id: str,
-        object_node_id: str,
-        edge_label: str,
-    ) -> None:
-        """Emit a glossary-term relationship between subject and object terms (best-effort).
-
-        DataHub does not have a first-class "glossary term relationship" REST write path
-        in the current SDK at the time of this implementation; we log a warning and
-        continue per BACKEND.md §Best-Effort Operations.
-        """
-        try:
-            # Fix #3: validate node IDs before constructing glossary URNs
-            _assert_node_id(subject_node_id)
-            _assert_node_id(object_node_id)
-            # Glossary term URNs derived from node IDs
-            subj_term_urn = f"urn:li:glossaryTerm:{subject_node_id}"
-            obj_term_urn = f"urn:li:glossaryTerm:{object_node_id}"
-
-            # Attempt to use GlossaryRelatedTermsClass if available in the SDK
-            try:
-                from datahub.metadata.schema_classes import (
-                    GlossaryRelatedTermsClass,
-                )
-
-                related = GlossaryRelatedTermsClass(isRelatedTerms=[obj_term_urn])
-                await self._datahub.emit_aspect(subj_term_urn, related)
-            except (ImportError, AttributeError):
-                logger.warning(
-                    "ontogen_glossary_relationship_api_unavailable",
-                    extra={
-                        "subject_node_id": subject_node_id,
-                        "object_node_id": object_node_id,
-                        "edge_label": edge_label,
-                    },
-                )
-        except Exception:
-            logger.warning(
-                "ontogen_glossary_term_relationship_failed",
-                extra={
-                    "subject_node_id": subject_node_id,
-                    "object_node_id": object_node_id,
-                },
-                exc_info=True,
-            )
 
     async def list_global_events(
         self,

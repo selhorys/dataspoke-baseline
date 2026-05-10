@@ -228,16 +228,12 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
     try:
         async with make_db_session() as db:
             from src.backend.ontogen.service import OntogenService
-            from src.shared.db.session import SessionLocal
-            from src.shared.graph.client import AgeGraph
 
-            age = AgeGraph(session_factory=SessionLocal)
             service = OntogenService(
                 datahub=datahub,
                 db=db,
                 cache=cache,
                 llm=llm,
-                age=age,
                 vector=vector,
             )
             summary = await service.run(prompt_md=body.prompt_md, dry_run=body.dry_run)

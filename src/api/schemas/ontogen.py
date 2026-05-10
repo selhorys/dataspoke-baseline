@@ -38,12 +38,6 @@ class OntogenConfResponse(SingleResponse):
             "OR-ed across dimensions; {} means all datasets."
         ),
     )
-    max_manual_queries_per_dataset: int = Field(
-        default=20, description="Cap on MANUAL Query entities used as evidence per dataset"
-    )
-    max_system_queries_per_dataset: int = Field(
-        default=10, description="Cap on SYSTEM Query entities used as evidence per dataset"
-    )
     default_run_prompt: str | None = Field(
         default=None,
         description="Default one-shot prompt for periodic runs and bodyless manual calls",
@@ -60,8 +54,6 @@ class OntogenConfPutRequest(BaseModel):
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
     )
     dataset_filter: dict[str, Any] = Field(default={})
-    max_manual_queries_per_dataset: int = Field(default=20, ge=0)
-    max_system_queries_per_dataset: int = Field(default=10, ge=0)
     default_run_prompt: str | None = Field(
         default=None,
         max_length=16_000,
@@ -90,8 +82,6 @@ class OntogenConfPatchRequest(BaseModel):
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
     )
     dataset_filter: dict[str, Any] | None = Field(default=None)
-    max_manual_queries_per_dataset: int | None = Field(default=None, ge=0)
-    max_system_queries_per_dataset: int | None = Field(default=None, ge=0)
     default_run_prompt: str | None = Field(
         default=None,
         max_length=16_000,
@@ -152,9 +142,6 @@ class NodeResponse(SingleResponse):
     description: str = Field(default="", description="Node description")
     confidence_score: float = Field(description="LLM confidence score (0–1)")
     status: str = Field(description="Lifecycle status: pending_review, approved, or rejected")
-    glossary_term_urn: str | None = Field(
-        default=None, description="DataHub glossary term URN (set on approval)"
-    )
     created_at: datetime = Field(description="UTC timestamp when the node was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
@@ -168,9 +155,6 @@ class NodeAttrResponse(SingleResponse):
     confidence_score: float = Field(description="LLM confidence score")
     evidence: dict[str, Any] = Field(
         default={}, description="Source evidence collected for this node"
-    )
-    glossary_term_urn: str | None = Field(
-        default=None, description="DataHub glossary term URN"
     )
 
 

@@ -39,8 +39,6 @@ def _make_conf_row() -> MagicMock:
     row.is_enabled = False
     row.schedule_tier = None
     row.dataset_filter = {}
-    row.max_manual_queries_per_dataset = 20
-    row.max_system_queries_per_dataset = 10
     row.default_run_prompt = None
     row.updated_at = datetime.now(tz=UTC)
     return row
@@ -281,3 +279,38 @@ async def test_post_node_review_reason_too_long_returns_422(client, mock_svc: As
         headers=auth_headers(["de"]),
     )
     assert resp.status_code == 422
+
+
+# ── Schema structural absence tests ──────────────────────────────────────────
+
+
+def test_node_response_schema_omits_glossary_term_urn() -> None:
+    """NodeResponse must not have a glossary_term_urn field.
+
+    Spec anchor: spec/feature/BACKEND_SCHEMA.md ontogen_nodes table (column
+    removed in UC3/UC4 refactor) — the API response schema must not expose
+    a field that no longer exists in the backing table.
+    """
+    from src.api.schemas.ontogen import NodeResponse
+
+    assert "glossary_term_urn" not in NodeResponse.model_fields, (
+        "NodeResponse must not expose glossary_term_urn (column removed per "
+        "spec/feature/BACKEND_SCHEMA.md ontogen_nodes)"
+    )
+
+
+def test_ontogen_conf_schemas_omit_query_caps() -> None:
+    """OntogenConfPutRequest and OntogenConfPatchRequest must not have
+    max_manual_queries_per_dataset or max_system_queries_per_dataset fields.
+
+    Spec anchor: spec/feature/BACKEND_SCHEMA.md ontogen_config (columns removed);
+    spec/API.md §UC3 conf fields.
+    """
+    from src.api.schemas.ontogen import OntogenConfPutRequest, OntogenConfPatchRequest
+
+    for schema_cls in (OntogenConfPutRequest, OntogenConfPatchRequest):
+        for dropped_field in ("max_manual_queries_per_dataset", "max_system_queries_per_dataset"):
+            assert dropped_field not in schema_cls.model_fields, (
+                f"{schema_cls.__name__} must not expose {dropped_field!r} "
+                f"(column removed per spec/feature/BACKEND_SCHEMA.md ontogen_config)"
+            )

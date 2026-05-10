@@ -114,19 +114,16 @@ def make_ontogen() -> tuple:  # type: ignore[type-arg]
     """Construct OntogenService with all required dependencies.
 
     Spec: spec/feature/BACKEND.md §Feature Services — OntogenService requires
-    datahub, db, cache, llm, age (AGE graph), vector.
+    datahub, db, cache, llm, vector.
     """
     from src.backend.ontogen.service import OntogenService
-    from src.shared.db.session import SessionLocal as _SessionLocal
-    from src.shared.graph.client import AgeGraph
 
     datahub = make_datahub()
     cache = make_cache()
     llm = make_llm()
     vector = make_vector()
-    age = AgeGraph(session_factory=_SessionLocal)
     # db session is provided by callers via async context manager
-    return OntogenService, datahub, cache, llm, age, vector
+    return OntogenService, datahub, cache, llm, vector
 
 
 def make_metagen() -> tuple:  # type: ignore[type-arg]

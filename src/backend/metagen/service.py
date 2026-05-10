@@ -12,14 +12,22 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.metagen import CrossDataAction
-from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET, apply_actions
+from src.backend.metagen.cross_data import apply_actions, fetch_related_documents
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import DatasetNodeMap, Event, MetagenConfig, MetagenResult
+from src.shared.db.models import (
+    DatasetNodeMap,
+    Event,
+    MetagenConfig,
+    MetagenResult,
+    OntogenEdge,
+    OntogenNode,
+    OntogenTriple,
+)
 from src.shared.events import (
     METAGEN_APPROVE,
     METAGEN_COMPLETE,
@@ -404,7 +412,7 @@ class MetagenService:
         Pipeline:
         1. Acquire Redis SETNX guard (if cache is available).
         2. Load metagen config; raise EntityNotFoundError if absent.
-        3. Gather DataHub evidence (non-editable aspects + schema + lineage).
+        3. Gather DataHub evidence (unified six-aspect proofread boundary).
         4. Resolve node membership from dataset_node_map (UC3 integration).
         5. Build LLM prompt per target; call LLM.
         6. For cross_data.md: inspect existing related document entities.
@@ -468,7 +476,44 @@ class MetagenService:
             .scalars()
             .all()
         )
-        evidence["ontogen_node_ids"] = [m.node_id for m in node_map]
+        approved_node_ids = [m.node_id for m in node_map]
+        evidence["ontogen_node_ids"] = approved_node_ids
+
+        # Step 3b: Fetch approved triples touching these nodes (UC3 → UC4 integration).
+        # Spec: spec/feature/BACKEND.md §Generation Pipeline; spec/USE_CASE_en.md §UC4 Inputs.
+        if approved_node_ids:
+            triples_result = await self._db.execute(
+                select(OntogenTriple, OntogenEdge)
+                .join(OntogenEdge, OntogenTriple.edge_id == OntogenEdge.id)
+                .join(
+                    OntogenNode,
+                    or_(
+                        OntogenTriple.subject_node_id == OntogenNode.id,
+                        OntogenTriple.object_node_id == OntogenNode.id,
+                    ),
+                )
+                .where(
+                    OntogenTriple.status == "approved",
+                    OntogenEdge.status == "approved",
+                    OntogenNode.status == "approved",
+                    or_(
+                        OntogenTriple.subject_node_id.in_(approved_node_ids),
+                        OntogenTriple.object_node_id.in_(approved_node_ids),
+                    ),
+                )
+                .distinct()
+            )
+            evidence["ontogen_triples"] = [
+                {
+                    "subject_node_id": triple.subject_node_id,
+                    "edge_id": triple.edge_id,
+                    "edge_label": edge.label,
+                    "object_node_id": triple.object_node_id,
+                }
+                for triple, edge in triples_result.all()
+            ]
+        else:
+            evidence["ontogen_triples"] = []
 
         # Step 4+5: Call LLM per target
         proposals: dict[str, Any] = {}
@@ -688,105 +733,76 @@ class MetagenService:
             evidence.setdefault("schema_fields", [])
 
         try:
-            from datahub.metadata.schema_classes import UpstreamLineageClass
+            from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
 
-            lineage = await self._datahub.get_aspect(dataset_urn, UpstreamLineageClass)
-            if lineage and hasattr(lineage, "upstreams"):
-                evidence["upstream_urns"] = [
-                    str(u.dataset) for u in lineage.upstreams if hasattr(u, "dataset")
-                ]
+            editable_props = await self._datahub.get_aspect(
+                dataset_urn, EditableDatasetPropertiesClass
+            )
+            if editable_props:
+                evidence["editable_description"] = getattr(editable_props, "description", None)
         except Exception:
             logger.warning(
-                "metagen_evidence_lineage_failed",
+                "metagen_evidence_editable_props_failed",
                 extra={"dataset_urn": dataset_urn},
                 exc_info=True,
             )
-            evidence.setdefault("upstream_urns", [])
 
-        # If cross_data.md is a target, gather existing related documents
-        if "cross_data.md" in targets:
-            try:
-                evidence["related_documents"] = await self._find_related_documents(dataset_urn)
-            except Exception:
-                logger.warning(
-                    "metagen_evidence_related_documents_failed",
-                    extra={"dataset_urn": dataset_urn},
-                    exc_info=True,
-                )
-                evidence["related_documents"] = []
+        try:
+            from datahub.metadata.schema_classes import EditableSchemaMetadataClass
+
+            editable_schema = await self._datahub.get_aspect(
+                dataset_urn, EditableSchemaMetadataClass
+            )
+            if editable_schema and hasattr(editable_schema, "editableSchemaFieldInfo"):
+                evidence["editable_field_descriptions"] = [
+                    {
+                        "fieldPath": getattr(f, "fieldPath", ""),
+                        "description": getattr(f, "description", "") or "",
+                    }
+                    for f in editable_schema.editableSchemaFieldInfo
+                    if getattr(f, "description", None)
+                ]
+            else:
+                evidence["editable_field_descriptions"] = []
+        except Exception:
+            logger.warning(
+                "metagen_evidence_editable_schema_failed",
+                extra={"dataset_urn": dataset_urn},
+                exc_info=True,
+            )
+            evidence.setdefault("editable_field_descriptions", [])
+
+        try:
+            from datahub.metadata.schema_classes import GlossaryTermsClass
+
+            glossary_terms = await self._datahub.get_aspect(dataset_urn, GlossaryTermsClass)
+            if glossary_terms and hasattr(glossary_terms, "terms"):
+                evidence["glossary_terms"] = [str(t.urn) for t in glossary_terms.terms]
+            else:
+                evidence["glossary_terms"] = []
+        except Exception:
+            logger.warning(
+                "metagen_evidence_glossary_terms_failed",
+                extra={"dataset_urn": dataset_urn},
+                exc_info=True,
+            )
+            evidence.setdefault("glossary_terms", [])
+
+        # Gather related documents (always, not only for cross_data.md targets)
+        # fetch_related_documents is best-effort and handles its own exceptions internally.
+        try:
+            evidence["related_documents"] = await fetch_related_documents(
+                dataset_urn, self._datahub
+            )
+        except Exception:
+            logger.warning(
+                "metagen_evidence_related_documents_failed",
+                extra={"dataset_urn": dataset_urn},
+                exc_info=True,
+            )
+            evidence["related_documents"] = []
 
         return evidence
-
-    async def _find_related_documents(self, dataset_urn: str) -> list[dict[str, Any]]:
-        """Find document entities whose relatedAssets include *dataset_urn*.
-
-        Uses searchAcrossEntities with a relatedAssets filter. Results are
-        sorted by lastModified descending and capped at 10.
-        """
-        gql = """
-        query searchDocumentsByRelatedAsset($input: SearchAcrossEntitiesInput!) {
-            searchAcrossEntities(input: $input) {
-                searchResults {
-                    entity {
-                        urn
-                        ... on Document {
-                            info {
-                                title
-                                contents { text }
-                                relatedAssets { asset { urn } }
-                                lastModified { time }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        """
-        variables: dict[str, Any] = {
-            "input": {
-                "types": ["DOCUMENT"],
-                "query": "*",
-                "start": 0,
-                "count": DOCUMENT_EVIDENCE_CAP_PER_DATASET * 5,
-                "orFilters": [{"and": [{"field": "relatedAssets", "values": [dataset_urn]}]}],
-            }
-        }
-        try:
-            result = await self._datahub._with_retry(
-                self._datahub._graph.execute_graphql, gql, variables=variables
-            )
-            search_results = (result or {}).get("searchAcrossEntities", {}).get("searchResults", [])
-            docs: list[dict[str, Any]] = []
-            for item in search_results:
-                entity = item.get("entity") or {}
-                info = entity.get("info") or {}
-                contents = info.get("contents") or {}
-                related_raw = info.get("relatedAssets") or []
-                related_assets = [
-                    r["asset"]["urn"]
-                    for r in related_raw
-                    if r.get("asset") and r["asset"].get("urn")
-                ]
-                last_modified_ms: int = (info.get("lastModified") or {}).get("time") or 0
-                docs.append(
-                    {
-                        "urn": entity.get("urn", ""),
-                        "title": info.get("title", ""),
-                        "body": contents.get("text", ""),
-                        "related_assets": related_assets,
-                        "last_modified": last_modified_ms,
-                    }
-                )
-            # Sort by lastModified descending, cap at constant
-            docs.sort(key=lambda d: -(d.get("last_modified") or 0))
-            return docs[:DOCUMENT_EVIDENCE_CAP_PER_DATASET]
-        except Exception:
-            logger.warning(
-                "metagen_related_documents_search_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
-            return []
 
     async def _propose_target(
         self,
@@ -820,12 +836,19 @@ class MetagenService:
         fields = evidence.get("schema_fields", [])
         field_summary = ", ".join(f.get("fieldPath", "") for f in fields[:20])
         node_ids = evidence.get("ontogen_node_ids", [])
+        triples = evidence.get("ontogen_triples", [])
+
+        triple_lines = "\n".join(
+            f"  {t['subject_node_id']} --[{t['edge_label']}]--> {t['object_node_id']}"
+            for t in triples[:30]
+        )
 
         prompt = (
             f"Dataset: {name}\n"
             f"Current description: {current_desc!r}\n"
             f"Columns: {field_summary}\n"
-            f"Ontology nodes: {node_ids}\n\n"
+            f"Ontology nodes: {node_ids}\n"
+            f"Ontology triples:\n{triple_lines or '(none)'}\n\n"
             "Write a concise one-paragraph business description for this dataset. "
             "Return ONLY the description text — no JSON, no formatting."
         )
@@ -841,9 +864,16 @@ class MetagenService:
             f"  - {f['fieldPath']} ({f.get('nativeDataType', '')}): {f.get('description', '')}"
             for f in schema_fields[:40]
         )
+        triples = evidence.get("ontogen_triples", [])
+        triple_lines = "\n".join(
+            f"  {t['subject_node_id']} --[{t['edge_label']}]--> {t['object_node_id']}"
+            for t in triples[:30]
+        )
+
         prompt = (
             f"Dataset: {name}\n"
-            f"Schema:\n{field_lines}\n\n"
+            f"Schema:\n{field_lines}\n"
+            f"Ontology triples:\n{triple_lines or '(none)'}\n\n"
             "For each column, write a concise business-friendly description. "
             "Return a JSON object mapping fieldPath to description string. "
             "Respond with ONLY the JSON object."
@@ -867,6 +897,7 @@ class MetagenService:
         """
         related_docs = evidence.get("related_documents", [])
         dataset_name = evidence.get("dataset_name", dataset_urn)
+        triples = evidence.get("ontogen_triples", [])
 
         doc_summary = "\n".join(
             f"  - URN: {doc['urn']}  Title: {doc.get('title', '')}  "
@@ -874,9 +905,14 @@ class MetagenService:
             f"    Body (excerpt): {doc.get('body', '')[:200]}"
             for doc in related_docs
         )
+        triple_lines = "\n".join(
+            f"  {t['subject_node_id']} --[{t['edge_label']}]--> {t['object_node_id']}"
+            for t in triples[:30]
+        )
 
         prompt = (
             f"Dataset: {dataset_name} ({dataset_urn})\n"
+            f"Ontology triples:\n{triple_lines or '(none)'}\n"
             f"Existing documents referencing this dataset:\n{doc_summary or '(none)'}\n\n"
             "Propose a list of document actions to organize cross-data documentation "
             "for this dataset. "

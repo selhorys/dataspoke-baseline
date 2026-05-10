@@ -285,14 +285,6 @@ class OntogenConfig(Base):
     __tablename__ = "ontogen_config"
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_ontogen_config_singleton"),
-        CheckConstraint(
-            "max_manual_queries_per_dataset >= 0",
-            name="ck_ontogen_config_max_manual_queries_gte0",
-        ),
-        CheckConstraint(
-            "max_system_queries_per_dataset >= 0",
-            name="ck_ontogen_config_max_system_queries_gte0",
-        ),
         {"schema": SCHEMA},
     )
 
@@ -300,8 +292,6 @@ class OntogenConfig(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    max_manual_queries_per_dataset: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
-    max_system_queries_per_dataset: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     default_run_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
@@ -345,7 +335,6 @@ class OntogenNode(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
-    glossary_term_urn: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

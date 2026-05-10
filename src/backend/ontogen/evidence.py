@@ -1,40 +1,35 @@
 """Evidence gatherer for the Ontology Generation inference pipeline.
 
-For each dataset, this module fetches:
-  - Canonical aspects (schemaMetadata, datasetProperties, globalTags,
-    glossaryTerms, upstreamLineage, usageStats)
-  - UC4-approved editable aspects (editableDatasetProperties.description,
-    editableSchemaMetadata)
-  - Document entities whose relatedAssets reference the dataset
+For each dataset, this module fetches the unified six-aspect proofread boundary
+shared with UC4:
+  - datasetProperties
+  - schemaMetadata
+  - editableDatasetProperties (description — UC4-approved editable aspect)
+  - editableSchemaMetadata (per-field descriptions — UC4-approved)
+  - glossaryTerms
+  - documentInfo on document entities whose relatedAssets reference the dataset
     (capped at _DOCUMENT_EVIDENCE_CAP_PER_DATASET)
-  - Bounded DataHub Query lists (MANUAL up to max_manual_queries_per_dataset;
-    SYSTEM multi-asset joins up to max_system_queries_per_dataset)
 
 All DataHub failures are best-effort — a failure returns reduced evidence and
 logs a WARNING.  The inference pipeline continues with the available data.
 
 Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
       spec/DATAHUB_INTEGRATION.md §Document Aspects
-      spec/DATAHUB_INTEGRATION.md §Query Aspects
+      spec/USE_CASE_en.md §UC3 Inputs
 """
 
 import logging
 from typing import Any
 
-from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET
+from src.backend.metagen.cross_data import fetch_related_documents
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import OntogenConfig
 
 logger = logging.getLogger(__name__)
-
-# Alias for use within this module; canonical definition lives in metagen/cross_data.py
-_DOCUMENT_EVIDENCE_CAP_PER_DATASET = DOCUMENT_EVIDENCE_CAP_PER_DATASET
 
 
 async def gather_evidence(
     dataset_urn: str,
     datahub: DataHubClient,
-    conf: OntogenConfig,
 ) -> dict[str, Any]:
     """Gather all evidence for *dataset_urn* needed by the LLM inference step.
 
@@ -45,14 +40,10 @@ async def gather_evidence(
     - description (str) — from ``datasetProperties``
     - platform (str)
     - schema_fields (list[dict]) — each has fieldPath, nativeDataType, description
-    - tags (list[str]) — DataHub tag URNs
     - glossary_terms (list[str]) — DataHub glossary-term URNs
-    - upstream_urns (list[str])
-    - usage_stats (dict) — from ``datasetUsageStatistics`` (latest timeseries)
     - editable_description (str | None) — from ``editableDatasetProperties``
     - editable_field_descriptions (list[dict]) — approved column descs
     - related_documents (list[dict]) — documents whose relatedAssets reference this dataset
-    - queries (list[dict]) — MANUAL + SYSTEM queries (capped)
     """
     evidence: dict[str, Any] = {}
 
@@ -99,22 +90,6 @@ async def gather_evidence(
         evidence.setdefault("schema_fields", [])
 
     try:
-        from datahub.metadata.schema_classes import GlobalTagsClass
-
-        global_tags = await datahub.get_aspect(dataset_urn, GlobalTagsClass)
-        if global_tags and hasattr(global_tags, "tags"):
-            evidence["tags"] = [str(t.tag) for t in global_tags.tags]
-        else:
-            evidence["tags"] = []
-    except Exception:
-        logger.warning(
-            "ontogen_evidence_tags_failed",
-            extra={"dataset_urn": dataset_urn},
-            exc_info=True,
-        )
-        evidence.setdefault("tags", [])
-
-    try:
         from datahub.metadata.schema_classes import GlossaryTermsClass
 
         glossary_terms = await datahub.get_aspect(dataset_urn, GlossaryTermsClass)
@@ -129,41 +104,6 @@ async def gather_evidence(
             exc_info=True,
         )
         evidence.setdefault("glossary_terms", [])
-
-    try:
-        from datahub.metadata.schema_classes import UpstreamLineageClass
-
-        upstream_lineage = await datahub.get_aspect(dataset_urn, UpstreamLineageClass)
-        if upstream_lineage and hasattr(upstream_lineage, "upstreams"):
-            evidence["upstream_urns"] = [
-                str(u.dataset) for u in upstream_lineage.upstreams if hasattr(u, "dataset")
-            ]
-        else:
-            evidence["upstream_urns"] = []
-    except Exception:
-        logger.warning(
-            "ontogen_evidence_lineage_failed",
-            extra={"dataset_urn": dataset_urn},
-            exc_info=True,
-        )
-        evidence.setdefault("upstream_urns", [])
-
-    try:
-        from datahub.metadata.schema_classes import DatasetUsageStatisticsClass
-
-        usage_list = await datahub.get_timeseries(dataset_urn, DatasetUsageStatisticsClass, limit=1)
-        if usage_list:
-            u = usage_list[0]
-            evidence["usage_stats"] = {
-                "unique_user_count": getattr(u, "uniqueUserCount", 0),
-                "total_sql_queries": getattr(u, "totalSqlQueries", 0),
-            }
-    except Exception:
-        logger.warning(
-            "ontogen_evidence_usage_failed",
-            extra={"dataset_urn": dataset_urn},
-            exc_info=True,
-        )
 
     # ── UC4-approved editable aspects ─────────────────────────────────────
 
@@ -206,8 +146,10 @@ async def gather_evidence(
 
     # ── Document entities whose relatedAssets include this dataset ────────
 
+    # fetch_related_documents is best-effort and returns [] on failure internally;
+    # wrap anyway so any unexpected raise doesn't lose prior evidence keys.
     try:
-        evidence["related_documents"] = await _fetch_documents_for_dataset(dataset_urn, datahub)
+        evidence["related_documents"] = await fetch_related_documents(dataset_urn, datahub)
     except Exception:
         logger.warning(
             "ontogen_evidence_documents_failed",
@@ -216,190 +158,6 @@ async def gather_evidence(
         )
         evidence.setdefault("related_documents", [])
 
-    # ── DataHub Query entities ────────────────────────────────────────────
-
-    max_manual = conf.max_manual_queries_per_dataset
-    max_system = conf.max_system_queries_per_dataset
-
-    queries: list[dict[str, Any]] = []
-
-    if max_manual > 0:
-        try:
-            manual_queries = await _fetch_queries(datahub, dataset_urn, source="MANUAL")
-            # MANUAL: take up to cap, no subject-count restriction
-            manual_queries = manual_queries[:max_manual]
-            queries.extend(manual_queries)
-        except Exception:
-            logger.warning(
-                "ontogen_evidence_manual_queries_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
-
-    if max_system > 0:
-        try:
-            system_queries = await _fetch_queries(datahub, dataset_urn, source="SYSTEM")
-            # SYSTEM: only multi-asset joins (len(subjects) >= 2)
-            # Sort joins-first by subject count desc, then lastModified desc
-            system_queries = [q for q in system_queries if len(q.get("subjects", [])) >= 2]
-            system_queries.sort(
-                key=lambda q: (-len(q.get("subjects", [])), -(q.get("last_modified") or 0))
-            )
-            system_queries = system_queries[:max_system]
-            queries.extend(system_queries)
-        except Exception:
-            logger.warning(
-                "ontogen_evidence_system_queries_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
-
-    if queries:
-        evidence["queries"] = queries
-
     return evidence
 
 
-async def _fetch_documents_for_dataset(
-    dataset_urn: str,
-    datahub: DataHubClient,
-) -> list[dict[str, Any]]:
-    """Fetch document entities whose relatedAssets include *dataset_urn*.
-
-    Uses GraphQL ``searchAcrossEntities`` with a ``relatedAssets`` filter.
-    Results are sorted by lastModified descending and capped at
-    ``_DOCUMENT_EVIDENCE_CAP_PER_DATASET``.
-
-    Each entry has: {urn, title, body, related_assets}.
-
-    Best-effort — caller must wrap in try/except.
-    """
-    gql = """
-    query searchDocumentsByRelatedAsset($input: SearchAcrossEntitiesInput!) {
-        searchAcrossEntities(input: $input) {
-            searchResults {
-                entity {
-                    urn
-                    ... on Document {
-                        info {
-                            title
-                            contents { text }
-                            relatedAssets { asset { urn } }
-                            lastModified { time }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    """
-    variables: dict[str, Any] = {
-        "input": {
-            "types": ["DOCUMENT"],
-            "query": "*",
-            "start": 0,
-            "count": _DOCUMENT_EVIDENCE_CAP_PER_DATASET * 5,
-            "orFilters": [{"and": [{"field": "relatedAssets", "values": [dataset_urn]}]}],
-        }
-    }
-
-    result = await datahub._with_retry(datahub._graph.execute_graphql, gql, variables=variables)
-    search_results = (result or {}).get("searchAcrossEntities", {}).get("searchResults", [])
-    docs: list[dict[str, Any]] = []
-    for item in search_results:
-        entity = item.get("entity") or {}
-        info = entity.get("info") or {}
-        contents = info.get("contents") or {}
-        related_raw = info.get("relatedAssets") or []
-        related_assets = [
-            r["asset"]["urn"] for r in related_raw if r.get("asset") and r["asset"].get("urn")
-        ]
-        last_modified_ms: int = (info.get("lastModified") or {}).get("time") or 0
-        docs.append(
-            {
-                "urn": entity.get("urn", ""),
-                "title": info.get("title", ""),
-                "body": contents.get("text", ""),
-                "related_assets": related_assets,
-                "last_modified": last_modified_ms,
-            }
-        )
-
-    # Sort by lastModified descending and cap
-    docs.sort(key=lambda d: -(d.get("last_modified") or 0))
-    return docs[:_DOCUMENT_EVIDENCE_CAP_PER_DATASET]
-
-
-async def _fetch_queries(
-    datahub: DataHubClient,
-    dataset_urn: str,
-    source: str,
-) -> list[dict[str, Any]]:
-    """List DataHub Query entities for *dataset_urn* filtered by *source*.
-
-    Uses ``DataHubGraph.execute_graphql`` with the ``listQueries`` query.
-    Returns a list of dicts with keys: name, statement, source, subjects,
-    last_modified.
-
-    Best-effort — caller must wrap in try/except.
-    """
-    gql = """
-    query listQueriesByDataset($input: ListQueriesInput!) {
-        listQueries(input: $input) {
-            total
-            start
-            count
-            queries {
-                urn
-                properties {
-                    name
-                    description
-                    statement { value language }
-                    source
-                    lastModified { time }
-                }
-                subjects {
-                    dataset { urn }
-                }
-            }
-        }
-    }
-    """
-    variables: dict[str, Any] = {
-        "input": {
-            "start": 0,
-            "count": 100,
-            "filters": [
-                {"field": "entities", "value": dataset_urn},
-                {"field": "source", "value": source},
-            ],
-        }
-    }
-
-    # DataHubClient wraps execute_graphql
-    result = await datahub._with_retry(datahub._graph.execute_graphql, gql, variables=variables)
-
-    queries_data = (result or {}).get("listQueries", {}).get("queries", [])
-    out: list[dict[str, Any]] = []
-    for q in queries_data:
-        props = q.get("properties") or {}
-        subjects_raw = q.get("subjects") or []
-        subject_urns = [
-            s["dataset"]["urn"]
-            for s in subjects_raw
-            if s.get("dataset") and s["dataset"].get("urn")
-        ]
-        stmt = (props.get("statement") or {}).get("value", "")
-        last_mod_ms: int = (props.get("lastModified") or {}).get("time") or 0
-        out.append(
-            {
-                "urn": q.get("urn", ""),
-                "name": props.get("name") or "",
-                "description": props.get("description") or "",
-                "statement": stmt,
-                "source": props.get("source", source),
-                "subjects": subject_urns,
-                "last_modified": last_mod_ms,
-            }
-        )
-    return out

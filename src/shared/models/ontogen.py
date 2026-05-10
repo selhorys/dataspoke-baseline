@@ -37,8 +37,6 @@ class OntogenConf(BaseModel):
     is_enabled: bool = False
     schedule_tier: str | None = None
     dataset_filter: dict[str, Any] = Field(default_factory=dict)
-    max_manual_queries_per_dataset: int = 20
-    max_system_queries_per_dataset: int = 10
     default_run_prompt: str | None = None
     updated_at: datetime
 
@@ -61,7 +59,6 @@ class OntogenNode(BaseModel):
     description: str
     confidence_score: float
     status: str = "pending_review"  # "approved" | "pending_review" | "rejected"
-    glossary_term_urn: str | None = None
     evidence: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime

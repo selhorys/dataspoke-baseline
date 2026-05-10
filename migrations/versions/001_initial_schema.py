@@ -232,29 +232,9 @@ def upgrade() -> None:
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column(
-            "max_manual_queries_per_dataset",
-            sa.Integer(),
-            nullable=False,
-            server_default="20",
-        ),
-        sa.Column(
-            "max_system_queries_per_dataset",
-            sa.Integer(),
-            nullable=False,
-            server_default="10",
-        ),
         sa.Column("default_run_prompt", sa.Text(), nullable=True),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("id = 1", name="ck_ontogen_config_singleton"),
-        sa.CheckConstraint(
-            "max_manual_queries_per_dataset >= 0",
-            name="ck_ontogen_config_max_manual_queries_gte0",
-        ),
-        sa.CheckConstraint(
-            "max_system_queries_per_dataset >= 0",
-            name="ck_ontogen_config_max_system_queries_gte0",
-        ),
         schema=SCHEMA,
     )
 
@@ -277,7 +257,6 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=False),
         sa.Column("confidence_score", sa.Float(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
-        sa.Column("glossary_term_urn", sa.Text(), nullable=True),
         sa.Column("evidence", JSONB, nullable=True),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),

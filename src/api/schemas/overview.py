@@ -28,7 +28,7 @@ class GraphNodeResponse(BaseModel):
     label: str = Field(description="Human-readable label displayed on the graph node")
     metadata: dict[str, Any] = Field(
         default={},
-        description="Additional node metadata (description, confidence_score, glossary_term_urn)",
+        description="Additional node metadata (description, confidence_score)",
     )
 
 

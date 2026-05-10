@@ -134,7 +134,6 @@ def make_ontogen_node_row(
     row.description = description
     row.confidence_score = confidence_score
     row.status = status
-    row.glossary_term_urn = None
     row.evidence = {"datasets": [], "run_at": "2025-01-01T00:00:00+00:00"}
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)

@@ -122,7 +122,6 @@ def _node_resp(row: object) -> NodeResponse:
         description=row.description or "",  # type: ignore[attr-defined]
         confidence_score=row.confidence_score,  # type: ignore[attr-defined]
         status=row.status,  # type: ignore[attr-defined]
-        glossary_term_urn=row.glossary_term_urn,  # type: ignore[attr-defined]
         created_at=row.created_at,  # type: ignore[attr-defined]
         updated_at=row.updated_at,  # type: ignore[attr-defined]
     )
@@ -166,8 +165,6 @@ async def get_ontogen_conf(
         is_enabled=row.is_enabled,
         schedule_tier=row.schedule_tier,
         dataset_filter=row.dataset_filter or {},
-        max_manual_queries_per_dataset=row.max_manual_queries_per_dataset,
-        max_system_queries_per_dataset=row.max_system_queries_per_dataset,
         default_run_prompt=row.default_run_prompt,
         updated_at=row.updated_at,
     )
@@ -184,8 +181,6 @@ async def put_ontogen_conf(
         is_enabled=row.is_enabled,
         schedule_tier=row.schedule_tier,
         dataset_filter=row.dataset_filter or {},
-        max_manual_queries_per_dataset=row.max_manual_queries_per_dataset,
-        max_system_queries_per_dataset=row.max_system_queries_per_dataset,
         default_run_prompt=row.default_run_prompt,
         updated_at=row.updated_at,
     )
@@ -202,8 +197,6 @@ async def patch_ontogen_conf(
         is_enabled=row.is_enabled,
         schedule_tier=row.schedule_tier,
         dataset_filter=row.dataset_filter or {},
-        max_manual_queries_per_dataset=row.max_manual_queries_per_dataset,
-        max_system_queries_per_dataset=row.max_system_queries_per_dataset,
         default_run_prompt=row.default_run_prompt,
         updated_at=row.updated_at,
     )
@@ -388,7 +381,6 @@ async def get_ontogen_node_attr(
         node_id=attr["node_id"],
         confidence_score=attr["confidence_score"],
         evidence=attr.get("evidence") or {},
-        glossary_term_urn=attr.get("glossary_term_urn"),
     )
 
 

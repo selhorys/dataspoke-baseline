@@ -189,7 +189,6 @@ class OverviewService:
                     metadata={
                         "description": row.description,
                         "confidence_score": row.confidence_score,
-                        "glossary_term_urn": row.glossary_term_urn,
                     },
                 )
             )

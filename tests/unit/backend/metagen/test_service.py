@@ -152,8 +152,20 @@ async def test_run_allows_dry_run_when_disabled(svc: MetagenService, cache: Asyn
     node_map_result.scalars.return_value.all.return_value = []
     db.execute = AsyncMock(side_effect=[config_result, node_map_result])
 
+    # Stub shape mirrors `_gather_evidence` return; not a spec contract.
+    _evidence_stub = {
+        "dataset_name": "test",
+        "description": "",
+        "schema_fields": [],
+        "editable_description": None,
+        "editable_field_descriptions": [],
+        "glossary_terms": [],
+        "related_documents": [],
+        "ontogen_node_ids": [],
+        "ontogen_triples": [],
+    }
     with (
-        patch.object(svc, "_gather_evidence", new=AsyncMock(return_value={})),
+        patch.object(svc, "_gather_evidence", new=AsyncMock(return_value=_evidence_stub)),
         patch.object(svc, "_propose_target", new=AsyncMock(return_value="Generated description")),
     ):
         result = await svc.run(_DATASET_URN, dry_run=True)
@@ -467,3 +479,577 @@ async def test_review_unknown_field_handled_consistently(
     )
     # Existing field unchanged — nonexistent field is silently skipped
     assert record.field_status.get("dataset.description") == "pending"
+
+
+# ── Evidence boundary: absence tests ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_does_not_read_upstream_lineage(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """_gather_evidence never fetches UpstreamLineageClass.
+
+    Spec anchor: spec/USE_CASE_en.md §UC4 Inputs — lineage (upstreamLineage)
+    is absent from the unified six-aspect input set shared by UC3 and UC4.
+    """
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": []}}
+    )
+
+    await svc._gather_evidence(_DATASET_URN, targets=["dataset.description"])
+
+    for call in svc._datahub.get_aspect.call_args_list:
+        args = call[0]
+        if len(args) > 1:
+            aspect_cls = args[1]
+            class_name = getattr(aspect_cls, "__name__", "")
+            assert "UpstreamLineage" not in class_name, (
+                f"UpstreamLineageClass must not be fetched (UC4 input set excludes lineage); "
+                f"found: {class_name}"
+            )
+
+
+# ── Evidence boundary: positive tests ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_reads_editable_dataset_properties(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """_gather_evidence populates 'editable_description' from EditableDatasetPropertiesClass.
+
+    Spec anchor: spec/USE_CASE_en.md §UC4 Inputs — editableDatasetProperties
+    is in the unified six-aspect input set.
+    """
+    from unittest.mock import MagicMock as _MagicMock
+
+    editable_props = _MagicMock()
+    editable_props.description = "Approved description"
+
+    def get_aspect_side_effect(urn, aspect_class):
+        # aspect_class is the class object; use __name__ to dispatch
+        class_name = getattr(aspect_class, "__name__", "")
+        if "EditableDatasetPropertiesClass" in class_name:
+            return editable_props
+        return None
+
+    svc._datahub.get_aspect = AsyncMock(side_effect=get_aspect_side_effect)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": []}}
+    )
+
+    evidence = await svc._gather_evidence(_DATASET_URN, targets=["dataset.description"])
+
+    assert evidence.get("editable_description") == "Approved description", (
+        "editableDatasetProperties must be surfaced as 'editable_description' in evidence"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_reads_editable_schema_metadata(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """_gather_evidence populates 'editable_field_descriptions' from EditableSchemaMetadataClass.
+
+    Spec anchor: spec/USE_CASE_en.md §UC4 Inputs — editableSchemaMetadata
+    is in the unified six-aspect input set.
+    """
+    from unittest.mock import MagicMock as _MagicMock
+
+    ef = _MagicMock()
+    ef.fieldPath = "title"
+    ef.description = "Book title column"
+    editable_schema = _MagicMock()
+    editable_schema.editableSchemaFieldInfo = [ef]
+
+    def get_aspect_side_effect(urn, aspect_class):
+        class_name = getattr(aspect_class, "__name__", "")
+        if "EditableSchemaMetadataClass" in class_name:
+            return editable_schema
+        return None
+
+    svc._datahub.get_aspect = AsyncMock(side_effect=get_aspect_side_effect)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": []}}
+    )
+
+    evidence = await svc._gather_evidence(_DATASET_URN, targets=["column.description"])
+
+    field_descs = evidence.get("editable_field_descriptions", [])
+    assert isinstance(field_descs, list), "editable_field_descriptions must be a list"
+    assert any(f.get("fieldPath") == "title" for f in field_descs), (
+        "editableSchemaMetadata field 'title' must appear in editable_field_descriptions"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_reads_glossary_terms(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """_gather_evidence populates 'glossary_terms' from GlossaryTermsClass.
+
+    Spec anchor: spec/USE_CASE_en.md §UC4 Inputs — glossaryTerms
+    is in the unified six-aspect input set.
+    """
+    from unittest.mock import MagicMock as _MagicMock
+
+    term = _MagicMock()
+    term.urn = "urn:li:glossaryTerm:Book"
+    glossary = _MagicMock()
+    glossary.terms = [term]
+
+    def get_aspect_side_effect(urn, aspect_class):
+        class_name = getattr(aspect_class, "__name__", "")
+        if "GlossaryTermsClass" in class_name:
+            return glossary
+        return None
+
+    svc._datahub.get_aspect = AsyncMock(side_effect=get_aspect_side_effect)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": []}}
+    )
+
+    evidence = await svc._gather_evidence(_DATASET_URN, targets=["dataset.description"])
+
+    assert "glossary_terms" in evidence, "glossaryTerms must appear as 'glossary_terms' in evidence"
+    assert "urn:li:glossaryTerm:Book" in evidence["glossary_terms"], (
+        "Fetched glossary term URN must appear in evidence['glossary_terms']"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_reads_related_documents(
+    svc: MetagenService, db: AsyncMock
+) -> None:
+    """_gather_evidence populates 'related_documents' from the document GraphQL search.
+
+    Spec anchor: spec/USE_CASE_en.md §UC4 Inputs — document entities (via relatedAssets)
+    are in the unified six-aspect input set.
+    """
+    doc_item = {
+        "entity": {
+            "urn": "urn:li:document:doc1",
+            "info": {
+                "title": "Test Doc",
+                "contents": {"text": "Content body"},
+                "relatedAssets": [{"asset": {"urn": _DATASET_URN}}],
+                "lastModified": {"time": 1000},
+            },
+        }
+    }
+
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": [doc_item]}}
+    )
+
+    evidence = await svc._gather_evidence(_DATASET_URN, targets=["cross_data.md"])
+
+    assert "related_documents" in evidence, (
+        "related_documents must be populated from document entity search"
+    )
+    assert len(evidence["related_documents"]) >= 1, (
+        "At least one related document must appear in evidence"
+    )
+
+
+# ── Filter tests: approved-only for ontogen_node_ids and ontogen_triples ──────
+
+
+def _compile_stmt(stmt) -> str:
+    """Compile a SQLAlchemy Select to a string with literal bind values rendered."""
+    from sqlalchemy.dialects import postgresql
+    return str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_dataset_node_map_query_filters_status_approved(
+    svc: MetagenService, db: AsyncMock, cache: AsyncMock
+) -> None:
+    """The SQL issued for dataset_node_map includes a WHERE status='approved' clause.
+
+    This guards the spec invariant that pending nodes are excluded by the SQL
+    predicate, not just absent from mocked results.  A regression that drops the
+    WHERE clause from the query would cause this test to fail regardless of which
+    rows the mock returns.
+
+    Spec anchor: spec/feature/BACKEND.md §Metadata Generation Service
+    §Generation Pipeline — node membership is filtered to status='approved'
+    from dataset_node_map before injecting into evidence.
+    """
+    from tests.unit.backend.conftest import make_dataset_node_map_row
+
+    approved_map = make_dataset_node_map_row(node_id="book", status="approved")
+
+    config_row = _make_metagen_config_row(is_enabled=True, targets=["dataset.description"])
+
+    captured_stmts: list = []
+
+    def make_result(scalars_all=None, scalar_one=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_one
+        ms = MagicMock()
+        ms.all.return_value = scalars_all or []
+        m.scalars.return_value = ms
+        return m
+
+    config_result = MagicMock()
+    config_result.scalar_one_or_none.return_value = config_row
+    node_map_result = make_result(scalars_all=[approved_map])
+    triples_result = make_result(scalars_all=[])
+
+    call_index = [0]
+
+    async def execute_side_effect(stmt, *args, **kwargs):
+        call_index[0] += 1
+        idx = call_index[0]
+        # Call 1 = config lookup, call 2 = node-map query, call 3 = triples query
+        if idx == 2:
+            captured_stmts.append(stmt)
+            return node_map_result
+        elif idx == 3:
+            return triples_result
+        else:
+            return config_result
+
+    db.execute = AsyncMock(side_effect=execute_side_effect)
+
+    captured_evidence: dict = {}
+
+    async def capture_propose(target, urn, evidence):
+        captured_evidence.update(evidence)
+        return "desc"
+
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": []}}
+    )
+
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    with patch.object(svc, "_propose_target", new=AsyncMock(side_effect=capture_propose)):
+        await svc.run(_DATASET_URN, dry_run=True)
+
+    # Pins table.column names; balanced by behavioral assertions below.
+    # Note: a pure behavioral counterpart that proves the WHERE clause is applied is infeasible
+    # with this mock structure — db.execute returns a pre-configured result regardless of the
+    # actual WHERE clause.  The SQL inspection is the load-bearing guard against the WHERE clause
+    # being dropped from the query entirely.
+    assert captured_stmts, (
+        "db.execute was not called for the node-map query — test setup may be wrong"
+    )
+    compiled_sql = _compile_stmt(captured_stmts[0])
+    assert "dataset_node_map.status" in compiled_sql and "approved" in compiled_sql, (
+        f"node-map query must filter dataset_node_map.status = 'approved'; "
+        f"compiled SQL: {compiled_sql!r}"
+    )
+
+    # Behavioral counterpart: approved node must reach the evidence dict and
+    # the pending node must NOT (the mock returns only approved_map, matching what a correct
+    # WHERE clause would return from the DB).
+    assert "book" in captured_evidence.get("ontogen_node_ids", []), (
+        "Approved node 'book' must be in ontogen_node_ids"
+    )
+    assert "pending-node" not in captured_evidence.get("ontogen_node_ids", []), (
+        "Pending node must NOT appear in ontogen_node_ids"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gather_evidence_ontogen_triples_query_filters_all_statuses_approved(
+    svc: MetagenService, db: AsyncMock, cache: AsyncMock
+) -> None:
+    """The SQL for the triples query includes approved-status filters for triple, edge, and node.
+
+    Spec anchor: spec/feature/BACKEND.md §Generation Pipeline — UC3-approved nodes
+    and triples filtered by dataset_node_map.status='approved'.
+    Spec anchor: spec/USE_CASE_en.md §UC4 Inputs — approved triples (status='approved'
+    on OntogenTriple, OntogenEdge, and OntogenNode) feed UC4 evidence.
+    """
+    from tests.unit.backend.conftest import make_dataset_node_map_row, make_ontogen_edge_row
+
+    approved_map = make_dataset_node_map_row(node_id="book", status="approved")
+
+    config_row = _make_metagen_config_row(is_enabled=True, targets=["dataset.description"])
+
+    # Build an approved triple row and a pending triple row (only approved should surface)
+    approved_triple = MagicMock()
+    approved_triple.subject_node_id = "book"
+    approved_triple.edge_id = "has-edition"
+    approved_triple.object_node_id = "edition"
+
+    approved_edge = make_ontogen_edge_row(id="has-edition", label="has edition", status="approved")
+
+    pending_triple = MagicMock()
+    pending_triple.subject_node_id = "book"
+    pending_triple.edge_id = "wrote"
+    pending_triple.object_node_id = "author"
+
+    captured_stmts: list = []
+
+    def make_result(rows=None, scalar_one=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_one
+        ms = MagicMock()
+        ms.all.return_value = rows or []
+        m.scalars.return_value = ms
+        # triples query uses result.all() (not .scalars().all())
+        m.all.return_value = [(approved_triple, approved_edge)] if rows is True else []
+        return m
+
+    config_result = MagicMock()
+    config_result.scalar_one_or_none.return_value = config_row
+    node_map_result = make_result(rows=[approved_map])
+    triples_result = make_result(rows=True)  # returns the approved pair
+
+    call_index = [0]
+
+    async def execute_side_effect(stmt, *args, **kwargs):
+        call_index[0] += 1
+        idx = call_index[0]
+        if idx == 1:
+            return config_result
+        elif idx == 2:
+            return node_map_result
+        else:
+            # Third call is the triples query — capture it
+            captured_stmts.append(stmt)
+            return triples_result
+
+    db.execute = AsyncMock(side_effect=execute_side_effect)
+
+    captured_evidence: dict = {}
+
+    async def capture_propose(target, urn, evidence):
+        captured_evidence.update(evidence)
+        return "desc"
+
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+    svc._datahub.get_timeseries = AsyncMock(return_value=[])
+    svc._datahub._with_retry = AsyncMock(
+        return_value={"searchAcrossEntities": {"searchResults": []}}
+    )
+
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    with patch.object(svc, "_propose_target", new=AsyncMock(side_effect=capture_propose)):
+        await svc.run(_DATASET_URN, dry_run=True)
+
+    # Pins table.column names; balanced by behavioral assertions below.
+    # Note: a pure behavioral counterpart that proves WHERE clause filtering is infeasible
+    # with this mock structure — db.execute returns a pre-configured result regardless of
+    # the actual WHERE clause predicates.  The SQL inspection is the load-bearing guard.
+    assert captured_stmts, (
+        "db.execute was not called for the triples query — approved_node_ids may be empty"
+    )
+    compiled_sql = _compile_stmt(captured_stmts[0])
+
+    assert "ontogen_triples.status" in compiled_sql and "approved" in compiled_sql, (
+        f"Triples query must filter OntogenTriple.status = 'approved'; SQL: {compiled_sql!r}"
+    )
+    assert "ontogen_edges.status" in compiled_sql, (
+        f"Triples query must join and filter OntogenEdge.status = 'approved'; SQL: {compiled_sql!r}"
+    )
+    assert "ontogen_nodes.status" in compiled_sql, (
+        f"Triples query must join and filter OntogenNode.status = 'approved'; SQL: {compiled_sql!r}"
+    )
+
+    # Behavioral counterpart: approved triple must surface in evidence; the mock returns the
+    # approved pair (approved_triple, approved_edge) only — matching what a correct WHERE
+    # clause returns from the DB.
+    ontogen_triples_evidence = captured_evidence.get("ontogen_triples", [])
+    assert any(t.get("edge_id") == "has-edition" for t in ontogen_triples_evidence), (
+        "Approved triple (has-edition) must appear in evidence['ontogen_triples']"
+    )
+    # The pending triple (wrote) must NOT appear — it was not in the mock result.
+    assert not any(t.get("edge_id") == "wrote" for t in ontogen_triples_evidence), (
+        "Pending triple (wrote) must NOT appear in evidence['ontogen_triples']"
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_result_approve_writes_per_data_only_to_editable_aspects(
+    svc: MetagenService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """review_result(approve) for dataset/column targets emits only editable aspects.
+
+    Tests the per-data write boundary: dataset.description goes to
+    EditableDatasetPropertiesClass; column.description goes to
+    EditableSchemaMetadataClass.  Neither non-editable aspect (datasetProperties,
+    schemaMetadata) may be written.
+
+    Spec anchor: spec/DATAHUB_INTEGRATION.md §Read vs Write Boundary — UC4 writes
+    only editable aspects for per-data targets.
+    Spec anchor: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow.
+    """
+    row = make_metagen_result_row(
+        field_status={"dataset.description": "pending"}
+    )
+    row.proposals = {"dataset.description": "A generated description."}
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = row
+    db.execute = AsyncMock(return_value=result_mock)
+    mock_db_refresh(db)
+
+    datahub.emit_aspect = AsyncMock()
+    datahub.get_aspect = AsyncMock(return_value=None)
+
+    await svc.review_result(str(row.id), verdict="approve", fields=["dataset.description"])
+
+    # Positive count assertions guard against vacuous pass when emit_aspect is never called.
+    # dataset.description approval must produce at least one EditableDatasetPropertiesClass emit.
+    # Spec: spec/feature/BACKEND.md §Approval flow; spec/USE_CASE_en.md §UC4 per-data target.
+    emitted_class_names = [
+        type(c[0][1]).__name__
+        for c in datahub.emit_aspect.call_args_list
+        if len(c[0]) > 1
+    ]
+    assert any("EditableDatasetPropertiesClass" in n for n in emitted_class_names), (
+        "Approving dataset.description must emit at least one EditableDatasetPropertiesClass; "
+        "got no such emit — apply_actions may be silently skipping the write. "
+        f"Emitted classes: {emitted_class_names!r}"
+    )
+
+    # All emitted aspect classes must be editable per-data aspects only.
+    # DocumentInfoClass is excluded: it belongs to the cross-data path (cross_data.md).
+    # Spec: spec/USE_CASE_en.md §UC4 — per-data targets restricted to editable variants.
+    # Spec: spec/DATAHUB_INTEGRATION.md §Read vs Write Boundary.
+    _ALLOWED_PER_DATA_WRITE_CLASSES = (
+        "EditableDatasetPropertiesClass",
+        "EditableSchemaMetadataClass",
+    )
+    for emit_call in datahub.emit_aspect.call_args_list:
+        emitted_aspect = emit_call[0][1] if len(emit_call[0]) > 1 else None
+        if emitted_aspect is not None:
+            emitted_class_name = type(emitted_aspect).__name__
+            assert any(allowed in emitted_class_name for allowed in _ALLOWED_PER_DATA_WRITE_CLASSES), (
+                f"emit_aspect called with non-editable aspect {emitted_class_name!r}; "
+                f"per-data UC4 targets may only write editable aspects per "
+                f"spec/DATAHUB_INTEGRATION.md §Read vs Write Boundary"
+            )
+
+
+@pytest.mark.asyncio
+async def test_review_result_approve_writes_cross_data_only_to_document_and_status(
+    svc: MetagenService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """review_result(approve) for cross_data.md targets emits DocumentInfoClass and/or
+    StatusClass (for deletes); no non-editable aspect may be written.
+
+    Exercises both the create path (DocumentInfoClass) and the delete path
+    (StatusClass(removed=True)) from src/backend/metagen/cross_data.py:187.
+
+    Spec anchor: spec/feature/BACKEND.md §Cross-data MD action types — delete soft-deletes
+    via Status.removed=true; create emits DocumentInfoClass.
+    Spec anchor: spec/DATAHUB_INTEGRATION.md §Document Aspects.
+    """
+    from unittest.mock import patch as _patch
+    from src.backend.metagen.cross_data import create_document, delete_document
+
+    doc_urn = "urn:li:document:existing-doc-001"
+
+    # Proposals: one create action and one delete action
+    action_create_id = "action-create-001"
+    action_delete_id = "action-delete-001"
+
+    row = make_metagen_result_row(
+        field_status={
+            f"cross_data.md.{action_create_id}": "pending",
+            f"cross_data.md.{action_delete_id}": "pending",
+        }
+    )
+    row.proposals = {
+        "cross_data.md": [
+            {
+                "action_id": action_create_id,
+                "action": "create",
+                "confidence": 0.9,
+                "title": "New Cross-data Doc",
+                "body": "# New document body",
+                "related_assets": [_DATASET_URN],
+            },
+            {
+                "action_id": action_delete_id,
+                "action": "delete",
+                "confidence": 0.85,
+                "document_urn": doc_urn,
+            },
+        ]
+    }
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = row
+    db.execute = AsyncMock(return_value=result_mock)
+    mock_db_refresh(db)
+
+    datahub.emit_aspect = AsyncMock()
+
+    # For the delete action, get_aspect must return an existing NATIVE document
+    from unittest.mock import MagicMock as _MM
+    existing_doc = _MM()
+    existing_doc.source = _MM()
+    existing_doc.source.sourceType = "NATIVE"
+
+    from datahub.metadata.schema_classes import DocumentInfoClass
+
+    def get_aspect_side(urn, aspect_cls):
+        if aspect_cls is DocumentInfoClass:
+            return existing_doc
+        return None
+
+    datahub.get_aspect = AsyncMock(side_effect=get_aspect_side)
+
+    await svc.review_result(
+        str(row.id),
+        verdict="approve",
+        fields=[f"cross_data.md.{action_create_id}", f"cross_data.md.{action_delete_id}"],
+    )
+
+    # Positive count assertions guard against vacuous pass when apply_actions silently drops emits.
+    # Spec: spec/feature/BACKEND.md §Cross-data MD action types — create emits DocumentInfoClass;
+    #       delete emits StatusClass(removed=True).
+    emitted_aspects_by_class = [
+        type(c[0][1]).__name__
+        for c in datahub.emit_aspect.call_args_list
+        if len(c[0]) > 1
+    ]
+    assert any("DocumentInfoClass" in n for n in emitted_aspects_by_class), (
+        "Approving a cross_data.md create action must emit at least one DocumentInfoClass; "
+        "got no DocumentInfoClass emit — create_document may be silently skipped. "
+        f"Emitted classes: {emitted_aspects_by_class!r}"
+    )
+    assert any("StatusClass" in n for n in emitted_aspects_by_class), (
+        "Approving a cross_data.md delete action must emit at least one StatusClass; "
+        "got no StatusClass emit — delete_document may be silently skipped. "
+        f"Emitted classes: {emitted_aspects_by_class!r}"
+    )
+
+    # All emitted aspects must be DocumentInfoClass or StatusClass for document URNs
+    _ALLOWED_CROSS_DATA_CLASSES = ("DocumentInfoClass", "StatusClass")
+    for emit_call in datahub.emit_aspect.call_args_list:
+        emitted_urn = emit_call[0][0] if len(emit_call[0]) > 0 else None
+        emitted_aspect = emit_call[0][1] if len(emit_call[0]) > 1 else None
+        if emitted_aspect is not None:
+            emitted_class_name = type(emitted_aspect).__name__
+            assert any(allowed in emitted_class_name for allowed in _ALLOWED_CROSS_DATA_CLASSES), (
+                f"cross_data emit_aspect called with unexpected class {emitted_class_name!r}; "
+                f"only DocumentInfoClass and StatusClass are permitted for cross-data targets. "
+                f"URN: {emitted_urn!r}"
+            )
+            # StatusClass is only permitted on document URNs (soft-delete path)
+            if "StatusClass" in emitted_class_name:
+                assert str(emitted_urn).startswith("urn:li:document:"), (
+                    f"StatusClass(removed=True) must only be emitted on document URNs; "
+                    f"got URN: {emitted_urn!r}"
+                )

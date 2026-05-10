@@ -101,17 +101,13 @@ async def get_ontogen_service(
     llm: LLMClient = Depends(get_llm),
     vector: PgVectorManager = Depends(get_vector),
 ) -> "OntogenService":
-    from src.shared.graph.client import AgeGraph
-    from src.shared.db.session import SessionLocal
     from src.backend.ontogen.service import OntogenService
 
-    age = AgeGraph(session_factory=SessionLocal)
     return OntogenService(
         datahub=datahub,
         db=db,
         cache=cache,
         llm=llm,
-        age=age,
         vector=vector,
     )
 

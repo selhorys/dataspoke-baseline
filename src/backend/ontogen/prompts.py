@@ -133,29 +133,9 @@ Rules:
                         line += f": {desc}"
                     parts.append(line)
 
-            tags: list[str] = evidence.get("tags", [])
-            if tags:
-                parts.append(f"Tags: {', '.join(_cap(t) for t in tags)}")
-
             glossary_terms: list[str] = evidence.get("glossary_terms", [])
             if glossary_terms:
                 parts.append(f"Glossary terms: {', '.join(_cap(t) for t in glossary_terms)}")
-
-            upstream_urns: list[str] = evidence.get("upstream_urns", [])
-            if upstream_urns:
-                parts.append(
-                    f"Upstream datasets ({len(upstream_urns)}): "
-                    f"{', '.join(_cap(u) for u in upstream_urns[:10])}"
-                )
-
-            queries: list[dict[str, Any]] = evidence.get("queries", [])
-            if queries:
-                parts.append(f"Notable queries ({len(queries)}):")
-                for q in queries[:5]:
-                    q_name = _cap(str(q.get("name") or ""))
-                    q_stmt = _cap(str(q.get("statement", ""))[:200])
-                    subjects = q.get("subjects", [])
-                    parts.append(f"  - [{q_name}] subjects={subjects}  SQL: {q_stmt!r}")
 
             # UC4-approved editable descriptions
             if evidence.get("editable_description"):

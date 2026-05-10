@@ -12,8 +12,6 @@ from src.shared.exceptions import (
     InvalidDatasetUrnError,
     PreconditionFailedError,
 )
-from src.shared.graph.client import AgeGraph
-
 from tests.unit.backend.conftest import (
     make_dataset_node_map_row,
     make_ontogen_edge_row,
@@ -28,19 +26,12 @@ from tests.unit.backend.conftest import (
 
 
 @pytest.fixture
-def graph() -> AsyncMock:
-    """Mock AgeGraph."""
-    return AsyncMock(spec=AgeGraph)
-
-
-@pytest.fixture
-def svc(datahub: AsyncMock, db: AsyncMock, cache: AsyncMock, llm: AsyncMock, vector: AsyncMock, graph: AsyncMock) -> OntogenService:
+def svc(datahub: AsyncMock, db: AsyncMock, cache: AsyncMock, llm: AsyncMock, vector: AsyncMock) -> OntogenService:
     return OntogenService(
         datahub=datahub,
         db=db,
         cache=cache,
         llm=llm,
-        age=graph,
         vector=vector,
     )
 
@@ -281,8 +272,6 @@ async def test_run_rejects_non_dry_run_when_disabled(svc: OntogenService, db: As
     conf.is_enabled = False
     conf.default_run_prompt = None
     conf.dataset_filter = {}
-    conf.max_manual_queries_per_dataset = 20
-    conf.max_system_queries_per_dataset = 10
     mock_scalar_query(db, conf)
 
     with pytest.raises(ConflictError) as exc_info:
@@ -309,8 +298,6 @@ async def test_run_allows_dry_run_when_disabled(
     conf.is_enabled = False
     conf.default_run_prompt = None
     conf.dataset_filter = {}
-    conf.max_manual_queries_per_dataset = 20
-    conf.max_system_queries_per_dataset = 10
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()
@@ -364,8 +351,6 @@ async def test_run_dry_run_returns_summary_no_db_writes(
     conf.is_enabled = True
     conf.default_run_prompt = None
     conf.dataset_filter = {}
-    conf.max_manual_queries_per_dataset = 20
-    conf.max_system_queries_per_dataset = 10
 
     # For list of approved nodes/edges/triples (3 queries) + conf query
     def make_result(scalar_val=None, scalars_val=None):
@@ -448,10 +433,15 @@ def test_llm_run_result_confidence_score_range() -> None:
 
 
 @pytest.mark.asyncio
-async def test_review_node_approve_calls_datahub_emit_aspect(
+async def test_review_node_approve_sets_approved_status(
     svc: OntogenService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """review_node(approve) emits a glossary term aspect to DataHub for member datasets."""
+    """review_node(approve) sets node.status='approved' and DatasetNodeMap status.
+
+    Spec: BACKEND.md §Ontology Generation Service — review_node approve mutates
+    node status and propagates to dataset_node_map; no DataHub writes are performed
+    (DataHub is read-only for UC3; approved metadata is read by UC4 from the DB).
+    """
     node = make_ontogen_node_row(id="book", status="pending_review")
     dm = make_dataset_node_map_row(node_id="book")
 
@@ -470,12 +460,6 @@ async def test_review_node_approve_calls_datahub_emit_aspect(
             ms.all.return_value = [dm]
             m.scalars.return_value = ms
             return m
-        elif call_count[0] == 3:
-            # DatasetNodeMap for glossary attach
-            ms = MagicMock()
-            ms.all.return_value = [dm]
-            m.scalars.return_value = ms
-            return m
         else:
             # event record — any extra execute
             ms = MagicMock()
@@ -490,11 +474,154 @@ async def test_review_node_approve_calls_datahub_emit_aspect(
     svc._cache.set = AsyncMock()
     mock_db_refresh(db)
 
-    # Mock DataHub get_aspect and emit_aspect
-    datahub.get_aspect = AsyncMock(return_value=None)
     datahub.emit_aspect = AsyncMock()
 
     await svc.review_node("book", verdict="approve")
 
-    # emit_aspect should have been called (glossary term attachment)
-    datahub.emit_aspect.assert_called()
+    # Node status must be updated to approved
+    assert node.status == "approved"
+    # DatasetNodeMap row status must be propagated
+    assert dm.status == "approved"
+    # UC3 is read-only toward DataHub; no emit_aspect calls permitted
+    datahub.emit_aspect.assert_not_called()
+
+
+# ── UC3 read-only DataHub boundary — triple approval ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_review_triple_approve_writes_no_datahub_aspect(
+    svc: OntogenService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """review_triple(approve) with all dependencies satisfied writes no DataHub aspect.
+
+    Spec anchor: spec/DATAHUB_INTEGRATION.md §Read vs Write Boundary (UC3 = Read);
+    spec/feature/BACKEND.md §Ontology Generation Service Approval flow — approval
+    persists status in the DB only; no DataHub emit is made.
+
+    The db.execute side_effect uses a callable that inspects the compiled SQL of each
+    Select statement and routes to the correct row, decoupling the test from the
+    source-code fetch order.
+    """
+    triple = make_ontogen_triple_row(
+        subject_node_id="book",
+        edge_id="has-edition",
+        object_node_id="edition",
+        status="pending_review",
+    )
+    subj_node = make_ontogen_node_row(id="book", status="approved")
+    edge_row = make_ontogen_edge_row(id="has-edition", status="approved")
+    obj_node = make_ontogen_node_row(id="edition", status="approved")
+
+    def make_result(row):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = row
+        return m
+
+    def _route_execute(stmt, *args, **kwargs):
+        """Return the right mock row by inspecting the compiled SQL.
+
+        Raises AssertionError for any SQL not matched here so that new queries
+        added to the source code fail loudly rather than silently receiving the
+        wrong mock result.
+        """
+        try:
+            from sqlalchemy.dialects import postgresql
+            sql = str(stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            ))
+        except Exception:
+            sql = str(stmt)
+
+        if "ontogen_triples" in sql:
+            return make_result(triple)
+        if "ontogen_edges" in sql:
+            return make_result(edge_row)
+        if "book" in sql:
+            return make_result(subj_node)
+        if "edition" in sql:
+            return make_result(obj_node)
+        raise AssertionError(f"Unexpected SQL in _route_execute: {sql[:300]}")
+
+    db.execute = AsyncMock(side_effect=_route_execute)
+    svc._cache.get = AsyncMock(return_value=None)
+    svc._cache.delete = AsyncMock()
+    svc._cache.set = AsyncMock()
+    mock_db_refresh(db)
+
+    datahub.emit_aspect = AsyncMock()
+
+    await svc.review_triple(triple.id, verdict="approve")
+
+    assert triple.status == "approved"
+    # UC3 is read-only toward DataHub — no aspect emission permitted on triple approval
+    datahub.emit_aspect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
+    svc: OntogenService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """review_triple(approve) raises ONTOGEN_TRIPLE_DEPENDENCY_PENDING when a node is not approved,
+    and no DataHub write occurs either before or after the error.
+
+    Uses _route_execute to decouple from source-code fetch order — the test passes
+    regardless of which order the impl queries subject_node, edge, and object_node.
+
+    Spec anchor: spec/USE_CASE_en.md §UC3 Approval flow — triple cannot be approved
+    unless its subject node, edge, and object node are all approved;
+    spec/DATAHUB_INTEGRATION.md §Read vs Write Boundary — UC3 never writes to DataHub.
+    """
+    triple = make_ontogen_triple_row(
+        subject_node_id="book",
+        edge_id="has-edition",
+        object_node_id="edition",
+        status="pending_review",
+    )
+    subj_node = make_ontogen_node_row(id="book", status="pending_review")  # not approved — triggers gate
+    edge_row = make_ontogen_edge_row(id="has-edition", status="approved")
+    obj_node = make_ontogen_node_row(id="edition", status="approved")
+
+    def make_result(row):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = row
+        return m
+
+    def _route_execute(stmt, *args, **kwargs):
+        """Route by SQL content — returns the appropriate row regardless of fetch order.
+
+        Raises AssertionError for any SQL not matched here so that new queries
+        added to the source code fail loudly rather than silently receiving the
+        wrong mock result.
+        """
+        try:
+            from sqlalchemy.dialects import postgresql
+            sql = str(stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            ))
+        except Exception:
+            sql = str(stmt)
+
+        if "ontogen_triples" in sql:
+            return make_result(triple)
+        if "ontogen_edges" in sql:
+            return make_result(edge_row)
+        if "book" in sql:
+            # subject node lookup — still pending_review, triggers dependency gate
+            return make_result(subj_node)
+        if "edition" in sql:
+            return make_result(obj_node)
+        raise AssertionError(f"Unexpected SQL in _route_execute: {sql[:300]}")
+
+    db.execute = AsyncMock(side_effect=_route_execute)
+    svc._cache.get = AsyncMock(return_value=None)
+    datahub.emit_aspect = AsyncMock()
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await svc.review_triple(triple.id, verdict="approve")
+
+    assert exc_info.value.error_code == "ONTOGEN_TRIPLE_DEPENDENCY_PENDING"
+    # No DataHub write was attempted
+    datahub.emit_aspect.assert_not_called()
