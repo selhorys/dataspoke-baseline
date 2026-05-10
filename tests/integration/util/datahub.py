@@ -37,22 +37,32 @@ from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
+    ArrayTypeClass,
     AssertionInfoClass,
     AuditStampClass,
+    BooleanTypeClass,
+    BytesTypeClass,
     DatasetFieldProfileClass,
     DatasetProfileClass,
     DatasetPropertiesClass,
+    DateTypeClass,
     DocumentContentsClass,
     DocumentInfoClass,
     DocumentSourceClass,
     DocumentStatusClass,
+    MapTypeClass,
+    NullTypeClass,
+    NumberTypeClass,
     OperationClass,
     OperationTypeClass,
     OtherSchemaClass,
     RelatedAssetClass,
     SchemaFieldClass,
+    SchemaFieldDataTypeClass,
     SchemaMetadataClass,
     StatusClass,
+    StringTypeClass,
+    TimeTypeClass,
 )
 
 # ---------------------------------------------------------------------------
@@ -106,39 +116,33 @@ TARGET_SCHEMAS: frozenset[str] = frozenset(
         "orders",
         "customers",
         "reviews",
-        "publishers",
         "shipping",
-        "inventory",
-        "marketing",
-        "products",
-        "content",
-        "storefront",
     }
 )
 
-_PG_TO_DATAHUB_TYPE: dict[str, str] = {
-    "integer": "NUMBER",
-    "bigint": "NUMBER",
-    "smallint": "NUMBER",
-    "numeric": "NUMBER",
-    "real": "NUMBER",
-    "double precision": "NUMBER",
-    "boolean": "BOOLEAN",
-    "text": "STRING",
-    "character varying": "STRING",
-    "character": "STRING",
-    "varchar": "STRING",
-    "char": "STRING",
-    "date": "DATE",
-    "timestamp with time zone": "TIME",
-    "timestamp without time zone": "TIME",
-    "time with time zone": "TIME",
-    "time without time zone": "TIME",
-    "jsonb": "STRING",
-    "json": "STRING",
-    "uuid": "STRING",
-    "bytea": "BYTES",
-    "ARRAY": "ARRAY",
+_PG_TO_DATAHUB_TYPE: dict[str, object] = {
+    "integer": NumberTypeClass(),
+    "bigint": NumberTypeClass(),
+    "smallint": NumberTypeClass(),
+    "numeric": NumberTypeClass(),
+    "real": NumberTypeClass(),
+    "double precision": NumberTypeClass(),
+    "boolean": BooleanTypeClass(),
+    "text": StringTypeClass(),
+    "character varying": StringTypeClass(),
+    "character": StringTypeClass(),
+    "varchar": StringTypeClass(),
+    "char": StringTypeClass(),
+    "date": DateTypeClass(),
+    "timestamp with time zone": TimeTypeClass(),
+    "timestamp without time zone": TimeTypeClass(),
+    "time with time zone": TimeTypeClass(),
+    "time without time zone": TimeTypeClass(),
+    "jsonb": StringTypeClass(),
+    "json": StringTypeClass(),
+    "uuid": StringTypeClass(),
+    "bytea": BytesTypeClass(),
+    "ARRAY": ArrayTypeClass(),
 }
 
 # ---------------------------------------------------------------------------
@@ -348,11 +352,19 @@ async def discover_tables(
     try:
         rows = await conn.fetch(
             """
-            SELECT table_schema, table_name, column_name, data_type,
-                   ordinal_position, is_nullable
-            FROM information_schema.columns
-            WHERE table_schema = ANY($1::text[])
-            ORDER BY table_schema, table_name, ordinal_position
+            SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
+                   c.ordinal_position, c.is_nullable,
+                   col_description(
+                       format('%I.%I', c.table_schema, c.table_name)::regclass,
+                       c.ordinal_position
+                   ) AS column_comment,
+                   obj_description(
+                       format('%I.%I', c.table_schema, c.table_name)::regclass,
+                       'pg_class'
+                   ) AS table_comment
+            FROM information_schema.columns c
+            WHERE c.table_schema = ANY($1::text[])
+            ORDER BY c.table_schema, c.table_name, c.ordinal_position
             """,
             sorted(effective_schemas),
         )
@@ -370,6 +382,8 @@ async def discover_tables(
                 "native_type": row["data_type"],
                 "ordinal": row["ordinal_position"],
                 "nullable": row["is_nullable"] == "YES",
+                "description": row["column_comment"],
+                "table_description": row["table_comment"],
             }
         )
     return datasets
@@ -597,13 +611,15 @@ def hard_delete_dataspoke_assertions_for_dataset(dataset_urn: str) -> int:
 def _build_schema_fields(columns: list[dict]) -> list[SchemaFieldClass]:  # type: ignore[type-arg]
     fields = []
     for col in columns:
-        dh_type = _PG_TO_DATAHUB_TYPE.get(col["native_type"], "STRING")
         fields.append(
             SchemaFieldClass(
                 fieldPath=col["name"],
                 nativeDataType=col["native_type"],
-                type={"type": {"type": dh_type}},
+                type=SchemaFieldDataTypeClass(
+                    type=_PG_TO_DATAHUB_TYPE.get(col["native_type"], StringTypeClass()),
+                ),
                 nullable=col["nullable"],
+                description=col.get("description") or None,
             )
         )
     return fields
@@ -706,13 +722,14 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
         )
 
         # 2. DatasetProperties
+        table_description = columns[0].get("table_description") if columns else None
         emitter.emit_mcp(
             MetadataChangeProposalWrapper(
                 entityUrn=urn,
                 aspect=DatasetPropertiesClass(
                     name=f"{schema}.{table}",
                     qualifiedName=f"{PG_INSTANCE}.{schema}.{table}",
-                    description=f"Imazon example table: {schema}.{table}",
+                    description=table_description or f"Imazon example table: {schema}.{table}",
                     customProperties={
                         "source": "dummy-data-ingest",
                         "schema": schema,
@@ -790,28 +807,41 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
 # Discover Kafka topic schemas from JSONL fixtures
 # ---------------------------------------------------------------------------
 
-_JSON_TO_DATAHUB_TYPE: dict[str, str] = {
-    "str": "STRING",
-    "int": "NUMBER",
-    "float": "NUMBER",
-    "bool": "BOOLEAN",
-    "list": "ARRAY",
-    "dict": "MAP",
-    "NoneType": "NULL",
+_JSON_TO_DATAHUB_TYPE: dict[str, object] = {
+    "str": StringTypeClass(),
+    "int": NumberTypeClass(),
+    "float": NumberTypeClass(),
+    "bool": BooleanTypeClass(),
+    "list": ArrayTypeClass(),
+    "dict": MapTypeClass(),
+    "NoneType": NullTypeClass(),
 }
 
 
-def _discover_kafka_topics() -> dict[str, tuple[list[dict], int]]:  # type: ignore[type-arg]
-    """Return {urn: ([field_dicts], message_count)} by scanning JSONL fixture files.
+def _load_kafka_meta(topic: str) -> dict:  # type: ignore[type-arg]
+    """Load optional <topic>.meta.json beside JSONL fixtures.
+
+    Returns the parsed dict if present, else an empty dict.
+    The meta.json format is: {"description": str, "fields": {<name>: <description>}}.
+    """
+    meta_path = Path(__file__).parent / "fixtures" / "kafka" / f"{topic}.meta.json"
+    if meta_path.is_file():
+        return json.loads(meta_path.read_text())
+    return {}
+
+
+def _discover_kafka_topics() -> dict[str, tuple[list[dict], int, str | None]]:  # type: ignore[type-arg]
+    """Return {urn: ([field_dicts], message_count, topic_description)} from JSONL fixtures.
 
     Unions all keys across all messages in each topic's JSONL file, inferring
     field types from the first non-null occurrence.  Message count is the
-    number of non-empty lines in the JSONL file.
+    number of non-empty lines in the JSONL file.  If a sibling ``<topic>.meta.json``
+    exists, per-field descriptions and the topic-level description are merged in.
     """
     from tests.integration.util.kafka import ALL_TOPICS
 
     _kafka_fixtures_dir = Path(__file__).parent / "fixtures" / "kafka"
-    datasets: dict[str, tuple[list[dict], int]] = {}  # type: ignore[type-arg]
+    datasets: dict[str, tuple[list[dict], int, str | None]] = {}  # type: ignore[type-arg]
 
     for topic, jsonl_file in ALL_TOPICS.items():
         urn = _make_kafka_urn(topic)
@@ -828,6 +858,10 @@ def _discover_kafka_topics() -> dict[str, tuple[list[dict], int]]:  # type: igno
                 if key not in field_types and value is not None:
                     field_types[key] = type(value).__name__
 
+        meta = _load_kafka_meta(topic)
+        topic_description: str | None = meta.get("description") or None
+        field_descriptions: dict[str, str] = meta.get("fields", {})
+
         fields = []
         for ordinal, (key, py_type) in enumerate(field_types.items(), start=1):
             fields.append(
@@ -836,9 +870,10 @@ def _discover_kafka_topics() -> dict[str, tuple[list[dict], int]]:  # type: igno
                     "native_type": py_type,
                     "ordinal": ordinal,
                     "nullable": True,
+                    "description": field_descriptions.get(key) or None,
                 }
             )
-        datasets[urn] = (fields, message_count)
+        datasets[urn] = (fields, message_count, topic_description)
 
     return datasets
 
@@ -848,13 +883,15 @@ def _build_kafka_schema_fields(
 ) -> list[SchemaFieldClass]:
     result = []
     for f in fields:
-        dh_type = _JSON_TO_DATAHUB_TYPE.get(f["native_type"], "STRING")
         result.append(
             SchemaFieldClass(
                 fieldPath=f["name"],
                 nativeDataType=f["native_type"],
-                type={"type": {"type": dh_type}},
+                type=SchemaFieldDataTypeClass(
+                    type=_JSON_TO_DATAHUB_TYPE.get(f["native_type"], StringTypeClass()),
+                ),
                 nullable=f["nullable"],
+                description=f.get("description") or None,
             )
         )
     return result
@@ -894,7 +931,7 @@ async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
 
     emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
-    for urn, (fields, message_count) in datasets.items():
+    for urn, (fields, message_count, topic_description) in datasets.items():
         # URN format: urn:li:dataset:(urn:li:dataPlatform:kafka,{instance}.{topic},{ENV})
         topic = urn.split(",")[1].split(".", 1)[1]
 
@@ -911,7 +948,7 @@ async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
                 aspect=DatasetPropertiesClass(
                     name=topic,
                     qualifiedName=f"{_kafka_instance}.{topic}",
-                    description=f"Imazon example Kafka topic: {topic}",
+                    description=topic_description or f"Imazon example Kafka topic: {topic}",
                     customProperties={
                         "source": "dummy-data-ingest",
                         "cluster": _kafka_instance,
@@ -967,30 +1004,45 @@ async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Convenience: reset then ingest in one call
+# Reset-only and seed helpers
 # ---------------------------------------------------------------------------
 
 
-async def reset_and_ingest(
-    schemas: frozenset[str] | None = None,
-) -> tuple[int, int]:
-    """Soft-delete existing datasets then ingest from both example-postgres
-    and example-kafka.
+def reset_only() -> int:
+    """Hard-delete all Imazon-related DataHub state. No ingest.
 
-    Args:
-        schemas: Optional subset of PG schemas to ingest after reset.
-                 Defaults to all TARGET_SCHEMAS.
+    Post-condition: zero example_db / example_kafka datasets, zero DataSpoke
+    assertions, zero stale containers / glossary terms attributable to Imazon.
 
     Returns:
-        A (deleted, ingested) tuple with the respective counts.
+        Total number of deleted entities.
     """
     deleted = reset_datasets()
     reset_assertions()
     reset_containers()
     reset_glossary_terms()
-    pg_count = await ingest_pg_datasets(schemas=schemas)
-    kafka_count = await ingest_kafka_datasets()
-    return deleted, pg_count + kafka_count
+    return deleted
+
+
+async def seed(
+    schemas: frozenset[str] | None = None,
+) -> int:
+    """Reset DataHub then re-ingest all Imazon datasets and topics.
+
+    Post-condition: full Imazon set present in DataHub with descriptions
+    and typed columns.
+
+    Args:
+        schemas: Optional subset of PG schemas to ingest.
+                 Defaults to all TARGET_SCHEMAS.
+
+    Returns:
+        Total number of deleted + ingested entities.
+    """
+    deleted = reset_only()
+    ingested_pg = await ingest_pg_datasets(schemas=schemas)
+    ingested_kafka = await ingest_kafka_datasets()
+    return deleted + ingested_pg + ingested_kafka
 
 
 # ---------------------------------------------------------------------------
@@ -999,13 +1051,13 @@ async def reset_and_ingest(
 
 
 async def async_main() -> None:
-    reset_only = "--reset-only" in sys.argv
-    do_reset = "--reset" in sys.argv or reset_only
+    reset_only_flag = "--reset-only" in sys.argv
+    do_reset = "--reset" in sys.argv or reset_only_flag
 
     if do_reset:
         print("[INFO]  Resetting DataHub datasets...")
         reset_datasets()
-        if reset_only:
+        if reset_only_flag:
             print("[INFO]  Reset complete (--reset-only).")
             return
 

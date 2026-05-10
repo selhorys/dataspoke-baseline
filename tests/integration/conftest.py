@@ -308,7 +308,7 @@ def _reset_all_dummy_data() -> None:
 
     asyncio.run(postgres.reset_all())
     kafka.reset_all()
-    asyncio.run(datahub.reset_and_ingest())
+    asyncio.run(datahub.seed())
 
 
 @pytest.fixture(scope="session", autouse=True)

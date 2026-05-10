@@ -11,7 +11,7 @@ Test in this module:
 
 Prerequisites (spec/TESTING.md §Integration Testing):
   ./dev_env/dataspoke-test-mode.sh --skip-build
-  uv run python -m tests.integration.util --reset-all
+  uv run python -m tests.integration.util --reset-seed
   DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/test_uc2_validation.py
 
 spec: USE_CASE_en.md §UC2
@@ -23,6 +23,11 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+
+# Declare fixture dependencies so module_dummy_data seeds PG + DataHub automatically.
+# spec: TESTING.md §Per-Module Dummy-Data Reset
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"orders"})
+DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset({"imazon.orders.events"})
 
 
 def _enc(urn: str) -> str:

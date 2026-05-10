@@ -99,7 +99,7 @@ The API is accessible via nginx-ingress at `http://app.<INGRESS_IP>.nip.io/api/v
 ```bash
 uv run pytest tests/unit/                      # Unit tests (no infra needed)
 uv run pytest tests/integration/               # Integration tests (requires dev environment with ingress)
-uv run python -m tests.integration.util --reset-all  # Seed dummy data (Imazon use-case)
+uv run python -m tests.integration.util --reset-seed  # Seed dummy data (Imazon use-case)
 ```
 
 See [`spec/TESTING.md`](spec/TESTING.md) for conventions, three-group execution sequence, and the integration test lock protocol.

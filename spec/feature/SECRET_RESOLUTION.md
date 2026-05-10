@@ -274,7 +274,7 @@ non-Airflow-callback iteration; secret resolution is intentionally out of scope 
 
 There is no production traffic on `ingestion_configs` yet. Prior rows persisted under the
 placeholder `secret_ref` design are deleted by the test-mode reset
-(`uv run python -m tests.integration.util --reset-all`). No migration script is provided.
+(`uv run python -m tests.integration.util --reset-seed`). No migration script is provided.
 
 Calls referencing the old string-form `secret_ref: "k8s-secret/<name>/<key>"` return 422
 on PUT/PATCH (validator rejects non-object). Callers update to the structured form.

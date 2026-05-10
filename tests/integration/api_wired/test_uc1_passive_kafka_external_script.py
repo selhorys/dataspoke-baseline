@@ -51,7 +51,7 @@ async def test_uc1_passive_kafka_via_external_script(
       5. Trigger sync_passive_status via internal activity endpoint
       6. GET event/ingestion — assert one INGESTION.COMPLETE row with source='passive'
       7. Cross-dataset overview includes passive Kafka URN
-      8. Cleanup: delete DataSpoke conf (reset-all handles DPI cleanup in subsequent runs)
+      8. Cleanup: delete DataSpoke conf (reset-seed handles DPI cleanup in subsequent runs)
     """
     datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
     datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")

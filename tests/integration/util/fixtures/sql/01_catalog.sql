@@ -1,37 +1,12 @@
--- 01_catalog.sql — UC1, UC4, UC7: genre hierarchy, title master, editions.
-
--- Genre hierarchy (self-referencing)
-CREATE TABLE catalog.genre_hierarchy (
-    code        VARCHAR(20) PRIMARY KEY,
-    display_name VARCHAR(100) NOT NULL,
-    parent_code VARCHAR(20) REFERENCES catalog.genre_hierarchy(code)
-);
-
-INSERT INTO catalog.genre_hierarchy (code, display_name, parent_code) VALUES
-('FIC',       'Fiction',              NULL),
-('FIC-THR',   'Thriller',             'FIC'),
-('FIC-ROM',   'Romance',              'FIC'),
-('FIC-SCI',   'Science Fiction',      'FIC'),
-('FIC-FAN',   'Fantasy',              'FIC'),
-('FIC-LIT',   'Literary Fiction',     'FIC'),
-('NF',        'Non-Fiction',          NULL),
-('NF-BIO',    'Biography',            'NF'),
-('NF-HIS',    'History',              'NF'),
-('NF-SCI',    'Popular Science',      'NF'),
-('NF-BUS',    'Business',             'NF'),
-('NF-SELF',   'Self-Help',            'NF'),
-('CH',        'Children',             NULL),
-('CH-PIC',    'Picture Books',        'CH'),
-('CH-MG',     'Middle Grade',         'CH');
+-- 01_catalog.sql — UC1, UC4: title master and editions.
 
 -- Title master (~30 rows, ~18 cols)
 CREATE TABLE catalog.title_master (
-    isbn          VARCHAR(17) NOT NULL,
-    edition_id    SERIAL,
+    isbn          VARCHAR(17) PRIMARY KEY,
     title         VARCHAR(300) NOT NULL,
     subtitle      VARCHAR(300),
     author_name   VARCHAR(200) NOT NULL,
-    genre_code    VARCHAR(20) NOT NULL REFERENCES catalog.genre_hierarchy(code),
+    genre_code    VARCHAR(20) NOT NULL,
     publisher     VARCHAR(200),
     publish_date  DATE,
     language      VARCHAR(5) DEFAULT 'en',
@@ -43,8 +18,7 @@ CREATE TABLE catalog.title_master (
     created_at    TIMESTAMP DEFAULT NOW(),
     updated_at    TIMESTAMP DEFAULT NOW(),
     description   TEXT,
-    cover_url     VARCHAR(500),
-    PRIMARY KEY (isbn, edition_id)
+    cover_url     VARCHAR(500)
 );
 
 INSERT INTO catalog.title_master (isbn, title, subtitle, author_name, genre_code, publisher, publish_date, page_count, weight_grams, list_price, description) VALUES
@@ -80,14 +54,13 @@ INSERT INTO catalog.title_master (isbn, title, subtitle, author_name, genre_code
 ('9780000000030', 'The Infinite Library',     NULL,                        'Marcus Chen',      'FIC-SCI', 'Imazon Press',      '2025-04-10', 410, 460, 18.99, 'A library that contains every book ever written — and some that shouldn''t exist.');
 
 -- COMMENTS for DataHub ingestion to surface as descriptions
-COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — one row per (ISBN, edition_id) combination. Source of truth for title, author, publisher, and pricing reference data. Used by UC1 (ingestion) and UC4 (metadata generation).';
+COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — one row per ISBN. Source of truth for title, author, publisher, and pricing reference data. Used by UC1 (ingestion) and UC4 (metadata generation).';
 
-COMMENT ON COLUMN catalog.title_master.isbn IS 'ISBN-13 identifier for the book. Combined with edition_id forms the natural key.';
-COMMENT ON COLUMN catalog.title_master.edition_id IS 'Edition sequence number (1, 2, 3, ...) for revisions of the same ISBN.';
+COMMENT ON COLUMN catalog.title_master.isbn IS 'ISBN-13 identifier. Sole primary key for the title.';
 COMMENT ON COLUMN catalog.title_master.title IS 'Primary title of the book as it appears on the cover.';
 COMMENT ON COLUMN catalog.title_master.subtitle IS 'Optional subtitle. NULL when the cover shows no subtitle.';
 COMMENT ON COLUMN catalog.title_master.author_name IS 'Primary author display name. Multi-author works show only the lead author here.';
-COMMENT ON COLUMN catalog.title_master.genre_code IS 'Foreign key into catalog.genre_hierarchy. Two-level taxonomy (e.g., FIC-THR for Fiction → Thriller).';
+COMMENT ON COLUMN catalog.title_master.genre_code IS 'Two-level genre taxonomy code (e.g., FIC-THR for Fiction → Thriller, NF-HIS for Non-Fiction → History).';
 COMMENT ON COLUMN catalog.title_master.publisher IS 'Publishing house name. NULL for self-published or unknown.';
 COMMENT ON COLUMN catalog.title_master.publish_date IS 'First publication date for this edition.';
 COMMENT ON COLUMN catalog.title_master.language IS 'ISO 639-1 two-letter language code with optional region (e.g., en, en-US, ko).';

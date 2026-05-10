@@ -1,0 +1,12 @@
+{
+  "description": "Carrier scan events emitted as parcels move through the logistics network. Each message represents one physical scan at a carrier facility or delivery point. Multiple messages per order_id track the full parcel journey from pickup to delivery.",
+  "fields": {
+    "tracking": "Carrier-assigned parcel tracking number — matches tracking_number in shipping.carrier_status and the tracking field in imazon.orders.events shipped events.",
+    "carrier": "Logistics carrier that performed this scan (e.g., UPS, FedEx, DHL).",
+    "order_id": "Imazon order identifier — joins to shipping.carrier_status.order_id in PostgreSQL and to imazon.orders.events.order_id in Kafka.",
+    "status": "Delivery lifecycle stage at scan time: picked_up | in_transit | out_for_delivery | delivered | delayed.",
+    "timestamp": "UTC timestamp of the carrier scan event in ISO 8601 format.",
+    "location": "Human-readable city and state/country where the scan occurred.",
+    "reason": "Textual explanation for delayed or exception statuses. Present only when status is delayed or exception."
+  }
+}

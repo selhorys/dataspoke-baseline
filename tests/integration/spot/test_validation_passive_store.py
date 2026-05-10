@@ -21,7 +21,7 @@ Concerns covered:
 
 Prerequisites (per spec/TESTING.md §Integration Testing):
   ./dev_env/dataspoke-test-mode.sh --skip-build
-  uv run python -m tests.integration.util --reset-all
+  uv run python -m tests.integration.util --reset-seed
   DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/test_validation_passive_store.py
 
 Spec:

@@ -53,8 +53,8 @@ Run `./dev_env/health-check.sh`. On any FAIL:
 - Offer to reinstall via `Skill(dev-env)` action `reinstall`.
 - Do not proceed until green.
 
-Ask once: reset-all baseline? Default Yes (per `feedback_reset_before_api_wired`).
-Yes → `set -a && source dev_env/.env && set +a && uv run python -m tests.integration.util --reset-all`.
+Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
+Yes → `set -a && source dev_env/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
 
 Bootstrap env:
 ```bash
@@ -116,7 +116,7 @@ For each extracted step:
 
 Walk the test's `finally:` block as its own phase. Same prompt rules apply.
 Honor user choice if they say "skip cleanup" — leave state for inspection
-(future runs will reset-all).
+(future runs will reset-seed).
 
 ### 7. Summary
 

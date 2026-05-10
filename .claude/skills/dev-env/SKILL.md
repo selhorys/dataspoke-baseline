@@ -82,7 +82,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 1. Confirm all expected components are running.
 2. Seed dummy data and register datasets in DataHub:
    ```bash
-   uv run python -m tests.integration.util --reset-all
+   uv run python -m tests.integration.util --reset-seed
    ```
 3. Show access information (ingress endpoints table is in `dev_env/README.md §Ingress Endpoints`; substitute `DATASPOKE_DEV_INGRESS_IP` / `DATASPOKE_DEV_INGRESS_DOMAIN` from `dev_env/.env`).
 4. Inform the user that `dev_env/.env` has been populated with ingress-derived runtime variables (hosts, URLs, ports) by `nginx-ingress/install.sh`, and that they should run `source dev_env/.env` to load them into their shell.

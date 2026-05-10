@@ -19,9 +19,8 @@ from confluent_kafka.admin import AdminClient, NewTopic
 # ---------------------------------------------------------------------------
 
 ALL_TOPICS: dict[str, str] = {
-    "imazon.orders.events": "orders.jsonl",
-    "imazon.shipping.updates": "shipping.jsonl",
-    "imazon.reviews.new": "reviews.jsonl",
+    "imazon.orders.events": "imazon.orders.events.jsonl",
+    "imazon.shipping.updates": "imazon.shipping.updates.jsonl",
 }
 
 _FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "kafka"
@@ -120,8 +119,20 @@ def _produce_messages(producer: Producer, topic: str, jsonl_file: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+def reset_all_empty() -> None:
+    """Delete and recreate all Imazon topics. No seed messages produced.
+
+    Post-condition: topics exist but are empty.
+    """
+    topic_list = list(ALL_TOPICS.keys())
+    admin = _get_admin_client()
+    _delete_topics(admin, topic_list)
+    time.sleep(2)
+    _create_topics(admin, topic_list)
+
+
 def reset_all() -> None:
-    """Delete and recreate all 3 Imazon topics, then produce all seed messages."""
+    """Delete and recreate all Imazon topics, then produce all seed messages."""
     reset_topics(set(ALL_TOPICS.keys()))
 
 

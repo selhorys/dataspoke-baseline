@@ -35,8 +35,12 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Declare fixture dependencies so module_dummy_data seeds catalog schema + DataHub.
+# spec: TESTING.md §Per-Module Dummy-Data Reset
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
 # UC4 dataset: catalog.title_master — Imazon primary catalog table
-# spec: TESTING.md §Imazon Dummy-Data Reference — inventory.book_stock/catalog.title_master UC4
+# spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master UC4
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 

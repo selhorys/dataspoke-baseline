@@ -128,12 +128,12 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `dev_env/.env` a
    `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
 3. **Reset dummy data** -- always reset before running, even if data appears clean.
    `conftest.py` resets via `tests/integration/util/`. Manual:
-   `uv run python -m tests.integration.util --reset-all`.
+   `uv run python -m tests.integration.util --reset-seed`.
 4. **Extend dummy data** if needed -- insert after reset, document in test file's module
    docstring.
 5. **Run and iterate** -- `uv run pytest tests/integration/`. Re-run from Step 3 as needed.
 6. **Reset on exit** -- module-scoped teardowns restore baseline. Manual fallback:
-   `--reset-all`.
+   `--reset-seed`.
 7. **Release lock** -- `POST http://<INGRESS_IP>:9221/lock/release` with `{"owner": "..."}`.
    Force-release: `DELETE http://<INGRESS_IP>:9221/lock`.
 
@@ -171,6 +171,11 @@ failing subsystem:
 | datahub-gms, datahub-kafka | `dev_env/datahub/` |
 | example-postgres, example-kafka | `dev_env/dataspoke-example/` |
 | lock-service | `dev_env/dataspoke-lock/` |
+
+The util has two reset modes. `--reset-all` produces an empty baseline (no Imazon entities
+anywhere) — useful for testing UC1 ingestion against a blank slate. `--reset-seed` produces
+the seeded baseline used by UC2/3/4/5 — full Imazon datasets present in PostgreSQL, Kafka,
+and DataHub with descriptions and typed columns.
 
 ### Airflow Integration Test Pitfalls
 
@@ -252,12 +257,12 @@ and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
 ```bash
 # Spot -- some tests need the test-mode server, others do not. Run together for simplicity:
 ./dev_env/dataspoke-test-mode.sh --skip-build      # safe to run; idempotent
-uv run python -m tests.integration.util --reset-all
+uv run python -m tests.integration.util --reset-seed
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/
 
 # Api-wired -- always run with the test-mode server up
 ./dev_env/dataspoke-test-mode.sh --skip-build
-uv run python -m tests.integration.util --reset-all
+uv run python -m tests.integration.util --reset-seed
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
 # Teardown (optional; leave running if you'll iterate)
@@ -297,7 +302,7 @@ testing and verifying features before writing automated tests.
 ```bash
 ./dev_env/health-check.sh                                        # Pre-flight
 ./dev_env/dataspoke-test-mode.sh                                 # Build and deploy in-cluster API
-uv run python -m tests.integration.util --reset-all              # Seed Imazon dummy data
+uv run python -m tests.integration.util --reset-seed             # Seed Imazon dummy data
 ```
 
 ### Authentication
@@ -372,57 +377,39 @@ invent alternative test companies.
 UC numbers below follow `USE_CASE_en.md` §Feature Mapping: UC1 Ingestion Control, UC2
 Validation, UC3 Ontology Generation, UC4 Metadata Generation, UC5 Governance.
 
-> **Note**: The fixture below extends the minimal Imazon profile sketched in
-> [`USE_CASE_en.md`](USE_CASE_en.md#imaginary-company-profile-imazon) (5 OLTP tables and 2
-> Kafka topics) with additional schemas needed to exercise ontology variants and time-series
-> anomaly detection. The narrative scenarios in `USE_CASE_en.md` remain authoritative for
-> feature behavior; this fixture is the test data that backs them and may be revised when
-> integration tests are rewritten.
+> **Note**: The fixture covers the minimal Imazon profile sketched in
+> [`USE_CASE_en.md`](USE_CASE_en.md#imaginary-company-profile-imazon) (catalog, orders,
+> customers, reviews, and shipping domains with 2 Kafka topics). The narrative scenarios in
+> `USE_CASE_en.md` remain authoritative for feature behavior; this fixture is the test data
+> that backs them and may be revised when integration tests are rewritten.
 
 | Schema.Table | Rows | Primary UC | Key Characteristic |
 |---|---|---|---|
-| `catalog.genre_hierarchy` | 15 | UC3 | Self-referencing hierarchy — feeds ontology |
-| `catalog.title_master` | 30 | UC1, UC3 | ~18 cols, composite PK |
-| `catalog.editions` | 40 | UC1, UC3 | Edition/format variants |
-| `orders.order_items` | 80 | UC1, UC3 | Multi-hop join path (PL/SQL lineage + ontology edges) |
-| `orders.daily_fulfillment_summary` | 30 | UC2 | 1 anomalous low-volume day (Jan 15) — pipeline POSTs daily row counts; historical-baseline GET surfaces the outlier |
-| `orders.raw_events` | 100 | UC2 | Lifecycle event stream |
-| `orders.eu_purchase_history` | 30 | UC1 | EU shipping/payment columns (PII-shaped test data) |
-| `customers.eu_profiles` | 20 | UC1 | EU profile columns (PII-shaped test data) |
-| `reviews.user_ratings` | 50 | UC2 | Healthy: rating_score NOT NULL |
-| `reviews.user_ratings_legacy` | 50 | UC2 | Degraded: ~30% NULL rating_score |
-| `publishers.feed_raw` | 20 | UC1 | JSONB raw payload |
-| `shipping.carrier_status` | 40 | UC2 | Delayed and exception statuses |
-| `inventory.book_stock` | 25 | UC3, UC4 | Multi-warehouse stock — BOOK/PRINT concept variant |
-| `marketing.eu_email_campaigns` | 15 | UC1, UC5 | Downstream of eu_profiles (ingestion + governance metrics) |
-| `products.digital_catalog` | 20 | UC3, UC4 | ~30% NULL isbn — BOOK/DIGITAL concept variant |
-| `content.ebook_assets` | 20 | UC3, UC4 | EPUB/PDF/MOBI assets |
-| `storefront.listing_items` | 15 | UC3, UC4 | Marketplace listings |
+| `catalog.title_master` | 30 | UC1, UC4 | 17 cols, `isbn` sole PK; every column has a description |
+| `catalog.editions` | 40 | UC1 | Per-format edition rows; `isbn` joins to `title_master` |
+| `customers.eu_profiles` | 20 | UC3, UC5 | EU customer accounts; `user_id` VARCHAR PK; GDPR PII surface |
+| `reviews.user_ratings` | 50 | UC2, UC3 | Ratings; `user_id` → `eu_profiles`, `edition_id` → `editions` |
+| `orders.daily_fulfillment_summary` | 30 | UC2 | 1 anomalous day (Jan 15, warehouse outage) — detectable via historical-baseline GET |
+| `shipping.carrier_status` | 30 | UC3 | Carrier scan events; `order_id` joins to both Kafka topics |
 
-Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs),
-`imazon.reviews.new` (10 msgs).
+Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs).
 
-DataHub datasets: All 17 tables registered as DataHub entities (platform `postgres`, env `DEV`)
+DataHub datasets: All 6 tables registered as DataHub entities (platform `postgres`, env `DEV`)
 via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMetadata` aspects
-(137 columns total).
+(53 columns total). Both Kafka topics registered as Kafka platform entities with field
+descriptions.
 
 ### Data Design Choices
 
-- **UC1**: EU PII-shaped tables (`orders.eu_purchase_history`, `customers.eu_profiles`,
-  `marketing.eu_email_campaigns`) carry structurally realistic data across DE/FR/ES/IT/NL —
-  reserved as test surface for future PII classification features
-- **UC1**: `order_items -> editions -> title_master -> genre_hierarchy` full referential
-  integrity — reserved as test surface for future multi-hop lineage extraction
-- **UC2**: `user_ratings_legacy` has 30% NULL `rating_score` — pipeline computes
-  `null_rate_rating_score` and POSTs it; result-store contract tested end-to-end
 - **UC2**: `daily_fulfillment_summary` has 1 anomalous day (Jan 15) — pipeline POSTs
   daily `row_cnt`; tomorrow's task GETs the prior 30-day series via the historical-baseline
   endpoint and detects the outlier without re-aggregating
-- **UC3**: BOOK concept has PRINT variant (`title_master`, `editions`, `book_stock`) and
-  DIGITAL variant (`digital_catalog`, `ebook_assets`, `listing_items`) — tests cross-variant
-  ontology construction
-- **UC4**: ~70% of `digital_catalog` titles match `title_master` by ISBN — tests
-  ontology-grounded doc generation and cross-source lineage matching
+- **UC3 cross-dataset join paths**: five signal paths available for ontology inference:
+  `catalog.editions.isbn` → `catalog.title_master.isbn` (edition↔title);
+  `reviews.user_ratings.edition_id` → `catalog.editions.edition_id` (rating↔edition);
+  `reviews.user_ratings.user_id` → `customers.eu_profiles.user_id` (rating↔customer);
+  `shipping.carrier_status.order_id` → `imazon.orders.events.order_id` (PG↔Kafka);
+  `shipping.carrier_status.order_id` → `imazon.shipping.updates.order_id` (PG↔Kafka)
 - **ISBNs**: 978-prefix, obviously fake (e.g., `9780000000001`)
 
 ### Assertion Principles

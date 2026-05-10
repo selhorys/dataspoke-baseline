@@ -14,6 +14,10 @@ Tests in this module:
 import httpx
 import pytest
 
+# Declare fixture dependencies so module_dummy_data seeds catalog schema + DataHub.
+# spec: TESTING.md §Per-Module Dummy-Data Reset
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
 # Bounded URN: keeps DataHub I/O small by scoping measurements to one known dataset
 # spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master
 _BOUNDED_URN = (

@@ -21,19 +21,9 @@ ALL_SCHEMAS: frozenset[str] = frozenset(
         "orders",
         "customers",
         "reviews",
-        "publishers",
         "shipping",
-        "inventory",
-        "marketing",
-        "products",
-        "content",
-        "storefront",
     }
 )
-
-# Schemas that share a single seed file (09_ebooknow.sql).  Resetting any one
-# of them must reset all three to keep referential integrity intact.
-_COLOCATED_SCHEMAS: frozenset[str] = frozenset({"products", "content", "storefront"})
 
 # Map each schema to the ordered list of SQL filenames required to recreate it.
 # Every schema needs 00_schemas.sql (creates all schema namespaces) plus its
@@ -43,14 +33,7 @@ SCHEMA_TO_SQL_FILES: dict[str, list[str]] = {
     "orders": ["00_schemas.sql", "02_orders.sql"],
     "customers": ["00_schemas.sql", "03_customers.sql"],
     "reviews": ["00_schemas.sql", "04_reviews.sql"],
-    "publishers": ["00_schemas.sql", "05_publishers.sql"],
     "shipping": ["00_schemas.sql", "06_shipping.sql"],
-    "inventory": ["00_schemas.sql", "07_inventory.sql"],
-    "marketing": ["00_schemas.sql", "08_marketing.sql"],
-    # products / content / storefront all live in 09_ebooknow.sql
-    "products": ["00_schemas.sql", "09_ebooknow.sql"],
-    "content": ["00_schemas.sql", "09_ebooknow.sql"],
-    "storefront": ["00_schemas.sql", "09_ebooknow.sql"],
 }
 
 _FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "sql"
@@ -100,14 +83,6 @@ _pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db
 # ---------------------------------------------------------------------------
 
 
-def _expand_colocated_schemas(schemas: frozenset[str] | set[str]) -> frozenset[str]:
-    """If any colocated schema is requested, expand to include all three."""
-    expanded = set(schemas)
-    if expanded & _COLOCATED_SCHEMAS:
-        expanded |= _COLOCATED_SCHEMAS
-    return frozenset(expanded)
-
-
 async def _get_connection() -> asyncpg.Connection:
     """Create a connection to example-postgres."""
     return await asyncpg.connect(
@@ -130,6 +105,19 @@ async def _execute_sql_file(conn: asyncpg.Connection, filename: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def reset_all_empty() -> None:
+    """Drop all custom schemas CASCADE. No seed SQL applied.
+
+    Post-condition: zero Imazon schemas/tables in the database.
+    """
+    conn = await _get_connection()
+    try:
+        for schema in ALL_SCHEMAS:
+            await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+    finally:
+        await conn.close()
+
+
 async def reset_all() -> None:
     """Drop all custom schemas CASCADE, then re-execute all SQL seed files in order."""
     conn = await _get_connection()
@@ -144,12 +132,8 @@ async def reset_all() -> None:
 
 
 async def reset_schemas(schemas: frozenset[str] | set[str]) -> None:
-    """Drop and re-seed specific schemas.
-
-    Auto-expands colocated schemas (products / content / storefront) so that
-    09_ebooknow.sql is always executed as a unit.
-    """
-    effective = _expand_colocated_schemas(schemas)
+    """Drop and re-seed specific schemas."""
+    effective = frozenset(schemas)
 
     # Collect the ordered, deduplicated set of SQL files needed.
     sql_files_needed: list[str] = ["00_schemas.sql"]
@@ -178,7 +162,7 @@ async def reset_tables(schema: str, tables: list[str]) -> None:
     foreign-key dependents.  The entire schema seed file is then re-executed so
     all rows are restored.
     """
-    effective_schemas = _expand_colocated_schemas({schema})
+    effective_schemas = frozenset({schema})
 
     conn = await _get_connection()
     try:

@@ -1,0 +1,15 @@
+{
+  "description": "Order lifecycle events emitted by the storefront when customers place, confirm, ship, or receive orders. Each order produces up to four events in sequence: placed → confirmed → shipped → delivered.",
+  "fields": {
+    "event_id": "Unique event identifier within the orders.events stream (e.g., evt-001). Monotonically increasing string key.",
+    "order_id": "Imazon order identifier — joins to shipping.carrier_status.order_id in PostgreSQL and to imazon.shipping.updates.order_id in Kafka.",
+    "event_type": "Lifecycle stage of the order at the time of emission: placed | confirmed | shipped | delivered.",
+    "timestamp": "Event UTC timestamp in ISO 8601 format (e.g., 2024-11-01T09:12:00Z).",
+    "items": "Array of {edition_id, qty} pairs describing which catalog.editions were ordered. Present only on placed events.",
+    "total": "Order total in the title currency (decimal). Present only on placed events.",
+    "warehouse": "Warehouse code assigned to fulfil the order (e.g., WH-East). Present only on confirmed events.",
+    "carrier": "Carrier code assigned for shipment (e.g., UPS, FedEx, DHL). Present only on shipped events.",
+    "tracking": "Carrier tracking number assigned at shipment — matches tracking_number in shipping.carrier_status and imazon.shipping.updates. Present only on shipped events.",
+    "signed_by": "Name of the recipient or proxy who signed for the delivery. Present only on delivered events."
+  }
+}

@@ -22,6 +22,15 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TCH002
 
+# Declare fixture dependencies so module_dummy_data seeds all schemas + topics for
+# cross-dataset ontology inference. spec: TESTING.md §Per-Module Dummy-Data Reset
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(
+    {"catalog", "customers", "reviews", "orders", "shipping"}
+)
+DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset(
+    {"imazon.orders.events", "imazon.shipping.updates"}
+)
+
 # ── Raw-SQL helpers for DB seeding (setup/teardown only — not in test bodies) ──
 # These helpers use raw SQL so the test bodies remain import-free of src.shared.db.models,
 # satisfying spec/TESTING.md §Api-Wired Integration Tests — "REST only in test body."
