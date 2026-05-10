@@ -186,7 +186,7 @@ schema including pgvector tables) in
 |---------|-------------|
 | Ingestion Control | `active-custom` and `passive` ingestion modes — DataSpoke either runs an in-house extractor on a tier schedule or observes externally-ingested datasets via `DataProcessInstance` polling; single control surface for lifecycle management |
 | Validation | One validation slot per dataset (description + declared variable names) emitted as DataHub `assertionInfo`; ingestion of pipeline-emitted timeseries results emitted as `assertionRunEvent`; historical-result query (`from`/`until`) for use as a baseline cache. |
-| Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from DataHub aspects (canonical + UC4-approved editable variants) and DataHub Query entities (highlighted MANUAL + auto-discovered SYSTEM joins, capped per-dataset); persisted in PostgreSQL (pgvector + Apache AGE) and surfaced through the ontogen API with independent review queues per result type |
+| Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from a fixed DataHub aspect set (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on related `document` entities); persisted in PostgreSQL (relational + pgvector) and surfaced through the ontogen API with independent review queues per result type |
 | Metadata Generation | Per-dataset proposals for documentation fields — table description, column descriptions, and cross-data Markdown documents on DataHub `document` entities (create/modify/delete actions; `relatedAssets` links to involved datasets); review queue with field-level approve/edit/reject; approved writes go to editable DataHub aspects and to `documentInfo` (with `Status.removed=true` for delete) |
 | Governance | Metric aggregation (pure aggregation over DataHub metadata + DataSpoke results), per-dataset breakdown, trend analysis, and a multi-perspective overview (metric values, blind spots, ontology graph, medallion layers, ownership topology) |
 
@@ -200,7 +200,7 @@ DataHub is deployed and managed separately. DataSpoke interacts through three ch
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
 | Python SDK (read) | DataHub → DataSpoke | Query metadata aspects, ingestion run history, assertion results, `document` entities (filtered by `relatedAssets` on in-scope datasets) |
-| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, validation `assertionInfo` (on conf upsert) + `assertionRunEvent` (per pipeline-posted result) + `status` (on soft-delete / resurrection), glossary term attachments (per approved ontology node) and glossary-term relationships (per approved ontology triple), editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `documentInfo` on `document` entities (and `Status.removed=true` for soft-delete) |
+| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, validation `assertionInfo` (on conf upsert) + `assertionRunEvent` (per pipeline-posted result) + `status` (on soft-delete / resurrection), editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `documentInfo` on `document` entities (and `Status.removed=true` for soft-delete) |
 | Kafka events *(optional)* | DataHub → DataSpoke | Available for future event-driven extensions; not consumed by baseline UC1–UC5 flows |
 
 For SDK entry points, aspect catalog, error handling, and configuration, see
@@ -212,7 +212,7 @@ For SDK entry points, aspect catalog, error handling, and configuration, see
 |-----------|-----------|---------|
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
 | Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, embedding sync, metrics collection). Validation results originate in the data pipeline, not in DataSpoke's Airflow. |
-| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, validation configs (description + declared variables) and pipeline-posted results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector), **graph queries** (Apache AGE) |
+| Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, validation configs (description + declared variables) and pipeline-posted results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector); Apache AGE graph extension is installed as reserved infrastructure |
 | Cache | Redis | API response caching, rate limiting |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
 
@@ -227,7 +227,7 @@ the cross-cutting flow that ties the features together.
 |---|---|---|---|
 | UC1 Ingestion Control | Airflow tier DAG (`active-custom` mode) or hourly `ingestion-passive-hourly` DAG (`passive` mode); manual `POST .../method/ingestion/run` (`active-custom` only) | `IngestionService` | `active-custom`: emits `Status` + `DatasetProperties` + `SchemaMetadata` + `DataProcessInstance` aspects. `passive`: no aspect writes; mirrors externally-emitted `DataProcessInstance` run history into `event/ingestion`. |
 | UC2 Validation | External pipeline `POST .../attr/validation/result` after each partition write; `PUT/PATCH/DELETE .../attr/validation/conf` for configuration | `ValidationService` (config + result store; runs no validation logic) | Emits `assertionInfo` on conf upsert; emits `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emits `status.removed` on DELETE / resurrection. |
-| UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | On node approval: glossary term attached to member datasets. On triple approval: glossary-term relationship between subject and object terms. |
+| UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | None — UC3 is read-only on the DataHub side; approval flips status in DataSpoke storage only. |
 | UC4 Metadata Generation | Airflow tier DAG; manual `POST .../method/metagen/run` | `MetagenService` | On reviewer approval only: writes to editable dataset aspects (`editableDatasetProperties`, `editableSchemaMetadata`) — never to non-editable counterparts — and to `documentInfo` on `document` entities for cross-data MDs (with `Status.removed=true` for delete actions). |
 | UC5 Governance | Airflow tier DAG; manual `POST /spoke/dg/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
 
@@ -256,7 +256,7 @@ route tiers are reserved for organization-specific extensions and have no baseli
 |---------|----|-----------|------------------|----------------|
 | Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/attr/validation/{conf,result}`, `/spoke/common/data/{urn}/event/validation` | Validation Config Manager (PUT/PATCH/DELETE conf → `assertionInfo` / `status`), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
-| Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector + Apache AGE), Airflow (tier-based periodic DAG) |
+| Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector), Airflow (tier-based periodic DAG) |
 | Metadata Generation | UC4 | `/spoke/common/metagen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/metagen/` | Metadata Generation Service, Source-Code Analyzer, Document Composer, Review Queue (field-level + action-level) | LLM API, PostgreSQL, DataHub SDK (read + approved writes to editable aspects and to `document` entities) |
 | Governance | UC5 | `/spoke/dg/metric/`, `/spoke/dg/overview/` | Metrics Aggregator (pure aggregation, no source-DB reads), Per-Dataset Breakdown, Overview Composer (metric values, blind spots, ontology graph, medallion layers, ownership topology) | Airflow (tier-based periodic DAGs), PostgreSQL, DataHub GraphQL |
 
@@ -271,7 +271,7 @@ route tiers are reserved for organization-specific extensions and have no baseli
 | Concern | Infrastructure | Consumers |
 |---------|----------------|-----------|
 | Airflow DAGs | Airflow | Periodic active ingestion (UC1), passive ingestion status sync (UC1, hourly), ontology re-inference (UC3), metadata generation (UC4), governance metrics (UC5). Validation (UC2) is **not** scheduled by DataSpoke — pipelines POST results directly. |
-| PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE) | Ingestion configs/runs, validation configs (description + declared variables) and pipeline-posted results (data_time, score, variables), ontology seeds + nodes + edges + triples + embeddings, metadata generation proposals + review state, governance metric results |
+| PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE reserved) | Ingestion configs/runs, validation configs (description + declared variables) and pipeline-posted results (data_time, score, variables), ontology seeds + nodes + edges + triples + embeddings, metadata generation proposals + review state, governance metric results |
 | Redis Caching | Redis | API response cache, rate limiting, JWT refresh-token revocation list |
 | Kafka Event Consumers *(optional)* | Kafka (shared with DataHub) | Reserved for future event-driven cross-feature triggers; not used by baseline UC1–UC5 flows, which are schedule-driven via Airflow |
 
@@ -286,12 +286,14 @@ Reusable backend services consumed by multiple features. These live in `src/shar
 Own feature (UC3) that also serves UC4 (Metadata Generation) and UC5 (Governance) as consumers.
 
 **Purpose**: LLM-powered service that builds and maintains a **subject / predicate / object
-triple ontology** from DataHub metadata, source code, SQL logs, external docs, and
-human-authored Markdown seeds.
+triple ontology** from a fixed DataHub aspect set (`datasetProperties`, `schemaMetadata`,
+`editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo`
+on related `document` entities) and human-authored Markdown seeds.
 
 **Processing pipeline**:
-1. **Dataset → Node Inference** — LLM analyses schema, descriptions, tags, lineage, code
-   references, and active seeds to propose nodes (subjects / objects) with member datasets
+1. **Dataset → Node Inference** — LLM analyses schema, descriptions, glossary terms,
+   related document bodies, and active seeds to propose nodes (subjects / objects) with
+   member datasets
 2. **Edge (Predicate) Inference** — semantic analysis proposes the relationship-type
    vocabulary used across the dataset estate
 3. **Triple Composition** — pairwise reasoning proposes `(subject_node, edge, object_node)`
@@ -300,20 +302,19 @@ human-authored Markdown seeds.
    independent confidence score and review status; review proceeds nodes → edges →
    triples via `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
 
-**Storage** (PostgreSQL with pgvector + Apache AGE):
+**Storage** (PostgreSQL with pgvector):
 - `ontogen_seeds` — id, markdown body, status (relational)
 - `ontogen_nodes` — id, name, description, confidence, status (relational)
 - `dataset_node_map` — dataset_urn, node_id, confidence_score, is_primary (relational)
 - `ontogen_edges` — id, label, semantics, confidence, status (relational)
-- `ontogen_triples` — id, subject_node_id, edge_id, object_node_id, confidence, status
-  (relational; also materialised in AGE for graph traversal)
+- `ontogen_triples` — id, subject_node_id, edge_id, object_node_id, confidence, status (relational)
 - `node_embeddings`, `dataset_embeddings` — pgvector tables for similarity recall
 
 **Properties**: Re-inference on the configured `schedule_tier`; dry-run mode evaluates without
 persisting; human-in-the-loop review at three layers (node, edge, triple) with a triple
 gated on its endpoint nodes and edge being approved (`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`
-otherwise); on approval, each node becomes a glossary term attached to its member datasets
-and each triple becomes a glossary-term relationship between subject and object terms.
+otherwise); approval flips the entry's `status` in DataSpoke storage with no DataHub side
+effect.
 
 ### DataHub Client Wrapper
 
@@ -336,7 +337,7 @@ logic, and convenience methods. Patterns defined in
 | Backend | Python 3.13 | Rich data/ML libraries, DataHub SDK compatibility |
 | Message Broker | Kafka | DataHub integration standard |
 | Orchestration | Airflow 3.1.8 | Python DAG definitions, HttpOperator tasks calling internal activity endpoints, built-in scheduling and retry; LocalExecutor on the dev profile |
-| Operational DB | PostgreSQL 17 (pgvector + Apache AGE) | ACID guarantees, JSONB flexibility, first-class vector similarity (pgvector), graph queries available (AGE) |
+| Operational DB | PostgreSQL 17 (pgvector + AGE) | ACID guarantees, JSONB flexibility, first-class vector similarity (pgvector); Apache AGE installed as reserved graph infrastructure |
 | Cache | Redis | API caching, rate limiting, session management |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
 | Charts | Highcharts / Recharts | Rich visualization (metrics dashboards, graph views) |

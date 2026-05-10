@@ -2,10 +2,9 @@
 
 > This document specifies the storage contracts shared across all DataSpoke
 > backend processes (API server, Airflow activity endpoints, event consumers):
-> PostgreSQL tables (including pgvector embeddings) and related indexes.
-> The same PostgreSQL instance also has the Apache AGE extension installed.
-> The Ontology Generation service materialises `ontogen_triples` as graph edges in
-> AGE for traversal queries; the relational tables remain the source of truth.
+> PostgreSQL tables (including pgvector embeddings) and related indexes. The
+> Apache AGE extension is also installed on the same PostgreSQL instance and
+> is available as reserved graph infrastructure for future use.
 >
 > Companion to [BACKEND](BACKEND.md) (service logic, workflows, shared clients).
 > Architecture context in [ARCHITECTURE](../ARCHITECTURE.md).
@@ -147,8 +146,6 @@ Singleton row holding the Ontology Generation conf (UC3).
 | `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence (required when `is_enabled=true`) |
 | `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `metric_definitions.measurement_query.dataset_filter` |
-| `max_manual_queries_per_dataset` | `INTEGER` | Per-dataset cap on `source = MANUAL` Query entities fed to the LLM. CHECK ≥ 0; default `20`; `0` disables |
-| `max_system_queries_per_dataset` | `INTEGER` | Per-dataset cap on `source = SYSTEM` Query entities (multi-asset joins only). CHECK ≥ 0; default `10`; `0` disables |
 | `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -178,7 +175,6 @@ There is no parent/child hierarchy.
 | `description` | `TEXT` | LLM-generated description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
-| `glossary_term_urn` | `TEXT` NULL | DataHub glossary term URN attached on approval; `null` while pending |
 | `evidence` | `JSONB` NULL | Snapshot of LLM evidence (signals from each input source) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -214,10 +210,9 @@ on its own and is reused across many triples.
 
 #### `ontogen_triples`
 
-`(subject_node, edge, object_node)` facts. Triples are also materialised in Apache AGE
-for graph queries; this relational table is the source of truth for review status. A
-triple may only be approved when both endpoint nodes (FK to `ontogen_nodes`) and the
-edge (FK to `ontogen_edges`) are themselves `approved`.
+`(subject_node, edge, object_node)` facts. A triple may only be approved when both
+endpoint nodes (FK to `ontogen_nodes`) and the edge (FK to `ontogen_edges`) are
+themselves `approved`.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -399,9 +394,7 @@ endpoint.
 ### Graph (Apache AGE, reserved)
 
 The `age` extension is installed and preloaded (`shared_preload_libraries = 'age'`),
-and `ag_catalog` usage is granted to the application role. The Ontology Generation
-service materialises `ontogen_triples` as `(subject_node)-[edge]->(object_node)` edges
-in an AGE graph for cross-node graph traversal queries (used by the governance
-overview's ontology-graph view). The relational `ontogen_triples` table remains the
-source of truth for review status; AGE is the read-side replica for graph-shaped
-queries.
+and `ag_catalog` usage is granted to the application role. This is reserved graph
+infrastructure available to any service that opts in via the shared `AgeGraph`
+client (see [BACKEND §Shared Services](BACKEND.md#shared-services-srcshared)).
+

@@ -111,8 +111,8 @@ Each MANIFESTO feature has a clear integration direction:
 | Ingestion Control (`active-custom`) | UC1 | **Write** | Emit dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. Applies to `mode: active-custom` configs only. |
 | Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
-| Ontology Generation | UC3 | **Read + Write** | Read schemas, descriptions, tags, lineage, usage; UC4-approved editable variants (`editableDatasetProperties`, `editableSchemaMetadata`, `documentInfo` on `document` entities whose `relatedAssets` reference the in-scope dataset); and DataHub Query entities (`queryProperties` + `querySubjects`) — both highlighted (`source = MANUAL`) and auto-discovered joins (`source = SYSTEM`, `len(querySubjects) ≥ 2`), capped per dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples). On node approval, attach a glossary term derived from the node ID to each member dataset (`glossaryTerms` only — not `globalTags`). On triple approval, create a glossary-term relationship between the subject and object terms using the edge label. |
-| Metadata Generation | UC4 | **Read + Write (editable only)** | Read non-editable descriptions and schemas as context; write reviewer-approved table/column descriptions to the *editable* aspect counterparts; create / modify / delete `document` entities (Markdown body in `documentInfo.contents.text`, `relatedAssets` listing the involved datasets). Tag / glossary-term proposals are future scope and not part of the baseline. |
+| Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
+| Metadata Generation | UC4 | **Read + Write (editable only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval, write to the *editable* aspect counterparts (`editableDatasetProperties`, `editableSchemaMetadata`) and create / modify / delete `document` entities (Markdown body in `documentInfo.contents.text`, `relatedAssets` listing the involved datasets). Tag / glossary-term proposals are future scope. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
@@ -137,10 +137,10 @@ emitter = DatahubRestEmitter(
 )
 ```
 
-Read-only features (Governance) use `DataHubGraph` only. Features that write back (Ingestion
-Control `active-custom` mode, Validation, Ontology Generation, Metadata Generation) additionally
-use `DatahubRestEmitter`. Redefined DataHub functions would use both clients to blend DataHub
-and DataSpoke data in a single API call.
+Read-only features (Governance, Ontology Generation) use `DataHubGraph` only. Features that
+write back (Ingestion Control `active-custom` mode, Validation, Metadata Generation)
+additionally use `DatahubRestEmitter`. Redefined DataHub functions would use both clients
+to blend DataHub and DataSpoke data in a single API call.
 
 ### URN Construction
 
@@ -316,31 +316,6 @@ in the DataHub source for the authoritative list. DataSpoke populates
 - Hierarchy is doc-to-doc only via `parentDocument`; documents cannot declare a parent of any other entity type.
 - `relatedAssets` carries no edge label beyond "related" — the relationship type is implicit in the document's body.
 
-### Query Aspects
-
-DataHub's "Queries" feature stores SQL queries as standalone `query` entities,
-surfaced on the dataset Queries tab in three lists: **highlighted** (`source = MANUAL`,
-human-curated via the UI), **recent** (`source = SYSTEM`, auto-discovered by
-crawlers), and **popular** (ranked by usage). The `source` field is **immutable
-after creation** — DataHub's `UpdateQueryInput` exposes only `name`, `description`,
-`statement`, and `subjects`. A SYSTEM query cannot be promoted to MANUAL in place;
-the only path is "copy the SQL and create a new MANUAL query".
-
-UC3 reads both sources as ontology evidence, capped per dataset by
-`ontogen_config.max_manual_queries_per_dataset` and
-`ontogen_config.max_system_queries_per_dataset` (see
-[BACKEND §Ontology Generation](feature/BACKEND.md#ontology-generation-service-srcbackendontogen)).
-
-| Aspect | SDK Class | Entity Type | Key Fields | REST Read Path |
-|--------|----------|-------------|------------|----------------|
-| `queryProperties` | `QueryPropertiesClass` | `query` | `statement.value` (SQL), `name`, `description`, `source` (`MANUAL` \| `SYSTEM`), `lastModified` | `GET /aspects/{urn}?aspect=queryProperties` |
-| `querySubjects` | `QuerySubjectsClass` | `query` | `subjects[].entity` (dataset URN; optional schema field URN) | `GET /aspects/{urn}?aspect=querySubjects` |
-
-**Listing per dataset.** Use the `listQueries` GraphQL with an entity-URN filter and
-optional `source` filter (same pattern as the DataHub frontend's
-`useHighlightedQueries`, `useRecentQueries`). The `count` parameter caps the result
-set server-side, matching the per-dataset config caps.
-
 ### Aspect Usage by Feature
 
 Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
@@ -351,24 +326,22 @@ per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-inge
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
-| `datasetProperties` | W | R | R | R (context only) | R |
-| `editableDatasetProperties` | — | — | — | W (on approval) | R |
-| `schemaMetadata` | W | R | R | R (context only) | R |
-| `editableSchemaMetadata` | — | — | — | W (on approval) | R |
-| `ownership` | W | — | R | — | R |
-| `globalTags` | W | — | R | — *(future scope)* | R |
-| `glossaryTerms` | — | — | R + W (term per approved node, attached to member datasets; glossary-term relationships per approved triple) | — *(future scope)* | R |
-| `upstreamLineage` | W | R | R | R | R |
+| `datasetProperties` | W | R | R | R | R |
+| `editableDatasetProperties` | — | — | R | R + W (W on approval) | R |
+| `schemaMetadata` | W | R | R | R | R |
+| `editableSchemaMetadata` | — | — | R | R + W (W on approval) | R |
+| `ownership` | W | — | — | — | R |
+| `globalTags` | W | — | — | — *(future scope)* | R |
+| `glossaryTerms` | — | — | R | R | R |
+| `upstreamLineage` | W | R | — | — | R |
 | `status` | W | W (assertion entity, on DELETE / resurrect) | — | — | — |
 | `deprecation` | — | — | — | — | — |
 | `datasetProfile` | — | — | — | — | R |
 | `operation` | — | — | — | — | R |
-| `datasetUsageStatistics` | — | — | R | R | R |
+| `datasetUsageStatistics` | — | — | — | — | R |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | — | W | — | — | R |
-| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | W (create / modify / delete on approval; delete via `Status.removed=true`) | R |
-| `queryProperties` | — | — | R (per-dataset cap, MANUAL + SYSTEM-with-joins) | — | — |
-| `querySubjects` | — | — | R (joins-first sort key) | — | — |
+| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | R + W (create / modify / delete on approval; delete via `Status.removed=true`) | R |
 
 ## Custom Ingestor Guide
 

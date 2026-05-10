@@ -127,7 +127,7 @@ for current method signatures.
 | DataHub Client | `datahub/client.py` | Unified read/write wrapper around `acryl-datahub` SDK | Exponential backoff (3 attempts, 500ms base). Circuit breaker (opens after 5 failures, 60s probe). See [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md). |
 | PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5 |
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
-| Graph (Apache AGE) | `graph/client.py` | AGE extension on the same PG instance materializes `ontogen_triples` as graph edges for cross-node traversal queries (used by the governance overview's ontology-graph view). | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph). |
+| Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
 | Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2) and Governance (UC5). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
@@ -419,12 +419,14 @@ PATCH.
 
 Future scope: proposals for `domains` and `globalTags`.
 
-**Generation Pipeline** (Airflow DAG): read non-editable description aspects + schema +
-lineage as context → resolve node membership via the Ontology Generation service → LLM
-analysis to draft per-field proposals for the configured `targets` → for `cross_data.md`,
-read existing `document` entities whose `relatedAssets` overlap the in-scope dataset
-(titles + bodies + relatedAssets list) and decide what to propose → produce a
-`metagen_results` row in PostgreSQL with status `pending_review`.
+**Generation Pipeline** (Airflow DAG): read DataHub evidence — `datasetProperties`,
+`schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
+`glossaryTerms`, and `documentInfo.contents.text` on `document` entities whose
+`relatedAssets` overlap the in-scope dataset — plus UC3-approved nodes and triples
+filtered by `dataset_node_map.status='approved'` → LLM analysis to draft per-field
+proposals for the configured `targets` → for `cross_data.md`, decide create / modify /
+delete actions over the candidate `document` entities → produce a `metagen_results`
+row in PostgreSQL with status `pending_review`.
 
 **Cross-data MD action types**. A single `cross_data.md` proposal carries an ordered list
 of actions, each independently approvable:
@@ -458,9 +460,8 @@ raises `409 GENERATION_DISABLED`. Dry-run is permitted regardless of `is_enabled
 Singleton-config LLM pipeline that emits a **subject / predicate / object triple
 ontology** — nodes (subjects / objects), edges (predicates), and triples
 (`(subject_node, edge, object_node)` facts). Storage backed by PostgreSQL relational
-tables + Apache AGE graph + pgvector embeddings. Independent review workflow (approve /
-reject) per result type, with triple review gated on its endpoint nodes and edge being
-approved.
+tables + pgvector embeddings. Independent review workflow (approve / reject) per
+result type, with triple review gated on its endpoint nodes and edge being approved.
 
 **Singleton conf** at `/spoke/common/ontogen/attr/conf` — there is no per-dataset ontology
 config. Fields:
@@ -470,13 +471,10 @@ config. Fields:
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
 | `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC5's `measurement_query.dataset_filter`. |
-| `max_manual_queries_per_dataset` | Per-dataset cap on `source = MANUAL` Query entities used as evidence. Default `20`. `0` disables. |
-| `max_system_queries_per_dataset` | Per-dataset cap on `source = SYSTEM` Query entities (multi-asset joins only). Default `10`. `0` disables. |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
-The first implementation reads DataHub aspects + DataHub Query entities only;
-broader input sources (raw SQL logs, GitHub repos, external docs) are deferred to a
-later release.
+UC3 inputs are sourced entirely from DataHub-resident metadata (the proofread
+boundary shared with UC4).
 
 The conf is a single row in `ontogen_config` (singleton table; see
 [BACKEND_SCHEMA §ontogen_config](BACKEND_SCHEMA.md#ontogen_config)).
@@ -504,34 +502,15 @@ or manual `POST /method/run`):
    carrying any listed `tags`, any listed `glossary_terms`, and any of the explicit
    `dataset_urns`. Listed URNs that don't resolve are skipped and accumulated for
    the run-complete event's `unresolved_urns`. `{}` means all datasets.
-3. Fetch evidence from DataHub aspects:
-   - **Canonical**: `schemaMetadata`, `datasetProperties`, `globalTags`,
-     `glossaryTerms`, `upstreamLineage`, `usageStats`.
-   - **UC4-approved editable**: `editableDatasetProperties.description`,
-     `editableSchemaMetadata.editableSchemaFieldInfo[].description`, and
-     `documentInfo.contents.text` on `document` entities whose `relatedAssets`
-     reference an in-scope dataset (Markdown body, capped per dataset). DataSpoke
-     writes these aspects only after a UC4 reviewer approves the proposal
-     (UC4 `field_status='approved'`); draft states (`pending` / `edited`) stay in
-     `metagen_results.proposals` and are never written to DataHub. UC3 therefore
-     reads DataHub directly with no JOIN against `metagen_results` — *presence*
-     is the approval signal.
-   - **Query entities** (DataHub Queries feature, `queryProperties` +
-     `querySubjects` aspects). For each in-scope dataset, call `listQueries`
-     filtered by entity URN, twice:
-     - `source = MANUAL` (highlighted queries — human-curated): take up to
-       `max_manual_queries_per_dataset`, no subject-count restriction.
-     - `source = SYSTEM` (auto-discovered by crawlers): take up to
-       `max_system_queries_per_dataset`, restricted to `len(querySubjects) ≥ 2`
-       (multi-asset joins) to filter out single-table monitoring/health-check
-       noise.
-
-     Within each cap, sort joins-first by `len(querySubjects)` desc, then
-     `lastModified` desc as tiebreaker. Either cap set to `0` skips that source.
-     The MANUAL/SYSTEM split exists only at the read layer; once selected, both
-     sets are concatenated into the same evidence corpus passed to the LLM, with
-     the SQL `statement`, `name`, `description`, and resolved `querySubjects`
-     dataset URNs.
+3. Fetch DataHub evidence per in-scope dataset (the proofread boundary shared
+   with UC4): `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
+   `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
+   `document` entities whose `relatedAssets` reference an in-scope dataset
+   (Markdown body, capped per dataset). DataSpoke writes the editable aspects
+   only after a UC4 reviewer approves the proposal (UC4 `field_status='approved'`);
+   draft states (`pending` / `edited`) stay in `metagen_results.proposals`, so
+   *presence* in DataHub is the approval signal — UC3 reads DataHub directly with
+   no JOIN against `metagen_results`.
 4. Load active seeds (`ontogen_seeds.status='active'`). Resolve the one-shot prompt:
    if the `POST /method/run` request carries a non-empty `text/markdown` body, use
    that body; otherwise fall back to `ontogen_config.default_run_prompt` (used by both
@@ -547,7 +526,7 @@ or manual `POST /method/run`):
    and pending). Reuse existing approved triples when subject / edge / object match.
 8. Score confidence per node, edge, and triple (below
    `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review).
-9. Persist new / updated rows to PostgreSQL (relational + AGE + pgvector); refresh
+9. Persist new / updated rows to PostgreSQL (relational + pgvector); refresh
    `node_embeddings` for any node whose name or description changed.
 
 Concurrent inference runs return `409 ONTOGEN_RUNNING`; `?dry_run=true` evaluates
@@ -557,23 +536,20 @@ steps 2–8 without persisting.
 raises `409 ONTOGEN_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
 
 **Approval flow**. Each result type uses `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
-with `{verdict, reason}`:
+with `{verdict, reason}`. Approval flips `status` in DataSpoke storage; the ontology
+graph lives entirely in DataSpoke (relational + pgvector).
 
-- **Node** `verdict: "approve"` → mark the node and its dataset memberships as approved;
-  for every member dataset, attach a glossary term derived from the node ID to the
-  dataset's `glossaryTerms` aspect.
+- **Node** `verdict: "approve"` → mark the node and its `dataset_node_map`
+  memberships as approved.
 - **Edge** `verdict: "approve"` → mark the edge (predicate vocabulary entry) as
-  approved; no DataHub write on its own.
+  approved.
 - **Triple** `verdict: "approve"` → requires both endpoint nodes and the edge to be
   already approved (otherwise `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`); on success,
-  emit a glossary-term relationship between the subject and object glossary terms
-  using the edge label.
-- `verdict: "reject"` → mark the result as rejected; no DataHub write. Rejecting a
-  node or edge does not auto-reject dependent triples — those simply remain stuck on
-  `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` until reinference produces a different proposal.
-
-**Ontology membership is reflected to DataHub via `glossaryTerms` and glossary-term
-relationships only — DataSpoke does not write `globalTags` for ontology purposes.**
+  mark the triple as approved.
+- `verdict: "reject"` → mark the result as rejected. Rejecting a node or edge does
+  not auto-reject dependent triples — those simply remain stuck on
+  `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` until reinference produces a different
+  proposal.
 
 Each verdict emits a `NODE.APPROVE` / `NODE.REJECT` / `EDGE.APPROVE` / `EDGE.REJECT` /
 `TRIPLE.APPROVE` / `TRIPLE.REJECT` event.

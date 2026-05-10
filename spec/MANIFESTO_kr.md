@@ -62,9 +62,9 @@ Vibe Coding의 시대, 앞서 설명한 추가 기능을 갖추고 특정 회사
   수행할 수 있는 편의 기능 제공
 - **Validation**: 검증의 최종 결과와 중간 결과의 구성 가능한 저장소.
   데이터 파이프라인의 데이터 품질 태스크가 사용한다.
-- **Ontology Generation**: 기본 데이터 문서(테이블 설명 등) 외에
-  소스 코드(GitHub), SQL 로그, 외부 문서 등을 분석해 스스로
-  온톨로지를 구성하고 그래프 DB 및 벡터 DB에 유지
+- **Ontology Generation**: DataHub에 등재된 메타데이터(설명, 스키마,
+  glossary term, document 엔티티)를 바탕으로 스스로 온톨로지를 구성하고
+  DataSpoke 내부의 그래프 DB 및 벡터 DB에 유지
 - **Metadata Generation**: 온톨로지에 기반해 데이터 문서화 상태를
   점검하고, 생성형 AI로 메타데이터를 제안하는 API 및 검수 프로세스 제공
 - **Governance**: 문서화 커버리지, 데이터 신선도 등 거버넌스 지표

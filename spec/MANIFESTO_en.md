@@ -60,9 +60,9 @@ organization's specialized extension as a spoke on a wheel.
   ingestion in one place.
 - **Validation**: Configurable storage of final and intermediate results of validation, used
   by data-quality tasks in the data pipeline.
-- **Ontology Generation**: Beyond baseline data documentation (e.g. table descriptions), analyzes
-  source code (GitHub), SQL logs, external documents, and more to autonomously construct an
-  ontology, maintained in a graph DB and a vector DB.
+- **Ontology Generation**: Autonomously constructs an ontology from DataHub-resident
+  metadata (descriptions, schemas, glossary terms, document entities), maintained in a
+  graph DB and a vector DB inside DataSpoke.
 - **Metadata Generation**: Based on the ontology, inspects the state of data documentation and
   proposes metadata via generative AI, including APIs and a review process.
 - **Governance**: APIs for configuring and monitoring governance metrics such as documentation

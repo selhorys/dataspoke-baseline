@@ -187,7 +187,7 @@ nodes → edges → triples.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `max_manual_queries_per_dataset`, `max_system_queries_per_dataset`, `default_run_prompt`) | Ontology Generation | UC3 |
+| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) | Ontology Generation | UC3 |
 | `PUT` | `/spoke/common/ontogen/attr/conf` | Create or replace operational conf | Ontology Generation | UC3 |
 | `PATCH` | `/spoke/common/ontogen/attr/conf` | Partially update operational conf | Ontology Generation | UC3 |
 | `DELETE` | `/spoke/common/ontogen/attr/conf` | Remove operational conf (effectively disables) | Ontology Generation | UC3 |

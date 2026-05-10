@@ -341,9 +341,9 @@ per-dataset description, variable count, and latest score.
 
 ## UC3: Ontology Generation
 
-**MANIFESTO §2.1 feature**: *Ontology Generation — analyses source code, SQL logs,
-external documents, and more to autonomously construct an ontology, maintained in a
-graph DB and a vector DB.*
+**MANIFESTO §2.1 feature**: *Ontology Generation — autonomously constructs an ontology
+from DataHub-resident metadata, maintained in a graph DB and a vector DB inside
+DataSpoke.*
 
 ### User Story
 
@@ -372,35 +372,24 @@ inherently idempotent across re-inference runs.
 
 **Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2 / UC4, the
 ontology is a global artifact. The operational conf at `/spoke/common/ontogen/attr/conf`
-controls when the inference DAG runs and which datasets are in scope. The first
-implementation reads DataHub aspects only (schemas, descriptions, tags, lineage,
-usage), plus the **UC4-approved editable variants** —
-`editableDatasetProperties.description`,
-`editableSchemaMetadata.editableSchemaFieldInfo[].description`, and
-`documentInfo.contents.text` on `document` entities whose `relatedAssets`
-reference an in-scope dataset (Markdown body by convention) — and **Query
-entities** (DataHub's "Queries" feature: `queryProperties` + `querySubjects` aspects)
-covering both the human-curated **highlighted** queries (`source = MANUAL`) and the
-crawler-discovered **auto-discovered** queries (`source = SYSTEM`, restricted to
-multi-asset joins for noise control). DataSpoke writes those editable aspects only
-after a UC4 reviewer approves the proposal, so their *presence* in DataHub is the
-approval signal — UC3 needs no separate join. UC4 *draft* states (`pending` /
-`edited`) are never written to DataHub, so the LLM never learns from another LLM's
-unreviewed guess. Broader sources (SQL logs, GitHub repos, external docs) are
-deferred to a later release.
+controls when the inference DAG runs and which datasets are in scope.
+
+**Inputs (proofread DataHub boundary).** UC3 reads the same set of DataHub
+aspects as UC4: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
+`editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
+`document` entities whose `relatedAssets` reference an in-scope dataset
+(Markdown body by convention). DataSpoke writes the editable aspects only after a
+UC4 reviewer approves the proposal, so their *presence* in DataHub is the
+approval signal — UC3 needs no separate join, and UC4 draft states (`pending` /
+`edited`) are never written to DataHub, so the LLM never learns from another
+LLM's unreviewed guess.
 
 | `attr/conf` field | Purpose |
 |---|---|
 | `is_enabled` | Master switch for the inference DAG |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence |
 | `dataset_filter` | Optional scope filter — `tags` (list of DataHub tag URNs), `glossary_terms` (list of glossary term URNs), and `dataset_urns` (list of explicit `urn:li:dataset:(…)` URNs for pinning to a known set). Filters are OR-ed across all three dimensions; an empty array on any dimension contributes nothing; `{}` means all datasets. URN format is validated at PUT/PATCH time; entries that don't resolve in DataHub at run time are skipped and reported in the run-complete event's `unresolved_urns` field. Same shape as UC5's `measurement_query.dataset_filter` |
-| `max_manual_queries_per_dataset` | Per-dataset cap on `source = MANUAL` Query entities fed to the LLM as evidence. Default `20`. `0` disables highlighted queries as input |
-| `max_system_queries_per_dataset` | Per-dataset cap on `source = SYSTEM` Query entities (restricted to multi-asset joins, `len(querySubjects) ≥ 2`). Default `10`. `0` disables auto-discovered queries as input |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs that do not supply their own — i.e., periodic Airflow runs, and manual `POST /method/run` calls with no body. Null disables the default |
-
-Within each cap, queries are sorted **joins-first** (`len(querySubjects)` desc) with
-`lastModified` desc as tiebreaker, so cross-dataset evidence is preferred over
-single-table queries when the cap binds.
 
 **Seeds steer inference.** A seed is a human-authored **Markdown document** (prompt,
 domain hint, naming convention) that the inference run consumes alongside the data
@@ -474,9 +463,7 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
-  "max_manual_queries_per_dataset": 20,
-  "max_system_queries_per_dataset": 10
+  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]}
 }
 ```
 
@@ -493,14 +480,11 @@ Imazon is an online bookstore. Treat *order* as a header concept and *order line
 the per-book row. Prefer business-friendly names over table names.
 ```
 
-**Inputs.** Per the conf, DataSpoke reads DataHub aspects (`schemaMetadata`,
-`datasetProperties`, `upstreamLineage`, `usageStats`) for the three OLTP tables, plus
-the UC4-approved editable variants (`editableDatasetProperties`,
-`editableSchemaMetadata`) where present and `documentInfo.contents.text` on
+**Inputs.** Per the conf, DataSpoke reads DataHub aspects for the three OLTP
+tables: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
+`editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
 `document` entities whose `relatedAssets` reference one of the in-scope datasets
-(Markdown body), plus DataHub Query entities scoped to each dataset — up to 20
-MANUAL (highlighted) and up to 10 SYSTEM (auto-discovered, joins only), sorted
-joins-first. The seed shapes naming choices.
+(Markdown body). The seed shapes naming choices.
 
 **Inferred output.** Three nodes, two edges, two triples — all `pending_review`:
 
@@ -511,7 +495,7 @@ Nodes (subjects / objects):
   ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
     evidence:
       - foreign key book_id → catalog.books.book_id (schemaMetadata)
-      - upstreamLineage from orders.line_items to customers.profiles
+      - column-level FK customer_id → customers.profiles.customer_id (schemaMetadata)
 
 Edges (predicates):
   references   confidence 0.95   semantics: foreign-key reference
@@ -551,9 +535,8 @@ GET /api/v1/spoke/common/ontogen/result/triple
 POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
 ```
 
-After approval, each node lands in DataHub as a glossary term attached to its member
-datasets, and each approved triple becomes a glossary-term relationship between the
-subject and object terms — DataHub remains the SSOT for the resulting vocabulary.
+Approval marks the entry as approved in DataSpoke storage. The ontology graph
+lives in DataSpoke (PostgreSQL relational + pgvector).
 
 When `is_enabled=false`, non-dry-run calls to `method/run` return `409 ONTOGEN_DISABLED`. Dry-run (`?dry_run=true`) is always permitted regardless of `is_enabled`.
 
@@ -567,6 +550,13 @@ a review process.*
 
 This feature proposes values for documentation fields that already exist in DataHub
 metadata. It does **not** propose ontology structure (UC3 owns that).
+
+**Inputs (proofread DataHub boundary).** UC4 reads the same DataHub aspect set
+as UC3: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
+`editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
+`document` entities whose `relatedAssets` reference the in-scope dataset.
+UC4 also reads the UC3-approved ontology nodes and triples (filtered to
+`status='approved'` via `dataset_node_map`) from DataSpoke storage.
 
 ### User Story
 

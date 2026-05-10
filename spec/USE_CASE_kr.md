@@ -353,9 +353,8 @@ GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:
 ## UC3: Ontology Generation
 
 **MANIFESTO §2.1 기능**:
-*Ontology Generation — 소스 코드, SQL 로그, 외부 문서 등을 분석해
-자율적으로 온톨로지를 구축하고
-graph DB와 vector DB에 유지한다.*
+*Ontology Generation — DataHub에 등재된 메타데이터를 바탕으로
+자율적으로 온톨로지를 구축하고 DataSpoke 내부 graph DB와 vector DB에 유지한다.*
 
 ### User Story
 
@@ -384,33 +383,24 @@ graph DB와 vector DB에 유지한다.*
 
 **Conf는 싱글톤.** UC1 / UC2 / UC4의 데이터셋별 conf와 달리, 온톨로지는 글로벌
 아티팩트이다. `/spoke/common/ontogen/attr/conf`의 운영 conf는 추론 DAG 실행 시점과
-스코프 데이터셋을 제어한다. 1차 구현은 DataHub aspect(스키마, 설명, 태그, 리니지,
-사용량)와 **UC4에서 승인된 editable 변형** —
-`editableDatasetProperties.description`,
-`editableSchemaMetadata.editableSchemaFieldInfo[].description`,
-스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
-`documentInfo.contents.text`(관례상 Markdown 본문) — 그리고 DataHub의
-**Query 엔티티**(Queries 기능: `queryProperties`+`querySubjects` aspect) — 사람이
-하이라이트한 highlighted 쿼리(`source = MANUAL`)와 크롤러가 자동 수집한 쿼리
-(`source = SYSTEM`, 노이즈 차단을 위해 다중 자산 조인으로 제한)를 모두 포함 — 만
-입력으로 사용한다. DataSpoke는 UC4 리뷰어가 제안을 승인한 뒤에만 해당 editable
-aspect를 DataHub에 쓰므로, DataHub에 *존재*한다는 사실 자체가 승인 신호다 — UC3는
-별도 조인이 필요 없다. UC4의 *초안* 상태(`pending` / `edited`)는 DataHub에
-기록되지 않으므로 LLM이 다른 LLM의 미승인 추측을 학습할 수 없다. SQL 로그·GitHub
-저장소·외부 문서 등 더 넓은 입력 소스는 후속 릴리스로 미룬다.
+스코프 데이터셋을 제어한다.
+
+**입력(검증된 DataHub 경계).** UC3는 UC4와 동일한 DataHub aspect 집합 —
+`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
+`editableSchemaMetadata`, `glossaryTerms`, 그리고 스코프 데이터셋을
+`relatedAssets`로 참조하는 `document` 엔티티의
+`documentInfo.contents.text`(관례상 Markdown 본문) — 만 입력으로 사용한다.
+DataSpoke는 UC4 리뷰어가 제안을 승인한 뒤에만 해당 editable aspect를
+DataHub에 쓰므로, DataHub에 *존재*한다는 사실 자체가 승인 신호다 — UC3는
+별도 조인이 필요 없고, UC4의 *초안* 상태(`pending` / `edited`)는 DataHub에
+기록되지 않으므로 LLM이 다른 LLM의 미승인 추측을 학습할 수 없다.
 
 | `attr/conf` 필드 | 용도 |
 |---|---|
 | `is_enabled` | 추론 DAG 마스터 스위치 |
 | `schedule_tier` | `hourly` / `daily` / `weekly` 재추론 주기 |
 | `dataset_filter` | 선택적 스코프 필터 — `tags`(DataHub 태그 URN 리스트), `glossary_terms`(glossary term URN 리스트), `dataset_urns`(고정된 데이터셋 집합을 지정하는 명시적 `urn:li:dataset:(…)` URN 리스트). 세 차원은 OR로 합쳐지며, 어느 한 차원의 빈 배열은 기여하지 않고, `{}`는 모든 데이터셋을 의미한다. URN 포맷은 PUT/PATCH 시점에 검증하고, 실행 시점에 DataHub에서 해석되지 않는 항목은 skip하며 run-complete 이벤트의 `unresolved_urns`에 보고한다. UC5의 `measurement_query.dataset_filter`와 동일 형태 |
-| `max_manual_queries_per_dataset` | LLM에 증거로 투입되는 `source = MANUAL` Query 엔티티의 데이터셋당 상한. 기본 `20`. `0`이면 highlighted 쿼리 입력 비활성 |
-| `max_system_queries_per_dataset` | `source = SYSTEM` Query 엔티티의 데이터셋당 상한 (다중 자산 조인 `len(querySubjects) ≥ 2`로 제한). 기본 `10`. `0`이면 자동 수집 쿼리 입력 비활성 |
 | `default_run_prompt` | 본문 없이 호출되는 실행(주기적 Airflow 실행, 본문 없는 수동 `POST /method/run`)의 일회성 프롬프트로 사용되는 선택적 Markdown 문자열. null이면 기본값 비활성 |
-
-각 상한 안에서 쿼리는 **조인 우선**(`len(querySubjects)` 내림차순)으로 정렬하고
-`lastModified` 내림차순을 동률 처리에 사용한다. 상한이 묶일 때 단일 테이블 쿼리보다
-교차 데이터셋 증거가 우선된다.
 
 **Seed가 추론을 안내한다.** seed는 데이터 소스와 함께 추론 실행이 소비하는
 사람이 작성한 **Markdown 문서**(프롬프트, 도메인 힌트, 명명 규칙)이다.
@@ -481,9 +471,7 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
-  "max_manual_queries_per_dataset": 20,
-  "max_system_queries_per_dataset": 10
+  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]}
 }
 ```
 
@@ -500,13 +488,11 @@ Imazon은 온라인 서점이다. *order*를 헤더 개념으로, *order line*�
 테이블명보다 비즈니스 친화적인 명명을 선호한다.
 ```
 
-**입력.** 위 conf에 따라 DataSpoke는 세 OLTP 테이블에 대한 DataHub aspect
-(`schemaMetadata`, `datasetProperties`, `upstreamLineage`, `usageStats`)와, UC4에서
-승인된 editable 변형(`editableDatasetProperties`, `editableSchemaMetadata`)
-및 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
-`documentInfo.contents.text`(Markdown 본문), 그리고 각 데이터셋에 연결된
-DataHub Query 엔티티 — MANUAL(highlighted) 최대 20건과 SYSTEM(자동 수집,
-조인만) 최대 10건, 조인 우선 정렬 — 을 읽는다. seed가 명명 선택을 안내한다.
+**입력.** 위 conf에 따라 DataSpoke는 세 OLTP 테이블에 대해 다음 DataHub
+aspect 만 읽는다: `datasetProperties`, `schemaMetadata`,
+`editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`,
+그리고 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
+`documentInfo.contents.text`(Markdown 본문). seed가 명명 선택을 안내한다.
 
 **추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 모두 `pending_review`:
 
@@ -517,7 +503,7 @@ Nodes (subjects / objects):
   ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
     evidence:
       - 외래 키 book_id → catalog.books.book_id (schemaMetadata)
-      - orders.line_items → customers.profiles 의 upstreamLineage
+      - 컬럼 단위 외래 키 customer_id → customers.profiles.customer_id (schemaMetadata)
 
 Edges (predicates):
   references   confidence 0.95   semantics: foreign-key reference
@@ -557,9 +543,8 @@ GET /api/v1/spoke/common/ontogen/result/triple
 POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
 ```
 
-승인 후 각 노드는 멤버 데이터셋의 glossary term으로 DataHub에 반영되고,
-승인된 트리플은 주어와 목적어 term 사이의 glossary-term 관계가 된다 —
-DataHub가 결과 어휘의 SSOT를 유지한다.
+승인은 DataSpoke 내부 상태를 갱신한다. 온톨로지 그래프는 DataSpoke의
+PostgreSQL(관계형 + pgvector)에서 유지한다.
 
 ---
 
@@ -572,6 +557,14 @@ DataHub가 결과 어휘의 SSOT를 유지한다.
 이 기능은 DataHub 메타데이터에 이미 존재하는
 문서 필드의 값을 제안한다.
 온톨로지 구조 자체는 제안하지 않는다 (UC3가 담당).
+
+**입력(검증된 DataHub 경계).** UC4는 UC3와 동일한 DataHub aspect 집합을
+입력으로 사용한다: `datasetProperties`, `schemaMetadata`,
+`editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`,
+그리고 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
+`documentInfo.contents.text`. 그 위에 UC3에서 승인된 노드와 트리플
+(`dataset_node_map.status='approved'` 필터)을 DataSpoke 저장소에서 추가로
+읽는다.
 
 ### User Story
 

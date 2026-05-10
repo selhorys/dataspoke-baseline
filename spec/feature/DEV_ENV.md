@@ -174,11 +174,12 @@ Infrastructure dependencies installed via the DataSpoke umbrella Helm chart with
 (`values-dev.yaml`). See [HELM_CHART.md](HELM_CHART.md) for chart details.
 
 PostgreSQL runs a custom image (`${REGISTRY}/postgres:dev`) built from
-`docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE (graph)
-and pgvector (vector search) extensions compiled in. Vector and graph workloads connect to the
-`dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic
-migration deploy. `dev_env/dataspoke-infra/install.sh` runs `dev_env/dataspoke-postgres/build.sh`
-automatically unless `SKIP_POSTGRES_BUILD=1`.
+`docker-images/postgres/Dockerfile` — a Bitnami PostgreSQL 17 runtime base with Apache AGE
+(graph) and pgvector (vector search) extensions compiled in. Both extensions are connected to
+the `dataspoke` database; `CREATE EXTENSION` runs idempotently on initdb and on every Alembic
+migration deploy. AGE is reserved infrastructure available to any service that opts in.
+`dev_env/dataspoke-infra/install.sh` runs `dev_env/dataspoke-postgres/build.sh` automatically
+unless `SKIP_POSTGRES_BUILD=1`.
 
 | Component | Type | Mem Limit | PV |
 |-----------|------|-----------|-----|
