@@ -17,6 +17,6 @@ router = APIRouter(
     dependencies=[Depends(require_common)],
 )
 router.include_router(core.sub_router)
-router.include_router(ingestion.sub_router, tags=["common/ingestion"])
-router.include_router(validation.sub_router, tags=["common/validation"])
-router.include_router(metagen.sub_router, tags=["common/metagen"])
+router.include_router(ingestion.sub_router)
+router.include_router(validation.sub_router)
+router.include_router(metagen.sub_router)
