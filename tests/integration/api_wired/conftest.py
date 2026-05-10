@@ -6,7 +6,7 @@ Prerequisites: `./dev_env/dataspoke-test-mode.sh --skip-build` must be running.
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 
 import httpx
 import pytest
@@ -124,7 +124,7 @@ def internal_headers() -> dict[str, str]:
 
 
 @pytest.fixture(autouse=True)
-def purge_urns(request: pytest.FixtureRequest) -> None:
+def purge_urns(request: pytest.FixtureRequest) -> Iterator[None]:
     """Hard-purge DataSpoke state for URNs declared by the test module.
 
     A test module opts in by declaring `URNS_TO_PURGE: list[str]` at module
@@ -133,12 +133,19 @@ def purge_urns(request: pytest.FixtureRequest) -> None:
       2. Hard-delete every DataSpoke-emitted DataHub assertion attached to it
          (including its assertionRunEvent timeseries).
 
-    Lets a single test re-run cleanly after an aborted prior run without
-    requiring a full `reset-all`.
+    Runs both before and after the test — the pre-purge lets a single test
+    re-run cleanly after an aborted prior run; the post-purge keeps the dev
+    DataHub UI free of soft-deleted leftovers (an in-test `DELETE` only sets
+    `status.removed=true`, leaving the assertion entity and its run events).
     """
     urns: list[str] = getattr(request.module, "URNS_TO_PURGE", [])
     if not urns:
+        yield
         return
+    for urn in urns:
+        asyncio.run(dataspoke_db.purge_urn(urn))
+        datahub_util.hard_delete_dataspoke_assertions_for_dataset(urn)
+    yield
     for urn in urns:
         asyncio.run(dataspoke_db.purge_urn(urn))
         datahub_util.hard_delete_dataspoke_assertions_for_dataset(urn)
