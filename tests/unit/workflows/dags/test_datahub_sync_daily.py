@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_DAGS_DIR = Path(__file__).resolve().parents[3] / "src" / "workflows" / "dags"
+_DAGS_DIR = Path(__file__).resolve().parents[4] / "src" / "workflows" / "dags"
 _DAG_ID = "datahub-sync-daily"
 
 # Exact set of 17 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue.
