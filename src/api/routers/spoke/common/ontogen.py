@@ -407,10 +407,7 @@ async def post_ontogen_node_review(
     body: ReviewRequest,
     service: OntogenService = Depends(get_ontogen_service),
 ) -> NodeResponse:
-    """Review a pending node — approve or reject.
-
-    On approval, attaches a DataHub glossary term to member datasets.
-    """
+    """Review a pending node — approve or reject."""
     row = await service.review_node(node_id, verdict=body.verdict, reason=body.reason)
     return _node_resp(row)
 

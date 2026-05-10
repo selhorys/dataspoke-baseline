@@ -151,6 +151,16 @@ Rules:
                     edesc = _cap(str(ef.get("description", "")))
                     parts.append(f"  - {fp}: {edesc}")
 
+            related_docs: list[dict[str, Any]] = evidence.get("related_documents", [])
+            if related_docs:
+                parts.append("Related documents (cross-data Markdown notes):")
+                for doc in related_docs[:5]:
+                    title = _cap(str(doc.get("title", "")))
+                    body = _cap(str(doc.get("body", "")))
+                    parts.append(f"  - {title}")
+                    if body:
+                        parts.append(f"    {body}")
+
             parts.append(data_end)
 
     parts.append("\n\n=== TASK ===")

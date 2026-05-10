@@ -188,7 +188,7 @@ Maps datasets to nodes with confidence scores.
 | `dataset_urn` | `TEXT` PK | Dataset URN |
 | `node_id` | `TEXT` PK, FK → `ontogen_nodes(id)` | Node |
 | `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
-| `status` | `TEXT` | `approved`, `pending` (pending if confidence < `ONTOLOGY_CONFIDENCE_THRESHOLD`) |
+| `status` | `TEXT` | `approved`, `pending`, `rejected` (pending if confidence < `ONTOLOGY_CONFIDENCE_THRESHOLD`; flipped to `approved` / `rejected` together with the parent node on review) |
 | `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node |
 | `created_at` | `TIMESTAMPTZ` | |
 
