@@ -1,4 +1,4 @@
--- 03_customers.sql — UC3, UC5: EU customer profiles with GDPR-relevant PII.
+-- Customers: EU customer profiles holding GDPR-relevant PII.
 
 CREATE TABLE customers.eu_profiles (
     user_id           VARCHAR(20) PRIMARY KEY,
@@ -33,7 +33,7 @@ INSERT INTO customers.eu_profiles (user_id, email, country, tier, consent_market
 ('user_119', 'marco.bianchi@example.it',    'IT', 'prime',      TRUE,  1988, '{"genres":["FIC-FAN","FIC-THR"],"format":"Hardcover"}', '2023-11-20 14:45:00'),
 ('user_120', 'anna.jansen@example.nl',      'NL', 'prime_plus', TRUE,  1991, '{"genres":["FIC-LIT","NF-HIS"],"format":"Paperback"}',  '2023-12-05 10:00:00');
 
-COMMENT ON TABLE customers.eu_profiles IS 'EU customer accounts subject to GDPR. One row per registered user. The user_id column is the shared identifier referenced by reviews.user_ratings, enabling cross-dataset join paths for UC3 ontology generation.';
+COMMENT ON TABLE customers.eu_profiles IS 'EU customer accounts subject to GDPR. One row per registered user. user_id is the shared identifier referenced by reviews.user_ratings to link a customer to their submitted ratings.';
 
 COMMENT ON COLUMN customers.eu_profiles.user_id IS 'Stable customer identifier (e.g. user_101). Joined to reviews.user_ratings.user_id to link customer profile to their submitted ratings.';
 COMMENT ON COLUMN customers.eu_profiles.email IS 'Primary contact email address. GDPR-classified PII — must not appear in log output.';

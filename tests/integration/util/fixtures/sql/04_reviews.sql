@@ -1,6 +1,6 @@
--- 04_reviews.sql — UC2, UC3: customer ratings linking eu_profiles to catalog.editions.
--- user_id values match customers.eu_profiles.user_id.
--- edition_id values match catalog.editions.edition_id (1-40).
+-- Reviews: customer ratings linking eu_profiles to catalog.editions.
+-- user_id matches customers.eu_profiles.user_id.
+-- edition_id matches catalog.editions.edition_id.
 
 CREATE TABLE reviews.user_ratings (
     rating_id           SERIAL PRIMARY KEY,
@@ -64,12 +64,12 @@ INSERT INTO reviews.user_ratings (user_id, edition_id, score, review_text, is_ve
 ('user_109',  7,  4, 'Dragon Codex keeps getting better.',                           FALSE, '2023-06-30 11:00:00'),
 ('user_110',  4,  5, 'Epic fantasy, beautiful illustrations inside.',                TRUE,  '2023-01-15 10:00:00');
 
-COMMENT ON TABLE reviews.user_ratings IS 'Customer ratings for specific book editions. Joins to customers.eu_profiles via user_id and to catalog.editions via edition_id, forming two cross-dataset join paths exploited by UC3 ontology generation.';
+COMMENT ON TABLE reviews.user_ratings IS 'Customer ratings for specific book editions. Joins to customers.eu_profiles via user_id and to catalog.editions via edition_id. One row per (user_id, edition_id) submitted rating.';
 
 COMMENT ON COLUMN reviews.user_ratings.rating_id IS 'Synthetic primary key — auto-incrementing sequence, not meaningful outside this table.';
 COMMENT ON COLUMN reviews.user_ratings.user_id IS 'Identifier of the reviewing customer. Matches customers.eu_profiles.user_id — the FK relationship is enforced by value alignment rather than a constraint to simplify seed ordering.';
 COMMENT ON COLUMN reviews.user_ratings.edition_id IS 'Identifier of the rated edition. Matches catalog.editions.edition_id — the FK relationship is enforced by value alignment rather than a constraint to simplify seed ordering.';
 COMMENT ON COLUMN reviews.user_ratings.score IS 'Star rating on a 1–5 scale. 1 = very poor, 5 = excellent. NOT NULL — records without a score are discarded at ingestion time.';
 COMMENT ON COLUMN reviews.user_ratings.review_text IS 'Free-text review body written by the customer. NULL when the customer submitted only a star rating.';
-COMMENT ON COLUMN reviews.user_ratings.is_verified_purchase IS 'TRUE when Imazon can confirm the reviewer purchased this edition. Influences UC2 completeness checks.';
+COMMENT ON COLUMN reviews.user_ratings.is_verified_purchase IS 'TRUE when Imazon can confirm the reviewer purchased this edition. Surfaced as a "Verified Purchase" badge on the storefront and weighted higher in aggregate scores.';
 COMMENT ON COLUMN reviews.user_ratings.created_at IS 'Timestamp when the rating was submitted (UTC). Used for recency weighting in recommendation models.';

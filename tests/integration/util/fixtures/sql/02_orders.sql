@@ -1,6 +1,6 @@
--- 02_orders.sql — UC2, UC3: daily fulfillment aggregate with SLA anomaly row.
+-- Orders: daily fulfillment aggregate for the EU region.
 
--- Daily fulfillment summary (30 rows, 1 anomalous day for UC2/UC3 SLA detection)
+-- Daily fulfillment summary — one row per day, region scoped
 CREATE TABLE orders.daily_fulfillment_summary (
     summary_date          DATE PRIMARY KEY,
     region                VARCHAR(50) NOT NULL,
@@ -43,7 +43,7 @@ INSERT INTO orders.daily_fulfillment_summary (summary_date, region, total_orders
 ('2025-01-29', 'EU',      147, 338070,  18.3, NULL),
 ('2025-01-30', 'EU',      150, 344010,  18.5, NULL);
 
-COMMENT ON TABLE orders.daily_fulfillment_summary IS 'One row per calendar day summarising order volume and revenue across the EU fulfillment region. The anomalous row on 2025-01-15 (warehouse outage) is intentional test data for SLA threshold detection in UC2/UC3.';
+COMMENT ON TABLE orders.daily_fulfillment_summary IS 'One row per calendar day summarising order volume and revenue across the EU fulfillment region. Feeds the operations dashboard and the nightly SLA threshold alert.';
 
 COMMENT ON COLUMN orders.daily_fulfillment_summary.summary_date IS 'Calendar date (UTC) this row covers. Primary key — one row per day per region.';
 COMMENT ON COLUMN orders.daily_fulfillment_summary.region IS 'Fulfillment region code. EU covers all five supported European markets.';

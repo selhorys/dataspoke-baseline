@@ -1,6 +1,6 @@
--- 01_catalog.sql — UC1, UC4: title master and editions.
+-- Catalog: title master and per-format editions.
 
--- Title master (~30 rows, ~18 cols)
+-- Title master
 CREATE TABLE catalog.title_master (
     isbn          VARCHAR(17) PRIMARY KEY,
     title         VARCHAR(300) NOT NULL,
@@ -53,8 +53,7 @@ INSERT INTO catalog.title_master (isbn, title, subtitle, author_name, genre_code
 ('9780000000029', 'Biohack',                  'Optimizing Human 2.0',      'Tom Harwick',      'NF-SELF', 'Summit Books',      '2025-03-01', 230, 260, 16.99, 'The science of self-improvement at the cellular level.'),
 ('9780000000030', 'The Infinite Library',     NULL,                        'Marcus Chen',      'FIC-SCI', 'Imazon Press',      '2025-04-10', 410, 460, 18.99, 'A library that contains every book ever written — and some that shouldn''t exist.');
 
--- COMMENTS for DataHub ingestion to surface as descriptions
-COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — one row per ISBN. Source of truth for title, author, publisher, and pricing reference data. Used by UC1 (ingestion) and UC4 (metadata generation).';
+COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — one row per ISBN. Source of truth for title, author, publisher, and pricing reference data across the Imazon storefront.';
 
 COMMENT ON COLUMN catalog.title_master.isbn IS 'ISBN-13 identifier. Sole primary key for the title.';
 COMMENT ON COLUMN catalog.title_master.title IS 'Primary title of the book as it appears on the cover.';
@@ -74,7 +73,7 @@ COMMENT ON COLUMN catalog.title_master.updated_at IS 'Last mutation timestamp (U
 COMMENT ON COLUMN catalog.title_master.description IS 'Marketing blurb or back-cover description. Plain text, no markup.';
 COMMENT ON COLUMN catalog.title_master.cover_url IS 'Public URL to the cover image asset. NULL when artwork is not yet uploaded.';
 
--- Editions (~40 rows) — multiple formats per title
+-- Editions — multiple formats per title
 CREATE TABLE catalog.editions (
     edition_id  SERIAL PRIMARY KEY,
     isbn        VARCHAR(17) NOT NULL,
@@ -127,7 +126,6 @@ INSERT INTO catalog.editions (isbn, format, price, release_date) VALUES
 ('9780000000028', 'Hardcover',  10.99, '2025-01-20'),
 ('9780000000030', 'Hardcover',  28.99, '2025-04-10');
 
--- COMMENTS for catalog.editions — UC1 Case 2 (DataHub Managed Ingestion target)
 COMMENT ON TABLE catalog.editions IS 'Per-format edition rows for each book title. One row per (ISBN, format) combination — captures Hardcover/Paperback/eBook/Audiobook variants and their release dates.';
 
 COMMENT ON COLUMN catalog.editions.edition_id IS 'Synthetic primary key. Sequence value, not meaningful outside this table.';

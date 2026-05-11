@@ -1,5 +1,5 @@
--- 06_shipping.sql — UC3: carrier scan events providing Kafka-to-PostgreSQL cross-dataset signal.
--- order_id values overlap with imazon.orders.events and imazon.shipping.updates Kafka topics.
+-- Shipping: carrier scan events tracking parcels from pickup to delivery.
+-- order_id overlaps with imazon.orders.events and imazon.shipping.updates Kafka topics.
 
 CREATE TABLE shipping.carrier_status (
     event_id        SERIAL PRIMARY KEY,
@@ -43,11 +43,11 @@ INSERT INTO shipping.carrier_status (tracking_number, order_id, carrier, status,
 ('1Z999AA10012', 'ORD-2024-00063', 'UPS',   'in_transit',       'Charlotte, NC',         '2025-01-04 14:00:00'),
 ('1Z999AA10012', 'ORD-2024-00063', 'UPS',   'delivered',        'Raleigh, NC',           '2025-01-06 11:00:00');
 
-COMMENT ON TABLE shipping.carrier_status IS 'Individual scan events emitted by logistics carriers as parcels move through the delivery network. order_id joins to imazon.orders.events.order_id and imazon.shipping.updates.order_id in the Kafka fixture, providing the primary Kafka-to-PostgreSQL cross-dataset signal for UC3.';
+COMMENT ON TABLE shipping.carrier_status IS 'Individual scan events emitted by logistics carriers as parcels move through the delivery network. order_id joins to imazon.orders.events.order_id and imazon.shipping.updates.order_id in Kafka, giving operations a unified view of each parcel''s journey.';
 
 COMMENT ON COLUMN shipping.carrier_status.event_id IS 'Synthetic primary key — auto-incrementing sequence within this table.';
 COMMENT ON COLUMN shipping.carrier_status.tracking_number IS 'Carrier-assigned parcel tracking number. Matches the tracking field in the imazon.shipping.updates Kafka topic.';
-COMMENT ON COLUMN shipping.carrier_status.order_id IS 'Imazon order identifier. Matches order_id in imazon.orders.events and imazon.shipping.updates Kafka events, enabling cross-platform join inference.';
+COMMENT ON COLUMN shipping.carrier_status.order_id IS 'Imazon order identifier. Matches order_id in imazon.orders.events and imazon.shipping.updates Kafka events for cross-system parcel tracking.';
 COMMENT ON COLUMN shipping.carrier_status.carrier IS 'Logistics carrier name. Constrained to the three carriers used in the EU fulfillment region: UPS, FedEx, DHL.';
 COMMENT ON COLUMN shipping.carrier_status.status IS 'Delivery lifecycle stage at the time of this scan event. Follows the carrier''s standard progression: label_created → picked_up → in_transit → out_for_delivery → delivered; delayed and exception break the normal sequence.';
 COMMENT ON COLUMN shipping.carrier_status.location IS 'Human-readable city and state/country where the scan occurred. NULL if the carrier scan system did not report a location.';

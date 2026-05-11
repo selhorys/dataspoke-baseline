@@ -467,22 +467,22 @@ async def test_uc3_run_dry_run_with_seeded_documents(
         token = get_datahub_token()
         doc1_urn = seed_native_document(
             document_id=doc1_id,
-            title="UC3 api-wired doc 1 — catalog overview",
+            title="Catalog title master — overview",
             body_markdown=(
                 "# Catalog Overview\n\n"
-                "Imazon title_master holds one row per book title. "
-                "Used by UC3 api-wired integration test."
+                "Imazon title_master holds one row per book title, keyed by ISBN-13. "
+                "Source of truth for title, author, publisher, and list price."
             ),
             related_dataset_urns=[dataset_urn],
             token=token,
         )
         doc2_urn = seed_native_document(
             document_id=doc2_id,
-            title="UC3 api-wired doc 2 — editorial notes",
+            title="Catalog editorial notes",
             body_markdown=(
                 "# Editorial Notes\n\n"
-                "Imazon catalog editorial metadata. "
-                "Used by UC3 api-wired integration test."
+                "Editorial metadata curated by the Imazon catalog team — "
+                "marketing blurbs, cover artwork sourcing, and genre taxonomy decisions."
             ),
             related_dataset_urns=[dataset_urn],
             token=token,

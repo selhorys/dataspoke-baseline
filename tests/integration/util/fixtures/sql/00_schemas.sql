@@ -1,5 +1,4 @@
--- 00_schemas.sql — Create all custom schemas for dummy data.
--- Executed after CASCADE drop, so these are always fresh.
+-- Schemas hosting the Imazon operational datasets.
 
 CREATE SCHEMA IF NOT EXISTS catalog;
 CREATE SCHEMA IF NOT EXISTS orders;
