@@ -805,7 +805,45 @@ async def test_uc3_debate_smoke_under_stub(
             "OntogenRunSummary missing 'counts' (dict). spec: USE_CASE_en.md §UC3"
         )
 
-        # ── Step 4: GET result/node — assert debate shape on any persisted rows ──
+        # ── Step 4: GET /event/ontogen — ONTOGEN.RUN_COMPLETE detail must carry debate fields ──
+        # spec: BACKEND_LLM.md §Adversarial Debate Framework §Wiring — _run_inner emits
+        # debate_outcome, producer_iterations, producer_errors_dropped in event detail
+        event_resp = await api_client.get(
+            "/api/v1/spoke/common/ontogen/event?limit=20",
+            headers=admin_headers,
+        )
+        assert event_resp.status_code == 200, (
+            f"GET /event/ontogen failed: {event_resp.status_code}"
+        )
+        events = event_resp.json().get("events", [])
+        run_complete = next(
+            (e for e in events if e["event_type"] == "ONTOGEN.RUN_COMPLETE"), None
+        )
+        assert run_complete is not None, (
+            "No ONTOGEN.RUN_COMPLETE event found after method/run. "
+            "spec: BACKEND_LLM.md §Wiring — RUN_COMPLETE must follow run_debate"
+        )
+        detail = run_complete["detail"]
+        # spec: §Termination — outcome ∈ {accept, turns_exhausted, cycle_detected}
+        outcome = detail.get("debate_outcome")
+        assert outcome in ("accept", "turns_exhausted", "cycle_detected"), (
+            f"event detail debate_outcome={outcome!r} not in canonical set. "
+            "spec: BACKEND_LLM.md §Adversarial Debate Framework §Termination"
+        )
+        # spec: §Inference Loop — producer_iterations is 1..max
+        prod_iter = detail.get("producer_iterations")
+        assert isinstance(prod_iter, int) and prod_iter >= 1, (
+            f"event detail producer_iterations must be int ≥ 1; got {prod_iter!r}. "
+            "spec: BACKEND_LLM.md §Inference Loop"
+        )
+        # spec: §Inference Loop — producer_errors_dropped is non-negative row count
+        prod_err = detail.get("producer_errors_dropped")
+        assert isinstance(prod_err, int) and prod_err >= 0, (
+            f"event detail producer_errors_dropped must be int ≥ 0; got {prod_err!r}. "
+            "spec: BACKEND_LLM.md §Inference Loop"
+        )
+
+        # ── Step 5: GET result/node — assert debate shape on any persisted rows ──
         # spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
         node_resp = await api_client.get(
             "/api/v1/spoke/common/ontogen/result/node?offset=0&limit=10",

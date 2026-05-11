@@ -892,3 +892,130 @@ async def test_ontogen_node_detail_carries_evidence(
 
 # UC3 read-only boundary is enforced structurally (no DataHub emit code paths in review
 # handlers per `src/backend/ontogen/service.py`); regression coverage lives in unit tests.
+
+
+# ── Adversarial Debate Framework tests ────────────────────────────────────────
+# Spec: spec/feature/BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
+
+
+@pytest.mark.asyncio
+async def test_ontogen_node_detail_round_trips_evidence_debate(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /result/node/{id}/attr returns the full debate sub-tree stored in evidence JSONB.
+
+    Seeds an ontogen_nodes row with a structured evidence dict containing a 'debate'
+    sub-tree and asserts the REST endpoint returns every field intact.
+
+    Spec: spec/feature/BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape —
+    evidence JSONB stores: source, run_id, debate.{turns_completed, outcome,
+    final_reviewer_verdict, rag_anchors, history[{turn, actor, ...}]}.
+    Spec: spec/feature/BACKEND_SCHEMA.md §ontogen_nodes — evidence JSONB column.
+    Route: GET /result/node/{node_id}/attr → NodeAttrResponse {node_id, confidence_score,
+    evidence}.
+    """
+    from src.shared.db.models import OntogenNode as _OntogenNode
+
+    suffix = uuid.uuid4().hex[:8]
+    node_id = f"spot-debate-{suffix}"
+
+    seeded_evidence = {
+        "source": "spot-test",
+        "run_id": "spot-test-debate",
+        "debate": {
+            "turns_completed": 2,
+            "outcome": "accept",
+            "final_reviewer_verdict": "accept",
+            "rag_anchors": [],
+            "history": [
+                {"turn": 0, "actor": "producer", "candidate_hash": "deadbeef"},
+                {"turn": 1, "actor": "reviewer", "verdict": "accept"},
+            ],
+        },
+    }
+
+    async_session.add(
+        _OntogenNode(
+            id=node_id,
+            name=f"SpotDebateNode-{suffix}",
+            description="Spot test node for debate evidence round-trip.",
+            confidence_score=0.85,
+            status="pending_review",
+            evidence=seeded_evidence,
+        )
+    )
+    await async_session.commit()
+
+    try:
+        # ── GET /result/node/{node_id}/attr ────────────────────────────────────
+        # spec: BACKEND_LLM.md §Evidence shape — evidence round-trips through JSONB
+        get_resp = await api_client.get(
+            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/attr",
+            headers=admin_headers,
+        )
+        assert get_resp.status_code == 200, get_resp.text
+        body = get_resp.json()
+
+        evidence = body.get("evidence")
+        assert isinstance(evidence, dict), (
+            f"evidence must be a dict; got {type(evidence)!r}. "
+            "spec: BACKEND_SCHEMA.md §ontogen_nodes — evidence JSONB"
+        )
+
+        # ── Assert top-level evidence fields ──────────────────────────────────
+        # spec: BACKEND_LLM.md §Evidence shape — source and run_id fields
+        assert evidence.get("source") == "spot-test", (
+            f"evidence['source'] must be 'spot-test'; got {evidence.get('source')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+        assert evidence.get("run_id") == "spot-test-debate", (
+            f"evidence['run_id'] must be 'spot-test-debate'; got {evidence.get('run_id')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+
+        # ── Assert debate sub-tree ─────────────────────────────────────────────
+        # spec: BACKEND_LLM.md §Evidence shape — debate.{turns_completed, outcome,
+        # final_reviewer_verdict, rag_anchors, history}
+        debate = evidence.get("debate")
+        assert isinstance(debate, dict), (
+            f"evidence['debate'] must be a dict; got {type(debate)!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+        assert debate.get("turns_completed") == 2, (
+            f"debate['turns_completed'] must be 2; got {debate.get('turns_completed')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+        assert debate.get("outcome") == "accept", (
+            f"debate['outcome'] must be 'accept'; got {debate.get('outcome')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+        assert debate.get("final_reviewer_verdict") == "accept", (
+            f"debate['final_reviewer_verdict'] must be 'accept'; "
+            f"got {debate.get('final_reviewer_verdict')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+
+        # ── Assert history list ────────────────────────────────────────────────
+        # spec: BACKEND_LLM.md §Evidence shape — history is ordered list of turns
+        history = debate.get("history")
+        assert isinstance(history, list), (
+            f"debate['history'] must be a list; got {type(history)!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape — history: list of turns"
+        )
+        assert len(history) == 2, (
+            f"debate['history'] must have 2 entries; got {len(history)}. "
+            "spec: BACKEND_LLM.md §Evidence shape"
+        )
+        assert history[0].get("actor") == "producer", (
+            f"history[0]['actor'] must be 'producer'; got {history[0].get('actor')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape — turn 0 is Producer"
+        )
+        assert history[1].get("actor") == "reviewer", (
+            f"history[1]['actor'] must be 'reviewer'; got {history[1].get('actor')!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape — turn 1 is Reviewer"
+        )
+
+    finally:
+        await _delete_row(async_session, _OntogenNode, node_id)
