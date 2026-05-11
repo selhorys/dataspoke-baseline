@@ -178,7 +178,7 @@ async def test_uc3_run_and_list(
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+                "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]},
             },
         )
         # spec: USE_CASE_en.md §UC3 L309-L317 — PUT conf returns 200 or 201
@@ -189,7 +189,7 @@ async def test_uc3_run_and_list(
         assert conf_body["is_enabled"] is True
         assert conf_body["schedule_tier"] == "daily"
         # spec: USE_CASE_en.md §UC3 L309-L317 — round-trip must preserve dataset_filter
-        assert conf_body["dataset_filter"] == {"tags": ["urn:li:tag:env:PROD"]}, (
+        assert conf_body["dataset_filter"] == {"tags": ["urn:li:tag:area:catalog"]}, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC3 L309-L317"
         )

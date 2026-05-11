@@ -50,6 +50,7 @@ from datahub.metadata.schema_classes import (
     DocumentInfoClass,
     DocumentSourceClass,
     DocumentStatusClass,
+    GlobalTagsClass,
     MapTypeClass,
     NullTypeClass,
     NumberTypeClass,
@@ -62,6 +63,7 @@ from datahub.metadata.schema_classes import (
     SchemaMetadataClass,
     StatusClass,
     StringTypeClass,
+    TagAssociationClass,
     TimeTypeClass,
 )
 
@@ -73,6 +75,26 @@ PG_PLATFORM = "postgres"
 KAFKA_PLATFORM = "kafka"
 ENV = "DEV"
 PG_INSTANCE = "example_db"
+
+# Business-area tags applied to seeded datasets. Catalog covers product master
+# data and customer reviews; fulfillment covers customer profiles, daily
+# fulfillment aggregates, carrier scans, and the order/shipping Kafka streams.
+TAG_AREA_CATALOG = "urn:li:tag:area:catalog"
+TAG_AREA_FULFILLMENT = "urn:li:tag:area:fulfillment"
+
+_PG_DATASET_AREA_TAGS: dict[str, str] = {
+    "catalog.title_master": TAG_AREA_CATALOG,
+    "catalog.editions": TAG_AREA_CATALOG,
+    "reviews.user_ratings": TAG_AREA_CATALOG,
+    "customers.eu_profiles": TAG_AREA_FULFILLMENT,
+    "orders.daily_fulfillment_summary": TAG_AREA_FULFILLMENT,
+    "shipping.carrier_status": TAG_AREA_FULFILLMENT,
+}
+
+_KAFKA_TOPIC_AREA_TAGS: dict[str, str] = {
+    "imazon.orders.events": TAG_AREA_FULFILLMENT,
+    "imazon.shipping.updates": TAG_AREA_FULFILLMENT,
+}
 
 # Dataspoke operational DB — used to reconcile dataset_registry rows whose
 # datahub_registered cache was frozen False before this ingest.
@@ -794,6 +816,16 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
+        # 6. GlobalTags — business-area tag for cross-dataset filtering
+        area_tag = _PG_DATASET_AREA_TAGS.get(f"{schema}.{table}")
+        if area_tag is not None:
+            emitter.emit_mcp(
+                MetadataChangeProposalWrapper(
+                    entityUrn=urn,
+                    aspect=GlobalTagsClass(tags=[TagAssociationClass(tag=area_tag)]),
+                )
+            )
+
     await _mark_registry_registered(list(datasets.keys()))
 
     print(
@@ -993,6 +1025,15 @@ async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
                 ),
             )
         )
+
+        area_tag = _KAFKA_TOPIC_AREA_TAGS.get(topic)
+        if area_tag is not None:
+            emitter.emit_mcp(
+                MetadataChangeProposalWrapper(
+                    entityUrn=urn,
+                    aspect=GlobalTagsClass(tags=[TagAssociationClass(tag=area_tag)]),
+                )
+            )
 
     await _mark_registry_registered(list(datasets.keys()))
 
