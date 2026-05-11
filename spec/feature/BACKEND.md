@@ -128,12 +128,41 @@ for current method signatures.
 | PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5 |
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
 | Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
-| LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars |
+| LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars. Tool-calling loop semantics defined in [LLM Inference Loop](#llm-inference-loop). |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
 | Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2) and Governance (UC5). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
 | Domain Models | `models/` | Shared Pydantic models (`QualityScore`, `EventRecord`, etc.) -- internal domain objects, not API schemas | API schemas live in `src/api/schemas/` |
 | Exceptions | `exceptions.py` | `DataSpokeError` hierarchy with error codes for HTTP mapping | See [Error Handling](#error-handling) |
 | Settings | `settings.py` | Pydantic `Settings` class reading `DATASPOKE_*` env vars | -- |
+
+### LLM Inference Loop
+
+LLM calls that produce structured business outputs (UC3 ontology generation, UC4 metadata
+generation) run inside a bounded ReAct loop, not single-shot completions. The model is
+bound to one tool — `{service}_validate(payload)` — and must call it with its proposed
+output before the loop accepts a result. The tool enforces semantic rules the JSON schema
+cannot express (ID-reference integrity, slug format, in-scope URN provenance, etc.) and
+returns `{ok: true}` or `{ok: false, errors: [...]}`. On errors the model receives the
+consolidated error list as a `ToolMessage` and revises.
+
+Two enforcement layers stack:
+
+| Layer | Mechanism | Provider wiring |
+|-------|-----------|-----------------|
+| Shape | LangChain `with_structured_output(OutputModel)` — Pydantic schema bound at the provider layer | OpenAI `response_format=json_schema`, Gemini `response_schema`, Anthropic forced tool-call. Uniform across providers. |
+| Semantic rules | LangChain `bind_tools([validator])` — service-supplied validator with full rule table | Same three providers; one tool per service. |
+
+**Common loop parameters**:
+
+| Parameter | Value |
+|-----------|-------|
+| Max iterations | `3` per service, overridable via `DATASPOKE_ONTOGEN_LLM_MAX_ITERATIONS` / `DATASPOKE_METAGEN_LLM_MAX_ITERATIONS`. One iteration = one model invocation. |
+| Exhaustion behavior | Soft. The last candidate is accepted; rows that fail individual rules are dropped before persistence. The run is **not** marked failed on validation exhaustion — UC3/UC4 already gate persistence through a human reviewer. |
+| Observability | The run-complete event carries `validation_iterations` (1–`max`) and `validation_errors_dropped` (row count). Per-rule error samples are logged but not surfaced in the synchronous response. |
+| Test mode | `StubLLMClient.complete_with_tools` returns one schema-valid empty payload on iteration 1; the loop never iterates. |
+
+Each service ships its validator alongside the service code (`src/backend/{service}/validator.py`).
+Rule tables for the two consuming services follow below.
 
 ### Cache Key Conventions
 
@@ -428,6 +457,28 @@ proposals for the configured `targets` → for `cross_data.md`, decide create / 
 delete actions over the candidate `document` entities → produce a `metagen_results`
 row in PostgreSQL with status `pending_review`.
 
+The LLM step in the Generation Pipeline runs inside the
+[LLM Inference Loop](#llm-inference-loop). The bound tool is `metagen_validate(payload)`;
+the schema model is `MetagenLLMOutput` (per-target proposal entries).
+
+**Metagen validator rules**:
+
+| Rule | Failure code |
+|------|--------------|
+| Pydantic shape of `MetagenLLMOutput` | `SCHEMA` |
+| Every proposal entry's `target` ∈ the config's configured `targets` | `TARGET_NOT_CONFIGURED` |
+| For `column.description`: `field_path` resolves to a real column in the dataset's `schemaMetadata` | `UNKNOWN_FIELD_PATH` |
+| For `cross_data.md`: `action_type ∈ {create, modify, delete}` | `INVALID_ACTION_TYPE` |
+| For `cross_data.md` `modify` / `delete` actions: `document_urn` references an existing document with `relatedAssets` overlapping the in-scope dataset set | `UNKNOWN_DOCUMENT_URN` |
+| For `cross_data.md` `create` / `modify` actions: `related_dataset_urns` is non-empty and every entry ∈ in-scope dataset URNs | `OUT_OF_SCOPE_URN` |
+| For `cross_data.md` `create` / `modify`: Markdown body is non-empty | `EMPTY_BODY` |
+| `action_id` (cross_data.md only) matches `^[a-z0-9][a-z0-9_-]*$`; no `__` | `SLUG_FORMAT` / `DOUBLE_UNDERSCORE` |
+| No duplicate `action_id` within a single proposal | `DUP_ACTION_ID` |
+| For `dataset.description` / `column.description`: proposed text is non-empty | `EMPTY_DESCRIPTION` |
+
+Metagen adopts the loop after Ontogen lands; until then, the existing single-call
+implementation persists and the validator rules above describe the target state.
+
 **Cross-data MD action types**. A single `cross_data.md` proposal carries an ordered list
 of actions, each independently approvable:
 
@@ -528,6 +579,26 @@ or manual `POST /method/run`):
    `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review).
 9. Persist new / updated rows to PostgreSQL (relational + pgvector); refresh
    `node_embeddings` for any node whose name or description changed.
+
+Steps 5–7 are executed as a single LLM call wrapped in the
+[LLM Inference Loop](#llm-inference-loop). The bound tool is `ontogen_validate(payload)`;
+the schema model is `OntogenLLMOutput` (nodes / edges / triples arrays).
+
+**Ontogen validator rules**:
+
+| Rule | Failure code |
+|------|--------------|
+| Pydantic shape of `OntogenLLMOutput` | `SCHEMA` |
+| `node.id` and `edge.id` match `^[a-z0-9][a-z0-9_-]*$`; no `__` | `SLUG_FORMAT` / `DOUBLE_UNDERSCORE` |
+| No duplicate ids within `nodes`, within `edges` | `DUP_ID` |
+| Every `triple.subject_node_id` and `triple.object_node_id` resolves to a node in the payload | `UNKNOWN_NODE_REF` |
+| Every `triple.edge_id` resolves to an edge in the payload | `UNKNOWN_EDGE_REF` |
+| `confidence_score ∈ [0.0, 1.0]` on every node, edge, triple | `CONF_OUT_OF_RANGE` |
+| `node.dataset_urns` is non-empty and every entry ∈ in-scope dataset URNs supplied as evidence | `MISSING_DATASET_URNS` / `OUT_OF_SCOPE_URN` |
+| No duplicate `(subject_node_id, edge_id, object_node_id)` triples | `DUP_TRIPLE` |
+
+The in-scope dataset URN set is the keys of `evidence_per_dataset` for the current run —
+fabricated URNs (model invented a dataset the prompt never mentioned) are rejected.
 
 Concurrent inference runs return `409 ONTOGEN_RUNNING`; `?dry_run=true` evaluates
 steps 2–8 without persisting.
