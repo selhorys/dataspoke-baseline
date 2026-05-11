@@ -12,12 +12,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, constr
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ontogen.evidence import gather_evidence
+from src.backend.ontogen.models import OntogenLLMEdge, OntogenLLMNode, OntogenLLMOutput, OntogenLLMTriple
 from src.backend.ontogen.prompts import build_run_prompt
+from src.backend.ontogen.validator import ValidationError, build_ontogen_validate_tool, partition_clean_rows
 from src.shared.cache.client import RedisClient
 from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
 from src.shared.datahub.client import DataHubClient
@@ -52,6 +55,7 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
+from src.shared.settings import settings
 from src.shared.vector.client import PgVectorManager, VectorHit
 
 logger = logging.getLogger(__name__)
@@ -177,37 +181,6 @@ def _assert_edge_id(edge_id: str) -> None:
         raise ValueError(
             f"edge_id {edge_id!r} is not a valid slug (allowed: a-z0-9_-, max 64 chars)"
         )
-
-
-# ── Pydantic models for LLM JSON output validation ───────────────────────────
-
-
-class _LLMNode(BaseModel):
-    id: str | None = None  # optional hint; we always re-slug from name
-    name: constr(strip_whitespace=True, min_length=1, max_length=200)  # type: ignore[valid-type]
-    description: constr(max_length=4000) = ""  # type: ignore[valid-type]
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    dataset_urns: list[str] = []  # supporting dataset URNs per Fix #2
-
-
-class _LLMEdge(BaseModel):
-    id: str | None = None
-    label: constr(strip_whitespace=True, min_length=1, max_length=200)  # type: ignore[valid-type]
-    semantics: constr(max_length=4000) = ""  # type: ignore[valid-type]
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-class _LLMTriple(BaseModel):
-    subject_node_id: str
-    edge_id: str
-    object_node_id: str
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-class _LLMRunResult(BaseModel):
-    nodes: list[_LLMNode] = []
-    edges: list[_LLMEdge] = []
-    triples: list[_LLMTriple] = []
 
 
 def _event_row(
@@ -574,28 +547,47 @@ class OntogenService:
         # Edge label → id lookup for reuse
         edge_label_to_id: dict[str, str] = {e.label: e.id for e in approved_edges}
 
-        # Step 8: Call LLM and validate output with Pydantic schema (Fix #5)
+        # Step 8: Call LLM inside bounded ReAct loop with semantic validator
         run_at_iso = datetime.now(tz=UTC).isoformat()
-        llm_run_result = _LLMRunResult()
+        in_scope_urns = frozenset(evidence_per_dataset.keys())
+        validate_tool = build_ontogen_validate_tool(in_scope_urns)
+
+        # Infra exceptions from complete_with_tools propagate to run()'s outer handler
+        # which emits RUN_FAILED; soft-failure is for validation exhaustion only.
+        loop_result = await self._llm.complete_with_tools(
+            prompt,
+            tools=[validate_tool],
+            success_tool_name="ontogen_validate",
+            schema=OntogenLLMOutput,
+            max_iterations=settings.ontogen_llm_max_iterations,
+        )
+
         try:
-            from pydantic import ValidationError as PydanticValidationError
+            candidate_output = OntogenLLMOutput.model_validate(loop_result.payload)
+        except PydanticValidationError:
+            logger.warning(
+                "ontogen_llm_output_validation_failed",
+                extra={"run_nonce": run_nonce},
+            )
+            candidate_output = OntogenLLMOutput(nodes=[], edges=[], triples=[])
 
-            raw_llm = await self._llm.complete_json(prompt)
-            try:
-                llm_run_result = _LLMRunResult.model_validate(raw_llm)
-            except PydanticValidationError:
-                logger.warning(
-                    "ontogen_llm_output_validation_failed",
-                    extra={"raw_keys": list(raw_llm.keys()) if isinstance(raw_llm, dict) else []},
-                    exc_info=True,
-                )
-                llm_run_result = _LLMRunResult()
-        except Exception:
-            logger.warning("ontogen_llm_call_failed", exc_info=True)
+        final_validation_errors = [
+            ValidationError.model_validate(e) for e in loop_result.trace.final_errors
+        ]
+        llm_run_result, dropped_count = partition_clean_rows(candidate_output, final_validation_errors)
 
-        proposed_nodes: list[_LLMNode] = llm_run_result.nodes
-        proposed_edges: list[_LLMEdge] = llm_run_result.edges
-        proposed_triples: list[_LLMTriple] = llm_run_result.triples
+        logger.info(
+            "ontogen_llm_loop_complete",
+            extra={
+                "run_nonce": run_nonce,
+                "validation_iterations": loop_result.trace.iterations,
+                "validation_errors_dropped": dropped_count,
+            },
+        )
+
+        proposed_nodes: list[OntogenLLMNode] = llm_run_result.nodes
+        proposed_edges: list[OntogenLLMEdge] = llm_run_result.edges
+        proposed_triples: list[OntogenLLMTriple] = llm_run_result.triples
 
         # ── Process nodes ──────────────────────────────────────────────────
 
@@ -773,6 +765,8 @@ class OntogenService:
                     "unresolved_urns": unresolved_urns,
                     "counts": counts_dict,
                     "dry_run": True,
+                    "validation_iterations": loop_result.trace.iterations,
+                    "validation_errors_dropped": dropped_count,
                 },
             )
             return summary
@@ -969,6 +963,8 @@ class OntogenService:
                 "unresolved_urns": unresolved_urns,
                 "counts": counts_dict,
                 "dry_run": False,
+                "validation_iterations": loop_result.trace.iterations,
+                "validation_errors_dropped": dropped_count,
             },
         )
         return summary

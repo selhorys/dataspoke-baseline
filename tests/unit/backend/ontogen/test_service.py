@@ -14,6 +14,7 @@ from src.shared.exceptions import (
     InvalidDatasetUrnError,
     PreconditionFailedError,
 )
+from src.shared.llm.loop_trace import LoopResult, LoopTrace
 from tests.unit.backend.conftest import (
     make_dataset_node_map_row,
     make_ontogen_edge_row,
@@ -502,13 +503,17 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
 
 
 def test_llm_run_result_validates_shape() -> None:
-    """_LLMRunResult rejects nodes with missing names."""
+    """OntogenLLMOutput rejects nodes with missing names.
+
+    Spec: BACKEND.md §Ontogen validator rules — 'Pydantic shape of OntogenLLMOutput → SCHEMA'.
+    _LLMRunResult was renamed to OntogenLLMOutput and moved to src.backend.ontogen.models (PR2).
+    """
     from pydantic import ValidationError
 
-    from src.backend.ontogen.service import _LLMRunResult
+    from src.backend.ontogen.models import OntogenLLMOutput
 
     # Valid shape
-    result = _LLMRunResult.model_validate({
+    result = OntogenLLMOutput.model_validate({
         "nodes": [{"name": "Book", "confidence_score": 0.9}],
         "edges": [],
         "triples": [],
@@ -517,7 +522,7 @@ def test_llm_run_result_validates_shape() -> None:
 
     # Node missing required 'name' field — should raise
     with pytest.raises(ValidationError):
-        _LLMRunResult.model_validate({
+        OntogenLLMOutput.model_validate({
             "nodes": [{"confidence_score": 0.9}],  # name is required
             "edges": [],
             "triples": [],
@@ -525,13 +530,17 @@ def test_llm_run_result_validates_shape() -> None:
 
 
 def test_llm_run_result_confidence_score_range() -> None:
-    """_LLMRunResult rejects confidence_score outside [0.0, 1.0]."""
+    """OntogenLLMOutput rejects confidence_score outside [0.0, 1.0].
+
+    Spec: BACKEND.md §Ontogen validator rules — 'confidence_score ∈ [0.0, 1.0] → CONF_OUT_OF_RANGE'.
+    _LLMRunResult was renamed to OntogenLLMOutput and moved to src.backend.ontogen.models (PR2).
+    """
     from pydantic import ValidationError
 
-    from src.backend.ontogen.service import _LLMRunResult
+    from src.backend.ontogen.models import OntogenLLMOutput
 
     with pytest.raises(ValidationError):
-        _LLMRunResult.model_validate({
+        OntogenLLMOutput.model_validate({
             "nodes": [{"name": "Book", "confidence_score": 1.5}],
             "edges": [],
             "triples": [],
@@ -734,3 +743,119 @@ async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
     assert exc_info.value.error_code == "ONTOGEN_TRIPLE_DEPENDENCY_PENDING"
     # No DataHub write was attempted
     datahub.emit_aspect.assert_not_called()
+
+
+# ── Validation telemetry in RUN_COMPLETE event ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_validation_telemetry_surfaces_in_run_complete_event(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock, llm: AsyncMock
+) -> None:
+    """RUN_COMPLETE event detail carries validation_iterations and validation_errors_dropped.
+
+    Spec: BACKEND.md §LLM Inference Loop — 'The run-complete event carries
+    validation_iterations (1–max) and validation_errors_dropped (row count).'
+
+    Setup:
+    - complete_with_tools returns LoopResult with trace.iterations=2 and
+      trace.final_errors containing one SLUG_FORMAT error at 'nodes[0].id'.
+    - The payload has one node whose id would be flagged by SLUG_FORMAT.
+    - partition_clean_rows contract (spec §Ontogen validator rules): that node is
+      dropped → expected dropped_count = 1.
+    - Assertion: RUN_COMPLETE event detail must contain
+        validation_iterations=2, validation_errors_dropped=1.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock(return_value=None)
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = True
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+
+    def make_result(scalar_val=None, scalars_val=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_val
+        ms = MagicMock()
+        ms.all.return_value = scalars_val or []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    db.execute = AsyncMock(side_effect=[
+        conf_result,              # get_conf
+        make_result(scalars_val=[]),  # OntogenSeed query
+        make_result(scalars_val=[]),  # approved nodes
+        make_result(scalars_val=[]),  # approved edges
+        make_result(scalars_val=[]),  # approved triples
+    ])
+
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    # complete_with_tools returns LoopResult with 2 iterations and one SLUG_FORMAT error.
+    # The payload has one node with a valid Pydantic shape (name present) but id="Order"
+    # which passes Pydantic (no length issue) but would fire SLUG_FORMAT in the semantic
+    # validator. The final_errors list signals what was wrong after the loop exhausted.
+    final_errors_raw = [
+        {"path": "nodes[0].id", "code": "SLUG_FORMAT", "message": "nodes[0].id does not match ^[a-z0-9][a-z0-9_-]*$: 'Order'"}
+    ]
+    loop_result = LoopResult(
+        payload={
+            "nodes": [
+                {
+                    "name": "Order",
+                    "id": "Order",          # uppercase — passes Pydantic, fails SLUG_FORMAT
+                    "confidence_score": 0.9,
+                    "dataset_urns": [],     # empty urns — MISSING_DATASET_URNS would fire too,
+                                            # but we only assert on the final_errors supplied
+                }
+            ],
+            "edges": [],
+            "triples": [],
+        },
+        trace=LoopTrace(
+            iterations=2,
+            errors_per_iter=[final_errors_raw, final_errors_raw],
+            final_errors=final_errors_raw,  # one SLUG_FORMAT error → partition drops 1 row
+        ),
+    )
+    llm.complete_with_tools = AsyncMock(return_value=loop_result)
+    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
+        with patch("src.backend.ontogen.service.build_ontogen_validate_tool", return_value=MagicMock()):
+            summary = await svc.run(dry_run=True)
+
+    assert isinstance(summary, OntogenRunSummary)
+
+    # Find the RUN_COMPLETE event among all db.add calls
+    added_args = [call.args[0] for call in db.add.call_args_list]
+    event_rows = [a for a in added_args if isinstance(a, Event)]
+    complete_events = [e for e in event_rows if e.event_type == ONTOGEN_RUN_COMPLETE]
+    assert len(complete_events) == 1, (
+        f"Expected exactly one ONTOGEN_RUN_COMPLETE event; got {len(complete_events)}. "
+        "Spec: BACKEND.md §LLM Inference Loop — run-complete event carries telemetry fields."
+    )
+
+    detail = complete_events[0].detail
+
+    # Spec: BACKEND.md §LLM Inference Loop — 'validation_iterations (1–max)'
+    assert detail.get("validation_iterations") == 2, (
+        f"detail['validation_iterations'] must be 2 (from trace.iterations); "
+        f"got {detail.get('validation_iterations')!r}. "
+        "Spec: BACKEND.md §LLM Inference Loop — 'run-complete event carries validation_iterations'."
+    )
+
+    # Spec: BACKEND.md §LLM Inference Loop — 'validation_errors_dropped (row count)'
+    # partition_clean_rows contract: one SLUG_FORMAT error at nodes[0].id → 1 node dropped.
+    # Expected dropped_count derived from partition_clean_rows spec invariant, not impl introspection.
+    assert detail.get("validation_errors_dropped") == 1, (
+        f"detail['validation_errors_dropped'] must be 1 (one node dropped by partition_clean_rows); "
+        f"got {detail.get('validation_errors_dropped')!r}. "
+        "Spec: BACKEND.md §LLM Inference Loop — 'run-complete event carries validation_errors_dropped'."
+    )
