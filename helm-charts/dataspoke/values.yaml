@@ -57,6 +57,7 @@ api:
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   testMode: false
+  testLlmReal: false
   enableStubAuth: false  # Never set true in production
   service:
     type: ClusterIP
@@ -379,6 +380,10 @@ config:
   llm:
     provider: "gemini"
     model: "gemini-3.1-flash-lite"
+  ontogen:
+    debateMaxTurns: 4
+    debateRagK: 5
+    debateReviewerModel: ""
   corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------

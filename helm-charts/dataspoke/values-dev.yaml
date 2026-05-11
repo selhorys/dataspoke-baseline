@@ -23,6 +23,7 @@ api:
     # repository + tag passed via --set from .env (DATASPOKE_DEV_IMAGE_REGISTRY)
     pullPolicy: Always
   testMode: true
+  testLlmReal: false
   enableStubAuth: true
   ingress:
     enabled: true
@@ -271,6 +272,10 @@ airflow:
 # ---------------------------------------------------------------------------
 config:
   createConfigMap: true
+  ontogen:
+    debateMaxTurns: 4
+    debateRagK: 5
+    debateReviewerModel: ""
 secrets:
   createSecret: true
   jwt:

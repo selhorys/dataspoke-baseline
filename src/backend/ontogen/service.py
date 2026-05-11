@@ -17,10 +17,22 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.backend.ontogen.debate import run_debate
+from src.backend.ontogen.embedding_search import search_node_embeddings as _search_node_embeddings
 from src.backend.ontogen.evidence import gather_evidence
-from src.backend.ontogen.models import OntogenLLMEdge, OntogenLLMNode, OntogenLLMOutput, OntogenLLMTriple
+from src.backend.ontogen.models import (
+    OntogenLLMEdge,
+    OntogenLLMNode,
+    OntogenLLMOutput,
+    OntogenLLMTriple,
+)
 from src.backend.ontogen.prompts import build_run_prompt
-from src.backend.ontogen.validator import ValidationError, build_ontogen_validate_tool, partition_clean_rows
+from src.backend.ontogen.reviewer import build_ontogen_review_tool
+from src.backend.ontogen.validator import (
+    ValidationError,
+    build_ontogen_validate_tool,
+    partition_clean_rows,
+)
 from src.shared.cache.client import RedisClient
 from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
 from src.shared.datahub.client import DataHubClient
@@ -69,10 +81,6 @@ _CACHE_TTL = 300
 
 # Node embedding collection (node_embeddings table)
 _NODE_EMBEDDING_COLLECTION = "node_embeddings"
-
-# Reuse threshold for node embedding similarity search
-# (uses ONTOLOGY_CONFIDENCE_THRESHOLD from config as default)
-_NODE_REUSE_THRESHOLD = ONTOLOGY_CONFIDENCE_THRESHOLD
 
 
 # ── Value objects ─────────────────────────────────────────────────────────────
@@ -547,23 +555,30 @@ class OntogenService:
         # Edge label → id lookup for reuse
         edge_label_to_id: dict[str, str] = {e.label: e.id for e in approved_edges}
 
-        # Step 8: Call LLM inside bounded ReAct loop with semantic validator
+        # Step 8: Run adversarial Producer/Reviewer debate loop
         run_at_iso = datetime.now(tz=UTC).isoformat()
         in_scope_urns = frozenset(evidence_per_dataset.keys())
         validate_tool = build_ontogen_validate_tool(in_scope_urns)
+        review_tool = build_ontogen_review_tool()
 
-        # Infra exceptions from complete_with_tools propagate to run()'s outer handler
-        # which emits RUN_FAILED; soft-failure is for validation exhaustion only.
-        loop_result = await self._llm.complete_with_tools(
-            prompt,
-            tools=[validate_tool],
-            success_tool_name="ontogen_validate",
-            schema=OntogenLLMOutput,
-            max_iterations=settings.ontogen_llm_max_iterations,
+        # Infra exceptions propagate to run()'s outer handler which emits RUN_FAILED.
+        debate_result = await run_debate(
+            llm=self._llm,
+            vector=self._vector,
+            db=self._db,
+            producer_prompt=prompt,
+            validate_tool=validate_tool,
+            review_tool=review_tool,
+            in_scope_urns=in_scope_urns,
+            max_turns=settings.ontogen_debate_max_turns,
+            rag_k=settings.ontogen_debate_rag_k,
+            reviewer_model=settings.ontogen_debate_reviewer_model,
+            producer_schema=OntogenLLMOutput,
+            producer_max_iterations=settings.ontogen_llm_max_iterations,
         )
 
         try:
-            candidate_output = OntogenLLMOutput.model_validate(loop_result.payload)
+            candidate_output = OntogenLLMOutput.model_validate(debate_result.payload)
         except PydanticValidationError:
             logger.warning(
                 "ontogen_llm_output_validation_failed",
@@ -571,17 +586,23 @@ class OntogenService:
             )
             candidate_output = OntogenLLMOutput(nodes=[], edges=[], triples=[])
 
-        final_validation_errors = [
-            ValidationError.model_validate(e) for e in loop_result.trace.final_errors
-        ]
-        llm_run_result, dropped_count = partition_clean_rows(candidate_output, final_validation_errors)
+        # Use producer inner-loop trace for validation metrics
+        producer_iterations = debate_result.transcript.get("producer_iterations", 1)
+        producer_errors_dropped = debate_result.transcript.get("producer_errors_dropped", 0)
+
+        # Partition out rows that still have validation errors after the final producer turn
+        final_validation_errors: list[ValidationError] = []
+        llm_run_result, dropped_count = partition_clean_rows(
+            candidate_output, final_validation_errors
+        )
 
         logger.info(
             "ontogen_llm_loop_complete",
             extra={
                 "run_nonce": run_nonce,
-                "validation_iterations": loop_result.trace.iterations,
-                "validation_errors_dropped": dropped_count,
+                "validation_iterations": producer_iterations,
+                "validation_errors_dropped": producer_errors_dropped,
+                "debate_outcome": debate_result.outcome,
             },
         )
 
@@ -765,8 +786,9 @@ class OntogenService:
                     "unresolved_urns": unresolved_urns,
                     "counts": counts_dict,
                     "dry_run": True,
-                    "validation_iterations": loop_result.trace.iterations,
-                    "validation_errors_dropped": dropped_count,
+                    "validation_iterations": producer_iterations,
+                    "validation_errors_dropped": producer_errors_dropped,
+                    "debate_outcome": debate_result.outcome,
                 },
             )
             return summary
@@ -787,9 +809,17 @@ class OntogenService:
                 continue
 
             # Fix #12: compact evidence JSONB
+            _node_reviewer_verdicts = [
+                iv for iv in (
+                    debate_result.transcript.get("item_verdicts") or []
+                )
+                if iv.get("item_kind") == "node" and iv.get("item_id") == node_id
+            ]
             _node_evidence: dict[str, Any] = {
                 "datasets": [u[:1024] for u in (n.get("dataset_urns") or [])],
                 "run_at": n.get("run_at", ""),
+                "debate": debate_result.transcript,
+                "reviewer_verdicts": _node_reviewer_verdicts,
             }
 
             if n["is_reuse"]:
@@ -851,7 +881,17 @@ class OntogenService:
                 continue
 
             # Fix #12: compact evidence JSONB
-            _edge_evidence: dict[str, Any] = {"run_at": e.get("run_at", "")}
+            _edge_reviewer_verdicts = [
+                iv for iv in (
+                    debate_result.transcript.get("item_verdicts") or []
+                )
+                if iv.get("item_kind") == "edge" and iv.get("item_id") == edge_id
+            ]
+            _edge_evidence: dict[str, Any] = {
+                "run_at": e.get("run_at", ""),
+                "debate": debate_result.transcript,
+                "reviewer_verdicts": _edge_reviewer_verdicts,
+            }
 
             existing_edge: OntogenEdge | None = (
                 await self._db.execute(select(OntogenEdge).where(OntogenEdge.id == edge_id))
@@ -911,6 +951,12 @@ class OntogenService:
 
             if existing_triple is None:
                 # Fix #12: compact evidence JSONB for triple
+                _triple_reviewer_verdicts = [
+                    iv for iv in (
+                        debate_result.transcript.get("item_verdicts") or []
+                    )
+                    if iv.get("item_kind") == "triple" and iv.get("item_id") == t["id"]
+                ]
                 _triple_evidence: dict[str, Any] = {
                     "datasets": sorted(
                         {
@@ -921,6 +967,8 @@ class OntogenService:
                         }
                     ),
                     "run_at": t.get("run_at", ""),
+                    "debate": debate_result.transcript,
+                    "reviewer_verdicts": _triple_reviewer_verdicts,
                 }
 
                 orm_triple = OntogenTriple(
@@ -937,8 +985,10 @@ class OntogenService:
 
         await self._db.commit()
 
-        # Step 10 (cont): Refresh node embeddings for new/changed nodes
+        # Step 10 (cont): Refresh embeddings for new/changed nodes, edges, triples
         await self._refresh_node_embeddings(nodes_to_upsert)
+        await self._refresh_edge_embeddings(edges_to_upsert)
+        await self._refresh_triple_embeddings(triples_to_upsert)
 
         # Step 11: Refresh dataset_embeddings for in-scope datasets
         await self._refresh_dataset_embeddings(dataset_urns)
@@ -963,8 +1013,9 @@ class OntogenService:
                 "unresolved_urns": unresolved_urns,
                 "counts": counts_dict,
                 "dry_run": False,
-                "validation_iterations": loop_result.trace.iterations,
-                "validation_errors_dropped": dropped_count,
+                "validation_iterations": producer_iterations,
+                "validation_errors_dropped": producer_errors_dropped,
+                "debate_outcome": debate_result.outcome,
             },
         )
         return summary
@@ -1463,6 +1514,74 @@ class OntogenService:
                     exc_info=True,
                 )
 
+    async def _refresh_edge_embeddings(self, edges_to_upsert: list[dict[str, Any]]) -> None:
+        """Embed and upsert edge_embeddings for new/changed edges (best-effort)."""
+        for e in edges_to_upsert:
+            edge_id = e["id"]
+            label = e.get("label", "")
+            semantics = e.get("semantics") or ""
+            if not label:
+                continue
+            try:
+                embed_text = f"{label} {semantics}".strip()
+                vec = await self._llm.embed(embed_text)
+                await _upsert_edge_embedding(self._vector, edge_id, vec, label, e["status"])
+            except Exception:
+                logger.warning(
+                    "ontogen_edge_embedding_upsert_failed",
+                    extra={"edge_id": edge_id},
+                    exc_info=True,
+                )
+
+    async def _refresh_triple_embeddings(self, triples_to_upsert: list[dict[str, Any]]) -> None:
+        """Embed and upsert triple_embeddings for new triples (best-effort).
+
+        Resolves subject node, edge, and object node from the DB to build
+        composite embed text at refresh time.
+        """
+        for t in triples_to_upsert:
+            triple_id = t["id"]
+            try:
+                subj = (
+                    await self._db.execute(
+                        select(OntogenNode).where(OntogenNode.id == t["subject_node_id"])
+                    )
+                ).scalar_one_or_none()
+                edge_row = (
+                    await self._db.execute(
+                        select(OntogenEdge).where(OntogenEdge.id == t["edge_id"])
+                    )
+                ).scalar_one_or_none()
+                obj = (
+                    await self._db.execute(
+                        select(OntogenNode).where(OntogenNode.id == t["object_node_id"])
+                    )
+                ).scalar_one_or_none()
+
+                if not subj or not edge_row or not obj:
+                    continue
+
+                composite = " ".join(
+                    part
+                    for part in [
+                        subj.name,
+                        subj.description or "",
+                        edge_row.label,
+                        edge_row.semantics or "",
+                        obj.name,
+                        obj.description or "",
+                    ]
+                    if part
+                )
+                vec = await self._llm.embed(composite)
+                await _upsert_triple_embedding(self._vector, triple_id, vec, t["status"])
+            except Exception:
+                logger.warning(
+                    "ontogen_triple_embedding_upsert_failed",
+                    extra={"triple_id": triple_id},
+                    exc_info=True,
+                )
+
     async def _upsert_dataset_node_maps(
         self,
         node_id: str,
@@ -1592,52 +1711,6 @@ class OntogenService:
 # ── pgvector helpers for node_embeddings table ────────────────────────────────
 
 
-async def _search_node_embeddings(
-    vector: PgVectorManager,
-    query_vec: list[float],
-    top_k: int = 5,
-) -> list[VectorHit]:
-    """Search the node_embeddings table for approved nodes similar to *query_vec*.
-
-    Returns up to *top_k* hits above ONTOLOGY_NODE_REUSE_THRESHOLD.
-    Falls back to empty list on any error.
-    """
-    try:
-        from sqlalchemy import text
-
-        async with vector._session_factory() as session:
-            vector_literal = "[" + ",".join(str(v) for v in query_vec) + "]"
-            sql = text(
-                """
-                SELECT
-                    node_id,
-                    name,
-                    status,
-                    GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector)) AS score
-                FROM dataspoke.node_embeddings
-                WHERE status = 'approved'
-                  AND GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector)) >= :threshold
-                ORDER BY score DESC
-                LIMIT :limit
-                """
-            )
-            result = await session.execute(
-                sql,
-                {
-                    "query_vector": vector_literal,
-                    "threshold": _NODE_REUSE_THRESHOLD,
-                    "limit": top_k,
-                },
-            )
-            rows = result.fetchall()
-
-        # Reuse VectorHit; store node_id in dataset_urn field for consistency
-        return [VectorHit(dataset_urn=row.node_id, score=float(row.score)) for row in rows]
-    except Exception:
-        logger.warning("ontogen_node_embedding_search_error", exc_info=True)
-        return []
-
-
 async def _upsert_node_embedding(
     vector: PgVectorManager,
     node_id: str,
@@ -1670,6 +1743,85 @@ async def _upsert_node_embedding(
                     "node_id": node_id,
                     "embedding": vector_literal,
                     "name": name,
+                    "status": status,
+                    "updated_at": datetime.now(tz=UTC).isoformat(),
+                },
+            )
+
+
+# ── pgvector helpers for edge_embeddings table ────────────────────────────────
+
+
+async def _upsert_edge_embedding(
+    vector: PgVectorManager,
+    edge_id: str,
+    embedding: list[float],
+    label: str,
+    status: str,
+) -> None:
+    """Upsert a row in edge_embeddings for *edge_id*."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    vector_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+    sql = text(
+        """
+        INSERT INTO dataspoke.edge_embeddings (edge_id, embedding, label, status, updated_at)
+        VALUES (:edge_id, :embedding::vector, :label, :status, :updated_at)
+        ON CONFLICT (edge_id) DO UPDATE SET
+            embedding  = EXCLUDED.embedding,
+            label      = EXCLUDED.label,
+            status     = EXCLUDED.status,
+            updated_at = EXCLUDED.updated_at
+        """
+    )
+    async with vector._session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sql,
+                {
+                    "edge_id": edge_id,
+                    "embedding": vector_literal,
+                    "label": label,
+                    "status": status,
+                    "updated_at": datetime.now(tz=UTC).isoformat(),
+                },
+            )
+
+
+# ── pgvector helpers for triple_embeddings table ──────────────────────────────
+
+
+async def _upsert_triple_embedding(
+    vector: PgVectorManager,
+    triple_id: str,
+    embedding: list[float],
+    status: str,
+) -> None:
+    """Upsert a row in triple_embeddings for *triple_id*."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    vector_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+    sql = text(
+        """
+        INSERT INTO dataspoke.triple_embeddings (triple_id, embedding, status, updated_at)
+        VALUES (:triple_id, :embedding::vector, :status, :updated_at)
+        ON CONFLICT (triple_id) DO UPDATE SET
+            embedding  = EXCLUDED.embedding,
+            status     = EXCLUDED.status,
+            updated_at = EXCLUDED.updated_at
+        """
+    )
+    async with vector._session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sql,
+                {
+                    "triple_id": triple_id,
+                    "embedding": vector_literal,
                     "status": status,
                     "updated_at": datetime.now(tz=UTC).isoformat(),
                 },

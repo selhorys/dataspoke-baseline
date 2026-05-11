@@ -40,15 +40,30 @@ from src.shared.vector.client import PgVectorManager
 
 
 def test_make_llm_returns_stub_in_test_mode(monkeypatch) -> None:
-    """make_llm() returns StubLLMClient when DATASPOKE_TEST_MODE=true.
+    """make_llm() returns StubLLMClient when test_mode=true and test_llm_real=false.
 
     spec: TESTING.md §Test-Mode Stubs — make_llm() → StubLLMClient in test mode.
+    spec: BACKEND_LLM.md §Test Mode — stub when test_mode and not test_llm_real.
     """
     monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
+    monkeypatch.setattr("src.shared.settings.settings.test_llm_real", False)
     result = make_llm()
     assert isinstance(result, StubLLMClient), (
         f"Expected StubLLMClient in test mode, got {type(result).__name__}. "
         "spec: TESTING.md §Test-Mode Stubs."
+    )
+
+
+def test_make_llm_returns_real_client_when_test_llm_real(monkeypatch) -> None:
+    """make_llm() returns LLMClient when test_mode=true but test_llm_real=true.
+
+    spec: BACKEND_LLM.md §Test Mode — DATASPOKE_TEST_LLM_REAL=true bypasses stub.
+    """
+    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
+    monkeypatch.setattr("src.shared.settings.settings.test_llm_real", True)
+    result = make_llm()
+    assert isinstance(result, LLMClient), (
+        f"Expected real LLMClient when test_llm_real=true, got {type(result).__name__}."
     )
 
 
@@ -58,6 +73,7 @@ def test_make_llm_returns_real_client_outside_test_mode(monkeypatch) -> None:
     spec: TESTING.md §Test-Mode Stubs — real LLM outside test mode.
     """
     monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
+    monkeypatch.setattr("src.shared.settings.settings.test_llm_real", False)
     result = make_llm()
     assert isinstance(result, LLMClient), (
         f"Expected LLMClient outside test mode, got {type(result).__name__}."

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.backend.ontogen.debate_models import DebateResult
 from src.backend.ontogen.service import OntogenRunSummary, OntogenService
 from src.shared.db.models import Event, OntogenEdge, OntogenNode, OntogenTriple
 from src.shared.events import ONTOGEN_RUN_COMPLETE
@@ -322,10 +323,16 @@ async def test_run_allows_dry_run_when_disabled(
     ])
 
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
-    llm.complete_json = AsyncMock(return_value={"nodes": [], "edges": [], "triples": []})
-    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
 
-    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
+    debate_stub = DebateResult(
+        payload={"nodes": [], "edges": [], "triples": []},
+        transcript={"turns_completed": 1, "outcome": "accept", "final_reviewer_verdict": "accept",
+                    "rag_anchors": [], "history": [], "producer_iterations": 1,
+                    "producer_errors_dropped": 0, "item_verdicts": []},
+        outcome="accept",
+    )
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)):
         summary = await svc.run(dry_run=True)
 
     assert isinstance(summary, OntogenRunSummary)
@@ -378,11 +385,15 @@ async def test_run_dry_run_returns_summary_no_db_writes(
     # DataHub enumerate_datasets
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
-    # LLM
-    llm.complete_json = AsyncMock(return_value={"nodes": [], "edges": [], "triples": []})
-    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
-
-    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
+    debate_stub = DebateResult(
+        payload={"nodes": [], "edges": [], "triples": []},
+        transcript={"turns_completed": 1, "outcome": "accept", "final_reviewer_verdict": "accept",
+                    "rag_anchors": [], "history": [], "producer_iterations": 1,
+                    "producer_errors_dropped": 0, "item_verdicts": []},
+        outcome="accept",
+    )
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)):
         summary = await svc.run(dry_run=True)
 
     assert isinstance(summary, OntogenRunSummary)
@@ -459,10 +470,15 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
     # Empty dataset enumeration → empty dataset_urns and empty unresolved_urns
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
-    llm.complete_json = AsyncMock(return_value={"nodes": [], "edges": [], "triples": []})
-    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
-
-    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
+    debate_stub = DebateResult(
+        payload={"nodes": [], "edges": [], "triples": []},
+        transcript={"turns_completed": 1, "outcome": "accept", "final_reviewer_verdict": "accept",
+                    "rag_anchors": [], "history": [], "producer_iterations": 1,
+                    "producer_errors_dropped": 0, "item_verdicts": []},
+        outcome="accept",
+    )
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)):
         summary = await svc.run(dry_run=False)
 
     assert isinstance(summary, OntogenRunSummary)
@@ -797,39 +813,28 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
 
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
-    # complete_with_tools returns LoopResult with 2 iterations and one SLUG_FORMAT error.
-    # The payload has one node with a valid Pydantic shape (name present) but id="Order"
-    # which passes Pydantic (no length issue) but would fire SLUG_FORMAT in the semantic
-    # validator. The final_errors list signals what was wrong after the loop exhausted.
-    final_errors_raw = [
-        {"path": "nodes[0].id", "code": "SLUG_FORMAT", "message": "nodes[0].id does not match ^[a-z0-9][a-z0-9_-]*$: 'Order'"}
-    ]
-    loop_result = LoopResult(
-        payload={
-            "nodes": [
-                {
-                    "name": "Order",
-                    "id": "Order",          # uppercase — passes Pydantic, fails SLUG_FORMAT
-                    "confidence_score": 0.9,
-                    "dataset_urns": [],     # empty urns — MISSING_DATASET_URNS would fire too,
-                                            # but we only assert on the final_errors supplied
-                }
-            ],
-            "edges": [],
-            "triples": [],
+    # DebateResult transcript carries producer_iterations=2 and producer_errors_dropped=1,
+    # which service.py writes into the RUN_COMPLETE event detail as validation_iterations
+    # and validation_errors_dropped.
+    # Spec: BACKEND.md §LLM Inference Loop — producer inner-loop telemetry is surfaced
+    # via debate_result.transcript["producer_iterations"] / ["producer_errors_dropped"].
+    debate_stub = DebateResult(
+        payload={"nodes": [], "edges": [], "triples": []},
+        transcript={
+            "turns_completed": 2,
+            "outcome": "accept",
+            "final_reviewer_verdict": "accept",
+            "rag_anchors": [],
+            "history": [],
+            "producer_iterations": 2,
+            "producer_errors_dropped": 1,
+            "item_verdicts": [],
         },
-        trace=LoopTrace(
-            iterations=2,
-            errors_per_iter=[final_errors_raw, final_errors_raw],
-            final_errors=final_errors_raw,  # one SLUG_FORMAT error → partition drops 1 row
-        ),
+        outcome="accept",
     )
-    llm.complete_with_tools = AsyncMock(return_value=loop_result)
-    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
-
-    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
-        with patch("src.backend.ontogen.service.build_ontogen_validate_tool", return_value=MagicMock()):
-            summary = await svc.run(dry_run=True)
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)):
+        summary = await svc.run(dry_run=True)
 
     assert isinstance(summary, OntogenRunSummary)
 

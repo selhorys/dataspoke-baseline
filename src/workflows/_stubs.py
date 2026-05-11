@@ -67,6 +67,15 @@ class StubLLMClient:
         max_iterations: int = 3,
         temperature: float = 0.0,
     ) -> LoopResult:
+        if success_tool_name == "ontogen_review":
+            return LoopResult(
+                payload={
+                    "overall_verdict": "accept",
+                    "item_verdicts": [],
+                    "summary": "stub-accept",
+                },
+                trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),
+            )
         return LoopResult(
             payload=_minimal_dict_for_schema(schema),
             trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),

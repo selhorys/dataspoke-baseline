@@ -16,6 +16,7 @@ from src.shared.db.models import (
     DatasetNodeMap,
     DatasetRegistry,
     DepartmentMapping,
+    EdgeEmbedding,
     Event,
     IngestionConfig,
     MetagenConfig,
@@ -29,6 +30,7 @@ from src.shared.db.models import (
     OntogenSeed,
     OntogenTriple,
     OverviewConfig,
+    TripleEmbedding,
     ValidationConfig,
     ValidationResult,
 )
@@ -52,6 +54,8 @@ ALL_MODELS = [
     OntogenTriple,
     DatasetNodeMap,
     NodeEmbedding,
+    EdgeEmbedding,
+    TripleEmbedding,
 ]
 
 EXPECTED_TABLES = {
@@ -73,6 +77,8 @@ EXPECTED_TABLES = {
     "ontogen_triples",
     "dataset_node_map",
     "node_embeddings",
+    "edge_embeddings",
+    "triple_embeddings",
 }
 
 

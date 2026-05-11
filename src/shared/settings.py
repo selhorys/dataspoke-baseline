@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o"
     ontogen_llm_max_iterations: int = Field(default=3, ge=1, le=20)
 
+    # Ontogen adversarial debate
+    ontogen_debate_max_turns: int = Field(default=4, ge=2, le=10)
+    ontogen_debate_rag_k: int = Field(default=5, ge=0, le=20)
+    ontogen_debate_reviewer_model: str | None = None
+
     # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
     # in ``src/workflows/_common.py`` return stub implementations instead of
     # real clients for LLM, pgvector, Redis (cache), and Notification.  DataHub
@@ -82,5 +87,6 @@ class Settings(BaseSettings):
     # ``DATASPOKE_TEST_MODE=true`` before starting the server.
     # See ``src/workflows/_stubs.py`` for stub behavior details.
     test_mode: bool = False
+    test_llm_real: bool = False
 
 settings = Settings()

@@ -379,6 +379,10 @@ class OntogenEdge(Base):
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
+    embedding: Mapped["EdgeEmbedding | None"] = relationship(
+        "EdgeEmbedding", back_populates="edge", uselist=False
+    )
+
 
 # ── ontogen_triples ───────────────────────────────────────────────────────────
 
@@ -422,6 +426,9 @@ class OntogenTriple(Base):
     edge: Mapped["OntogenEdge"] = relationship("OntogenEdge", foreign_keys=[edge_id])
     object_node: Mapped["OntogenNode"] = relationship(
         "OntogenNode", foreign_keys=[object_node_id]
+    )
+    embedding: Mapped["TripleEmbedding | None"] = relationship(
+        "TripleEmbedding", back_populates="triple", uselist=False
     )
 
 
@@ -473,3 +480,42 @@ class NodeEmbedding(Base):
     )
 
     node: Mapped["OntogenNode"] = relationship("OntogenNode", back_populates="embedding")
+
+
+# ── edge_embeddings (pgvector) ────────────────────────────────────────────────
+
+
+class EdgeEmbedding(Base):
+    __tablename__ = "edge_embeddings"
+    __table_args__ = {"schema": SCHEMA}
+
+    edge_id: Mapped[str] = mapped_column(
+        Text, ForeignKey(f"{SCHEMA}.ontogen_edges.id"), primary_key=True
+    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+    edge: Mapped["OntogenEdge"] = relationship("OntogenEdge", back_populates="embedding")
+
+
+# ── triple_embeddings (pgvector) ──────────────────────────────────────────────
+
+
+class TripleEmbedding(Base):
+    __tablename__ = "triple_embeddings"
+    __table_args__ = {"schema": SCHEMA}
+
+    triple_id: Mapped[str] = mapped_column(
+        Text, ForeignKey(f"{SCHEMA}.ontogen_triples.id"), primary_key=True
+    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+    triple: Mapped["OntogenTriple"] = relationship("OntogenTriple", back_populates="embedding")

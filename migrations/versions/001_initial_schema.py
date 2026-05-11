@@ -29,6 +29,10 @@ DATASET_EMBEDDINGS_TABLE = "dataset_embeddings"
 DATASET_EMBEDDINGS_HNSW_INDEX = "dataset_embeddings_embedding_hnsw_idx"
 NODE_EMBEDDINGS_TABLE = "node_embeddings"
 NODE_EMBEDDINGS_HNSW_INDEX = "node_embeddings_embedding_hnsw_idx"
+EDGE_EMBEDDINGS_TABLE = "edge_embeddings"
+EDGE_EMBEDDINGS_HNSW_INDEX = "edge_embeddings_embedding_hnsw_idx"
+TRIPLE_EMBEDDINGS_TABLE = "triple_embeddings"
+TRIPLE_EMBEDDINGS_HNSW_INDEX = "triple_embeddings_embedding_hnsw_idx"
 
 
 def upgrade() -> None:
@@ -419,6 +423,61 @@ def upgrade() -> None:
     op.execute(
         f"CREATE INDEX {NODE_EMBEDDINGS_HNSW_INDEX} "
         f"ON {SCHEMA}.{NODE_EMBEDDINGS_TABLE} "
+        f"USING hnsw (embedding vector_cosine_ops)"
+    )
+
+    # ── edge_embeddings (pgvector) ───────────────────────────────────────
+    op.create_table(
+        EDGE_EMBEDDINGS_TABLE,
+        sa.Column(
+            "edge_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_edges.id"),
+            primary_key=True,
+        ),
+        sa.Column("label", sa.Text(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{EDGE_EMBEDDINGS_TABLE} "
+        f"ADD COLUMN embedding vector({EMBEDDING_DIMENSION}) NOT NULL "
+        f"DEFAULT array_fill(0, ARRAY[{EMBEDDING_DIMENSION}])::vector({EMBEDDING_DIMENSION})"
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{EDGE_EMBEDDINGS_TABLE} ALTER COLUMN embedding DROP DEFAULT"
+    )
+    op.execute(
+        f"CREATE INDEX {EDGE_EMBEDDINGS_HNSW_INDEX} "
+        f"ON {SCHEMA}.{EDGE_EMBEDDINGS_TABLE} "
+        f"USING hnsw (embedding vector_cosine_ops)"
+    )
+
+    # ── triple_embeddings (pgvector) ─────────────────────────────────────
+    op.create_table(
+        TRIPLE_EMBEDDINGS_TABLE,
+        sa.Column(
+            "triple_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.ontogen_triples.id"),
+            primary_key=True,
+        ),
+        sa.Column("status", sa.Text(), nullable=False, server_default="pending_review"),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{TRIPLE_EMBEDDINGS_TABLE} "
+        f"ADD COLUMN embedding vector({EMBEDDING_DIMENSION}) NOT NULL "
+        f"DEFAULT array_fill(0, ARRAY[{EMBEDDING_DIMENSION}])::vector({EMBEDDING_DIMENSION})"
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{TRIPLE_EMBEDDINGS_TABLE} ALTER COLUMN embedding DROP DEFAULT"
+    )
+    op.execute(
+        f"CREATE INDEX {TRIPLE_EMBEDDINGS_HNSW_INDEX} "
+        f"ON {SCHEMA}.{TRIPLE_EMBEDDINGS_TABLE} "
         f"USING hnsw (embedding vector_cosine_ops)"
     )
 

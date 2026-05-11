@@ -16,6 +16,13 @@ Tests in this module:
     assert 409 ONTOGEN_DISABLED.
   - test_uc3_review_reject: Seed pending node, POST review verdict=reject, assert
     status='rejected'.
+  - test_uc3_debate_smoke_under_stub: POST real run under stub mode, assert the debate
+    code path runs without error (returns 200, correct OntogenRunSummary shape). Stub
+    Producer returns empty payload so no rows are persisted; per-row evidence assertions
+    fire only when rows happen to be present. Full per-row transcript assertions live in
+    test_uc3_debate_real_when_test_llm_real.
+  - test_uc3_debate_real_when_test_llm_real: Skipped when DATASPOKE_TEST_LLM_REAL=false.
+    When true, fires a real LLM run and asserts debate transcript content.
 """
 # spec: USE_CASE_en.md §UC3
 
@@ -25,6 +32,8 @@ import uuid
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TCH002
+
+from src.shared.settings import settings
 
 # Declare fixture dependencies so module_dummy_data seeds all schemas + topics for
 # cross-dataset ontology inference. spec: TESTING.md §Per-Module Dummy-Data Reset
@@ -693,3 +702,293 @@ async def test_uc3_review_reject(
 
 # UC3 read-only boundary is enforced structurally (no DataHub emit code paths in review
 # handlers per `src/backend/ontogen/service.py`); regression coverage lives in unit tests.
+
+
+# ── Adversarial debate transcript tests ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_uc3_debate_smoke_under_stub(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Debate code path runs without error under stub mode; OntogenRunSummary shape is correct.
+
+    Under stub mode (DATASPOKE_TEST_MODE=true, DATASPOKE_TEST_LLM_REAL=false):
+    - Stub Producer returns an empty payload (nodes/edges/triples=[]).
+    - Stub Reviewer returns overall_verdict='accept' on turn 1.
+    - Debate terminates with outcome='accept' and turns_completed=2.
+    - No rows are persisted because the stub Producer emits an empty payload.
+
+    This test verifies the debate code path is wired correctly and returns 200 with the
+    correct OntogenRunSummary shape. Per-row evidence.debate assertions serve as
+    defense-in-depth — they fire correctly when rows happen to be present, but the stub
+    Producer's empty payload prevents new row persistence under default test mode.
+
+    NOTE: Per-row transcript content (evidence.debate keys and values for real LLM output)
+    is asserted in test_uc3_debate_real_when_test_llm_real, not here, because the stub
+    Producer's empty payload prevents new row persistence under default test mode.
+
+    Steps mirror USE_CASE_en.md §UC3 §Debate transcript:
+      1. PUT conf (is_enabled=True, dataset_filter)
+      2. POST seed (Markdown)
+      3. POST run (no dry_run) — real run under stub mode
+      4. GET result/node — if any rows returned, verify evidence.debate shape
+      5. Cleanup: DELETE seed, PATCH conf disabled
+
+    Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
+    — debate transcript stored in evidence JSONB with keys:
+      turns_completed, outcome, final_reviewer_verdict, rag_anchors, history.
+    Spec: BACKEND_LLM.md §Test Mode — stub Reviewer accepts on turn 1; stub Producer
+    returns empty output so no rows are persisted under default test mode.
+    """
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    seed_url = "/api/v1/spoke/common/ontogen/attr/seed"
+    seed_id: str | None = None
+
+    try:
+        # ── Step 1: PUT conf ──────────────────────────────────────────────────
+        # spec: USE_CASE_en.md §UC3 L385-L398
+        put_conf_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]},
+            },
+        )
+        assert put_conf_resp.status_code in (200, 201), (
+            f"PUT conf failed: {put_conf_resp.status_code} {put_conf_resp.text}"
+        )
+
+        # ── Step 2: POST seed ─────────────────────────────────────────────────
+        # spec: USE_CASE_en.md §UC3 L400-L409
+        seed_md = (
+            "# Imazon Bookstore Domain\n\n"
+            "Imazon sells books. Key concepts: Title, Edition, Order, Customer."
+        )
+        create_seed_resp = await api_client.post(
+            seed_url,
+            headers={**admin_headers, "content-type": "text/markdown"},
+            content=seed_md.encode(),
+        )
+        assert create_seed_resp.status_code == 201, (
+            f"POST seed failed: {create_seed_resp.status_code} {create_seed_resp.text}"
+        )
+        seed_id = create_seed_resp.json()["seed_id"]
+
+        # ── Step 3: POST real run ─────────────────────────────────────────────
+        # spec: USE_CASE_en.md §UC3 — non-dry-run persists rows
+        # spec: BACKEND_LLM.md §Adversarial Debate Framework — debate runs unconditionally
+        run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run",
+            headers=admin_headers,
+        )
+        assert run_resp.status_code == 200, (
+            f"POST run failed: {run_resp.status_code} {run_resp.text}. "
+            "spec: USE_CASE_en.md §UC3 — method/run with is_enabled=True returns 200"
+        )
+        run_body = run_resp.json()
+
+        # OntogenRunSummary shape must be present regardless of LLM mode
+        # spec: USE_CASE_en.md §UC3 — OntogenRunSummary: status, dry_run, counts, unresolved_urns
+        assert "status" in run_body and isinstance(run_body["status"], str), (
+            "OntogenRunSummary missing 'status'. spec: USE_CASE_en.md §UC3"
+        )
+        actual_dry_run = run_body.get("dry_run")
+        assert actual_dry_run is False, (
+            f"OntogenRunSummary dry_run must be False on real run; got {actual_dry_run!r}. "
+            "spec: USE_CASE_en.md §UC3"
+        )
+        assert isinstance(run_body.get("counts"), dict), (
+            "OntogenRunSummary missing 'counts' (dict). spec: USE_CASE_en.md §UC3"
+        )
+
+        # ── Step 4: GET result/node — assert debate shape on any persisted rows ──
+        # spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
+        node_resp = await api_client.get(
+            "/api/v1/spoke/common/ontogen/result/node?offset=0&limit=10",
+            headers=admin_headers,
+        )
+        assert node_resp.status_code == 200, (
+            f"GET result/node failed: {node_resp.status_code}"
+        )
+        nodes = node_resp.json().get("nodes", [])
+
+        # Under stub mode: Producer returns empty → no rows persisted.
+        # Soft assertion: if any rows are present, verify evidence.debate shape.
+        # spec: BACKEND_LLM.md §Evidence shape
+        for node in nodes:
+            evidence = node.get("evidence") or {}
+            debate = evidence.get("debate")
+            assert debate is not None, (
+                f"Node {node.get('id')!r} evidence missing 'debate' key. "
+                "spec: BACKEND_LLM.md §Evidence shape — debate key required in evidence JSONB"
+            )
+            # spec: §Evidence shape — required top-level keys
+            for key in ("turns_completed", "outcome", "final_reviewer_verdict",
+                        "rag_anchors", "history"):
+                assert key in debate, (
+                    f"evidence.debate for node {node.get('id')!r} missing key {key!r}. "
+                    f"spec: BACKEND_LLM.md §Evidence shape"
+                )
+            # spec: §Termination — outcome must be one of the three canonical values
+            assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
+                f"evidence.debate.outcome must be a canonical value; "
+                f"got {debate['outcome']!r}. "
+                "spec: BACKEND_LLM.md §Termination"
+            )
+            # spec: §Loop shape — turns_completed ≥ 2 (at least 1 Producer + 1 Reviewer)
+            assert isinstance(debate["turns_completed"], int) and debate["turns_completed"] >= 2, (
+                f"evidence.debate.turns_completed must be int ≥ 2; "
+                f"got {debate['turns_completed']!r}. "
+                "spec: BACKEND_LLM.md §Loop shape"
+            )
+            assert isinstance(debate["history"], list) and len(debate["history"]) >= 1, (
+                f"evidence.debate.history must be a non-empty list; "
+                f"got {debate['history']!r}. "
+                "spec: BACKEND_LLM.md §Evidence shape"
+            )
+
+    finally:
+        # ── Step 5: Cleanup ───────────────────────────────────────────────────
+        if seed_id is not None:
+            await api_client.delete(f"{seed_url}/{seed_id}", headers=admin_headers)
+        await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not settings.test_llm_real, reason="requires DATASPOKE_TEST_LLM_REAL=true")
+async def test_uc3_debate_real_when_test_llm_real(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """When DATASPOKE_TEST_LLM_REAL=true, a real LLM run fires and transcript is non-trivial.
+
+    Skipped automatically when DATASPOKE_TEST_LLM_REAL=false (default CI behaviour);
+    surfaces in pytest --collect-only before test setup begins.
+
+    Steps mirror USE_CASE_en.md §UC3 §Debate transcript (real-LLM variant):
+      1. PUT conf (is_enabled=True)
+      2. POST seed
+      3. POST run (no dry_run)
+      4. GET result/{node,edge,triple} — assert for each persisted row:
+         - evidence.debate.outcome ∈ {accept, turns_exhausted, cycle_detected}
+         - evidence.debate.turns_completed ≥ 2
+         - evidence.debate.history is a non-empty list with actor entries
+      5. Cleanup
+
+    Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
+    Spec: BACKEND_LLM.md §Test Mode — DATASPOKE_TEST_LLM_REAL=true bypasses stub;
+    real Gemini calls execute for Producer and Reviewer.
+    """
+
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    seed_url = "/api/v1/spoke/common/ontogen/attr/seed"
+    seed_id: str | None = None
+
+    try:
+        # ── Step 1: PUT conf ──────────────────────────────────────────────────
+        put_conf_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]},
+            },
+        )
+        assert put_conf_resp.status_code in (200, 201), (
+            f"PUT conf failed: {put_conf_resp.status_code} {put_conf_resp.text}"
+        )
+
+        # ── Step 2: POST seed ─────────────────────────────────────────────────
+        seed_md = (
+            "# Imazon Bookstore Domain\n\n"
+            "Imazon sells books online. Key concepts: Title (keyed by ISBN-13), "
+            "Edition (format variant of a Title), Order, OrderLine, Customer, "
+            "Rating, CarrierEvent. Prefer business-domain names over table names."
+        )
+        create_seed_resp = await api_client.post(
+            seed_url,
+            headers={**admin_headers, "content-type": "text/markdown"},
+            content=seed_md.encode(),
+        )
+        assert create_seed_resp.status_code == 201, (
+            f"POST seed failed: {create_seed_resp.status_code} {create_seed_resp.text}"
+        )
+        seed_id = create_seed_resp.json()["seed_id"]
+
+        # ── Step 3: POST real run ─────────────────────────────────────────────
+        run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run",
+            headers=admin_headers,
+        )
+        assert run_resp.status_code == 200, (
+            f"POST real run failed: {run_resp.status_code} {run_resp.text}. "
+            "spec: USE_CASE_en.md §UC3"
+        )
+
+        # ── Step 4: Verify debate transcript on every persisted row ───────────
+        # spec: BACKEND_LLM.md §Evidence shape — debate key required on each row
+        any_rows_found = False
+        for result_type, list_key in [("node", "nodes"), ("edge", "edges"), ("triple", "triples")]:
+            list_resp = await api_client.get(
+                f"/api/v1/spoke/common/ontogen/result/{result_type}?offset=0&limit=20",
+                headers=admin_headers,
+            )
+            assert list_resp.status_code == 200, (
+                f"GET result/{result_type} failed: {list_resp.status_code}"
+            )
+            rows = list_resp.json().get(list_key, [])
+            for row in rows:
+                any_rows_found = True
+                evidence = row.get("evidence") or {}
+                debate = evidence.get("debate")
+                assert debate is not None, (
+                    f"{result_type} {row.get('id')!r} evidence missing 'debate'. "
+                    "spec: BACKEND_LLM.md §Evidence shape"
+                )
+                # spec: §Termination — outcome is one of the canonical values
+                assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
+                    f"{result_type} {row.get('id')!r} debate.outcome invalid: "
+                    f"{debate['outcome']!r}. "
+                    "spec: BACKEND_LLM.md §Termination"
+                )
+                # spec: §Loop shape — at least 1 Producer + 1 Reviewer turn
+                tc = debate["turns_completed"]
+                assert isinstance(tc, int) and tc >= 2, (
+                    f"{result_type} {row.get('id')!r} turns_completed must be ≥ 2; "
+                    f"got {tc!r}. spec: BACKEND_LLM.md §Loop shape"
+                )
+                # spec: §Evidence shape — history non-empty with actor entries
+                history = debate.get("history", [])
+                assert len(history) >= 2, (
+                    f"{result_type} {row.get('id')!r} history must have ≥ 2 entries "
+                    f"(at least 1 Producer + 1 Reviewer); got {len(history)}. "
+                    "spec: BACKEND_LLM.md §Evidence shape §history"
+                )
+                actors = {e.get("actor") for e in history}
+                assert "producer" in actors, (
+                    f"{result_type} {row.get('id')!r} history must include a producer turn. "
+                    "spec: BACKEND_LLM.md §Evidence shape"
+                )
+                assert "reviewer" in actors, (
+                    f"{result_type} {row.get('id')!r} history must include a reviewer turn. "
+                    "spec: BACKEND_LLM.md §Evidence shape"
+                )
+
+        # Real LLM must produce at least some rows — empty output signals a prompt/filter
+        # regression that must surface as FAILED, not SKIPPED.
+        # spec: BACKEND_LLM.md §Test Mode — DATASPOKE_TEST_LLM_REAL=true implies real output
+        assert any_rows_found, (
+            "Real LLM run produced zero rows — verify prompt/filter pipeline. "
+            "spec: BACKEND_LLM.md §Test Mode — real LLM must persist ≥1 row"
+        )
+
+    finally:
+        # ── Step 5: Cleanup ───────────────────────────────────────────────────
+        if seed_id is not None:
+            await api_client.delete(f"{seed_url}/{seed_id}", headers=admin_headers)
+        await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})

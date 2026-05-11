@@ -22,6 +22,12 @@
 #
 # Note: DATASPOKE_TEST_MODE must be set in the pytest process as well —
 # the API pod has it baked in via values-dev.yaml.
+#
+# Live-LLM exploration: set DATASPOKE_TEST_LLM_REAL=true on the pod (helm
+# `--set api.testLlmReal=true` or kubectl env override) and in the pytest
+# process to bypass StubLLMClient and hit the real LLM. Used by
+# /test-api-wired-manual for live ontogen debate inspection. Keep false
+# for CI / batch test runs.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 

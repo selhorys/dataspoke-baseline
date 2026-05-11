@@ -71,15 +71,22 @@ def make_cache() -> RedisClient:
     return RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
 
 
-def make_llm() -> LLMClient:
-    if settings.test_mode:
+def make_llm(model_override: str | None = None) -> LLMClient:
+    """Return an LLMClient honouring test-mode stubbing.
+
+    ``model_override`` replaces ``settings.llm_model`` while keeping the
+    same provider / api_key.  Stubbing still applies when test_mode is active
+    — the override is silently ignored in stub mode because the stub is
+    model-agnostic.
+    """
+    if settings.test_mode and not settings.test_llm_real:
         from src.workflows._stubs import StubLLMClient
 
         return StubLLMClient()  # type: ignore[return-value]
     return LLMClient(
         provider=settings.llm_provider,
         api_key=settings.llm_api_key,
-        model=settings.llm_model,
+        model=model_override or settings.llm_model,
     )
 
 

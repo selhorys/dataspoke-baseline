@@ -246,7 +246,7 @@ The debate transcript is stored in the existing `evidence` JSONB column of
   "source": "ontogen-run",
   "run_id": "ru_<iso8601-utc>_<short>",
   "debate": {
-    "turns_completed": 3,
+    "turns_completed": 4,
     "outcome": "accept",
     "final_reviewer_verdict": "accept",
     "rag_anchors": [

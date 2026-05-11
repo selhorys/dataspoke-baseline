@@ -59,6 +59,8 @@ spec:
           env:
             - name: DATASPOKE_TEST_MODE
               value: {{ .Values.api.testMode | default false | quote }}
+            - name: DATASPOKE_TEST_LLM_REAL
+              value: {{ .Values.api.testLlmReal | default false | quote }}
             - name: DATASPOKE_INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef:
