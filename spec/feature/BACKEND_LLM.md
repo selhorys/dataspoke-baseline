@@ -1,8 +1,8 @@
 # Backend LLM Pipeline
 
 Cross-cutting patterns for every LLM call DataSpoke makes — the bounded ReAct
-loop, the per-service validator tools, the opt-in adversarial debate layer,
-and the test-mode toggles. Consumed by the Ontology Generation Service (UC3)
+loop, the per-service validator tools, the adversarial debate layer, and
+the test-mode toggles. Consumed by the Ontology Generation Service (UC3)
 and the Metadata Generation Service (UC4).
 
 ## Table of Contents
@@ -23,7 +23,7 @@ and the Metadata Generation Service (UC4).
 |---|---|
 | Loop semantics for structured-output LLM calls (UC3 ontogen, UC4 metagen) | Provider-specific request shapes — LangChain owns those |
 | Per-service validator tool contracts and rule tables | Validator implementations — `src/backend/{service}/validator.py` |
-| Opt-in adversarial Producer/Reviewer debate layered on the inference loop | Single-call completions (e.g. ad-hoc summarisation) — no loop, no validator |
+| Adversarial Producer/Reviewer debate layered on the inference loop (UC3, always on) | Single-call completions (e.g. ad-hoc summarisation) — no loop, no validator |
 | Test-mode stubbing conventions for both Producer and Reviewer | Provider credential resolution — see `SECRET_RESOLUTION.md` |
 
 Single-call completions go through `LLMClient.complete` / `complete_json` /
@@ -105,11 +105,11 @@ adopts the inference loop.
 
 ## Adversarial Debate Framework
 
-Opt-in second loop layered on top of the inference loop. A **Reviewer** agent
-critiques the **Producer's** validated output and gates acceptance until both
-the deterministic validator and the Reviewer's adversarial verdict agree.
-Disabled by default; enable per-service via `DATASPOKE_ONTOGEN_DEBATE_ENABLED`
-(UC4 wiring deferred).
+Second loop layered on top of the inference loop. A **Reviewer** agent
+critiques the **Producer's** validated output and gates acceptance until
+both the deterministic validator and the Reviewer's adversarial verdict
+agree. Runs on every UC3 ontogen call; UC4 metagen wiring deferred (see
+§Open Questions).
 
 ### Loop shape
 
@@ -286,12 +286,13 @@ turns; the array is ordered oldest to newest.
 
 ### Wiring
 
-Branch on `settings.ontogen_debate_enabled` at the LLM-call site in
-`OntogenService._run_inner`. When enabled, replace the `complete_with_tools`
-call with a `run_debate` invocation that owns the Producer/Reviewer loop,
-RAG sampling, hash-cycle detection, and transcript assembly. The new logic
-lives in `src/backend/ontogen/debate.py`. The rest of `_run_inner`
-(enumeration, evidence gathering, persistence) is unchanged.
+`OntogenService._run_inner` invokes `run_debate(...)` at the LLM-call site
+unconditionally — there is no toggle to skip the Reviewer. `run_debate`
+owns the Producer/Reviewer loop, RAG sampling, hash-cycle detection, and
+transcript assembly; it lives in `src/backend/ontogen/debate.py`. The rest
+of `_run_inner` (enumeration, evidence gathering, persistence) is
+unchanged. The debate's per-turn LLM stubbing is governed by the test-mode
+env vars in §Test Mode below.
 
 ## Test Mode
 
@@ -339,7 +340,6 @@ class (`src/shared/settings.py`).
 | `DATASPOKE_LLM_API_KEY` | — | shared |
 | `DATASPOKE_ONTOGEN_LLM_MAX_ITERATIONS` | `3` | ontogen inference loop |
 | `DATASPOKE_METAGEN_LLM_MAX_ITERATIONS` | `3` | metagen inference loop |
-| `DATASPOKE_ONTOGEN_DEBATE_ENABLED` | `false` | ontogen debate |
 | `DATASPOKE_ONTOGEN_DEBATE_MAX_TURNS` | `4` | ontogen debate |
 | `DATASPOKE_ONTOGEN_DEBATE_RAG_K` | `5` | ontogen debate |
 | `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | ontogen debate |
