@@ -527,14 +527,28 @@ class OntogenService:
         run_nonce = secrets.token_hex(8)
         prompt = build_run_prompt(seeds_md, evidence_per_dataset, effective_prompt, nonce=run_nonce)
 
-        # Step 7: Load approved nodes/edges for reuse
-        approved_nodes = (
-            (await self._db.execute(select(OntogenNode).where(OntogenNode.status == "approved")))
+        # Step 7: Load approved + pending nodes/edges for reuse. Approved rows
+        # are the "carried-forward" ontology the new run can extend; pending
+        # rows from prior runs also count for direct-match reuse so the
+        # unique-name / unique-label DB constraints don't reject a re-proposal
+        # of the same business concept before the human reviewer has acted on
+        # the original pending row. Rejected rows are excluded so they aren't
+        # implicitly revived.
+        eligible_nodes = (
+            (await self._db.execute(
+                select(OntogenNode).where(
+                    OntogenNode.status.in_(["approved", "pending_review"])
+                )
+            ))
             .scalars()
             .all()
         )
-        approved_edges = (
-            (await self._db.execute(select(OntogenEdge).where(OntogenEdge.status == "approved")))
+        eligible_edges = (
+            (await self._db.execute(
+                select(OntogenEdge).where(
+                    OntogenEdge.status.in_(["approved", "pending_review"])
+                )
+            ))
             .scalars()
             .all()
         )
@@ -548,12 +562,25 @@ class OntogenService:
             .all()
         )
 
-        existing_node_ids: set[str] = {n.id for n in approved_nodes}
-        existing_edge_ids: set[str] = {e.id for e in approved_edges}
+        approved_nodes = [n for n in eligible_nodes if n.status == "approved"]
+        approved_edges = [e for e in eligible_edges if e.status == "approved"]
+
+        existing_node_ids: set[str] = {n.id for n in eligible_nodes}
+        existing_edge_ids: set[str] = {e.id for e in eligible_edges}
         existing_triple_ids: set[str] = {t.id for t in approved_triples}
 
-        # Edge label → id lookup for reuse
-        edge_label_to_id: dict[str, str] = {e.label: e.id for e in approved_edges}
+        # Name/label → id lookup for direct-match reuse (approved + pending).
+        # Approved entries shadow pending entries when both exist with the same
+        # name/label (shouldn't happen given the unique constraints, but is the
+        # safer precedence).
+        node_name_to_id: dict[str, str] = {
+            n.name: n.id for n in eligible_nodes if n.status == "pending_review"
+        }
+        node_name_to_id.update({n.name: n.id for n in approved_nodes})
+        edge_label_to_id: dict[str, str] = {
+            e.label: e.id for e in eligible_edges if e.status == "pending_review"
+        }
+        edge_label_to_id.update({e.label: e.id for e in approved_edges})
 
         # Step 8: Run adversarial Producer/Reviewer debate loop
         run_at_iso = datetime.now(tz=UTC).isoformat()
@@ -634,20 +661,29 @@ class OntogenService:
             # Fix #3: always re-slug from name regardless of LLM-supplied id
             final_id = _make_slug_id(name, all_known_ids)
 
-            # Try embedding-based reuse
-            reused_id: str | None = None
-            try:
-                embed_text = f"{name} {description}"
-                query_vec = await self._llm.embed(embed_text)
-                hits = await _search_node_embeddings(self._vector, query_vec, top_k=5)
-                if hits:
-                    reused_id = hits[0].dataset_urn  # dataset_urn stores node_id here
-            except Exception:
-                logger.warning(
-                    "ontogen_node_embedding_search_failed",
-                    extra={"node_name": name},
-                    exc_info=True,
-                )
+            # Direct-match reuse first — if a node with this exact name already
+            # exists (approved or pending), reuse its id. Cheaper than embedding
+            # search and avoids the unique_name DB-constraint violation that
+            # would otherwise fire when the LLM re-proposes a concept whose
+            # pending row from a prior run hasn't been reviewed yet.
+            reused_id: str | None = node_name_to_id.get(name)
+
+            # Fall back to embedding-based reuse for semantic matches across
+            # *different* names (e.g. "Customer" vs "Buyer"). Only approved
+            # rows are indexed, so this is a no-op for pending rows.
+            if reused_id is None:
+                try:
+                    embed_text = f"{name} {description}"
+                    query_vec = await self._llm.embed(embed_text)
+                    hits = await _search_node_embeddings(self._vector, query_vec, top_k=5)
+                    if hits:
+                        reused_id = hits[0].dataset_urn  # dataset_urn stores node_id here
+                except Exception:
+                    logger.warning(
+                        "ontogen_node_embedding_search_failed",
+                        extra={"node_name": name},
+                        exc_info=True,
+                    )
 
             if reused_id:
                 final_id = reused_id
@@ -823,7 +859,10 @@ class OntogenService:
             }
 
             if n["is_reuse"]:
-                # Approved node already exists; upsert DatasetNodeMap rows only
+                # An approved or pending node already exists with this name or
+                # by embedding-similarity. Leave its row content + evidence
+                # untouched; only refresh DatasetNodeMap so the new run's
+                # dataset coverage merges with whatever was there before.
                 await self._upsert_dataset_node_maps(
                     node_id, n.get("dataset_urns") or [], n["confidence_score"]
                 )
