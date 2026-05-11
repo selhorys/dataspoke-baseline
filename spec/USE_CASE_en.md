@@ -538,7 +538,7 @@ POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
 Approval marks the entry as approved in DataSpoke storage. The ontology graph
 lives in DataSpoke (PostgreSQL relational + pgvector).
 
-When `is_enabled=false`, non-dry-run calls to `method/run` return `409 ONTOGEN_DISABLED`. Dry-run (`?dry_run=true`) is always permitted regardless of `is_enabled`.
+When `is_enabled=false`, non-dry-run calls to `method/run` return `409 ONTOGEN_DISABLED`. Dry-run (`?dry_run=true`) is always permitted regardless of `is_enabled`. Dry-run records `ONTOGEN.RUN_COMPLETE` with `dry_run: true` in the event detail, same as real runs.
 
 ---
 
@@ -697,7 +697,7 @@ The team can then watch the proposal lifecycle:
 GET .../event/metagen
 ```
 
-When `is_enabled=false`, non-dry-run calls to `method/metagen/run` return `409 GENERATION_DISABLED`. Dry-run is always permitted regardless of `is_enabled`.
+When `is_enabled=false`, non-dry-run calls to `method/metagen/run` return `409 GENERATION_DISABLED`. Dry-run is always permitted regardless of `is_enabled`. Dry-run records `METAGEN.COMPLETE` with `dry_run: true` in the event detail, same as real runs.
 
 ---
 

@@ -654,11 +654,11 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METAGEN`, `ME
 |---|---|---|
 | `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | `POST method/ingestion/run` succeeds / errors |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
-| `METAGEN` (`dataset`) | `COMPLETE` | `POST method/metagen/run` succeeds |
+| `METAGEN` (`dataset`) | `COMPLETE` | `POST method/metagen/run` succeeds; recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id`, `result_id` (UUID on real-run, `null` on dry-run), `targets` (list mirroring the conf's `targets`), `dry_run` |
 | `METAGEN` (`dataset`) | `APPROVE` / `REJECT` | `PATCH attr/metagen/result/{id}` with `verdict: "approve"\|"reject"` |
 | `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds; payload carries `unresolved_urns` for any `dataset_filter.dataset_urns` entries that didn't resolve in DataHub |
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
-| `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` payload carries `unresolved_urns` (same shape as METRIC) |
+| `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `nodes_added/edges_added/triples_added` on real-run, `nodes_proposed/edges_proposed/triples_proposed` on dry-run), `dry_run` |
 | `NODE` / `EDGE` / `TRIPLE` (`node` / `edge` / `triple`) | `APPROVE` / `REJECT` | `POST ontogen/result/{type}/{id}/method/review` |
 
 ### Querying Events

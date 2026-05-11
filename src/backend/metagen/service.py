@@ -529,7 +529,18 @@ class MetagenService:
                 proposals[target] = None
 
         if dry_run:
-            # Return a synthetic record without persisting
+            # Emit METAGEN.COMPLETE before returning — dry-run is recorded same as real run
+            await self._record_event(
+                dataset_urn,
+                METAGEN_COMPLETE,
+                "success",
+                {
+                    "run_id": run_id_str,
+                    "result_id": None,
+                    "targets": config.targets,
+                    "dry_run": True,
+                },
+            )
             return MetagenResultRecord(
                 id=run_id_str,
                 dataset_urn=dataset_urn,
@@ -563,6 +574,7 @@ class MetagenService:
                 "run_id": run_id_str,
                 "result_id": str(result_row.id),
                 "targets": config.targets,
+                "dry_run": False,
             },
         )
         return _result_from_row(result_row)

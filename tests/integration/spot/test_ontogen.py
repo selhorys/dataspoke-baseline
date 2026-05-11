@@ -11,6 +11,8 @@ Concerns covered:
 - PATCH /spoke/common/ontogen/attr/seed/{seed_id} — replace seed body
 - DELETE /spoke/common/ontogen/attr/seed/{seed_id} — retire seed (204)
 - POST /spoke/common/ontogen/method/run — trigger run (dry_run query param)
+- POST /spoke/common/ontogen/method/run — dry-run emits ONTOGEN.RUN_COMPLETE with
+    dry_run=true in detail; counts match response body
 - POST /spoke/common/ontogen/method/run — dry-run with seeded documents exercises
     _fetch_documents_for_dataset evidence path (document relatedAssets filter)
 - GET /spoke/common/ontogen/result/node — list nodes (envelope)
@@ -21,7 +23,8 @@ Concerns covered:
 - POST /spoke/common/ontogen/result/edge/{edge_id}/method/review — approve edge
 - POST /spoke/common/ontogen/result/edge/{edge_id}/method/review — reject edge
 - POST /spoke/common/ontogen/result/triple/{triple_id}/method/review — approve triple
-- POST /spoke/common/ontogen/method/run — 409 ONTOGEN_DISABLED when is_enabled=False
+- POST /spoke/common/ontogen/method/run — 409 ONTOGEN_DISABLED when is_enabled=False;
+    no ONTOGEN.RUN_COMPLETE event emitted on rejected call
 - GET /spoke/common/ontogen/result/node/{id}/attr — confidence_score (float) and evidence (dict)
 
 NOTE: node_embeddings sync is verified at the DAG/run-level integration test, not on
@@ -41,6 +44,8 @@ Spec traceability:
 - spec/feature/BACKEND_SCHEMA.md §node_embeddings (pgvector)
 - spec/USE_CASE_en.md §UC3 §Inputs — document evidence read path
 - spec/USE_CASE_en.md L541 — ONTOGEN_DISABLED on non-dry run with is_enabled=False
+- spec/feature/BACKEND.md L661 — RUN_COMPLETE emitted for dry-run and non-dry-run;
+    dry_run flag in detail
 - spec/DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery filter
 - spec/DATAHUB_INTEGRATION.md L114 — UC3 direction is Read-only
 """
@@ -219,12 +224,26 @@ async def test_ontogen_run_dry_run(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /spoke/common/ontogen/method/run?dry_run=true returns OntogenRunSummary body.
+    """POST /spoke/common/ontogen/method/run?dry_run=true returns OntogenRunSummary body
+    and emits exactly one ONTOGEN.RUN_COMPLETE event with dry_run=true in detail.
 
     Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
     — ?dry_run=true evaluates steps 2–8 without persisting; returns OntogenRunSummary
     with status (str), dry_run (bool), unresolved_urns (list), counts (dict).
+    Spec: spec/feature/BACKEND.md L661 — RUN_COMPLETE recorded for both dry-run and
+    non-dry-run; dry_run flag in detail.
     """
+    event_url = "/api/v1/spoke/common/ontogen/event"
+
+    # Snapshot count of existing ONTOGEN.RUN_COMPLETE events before the POST
+    pre_resp = await api_client.get(
+        f"{event_url}?limit=100",
+        headers=admin_headers,
+    )
+    assert pre_resp.status_code == 200, pre_resp.text
+    pre_events = pre_resp.json()["events"]
+    pre_count = sum(1 for e in pre_events if e["event_type"] == "ONTOGEN.RUN_COMPLETE")
+
     resp = await api_client.post(
         "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
         headers=admin_headers,
@@ -238,6 +257,45 @@ async def test_ontogen_run_dry_run(
     assert "unresolved_urns" in body and isinstance(body["unresolved_urns"], list)
     assert "counts" in body and isinstance(body["counts"], dict)
     assert body["dry_run"] is True
+
+    # Assert exactly one new ONTOGEN.RUN_COMPLETE event was emitted
+    # spec: BACKEND.md L661 — RUN_COMPLETE recorded for dry-run; dry_run flag in detail
+    post_resp = await api_client.get(
+        f"{event_url}?limit=100",
+        headers=admin_headers,
+    )
+    assert post_resp.status_code == 200, post_resp.text
+    post_events = post_resp.json()["events"]
+    run_complete_events = [e for e in post_events if e["event_type"] == "ONTOGEN.RUN_COMPLETE"]
+    post_count = len(run_complete_events)
+
+    assert post_count == pre_count + 1, (
+        f"Expected exactly one new ONTOGEN.RUN_COMPLETE event after dry-run; "
+        f"pre_count={pre_count}, post_count={post_count}. "
+        "spec: BACKEND.md L661 — dry-run must emit RUN_COMPLETE"
+    )
+
+    # The newest event is first (ordered by occurred_at desc)
+    new_event = run_complete_events[0]
+    assert new_event["detail"].get("dry_run") is True, (
+        f"ONTOGEN.RUN_COMPLETE event detail must carry dry_run=true; "
+        f"got detail={new_event['detail']!r}. "
+        "spec: BACKEND.md L661 — dry_run flag in detail"
+    )
+    # counts in event detail must match the response body's counts field exactly
+    # spec: BACKEND.md L661 — RUN_COMPLETE payload carries counts
+    assert new_event["detail"].get("counts") == body["counts"], (
+        f"Event detail counts={new_event['detail'].get('counts')!r} must match "
+        f"response counts={body['counts']!r}. "
+        "spec: BACKEND.md L661 — event and response must agree on counts"
+    )
+    # unresolved_urns in event detail must match the response body's unresolved_urns
+    # spec: BACKEND.md L661 — unresolved_urns is part of the RUN_COMPLETE payload
+    assert new_event["detail"].get("unresolved_urns") == body["unresolved_urns"], (
+        f"Event detail unresolved_urns={new_event['detail'].get('unresolved_urns')!r} must "
+        f"match response unresolved_urns={body['unresolved_urns']!r}. "
+        "spec: BACKEND.md L661 — event and response must agree on unresolved_urns"
+    )
 
 
 @pytest.mark.asyncio
@@ -624,18 +682,21 @@ async def test_ontogen_triple_review_dependency_order(
 
 
 @pytest.mark.asyncio
-async def test_ontogen_run_disabled_returns_409(
+async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISABLED(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
     """POST /method/run (no dry_run) with is_enabled=False returns 409 ONTOGEN_DISABLED;
-    dry-run with the same conf returns 200.
+    dry-run with the same conf returns 200; no ONTOGEN.RUN_COMPLETE event on rejected run.
 
     spec: USE_CASE_en.md L541 — 'When is_enabled=false, non-dry-run calls to
     method/run return 409 ONTOGEN_DISABLED. Dry-run (?dry_run=true) is always
     permitted regardless of is_enabled.'
+    spec: BACKEND.md L661 — RUN_COMPLETE is emitted only when the run completes;
+    a rejected (409) call must not emit it.
     """
     conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    event_url = "/api/v1/spoke/common/ontogen/event"
 
     try:
         put_resp = await api_client.put(
@@ -651,6 +712,14 @@ async def test_ontogen_run_disabled_returns_409(
             f"PUT ontogen conf failed: {put_resp.status_code} {put_resp.text}"
         )
 
+        # Snapshot ONTOGEN.RUN_COMPLETE count before the rejected call
+        pre_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        assert pre_resp.status_code == 200, pre_resp.text
+        pre_run_complete_count = sum(
+            1 for e in pre_resp.json()["events"]
+            if e["event_type"] == "ONTOGEN.RUN_COMPLETE"
+        )
+
         run_resp = await api_client.post(
             "/api/v1/spoke/common/ontogen/method/run",
             headers=admin_headers,
@@ -664,6 +733,20 @@ async def test_ontogen_run_disabled_returns_409(
         assert body.get("error_code") == "ONTOGEN_DISABLED", (
             f"Expected error_code 'ONTOGEN_DISABLED'; got: {body}. "
             "spec: USE_CASE_en.md L541"
+        )
+
+        # Negative-parity: no ONTOGEN.RUN_COMPLETE event must have been emitted
+        # spec: BACKEND.md L661 — event is for completed runs only; rejected calls are not runs
+        post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        assert post_resp.status_code == 200, post_resp.text
+        post_run_complete_count = sum(
+            1 for e in post_resp.json()["events"]
+            if e["event_type"] == "ONTOGEN.RUN_COMPLETE"
+        )
+        assert post_run_complete_count == pre_run_complete_count, (
+            f"No new ONTOGEN.RUN_COMPLETE event must be emitted after a 409-rejected run; "
+            f"pre={pre_run_complete_count}, post={post_run_complete_count}. "
+            "spec: BACKEND.md L661"
         )
 
         # Dry-run must still succeed when is_enabled=False — disabled gate is

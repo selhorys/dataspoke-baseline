@@ -6,8 +6,11 @@ Concerns covered:
 - PUT /data/{urn}/attr/metagen/conf — create config (201)
 - PATCH /data/{urn}/attr/metagen/conf — partial update
 - DELETE /data/{urn}/attr/metagen/conf — remove config (204)
-- POST /data/{urn}/method/metagen/run — dry_run=true and dry_run=false
-- POST /data/{urn}/method/metagen/run — 409 GENERATION_DISABLED when is_enabled=False
+- POST /data/{urn}/method/metagen/run — dry_run=true emits METAGEN.COMPLETE with
+    dry_run=true; result_id=None in detail
+- POST /data/{urn}/method/metagen/run — dry_run=false (non-dry-run persisted path)
+- POST /data/{urn}/method/metagen/run — 409 GENERATION_DISABLED when is_enabled=False;
+    no METAGEN.COMPLETE event emitted on rejected call
 - GET /data/{urn}/attr/metagen/result — result list (paginated)
 - GET /data/{urn}/attr/metagen/result?latest=true — returns at most one result
 - PATCH /data/{urn}/attr/metagen/result/{result_id} — review (approve and reject)
@@ -20,6 +23,8 @@ Spec traceability:
 - spec/feature/BACKEND.md §Cross-data MD action types
 - spec/feature/BACKEND_SCHEMA.md §metagen_results
 - spec/USE_CASE_en.md L700 — GENERATION_DISABLED on non-dry run with is_enabled=False
+- spec/feature/BACKEND.md L657 — METAGEN.COMPLETE emitted for dry-run and non-dry-run;
+    dry_run flag in detail
 - spec/API.md L257 — ?latest=true returns most recent result row
 """
 
@@ -169,26 +174,37 @@ async def test_metagen_run_dry_run(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST method/metagen/run with dry_run=true returns MetagenRunResponse envelope.
+    """POST method/metagen/run with dry_run=true returns MetagenRunResponse envelope
+    and emits exactly one METAGEN.COMPLETE event with dry_run=true and result_id=None.
 
     Spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline
     — dry_run returns a synthetic MetagenResultRecord without persisting.
     MetagenRunResponse must contain id, dataset_urn, proposals.
+    Spec: spec/feature/BACKEND.md L657 — METAGEN.COMPLETE recorded for both dry-run and
+    non-dry-run; dry_run flag in detail; result_id is null for dry-run (no persisted row).
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
     base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
+    event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+    conf_targets = ["dataset.description"]
 
     # Ensure config exists
     await api_client.put(
         base_conf,
         headers=admin_headers,
         json={
-            "targets": ["dataset.description"],
+            "targets": conf_targets,
             "is_enabled": False,
             "schedule_tier": None,
             "owner": "spot-test@imazon.com",
         },
     )
+
+    # Snapshot count of METAGEN.COMPLETE events before the POST
+    pre_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+    assert pre_resp.status_code == 200, pre_resp.text
+    pre_events = pre_resp.json()["events"]
+    pre_count = sum(1 for e in pre_events if e["event_type"] == "METAGEN.COMPLETE")
 
     run_resp = await api_client.post(
         base_run,
@@ -202,6 +218,41 @@ async def test_metagen_run_dry_run(
     # Spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline
     assert "id" in body and "dataset_urn" in body and "proposals" in body
     assert body["dataset_urn"] == _TEST_URN
+
+    # Assert exactly one new METAGEN.COMPLETE event was emitted
+    # spec: BACKEND.md L657 — COMPLETE recorded for dry-run; dry_run flag in detail
+    post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+    assert post_resp.status_code == 200, post_resp.text
+    post_events = post_resp.json()["events"]
+    complete_events = [e for e in post_events if e["event_type"] == "METAGEN.COMPLETE"]
+    post_count = len(complete_events)
+
+    assert post_count == pre_count + 1, (
+        f"Expected exactly one new METAGEN.COMPLETE event after dry-run; "
+        f"pre_count={pre_count}, post_count={post_count}. "
+        "spec: BACKEND.md L657 — dry-run must emit METAGEN.COMPLETE"
+    )
+
+    new_event = complete_events[0]  # newest first (ordered by occurred_at desc)
+    assert new_event["detail"].get("dry_run") is True, (
+        f"METAGEN.COMPLETE event detail must carry dry_run=true; "
+        f"got detail={new_event['detail']!r}. "
+        "spec: BACKEND.md L657 — dry_run flag in detail"
+    )
+    # result_id must be None for dry-run — no row is persisted
+    # spec: BACKEND.md L657 — result_id is null for dry-run
+    assert new_event["detail"].get("result_id") is None, (
+        f"METAGEN.COMPLETE event detail result_id must be None for dry-run; "
+        f"got {new_event['detail'].get('result_id')!r}. "
+        "spec: BACKEND.md L657 — dry-run does not persist a result row"
+    )
+    # targets in event detail must match the conf's targets list
+    # spec: BACKEND.md L657 — event detail carries targets
+    assert new_event["detail"].get("targets") == conf_targets, (
+        f"METAGEN.COMPLETE event detail targets={new_event['detail'].get('targets')!r} "
+        f"must match conf targets={conf_targets!r}. "
+        "spec: BACKEND.md L657"
+    )
 
     # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
@@ -439,19 +490,23 @@ async def test_metagen_events_list_envelope(
 
 
 @pytest.mark.asyncio
-async def test_metagen_run_disabled_returns_409(
+async def test_metagen_run_is_enabled_false_non_dry_run_returns_409_GENERATION_DISABLED(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST method/metagen/run with is_enabled=False returns 409 GENERATION_DISABLED.
+    """POST method/metagen/run with is_enabled=False returns 409 GENERATION_DISABLED;
+    no METAGEN.COMPLETE event is emitted on the rejected call.
 
     spec: USE_CASE_en.md L700 — 'When is_enabled=false, non-dry-run calls to
     method/metagen/run return 409 GENERATION_DISABLED.'
     spec: BACKEND.md L452 — 'method/run with is_enabled=false and dry_run=false raises
     409 GENERATION_DISABLED. Dry-run is permitted regardless of is_enabled.'
+    spec: BACKEND.md L657 — METAGEN.COMPLETE is emitted only when the run completes;
+    a rejected (409) call must not emit it.
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
     base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
+    event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
 
     try:
         # Ensure config exists with is_enabled=False
@@ -464,6 +519,14 @@ async def test_metagen_run_disabled_returns_409(
                 "schedule_tier": None,
                 "owner": "spot-test@imazon.com",
             },
+        )
+
+        # Snapshot METAGEN.COMPLETE count before the rejected call
+        pre_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        assert pre_resp.status_code == 200, pre_resp.text
+        pre_complete_count = sum(
+            1 for e in pre_resp.json()["events"]
+            if e["event_type"] == "METAGEN.COMPLETE"
         )
 
         run_resp = await api_client.post(
@@ -480,6 +543,20 @@ async def test_metagen_run_disabled_returns_409(
         assert body.get("error_code") == "GENERATION_DISABLED", (
             f"Expected error_code 'GENERATION_DISABLED'; got: {body!r}. "
             "spec: USE_CASE_en.md L700; BACKEND.md L452"
+        )
+
+        # Negative-parity: no METAGEN.COMPLETE event must have been emitted
+        # spec: BACKEND.md L657 — event is for completed runs only; rejected calls are not runs
+        post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        assert post_resp.status_code == 200, post_resp.text
+        post_complete_count = sum(
+            1 for e in post_resp.json()["events"]
+            if e["event_type"] == "METAGEN.COMPLETE"
+        )
+        assert post_complete_count == pre_complete_count, (
+            f"No new METAGEN.COMPLETE event must be emitted after a 409-rejected run; "
+            f"pre={pre_complete_count}, post={post_complete_count}. "
+            "spec: BACKEND.md L657"
         )
 
         # Dry-run must still succeed when is_enabled=False — disabled gate is

@@ -6,9 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from src.backend.metagen.service import MetagenService, MetagenResultRecord, _build_initial_field_status
+from src.backend.metagen.service import (
+    MetagenResultRecord,
+    MetagenService,
+    _build_initial_field_status,
+)
+from src.shared.db.models import Event
+from src.shared.events import METAGEN_COMPLETE
 from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
-
 from tests.unit.backend.conftest import make_metagen_result_row, mock_db_refresh, mock_scalar_query
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,PROD)"
@@ -172,6 +177,68 @@ async def test_run_allows_dry_run_when_disabled(svc: MetagenService, cache: Asyn
 
     assert isinstance(result, MetagenResultRecord)
     assert result.dataset_urn == _DATASET_URN
+
+
+@pytest.mark.asyncio
+async def test_run_real_run_emits_complete_event_with_dry_run_false(
+    svc: MetagenService, cache: AsyncMock, db: AsyncMock
+) -> None:
+    """Real-run (dry_run=False) emits exactly one METAGEN.COMPLETE Event with dry_run=False.
+
+    spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline step 8
+    — 'Emit METAGEN.COMPLETE'; dry_run key is present with value False on the real-run path.
+    spec: spec/USE_CASE_en.md §UC4 — real-run persists a MetagenResult and emits the event.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock()
+
+    config_row = _make_metagen_config_row(is_enabled=True, targets=["dataset.description"])
+    config_result = MagicMock()
+    config_result.scalar_one_or_none.return_value = config_row
+
+    node_map_result = MagicMock()
+    node_map_result.scalars.return_value.all.return_value = []
+
+    db.execute = AsyncMock(side_effect=[config_result, node_map_result])
+    mock_db_refresh(db)
+
+    _evidence_stub = {
+        "dataset_name": "test",
+        "description": "",
+        "schema_fields": [],
+        "editable_description": None,
+        "editable_field_descriptions": [],
+        "glossary_terms": [],
+        "related_documents": [],
+        "ontogen_node_ids": [],
+        "ontogen_triples": [],
+    }
+    with (
+        patch.object(svc, "_gather_evidence", new=AsyncMock(return_value=_evidence_stub)),
+        patch.object(svc, "_propose_target", new=AsyncMock(return_value="Generated description")),
+    ):
+        result = await svc.run(_DATASET_URN, dry_run=False)
+
+    assert isinstance(result, MetagenResultRecord)
+    assert result.dataset_urn == _DATASET_URN
+
+    # Exactly one Event row must be added with METAGEN_COMPLETE and dry_run=False.
+    # spec: spec/feature/BACKEND.md §Run pipeline step 8 — dry_run key in detail.
+    added_args = [c.args[0] for c in db.add.call_args_list]
+    event_rows = [a for a in added_args if isinstance(a, Event)]
+    assert len(event_rows) == 1, (
+        f"Expected exactly one Event row added; got {len(event_rows)}. "
+        "spec: BACKEND.md §Run pipeline — one METAGEN.COMPLETE event per run"
+    )
+    assert event_rows[0].event_type == METAGEN_COMPLETE, (
+        f"Event type must be METAGEN_COMPLETE; got {event_rows[0].event_type!r}. "
+        "spec: BACKEND.md §Metadata Generation Service §Event Catalogue"
+    )
+    assert event_rows[0].detail["dry_run"] is False, (
+        f"detail['dry_run'] must be False on real-run path; "
+        f"got {event_rows[0].detail.get('dry_run')!r}. "
+        "spec: BACKEND.md §Run pipeline step 8 — dry_run flag in detail"
+    )
 
 
 # ── list_metagen — cross-dataset ──────────────────────────────────────────────

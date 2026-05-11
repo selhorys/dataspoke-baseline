@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.backend.ontogen.service import OntogenService, OntogenRunSummary
+from src.backend.ontogen.service import OntogenRunSummary, OntogenService
+from src.shared.db.models import Event, OntogenEdge, OntogenNode, OntogenTriple
+from src.shared.events import ONTOGEN_RUN_COMPLETE
 from src.shared.exceptions import (
     ConflictError,
     EntityNotFoundError,
@@ -20,7 +22,6 @@ from tests.unit.backend.conftest import (
     mock_db_refresh,
     mock_scalar_query,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -337,10 +338,10 @@ async def test_run_allows_dry_run_when_disabled(
 async def test_run_dry_run_returns_summary_no_db_writes(
     svc: OntogenService, db: AsyncMock, cache: AsyncMock, llm: AsyncMock
 ) -> None:
-    """run(dry_run=True) returns OntogenRunSummary without writing to DB.
+    """run(dry_run=True) returns OntogenRunSummary and emits ONTOGEN.RUN_COMPLETE.
 
-    Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
-    — step 9: ?dry_run=true evaluates steps 2-8 without persisting.
+    Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for
+    both dry-run and non-dry-run; ontology rows are not persisted on dry-run.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock(return_value=None)
@@ -385,10 +386,116 @@ async def test_run_dry_run_returns_summary_no_db_writes(
 
     assert isinstance(summary, OntogenRunSummary)
     assert summary.dry_run is True
-    # No OntogenNode/Edge/Triple rows committed on dry_run
-    # Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
-    # — ?dry_run=true evaluates steps 2–8 without persisting (step 9 is skipped).
-    assert db.commit.call_count == 0
+
+    # Spec invariant: dry-run records ONTOGEN.RUN_COMPLETE with dry_run=True;
+    # no OntogenNode/OntogenEdge/OntogenTriple rows are persisted.
+    added_args = [call.args[0] for call in db.add.call_args_list]
+
+    # Exactly one Event row with ONTOGEN_RUN_COMPLETE and dry_run flag
+    event_rows = [a for a in added_args if isinstance(a, Event)]
+    assert len(event_rows) == 1
+    assert event_rows[0].event_type == ONTOGEN_RUN_COMPLETE
+    assert event_rows[0].detail["dry_run"] is True
+
+    # No ontology rows persisted on dry-run
+    assert not any(isinstance(a, OntogenNode) for a in added_args)
+    assert not any(isinstance(a, OntogenEdge) for a in added_args)
+    assert not any(isinstance(a, OntogenTriple) for a in added_args)
+
+    # Spec invariant: exactly one commit on the dry-run path (event row only).
+    # spec: BACKEND.md §Inference Pipeline — dry-run records the event and returns;
+    # no node/edge/triple commits occur.
+    assert db.commit.call_count == 1, (
+        f"Expected exactly one db.commit on dry-run (event row); "
+        f"got {db.commit.call_count}. "
+        "spec: BACKEND.md §Inference Pipeline — dry-run must not write ontology rows"
+    )
+
+
+# ── real_run happy path ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_real_run_emits_complete_event_with_dry_run_false(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock, llm: AsyncMock
+) -> None:
+    """run(dry_run=False) emits ONTOGEN.RUN_COMPLETE with dry_run=False and unresolved_urns.
+
+    spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
+    — Step 12 emits RUN_COMPLETE with dry_run key; real-run sets it to False.
+    spec: spec/feature/BACKEND.md L661 — RUN_COMPLETE recorded for both dry-run
+    and non-dry-run; dry_run flag and unresolved_urns are present in detail.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock(return_value=None)
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = True
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+
+    def make_result(scalar_val=None, scalars_val=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_val
+        ms = MagicMock()
+        ms.all.return_value = scalars_val or []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    db.execute = AsyncMock(side_effect=[
+        conf_result,              # get_conf
+        make_result(scalars_val=[]),  # OntogenSeed query
+        make_result(scalars_val=[]),  # approved nodes
+        make_result(scalars_val=[]),  # approved edges
+        make_result(scalars_val=[]),  # approved triples
+    ])
+
+    # Empty dataset enumeration → empty dataset_urns and empty unresolved_urns
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    llm.complete_json = AsyncMock(return_value={"nodes": [], "edges": [], "triples": []})
+    llm.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"):
+        summary = await svc.run(dry_run=False)
+
+    assert isinstance(summary, OntogenRunSummary)
+    assert summary.dry_run is False
+
+    # Exactly one Event row added with ONTOGEN_RUN_COMPLETE and dry_run=False.
+    # spec: BACKEND.md §Inference Pipeline Step 12 — real-run emits RUN_COMPLETE
+    # with dry_run=False; unresolved_urns present in detail.
+    added_args = [call.args[0] for call in db.add.call_args_list]
+    event_rows = [a for a in added_args if isinstance(a, Event)]
+    assert len(event_rows) == 1, (
+        f"Expected exactly one Event row on real-run; got {len(event_rows)}. "
+        "spec: BACKEND.md §Inference Pipeline Step 12"
+    )
+    assert event_rows[0].event_type == ONTOGEN_RUN_COMPLETE, (
+        f"Event type must be ONTOGEN_RUN_COMPLETE; got {event_rows[0].event_type!r}. "
+        "spec: BACKEND.md §Event Catalogue"
+    )
+    assert event_rows[0].detail["dry_run"] is False, (
+        f"detail['dry_run'] must be False on real-run path; "
+        f"got {event_rows[0].detail.get('dry_run')!r}. "
+        "spec: BACKEND.md L661 — dry_run flag in detail"
+    )
+    # unresolved_urns must be present in detail and agree with the summary
+    # spec: BACKEND.md L661 — unresolved_urns in RUN_COMPLETE payload
+    assert "unresolved_urns" in event_rows[0].detail, (
+        "detail must carry 'unresolved_urns'. spec: BACKEND.md L661"
+    )
+    assert event_rows[0].detail["unresolved_urns"] == summary.unresolved_urns, (
+        f"detail['unresolved_urns'] must match summary.unresolved_urns; "
+        f"detail={event_rows[0].detail['unresolved_urns']!r}, "
+        f"summary={summary.unresolved_urns!r}. "
+        "spec: BACKEND.md L661 — event and summary must agree on unresolved_urns"
+    )
 
 
 # ── LLM proposal validation ───────────────────────────────────────────────────
@@ -396,8 +503,9 @@ async def test_run_dry_run_returns_summary_no_db_writes(
 
 def test_llm_run_result_validates_shape() -> None:
     """_LLMRunResult rejects nodes with missing names."""
-    from src.backend.ontogen.service import _LLMRunResult
     from pydantic import ValidationError
+
+    from src.backend.ontogen.service import _LLMRunResult
 
     # Valid shape
     result = _LLMRunResult.model_validate({
@@ -418,8 +526,9 @@ def test_llm_run_result_validates_shape() -> None:
 
 def test_llm_run_result_confidence_score_range() -> None:
     """_LLMRunResult rejects confidence_score outside [0.0, 1.0]."""
-    from src.backend.ontogen.service import _LLMRunResult
     from pydantic import ValidationError
+
+    from src.backend.ontogen.service import _LLMRunResult
 
     with pytest.raises(ValidationError):
         _LLMRunResult.model_validate({

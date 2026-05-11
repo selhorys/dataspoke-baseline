@@ -546,6 +546,8 @@ POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
 승인은 DataSpoke 내부 상태를 갱신한다. 온톨로지 그래프는 DataSpoke의
 PostgreSQL(관계형 + pgvector)에서 유지한다.
 
+`is_enabled=false`이면 non-dry-run `method/run` 호출은 `409 ONTOGEN_DISABLED`를 반환한다. Dry-run(`?dry_run=true`)은 `is_enabled`와 관계없이 항상 허용된다. Dry-run도 실제 실행과 동일하게 이벤트 detail에 `dry_run: true`를 담아 `ONTOGEN.RUN_COMPLETE`를 기록한다.
+
 ---
 
 ## UC4: Metadata Generation
@@ -706,6 +708,8 @@ DataSpoke는 같은 호출 안에서 승인된 액션을 DataHub에 기록한다
 ```http
 GET .../event/metagen
 ```
+
+`is_enabled=false`이면 non-dry-run `method/metagen/run` 호출은 `409 GENERATION_DISABLED`를 반환한다. Dry-run은 `is_enabled`와 관계없이 항상 허용된다. Dry-run도 실제 실행과 동일하게 이벤트 detail에 `dry_run: true`를 담아 `METAGEN.COMPLETE`를 기록한다.
 
 ---
 

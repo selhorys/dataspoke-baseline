@@ -752,18 +752,30 @@ class OntogenService:
                 }
             )
 
-        # Step 9: dry_run short-circuit
+        # Step 9: dry_run short-circuit — emit RUN_COMPLETE before returning
         if dry_run:
-            return OntogenRunSummary(
+            counts_dict = {
+                "nodes_proposed": len(nodes_to_upsert),
+                "edges_proposed": len(edges_to_upsert),
+                "triples_proposed": len(triples_to_upsert),
+            }
+            summary = OntogenRunSummary(
                 status="success",
                 dry_run=True,
                 unresolved_urns=unresolved_urns,
-                counts={
-                    "nodes_proposed": len(nodes_to_upsert),
-                    "edges_proposed": len(edges_to_upsert),
-                    "triples_proposed": len(triples_to_upsert),
+                counts=counts_dict,
+            )
+            await self._record_ontogen_event(
+                "singleton",
+                ONTOGEN_RUN_COMPLETE,
+                "success",
+                {
+                    "unresolved_urns": unresolved_urns,
+                    "counts": counts_dict,
+                    "dry_run": True,
                 },
             )
+            return summary
 
         # Step 10: Persist nodes
         nodes_added = 0
@@ -938,15 +950,16 @@ class OntogenService:
         await self._refresh_dataset_embeddings(dataset_urns)
 
         # Step 12: Emit ONTOGEN.RUN_COMPLETE
+        counts_dict = {
+            "nodes_added": nodes_added,
+            "edges_added": edges_added,
+            "triples_added": triples_added,
+        }
         summary = OntogenRunSummary(
             status="success",
             dry_run=False,
             unresolved_urns=unresolved_urns,
-            counts={
-                "nodes_added": nodes_added,
-                "edges_added": edges_added,
-                "triples_added": triples_added,
-            },
+            counts=counts_dict,
         )
         await self._record_ontogen_event(
             "singleton",
@@ -954,7 +967,8 @@ class OntogenService:
             "success",
             {
                 "unresolved_urns": unresolved_urns,
-                "counts": summary.counts,
+                "counts": counts_dict,
+                "dry_run": False,
             },
         )
         return summary
