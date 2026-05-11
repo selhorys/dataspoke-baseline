@@ -176,8 +176,10 @@ catalogue, see [`spec/API.md`](API.md).
 
 Core computational layer. For the full backend specification — layered architecture, shared
 services, per-feature service designs, Airflow workflows, and infrastructure integration
-patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). Data contracts (PostgreSQL
-schema including pgvector tables) in
+patterns — see [`spec/feature/BACKEND.md`](feature/BACKEND.md). LLM inference loop,
+per-service validator rule tables, the opt-in adversarial debate framework, and test-mode
+toggles in [`spec/feature/BACKEND_LLM.md`](feature/BACKEND_LLM.md). Data contracts
+(PostgreSQL schema including pgvector tables) in
 [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md).
 
 **Key capabilities by feature** (MANIFESTO §2.1):
