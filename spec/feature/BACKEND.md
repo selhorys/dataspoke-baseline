@@ -476,8 +476,8 @@ the schema model is `MetagenLLMOutput` (per-target proposal entries).
 | No duplicate `action_id` within a single proposal | `DUP_ACTION_ID` |
 | For `dataset.description` / `column.description`: proposed text is non-empty | `EMPTY_DESCRIPTION` |
 
-Metagen adopts the loop after Ontogen lands; until then, the existing single-call
-implementation persists and the validator rules above describe the target state.
+The Generation Pipeline currently uses a single-call LLM implementation. The validator
+rules above describe the target shape when it adopts the LLM Inference Loop.
 
 **Cross-data MD action types**. A single `cross_data.md` proposal carries an ordered list
 of actions, each independently approvable:
