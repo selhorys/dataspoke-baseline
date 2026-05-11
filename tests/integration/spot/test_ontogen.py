@@ -17,8 +17,12 @@ Concerns covered:
 - GET /spoke/common/ontogen/result/edge — list edges (envelope)
 - GET /spoke/common/ontogen/result/triple — list triples (envelope)
 - POST /spoke/common/ontogen/result/node/{node_id}/method/review — approve node
+- POST /spoke/common/ontogen/result/node/{node_id}/method/review — reject node
 - POST /spoke/common/ontogen/result/edge/{edge_id}/method/review — approve edge
+- POST /spoke/common/ontogen/result/edge/{edge_id}/method/review — reject edge
 - POST /spoke/common/ontogen/result/triple/{triple_id}/method/review — approve triple
+- POST /spoke/common/ontogen/method/run — 409 ONTOGEN_DISABLED when is_enabled=False
+- GET /spoke/common/ontogen/result/node/{id}/attr — confidence_score (float) and evidence (dict)
 
 NOTE: node_embeddings sync is verified at the DAG/run-level integration test, not on
 per-node REST review approval.  spec/feature/BACKEND_SCHEMA.md §node_embeddings lists
@@ -36,7 +40,9 @@ Spec traceability:
 - spec/feature/BACKEND_SCHEMA.md §Graph (ontogen_triples → AGE)
 - spec/feature/BACKEND_SCHEMA.md §node_embeddings (pgvector)
 - spec/USE_CASE_en.md §UC3 §Inputs — document evidence read path
+- spec/USE_CASE_en.md L541 — ONTOGEN_DISABLED on non-dry run with is_enabled=False
 - spec/DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery filter
+- spec/DATAHUB_INTEGRATION.md L114 — UC3 direction is Read-only
 """
 
 import uuid
@@ -45,6 +51,11 @@ from typing import Any
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Declare DataHub fixture dependency so module_dummy_data ingests catalog.title_master
+# into DataHub before tests that seed NATIVE documents (evidence path tests).
+# spec: TESTING.md §Per-Module Dummy-Data Reset
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
 
 @pytest.mark.asyncio
@@ -60,11 +71,13 @@ async def test_ontogen_conf_get_returns_defaults(
 
     assert resp.status_code == 200
     body = resp.json()
+    # spec: USE_CASE_en.md §UC3 L389 — OntogenConfResponse fields: is_enabled, schedule_tier,
+    # dataset_filter, default_run_prompt, updated_at (max_manual/system_queries removed)
     assert "is_enabled" in body
     assert "schedule_tier" in body
     assert "dataset_filter" in body
-    assert "max_manual_queries_per_dataset" in body
-    assert "max_system_queries_per_dataset" in body
+    assert "default_run_prompt" in body
+    assert "updated_at" in body
 
 
 @pytest.mark.asyncio
@@ -80,8 +93,6 @@ async def test_ontogen_conf_put(
             "is_enabled": True,
             "schedule_tier": "daily",
             "dataset_filter": {},
-            "max_manual_queries_per_dataset": 20,
-            "max_system_queries_per_dataset": 10,
             "default_run_prompt": None,
         },
     )
@@ -113,21 +124,18 @@ async def test_ontogen_conf_patch(
             "is_enabled": False,
             "schedule_tier": "daily",
             "dataset_filter": {},
-            "max_manual_queries_per_dataset": 20,
-            "max_system_queries_per_dataset": 10,
         },
     )
 
     patch_resp = await api_client.patch(
         "/api/v1/spoke/common/ontogen/attr/conf",
         headers=admin_headers,
-        json={"schedule_tier": "weekly", "max_manual_queries_per_dataset": 5},
+        json={"schedule_tier": "weekly"},
     )
 
     assert patch_resp.status_code == 200
     body = patch_resp.json()
     assert body["schedule_tier"] == "weekly"
-    assert body["max_manual_queries_per_dataset"] == 5
 
 
 @pytest.mark.asyncio
@@ -144,8 +152,6 @@ async def test_ontogen_conf_delete_resets(
             "is_enabled": False,
             "schedule_tier": "daily",
             "dataset_filter": {},
-            "max_manual_queries_per_dataset": 20,
-            "max_system_queries_per_dataset": 10,
         },
     )
 
@@ -306,8 +312,6 @@ async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
                 "is_enabled": True,
                 "schedule_tier": "daily",
                 "dataset_filter": {"dataset_urns": [dataset_urn]},
-                "max_manual_queries_per_dataset": 5,
-                "max_system_queries_per_dataset": 5,
             },
         )
         assert conf_resp.status_code in (200, 201), (
@@ -614,3 +618,194 @@ async def test_ontogen_triple_review_dependency_order(
         await _delete_row(async_session, OntogenNode, subj_id)
         await _delete_row(async_session, OntogenNode, obj_id)
         await _delete_row(async_session, OntogenEdge, edge_id)
+
+
+# ── New-boundary + negative-coverage tests ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ontogen_run_disabled_returns_409(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """POST /method/run (no dry_run) with is_enabled=False returns 409 ONTOGEN_DISABLED;
+    dry-run with the same conf returns 200.
+
+    spec: USE_CASE_en.md L541 — 'When is_enabled=false, non-dry-run calls to
+    method/run return 409 ONTOGEN_DISABLED. Dry-run (?dry_run=true) is always
+    permitted regardless of is_enabled.'
+    """
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    try:
+        put_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "schedule_tier": "daily",
+                "dataset_filter": {},
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT ontogen conf failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run",
+            headers=admin_headers,
+        )
+        assert run_resp.status_code == 409, (
+            f"Expected 409 ONTOGEN_DISABLED when is_enabled=False; "
+            f"got {run_resp.status_code}: {run_resp.text}. "
+            "spec: USE_CASE_en.md L541"
+        )
+        body = run_resp.json()
+        assert body.get("error_code") == "ONTOGEN_DISABLED", (
+            f"Expected error_code 'ONTOGEN_DISABLED'; got: {body}. "
+            "spec: USE_CASE_en.md L541"
+        )
+
+        # Dry-run must still succeed when is_enabled=False — disabled gate is
+        # scoped to non-dry-run only. spec: USE_CASE_en.md L541
+        dry_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            headers=admin_headers,
+        )
+        assert dry_resp.status_code == 200, (
+            f"Dry-run must succeed even when is_enabled=False; "
+            f"got {dry_resp.status_code}: {dry_resp.text}. "
+            "spec: USE_CASE_en.md L541"
+        )
+    finally:
+        await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})
+
+
+@pytest.mark.asyncio
+async def test_ontogen_node_review_reject(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """POST node/{id}/method/review with 'reject' transitions status to rejected.
+
+    spec: spec/feature/BACKEND.md §Ontology Generation Service — 'verdict: reject →
+    mark the result as rejected.'
+    """
+    from src.shared.db.models import OntogenNode
+
+    suffix = uuid.uuid4().hex[:8]
+    node_id = f"spot-rej-node-{suffix}"
+    await _insert_pending_node(async_session, node_id, f"SpotRejectNode-{suffix}")
+
+    try:
+        review_resp = await api_client.post(
+            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/method/review",
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": "spot-test rejection"},
+        )
+        assert review_resp.status_code == 200, review_resp.text
+        body = review_resp.json()
+        assert body["status"] == "rejected", (
+            f"Expected status 'rejected'; got {body['status']!r}. "
+            "spec: BACKEND.md §Ontology Generation Service §Approval flow"
+        )
+        assert body["id"] == node_id
+    finally:
+        await _delete_row(async_session, OntogenNode, node_id)
+
+
+@pytest.mark.asyncio
+async def test_ontogen_edge_review_reject(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """POST edge/{id}/method/review with 'reject' transitions status to rejected.
+
+    spec: spec/feature/BACKEND.md §Ontology Generation Service — verdict=reject flow.
+    """
+    from src.shared.db.models import OntogenEdge
+
+    suffix = uuid.uuid4().hex[:8]
+    edge_id = f"spot-rej-edge-{suffix}"
+    await _insert_pending_edge(async_session, edge_id, f"spot_reject_edge_{suffix}")
+
+    try:
+        review_resp = await api_client.post(
+            f"/api/v1/spoke/common/ontogen/result/edge/{edge_id}/method/review",
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": "spot-test edge rejection"},
+        )
+        assert review_resp.status_code == 200, review_resp.text
+        body = review_resp.json()
+        assert body["status"] == "rejected", (
+            f"Expected status 'rejected'; got {body['status']!r}. "
+            "spec: BACKEND.md §Ontology Generation Service §Approval flow"
+        )
+    finally:
+        await _delete_row(async_session, OntogenEdge, edge_id)
+
+
+@pytest.mark.asyncio
+async def test_ontogen_node_detail_carries_evidence(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /result/node/{id}/attr returns confidence_score (float >= 0) and evidence (dict).
+
+    Shape-only assertion — does not pin specific values because evidence content is
+    LLM-generated and varies.
+    spec: spec/feature/BACKEND_SCHEMA.md §ontogen_nodes — confidence_score FLOAT NOT NULL,
+    evidence JSONB.
+    Route: src/api/routers/spoke/common/ontogen.py:373-384
+      GET /result/node/{node_id}/attr → NodeAttrResponse {node_id, confidence_score, evidence}
+    """
+    from src.shared.db.models import OntogenNode
+
+    suffix = uuid.uuid4().hex[:8]
+    node_id = f"spot-ev-node-{suffix}"
+
+    session = async_session
+    from src.shared.db.models import OntogenNode as _OntogenNode
+
+    session.add(
+        _OntogenNode(
+            id=node_id,
+            name=f"SpotEvidenceNode-{suffix}",
+            description="Spot test node for evidence shape check.",
+            confidence_score=0.91,
+            status="pending_review",
+            evidence={"source": "spot-test", "datasets": ["urn:li:dataset:test"]},
+        )
+    )
+    await session.commit()
+
+    try:
+        get_resp = await api_client.get(
+            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/attr",
+            headers=admin_headers,
+        )
+        assert get_resp.status_code == 200, get_resp.text
+        body = get_resp.json()
+        # spec: BACKEND_SCHEMA.md §ontogen_nodes — confidence_score is FLOAT NOT NULL
+        assert isinstance(body.get("confidence_score"), float), (
+            f"confidence_score must be a float; got {type(body.get('confidence_score'))!r}. "
+            "spec: BACKEND_SCHEMA.md §ontogen_nodes"
+        )
+        assert body["confidence_score"] >= 0, (
+            f"confidence_score must be >= 0; got {body['confidence_score']!r}. "
+            "spec: BACKEND_SCHEMA.md §ontogen_nodes"
+        )
+        # spec: BACKEND_SCHEMA.md §ontogen_nodes — evidence JSONB (shape check only)
+        assert isinstance(body.get("evidence"), dict), (
+            f"evidence must be a dict; got {type(body.get('evidence'))!r}. "
+            "spec: BACKEND_SCHEMA.md §ontogen_nodes"
+        )
+    finally:
+        await _delete_row(async_session, OntogenNode, node_id)
+
+
+# UC3 read-only boundary is enforced structurally (no DataHub emit code paths in review
+# handlers per `src/backend/ontogen/service.py`); regression coverage lives in unit tests.

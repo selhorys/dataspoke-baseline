@@ -11,6 +11,13 @@ Tests in this module:
     verify field_status transitions.
   - test_uc4_review_approves_cross_data_create_action: Seed a metagen_results row with
     a cross_data.md create action; PATCH approves it; verify field_status flip to approved.
+  - test_uc4_whole_proposal_reject: Seed a multi-field result; PATCH verdict=reject with
+    no fields array; assert every field_status entry flips to 'rejected'.
+  - test_uc4_cross_data_modify_and_delete_actions: Seed a result with modify + delete
+    cross_data.md actions; PATCH approves both; assert both flip to 'approved'.
+  - test_uc4_reads_uc3_approved_nodes: Seed an approved ontogen_nodes row and a
+    dataset_node_map row; POST metagen run; assert 200 with proposals dict
+    (UC3 → UC4 coupling test).
 
 Note: Concurrent-run 409 GENERATION_RUNNING coverage lives in
 `tests/integration/spot/test_metagen.py`; UC4 narrative scope does not require it.
@@ -88,6 +95,79 @@ async def _delete_metagen_result(session: AsyncSession, result_id: str, dataset_
     await session.execute(
         text("DELETE FROM dataspoke.metagen_results WHERE id = :id AND dataset_urn = :urn"),
         {"id": result_id, "urn": dataset_urn},
+    )
+    await session.commit()
+
+
+async def _seed_approved_ontogen_node(session: AsyncSession, node_id: str, name: str) -> None:
+    """Insert an approved ontogen_nodes row via raw SQL (UC3 → UC4 coupling setup).
+
+    spec: BACKEND.md L425-L426 — UC4 reads UC3-approved nodes via
+    dataset_node_map.status='approved'.
+    """
+    from sqlalchemy import text
+
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.ontogen_nodes"
+            " (id, name, description, confidence_score, status, evidence)"
+            " VALUES (:id, :name, :desc, :conf, 'approved', CAST(:ev AS jsonb))"
+        ),
+        {
+            "id": node_id,
+            "name": name,
+            "desc": "UC4 coupling test approved node",
+            "conf": 0.90,
+            "ev": json.dumps({"source": "uc4-coupling-test"}),
+        },
+    )
+    await session.commit()
+
+
+async def _seed_dataset_node_map(
+    session: AsyncSession,
+    *,
+    dataset_urn: str,
+    node_id: str,
+    status: str = "approved",
+) -> None:
+    """Insert a dataset_node_map row via raw SQL.
+
+    Composite PK: (dataset_urn, node_id).
+    spec: src/shared/db/models.py:431-451 — DatasetNodeMap schema.
+    spec: BACKEND.md L425-L426 — UC4 reads rows with status='approved'.
+    """
+    from sqlalchemy import text
+
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.dataset_node_map"
+            " (dataset_urn, node_id, confidence_score, status, is_primary)"
+            " VALUES (:dataset_urn, :node_id, :conf, :status, false)"
+            " ON CONFLICT (dataset_urn, node_id) DO UPDATE SET status = EXCLUDED.status"
+        ),
+        {
+            "dataset_urn": dataset_urn,
+            "node_id": node_id,
+            "conf": 0.90,
+            "status": status,
+        },
+    )
+    await session.commit()
+
+
+async def _delete_ontogen_node(session: AsyncSession, node_id: str) -> None:
+    """Delete an ontogen_nodes row (cascades to dataset_node_map via FK)."""
+    from sqlalchemy import text
+
+    # Delete dataset_node_map rows first (FK constraint)
+    await session.execute(
+        text("DELETE FROM dataspoke.dataset_node_map WHERE node_id = :node_id"),
+        {"node_id": node_id},
+    )
+    await session.execute(
+        text("DELETE FROM dataspoke.ontogen_nodes WHERE id = :id"),
+        {"id": node_id},
     )
     await session.commit()
 
@@ -517,4 +597,301 @@ async def test_uc4_review_approves_cross_data_create_action(
     finally:
         if result_id is not None:
             await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+# ── New-boundary + coupling tests ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_uc4_whole_proposal_reject(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """UC4 invariant: PATCH verdict=reject with no fields array rejects all field_status entries.
+
+    spec: BACKEND.md L446 — 'verdict: reject → reject the whole proposal (or the listed
+    fields only).' When fields is absent, every entry in field_status must flip to 'rejected'.
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    result_id: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["dataset.description", "column.description"],
+                "schedule_tier": "weekly",
+                "is_enabled": False,
+                "owner": "uc4-api-wired@imazon.com",
+            },
+        )
+
+        # ── Seed a multi-field pending result ────────────────────────────────
+        # spec: TESTING.md §Api-Wired Integration Tests — setup may use raw SQL
+        proposals: dict[str, Any] = {
+            "dataset.description": "Whole-reject test description.",
+            "column.description": {
+                "book_id": "Whole-reject book_id desc.",
+                "title": "Whole-reject title desc.",
+            },
+        }
+        field_status = {
+            "dataset.description": "pending",
+            "column.description.book_id": "pending",
+            "column.description.title": "pending",
+        }
+        result_id = await _seed_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals=proposals,
+            field_status=field_status,
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        # ── PATCH: reject whole proposal (no fields array) ───────────────────
+        # spec: BACKEND.md L446 — reject without fields rejects all entries
+        reject_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "reject",
+                "reason": "uc4-api-wired: whole reject test",
+            },
+        )
+        assert reject_resp.status_code == 200, (
+            f"PATCH whole-reject failed: {reject_resp.status_code} {reject_resp.text}"
+        )
+        body = reject_resp.json()
+        assert body["id"] == result_id
+        # Every field_status entry must be 'rejected'
+        # spec: BACKEND.md L446 — verdict=reject with no fields rejects the whole proposal
+        for field, status_val in body["field_status"].items():
+            assert status_val == "rejected", (
+                f"Field {field!r} should be 'rejected' after whole-proposal reject; "
+                f"got {status_val!r}. spec: BACKEND.md L446"
+            )
+    finally:
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_uc4_cross_data_modify_and_delete_actions(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """UC4 invariant: approving modify and delete cross_data.md actions flips their field_status.
+
+    Seeds a result with two cross_data.md actions:
+      - a1: modify (requires document_urn and body)
+      - a2: delete (requires document_urn only)
+    PATCH approve both actions; assert both flip to 'approved'.
+
+    spec: USE_CASE_en.md L594-L597 — modify/delete action semantics.
+    spec: BACKEND.md §Cross-data MD action types — modify: document_urn + body; delete:
+    document_urn only.
+    spec: BACKEND_SCHEMA.md L134-L135 — field_status uses cross_data.md.<action_id> keys.
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    result_id: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["cross_data.md"],
+                "schedule_tier": "weekly",
+                "is_enabled": False,
+                "owner": "uc4-api-wired@imazon.com",
+            },
+        )
+
+        # ── Seed a result with modify + delete actions ─────────────────────
+        # spec: BACKEND.md §Cross-data MD action types — modify requires document_urn
+        # and body; delete requires document_urn only.
+        # NOTE: document_urn values below are fictitious; on approval apply_actions() warns
+        # and continues per impl best-effort emit (src/backend/metagen/service.py ~L1085).
+        # This test asserts the DataSpoke field_status flip only; end-to-end DataHub apply
+        # for modify/delete actions is out of scope for this test.
+        proposals: dict[str, Any] = {
+            "cross_data.md": [
+                {
+                    "action_id": "a1",
+                    "action": "modify",
+                    "document_urn": "urn:li:document:uc4-test-existing-doc-1",
+                    "body": "Updated cross-data body for modify action test.",
+                    "confidence": 0.78,
+                },
+                {
+                    "action_id": "a2",
+                    "action": "delete",
+                    "document_urn": "urn:li:document:uc4-test-existing-doc-2",
+                    "confidence": 0.65,
+                },
+            ]
+        }
+        field_status = {
+            "cross_data.md.a1": "pending",
+            "cross_data.md.a2": "pending",
+        }
+        result_id = await _seed_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals=proposals,
+            field_status=field_status,
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        # ── PATCH: approve both modify and delete actions ─────────────────────
+        # spec: USE_CASE_en.md L594-L597 — each action independently approvable via PATCH
+        approve_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "approve",
+                "fields": ["cross_data.md.a1", "cross_data.md.a2"],
+                "reason": "uc4-api-wired: modify+delete action approve",
+            },
+        )
+        assert approve_resp.status_code == 200, (
+            f"PATCH approve modify+delete actions failed: "
+            f"{approve_resp.status_code} {approve_resp.text}"
+        )
+        body = approve_resp.json()
+        assert body["id"] == result_id
+        # Both actions must flip to 'approved'
+        # spec: BACKEND_SCHEMA.md L134-L135 — field_status key is cross_data.md.<action_id>
+        assert body["field_status"].get("cross_data.md.a1") == "approved", (
+            f"field_status['cross_data.md.a1'] (modify) should be 'approved'; "
+            f"got {body['field_status'].get('cross_data.md.a1')!r}. "
+            "spec: USE_CASE_en.md L594-L597; BACKEND_SCHEMA.md L134"
+        )
+        assert body["field_status"].get("cross_data.md.a2") == "approved", (
+            f"field_status['cross_data.md.a2'] (delete) should be 'approved'; "
+            f"got {body['field_status'].get('cross_data.md.a2')!r}. "
+            "spec: USE_CASE_en.md L594-L597; BACKEND_SCHEMA.md L134"
+        )
+        # Shape-check: action_id and action must be present in seeded proposals
+        actions_by_id = {a["action_id"]: a for a in body["proposals"]["cross_data.md"]}
+        assert "a1" in actions_by_id and actions_by_id["a1"]["action"] == "modify", (
+            f"Proposal a1 should have action='modify'; got {actions_by_id.get('a1')!r}. "
+            "spec: BACKEND.md §Cross-data MD action types"
+        )
+        assert "a2" in actions_by_id and actions_by_id["a2"]["action"] == "delete", (
+            f"Proposal a2 should have action='delete'; got {actions_by_id.get('a2')!r}. "
+            "spec: BACKEND.md §Cross-data MD action types"
+        )
+    finally:
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_uc4_reads_uc3_approved_nodes(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """UC3 → UC4 coupling: metagen run succeeds when approved ontogen nodes exist.
+
+    Setup (raw SQL):
+      1. Insert an approved ontogen_nodes row.
+      2. Insert a dataset_node_map row linking that node to _TEST_URN with status='approved'.
+      3. PUT metagen conf with targets=['dataset.description'], is_enabled=True.
+      4. POST method/metagen/run with dry_run=False.
+    Assert:
+      - HTTP 200 with proposals dict present.
+    Cleanup:
+      - DELETE metagen result row, dataset_node_map row, ontogen_nodes row, conf.
+
+    This test proves the UC4 service correctly joins dataset_node_map on status='approved'
+    without exploding, and that the UC3 → UC4 data handoff is plumbed end-to-end.
+
+    spec: BACKEND.md L425-L426 — 'UC3-approved nodes and triples filtered by
+    dataset_node_map.status=approved'.
+    spec: src/shared/db/models.py:431-451 — DatasetNodeMap schema.
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
+
+    suffix = uuid.uuid4().hex[:8]
+    node_id = f"uc4-coupling-{suffix}"
+    run_result_id: str | None = None
+
+    try:
+        # ── Step 1-2: Seed approved UC3 node + dataset_node_map row ──────────
+        # spec: TESTING.md §Api-Wired Integration Tests — setup may use raw SQL
+        await _seed_approved_ontogen_node(
+            async_session, node_id, f"Uc4CouplingNode-{suffix}"
+        )
+        await _seed_dataset_node_map(
+            async_session,
+            dataset_urn=_TEST_URN,
+            node_id=node_id,
+            status="approved",
+        )
+
+        # ── Step 3: PUT metagen conf ──────────────────────────────────────────
+        # spec: USE_CASE_en.md §UC4 L541-L549
+        put_resp = await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["dataset.description"],
+                "schedule_tier": "weekly",
+                "is_enabled": True,
+                "owner": "uc4-coupling-test@imazon.com",
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT metagen conf failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        # ── Step 4: POST metagen run ──────────────────────────────────────────
+        # spec: USE_CASE_en.md §UC4 L551-L553
+        run_resp = await api_client.post(
+            base_run,
+            headers=admin_headers,
+            json={"dry_run": False},
+        )
+        assert run_resp.status_code == 200, (
+            f"POST metagen run failed: {run_resp.status_code} {run_resp.text}. "
+            "UC3 → UC4 coupling: dataset_node_map join must not blow up when approved "
+            "rows exist. spec: BACKEND.md L425-L426"
+        )
+        run_body = run_resp.json()
+
+        # ── Assert: 200 with proposals dict (no LLM-output assertions) ───────
+        # spec: USE_CASE_en.md §UC4 — MetagenRunResponse: id, dataset_urn, proposals
+        assert "proposals" in run_body and isinstance(run_body["proposals"], dict), (
+            f"MetagenRunResponse must carry 'proposals' (dict); got {run_body!r}. "
+            "spec: USE_CASE_en.md §UC4 L551-L553"
+        )
+        assert run_body.get("dataset_urn") == _TEST_URN, (
+            f"MetagenRunResponse dataset_urn expected {_TEST_URN!r}; "
+            f"got {run_body.get('dataset_urn')!r}"
+        )
+        run_result_id = run_body.get("id")
+
+    finally:
+        # ── Cleanup: DELETE result, dataset_node_map, ontogen_node, conf ─────
+        if run_result_id is not None:
+            await _delete_metagen_result(async_session, run_result_id, _TEST_URN)
+        # _delete_ontogen_node cascades to dataset_node_map first
+        await _delete_ontogen_node(async_session, node_id)
         await api_client.delete(base_conf, headers=admin_headers)

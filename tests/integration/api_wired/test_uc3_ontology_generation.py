@@ -12,6 +12,10 @@ Tests in this module:
   - test_uc3_run_dry_run_with_seeded_documents: Seed two NATIVE document entities whose
     relatedAssets reference an in-scope dataset, POST dry-run, assert evidence-gathering
     succeeds (dataset URN absent from unresolved_urns).
+  - test_uc3_run_disabled_returns_409: PUT is_enabled=False, POST run (no dry_run),
+    assert 409 ONTOGEN_DISABLED.
+  - test_uc3_review_reject: Seed pending node, POST review verdict=reject, assert
+    status='rejected'.
 """
 # spec: USE_CASE_en.md §UC3
 
@@ -175,8 +179,6 @@ async def test_uc3_run_and_list(
                 "is_enabled": True,
                 "schedule_tier": "daily",
                 "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
-                "max_manual_queries_per_dataset": 20,
-                "max_system_queries_per_dataset": 10,
             },
         )
         # spec: USE_CASE_en.md §UC3 L309-L317 — PUT conf returns 200 or 201
@@ -186,22 +188,11 @@ async def test_uc3_run_and_list(
         conf_body = put_conf_resp.json()
         assert conf_body["is_enabled"] is True
         assert conf_body["schedule_tier"] == "daily"
-        # spec: USE_CASE_en.md §UC3 L309-L317 — round-trip must preserve dataset_filter and caps
+        # spec: USE_CASE_en.md §UC3 L309-L317 — round-trip must preserve dataset_filter
         assert conf_body["dataset_filter"] == {"tags": ["urn:li:tag:env:PROD"]}, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC3 L309-L317"
         )
-        assert conf_body["max_manual_queries_per_dataset"] == 20, (
-            f"max_manual_queries_per_dataset not preserved: "
-            f"{conf_body.get('max_manual_queries_per_dataset')!r}. "
-            "spec: USE_CASE_en.md §UC3 L309-L317"
-        )
-        assert conf_body["max_system_queries_per_dataset"] == 10, (
-            f"max_system_queries_per_dataset not preserved: "
-            f"{conf_body.get('max_system_queries_per_dataset')!r}. "
-            "spec: USE_CASE_en.md §UC3 L309-L317"
-        )
-
         # ── Step 2: POST a Markdown seed ──────────────────────────────────────
         # UC3 narrative: "They post a domain seed (Markdown) to steer the LLM toward
         # bookstore-friendly names."
@@ -507,8 +498,6 @@ async def test_uc3_run_dry_run_with_seeded_documents(
                 "is_enabled": True,
                 "schedule_tier": "daily",
                 "dataset_filter": {"dataset_urns": [dataset_urn]},
-                "max_manual_queries_per_dataset": 5,
-                "max_system_queries_per_dataset": 5,
             },
         )
         assert put_conf_resp.status_code in (200, 201), (
@@ -578,3 +567,118 @@ async def test_uc3_run_dry_run_with_seeded_documents(
             except Exception:
                 pass
         await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})
+
+
+# ── New-boundary + negative-coverage tests ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_uc3_run_disabled_returns_409(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """UC3 invariant: POST /method/run with is_enabled=False returns 409 ONTOGEN_DISABLED.
+
+    Steps mirror USE_CASE_en.md L541:
+      1. PUT conf with is_enabled=False
+      2. POST method/run (no dry_run query param)
+      3. Assert 409 with error_code='ONTOGEN_DISABLED'
+      4. Cleanup: PATCH conf back to disabled (already is, belt-and-suspenders)
+
+    spec: USE_CASE_en.md L541 — 'When is_enabled=false, non-dry-run calls to method/run
+    return 409 ONTOGEN_DISABLED.'
+    """
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    try:
+        # ── Step 1: PUT conf with is_enabled=False ────────────────────────────
+        put_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "schedule_tier": "daily",
+                "dataset_filter": {},
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT ontogen conf failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        # ── Step 2: POST run (no dry_run) ─────────────────────────────────────
+        # spec: USE_CASE_en.md L541 — non-dry-run on disabled config must be rejected
+        run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run",
+            headers=admin_headers,
+        )
+
+        # ── Step 3: Assert 409 ONTOGEN_DISABLED ──────────────────────────────
+        assert run_resp.status_code == 409, (
+            f"Expected 409 ONTOGEN_DISABLED when is_enabled=False and no dry_run; "
+            f"got {run_resp.status_code}: {run_resp.text}. "
+            "spec: USE_CASE_en.md L541"
+        )
+        body = run_resp.json()
+        assert body.get("error_code") == "ONTOGEN_DISABLED", (
+            f"Expected error_code 'ONTOGEN_DISABLED'; got: {body!r}. "
+            "spec: USE_CASE_en.md L541"
+        )
+
+        # Dry-run must still succeed when is_enabled=False — disabled gate is
+        # scoped to non-dry-run only. spec: USE_CASE_en.md L541
+        dry_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            headers=admin_headers,
+        )
+        assert dry_resp.status_code == 200, (
+            f"Dry-run must succeed even when is_enabled=False; "
+            f"got {dry_resp.status_code}: {dry_resp.text}. "
+            "spec: USE_CASE_en.md L541"
+        )
+    finally:
+        # ── Step 4: Restore conf ─────────────────────────────────────────────
+        await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})
+
+
+@pytest.mark.asyncio
+async def test_uc3_review_reject(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """UC3 invariant: POST node/{id}/method/review with verdict=reject sets status to 'rejected'.
+
+    spec: spec/feature/BACKEND.md §Ontology Generation Service — 'verdict: reject →
+    mark the result as rejected. Rejecting a node or edge does not auto-reject
+    dependent triples.'
+    spec: USE_CASE_en.md §UC3 — reviewer may reject candidates they disagree with.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    node_id = f"uc3-rej-{suffix}"
+
+    try:
+        # Setup: seed a pending node via raw SQL
+        # spec: TESTING.md §Api-Wired Integration Tests — setup may use raw SQL
+        await _seed_pending_node(async_session, node_id, f"UcRejectNode-{suffix}")
+
+        # Test body: REST only
+        review_resp = await api_client.post(
+            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/method/review",
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": "uc3-api-wired: reject test"},
+        )
+        assert review_resp.status_code == 200, (
+            f"POST review verdict=reject failed: "
+            f"{review_resp.status_code} {review_resp.text}"
+        )
+        body = review_resp.json()
+        assert body.get("status") == "rejected", (
+            f"Expected status 'rejected'; got {body.get('status')!r}. "
+            "spec: BACKEND.md §Ontology Generation Service §Approval flow"
+        )
+    finally:
+        await _delete_node(async_session, node_id)
+
+
+# UC3 read-only boundary is enforced structurally (no DataHub emit code paths in review
+# handlers per `src/backend/ontogen/service.py`); regression coverage lives in unit tests.

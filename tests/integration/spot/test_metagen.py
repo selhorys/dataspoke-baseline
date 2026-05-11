@@ -7,13 +7,20 @@ Concerns covered:
 - PATCH /data/{urn}/attr/metagen/conf — partial update
 - DELETE /data/{urn}/attr/metagen/conf — remove config (204)
 - POST /data/{urn}/method/metagen/run — dry_run=true and dry_run=false
+- POST /data/{urn}/method/metagen/run — 409 GENERATION_DISABLED when is_enabled=False
 - GET /data/{urn}/attr/metagen/result — result list (paginated)
+- GET /data/{urn}/attr/metagen/result?latest=true — returns at most one result
 - PATCH /data/{urn}/attr/metagen/result/{result_id} — review (approve and reject)
+- PATCH /data/{urn}/attr/metagen/result/{result_id} — field-level approve subset
+- PATCH /data/{urn}/attr/metagen/result/{result_id} — cross_data.md action approve
 - GET /data/{urn}/event/metagen — event list envelope
 
 Spec traceability:
-- spec/feature/BACKEND.md §Metadata Generation Service §Approval flow (L289-L299)
+- spec/feature/BACKEND.md §Metadata Generation Service §Approval flow (L440-L453)
+- spec/feature/BACKEND.md §Cross-data MD action types
 - spec/feature/BACKEND_SCHEMA.md §metagen_results
+- spec/USE_CASE_en.md L700 — GENERATION_DISABLED on non-dry run with is_enabled=False
+- spec/API.md L257 — ?latest=true returns most recent result row
 """
 
 import urllib.parse
@@ -246,7 +253,7 @@ async def _insert_pending_metagen_result(
     Mirrors the DB-seeding pattern from test_ontogen.py review tests so the
     approve/reject paths can be exercised without depending on the stub LLM
     returning non-empty proposals.
-    Spec: spec/feature/BACKEND.md L289-L299 (approve writes DataHub editable aspects).
+    Spec: spec/feature/BACKEND.md L440-L453 (approve writes DataHub editable aspects).
     """
     import json
     import uuid as _uuid
@@ -298,7 +305,7 @@ async def test_metagen_result_review_reject(
 
     Seeds a metagen_results row directly (no LLM dependency) so the reject path
     is deterministic regardless of stub LLM behaviour.
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L289-L299.
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L440-L453.
     """
     base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
 
@@ -350,7 +357,7 @@ async def test_metagen_result_review_approve(
 
     Seeds a metagen_results row directly (no LLM dependency) so the approve path
     is deterministic regardless of stub LLM behaviour.
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L289-L299
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L440-L453
     — on approval the service writes to editable DataHub aspects in a single emit_mcp
     per affected entity and emits METAGEN.APPROVE event.
     """
@@ -386,7 +393,7 @@ async def test_metagen_result_review_approve(
         body = review_resp.json()
         assert body["id"] == result_id
         # All fields must be approved
-        # Spec: spec/feature/BACKEND.md L289 — verdict=approve flips all pending fields
+        # Spec: spec/feature/BACKEND.md L440 — verdict=approve flips all pending fields
         for status_val in body["field_status"].values():
             assert status_val == "approved"
     finally:
@@ -426,3 +433,307 @@ async def test_metagen_events_list_envelope(
 
     # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
+
+
+# ── New-boundary + negative-coverage tests ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metagen_run_disabled_returns_409(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """POST method/metagen/run with is_enabled=False returns 409 GENERATION_DISABLED.
+
+    spec: USE_CASE_en.md L700 — 'When is_enabled=false, non-dry-run calls to
+    method/metagen/run return 409 GENERATION_DISABLED.'
+    spec: BACKEND.md L452 — 'method/run with is_enabled=false and dry_run=false raises
+    409 GENERATION_DISABLED. Dry-run is permitted regardless of is_enabled.'
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
+
+    try:
+        # Ensure config exists with is_enabled=False
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["dataset.description"],
+                "is_enabled": False,
+                "schedule_tier": None,
+                "owner": "spot-test@imazon.com",
+            },
+        )
+
+        run_resp = await api_client.post(
+            base_run,
+            headers=admin_headers,
+            json={"dry_run": False},
+        )
+        assert run_resp.status_code == 409, (
+            f"Expected 409 GENERATION_DISABLED when is_enabled=False and dry_run=False; "
+            f"got {run_resp.status_code}: {run_resp.text}. "
+            "spec: USE_CASE_en.md L700"
+        )
+        body = run_resp.json()
+        assert body.get("error_code") == "GENERATION_DISABLED", (
+            f"Expected error_code 'GENERATION_DISABLED'; got: {body!r}. "
+            "spec: USE_CASE_en.md L700; BACKEND.md L452"
+        )
+
+        # Dry-run must still succeed when is_enabled=False — disabled gate is
+        # scoped to non-dry-run only. spec: USE_CASE_en.md L700; BACKEND.md L452
+        dry_resp = await api_client.post(
+            base_run,
+            headers=admin_headers,
+            json={"dry_run": True},
+        )
+        assert dry_resp.status_code == 200, (
+            f"Dry-run must succeed even when is_enabled=False; "
+            f"got {dry_resp.status_code}: {dry_resp.text}. "
+            "spec: USE_CASE_en.md L700; BACKEND.md L452"
+        )
+    finally:
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_field_level_approve_subset(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session,
+) -> None:
+    """PATCH result with verdict=approve + fields=[subset] only flips those fields to 'approved'.
+
+    Fields not in the subset must remain 'pending'.
+
+    spec: BACKEND.md L444 — 'verdict: approve + fields: [...] → approve only the listed
+    field paths and/or cross-data actions'
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    encoded_urn = urllib.parse.quote(_TEST_URN, safe="")
+
+    result_id: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["dataset.description", "column.description"],
+                "is_enabled": False,
+                "schedule_tier": None,
+                "owner": "spot-test@imazon.com",
+            },
+        )
+
+        # Seed a result with four pending fields
+        result_id = await _insert_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals={
+                "dataset.description": "Book catalog master list.",
+                "column.description": {
+                    "book_id": "Unique identifier for a book.",
+                    "title": "Book title shown to customers.",
+                    "author": "Author name.",
+                },
+            },
+            field_status={
+                "dataset.description": "pending",
+                "column.description.book_id": "pending",
+                "column.description.title": "pending",
+                "column.description.author": "pending",
+            },
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{encoded_urn}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        approve_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "approve",
+                "fields": ["dataset.description", "column.description.book_id"],
+                "reason": "spot-test field-level approve",
+            },
+        )
+        assert approve_resp.status_code == 200, approve_resp.text
+        body = approve_resp.json()
+        fs = body["field_status"]
+
+        # Approved fields must flip
+        # spec: BACKEND.md L444 — field-level approve flips only listed fields
+        assert fs.get("dataset.description") == "approved", (
+            f"'dataset.description' should be 'approved'; got {fs.get('dataset.description')!r}. "
+            "spec: BACKEND.md L444"
+        )
+        assert fs.get("column.description.book_id") == "approved", (
+            f"'column.description.book_id' should be 'approved'; "
+            f"got {fs.get('column.description.book_id')!r}. spec: BACKEND.md L444"
+        )
+        # Non-listed fields must remain pending
+        assert fs.get("column.description.title") == "pending", (
+            f"'column.description.title' should remain 'pending'; "
+            f"got {fs.get('column.description.title')!r}. spec: BACKEND.md L444"
+        )
+        assert fs.get("column.description.author") == "pending", (
+            f"'column.description.author' should remain 'pending'; "
+            f"got {fs.get('column.description.author')!r}. spec: BACKEND.md L444"
+        )
+    finally:
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_cross_data_action_approve(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session,
+) -> None:
+    """PATCH result approving cross_data.md.a1 flips that action's field_status to 'approved'.
+
+    spec: BACKEND_SCHEMA.md L134 — proposals['cross_data.md'] is a list of action dicts;
+    field_status uses flat cross_data.md.<action_id> keys.
+    spec: BACKEND.md §Cross-data MD action types (create action: title, body,
+    related_assets required).
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    encoded_urn = urllib.parse.quote(_TEST_URN, safe="")
+
+    result_id: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["cross_data.md"],
+                "is_enabled": False,
+                "schedule_tier": None,
+                "owner": "spot-test@imazon.com",
+            },
+        )
+
+        # Seed a result with a cross_data.md create action
+        # spec: BACKEND.md §Cross-data MD action types — create requires title, body, related_assets
+        result_id = await _insert_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals={
+                "cross_data.md": [
+                    {
+                        "action_id": "a1",
+                        "action": "create",
+                        "title": "Spot test cross-data doc",
+                        "body": "Spot test body for cross-data create action.",
+                        "related_assets": [
+                            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+                            "example_db.catalog.title_master,DEV)"
+                        ],
+                        "confidence": 0.75,
+                    }
+                ]
+            },
+            field_status={"cross_data.md.a1": "pending"},
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{encoded_urn}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        approve_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "approve",
+                "fields": ["cross_data.md.a1"],
+                "reason": "spot-test cross_data action approve",
+            },
+        )
+        assert approve_resp.status_code == 200, approve_resp.text
+        body = approve_resp.json()
+        # spec: BACKEND_SCHEMA.md L134-L135 — field_status key is cross_data.md.<action_id>
+        assert body["field_status"].get("cross_data.md.a1") == "approved", (
+            f"field_status['cross_data.md.a1'] should be 'approved'; "
+            f"got {body['field_status'].get('cross_data.md.a1')!r}. "
+            "spec: BACKEND_SCHEMA.md L134; BACKEND.md §Cross-data MD action types"
+        )
+    finally:
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_result_latest_returns_at_most_one(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session,
+) -> None:
+    """GET attr/metagen/result?latest=true returns at most one result row for the dataset.
+
+    Seeds two results rows with different generated_at values; asserts the response
+    carries at most one row and that row belongs to _TEST_URN.
+
+    spec: API.md L257 — '?latest=true for most recent only'
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    base_results = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result"
+
+    result_id1: str | None = None
+    result_id2: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["dataset.description"],
+                "is_enabled": False,
+                "schedule_tier": None,
+                "owner": "spot-test@imazon.com",
+            },
+        )
+
+        result_id1 = await _insert_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals={"dataset.description": "First seeded description."},
+            field_status={"dataset.description": "pending"},
+        )
+        result_id2 = await _insert_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals={"dataset.description": "Second seeded description."},
+            field_status={"dataset.description": "pending"},
+        )
+
+        latest_resp = await api_client.get(
+            f"{base_results}?latest=true",
+            headers=admin_headers,
+        )
+        assert latest_resp.status_code == 200, latest_resp.text
+        body = latest_resp.json()
+        assert "results" in body and isinstance(body["results"], list)
+        # spec: API.md L257 — ?latest=true returns the most recent row; two rows
+        # were seeded for this URN, so exactly one must be returned.
+        assert len(body["results"]) == 1, (
+            f"?latest=true must return exactly one result row when results exist; "
+            f"got {len(body['results'])}. spec: API.md L257"
+        )
+        assert body["results"][0]["dataset_urn"] == _TEST_URN, (
+            f"latest result dataset_urn expected {_TEST_URN!r}; "
+            f"got {body['results'][0].get('dataset_urn')!r}. spec: API.md L257"
+        )
+    finally:
+        if result_id1 is not None:
+            await _delete_metagen_result(async_session, result_id1, _TEST_URN)
+        if result_id2 is not None:
+            await _delete_metagen_result(async_session, result_id2, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
