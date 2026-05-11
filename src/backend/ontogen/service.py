@@ -600,8 +600,8 @@ class OntogenService:
             "ontogen_llm_loop_complete",
             extra={
                 "run_nonce": run_nonce,
-                "validation_iterations": producer_iterations,
-                "validation_errors_dropped": producer_errors_dropped,
+                "producer_iterations": producer_iterations,
+                "producer_errors_dropped": producer_errors_dropped,
                 "debate_outcome": debate_result.outcome,
             },
         )
@@ -786,8 +786,8 @@ class OntogenService:
                     "unresolved_urns": unresolved_urns,
                     "counts": counts_dict,
                     "dry_run": True,
-                    "validation_iterations": producer_iterations,
-                    "validation_errors_dropped": producer_errors_dropped,
+                    "producer_iterations": producer_iterations,
+                    "producer_errors_dropped": producer_errors_dropped,
                     "debate_outcome": debate_result.outcome,
                 },
             )
@@ -1013,8 +1013,8 @@ class OntogenService:
                 "unresolved_urns": unresolved_urns,
                 "counts": counts_dict,
                 "dry_run": False,
-                "validation_iterations": producer_iterations,
-                "validation_errors_dropped": producer_errors_dropped,
+                "producer_iterations": producer_iterations,
+                "producer_errors_dropped": producer_errors_dropped,
                 "debate_outcome": debate_result.outcome,
             },
         )

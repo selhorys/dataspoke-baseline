@@ -54,7 +54,7 @@ Two enforcement layers stack:
 |-----------|-------|
 | Max iterations | `3` per service, overridable via `DATASPOKE_ONTOGEN_LLM_MAX_ITERATIONS` / `DATASPOKE_METAGEN_LLM_MAX_ITERATIONS`. One iteration = one model invocation. |
 | Exhaustion behavior | Soft. The last candidate is accepted; rows that fail individual rules are dropped before persistence. The run is **not** marked failed on validation exhaustion — UC3/UC4 gate persistence through a human reviewer. |
-| Observability | The run-complete event carries `validation_iterations` (1–`max`) and `validation_errors_dropped` (row count). Per-rule error samples are logged but not surfaced in the synchronous response. |
+| Observability | The run-complete event carries `producer_iterations` (1–`max`) and `producer_errors_dropped` (row count) reflecting the Producer-turn inference loop. Per-rule error samples are logged but not surfaced in the synchronous response. |
 
 The loop lives in `LLMClient.complete_with_tools`. Validators ship alongside
 their service code (`src/backend/{service}/validator.py`).

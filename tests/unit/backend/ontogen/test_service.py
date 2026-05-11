@@ -768,10 +768,11 @@ async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
 async def test_run_validation_telemetry_surfaces_in_run_complete_event(
     svc: OntogenService, db: AsyncMock, cache: AsyncMock, llm: AsyncMock
 ) -> None:
-    """RUN_COMPLETE event detail carries validation_iterations and validation_errors_dropped.
+    """RUN_COMPLETE event detail carries producer_iterations and producer_errors_dropped.
 
-    Spec: BACKEND.md §LLM Inference Loop — 'The run-complete event carries
-    validation_iterations (1–max) and validation_errors_dropped (row count).'
+    Spec: BACKEND_LLM.md §Inference Loop — 'The run-complete event carries
+    producer_iterations (1–max) and producer_errors_dropped (row count)
+    reflecting the Producer-turn inference loop.'
 
     Setup:
     - complete_with_tools returns LoopResult with trace.iterations=2 and
@@ -780,7 +781,7 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
     - partition_clean_rows contract (spec §Ontogen validator rules): that node is
       dropped → expected dropped_count = 1.
     - Assertion: RUN_COMPLETE event detail must contain
-        validation_iterations=2, validation_errors_dropped=1.
+        producer_iterations=2, producer_errors_dropped=1.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock(return_value=None)
@@ -814,9 +815,8 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
     # DebateResult transcript carries producer_iterations=2 and producer_errors_dropped=1,
-    # which service.py writes into the RUN_COMPLETE event detail as validation_iterations
-    # and validation_errors_dropped.
-    # Spec: BACKEND.md §LLM Inference Loop — producer inner-loop telemetry is surfaced
+    # which service.py writes into the RUN_COMPLETE event detail under the same keys.
+    # Spec: BACKEND_LLM.md §Inference Loop — producer inner-loop telemetry surfaced
     # via debate_result.transcript["producer_iterations"] / ["producer_errors_dropped"].
     debate_stub = DebateResult(
         payload={"nodes": [], "edges": [], "triples": []},
@@ -849,17 +849,17 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
 
     detail = complete_events[0].detail
 
-    # Spec: BACKEND.md §LLM Inference Loop — 'validation_iterations (1–max)'
-    assert detail.get("validation_iterations") == 2, (
-        f"detail['validation_iterations'] must be 2 (from trace.iterations); "
-        f"got {detail.get('validation_iterations')!r}. "
-        "Spec: BACKEND.md §LLM Inference Loop — 'run-complete event carries validation_iterations'."
+    # Spec: BACKEND_LLM.md §Inference Loop — 'producer_iterations (1–max)'
+    assert detail.get("producer_iterations") == 2, (
+        f"detail['producer_iterations'] must be 2 (from trace.iterations); "
+        f"got {detail.get('producer_iterations')!r}. "
+        "Spec: BACKEND_LLM.md §Inference Loop — 'run-complete event carries producer_iterations'."
     )
 
-    # Spec: BACKEND.md §LLM Inference Loop — 'validation_errors_dropped (row count)'
+    # Spec: BACKEND_LLM.md §Inference Loop — 'producer_errors_dropped (row count)'
     # partition_clean_rows contract: one SLUG_FORMAT error at nodes[0].id → 1 node dropped.
     # Expected dropped_count derived from partition_clean_rows spec invariant, not impl introspection.
-    assert detail.get("validation_errors_dropped") == 1, (
+    assert detail.get("producer_errors_dropped") == 1, (
         f"detail['validation_errors_dropped'] must be 1 (one node dropped by partition_clean_rows); "
         f"got {detail.get('validation_errors_dropped')!r}. "
         "Spec: BACKEND.md §LLM Inference Loop — 'run-complete event carries validation_errors_dropped'."

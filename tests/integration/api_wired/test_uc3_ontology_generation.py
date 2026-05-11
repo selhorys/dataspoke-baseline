@@ -856,12 +856,20 @@ async def test_uc3_debate_smoke_under_stub(
 
         # Under stub mode: Producer returns empty → no rows persisted.
         # Soft assertion: if any rows are present, verify evidence.debate shape.
+        # Evidence is not surfaced on the list response — fetch /attr per row to read it.
         # spec: BACKEND_LLM.md §Evidence shape
         for node in nodes:
-            evidence = node.get("evidence") or {}
+            attr_resp = await api_client.get(
+                f"/api/v1/spoke/common/ontogen/result/node/{node['id']}/attr",
+                headers=admin_headers,
+            )
+            assert attr_resp.status_code == 200, (
+                f"GET result/node/{node['id']}/attr failed: {attr_resp.status_code}"
+            )
+            evidence = attr_resp.json().get("evidence") or {}
             debate = evidence.get("debate")
             assert debate is not None, (
-                f"Node {node.get('id')!r} evidence missing 'debate' key. "
+                f"Node {node['id']!r} evidence missing 'debate' key. "
                 "spec: BACKEND_LLM.md §Evidence shape — debate key required in evidence JSONB"
             )
             # spec: §Evidence shape — required top-level keys
@@ -970,6 +978,8 @@ async def test_uc3_debate_real_when_test_llm_real(
 
         # ── Step 4: Verify debate transcript on every persisted row ───────────
         # spec: BACKEND_LLM.md §Evidence shape — debate key required on each row
+        # The list endpoints return summary rows without evidence; fetch each row's
+        # /attr endpoint to read the full evidence JSONB including the debate sub-tree.
         any_rows_found = False
         for result_type, list_key in [("node", "nodes"), ("edge", "edges"), ("triple", "triples")]:
             list_resp = await api_client.get(
@@ -982,28 +992,36 @@ async def test_uc3_debate_real_when_test_llm_real(
             rows = list_resp.json().get(list_key, [])
             for row in rows:
                 any_rows_found = True
-                evidence = row.get("evidence") or {}
+                attr_resp = await api_client.get(
+                    f"/api/v1/spoke/common/ontogen/result/{result_type}/{row['id']}/attr",
+                    headers=admin_headers,
+                )
+                assert attr_resp.status_code == 200, (
+                    f"GET result/{result_type}/{row['id']}/attr failed: "
+                    f"{attr_resp.status_code}"
+                )
+                evidence = attr_resp.json().get("evidence") or {}
                 debate = evidence.get("debate")
                 assert debate is not None, (
-                    f"{result_type} {row.get('id')!r} evidence missing 'debate'. "
+                    f"{result_type} {row['id']!r} evidence missing 'debate'. "
                     "spec: BACKEND_LLM.md §Evidence shape"
                 )
                 # spec: §Termination — outcome is one of the canonical values
                 assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
-                    f"{result_type} {row.get('id')!r} debate.outcome invalid: "
+                    f"{result_type} {row['id']!r} debate.outcome invalid: "
                     f"{debate['outcome']!r}. "
                     "spec: BACKEND_LLM.md §Termination"
                 )
                 # spec: §Loop shape — at least 1 Producer + 1 Reviewer turn
                 tc = debate["turns_completed"]
                 assert isinstance(tc, int) and tc >= 2, (
-                    f"{result_type} {row.get('id')!r} turns_completed must be ≥ 2; "
+                    f"{result_type} {row['id']!r} turns_completed must be ≥ 2; "
                     f"got {tc!r}. spec: BACKEND_LLM.md §Loop shape"
                 )
                 # spec: §Evidence shape — history non-empty with actor entries
                 history = debate.get("history", [])
                 assert len(history) >= 2, (
-                    f"{result_type} {row.get('id')!r} history must have ≥ 2 entries "
+                    f"{result_type} {row['id']!r} history must have ≥ 2 entries "
                     f"(at least 1 Producer + 1 Reviewer); got {len(history)}. "
                     "spec: BACKEND_LLM.md §Evidence shape §history"
                 )
