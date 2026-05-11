@@ -5,6 +5,7 @@ backend, api) can import them without violating the layered architecture
 rule.
 """
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     llm_api_key: str = ""
     llm_model: str = "gpt-4o"
+    ontogen_llm_max_iterations: int = Field(default=3, ge=1, le=20)
 
     # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
     # in ``src/workflows/_common.py`` return stub implementations instead of

@@ -29,6 +29,7 @@ from typing import Any, get_args, get_origin
 from pydantic import BaseModel
 
 from src.shared.config import EMBEDDING_DIMENSION
+from src.shared.llm.loop_trace import LoopResult, LoopTrace
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,22 @@ class StubLLMClient:
         if schema is None:
             return {}
         return _minimal_dict_for_schema(schema)
+
+    async def complete_with_tools(
+        self,
+        prompt: str,
+        *,
+        tools: list,
+        success_tool_name: str,
+        schema: type[BaseModel],
+        system: str = "",
+        max_iterations: int = 3,
+        temperature: float = 0.0,
+    ) -> LoopResult:
+        return LoopResult(
+            payload=_minimal_dict_for_schema(schema),
+            trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),
+        )
 
 
 def _minimal_dict_for_schema(schema: type[BaseModel]) -> dict[str, Any]:
