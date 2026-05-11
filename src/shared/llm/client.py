@@ -288,7 +288,7 @@ def _create_chat_model(provider: str, api_key: str, model: str):  # type: ignore
 
 
 def _create_embeddings_model(provider: str, api_key: str):  # type: ignore[no-untyped-def]
-    from src.shared.config import EMBEDDING_MODEL_GOOGLE, EMBEDDING_MODEL_OPENAI
+    from src.shared.config import EMBEDDING_DIMENSION, EMBEDDING_MODEL_GOOGLE, EMBEDDING_MODEL_OPENAI
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
@@ -297,9 +297,12 @@ def _create_embeddings_model(provider: str, api_key: str):  # type: ignore[no-un
     elif provider in ("google", "gemini"):
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
+        # gemini-embedding-001 emits 3072-dim by default; truncate via MRL to match
+        # the pgvector column (EMBEDDING_DIMENSION).
         return GoogleGenerativeAIEmbeddings(
             model=EMBEDDING_MODEL_GOOGLE,
             google_api_key=api_key,  # type: ignore[arg-type]
+            output_dimensionality=EMBEDDING_DIMENSION,
         )
     elif provider == "anthropic":
         # Anthropic does not provide a native embedding API.

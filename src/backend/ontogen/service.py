@@ -624,7 +624,7 @@ class OntogenService:
             except Exception:
                 logger.warning(
                     "ontogen_node_embedding_search_failed",
-                    extra={"name": name},
+                    extra={"node_name": name},
                     exc_info=True,
                 )
 

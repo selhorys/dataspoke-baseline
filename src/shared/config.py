@@ -22,7 +22,7 @@ EMBEDDING_DIMENSION: int = 1536
 SEARCH_SCORE_THRESHOLD: float = 0.3
 EMBEDDING_COLLECTION: str = "dataset_embeddings"
 EMBEDDING_MODEL_OPENAI: str = "text-embedding-3-small"
-EMBEDDING_MODEL_GOOGLE: str = "models/text-embedding-004"
+EMBEDDING_MODEL_GOOGLE: str = "models/gemini-embedding-001"
 
 # Ontology
 ONTOLOGY_CONFIDENCE_THRESHOLD: float = 0.7

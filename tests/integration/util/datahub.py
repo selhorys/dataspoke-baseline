@@ -595,6 +595,25 @@ def reset_glossary_terms() -> int:
     return deleted
 
 
+def reset_documents() -> int:
+    """Hard-delete every dataDocument entity in dev-env DataHub.
+
+    The Imazon seed never emits documents — only datasets, containers, and
+    glossary terms. Any urn:li:document:* present in dev-env is residue from
+    prior spot/api-wired tests (metagen cross_data.md create-action approvals,
+    UI manual "New Document" clicks, or seed_native_document() calls that
+    aborted before their cleanup ran).
+    """
+    deleted = 0
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+    for urn in _list_urns_incl_soft_deleted("document"):
+        graph.hard_delete_entity(urn)
+        deleted += 1
+    print(f"  Hard-deleted {deleted} documents.")
+    return deleted
+
+
 def hard_delete_dataspoke_assertions_for_dataset(dataset_urn: str) -> int:
     """Hard-delete every DataSpoke-emitted assertion attached to one dataset URN.
 
@@ -622,6 +641,31 @@ def hard_delete_dataspoke_assertions_for_dataset(dataset_urn: str) -> int:
             continue
         graph.hard_delete_entity(urn)
         deleted += 1
+    return deleted
+
+
+def hard_delete_documents_for_dataset(dataset_urn: str) -> int:
+    """Hard-delete every document entity whose relatedAssets references ``dataset_urn``.
+
+    Used by spot/api-wired test teardown for flows (e.g. metagen cross_data.md
+    create-action approval) where the spot test triggers a document emission
+    but does not know the random URN. Filters by the ``IsRelatedTo`` relationship
+    so unrelated documents are left untouched.
+    """
+    from datahub.metadata.schema_classes import DocumentInfoClass
+
+    token = _get_token()
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
+
+    deleted = 0
+    for urn in _list_urns_incl_soft_deleted("document"):
+        info = graph.get_aspect(entity_urn=urn, aspect_type=DocumentInfoClass)
+        if info is None:
+            continue
+        related = getattr(info, "relatedAssets", None) or []
+        if any(getattr(r, "asset", None) == dataset_urn for r in related):
+            graph.hard_delete_entity(urn)
+            deleted += 1
     return deleted
 
 
@@ -1062,6 +1106,7 @@ def reset_only() -> int:
     reset_assertions()
     reset_containers()
     reset_glossary_terms()
+    reset_documents()
     return deleted
 
 

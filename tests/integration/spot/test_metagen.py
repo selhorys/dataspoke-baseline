@@ -707,8 +707,20 @@ async def test_metagen_cross_data_action_approve(
                     {
                         "action_id": "a1",
                         "action": "create",
-                        "title": "Spot test cross-data doc",
-                        "body": "Spot test body for cross-data create action.",
+                        "title": "title_master onboarding guide for catalog editors",
+                        "body": (
+                            "# title_master onboarding\n\n"
+                            "`catalog.title_master` is the per-ISBN source of truth for every "
+                            "Imazon listing — title, subtitle, primary author, publisher, "
+                            "genre code, and the manufacturer suggested retail price that the "
+                            "storefront falls back to when an edition is missing its own price.\n\n"
+                            "Editors update this row when a publisher submits cover artwork or "
+                            "revises the marketing blurb; the `editions` table holds the "
+                            "per-format variants (Hardcover, Paperback, eBook, Audiobook) and "
+                            "joins back here on `isbn`. Inactive titles are kept for historical "
+                            "sales analytics rather than being deleted, so set `is_active=false` "
+                            "instead of removing the row."
+                        ),
                         "related_assets": [
                             "urn:li:dataset:(urn:li:dataPlatform:postgres,"
                             "example_db.catalog.title_master,DEV)"
@@ -742,6 +754,11 @@ async def test_metagen_cross_data_action_approve(
             "spec: BACKEND_SCHEMA.md L134; BACKEND.md §Cross-data MD action types"
         )
     finally:
+        # Approval emits a urn:li:document:<uuid> via metagen cross_data.create_document.
+        # The URN is not deterministic, so clean up by scanning relatedAssets for _TEST_URN.
+        from tests.integration.util.datahub import hard_delete_documents_for_dataset
+
+        hard_delete_documents_for_dataset(_TEST_URN)
         if result_id is not None:
             await _delete_metagen_result(async_session, result_id, _TEST_URN)
         await api_client.delete(base_conf, headers=admin_headers)

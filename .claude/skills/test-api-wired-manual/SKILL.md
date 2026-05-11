@@ -99,13 +99,18 @@ For each extracted step:
    STEP N: <one-line operation framing>
      METHOD URL
      auth: admin | internal | gms
-     body: <pretty-printed JSON, or "(none)">
      expected: HTTP <status> [+ <key field assertions>]
      side-effects to verify: <bullet list>
    ```
+   Then a separate fenced **REQUEST** block with the full pretty-printed body
+   (`(none)` if no body). Keep request preview and response preview symmetrical
+   — the user reviews both side-by-side.
 2. **Approval gate** (per-call mode only): `AskUserQuestion` Approve / Skip / Abort.
 3. **Fire**: write body to `/tmp/_step_body.json`, run curl with `-d @file`.
-4. **Print response**: HTTP status + pretty-printed JSON.
+4. **Print response**: emit one fenced **RESPONSE** block with `HTTP <code>`
+   on the first line and the full pretty-printed JSON body (or raw text if not
+   JSON). Never truncate. The request block from step 1 and this response block
+   are the canonical artifacts the user reviews to approve the step.
 5. **401 retry**: if HTTP 401 with `error_code=UNAUTHORIZED`, run
    `bash .claude/skills/test-api-wired-manual/helpers/refresh_token.sh`,
    then re-fire once. If still 401, abort with diagnostics.

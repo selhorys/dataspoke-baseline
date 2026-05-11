@@ -199,9 +199,20 @@ async def test_uc3_run_and_list(
         # spec: USE_CASE_en.md §UC3 L400-L409
         seed_md = (
             "# Imazon Bookstore Domain\n\n"
-            "Imazon is an online bookstore. Treat *order* as a header concept and "
-            "*order line* as the per-book row. Prefer business-friendly names over "
-            "table names."
+            "Imazon is an online retailer specialising in books. The storefront sells "
+            "individual titles, identified by ISBN-13, in multiple physical and digital "
+            "formats — Hardcover, Paperback, eBook, and Audiobook. Each title carries "
+            "marketing copy, cover artwork, and a genre code from a two-level taxonomy "
+            "(for example `FIC-THR` for Fiction → Thriller).\n\n"
+            "Customers place *orders* that bundle one or more *order lines*; each line "
+            "is a single edition at a single quantity. Treat *order* as the header concept "
+            "and *order line* as the per-book row — never confuse the two, and prefer "
+            "those business-friendly names over the underlying table names.\n\n"
+            "Customers may submit ratings and reviews tied to a specific edition, and we "
+            "track whether the rating came from a verified purchase. Editorial metadata "
+            "(blurbs, cover sourcing, genre decisions) is curated by the catalog team and "
+            "lives separately from operational sales data. Prefer business-domain language "
+            "over warehouse schema names whenever both are available."
         )
         create_seed_resp = await api_client.post(
             seed_url,
