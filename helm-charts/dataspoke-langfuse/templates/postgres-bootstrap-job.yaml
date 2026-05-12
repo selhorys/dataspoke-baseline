@@ -31,7 +31,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: create-db
-          image: "bitnami/postgresql:17"
+          image: "bitnamilegacy/postgresql:17"
           imagePullPolicy: IfNotPresent
           env:
             - name: PGPASSWORD

@@ -62,16 +62,53 @@ _env_set_or_generate DATASPOKE_LANGFUSE_ENCRYPTION_KEY
 _env_set_or_generate DATASPOKE_LANGFUSE_CLICKHOUSE_PASSWORD
 _env_set_or_generate DATASPOKE_LANGFUSE_MINIO_ROOT_PASSWORD
 
-chmod 600 "$ENV_FILE"
-
 # MinIO root user is fixed (not random)
 DATASPOKE_LANGFUSE_MINIO_ROOT_USER="${DATASPOKE_LANGFUSE_MINIO_ROOT_USER:-minio}"
 
-# Public/secret keys must come from Langfuse UI after first login.
-# Provide empty-string defaults so the secret is created; operators update these
-# after bootstrapping Langfuse and generating an API key pair in the UI.
-DATASPOKE_LANGFUSE_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}"
-DATASPOKE_LANGFUSE_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY:-}"
+# Headless-init seeded credentials (dev). On first web start, Langfuse reads
+# LANGFUSE_INIT_* env vars and provisions an org + project + user + API key
+# pair so no manual UI signup is needed. Deterministic public key + persisted
+# secret key make the pair stable across re-installs.
+#
+# Login at the UI: dataspoke@dataspoke.local / dataspoke
+DATASPOKE_LANGFUSE_INIT_USER_EMAIL="${DATASPOKE_LANGFUSE_INIT_USER_EMAIL:-dataspoke@dataspoke.local}"
+DATASPOKE_LANGFUSE_INIT_USER_NAME="${DATASPOKE_LANGFUSE_INIT_USER_NAME:-dataspoke}"
+DATASPOKE_LANGFUSE_INIT_USER_PASSWORD="${DATASPOKE_LANGFUSE_INIT_USER_PASSWORD:-dataspoke}"
+DATASPOKE_LANGFUSE_INIT_ORG_ID="${DATASPOKE_LANGFUSE_INIT_ORG_ID:-dataspoke-org}"
+DATASPOKE_LANGFUSE_INIT_ORG_NAME="${DATASPOKE_LANGFUSE_INIT_ORG_NAME:-DataSpoke}"
+DATASPOKE_LANGFUSE_INIT_PROJECT_ID="${DATASPOKE_LANGFUSE_INIT_PROJECT_ID:-dataspoke-project}"
+DATASPOKE_LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_LANGFUSE_INIT_PROJECT_NAME:-dataspoke}"
+
+# Public key is human-readable, hardcoded; secret key is persisted random hex
+# so it stays stable across re-runs and matches what Langfuse provisioned.
+# Persist both into .env so downstream tools (helm --set-string, host-mode
+# clients) read them via the normal source dev_env/.env path.
+if [[ -z "${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+  info "DATASPOKE_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
+  DATASPOKE_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
+  if grep -q "^DATASPOKE_LANGFUSE_PUBLIC_KEY=" "$ENV_FILE" 2>/dev/null; then
+    sed -i.bak "s|^DATASPOKE_LANGFUSE_PUBLIC_KEY=.*|DATASPOKE_LANGFUSE_PUBLIC_KEY=${DATASPOKE_LANGFUSE_PUBLIC_KEY}|" "$ENV_FILE" \
+      && rm -f "${ENV_FILE}.bak"
+  else
+    printf '\n%s=%s\n' "DATASPOKE_LANGFUSE_PUBLIC_KEY" "${DATASPOKE_LANGFUSE_PUBLIC_KEY}" >> "$ENV_FILE"
+  fi
+  export DATASPOKE_LANGFUSE_PUBLIC_KEY
+  info "  DATASPOKE_LANGFUSE_PUBLIC_KEY=${DATASPOKE_LANGFUSE_PUBLIC_KEY} persisted to .env."
+fi
+if [[ -z "${DATASPOKE_LANGFUSE_SECRET_KEY:-}" ]]; then
+  info "DATASPOKE_LANGFUSE_SECRET_KEY not set — generating sk-lf-dataspoke-dev-<hex>..."
+  _generated_sk="sk-lf-dataspoke-dev-$(openssl rand -hex 24)"
+  if grep -q "^DATASPOKE_LANGFUSE_SECRET_KEY=" "$ENV_FILE" 2>/dev/null; then
+    sed -i.bak "s|^DATASPOKE_LANGFUSE_SECRET_KEY=.*|DATASPOKE_LANGFUSE_SECRET_KEY=${_generated_sk}|" "$ENV_FILE" \
+      && rm -f "${ENV_FILE}.bak"
+  else
+    printf '\n%s=%s\n' "DATASPOKE_LANGFUSE_SECRET_KEY" "${_generated_sk}" >> "$ENV_FILE"
+  fi
+  export DATASPOKE_LANGFUSE_SECRET_KEY="${_generated_sk}"
+  info "  DATASPOKE_LANGFUSE_SECRET_KEY generated and persisted to .env."
+fi
+
+chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
 # Verify required tools
@@ -117,6 +154,17 @@ kubectl create secret generic dataspoke-langfuse-secret \
   --from-literal=LANGFUSE_CLICKHOUSE_PASSWORD="${DATASPOKE_LANGFUSE_CLICKHOUSE_PASSWORD}" \
   --from-literal=LANGFUSE_MINIO_ROOT_USER="${DATASPOKE_LANGFUSE_MINIO_ROOT_USER}" \
   --from-literal=LANGFUSE_MINIO_ROOT_PASSWORD="${DATASPOKE_LANGFUSE_MINIO_ROOT_PASSWORD}" \
+  --from-literal=LANGFUSE_S3_ACCESS_KEY_ID="${DATASPOKE_LANGFUSE_MINIO_ROOT_USER}" \
+  --from-literal=LANGFUSE_S3_SECRET_ACCESS_KEY="${DATASPOKE_LANGFUSE_MINIO_ROOT_PASSWORD}" \
+  --from-literal=LANGFUSE_INIT_USER_EMAIL="${DATASPOKE_LANGFUSE_INIT_USER_EMAIL}" \
+  --from-literal=LANGFUSE_INIT_USER_NAME="${DATASPOKE_LANGFUSE_INIT_USER_NAME}" \
+  --from-literal=LANGFUSE_INIT_USER_PASSWORD="${DATASPOKE_LANGFUSE_INIT_USER_PASSWORD}" \
+  --from-literal=LANGFUSE_INIT_ORG_ID="${DATASPOKE_LANGFUSE_INIT_ORG_ID}" \
+  --from-literal=LANGFUSE_INIT_ORG_NAME="${DATASPOKE_LANGFUSE_INIT_ORG_NAME}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_ID="${DATASPOKE_LANGFUSE_INIT_PROJECT_ID}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_LANGFUSE_INIT_PROJECT_NAME}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
 info "dataspoke-langfuse-secret applied."
 
@@ -170,13 +218,18 @@ info "DATASPOKE_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
 # ---------------------------------------------------------------------------
 UMBRELLA_CHART="$REPO_ROOT/helm-charts/dataspoke"
 if helm status dataspoke -n "${NS}" >/dev/null 2>&1; then
-  info "Propagating DATASPOKE_LANGFUSE_HOST into the DataSpoke umbrella chart..."
+  info "Propagating Langfuse host + public key into the DataSpoke umbrella chart..."
+  # All three of host/public/secret must be set for LLMClient to install the
+  # Langfuse callback (src/shared/llm/client.py). publicKey lands in the
+  # ConfigMap (non-secret); secretKey is read from dataspoke-langfuse-secret
+  # via existingSecret reference (see helm-charts/dataspoke/values.yaml).
   helm upgrade --install dataspoke "$UMBRELLA_CHART" \
     --reuse-values \
     --set-string "config.langfuse.host=${LANGFUSE_HOST}" \
+    --set-string "config.langfuse.publicKey=${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
     -n "${NS}" --wait --timeout 5m
   kubectl rollout restart deployment/dataspoke-api -n "${NS}" || true
-  info "dataspoke-api restarted with updated Langfuse host."
+  info "dataspoke-api restarted with updated Langfuse host + public key."
 else
   info "DataSpoke umbrella release not found — host will be picked up on next dataspoke-infra install."
 fi
