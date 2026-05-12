@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     ontogen_debate_rag_k: int = Field(default=5, ge=0, le=20)
     ontogen_debate_reviewer_model: str | None = None
 
+    # Langfuse observability (all optional — when unset no traces are emitted)
+    langfuse_host: str | None = None
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+
     # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
     # in ``src/workflows/_common.py`` return stub implementations instead of
     # real clients for LLM, pgvector, Redis (cache), and Notification.  DataHub

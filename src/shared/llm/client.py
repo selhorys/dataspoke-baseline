@@ -5,6 +5,7 @@ from typing import Any
 
 import pydantic
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from src.shared.llm.loop_trace import LoopResult, LoopTrace
@@ -23,23 +24,75 @@ _RECOVERABLE_EXCEPTIONS = (
 class LLMClient:
     """LangChain-based LLM client supporting multiple providers."""
 
-    def __init__(self, provider: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        model: str,
+        *,
+        langfuse_host: str | None = None,
+        langfuse_public_key: str | None = None,
+        langfuse_secret_key: str | None = None,
+    ) -> None:
         self._provider = provider.lower()
         self._api_key = api_key
         self._model = _create_chat_model(provider, api_key, model)
         self._embeddings = _create_embeddings_model(self._provider, self._api_key)
+
+        if langfuse_host and langfuse_public_key and langfuse_secret_key:
+            from langfuse import Langfuse
+            from langfuse.langchain import CallbackHandler
+
+            # Register credentials in LangfuseResourceManager's singleton before
+            # constructing the handler — v4 CallbackHandler only accepts public_key.
+            Langfuse(
+                public_key=langfuse_public_key,
+                secret_key=langfuse_secret_key,
+                host=langfuse_host,
+            )
+            self._langfuse_handler: Any = CallbackHandler(public_key=langfuse_public_key)
+        else:
+            self._langfuse_handler = None
+
+    def _runnable_config(
+        self,
+        *,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RunnableConfig | None:
+        if self._langfuse_handler is None:
+            return None
+        meta: dict[str, Any] = {}
+        if metadata:
+            meta.update(metadata)
+        # Set after caller metadata so langfuse_session_id cannot be overridden.
+        if session_id is not None:
+            meta["langfuse_session_id"] = session_id
+        return RunnableConfig(callbacks=[self._langfuse_handler], metadata=meta)
 
     async def embed(self, text: str) -> list[float]:
         """Generate a vector embedding for the given text."""
         result = await self._embeddings.aembed_query(text)
         return result
 
-    async def complete(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        temperature: float = 0.0,
+        *,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         messages: list[Any] = []
         if system:
             messages.append(SystemMessage(content=system))
         messages.append(HumanMessage(content=prompt))
-        response = await self._model.ainvoke(messages, temperature=temperature)
+        cfg = self._runnable_config(session_id=session_id, metadata=metadata)
+        invoke_kwargs: dict[str, Any] = {"temperature": temperature}
+        if cfg is not None:
+            invoke_kwargs["config"] = cfg
+        response = await self._model.ainvoke(messages, **invoke_kwargs)
         return str(response.content)
 
     async def complete_json(
@@ -47,6 +100,9 @@ class LLMClient:
         prompt: str,
         system: str = "",
         schema: type[BaseModel] | None = None,
+        *,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         json_instruction = "You must respond with valid JSON only. No other text."
         full_system = f"{system}\n\n{json_instruction}" if system else json_instruction
@@ -58,14 +114,23 @@ class LLMClient:
                 if system:
                     messages.append(SystemMessage(content=system))
                 messages.append(HumanMessage(content=prompt))
-                result = await structured.ainvoke(messages)
+                cfg = self._runnable_config(session_id=session_id, metadata=metadata)
+                invoke_kwargs: dict[str, Any] = {}
+                if cfg is not None:
+                    invoke_kwargs["config"] = cfg
+                result = await structured.ainvoke(messages, **invoke_kwargs)
                 if isinstance(result, BaseModel):
                     return result.model_dump()
                 return dict(result)  # type: ignore[arg-type]
             except (NotImplementedError, AttributeError):
                 pass
 
-        raw = await self.complete(prompt, system=full_system)
+        raw = await self.complete(
+            prompt,
+            system=full_system,
+            session_id=session_id,
+            metadata=metadata,
+        )
         parsed = json.loads(raw)
         if schema is not None:
             validated = schema.model_validate(parsed)
@@ -82,6 +147,8 @@ class LLMClient:
         system: str = "",
         max_iterations: int = 3,
         temperature: float = 0.0,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> LoopResult:
         """Run a bounded ReAct loop that terminates when the model calls
         ``success_tool_name`` with no validation errors.
@@ -117,8 +184,12 @@ class LLMClient:
             # Outer try: catches model-call failures (no tool_call_id to recover).
             # Network/auth errors bubble — only recoverable exceptions are caught.
             try:
+                cfg = self._runnable_config(session_id=session_id, metadata=metadata)
+                ainvoke_kwargs: dict[str, Any] = {"temperature": temperature}
+                if cfg is not None:
+                    ainvoke_kwargs["config"] = cfg
                 response: AIMessage = await model_with_tools.ainvoke(
-                    messages, temperature=temperature
+                    messages, **ainvoke_kwargs
                 )
             except _RECOVERABLE_EXCEPTIONS as exc:
                 iter_errors.append(

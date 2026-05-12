@@ -81,7 +81,14 @@ async def lifespan(app: FastAPI):
     app.state.datahub = DataHubClient(settings.datahub_gms_url, settings.datahub_token)
     app.state.redis = RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
     app.state.vector = PgVectorManager(session_factory=SessionLocal)
-    app.state.llm = LLMClient(settings.llm_provider, settings.llm_api_key, settings.llm_model)
+    app.state.llm = LLMClient(
+        settings.llm_provider,
+        settings.llm_api_key,
+        settings.llm_model,
+        langfuse_host=settings.langfuse_host,
+        langfuse_public_key=settings.langfuse_public_key,
+        langfuse_secret_key=settings.langfuse_secret_key,
+    )
 
     logger.info(
         "lifespan_startup_complete",

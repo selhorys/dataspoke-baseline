@@ -274,6 +274,40 @@ check_dataspoke_api() {
   fi
 }
 
+check_dataspoke_langfuse() {
+  local lf_url="http://langfuse.${DOMAIN}"
+  local label="dataspoke-langfuse-web (${lf_url})"
+  if ! _tcp_check "${INGRESS_IP}" 80; then
+    _fail "$label — ingress port 80 not reachable"
+    ((FAILURES++)); return
+  fi
+  if $QUICK; then _pass "$label (tcp)"; return; fi
+
+  # Langfuse returns 200 on the root path when healthy.
+  if _http_alive "${lf_url}/"; then
+    _pass "$label"
+  else
+    _skip "$label — not responding (may not be installed; run dataspoke-langfuse/install.sh)"
+  fi
+
+  # Check langfuse-worker rollout status (non-fatal skip if not installed).
+  local worker_label="dataspoke-langfuse-worker"
+  local worker_ns="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE:-dataspoke-01}"
+  if kubectl get deployment/dataspoke-langfuse-worker -n "${worker_ns}" >/dev/null 2>&1; then
+    local ready
+    ready=$(kubectl get deployment/dataspoke-langfuse-worker -n "${worker_ns}" \
+      -o jsonpath='{.status.readyReplicas}' 2>/dev/null) || ready="0"
+    if [[ "${ready:-0}" -ge 1 ]]; then
+      _pass "${worker_label} (${ready} replica(s) ready)"
+    else
+      _fail "${worker_label} — 0 replicas ready"
+      ((FAILURES++))
+    fi
+  else
+    _skip "${worker_label} — not deployed (run dataspoke-langfuse/install.sh)"
+  fi
+}
+
 check_datahub_gms() {
   local label="datahub-gms (${DH_GMS_URL})"
   if ! _tcp_check "${INGRESS_IP}" 80; then
@@ -400,6 +434,7 @@ check_dataspoke_postgresql
 check_dataspoke_redis
 check_dataspoke_airflow
 check_dataspoke_api
+check_dataspoke_langfuse
 
 echo ""
 echo "DataHub:"

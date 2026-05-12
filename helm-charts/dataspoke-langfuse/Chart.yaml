@@ -1,0 +1,11 @@
+apiVersion: v2
+name: dataspoke-langfuse
+description: Langfuse self-hosted LLM observability — DataSpoke sibling chart
+type: application
+version: 0.1.0
+appVersion: "3.172.1"
+
+dependencies:
+  - name: langfuse
+    version: "1.5.29"
+    repository: "https://langfuse.github.io/langfuse-k8s"

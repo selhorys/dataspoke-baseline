@@ -17,6 +17,8 @@ data:
   DATASPOKE_AIRFLOW_CALLBACK_BASE_URL: {{ .Values.config.airflow.callbackBaseUrl | quote }}
   DATASPOKE_LLM_PROVIDER: {{ .Values.config.llm.provider | quote }}
   DATASPOKE_LLM_MODEL: {{ .Values.config.llm.model | quote }}
+  DATASPOKE_LANGFUSE_HOST: {{ .Values.config.langfuse.host | quote }}
+  DATASPOKE_LANGFUSE_PUBLIC_KEY: {{ .Values.config.langfuse.publicKey | quote }}
   DATASPOKE_ONTOGEN_DEBATE_MAX_TURNS: {{ .Values.config.ontogen.debateMaxTurns | quote }}
   DATASPOKE_ONTOGEN_DEBATE_RAG_K: {{ .Values.config.ontogen.debateRagK | quote }}
   DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL: {{ .Values.config.ontogen.debateReviewerModel | quote }}

@@ -68,6 +68,13 @@ spec:
                   key: token
             - name: DATASPOKE_ENABLE_STUB_AUTH
               value: {{ .Values.api.enableStubAuth | default false | quote }}
+            {{- if .Values.secrets.langfuse.existingSecret }}
+            - name: DATASPOKE_LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.langfuse.existingSecret }}
+                  key: {{ .Values.secrets.langfuse.existingSecretKey }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: /health

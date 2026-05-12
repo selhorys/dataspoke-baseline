@@ -22,10 +22,12 @@ dependencies = [
     "acryl-datahub>=1.5,<2.0",
     "redis[hiredis]>=5.2",
     "pgvector>=0.3.0",
+    "langchain>=1,<2",
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
     "langchain-google-genai>=2",
     "langchain-anthropic>=0.3",
+    "langfuse>=4.6,<5",
     # Ingestion extractors
     "kubernetes>=29,<32",
     "confluent-kafka>=2.13",

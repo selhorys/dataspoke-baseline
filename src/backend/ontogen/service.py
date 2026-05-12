@@ -457,6 +457,8 @@ class OntogenService:
         11. Refresh dataset_embeddings for in-scope datasets.
         12. Emit ONTOGEN.RUN_COMPLETE.
         """
+        run_id = str(uuid.uuid4())
+
         # Step 1: Acquire Redis SETNX guard (CAS token prevents cross-worker deletion)
         lock_token = secrets.token_urlsafe(16)
         acquired = await self._cache.set_nx(_LOCK_KEY, lock_token, ttl_seconds=_LOCK_TTL_SECONDS)
@@ -464,7 +466,7 @@ class OntogenService:
             raise ConflictError("ONTOGEN_RUNNING", "Ontogen inference is already running")
 
         try:
-            return await self._run_inner(prompt_md=prompt_md, dry_run=dry_run)
+            return await self._run_inner(prompt_md=prompt_md, dry_run=dry_run, run_id=run_id)
         except ConflictError:
             raise
         except Exception as exc:
@@ -474,7 +476,7 @@ class OntogenService:
                     "singleton",
                     ONTOGEN_RUN_FAILED,
                     "failure",
-                    {"error": str(exc)},
+                    {"error": str(exc), "run_id": run_id},
                 )
             except Exception:
                 logger.warning("ontogen_run_failed_event_emit_failed", exc_info=True)
@@ -486,6 +488,7 @@ class OntogenService:
         self,
         prompt_md: str | None,
         dry_run: bool,
+        run_id: str,
     ) -> OntogenRunSummary:
         """Inner run logic (called inside the SETNX guard)."""
         # Step 2: Load conf and resolve one-shot prompt
@@ -602,6 +605,7 @@ class OntogenService:
             reviewer_model=settings.ontogen_debate_reviewer_model,
             producer_schema=OntogenLLMOutput,
             producer_max_iterations=settings.ontogen_llm_max_iterations,
+            run_id=run_id,
         )
 
         try:
@@ -819,6 +823,7 @@ class OntogenService:
                 ONTOGEN_RUN_COMPLETE,
                 "success",
                 {
+                    "run_id": run_id,
                     "unresolved_urns": unresolved_urns,
                     "counts": counts_dict,
                     "dry_run": True,
@@ -1049,6 +1054,7 @@ class OntogenService:
             ONTOGEN_RUN_COMPLETE,
             "success",
             {
+                "run_id": run_id,
                 "unresolved_urns": unresolved_urns,
                 "counts": counts_dict,
                 "dry_run": False,

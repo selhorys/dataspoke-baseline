@@ -43,7 +43,15 @@ class StubLLMClient:
     async def embed(self, text: str) -> list[float]:
         return [0.0] * EMBEDDING_DIMENSION
 
-    async def complete(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        temperature: float = 0.0,
+        *,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         return "stub"
 
     async def complete_json(
@@ -51,6 +59,9 @@ class StubLLMClient:
         prompt: str,
         system: str = "",
         schema: type[BaseModel] | None = None,
+        *,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict:
         if schema is None:
             return {}
@@ -66,6 +77,8 @@ class StubLLMClient:
         system: str = "",
         max_iterations: int = 3,
         temperature: float = 0.0,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> LoopResult:
         if success_tool_name == "ontogen_review":
             return LoopResult(

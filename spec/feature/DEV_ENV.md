@@ -82,9 +82,10 @@ route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 ### Directory Layout
 
 `dev_env/` contains: top-level orchestrators (`install.sh`, `uninstall.sh`), shared helpers
-(`lib/helpers.sh`), and five sub-installers: `nginx-ingress/` (ingress controller), `datahub/`
-(Helm), `dataspoke-infra/` (umbrella chart), `dataspoke-lock/` (plain K8s manifests),
-`dataspoke-example/` (plain K8s manifests). Configuration in `.env` (copied from `.env.example`).
+(`lib/helpers.sh`), and six sub-installers: `nginx-ingress/` (ingress controller), `datahub/`
+(Helm), `dataspoke-infra/` (umbrella chart), `dataspoke-langfuse/` (Langfuse LLM observability),
+`dataspoke-lock/` (plain K8s manifests), `dataspoke-example/` (plain K8s manifests).
+Configuration in `.env` (copied from `.env.example`).
 
 ---
 

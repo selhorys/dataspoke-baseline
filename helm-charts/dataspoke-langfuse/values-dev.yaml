@@ -1,0 +1,166 @@
+# DataSpoke Langfuse Chart — Dev Overlay
+# Applied on top of values.yaml by dev_env/dataspoke-langfuse/install.sh.
+# Uses shared in-cluster Postgres (DB: langfuse) and Redis (DB index: 1),
+# bundled single-replica ClickHouse + MinIO, no TLS.
+# Ingress host overridden at install time via --set-string.
+#
+# Key nesting: see values.yaml header for explanation of langfuse.langfuse.* nesting.
+
+# ---------------------------------------------------------------------------
+# Bootstrap: auto-create langfuse DB on first install in dev
+# ---------------------------------------------------------------------------
+bootstrap:
+  postgres:
+    enabled: true
+    host: "dataspoke-postgresql"
+    port: 5432
+
+# ---------------------------------------------------------------------------
+# Langfuse subchart values (nested under langfuse.<key> per subchart structure)
+# ---------------------------------------------------------------------------
+langfuse:
+  global:
+    security:
+      allowInsecureImages: true
+
+  langfuse:
+    # ---- NextAuth ----
+    nextauth:
+      # install.sh overrides this to http://langfuse.<INGRESS_IP>.nip.io
+      url: "http://langfuse.dev.dataspoke.example.com"
+      secret:
+        secretKeyRef:
+          name: dataspoke-langfuse-secret
+          key: LANGFUSE_NEXTAUTH_SECRET
+
+    # ---- Hashing salt ----
+    salt:
+      secretKeyRef:
+        name: dataspoke-langfuse-secret
+        key: LANGFUSE_SALT
+
+    # ---- Encryption key (64-hex-char) — encrypts stored LLM provider keys ----
+    encryptionKey:
+      secretKeyRef:
+        name: dataspoke-langfuse-secret
+        key: LANGFUSE_ENCRYPTION_KEY
+
+    # ---- Ingress: no TLS in dev ----
+    ingress:
+      enabled: true
+      className: "nginx"
+      annotations:
+        nginx.ingress.kubernetes.io/ssl-redirect: "false"
+        nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      hosts:
+        - host: "langfuse.dev.dataspoke.example.com"
+          paths:
+            - path: /
+              pathType: Prefix
+      tls:
+        enabled: false
+        secretName: ""
+
+    # ---- Web resources (dev minimums) ----
+    web:
+      service:
+        port: 3000
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 250m
+          memory: 512Mi
+
+    # ---- Worker resources (dev minimums) ----
+    worker:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 250m
+          memory: 512Mi
+
+    # ---- Single replica in dev ----
+    replicas: 1
+
+  # ---- PostgreSQL — point at shared in-cluster dataspoke-postgresql ----
+  postgresql:
+    deploy: false
+    host: "dataspoke-postgresql"
+    port: 5432
+    auth:
+      username: "dataspoke"
+      existingSecret: "dataspoke-postgres-secret"
+      secretKeys:
+        userPasswordKey: POSTGRES_PASSWORD
+        adminPasswordKey: POSTGRES_PASSWORD
+      database: "langfuse"
+
+  # ---- Redis — point at shared in-cluster dataspoke-redis, logical DB 1 ----
+  # NetworkPolicy disabled in dev; enabled with allow-list in prod (values.yaml).
+  # The upstream Langfuse chart has no parent-level networkPolicy.enabled knob;
+  # these are the Bitnami sub-subchart knobs.
+  redis:
+    deploy: false
+    host: "dataspoke-redis-master"
+    port: 6379
+    auth:
+      username: "default"
+      existingSecret: "dataspoke-redis-secret"
+      existingSecretPasswordKey: REDIS_PASSWORD
+      database: 1
+    networkPolicy:
+      enabled: false
+
+  # ---- ClickHouse — single-replica in dev, smaller PVC ----
+  # NetworkPolicy disabled in dev; enabled with allow-list in prod (values.yaml).
+  clickhouse:
+    deploy: true
+    replicaCount: 1
+    clusterEnabled: false
+    auth:
+      password: ""
+      existingSecret: "dataspoke-langfuse-secret"
+      existingSecretKey: LANGFUSE_CLICKHOUSE_PASSWORD
+    zookeeper:
+      image:
+        repository: bitnamilegacy/zookeeper
+      networkPolicy:
+        enabled: false
+    resourcesPreset: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 5Gi
+    networkPolicy:
+      enabled: false
+
+  # ---- S3 — bundled MinIO in dev (single replica) ----
+  s3:
+    deploy: true
+    bucket: "langfuse"
+    region: "auto"
+    endpoint: ""    # auto-resolved from MinIO subchart service when deploy=true
+    forcePathStyle: true
+    auth:
+      rootUser: minio
+      rootPassword: ""
+      existingSecret: "dataspoke-langfuse-secret"
+      rootUserSecretKey: LANGFUSE_MINIO_ROOT_USER
+      rootPasswordSecretKey: LANGFUSE_MINIO_ROOT_PASSWORD
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 256Mi

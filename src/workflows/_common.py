@@ -87,6 +87,9 @@ def make_llm(model_override: str | None = None) -> LLMClient:
         provider=settings.llm_provider,
         api_key=settings.llm_api_key,
         model=model_override or settings.llm_model,
+        langfuse_host=settings.langfuse_host,
+        langfuse_public_key=settings.langfuse_public_key,
+        langfuse_secret_key=settings.langfuse_secret_key,
     )
 
 

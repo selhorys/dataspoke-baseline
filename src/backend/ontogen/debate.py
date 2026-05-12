@@ -57,6 +57,7 @@ async def run_debate(
     reviewer_model: str | None,
     producer_schema: type[BaseModel],
     producer_max_iterations: int,
+    run_id: str,
 ) -> DebateResult:
     """Run the adversarial Producer/Reviewer debate loop.
 
@@ -88,6 +89,8 @@ async def run_debate(
             success_tool_name="ontogen_validate",
             schema=producer_schema,
             max_iterations=producer_max_iterations,
+            session_id=run_id,
+            metadata={"actor": "producer", "turn": producer_turn},
         )
 
         producer_trace_iterations = loop_result.trace.iterations
@@ -168,6 +171,8 @@ async def run_debate(
             success_tool_name="ontogen_review",
             schema=ReviewOutput,
             max_iterations=1,
+            session_id=run_id,
+            metadata={"actor": "reviewer", "turn": reviewer_turn},
         )
 
         last_reviewer_payload = reviewer_result.payload

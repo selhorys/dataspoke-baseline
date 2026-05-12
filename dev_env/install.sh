@@ -75,6 +75,17 @@ info "Running dataspoke-infra/install.sh..."
 bash "$SCRIPT_DIR/dataspoke-infra/install.sh"
 
 # ---------------------------------------------------------------------------
+# Install DataSpoke Langfuse (LLM observability)
+# Must run after dataspoke-infra (Postgres + Redis must be up) and before
+# any API/Airflow containers start so they pick up Langfuse env at launch.
+# ---------------------------------------------------------------------------
+info "Running dataspoke-langfuse/install.sh..."
+bash "$SCRIPT_DIR/dataspoke-langfuse/install.sh"
+
+# Re-source .env to pick up DATASPOKE_LANGFUSE_HOST written by install.sh
+source "$SCRIPT_DIR/.env"
+
+# ---------------------------------------------------------------------------
 # Install dataspoke-example sources
 # ---------------------------------------------------------------------------
 info "Running dataspoke-example/install.sh..."
@@ -103,6 +114,7 @@ echo "  DataHub UI:    http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}
 echo "  DataHub GMS:   http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/gms/"
 echo "  DataSpoke API: http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/api/v1/"
 echo "  Airflow UI:    http://airflow.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/"
+echo "  Langfuse UI:   ${DATASPOKE_LANGFUSE_HOST:-http://langfuse.<not set>}/"
 echo ""
 echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9201"
 echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9202"

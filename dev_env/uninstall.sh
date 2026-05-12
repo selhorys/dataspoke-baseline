@@ -69,6 +69,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Uninstall DataSpoke Langfuse (must run before dataspoke-infra since it
+# depends on shared Postgres + Redis)
+# ---------------------------------------------------------------------------
+if [[ -f "$SCRIPT_DIR/dataspoke-langfuse/uninstall.sh" ]]; then
+  info "Running dataspoke-langfuse/uninstall.sh..."
+  bash "$SCRIPT_DIR/dataspoke-langfuse/uninstall.sh"
+else
+  warn "dataspoke-langfuse/uninstall.sh not found — skipping."
+fi
+
+# ---------------------------------------------------------------------------
 # Uninstall DataSpoke infrastructure
 # ---------------------------------------------------------------------------
 if [[ -f "$SCRIPT_DIR/dataspoke-infra/uninstall.sh" ]]; then

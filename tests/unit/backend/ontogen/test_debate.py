@@ -51,6 +51,8 @@ class FakeLLM:
         system: str = "",
         max_iterations: int = 3,
         temperature: float = 0.0,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> LoopResult:
         self.calls.append({"prompt": prompt, "success_tool_name": success_tool_name})
         if not self._script:
@@ -174,6 +176,7 @@ async def _run(
             reviewer_model=reviewer_model,
             producer_schema=MagicMock(),
             producer_max_iterations=3,
+            run_id="test-run-id",
         )
 
 
@@ -676,6 +679,7 @@ async def test_run_debate_reviewer_model_override() -> None:
             reviewer_model="some-other-model",
             producer_schema=MagicMock(),
             producer_max_iterations=3,
+            run_id="test-run-id",
         )
 
     # spec: debate.py wiring — make_llm must be called when reviewer_model is set

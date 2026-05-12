@@ -1,0 +1,59 @@
+{{- if .Values.bootstrap.postgres.enabled }}
+# One-shot Job that creates the `langfuse` database on the shared Postgres
+# instance before Langfuse's own migration Job runs.
+# Only rendered in prod when bootstrap.postgres.enabled=true.
+# In dev, the langfuse DB is created via postgresql.primary.initdb.scripts
+# in helm-charts/dataspoke/values-dev.yaml (runs as postgres superuser on
+# first Postgres startup); this Job is kept for prod operators who bypass
+# the umbrella chart.
+#
+# Connects as the postgres superuser (CREATEDB privilege required).
+# Credentials sourced from dataspoke-postgres-secret key POSTGRES_POSTGRES_PASSWORD,
+# matching the Bitnami `POSTGRES_POSTGRES_PASSWORD` env var pattern.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dataspoke-langfuse.fullname" . }}-postgres-bootstrap
+  labels:
+    {{- include "dataspoke-langfuse.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-weight": "-5"
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "dataspoke-langfuse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-db
+          image: "bitnami/postgresql:17"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dataspoke-postgres-secret
+                  key: POSTGRES_POSTGRES_PASSWORD
+          command:
+            - /bin/sh
+            - -c
+            - |
+              psql \
+                -h "{{ .Values.bootstrap.postgres.host }}" \
+                -p "{{ .Values.bootstrap.postgres.port }}" \
+                -U postgres \
+                -d postgres \
+                -c "SELECT 'CREATE DATABASE langfuse' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')\gexec"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+{{- end }}

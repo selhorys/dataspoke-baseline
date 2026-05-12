@@ -328,6 +328,78 @@ pass under both `DATASPOKE_TEST_LLM_REAL` values:
 The same env var is honored by `LLMClient` regardless of consumer service
 (ontogen, metagen, or future LLM-backed flows).
 
+## Observability
+
+DataSpoke ships self-hosted [Langfuse](https://langfuse.com/) as its LLM trace store. The
+Langfuse instance is an independent subsystem (`dev_env/dataspoke-langfuse/`, chart
+`helm-charts/dataspoke-langfuse/`) following the same `values.yaml` + `values-dev.yaml` overlay
+convention as the umbrella chart.
+
+### Env contract
+
+| Env var | Required | Notes |
+|---------|----------|-------|
+| `DATASPOKE_LANGFUSE_HOST` | No | Full URL, e.g. `http://langfuse.10.0.0.1.nip.io` |
+| `DATASPOKE_LANGFUSE_PUBLIC_KEY` | No | Langfuse project public key |
+| `DATASPOKE_LANGFUSE_SECRET_KEY` | No | Langfuse project secret key |
+
+All three must be set for tracing to activate. When any one is absent, `LLMClient` skips
+callback construction and emits no traces — zero overhead, no failures.
+
+### What lands in traces
+
+`LLMClient` attaches a `langfuse.langchain.CallbackHandler` to every `ainvoke` call via
+LangChain's `RunnableConfig`. Langfuse captures:
+
+- Prompt messages and completion content for each turn.
+- Tool calls and tool responses (for `complete_with_tools`).
+- Token-count metadata reported by the provider.
+- `session_id` = `run_id` (uuid4 generated once per `OntogenService.run()` call), grouping all
+  turns of one ontogen run into a single Langfuse session.
+- `metadata.actor` = `"producer"` or `"reviewer"`.
+- `metadata.turn` = integer turn index within the debate.
+
+Session grouping uses LangChain `RunnableConfig.metadata.langfuse_session_id`, set equal to the ontogen run_id. The dedicated `session_id` argument on `LLMClient` methods takes precedence over any caller-supplied `metadata.langfuse_session_id`.
+
+Embedding calls (`LLMClient.embed`) use a separate embeddings-model client that does not pass
+through the LangChain callback pipeline; embedding spans are not captured in Langfuse traces.
+This is noted as future work.
+
+### Operator workflow
+
+1. A completed run emits an `ONTOGEN_RUN_COMPLETE` event. The `detail` JSONB contains
+   `run_id` (uuid4).
+2. Open the Langfuse UI at `${DATASPOKE_LANGFUSE_HOST}/sessions/<run_id>` to see all LLM
+   turns for that run — prompts, completions, tool calls, and token counts in one view.
+
+No DataSpoke API endpoint exists for log retrieval. Langfuse UI is the sole operator surface
+for per-run LLM trace browsing.
+
+### Data exposure
+
+Langfuse traces capture the full content of LLM interactions: dataset URNs, schema field names,
+evidence text (DataHub descriptions, owner identities), completion text, and tool-call payloads.
+For prod deployments using external Postgres/S3 configured in `helm-charts/dataspoke-langfuse/values.yaml`,
+this prompt corpus persists in operator-controlled storage. Operator responsibility: enable SSO/auth
+on the Langfuse UI before exposing the hostname; consider Langfuse's `mask=` callable on the `Langfuse()`
+constructor for field-level redaction if sensitive schema names must be excluded from traces.
+
+### Production auth requirement
+
+Production deployments MUST disable Langfuse public sign-up (`AUTH_DISABLE_SIGNUP=true` upstream env)
+once the bootstrap admin is created, configure SSO/OIDC via NextAuth providers, and restrict ingress
+access (auth annotation or IP allowlist). With Langfuse's default open-signup, any reachable user can
+create an account and read all traces including raw prompts and completions. Dev deployments under
+`.nip.io` are intentionally open for developer convenience.
+
+### Partial coverage and availability notes
+
+Metagen (UC4) LLM calls flow through the same `LLMClient` and produce Langfuse traces but without
+`session_id`/`actor`/`turn` metadata; full UC4 wiring is deferred alongside the metagen debate framework.
+
+Langfuse unavailability does not affect LLM call success — the exporter buffers and retries in the
+background; on permanent failure traces are dropped silently.
+
 ## Settings Reference
 
 All env vars are read once at process startup via the `Settings` Pydantic
@@ -345,6 +417,9 @@ class (`src/shared/settings.py`).
 | `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | ontogen debate |
 | `DATASPOKE_TEST_MODE` | unset | test infra |
 | `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
+| `DATASPOKE_LANGFUSE_HOST` | unset | observability |
+| `DATASPOKE_LANGFUSE_PUBLIC_KEY` | unset | observability |
+| `DATASPOKE_LANGFUSE_SECRET_KEY` | unset | observability |
 
 ## Open Questions
 

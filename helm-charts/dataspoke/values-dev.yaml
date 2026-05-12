@@ -92,6 +92,8 @@ postgresql:
           GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO dataspoke;
         create-airflow-db.sql: |
           CREATE DATABASE airflow;
+        create-langfuse-db.sql: |
+          CREATE DATABASE langfuse;
 
 redis:
   enabled: true
@@ -272,11 +274,19 @@ airflow:
 # ---------------------------------------------------------------------------
 config:
   createConfigMap: true
+  langfuse:
+    host: ""          # populated via --set-string from install.sh
+    publicKey: ""     # populated via --set-string from install.sh after first Langfuse login
   ontogen:
     debateMaxTurns: 4
     debateRagK: 5
     debateReviewerModel: ""
 secrets:
   createSecret: true
+  langfuse:
+    # secretKey is read from dataspoke-langfuse-secret via existingSecret reference.
+    # Do not pass it via --set-string (prevents exposure in helm release record).
+    existingSecret: "dataspoke-langfuse-secret"
+    existingSecretKey: "LANGFUSE_SECRET_KEY"
   jwt:
     secretKey: "changeme-dev-secret-do-not-use-in-prod"
