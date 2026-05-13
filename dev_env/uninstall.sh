@@ -69,17 +69,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Uninstall DataSpoke Langfuse (must run before dataspoke-infra since it
-# depends on shared Postgres + Redis)
-# ---------------------------------------------------------------------------
-if [[ -f "$SCRIPT_DIR/dataspoke-langfuse/uninstall.sh" ]]; then
-  info "Running dataspoke-langfuse/uninstall.sh..."
-  bash "$SCRIPT_DIR/dataspoke-langfuse/uninstall.sh"
-else
-  warn "dataspoke-langfuse/uninstall.sh not found — skipping."
-fi
-
-# ---------------------------------------------------------------------------
 # Uninstall DataSpoke infrastructure
 # ---------------------------------------------------------------------------
 if [[ -f "$SCRIPT_DIR/dataspoke-infra/uninstall.sh" ]]; then
@@ -87,6 +76,16 @@ if [[ -f "$SCRIPT_DIR/dataspoke-infra/uninstall.sh" ]]; then
   bash "$SCRIPT_DIR/dataspoke-infra/uninstall.sh"
 else
   warn "dataspoke-infra/uninstall.sh not found — skipping."
+fi
+
+# ---------------------------------------------------------------------------
+# Uninstall Langfuse (independent namespace — no shared infra dependency)
+# ---------------------------------------------------------------------------
+if [[ -f "$SCRIPT_DIR/langfuse/uninstall.sh" ]]; then
+  info "Running langfuse/uninstall.sh..."
+  bash "$SCRIPT_DIR/langfuse/uninstall.sh"
+else
+  warn "langfuse/uninstall.sh not found — skipping."
 fi
 
 # ---------------------------------------------------------------------------
@@ -116,6 +115,7 @@ echo ""
 NAMESPACES=(
   "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
   "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
+  "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
   "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 )
 

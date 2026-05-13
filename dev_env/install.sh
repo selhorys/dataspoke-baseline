@@ -41,6 +41,7 @@ kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}"
 NAMESPACES=(
   "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
   "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
+  "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
   "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 )
 
@@ -69,21 +70,23 @@ info "Running datahub/install.sh..."
 bash "$SCRIPT_DIR/datahub/install.sh"
 
 # ---------------------------------------------------------------------------
+# Install Langfuse (LLM observability)
+# Must run before dataspoke-infra: the umbrella chart's API/Airflow pods
+# reference dataspoke-langfuse-secret via existingSecretKeyRef in their own
+# namespace. Langfuse runs its own bundled Postgres/Redis/ClickHouse/MinIO
+# subcharts and has no runtime dependency on dataspoke-infra.
+# ---------------------------------------------------------------------------
+info "Running langfuse/install.sh..."
+bash "$SCRIPT_DIR/langfuse/install.sh"
+
+# Re-source .env to pick up DATASPOKE_LANGFUSE_HOST written by install.sh
+source "$SCRIPT_DIR/.env"
+
+# ---------------------------------------------------------------------------
 # Install DataSpoke infrastructure
 # ---------------------------------------------------------------------------
 info "Running dataspoke-infra/install.sh..."
 bash "$SCRIPT_DIR/dataspoke-infra/install.sh"
-
-# ---------------------------------------------------------------------------
-# Install DataSpoke Langfuse (LLM observability)
-# Must run after dataspoke-infra (Postgres + Redis must be up) and before
-# any API/Airflow containers start so they pick up Langfuse env at launch.
-# ---------------------------------------------------------------------------
-info "Running dataspoke-langfuse/install.sh..."
-bash "$SCRIPT_DIR/dataspoke-langfuse/install.sh"
-
-# Re-source .env to pick up DATASPOKE_LANGFUSE_HOST written by install.sh
-source "$SCRIPT_DIR/.env"
 
 # ---------------------------------------------------------------------------
 # Install dataspoke-example sources
@@ -106,6 +109,7 @@ echo ""
 echo "Namespaces:"
 kubectl get namespaces "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}" \
   "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}" \
+  "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}" \
   "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}" 2>/dev/null || true
 echo ""
 echo "Ingress endpoints (via nginx-ingress at ${DATASPOKE_DEV_INGRESS_IP:-<not set>}):"

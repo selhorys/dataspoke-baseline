@@ -19,7 +19,7 @@
 ## Overview
 
 `dev_env/` provides a fully scripted Kubernetes-based environment for developing and testing
-DataSpoke. It provisions three namespaces and installs **infrastructure dependencies** that the
+DataSpoke. It provisions four namespaces and installs **infrastructure dependencies** that the
 DataSpoke application connects to.
 
 The API server is deployed **in-cluster** alongside Airflow so that workflow callbacks work
@@ -33,11 +33,12 @@ dependency deployed and managed separately.
 
 **Dev Architecture**: a single nginx-ingress controller (`ingress-nginx` namespace) owns the
 cluster's LoadBalancer IP and serves both HTTP virtual hosts (port 80 — DataHub UI/GMS, DataSpoke
-API, Airflow) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka, PostgreSQL,
-Redis, Lock). Three application namespaces sit behind it: `datahub-01` (GMS, Frontend, MAE/MCE
-consumers, Kafka KRaft, OpenSearch, MySQL), `dataspoke-01` (in-cluster API, Airflow, PostgreSQL,
-Redis, dev-lock), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs on
-the host (`npm run dev`, :3000); all other components are reached through the ingress. Full
+API, Airflow, Langfuse) and TCP passthrough (ports 9005, 9102, 9104, 9201–9202, 9221 — Kafka,
+PostgreSQL, Redis, Lock). Four application namespaces sit behind it: `datahub-01` (GMS, Frontend,
+MAE/MCE consumers, Kafka KRaft, OpenSearch, MySQL), `dataspoke-01` (in-cluster API, Airflow,
+PostgreSQL, Redis, dev-lock), `langfuse-01` (Langfuse web/worker + bundled Postgres, Redis,
+ClickHouse, MinIO), and `dataspoke-dummy-data-01` (example PostgreSQL + Kafka). The frontend runs
+on the host (`npm run dev`, :3000); all other components are reached through the ingress. Full
 route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 
 ---
@@ -74,6 +75,7 @@ route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 | `ingress-nginx` | nginx-ingress controller (single LoadBalancer for all namespaces) | `nginx-ingress/install.sh` via Helm |
 | `datahub-01` | DataHub platform + all backing services | `datahub/install.sh` via Helm |
 | `dataspoke-01` | DataSpoke infrastructure (API, Airflow, PostgreSQL, Redis) + lock service | `dataspoke-infra/install.sh` via Helm; `dataspoke-lock/install.sh` via kubectl |
+| `langfuse-01` | Langfuse LLM observability (web, worker, bundled Postgres, Redis, ClickHouse, MinIO) | `langfuse/install.sh` via Helm |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka for ingestion testing | `dataspoke-example/install.sh` via kubectl |
 
 > Namespace names are **defaults** from `.env.example`. All scripts read them from environment
@@ -83,9 +85,9 @@ route/port mappings are in `dev_env/README.md §Ingress Endpoints`.
 
 `dev_env/` contains: top-level orchestrators (`install.sh`, `uninstall.sh`), shared helpers
 (`lib/helpers.sh`), and six sub-installers: `nginx-ingress/` (ingress controller), `datahub/`
-(Helm), `dataspoke-infra/` (umbrella chart), `dataspoke-langfuse/` (Langfuse LLM observability),
-`dataspoke-lock/` (plain K8s manifests), `dataspoke-example/` (plain K8s manifests).
-Configuration in `.env` (copied from `.env.example`).
+(Helm), `dataspoke-infra/` (umbrella chart), `langfuse/` (Langfuse LLM observability — own
+namespace with bundled subcharts), `dataspoke-lock/` (plain K8s manifests), `dataspoke-example/`
+(plain K8s manifests). Configuration in `.env` (copied from `.env.example`).
 
 ---
 
@@ -107,7 +109,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 
 | Category | Example variables | Notes |
 |----------|-------------------|-------|
-| Cluster & namespaces | `DATASPOKE_DEV_KUBE_CLUSTER`, `*_NAMESPACE` | Kubernetes context and namespace names (includes `ingress-nginx`) |
+| Cluster & namespaces | `DATASPOKE_DEV_KUBE_CLUSTER`, `*_NAMESPACE` | Kubernetes context and namespace names (includes `ingress-nginx`); `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE=langfuse-01` for the Langfuse namespace |
 | Ingress | `DATASPOKE_DEV_INGRESS_IP`, `DATASPOKE_DEV_INGRESS_DOMAIN` | Written by `nginx-ingress/install.sh`; domain defaults to `dev.dataspoke.example.com` (use `<IP>.nip.io` for automatic DNS) |
 | Helm chart versions | `*_CHART_VERSION` | DataHub prerequisites 0.3.0, DataHub 0.9.10 |
 | DataHub MySQL creds | `*_MYSQL_ROOT_PASSWORD`, `*_MYSQL_PASSWORD` | Dev-only, 16+ chars |
@@ -256,19 +258,21 @@ acquire/release + DELETE force-release) documented in
 ### install.sh
 
 Top-level orchestrator: sources `.env`, verifies `kubectl`/`helm`, switches kube context, creates
-namespaces, then calls sub-installers in order: `nginx-ingress/` → `datahub/` →
-`dataspoke-infra/` → `dataspoke-example/` → `dataspoke-lock/`.
+namespaces (including `langfuse-01`), then calls sub-installers in order: `nginx-ingress/` →
+`datahub/` → `langfuse/` → `dataspoke-infra/` → `dataspoke-example/` → `dataspoke-lock/`.
+Langfuse runs before `dataspoke-infra` so the umbrella chart's API/Airflow pods find
+`dataspoke-langfuse-secret` in `dataspoke-01` on their first start.
 Prints ingress endpoint summary on completion.
 
 ### uninstall.sh
 
-Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/` → `datahub/` →
-`nginx-ingress/`. Prompts before destructive operations.
+Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/` → `langfuse/` →
+`datahub/` → `nginx-ingress/`. Prompts before destructive operations.
 
 | Flag | Effect |
 |------|--------|
 | `--yes` | Skip "remove all resources?" confirmation |
-| `--delete-namespaces` | Also delete the three namespaces |
+| `--delete-namespaces` | Also delete the four namespaces |
 
 ### Component reinstall
 

@@ -1,5 +1,5 @@
 apiVersion: v2
-name: dataspoke-langfuse
+name: langfuse
 description: Langfuse self-hosted LLM observability — DataSpoke sibling chart
 type: application
 version: 0.1.0

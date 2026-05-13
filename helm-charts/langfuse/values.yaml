@@ -1,6 +1,8 @@
-# DataSpoke Langfuse Chart — Production Defaults
-# Operator: supply a prod-overrides.yaml with real hostnames, TLS secrets,
-# external S3/Postgres/Redis endpoints, and ESO wiring.
+# Langfuse Chart — Production Defaults
+# Langfuse is treated as a separately-owned subsystem with its own bundled
+# Postgres/Redis/ClickHouse/MinIO subcharts in dev. In production, operators
+# supply a prod-overrides.yaml pointing at external endpoints, TLS secrets,
+# and ESO wiring.
 #
 # Key nesting: the upstream Langfuse chart wraps its own config under a
 # top-level `langfuse:` key, and Helm passes parent values under the
@@ -22,20 +24,6 @@ global:
 # ---------------------------------------------------------------------------
 externalSecrets:
   enabled: false
-
-# ---------------------------------------------------------------------------
-# Bootstrap job — creates the `langfuse` database on shared Postgres.
-# Disabled in prod: DBA pre-creates the DB before first Helm install.
-# These values are read by our own templates (postgres-bootstrap-job.yaml),
-# not by the upstream langfuse subchart.
-# ---------------------------------------------------------------------------
-bootstrap:
-  postgres:
-    enabled: false
-    # Connection info for the shared Postgres host (same as langfuse.postgresql.*
-    # but accessible at the parent chart level for the bootstrap Job template).
-    host: "pg.your-domain.com"   # operator overrides with actual Postgres hostname
-    port: 5432
 
 # ---------------------------------------------------------------------------
 # Langfuse upstream subchart passthrough
@@ -110,41 +98,27 @@ langfuse:
     # ---- Replica count ----
     replicas: 2
 
-  # ---- PostgreSQL — external in prod ----
+  # ---- PostgreSQL — bundled by default; override deploy=false + host in prod for external ----
   postgresql:
-    deploy: false
-    host: ""          # operator sets: e.g. pg.internal.your-domain.com
+    deploy: true
+    host: ""          # operator sets when deploy=false: e.g. pg.internal.your-domain.com
     port: 5432
     auth:
-      username: "dataspoke"
-      existingSecret: "dataspoke-postgres-secret"
-      secretKeys:
-        userPasswordKey: POSTGRES_PASSWORD
-        adminPasswordKey: POSTGRES_PASSWORD
+      username: "langfuse"
       database: "langfuse"
 
-  # ---- Redis — external in prod ----
-  # NetworkPolicy: restrict ingress to the DataSpoke namespace.
-  # The upstream Langfuse chart has no parent-level networkPolicy.enabled knob;
-  # these are the Bitnami sub-subchart knobs.
-  # Verify the namespace label: kubectl get ns dataspoke-01 --show-labels
+  # ---- Redis — bundled by default; override deploy=false + host in prod for external ----
   redis:
-    deploy: false
-    host: "redis.your-domain.com"   # operator overrides with actual Redis hostname
+    deploy: true
+    host: ""          # operator sets when deploy=false: e.g. redis.internal.your-domain.com
     port: 6379
     auth:
       username: "default"
-      existingSecret: "dataspoke-redis-secret"
-      existingSecretPasswordKey: REDIS_PASSWORD
       database: 1
     networkPolicy:
-      enabled: true
-      allowExternal: false
-      ingressNSMatchLabels:
-        kubernetes.io/metadata.name: dataspoke-01
+      enabled: false
 
   # ---- ClickHouse — bundled, HA in prod (3 replicas) ----
-  # NetworkPolicy: restrict ingress to the DataSpoke namespace.
   clickhouse:
     deploy: true
     replicaCount: 3
@@ -156,20 +130,10 @@ langfuse:
     zookeeper:
       image:
         repository: bitnamilegacy/zookeeper
-      networkPolicy:
-        enabled: true
-        allowExternal: false
-        ingressNSMatchLabels:
-          kubernetes.io/metadata.name: dataspoke-01
     persistence:
       enabled: true
       size: 50Gi
       storageClass: ""   # operator sets to cluster storage class
-    networkPolicy:
-      enabled: true
-      allowExternal: false
-      ingressNSMatchLabels:
-        kubernetes.io/metadata.name: dataspoke-01
 
   # ---- S3 — external in prod (points at real S3 / GCS) ----
   s3:

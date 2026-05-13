@@ -92,8 +92,6 @@ postgresql:
           GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO dataspoke;
         create-airflow-db.sql: |
           CREATE DATABASE airflow;
-        create-langfuse-db.sql: |
-          CREATE DATABASE langfuse;
 
 redis:
   enabled: true

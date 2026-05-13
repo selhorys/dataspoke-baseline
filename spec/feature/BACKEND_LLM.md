@@ -331,9 +331,9 @@ The same env var is honored by `LLMClient` regardless of consumer service
 ## Observability
 
 DataSpoke ships self-hosted [Langfuse](https://langfuse.com/) as its LLM trace store. The
-Langfuse instance is an independent subsystem (`dev_env/dataspoke-langfuse/`, chart
-`helm-charts/dataspoke-langfuse/`) following the same `values.yaml` + `values-dev.yaml` overlay
-convention as the umbrella chart.
+Langfuse instance is an independent subsystem (`dev_env/langfuse/`, chart
+`helm-charts/langfuse/`) installed in its own `langfuse-01` namespace, following the same
+`values.yaml` + `values-dev.yaml` overlay convention as the umbrella chart.
 
 ### Env contract
 
@@ -379,7 +379,7 @@ for per-run LLM trace browsing.
 
 Langfuse traces capture the full content of LLM interactions: dataset URNs, schema field names,
 evidence text (DataHub descriptions, owner identities), completion text, and tool-call payloads.
-For prod deployments using external Postgres/S3 configured in `helm-charts/dataspoke-langfuse/values.yaml`,
+For prod deployments using external Postgres/S3 configured in `helm-charts/langfuse/values.yaml`,
 this prompt corpus persists in operator-controlled storage. Operator responsibility: enable SSO/auth
 on the Langfuse UI before exposing the hostname; consider Langfuse's `mask=` callable on the `Langfuse()`
 constructor for field-level redaction if sensitive schema names must be excluded from traces.

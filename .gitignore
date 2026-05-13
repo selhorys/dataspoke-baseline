@@ -13,7 +13,7 @@ __pycache__/
 dev_env/.env
 dev_env/.*.pid
 helm-charts/dataspoke/charts/
-helm-charts/dataspoke-langfuse/charts/
+helm-charts/langfuse/charts/
 memory/
 .claude/*.local.*
 .claude/plans/

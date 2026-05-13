@@ -1,6 +1,6 @@
 # DataSpoke Development Environment
 
-A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Three namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), and `dataspoke-dummy-data-01` (example data sources).
+A fully scripted Kubernetes-based environment for developing and testing DataSpoke. Four namespaces are provisioned: `datahub-01` (DataHub), `dataspoke-01` (infrastructure), `langfuse-01` (Langfuse LLM observability), and `dataspoke-dummy-data-01` (example data sources).
 
 The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access the API via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Frontend runs on the host. See [spec/TESTING.md §Testing Modes](../spec/TESTING.md#testing-modes).
 
@@ -50,6 +50,7 @@ All HTTP services are accessed via virtual-host routing on the nginx-ingress Loa
 | DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
 | DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
+| Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `dataspoke@dataspoke.local` / `dataspoke` |
 | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
 | Redis | `<INGRESS_IP>:9202` | per `.env` |
 | DataHub Kafka | `<INGRESS_IP>:9005` | -- |
@@ -150,6 +151,7 @@ The controller serves:
 | `ingress-nginx` | nginx-ingress controller | `nginx-ingress/install.sh` |
 | `datahub-01` | DataHub + backing services | `datahub/install.sh` |
 | `dataspoke-01` | DataSpoke infrastructure + lock service | `dataspoke-infra/install.sh`, `dataspoke-lock/install.sh` |
+| `langfuse-01` | Langfuse LLM observability (web, worker, Postgres, Redis, ClickHouse, MinIO) | `langfuse/install.sh` |
 | `dataspoke-dummy-data-01` | Example PostgreSQL + Kafka | `dataspoke-example/install.sh` |
 
 ### Environment variables

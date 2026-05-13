@@ -1,22 +1,10 @@
-# DataSpoke Langfuse Chart — Dev Overlay
-# Applied on top of values.yaml by dev_env/dataspoke-langfuse/install.sh.
-# Uses shared in-cluster Postgres (DB: langfuse) and Redis (DB index: 1),
-# bundled single-replica ClickHouse + MinIO, no TLS.
+# Langfuse Chart — Dev Overlay
+# Applied on top of values.yaml by dev_env/langfuse/install.sh.
+# Langfuse runs in its own namespace (langfuse-01) with bundled single-replica
+# Postgres, Redis, ClickHouse, and MinIO subcharts. No dependency on dataspoke-01.
 # Ingress host overridden at install time via --set-string.
 #
 # Key nesting: see values.yaml header for explanation of langfuse.langfuse.* nesting.
-
-# ---------------------------------------------------------------------------
-# Bootstrap: in dev, the langfuse DB is created by the umbrella chart's
-# postgresql.primary.initdb.scripts (see helm-charts/dataspoke/values-dev.yaml)
-# on first Postgres startup, so the pre-install Job is redundant — disabled
-# here to avoid the duplicate path.
-# ---------------------------------------------------------------------------
-bootstrap:
-  postgres:
-    enabled: false
-    host: "dataspoke-postgresql"
-    port: 5432
 
 # ---------------------------------------------------------------------------
 # Langfuse subchart values (nested under langfuse.<key> per subchart structure)
@@ -98,6 +86,8 @@ langfuse:
       #   API public key=pk-lf-dataspoke-dev / secret key persisted in .env.
       # Login at the UI: dataspoke@dataspoke.local / dataspoke.
       # Subsequent restarts are no-ops once these entities exist.
+      # The dataspoke-langfuse-secret is created in langfuse-01 by install.sh
+      # with the full key set; pods resolve it locally within their namespace.
       pod:
         additionalEnv:
           - name: LANGFUSE_INIT_USER_EMAIL
@@ -159,37 +149,41 @@ langfuse:
     # ---- Single replica in dev ----
     replicas: 1
 
-  # ---- PostgreSQL — point at shared in-cluster dataspoke-postgresql ----
+  # ---- PostgreSQL — bundled in dev (runs inside langfuse-01 namespace) ----
+  # The bundled subchart username is fixed to `postgres`; both userPasswordKey
+  # and adminPasswordKey must be provided for the default postgres user.
   postgresql:
-    deploy: false
-    host: "dataspoke-postgresql"
+    deploy: true
     port: 5432
     auth:
-      username: "dataspoke"
-      existingSecret: "dataspoke-postgres-secret"
+      username: postgres
+      password: ""
+      existingSecret: "dataspoke-langfuse-secret"
       secretKeys:
-        userPasswordKey: POSTGRES_PASSWORD
-        adminPasswordKey: POSTGRES_PASSWORD
+        userPasswordKey: LANGFUSE_POSTGRES_PASSWORD
+        adminPasswordKey: LANGFUSE_POSTGRES_PASSWORD
       database: "langfuse"
+    primary:
+      persistence:
+        size: 6Gi
 
-  # ---- Redis — point at shared in-cluster dataspoke-redis, logical DB 1 ----
-  # NetworkPolicy disabled in dev; enabled with allow-list in prod (values.yaml).
-  # The upstream Langfuse chart has no parent-level networkPolicy.enabled knob;
-  # these are the Bitnami sub-subchart knobs.
+  # ---- Redis (Valkey) — bundled in dev (runs inside langfuse-01 namespace) ----
   redis:
-    deploy: false
-    host: "dataspoke-redis-master"
+    deploy: true
     port: 6379
     auth:
       username: "default"
-      existingSecret: "dataspoke-redis-secret"
-      existingSecretPasswordKey: REDIS_PASSWORD
-      database: 1
+      password: ""
+      existingSecret: "dataspoke-langfuse-secret"
+      existingSecretPasswordKey: LANGFUSE_REDIS_PASSWORD
+      database: 0
+    primary:
+      persistence:
+        size: 6Gi
     networkPolicy:
       enabled: false
 
-  # ---- ClickHouse — single-replica in dev, smaller PVC ----
-  # NetworkPolicy disabled in dev; enabled with allow-list in prod (values.yaml).
+  # ---- ClickHouse — single-replica in dev ----
   clickhouse:
     deploy: true
     replicaCount: 1
@@ -203,6 +197,8 @@ langfuse:
         repository: bitnamilegacy/zookeeper
       networkPolicy:
         enabled: false
+      persistence:
+        size: 6Gi
     resourcesPreset: ""
     resources:
       requests:
@@ -213,7 +209,7 @@ langfuse:
         memory: 1Gi
     persistence:
       enabled: true
-      size: 5Gi
+      size: 8Gi
     networkPolicy:
       enabled: false
 

@@ -33,7 +33,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `helm-charts/**/templates/secrets.yaml`, `helm-charts/**/values*.yaml` — credentials / config
 - `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/package-lock.json` — new/bumped dependencies
 - `.prauto/**` — autonomous worker (unsupervised, higher blast radius)
-- `helm-charts/dataspoke-langfuse/templates/**`, `helm-charts/dataspoke-langfuse/values*.yaml`, `dev_env/dataspoke-langfuse/**` — Langfuse credentials and config (LLM trace store)
+- `helm-charts/langfuse/templates/**`, `helm-charts/langfuse/values*.yaml`, `dev_env/langfuse/**` — Langfuse credentials and config (LLM trace store)
 
 Keep this list in sync with reality — if you see a new sensitive surface that is not listed, flag it in your findings and the orchestrator will update.
 

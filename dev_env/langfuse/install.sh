@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CHART_DIR="$REPO_ROOT/helm-charts/dataspoke-langfuse"
+CHART_DIR="$REPO_ROOT/helm-charts/langfuse"
 ENV_FILE="$SCRIPT_DIR/../.env"
 
 # ---------------------------------------------------------------------------
@@ -21,39 +21,44 @@ fi
 source "$ENV_FILE"
 
 echo ""
-echo "=== Installing DataSpoke Langfuse subsystem ==="
+echo "=== Installing Langfuse subsystem ==="
 echo ""
 
-NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
+LANGFUSE_NS="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
+DATASPOKE_NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
 
 # ---------------------------------------------------------------------------
 # Verify required env vars
 # ---------------------------------------------------------------------------
 info "Checking required environment variables..."
 : "${DATASPOKE_DEV_KUBE_CLUSTER:?DATASPOKE_DEV_KUBE_CLUSTER must be set in .env}"
+: "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE:?DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE must be set in .env}"
 : "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE:?DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE must be set in .env}"
-: "${DATASPOKE_POSTGRES_PASSWORD:?DATASPOKE_POSTGRES_PASSWORD must be set in .env}"
-: "${DATASPOKE_REDIS_PASSWORD:?DATASPOKE_REDIS_PASSWORD must be set in .env}"
 : "${DATASPOKE_DEV_INGRESS_IP:?DATASPOKE_DEV_INGRESS_IP must be set in .env (run nginx-ingress/install.sh first)}"
 info "Required environment variables present."
 
 # ---------------------------------------------------------------------------
 # Generate and persist random secrets if not already set
 # ---------------------------------------------------------------------------
-# Re-read .env into this function to get current values after possible prior run
 _env_set_or_generate() {
   local var_name="$1"
   local current_value="${!var_name:-}"
-  if [[ -z "$current_value" ]]; then
-    info "${var_name} not set — generating with openssl rand -hex 32..."
-    local generated
-    generated="$(openssl rand -hex 32)"
-    printf '\n%s=%s\n' "${var_name}" "${generated}" >> "$ENV_FILE"
-    export "${var_name}=${generated}"
-    info "  ${var_name} generated and appended to .env."
-  else
+  if [[ -n "$current_value" ]]; then
     info "  ${var_name} already set."
+    return
   fi
+  info "${var_name} not set — generating with openssl rand -hex 32..."
+  local generated
+  generated="$(openssl rand -hex 32)"
+  if grep -q "^${var_name}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i.bak "s|^${var_name}=.*|${var_name}=${generated}|" "$ENV_FILE" \
+      && rm -f "${ENV_FILE}.bak"
+    info "  ${var_name} generated and updated in .env."
+  else
+    printf '\n%s=%s\n' "${var_name}" "${generated}" >> "$ENV_FILE"
+    info "  ${var_name} generated and appended to .env."
+  fi
+  export "${var_name}=${generated}"
 }
 
 _env_set_or_generate DATASPOKE_LANGFUSE_NEXTAUTH_SECRET
@@ -61,6 +66,8 @@ _env_set_or_generate DATASPOKE_LANGFUSE_SALT
 _env_set_or_generate DATASPOKE_LANGFUSE_ENCRYPTION_KEY
 _env_set_or_generate DATASPOKE_LANGFUSE_CLICKHOUSE_PASSWORD
 _env_set_or_generate DATASPOKE_LANGFUSE_MINIO_ROOT_PASSWORD
+_env_set_or_generate DATASPOKE_LANGFUSE_POSTGRES_PASSWORD
+_env_set_or_generate DATASPOKE_LANGFUSE_REDIS_PASSWORD
 
 # MinIO root user is fixed (not random)
 DATASPOKE_LANGFUSE_MINIO_ROOT_USER="${DATASPOKE_LANGFUSE_MINIO_ROOT_USER:-minio}"
@@ -81,8 +88,6 @@ DATASPOKE_LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_LANGFUSE_INIT_PROJECT_NAME:-da
 
 # Public key is human-readable, hardcoded; secret key is persisted random hex
 # so it stays stable across re-runs and matches what Langfuse provisioned.
-# Persist both into .env so downstream tools (helm --set-string, host-mode
-# clients) read them via the normal source dev_env/.env path.
 if [[ -z "${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" ]]; then
   info "DATASPOKE_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
   DATASPOKE_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
@@ -119,6 +124,16 @@ command -v helm    >/dev/null 2>&1 || error "helm is not installed or not in PAT
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
+# Ensure langfuse namespace exists
+# ---------------------------------------------------------------------------
+if kubectl get namespace "${LANGFUSE_NS}" >/dev/null 2>&1; then
+  info "Namespace '${LANGFUSE_NS}' already exists."
+else
+  info "Creating namespace '${LANGFUSE_NS}'..."
+  kubectl create namespace "${LANGFUSE_NS}"
+fi
+
+# ---------------------------------------------------------------------------
 # Add Langfuse Helm repo
 # ---------------------------------------------------------------------------
 if helm repo list 2>/dev/null | grep -q "^langfuse"; then
@@ -136,22 +151,26 @@ info "Helm repo 'langfuse' up to date."
 if [[ -d "$CHART_DIR/charts" ]] && compgen -G "$CHART_DIR/charts/langfuse-*.tgz" > /dev/null 2>&1; then
   info "Langfuse chart dependency already present — skipping helm dependency update."
 else
-  info "Running helm dependency update for dataspoke-langfuse..."
+  info "Running helm dependency update for langfuse..."
   helm dependency update "$CHART_DIR"
 fi
 
 # ---------------------------------------------------------------------------
-# Create dataspoke-langfuse-secret (idempotent)
+# Create dataspoke-langfuse-secret in langfuse-01 (full key set — idempotent)
+# Langfuse pods (web, worker, migration jobs) resolve this secret locally
+# within their own namespace.
 # ---------------------------------------------------------------------------
-info "Creating dataspoke-langfuse-secret..."
+info "Creating dataspoke-langfuse-secret in ${LANGFUSE_NS} (full key set)..."
 kubectl create secret generic dataspoke-langfuse-secret \
-  --namespace "${NS}" \
+  --namespace "${LANGFUSE_NS}" \
   --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
   --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
   --from-literal=LANGFUSE_NEXTAUTH_SECRET="${DATASPOKE_LANGFUSE_NEXTAUTH_SECRET}" \
   --from-literal=LANGFUSE_SALT="${DATASPOKE_LANGFUSE_SALT}" \
   --from-literal=LANGFUSE_ENCRYPTION_KEY="${DATASPOKE_LANGFUSE_ENCRYPTION_KEY}" \
   --from-literal=LANGFUSE_CLICKHOUSE_PASSWORD="${DATASPOKE_LANGFUSE_CLICKHOUSE_PASSWORD}" \
+  --from-literal=LANGFUSE_POSTGRES_PASSWORD="${DATASPOKE_LANGFUSE_POSTGRES_PASSWORD}" \
+  --from-literal=LANGFUSE_REDIS_PASSWORD="${DATASPOKE_LANGFUSE_REDIS_PASSWORD}" \
   --from-literal=LANGFUSE_MINIO_ROOT_USER="${DATASPOKE_LANGFUSE_MINIO_ROOT_USER}" \
   --from-literal=LANGFUSE_MINIO_ROOT_PASSWORD="${DATASPOKE_LANGFUSE_MINIO_ROOT_PASSWORD}" \
   --from-literal=LANGFUSE_S3_ACCESS_KEY_ID="${DATASPOKE_LANGFUSE_MINIO_ROOT_USER}" \
@@ -166,7 +185,30 @@ kubectl create secret generic dataspoke-langfuse-secret \
   --from-literal=LANGFUSE_INIT_PROJECT_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
   --from-literal=LANGFUSE_INIT_PROJECT_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
-info "dataspoke-langfuse-secret applied."
+info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
+
+# ---------------------------------------------------------------------------
+# Create dataspoke-langfuse-secret in dataspoke-01 (consumer subset — idempotent)
+# The umbrella chart's existingSecretKeyRef for LANGFUSE_SECRET_KEY resolves
+# within the same namespace as the API/Airflow pods (dataspoke-01). Kubernetes
+# secrets are namespace-scoped — a cross-namespace secretKeyRef is not possible,
+# so we mirror only the two keys the umbrella chart needs.
+# ---------------------------------------------------------------------------
+info "Creating dataspoke-langfuse-secret in ${DATASPOKE_NS} (consumer subset: PUBLIC_KEY + SECRET_KEY)..."
+# Ensure dataspoke namespace exists (install.sh creates it up front, but this
+# script may also be run standalone before dataspoke-infra).
+if kubectl get namespace "${DATASPOKE_NS}" >/dev/null 2>&1; then
+  info "Namespace '${DATASPOKE_NS}' already exists."
+else
+  info "Creating namespace '${DATASPOKE_NS}'..."
+  kubectl create namespace "${DATASPOKE_NS}"
+fi
+kubectl create secret generic dataspoke-langfuse-secret \
+  --namespace "${DATASPOKE_NS}" \
+  --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
+  --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+info "dataspoke-langfuse-secret (consumer subset) applied in ${DATASPOKE_NS}."
 
 # ---------------------------------------------------------------------------
 # Helm install/upgrade
@@ -174,11 +216,11 @@ info "dataspoke-langfuse-secret applied."
 INGRESS_DOMAIN="${DATASPOKE_DEV_INGRESS_IP}.nip.io"
 LANGFUSE_HOST="http://langfuse.${INGRESS_DOMAIN}"
 
-info "Installing/upgrading dataspoke-langfuse Helm release..."
-helm upgrade --install dataspoke-langfuse "$CHART_DIR" \
+info "Installing/upgrading langfuse Helm release in namespace ${LANGFUSE_NS}..."
+helm upgrade --install langfuse "$CHART_DIR" \
   -f "$CHART_DIR/values.yaml" \
   -f "$CHART_DIR/values-dev.yaml" \
-  -n "${NS}" \
+  -n "${LANGFUSE_NS}" \
   --set-string "langfuse.langfuse.nextauth.url=${LANGFUSE_HOST}" \
   --set-string "langfuse.langfuse.ingress.hosts[0].host=langfuse.${INGRESS_DOMAIN}" \
   --set-string "langfuse.langfuse.ingress.hosts[0].paths[0].path=/" \
@@ -187,21 +229,26 @@ helm upgrade --install dataspoke-langfuse "$CHART_DIR" \
 
 # ---------------------------------------------------------------------------
 # Wait for rollout
+# The upstream langfuse subchart names its Deployments using .Release.Name as
+# the prefix. With release name `langfuse` the deployments are named
+# `langfuse-web` and `langfuse-worker`.
 # ---------------------------------------------------------------------------
 info "Waiting for Langfuse web deployment to become ready..."
-kubectl rollout status deployment/dataspoke-langfuse-web \
-  -n "${NS}" --timeout=300s \
-  && info "dataspoke-langfuse-web is ready." \
-  || warn "dataspoke-langfuse-web did not become ready in time — check pod logs."
+kubectl rollout status deployment/langfuse-web \
+  -n "${LANGFUSE_NS}" --timeout=300s \
+  && info "langfuse-web is ready." \
+  || warn "langfuse-web did not become ready in time — check pod logs."
 
 info "Waiting for Langfuse worker deployment to become ready..."
-kubectl rollout status deployment/dataspoke-langfuse-worker \
-  -n "${NS}" --timeout=300s \
-  && info "dataspoke-langfuse-worker is ready." \
-  || warn "dataspoke-langfuse-worker did not become ready in time — check pod logs."
+kubectl rollout status deployment/langfuse-worker \
+  -n "${LANGFUSE_NS}" --timeout=300s \
+  && info "langfuse-worker is ready." \
+  || warn "langfuse-worker did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
 # Write DATASPOKE_LANGFUSE_HOST back into .env (idempotent upsert)
+# dataspoke-infra/install.sh reads this on its initial helm upgrade --install,
+# so no post-hoc reupgrade of the umbrella chart is needed.
 # ---------------------------------------------------------------------------
 if grep -q "^DATASPOKE_LANGFUSE_HOST=" "$ENV_FILE" 2>/dev/null; then
   sed -i.bak "s|^DATASPOKE_LANGFUSE_HOST=.*|DATASPOKE_LANGFUSE_HOST=${LANGFUSE_HOST}|" "$ENV_FILE" \
@@ -212,41 +259,15 @@ fi
 info "DATASPOKE_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
 
 # ---------------------------------------------------------------------------
-# Propagate Langfuse host into the DataSpoke umbrella chart so the API and
-# Airflow containers receive the correct DATASPOKE_LANGFUSE_HOST at startup.
-# --reuse-values preserves all other umbrella settings set by dataspoke-infra.
-# ---------------------------------------------------------------------------
-UMBRELLA_CHART="$REPO_ROOT/helm-charts/dataspoke"
-if helm status dataspoke -n "${NS}" >/dev/null 2>&1; then
-  info "Propagating Langfuse host + public key into the DataSpoke umbrella chart..."
-  # All three of host/public/secret must be set for LLMClient to install the
-  # Langfuse callback (src/shared/llm/client.py). publicKey lands in the
-  # ConfigMap (non-secret); secretKey is read from dataspoke-langfuse-secret
-  # via existingSecret reference (see helm-charts/dataspoke/values.yaml).
-  helm upgrade --install dataspoke "$UMBRELLA_CHART" \
-    --reuse-values \
-    --set-string "config.langfuse.host=${LANGFUSE_HOST}" \
-    --set-string "config.langfuse.publicKey=${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
-    -n "${NS}" --wait --timeout 5m
-  kubectl rollout restart deployment/dataspoke-api -n "${NS}" || true
-  info "dataspoke-api restarted with updated Langfuse host + public key."
-else
-  info "DataSpoke umbrella release not found — host will be picked up on next dataspoke-infra install."
-fi
-
-# ---------------------------------------------------------------------------
 # Access summary
 # ---------------------------------------------------------------------------
 echo ""
-info "DataSpoke Langfuse installation complete."
+info "Langfuse installation complete."
 echo ""
 echo "  Langfuse UI:    ${LANGFUSE_HOST}/"
-echo "  Namespace:      ${NS}"
-echo "  Secret:         dataspoke-langfuse-secret"
+echo "  Namespace:      ${LANGFUSE_NS}"
+echo "  Secret (full):  dataspoke-langfuse-secret in ${LANGFUSE_NS}"
+echo "  Secret (keys):  dataspoke-langfuse-secret in ${DATASPOKE_NS} (PUBLIC_KEY + SECRET_KEY)"
 echo ""
-echo "  First-time setup:"
-echo "    1. Open ${LANGFUSE_HOST}/ and sign up for an account."
-echo "    2. Create an API key pair in Settings → API Keys."
-echo "    3. Set DATASPOKE_LANGFUSE_PUBLIC_KEY and DATASPOKE_LANGFUSE_SECRET_KEY in .env."
-echo "    4. Re-run this script to update the secret in the cluster."
+echo "  Login: dataspoke@dataspoke.local / dataspoke"
 echo ""

@@ -157,8 +157,6 @@ if [[ -d "$CHART_DIR" ]]; then
     --set-string secrets.llm.apiKey="${DATASPOKE_LLM_API_KEY:-}" \
     --set-string config.langfuse.host="${DATASPOKE_LANGFUSE_HOST:-}" \
     --set-string config.langfuse.publicKey="${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" \
-    --set-string secrets.langfuse.existingSecret="dataspoke-langfuse-secret" \
-    --set-string secrets.langfuse.existingSecretKey="LANGFUSE_SECRET_KEY" \
     --set-string config.airflow.callbackBaseUrl="http://dataspoke-api:8002" \
     --set-string config.datahub.gmsUrl="http://datahub-datahub-gms.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:8080" \
     --set-string config.datahub.kafkaBrokers="datahub-prerequisites-kafka.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:9092" \

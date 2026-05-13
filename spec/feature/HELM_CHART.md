@@ -20,8 +20,9 @@
 `helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components —
 application services and infrastructure dependencies — into a single installable unit. The same
 chart serves both production and development — only the values file differs.
-`helm-charts/dataspoke-langfuse/` is a sibling chart for the self-hosted Langfuse LLM observability
-subsystem, following the same `values.yaml` + `values-dev.yaml` overlay convention.
+`helm-charts/langfuse/` is a sibling chart for the self-hosted Langfuse LLM observability
+subsystem, installed into its own `langfuse-01` namespace with bundled Postgres, Redis, ClickHouse,
+and MinIO subcharts. It follows the same `values.yaml` + `values-dev.yaml` overlay convention.
 
 - **Production** (`values.yaml`): All components enabled — frontend, API, plus infrastructure
   (including Airflow). Deploy with `helm upgrade --install` and a customized values file for your

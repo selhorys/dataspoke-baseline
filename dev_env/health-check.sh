@@ -276,7 +276,7 @@ check_dataspoke_api() {
 
 check_dataspoke_langfuse() {
   local lf_url="http://langfuse.${DOMAIN}"
-  local label="dataspoke-langfuse-web (${lf_url})"
+  local label="langfuse-web (${lf_url})"
   if ! _tcp_check "${INGRESS_IP}" 80; then
     _fail "$label — ingress port 80 not reachable"
     ((FAILURES++)); return
@@ -287,15 +287,15 @@ check_dataspoke_langfuse() {
   if _http_alive "${lf_url}/"; then
     _pass "$label"
   else
-    _skip "$label — not responding (may not be installed; run dataspoke-langfuse/install.sh)"
+    _skip "$label — not responding (may not be installed; run langfuse/install.sh)"
   fi
 
   # Check langfuse-worker rollout status (non-fatal skip if not installed).
-  local worker_label="dataspoke-langfuse-worker"
-  local worker_ns="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE:-dataspoke-01}"
-  if kubectl get deployment/dataspoke-langfuse-worker -n "${worker_ns}" >/dev/null 2>&1; then
+  local worker_label="langfuse-worker"
+  local worker_ns="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE:-langfuse-01}"
+  if kubectl get deployment/langfuse-worker -n "${worker_ns}" >/dev/null 2>&1; then
     local ready
-    ready=$(kubectl get deployment/dataspoke-langfuse-worker -n "${worker_ns}" \
+    ready=$(kubectl get deployment/langfuse-worker -n "${worker_ns}" \
       -o jsonpath='{.status.readyReplicas}' 2>/dev/null) || ready="0"
     if [[ "${ready:-0}" -ge 1 ]]; then
       _pass "${worker_label} (${ready} replica(s) ready)"
@@ -304,7 +304,7 @@ check_dataspoke_langfuse() {
       ((FAILURES++))
     fi
   else
-    _skip "${worker_label} — not deployed (run dataspoke-langfuse/install.sh)"
+    _skip "${worker_label} — not deployed (run langfuse/install.sh)"
   fi
 }
 
