@@ -414,12 +414,15 @@ PATCH는 문서 교체, DELETE는 폐기한다.
 트리플 결과를 기록 없이 반환하므로, `seed`·`dataset_filter` 변경의 효과를 적용
 전에 미리 보는 데 유용하다.
 
-**증분 추론.** 각 실행은 기존의 **승인된** 노드·엣지·트리플을 기반으로 시작한다 —
+**증분 추론.** 각 실행은 기존의 재사용 가능한 온톨로지를 기반으로 시작한다 —
 LLM이 매번 온톨로지를 처음부터 다시 도출하지 않는다.
 새 제안은 그 위에 쌓인다: 후보가 이름 또는 임베딩 유사도(`node_embeddings`)로
-승인된 노드와 일치하면 기존 노드 ID를 재사용하고, 그렇지 않으면 새 pending 노드로
-제안한다. 엣지와 트리플도 동일한 재사용 규칙을 따른다.
-거부·대기 상태의 결과는 입력으로 이월되지 않는다.
+기존 노드와 일치하면 기존 노드 ID를 재사용한다. 재사용 풀은
+`rejected`가 아닌 모든 상태(`llm_pending`, `llm_approved`, `approved`)를 포함하므로,
+사람 리뷰를 기다리는 동안 같은 개념이 중복 행으로 분기되지 않는다.
+일치가 없으면 새 `llm_pending` 노드로 제안한다.
+엣지와 트리플도 동일한 재사용 규칙을 따른다.
+`rejected` 결과는 입력으로 이월되지 않는다.
 
 **일회성 실행 프롬프트.** `POST /method/run`은 Markdown 본문(`Content-Type: text/markdown`)을
 실을 수 있으며, 영속 seed 위에 해당 실행에만 적용되는 일회성 프롬프트로 작동한다.
@@ -430,8 +433,10 @@ LLM이 매번 온톨로지를 처음부터 다시 도출하지 않는다.
 "매 스케줄 실행을 어떻게 조정할지"의 지침은 여기에 적는다.
 수동 실행에서 본문을 명시하면 기본값을 덮어쓰며, 빈 본문은 항상 기본값을 사용한다.
 
-**리뷰 의존성.** 트리플은 양쪽 끝 노드와 엣지가 모두 승인되기 전에는 승인할 수 없다.
-선행 승인 없이 시도하면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`을 반환한다.
+**리뷰 의존성.** 트리플을 사람이 승인하려면 양쪽 끝 노드와 엣지가 모두
+`status='approved'`여야 한다(`llm_approved` 의존성은 게이트를 충족하지 않는다 —
+각 구성 요소를 사람이 명시적으로 먼저 승인해야 한다).
+이를 어기고 시도하면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`을 반환한다.
 따라서 리뷰어는 일반적으로 **노드 → 엣지 → 트리플** 순서로 처리한다.
 
 ### API Mapping
@@ -494,7 +499,9 @@ aspect 만 읽는다: `datasetProperties`, `schemaMetadata`,
 그리고 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
 `documentInfo.contents.text`(Markdown 본문). seed가 명명 선택을 안내한다.
 
-**추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 모두 `pending_review`:
+**추론 출력.** 노드 셋, 엣지 둘, 트리플 둘. 각 행의 `status`는 Adversarial Debate가
+신뢰도 ≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`로 수락하면 `llm_approved`, 그렇지 않으면
+`llm_pending`이다:
 
 ```
 Nodes (subjects / objects):

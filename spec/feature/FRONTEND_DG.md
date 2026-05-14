@@ -152,10 +152,12 @@ for the triple ontology — DE and DA browse but cannot approve.
 | `/dg/ontogen/seed` | `GET .../attr/seed`, `GET .../{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../{seed_id}` |
 | `/dg/ontogen` | `GET .../result/{node\|edge\|triple}` (+ `/{id}`, `/attr`, `/event`) | `POST .../method/run`; `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-Review proceeds **nodes → edges → triples**. A triple cannot be approved
-while any of its subject node, edge, or object node is still pending; the
-API returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` and the UI disables the
-approve button with an inline hint naming the missing dependency.
+Review proceeds **nodes → edges → triples**. A triple cannot be human-approved
+unless its subject node, edge, and object node all carry `status='approved'`
+(an `llm_approved` dependency does NOT satisfy the gate — the human must
+explicitly approve each component first); the API returns
+`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` and the UI disables the approve
+button with an inline hint naming the missing dependency.
 Approval flips the entry's status in DataSpoke storage; DataHub is not
 written to — the confirm dialog states this.
 

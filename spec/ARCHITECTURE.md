@@ -343,6 +343,7 @@ logic, and convenience methods. Patterns defined in
 | Operational DB | PostgreSQL 17 (pgvector + AGE) | ACID guarantees, JSONB flexibility, first-class vector similarity (pgvector); Apache AGE installed as reserved graph infrastructure |
 | Cache | Redis | API caching, rate limiting, session management |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
+| LLM Observability | Self-hosted Langfuse | Per-run trace store for prompts, completions, tool calls, and token counts; sibling subsystem with its own chart and namespace. See [`spec/feature/BACKEND_LLM.md` §Observability](feature/BACKEND_LLM.md#observability) |
 | Charts | Highcharts / Recharts | Rich visualization (metrics dashboards, graph views) |
 
 ### Development Stack
@@ -382,6 +383,11 @@ and `datahub-kafka:9092` (event streaming).
 `dataspoke-event-consumer` is **disabled by default** — baseline UC1–UC5 are schedule-driven
 via Airflow tier DAGs and do not subscribe to DataHub MCL events. Enable the separate pod
 when an organisation adds event-driven extensions; Kafka consumers scale by partition count.
+
+Langfuse runs as a sibling subsystem in its own namespace (`langfuse-01` by default) — web,
+worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from
+`helm-charts/langfuse/`. DataSpoke pods consume Langfuse via the `DATASPOKE_LANGFUSE_*` env
+vars; absence of those vars disables tracing without affecting LLM call success.
 
 For replica counts, resource requests/limits, PV sizes, component matrix, and network policy,
 see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md). DataSpoke's namespace requires egress

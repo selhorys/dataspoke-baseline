@@ -194,8 +194,9 @@ aspect.
 
 `POST .../result/{node\|edge\|triple}/{id}/method/review` is **not** exposed
 in the DE workspace — see [FRONTEND_DG §Ontogen Review](FRONTEND_DG.md#ontogen-review-uc3).
-The browser shows the same pending / approved / rejected status badges so
-engineers can see what is in flight.
+The browser shows the same `llm_pending` / `llm_approved` / `approved` / `rejected`
+status badges so engineers can see what is in flight and which gate each row has
+cleared.
 
 ```
 ┌──────────────────────────────────────────────────────┐

@@ -48,7 +48,7 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 
 ### Dev Environment Setup
 
-The dev environment provisions infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, example data sources) into a Kubernetes cluster. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
+The dev environment provisions infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, self-hosted Langfuse for LLM observability, example data sources) into a Kubernetes cluster. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
 
 ```bash
 cp dev_env/.env.example dev_env/.env   # Set your Kubernetes context
