@@ -28,6 +28,7 @@ When the user specifies components, match against these names. If no components 
 |-----------|---------------|------------------|
 | `nginx-ingress` | `dev_env/nginx-ingress/install.sh` | `dev_env/nginx-ingress/uninstall.sh` |
 | `datahub` | `dev_env/datahub/install.sh` | `dev_env/datahub/uninstall.sh` |
+| `langfuse` (aliases: `lf`, `observability`) | `dev_env/langfuse/install.sh` | `dev_env/langfuse/uninstall.sh` |
 | `dataspoke-infra` (aliases: `infra`, `infrastructure`) | `dev_env/dataspoke-infra/install.sh` | `dev_env/dataspoke-infra/uninstall.sh` |
 | `dataspoke-example` (aliases: `example`, `dummy-data`) | `dev_env/dataspoke-example/install.sh` | `dev_env/dataspoke-example/uninstall.sh` |
 | `dataspoke-lock` (aliases: `lock`) | `dev_env/dataspoke-lock/install.sh` | `dev_env/dataspoke-lock/uninstall.sh` |
@@ -38,7 +39,7 @@ When the user specifies components, match against these names. If no components 
 
 1. Read `dev_env/.env`. If it does not exist, create it from `dev_env/.env.example`.
 2. If it already exists, verify all required variables are present:
-   - Dev variables: `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`
+   - Dev variables: `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`
    - Dev chart versions: `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION`
    - Dev credentials: `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_ROOT_PASSWORD`, `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_PASSWORD`
    - Dev ingress: `DATASPOKE_DEV_INGRESS_IP`, `DATASPOKE_DEV_INGRESS_DOMAIN`
@@ -74,7 +75,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 ### Partial install (specific components)
 
 1. Ensure namespaces exist (create if needed, same logic as `install.sh`).
-2. For each requested component **in dependency order** (nginx-ingress → datahub → dataspoke-infra → dataspoke-example → dataspoke-lock), run the component's install script directly: `bash dev_env/<component>/install.sh`
+2. For each requested component **in dependency order** (nginx-ingress → datahub → langfuse → dataspoke-infra → dataspoke-example → dataspoke-lock), run the component's install script directly: `bash dev_env/<component>/install.sh`
 3. Monitor with `/k8s-work` after each component completes.
 
 ### Post-install
@@ -112,7 +113,7 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 
 ### Partial uninstall (specific components)
 
-1. For each requested component **in reverse dependency order** (dataspoke-lock → dataspoke-example → dataspoke-infra → datahub → nginx-ingress), run: `bash dev_env/<component>/uninstall.sh`
+1. For each requested component **in reverse dependency order** (dataspoke-lock → dataspoke-example → dataspoke-infra → langfuse → datahub → nginx-ingress), run: `bash dev_env/<component>/uninstall.sh`
 2. Do NOT delete namespaces during partial uninstall.
 
 ### Post-uninstall
