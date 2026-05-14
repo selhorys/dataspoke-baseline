@@ -7,7 +7,6 @@ Spec: spec/feature/BACKEND.md §Ontology Generation Service
 import logging
 import re
 import secrets
-import unicodedata
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -28,6 +27,7 @@ from src.backend.ontogen.models import (
 )
 from src.backend.ontogen.prompts import build_run_prompt
 from src.backend.ontogen.reviewer import build_ontogen_review_tool
+from src.backend.ontogen.slug import assert_edge_id, assert_node_id, make_snake_id
 from src.backend.ontogen.validator import (
     ValidationError,
     build_ontogen_validate_tool,
@@ -138,57 +138,22 @@ def _validate_schedule_tier(tier: str | None) -> None:
         )
 
 
-def _to_slug(text: str) -> str:
-    """Convert *text* to a lowercase ASCII slug (kebab-case, no double underscores)."""
-    # Normalise unicode to ASCII-safe form
-    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-")
-    # Replace double hyphens; reject if resulting slug is empty
-    slug = re.sub(r"-+", "-", slug)
-    return slug or "node"
+def _status_for_outcome(score: float, debate_outcome: str) -> str:
+    """Return the LLM-gated status for a newly persisted ontogen row.
 
-
-def _make_slug_id(name: str, existing_ids: set[str]) -> str:
-    """Derive a unique slug ID from *name*, avoiding *existing_ids*."""
-    base = _to_slug(name)
-    # Strip double underscore (reserved)
-    base = base.replace("__", "-")
-    candidate = base
-    counter = 1
-    while candidate in existing_ids or "__" in candidate:
-        candidate = f"{base}-{counter}"
-        counter += 1
-    return candidate
-
-
-def _status_for_confidence(score: float) -> str:
-    if score >= ONTOLOGY_CONFIDENCE_THRESHOLD:
-        return "approved"
-    return "pending_review"
+    Returns ``"llm_approved"`` when the debate Reviewer accepted the item and
+    the confidence score meets the threshold.  All other outcomes (low
+    confidence accept, reject, exhaustion, cycle) return ``"llm_pending"``,
+    placing the row in the human review queue.
+    """
+    if debate_outcome == "accept" and score >= ONTOLOGY_CONFIDENCE_THRESHOLD:
+        return "llm_approved"
+    return "llm_pending"
 
 
 def _preview(body_md: str) -> str:
     normalised = " ".join(body_md.splitlines())
     return normalised[:200]
-
-
-_SLUG_ID_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
-
-
-def _assert_node_id(node_id: str) -> None:
-    """Raise ValueError if *node_id* is not a valid slug (defence-in-depth)."""
-    if not _SLUG_ID_RE.match(node_id):
-        raise ValueError(
-            f"node_id {node_id!r} is not a valid slug (allowed: a-z0-9_-, max 64 chars)"
-        )
-
-
-def _assert_edge_id(edge_id: str) -> None:
-    """Raise ValueError if *edge_id* is not a valid slug (defence-in-depth)."""
-    if not _SLUG_ID_RE.match(edge_id):
-        raise ValueError(
-            f"edge_id {edge_id!r} is not a valid slug (allowed: a-z0-9_-, max 64 chars)"
-        )
 
 
 def _event_row(
@@ -540,7 +505,7 @@ class OntogenService:
         eligible_nodes = (
             (await self._db.execute(
                 select(OntogenNode).where(
-                    OntogenNode.status.in_(["approved", "pending_review"])
+                    OntogenNode.status.in_(["approved", "llm_approved", "llm_pending"])
                 )
             ))
             .scalars()
@@ -549,7 +514,7 @@ class OntogenService:
         eligible_edges = (
             (await self._db.execute(
                 select(OntogenEdge).where(
-                    OntogenEdge.status.in_(["approved", "pending_review"])
+                    OntogenEdge.status.in_(["approved", "llm_approved", "llm_pending"])
                 )
             ))
             .scalars()
@@ -558,15 +523,17 @@ class OntogenService:
         approved_triples = (
             (
                 await self._db.execute(
-                    select(OntogenTriple).where(OntogenTriple.status == "approved")
+                    select(OntogenTriple).where(
+                        OntogenTriple.status.in_(["approved", "llm_approved", "llm_pending"])
+                    )
                 )
             )
             .scalars()
             .all()
         )
 
-        approved_nodes = [n for n in eligible_nodes if n.status == "approved"]
-        approved_edges = [e for e in eligible_edges if e.status == "approved"]
+        approved_nodes = [n for n in eligible_nodes if n.status in {"approved", "llm_approved"}]
+        approved_edges = [e for e in eligible_edges if e.status in {"approved", "llm_approved"}]
 
         existing_node_ids: set[str] = {n.id for n in eligible_nodes}
         existing_edge_ids: set[str] = {e.id for e in eligible_edges}
@@ -577,11 +544,11 @@ class OntogenService:
         # name/label (shouldn't happen given the unique constraints, but is the
         # safer precedence).
         node_name_to_id: dict[str, str] = {
-            n.name: n.id for n in eligible_nodes if n.status == "pending_review"
+            n.name: n.id for n in eligible_nodes if n.status == "llm_pending"
         }
         node_name_to_id.update({n.name: n.id for n in approved_nodes})
         edge_label_to_id: dict[str, str] = {
-            e.label: e.id for e in eligible_edges if e.status == "pending_review"
+            e.label: e.id for e in eligible_edges if e.status == "llm_pending"
         }
         edge_label_to_id.update({e.label: e.id for e in approved_edges})
 
@@ -663,7 +630,7 @@ class OntogenService:
                 continue
 
             # Fix #3: always re-slug from name regardless of LLM-supplied id
-            final_id = _make_slug_id(name, all_known_ids)
+            final_id = make_snake_id(name, all_known_ids)
 
             # Direct-match reuse first — if a node with this exact name already
             # exists (approved or pending), reuse its id. Cheaper than embedding
@@ -706,7 +673,7 @@ class OntogenService:
                     "name": name,
                     "description": description,
                     "confidence_score": confidence,
-                    "status": _status_for_confidence(confidence),
+                    "status": _status_for_outcome(confidence, debate_result.outcome),
                     "is_reuse": reused_id is not None,
                     "dataset_urns": dataset_urns_for_node,
                     "run_at": run_at_iso,
@@ -733,7 +700,7 @@ class OntogenService:
                 continue
 
             # Fix #3: always re-slug from label
-            slugged_label = _make_slug_id(label, all_known_edge_ids)
+            slugged_label = make_snake_id(label, all_known_edge_ids)
 
             # Reuse by label match
             if label in edge_label_to_id:
@@ -752,7 +719,7 @@ class OntogenService:
                     "label": label,
                     "semantics": semantics,
                     "confidence_score": edge_confidence,
-                    "status": _status_for_confidence(edge_confidence),
+                    "status": _status_for_outcome(edge_confidence, debate_result.outcome),
                     "run_at": run_at_iso,
                 }
             )
@@ -774,9 +741,9 @@ class OntogenService:
 
             # Fix #3: validate all three component IDs are valid slugs
             try:
-                _assert_node_id(subj_id)
-                _assert_edge_id(edge_id_val)
-                _assert_node_id(obj_id)
+                assert_node_id(subj_id)
+                assert_edge_id(edge_id_val)
+                assert_node_id(obj_id)
             except ValueError:
                 logger.warning(
                     "ontogen_invalid_llm_proposal_skipped",
@@ -800,7 +767,7 @@ class OntogenService:
                     "edge_id": edge_id_val,
                     "object_node_id": obj_id,
                     "confidence_score": triple_confidence,
-                    "status": _status_for_confidence(triple_confidence),
+                    "status": _status_for_outcome(triple_confidence, debate_result.outcome),
                     "run_at": run_at_iso,
                 }
             )
@@ -841,7 +808,7 @@ class OntogenService:
 
             # Fix #3: defence-in-depth slug check before any DB write
             try:
-                _assert_node_id(node_id)
+                assert_node_id(node_id)
             except ValueError:
                 logger.warning(
                     "ontogen_invalid_llm_proposal_skipped",
@@ -916,7 +883,7 @@ class OntogenService:
 
             # Fix #3: defence-in-depth slug check
             try:
-                _assert_edge_id(edge_id)
+                assert_edge_id(edge_id)
             except ValueError:
                 logger.warning(
                     "ontogen_invalid_llm_proposal_skipped",
@@ -1637,11 +1604,11 @@ class OntogenService:
 
         The first URN in the list is marked ``is_primary=True``.  If the node
         confidence meets ONTOLOGY_CONFIDENCE_THRESHOLD the rows start as
-        ``status='approved'``; otherwise ``status='pending'``.
+        ``status='llm_approved'``; otherwise ``status='llm_pending'``.
         """
         if not dataset_urns:
             return
-        status = "approved" if confidence >= ONTOLOGY_CONFIDENCE_THRESHOLD else "pending"
+        status = "llm_approved" if confidence >= ONTOLOGY_CONFIDENCE_THRESHOLD else "llm_pending"
         for idx, urn in enumerate(dataset_urns):
             existing_map = (
                 await self._db.execute(
@@ -1772,7 +1739,7 @@ async def _upsert_node_embedding(
     sql = text(
         """
         INSERT INTO dataspoke.node_embeddings (node_id, embedding, name, status, updated_at)
-        VALUES (:node_id, :embedding::vector, :name, :status, :updated_at)
+        VALUES (:node_id, CAST(:embedding AS vector), :name, :status, CAST(:updated_at AS timestamptz))
         ON CONFLICT (node_id) DO UPDATE SET
             embedding  = EXCLUDED.embedding,
             name       = EXCLUDED.name,
@@ -1789,7 +1756,7 @@ async def _upsert_node_embedding(
                     "embedding": vector_literal,
                     "name": name,
                     "status": status,
-                    "updated_at": datetime.now(tz=UTC).isoformat(),
+                    "updated_at": datetime.now(tz=UTC),
                 },
             )
 
@@ -1813,7 +1780,7 @@ async def _upsert_edge_embedding(
     sql = text(
         """
         INSERT INTO dataspoke.edge_embeddings (edge_id, embedding, label, status, updated_at)
-        VALUES (:edge_id, :embedding::vector, :label, :status, :updated_at)
+        VALUES (:edge_id, CAST(:embedding AS vector), :label, :status, CAST(:updated_at AS timestamptz))
         ON CONFLICT (edge_id) DO UPDATE SET
             embedding  = EXCLUDED.embedding,
             label      = EXCLUDED.label,
@@ -1830,7 +1797,7 @@ async def _upsert_edge_embedding(
                     "embedding": vector_literal,
                     "label": label,
                     "status": status,
-                    "updated_at": datetime.now(tz=UTC).isoformat(),
+                    "updated_at": datetime.now(tz=UTC),
                 },
             )
 
@@ -1853,7 +1820,7 @@ async def _upsert_triple_embedding(
     sql = text(
         """
         INSERT INTO dataspoke.triple_embeddings (triple_id, embedding, status, updated_at)
-        VALUES (:triple_id, :embedding::vector, :status, :updated_at)
+        VALUES (:triple_id, CAST(:embedding AS vector), :status, CAST(:updated_at AS timestamptz))
         ON CONFLICT (triple_id) DO UPDATE SET
             embedding  = EXCLUDED.embedding,
             status     = EXCLUDED.status,
@@ -1868,6 +1835,6 @@ async def _upsert_triple_embedding(
                     "triple_id": triple_id,
                     "embedding": vector_literal,
                     "status": status,
-                    "updated_at": datetime.now(tz=UTC).isoformat(),
+                    "updated_at": datetime.now(tz=UTC),
                 },
             )

@@ -24,6 +24,9 @@ Usage:
 
     uv run python -m tests.integration.util --reset-dataspoke-db
         DataSpoke operational DB only
+
+    uv run python -m tests.integration.util --langfuse
+        Langfuse dataspoke project only (delete all traces)
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ import sys
 
 
 def main() -> None:
-    from tests.integration.util import datahub, dataspoke_db, kafka, postgres
+    from tests.integration.util import datahub, dataspoke_db, kafka, langfuse, postgres
 
     args = set(sys.argv[1:])
 
@@ -45,20 +48,22 @@ def main() -> None:
         sys.exit(1)
 
     if not args or "--reset-all" in args:
-        print("[INFO] Resetting to empty state (PG + Kafka + DataHub + DataSpoke DB)...")
+        print("[INFO] Resetting to empty state (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
         asyncio.run(postgres.reset_all_empty())
         kafka.reset_all_empty()
         datahub.reset_only()
         asyncio.run(dataspoke_db.reset_all())
+        asyncio.run(langfuse.reset_project())
         print("[INFO] Done.")
         return
 
     if "--reset-seed" in args:
-        print("[INFO] Resetting and seeding (PG + Kafka + DataHub + DataSpoke DB)...")
+        print("[INFO] Resetting and seeding (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
         asyncio.run(postgres.reset_all())
         kafka.reset_all()
         asyncio.run(datahub.seed())
         asyncio.run(dataspoke_db.reset_all())
+        asyncio.run(langfuse.reset_project())
         print("[INFO] Done.")
         return
 
@@ -81,6 +86,10 @@ def main() -> None:
     if "--reset-dataspoke-db" in args:
         print("[INFO] Resetting DataSpoke operational DB...")
         asyncio.run(dataspoke_db.reset_all())
+
+    if "--langfuse" in args:
+        print("[INFO] Clearing Langfuse traces in the dataspoke project...")
+        asyncio.run(langfuse.reset_project())
 
     print("[INFO] Done.")
 

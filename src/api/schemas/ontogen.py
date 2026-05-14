@@ -141,7 +141,13 @@ class NodeResponse(SingleResponse):
     name: str = Field(description="Human-readable node name")
     description: str = Field(default="", description="Node description")
     confidence_score: float = Field(description="LLM confidence score (0–1)")
-    status: str = Field(description="Lifecycle status: pending_review, approved, or rejected")
+    status: str = Field(
+        description=(
+            "Lifecycle status: llm_pending (LLM-created, awaiting review), "
+            "llm_approved (LLM-reviewer accepted + high confidence), "
+            "approved (human-approved), or rejected (human-rejected)"
+        )
+    )
     created_at: datetime = Field(description="UTC timestamp when the node was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
@@ -166,7 +172,13 @@ class EdgeResponse(SingleResponse):
     label: str = Field(description="Human-readable predicate label")
     semantics: str | None = Field(default=None, description="Semantic description of the predicate")
     confidence_score: float = Field(description="LLM confidence score (0–1)")
-    status: str = Field(description="Lifecycle status: pending_review, approved, or rejected")
+    status: str = Field(
+        description=(
+            "Lifecycle status: llm_pending (LLM-created, awaiting review), "
+            "llm_approved (LLM-reviewer accepted + high confidence), "
+            "approved (human-approved), or rejected (human-rejected)"
+        )
+    )
     created_at: datetime = Field(description="UTC timestamp when the edge was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
@@ -194,7 +206,13 @@ class TripleResponse(SingleResponse):
     edge_id: str = Field(description="ID of the predicate edge")
     object_node_id: str = Field(description="ID of the object node")
     confidence_score: float = Field(description="LLM confidence score (0–1)")
-    status: str = Field(description="Lifecycle status: pending_review, approved, or rejected")
+    status: str = Field(
+        description=(
+            "Lifecycle status: llm_pending (LLM-created, awaiting review), "
+            "llm_approved (LLM-reviewer accepted + high confidence), "
+            "approved (human-approved), or rejected (human-rejected)"
+        )
+    )
     created_at: datetime = Field(description="UTC timestamp when the triple was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 

@@ -229,9 +229,9 @@ async def test_ontology_graph_edges_reference_edge_label(service, db):
     """ontology_graph.edges use ontogen_edges.label for edge metadata."""
     subj = make_ontogen_node_row(id="book", name="Book", status="approved")
     obj = make_ontogen_node_row(id="edition", name="Edition", status="approved")
-    edge = make_ontogen_edge_row(id="has-edition", label="has edition", status="approved")
+    edge = make_ontogen_edge_row(id="has_edition", label="has edition", status="approved")
     triple = make_ontogen_triple_row(
-        subject_node_id="book", edge_id="has-edition", object_node_id="edition", status="approved"
+        subject_node_id="book", edge_id="has_edition", object_node_id="edition", status="approved"
     )
 
     node_result = MagicMock()
@@ -272,11 +272,11 @@ async def test_ontology_graph_empty_when_no_approved_nodes(service, db):
 async def test_ontology_graph_triple_endpoints_must_be_approved(service, db):
     """Triples with non-approved endpoints are excluded from the graph."""
     approved_node = make_ontogen_node_row(id="book", name="Book", status="approved")
-    edge = make_ontogen_edge_row(id="has-edition", label="has edition", status="approved")
+    edge = make_ontogen_edge_row(id="has_edition", label="has edition", status="approved")
     # The SQL query filters triples by node_ids ∈ approved set; mock simulates no matching rows
     # because the object_node_id ("missing") is not in the approved node set.
     make_ontogen_triple_row(
-        subject_node_id="book", edge_id="has-edition", object_node_id="missing", status="approved"
+        subject_node_id="book", edge_id="has_edition", object_node_id="missing", status="approved"
     )
 
     node_result = MagicMock()

@@ -89,7 +89,7 @@ class PgVectorManager:
 
         ``collection`` must equal ``EMBEDDING_COLLECTION``.
         The embedding is read from ``hit.embedding`` and cast to the pgvector
-        type via ``::vector`` in the SQL so asyncpg can bind a Python list.
+        type via ``CAST(... AS vector)`` in the SQL so asyncpg can bind a Python list.
         ``hit.payload`` keys are split across the table's dedicated columns
         (``platform``, ``tags``, ``owners``, ``quality_score``, ``has_pii``,
         ``updated_at``); unknown keys are silently ignored (logged at DEBUG).
@@ -131,10 +131,10 @@ class PgVectorManager:
                                 (dataset_urn, embedding, platform, tags, owners,
                                  quality_score, has_pii, updated_at)
                             VALUES
-                                (:dataset_urn, :embedding::vector, :platform,
-                                 :tags::jsonb, :owners::jsonb,
+                                (:dataset_urn, CAST(:embedding AS vector), :platform,
+                                 CAST(:tags AS jsonb), CAST(:owners AS jsonb),
                                  :quality_score, :has_pii,
-                                 COALESCE(:updated_at::timestamptz, NOW()))
+                                 COALESCE(CAST(:updated_at AS timestamptz), NOW()))
                             ON CONFLICT (dataset_urn) DO UPDATE SET
                                 embedding    = EXCLUDED.embedding,
                                 platform     = EXCLUDED.platform,
@@ -210,7 +210,7 @@ class PgVectorManager:
 
         if score_threshold is not None:
             where_clauses.append(
-                "GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector)) >= :score_threshold"
+                "GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) >= :score_threshold"
             )
             params["score_threshold"] = score_threshold
 
@@ -226,7 +226,7 @@ class PgVectorManager:
                 quality_score,
                 has_pii,
                 updated_at,
-                GREATEST(0.0, 1.0 - (embedding <=> :query_vector::vector)) AS score
+                GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
             FROM dataspoke.{collection}
             {where_sql}
             ORDER BY score DESC

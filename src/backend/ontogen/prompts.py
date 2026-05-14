@@ -68,7 +68,7 @@ Output ONLY a valid JSON object with the following schema (no extra keys, no mar
 {{
   "nodes": [
     {{
-      "id": "<slug: lowercase letters, digits, hyphens, underscores — no double-underscores>",
+      "id": "<snake_case slug: a-z, 0-9, underscores only — no hyphens, no double-underscores>",
       "name": "<human-readable display name>",
       "description": "<one-sentence business description>",
       "confidence_score": <float 0.0-1.0>,
@@ -94,8 +94,7 @@ Output ONLY a valid JSON object with the following schema (no extra keys, no mar
 }}
 
 Rules:
-- Node and edge IDs must be lowercase slugs (a-z, 0-9, hyphens, underscores only).
-- Double-underscore (__) is forbidden in any id.
+- Node and edge IDs must be lowercase snake_case slugs (a-z, 0-9, underscores only; no hyphens). Double-underscore (__) is forbidden. The server normalizes IDs regardless, so submit best-effort slugs.
 - confidence_score is your estimate from 0.0 (wild guess) to 1.0 (certain).
 - Reuse node/edge ids from the existing ontology when the concept is the same.
 - Do not duplicate nodes or edges.

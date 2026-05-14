@@ -171,7 +171,7 @@ Tool name `ontogen_review`. Producer's tools and validator are unchanged.
 
 | Issue | Meaning |
 |-------|---------|
-| `naming_format` | id is not a lowercase slug, or display name drifts from RAG-ANCHOR style (not business-friendly, not singular, etc.) |
+| `naming_format` | id is not a lowercase snake_case slug (`a-z0-9_` only), or display name drifts from RAG-ANCHOR style (not business-friendly, not singular, etc.). Display names (`name`, `label`) may contain whitespace and mixed case; only `id` fields are slug-checked. |
 | `confidence_miscalibrated` | Score does not match evidence weight; calibrate against the score distribution of RAG anchors |
 | `duplicates_existing` | Semantically the same as an approved item (different spelling/casing); suggested_revision should reuse the approved id |
 | `weak_evidence` | `dataset_urns` produce no schema fields or descriptions matching the proposed concept |
@@ -184,23 +184,26 @@ verdict. Adding a new code is a spec change.
 ### RAG anchors
 
 Reviewer-only context. For each proposed item, pgvector-sample top-K
-(`DATASPOKE_ONTOGEN_DEBATE_RAG_K`, default 5) approved items by similarity:
+(`DATASPOKE_ONTOGEN_DEBATE_RAG_K`, default 5) anchor items by similarity. The
+anchor pool is `status IN ('approved', 'llm_approved')` — i.e. anything that
+passed at least one gate (human review or the Adversarial Debate's auto-approval
+path) qualifies, keeping cold-start ergonomics workable on fresh installs:
 
 | Kind | Embed text | Source table |
 |------|-----------|--------------|
-| node | `name + description` | `OntogenNode where status='approved'` |
-| edge | `label + semantics`  | `OntogenEdge where status='approved'` |
-| triple | composite of (subject_node.embed_text, edge.embed_text, object_node.embed_text) | approved triple set |
+| node | `name + description` | `OntogenNode where status IN ('approved','llm_approved')` |
+| edge | `label + semantics`  | `OntogenEdge where status IN ('approved','llm_approved')` |
+| triple | composite of (subject_node.embed_text, edge.embed_text, object_node.embed_text) | anchor pool same as nodes/edges (`status IN ('approved','llm_approved')`) |
 
 Anchors are injected as a `RAG ANCHORS` block in the Reviewer prompt. The
 Producer never sees them. This asymmetric context is the source of
 adversariality — the Reviewer judges against a quality bar the Producer
 never had access to.
 
-**Cold start.** When approved-item sets are empty (first runs on a fresh
+**Cold start.** When the anchor pool is empty (first runs on a fresh
 DataSpoke install), the Reviewer simply runs without anchor grounding. No
 special fallback prompt — the Reviewer relies on its own training and the
-canonical issue taxonomy. Quality improves as the approved corpus grows.
+canonical issue taxonomy. Quality improves as the anchor corpus grows.
 
 ### Producer revision (turn 2+)
 
@@ -229,12 +232,33 @@ disagree on the same item across turns.
 
 | Outcome | Meaning |
 |---------|---------|
-| `accept` | Reviewer returned `overall_verdict='accept'`; persist with transcript. |
-| `turns_exhausted` | Reached `max_turns` without an accept; last candidate is kept and persisted with `outcome=turns_exhausted` so human reviewers can see the debate did not converge. |
-| `cycle_detected` | Producer's revised payload duplicated a prior turn's payload; last candidate is kept. |
+| `accept` | Reviewer returned `overall_verdict='accept'`; persist with transcript. Rows whose `confidence_score >= ONTOLOGY_CONFIDENCE_THRESHOLD` are persisted as `status=llm_approved` (LLM gate cleared, awaiting human review); rows below the threshold persist as `status=llm_pending`. |
+| `turns_exhausted` | Reached `max_turns` without an accept; last candidate is kept. Rows persist with `status=llm_pending` regardless of confidence_score — non-accept outcomes always require a human gate. |
+| `cycle_detected` | Producer's revised payload duplicated a prior turn's payload; last candidate is kept. Rows persist with `status=llm_pending` regardless of confidence_score. |
 
 Soft-fail in all cases — the human review queue remains the final gate, so
 the debate layer never blocks a run from emitting candidates.
+
+### Status lifecycle
+
+Ontogen rows carry a four-state status that surfaces governance lineage:
+
+| State | Set by | Meaning |
+|-------|--------|---------|
+| `llm_pending` | server default (DB) and `_status_for_outcome` fallback | LLM created the row but the Adversarial Debate did not converge to `accept`, OR confidence was below `ONTOLOGY_CONFIDENCE_THRESHOLD`. Awaiting any review. |
+| `llm_approved` | `_status_for_outcome` after `outcome=accept` + high confidence | The LLM Reviewer accepted and confidence cleared the threshold. Not yet seen by a human. |
+| `approved` | Human review endpoint (`POST .../method/review` with `verdict=approve`) | A human explicitly approved the row. |
+| `rejected` | Human review endpoint (`verdict=reject`) | A human explicitly rejected the row. |
+
+There is no `llm_rejected` — the Reviewer's negative verdicts trigger
+Producer revision attempts; when revisions are exhausted the row lands in
+`llm_pending` for human disposition.
+
+Downstream query rules:
+- **RAG anchors** (this section): `status IN ('approved','llm_approved')`.
+- **Reuse lookup** (Inference Pipeline Step 7): `status IN ('llm_pending','llm_approved','approved')` — anything non-`rejected`.
+- **Triple-review dependency gate**: dependencies must be `status='approved'` (strict; an `llm_approved` dep does not satisfy the gate).
+- **Metagen reads** (UC4): `status='approved'` only — only human-curated entities feed user-facing metadata.
 
 ### Evidence shape
 

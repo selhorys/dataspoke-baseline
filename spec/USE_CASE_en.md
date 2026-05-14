@@ -403,12 +403,14 @@ is in flight returns `409 ONTOGEN_RUNNING`. `?dry_run=true` evaluates the infere
 returns the would-be node / edge / triple set without persisting changes — useful for
 previewing the effect of a `seed` or `dataset_filter` change before committing.
 
-**Incremental inference.** Each run starts from the existing **approved** nodes,
-edges, and triples — the LLM does not re-derive the ontology from scratch. New
-proposals are layered on top: when a candidate matches an approved node by name or
-embedding similarity (via `node_embeddings`), the existing node ID is reused;
-otherwise a new pending node is proposed. Edges and triples follow the same reuse
-rule. Rejected and pending results are not carried forward as inputs.
+**Incremental inference.** Each run starts from the existing reusable ontology —
+the LLM does not re-derive from scratch. New proposals are layered on top: when a
+candidate matches an existing node by name or embedding similarity (via
+`node_embeddings`), the existing node ID is reused. The reuse pool spans all
+non-`rejected` statuses (`llm_pending`, `llm_approved`, `approved`) so the same
+concept doesn't fork into duplicate rows while awaiting human review. Otherwise a
+new `llm_pending` node is proposed. Edges and triples follow the same reuse rule.
+`rejected` results are not carried forward as inputs.
 
 **One-shot run prompt.** A `POST /method/run` may carry a Markdown body
 (`Content-Type: text/markdown`) that acts as a transient prompt for that single run,
@@ -421,10 +423,11 @@ Airflow runs and manual `POST /method/run` calls with an empty body — fall bac
 "how every scheduled run should be steered" guidance. An explicit body on a manual run
 overrides the default; sending an empty body always uses the default.
 
-**Review dependency.** A pending triple cannot be approved until both its endpoint
-nodes and its edge are approved; attempting to do so returns
-`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`. The reviewer therefore typically processes
-**nodes → edges → triples**.
+**Review dependency.** A triple cannot be human-approved until both its endpoint
+nodes and its edge are `status='approved'` (an `llm_approved` dependency does NOT
+satisfy the gate — the human must explicitly approve each component first).
+Attempting otherwise returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`. The reviewer
+therefore typically processes **nodes → edges → triples**.
 
 ### API Mapping
 
@@ -486,7 +489,9 @@ tables: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
 `document` entities whose `relatedAssets` reference one of the in-scope datasets
 (Markdown body). The seed shapes naming choices.
 
-**Inferred output.** Three nodes, two edges, two triples — all `pending_review`:
+**Inferred output.** Three nodes, two edges, two triples. Each row's `status` is
+either `llm_approved` (if the Adversarial Debate accepted it with confidence
+≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`) or `llm_pending` (otherwise):
 
 ```
 Nodes (subjects / objects):

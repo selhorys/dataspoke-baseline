@@ -50,14 +50,18 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset(
 
 
 async def _seed_pending_node(session: AsyncSession, node_id: str, name: str) -> None:
-    """Insert a pending_review node row via raw SQL."""
+    """Insert a node row with status='llm_pending' via raw SQL.
+
+    'llm_pending' = LLM created this row, no human has reviewed it yet.
+    Used for tests that need a reviewable node to be present in the DB.
+    """
     from sqlalchemy import text
 
     await session.execute(
         text(
             "INSERT INTO dataspoke.ontogen_nodes"
             " (id, name, description, confidence_score, status, evidence)"
-            " VALUES (:id, :name, :desc, :conf, 'pending_review', CAST(:ev AS jsonb))"
+            " VALUES (:id, :name, :desc, :conf, 'llm_pending', CAST(:ev AS jsonb))"
         ),
         {
             "id": node_id,
@@ -71,14 +75,17 @@ async def _seed_pending_node(session: AsyncSession, node_id: str, name: str) -> 
 
 
 async def _seed_pending_edge(session: AsyncSession, edge_id: str, label: str) -> None:
-    """Insert a pending_review edge row via raw SQL."""
+    """Insert an edge row with status='llm_pending' via raw SQL.
+
+    'llm_pending' = LLM created this row, no human has reviewed it yet.
+    """
     from sqlalchemy import text
 
     await session.execute(
         text(
             "INSERT INTO dataspoke.ontogen_edges"
             " (id, label, semantics, confidence_score, status, evidence)"
-            " VALUES (:id, :label, :semantics, :conf, 'pending_review', CAST(:ev AS jsonb))"
+            " VALUES (:id, :label, :semantics, :conf, 'llm_pending', CAST(:ev AS jsonb))"
         ),
         {
             "id": edge_id,
@@ -98,7 +105,10 @@ async def _seed_pending_triple(
     edge_id: str,
     object_node_id: str,
 ) -> str:
-    """Insert a pending_review triple row via raw SQL; return composite triple ID."""
+    """Insert a triple row with status='llm_pending' via raw SQL; return composite triple ID.
+
+    'llm_pending' = LLM created this row, no human has reviewed it yet.
+    """
     from sqlalchemy import text
 
     triple_id = f"{subject_node_id}__{edge_id}__{object_node_id}"
@@ -107,7 +117,7 @@ async def _seed_pending_triple(
             "INSERT INTO dataspoke.ontogen_triples"
             " (id, subject_node_id, edge_id, object_node_id,"
             "  confidence_score, status, evidence)"
-            " VALUES (:id, :subj, :edge, :obj, :conf, 'pending_review', CAST(:ev AS jsonb))"
+            " VALUES (:id, :subj, :edge, :obj, :conf, 'llm_pending', CAST(:ev AS jsonb))"
         ),
         {
             "id": triple_id,
@@ -268,7 +278,7 @@ async def test_uc3_run_and_list(
         assert "counts" in dry_body and isinstance(dry_body["counts"], dict)
 
         # ── Step 4: List envelopes for node, edge, triple ────────────────────
-        # UC3 narrative: "Three nodes, two edges, two triples — all pending_review."
+        # UC3 narrative: "Three nodes, two edges, two triples — all llm_pending or llm_approved."
         # spec: USE_CASE_en.md §UC3 L421-L437
         for result_type, list_key in [
             ("node", "nodes"),
@@ -328,9 +338,9 @@ async def test_uc3_review_in_dependency_order(
       e. Cleanup (triple first, then nodes/edge)
     """
     suffix = uuid.uuid4().hex[:8]
-    subj_id = f"uc3-subj-{suffix}"
-    obj_id = f"uc3-obj-{suffix}"
-    edge_id = f"uc3-edge-{suffix}"
+    subj_id = f"uc3_subj_{suffix}"
+    obj_id = f"uc3_obj_{suffix}"
+    edge_id = f"uc3_edge_{suffix}"
     triple_id: str | None = None
 
     try:
@@ -472,8 +482,8 @@ async def test_uc3_run_dry_run_with_seeded_documents(
     )
 
     suffix = uuid.uuid4().hex[:12]
-    doc1_id = f"uc3-doc1-{suffix}"
-    doc2_id = f"uc3-doc2-{suffix}"
+    doc1_id = f"uc3_doc1_{suffix}"
+    doc2_id = f"uc3_doc2_{suffix}"
     doc1_urn: str | None = None
     doc2_urn: str | None = None
     token: str = ""
@@ -674,7 +684,7 @@ async def test_uc3_review_reject(
     spec: USE_CASE_en.md §UC3 — reviewer may reject candidates they disagree with.
     """
     suffix = uuid.uuid4().hex[:8]
-    node_id = f"uc3-rej-{suffix}"
+    node_id = f"uc3_rej_{suffix}"
 
     try:
         # Setup: seed a pending node via raw SQL

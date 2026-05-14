@@ -34,10 +34,10 @@ from src.shared.exceptions import DataSpokeError
 
 logger = logging.getLogger(__name__)
 
-# Slug pattern: lowercase letters, digits, hyphens, underscores only.
+# Slug pattern: lowercase letters, digits, underscores only.
 # Double-underscore is already excluded at the DB CHECK level; this regex is
 # defence-in-depth at the Python layer.
-_SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
+_SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 
 _GRAPH_NAME = "dataspoke_ontogen"
 
@@ -52,7 +52,7 @@ def _assert_slug(value: str, label: str) -> None:
     if not _SLUG_RE.match(value):
         raise ValueError(
             f"AgeGraph: {label} {value!r} is not a valid slug "
-            f"(allowed: a-z0-9_-). Injection guard triggered."
+            f"(allowed: a-z 0-9 _). Injection guard triggered."
         )
 
 

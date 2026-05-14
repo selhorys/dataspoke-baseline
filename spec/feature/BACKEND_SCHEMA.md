@@ -174,7 +174,7 @@ There is no parent/child hierarchy.
 | `name` | `TEXT` UNIQUE | Node display name |
 | `description` | `TEXT` | LLM-generated description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
-| `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
+| `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — `llm_pending` is the LLM-created default; `llm_approved` is set when the Adversarial Debate ends with `outcome=accept` and confidence ≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`; `approved` and `rejected` are written only by the human review endpoint |
 | `evidence` | `JSONB` NULL | Snapshot of LLM evidence (signals from each input source) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -188,7 +188,7 @@ Maps datasets to nodes with confidence scores.
 | `dataset_urn` | `TEXT` PK | Dataset URN |
 | `node_id` | `TEXT` PK, FK → `ontogen_nodes(id)` | Node |
 | `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
-| `status` | `TEXT` | `approved`, `pending`, `rejected` (pending if confidence < `ONTOLOGY_CONFIDENCE_THRESHOLD`; flipped to `approved` / `rejected` together with the parent node on review) |
+| `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same vocabulary as `ontogen_nodes`; cascaded from the parent node row on human review |
 | `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node |
 | `created_at` | `TIMESTAMPTZ` | |
 
@@ -203,7 +203,7 @@ on its own and is reused across many triples.
 | `label` | `TEXT` UNIQUE | Edge display label |
 | `semantics` | `TEXT` NULL | LLM-generated short semantics description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
-| `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
+| `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same semantics as `ontogen_nodes.status` |
 | `evidence` | `JSONB` NULL | Snapshot of LLM evidence |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -221,7 +221,7 @@ themselves `approved`.
 | `edge_id` | `TEXT` FK → `ontogen_edges(id)` | Predicate edge |
 | `object_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Object node |
 | `confidence_score` | `REAL` | LLM inference confidence |
-| `status` | `TEXT` | `approved`, `pending_review`, `rejected` |
+| `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same semantics as `ontogen_nodes.status`. Human approval is gated on all three component rows (`subject_node_id`, `edge_id`, `object_node_id`) being `approved`; an LLM-approved component does NOT satisfy the gate |
 | `evidence` | `JSONB` NULL | Snapshot of LLM evidence |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -374,7 +374,7 @@ Lives in the `dataspoke` schema.
 | `node_id` | `TEXT` PK FK → `ontogen_nodes(id)` | Node identifier |
 | `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time (provider-determined, e.g. 1536) |
 | `name` | `TEXT` | Cached node name (denormalised for query convenience) |
-| `status` | `TEXT` | Cached node status (`approved`, `pending_review`, `rejected`) — reuse lookups filter to `approved` |
+| `status` | `TEXT` | Cached node status (`llm_pending`, `llm_approved`, `approved`, `rejected`) — RAG-anchor lookups filter to `status IN ('approved','llm_approved')`; reuse lookups accept all non-`rejected` statuses |
 | `updated_at` | `TIMESTAMPTZ` NOT NULL | Last embedding refresh |
 
 **Index**: `node_embeddings_embedding_hnsw_idx` — HNSW over `embedding` with

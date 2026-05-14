@@ -432,9 +432,11 @@ Future scope: proposals for `domains` and `globalTags`.
 `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
 `glossaryTerms`, and `documentInfo.contents.text` on `document` entities whose
 `relatedAssets` overlap the in-scope dataset — plus UC3-approved nodes and triples
-filtered by `dataset_node_map.status='approved'` → LLM analysis to draft per-field
-proposals for the configured `targets` → for `cross_data.md`, decide create / modify /
-delete actions over the candidate `document` entities → produce a `metagen_results`
+filtered by `dataset_node_map.status='approved'` (human-approved only — metagen
+intentionally excludes `llm_approved` rows so user-facing metadata is gated to
+human-curated entities) → LLM analysis to draft per-field proposals for the
+configured `targets` → for `cross_data.md`, decide create / modify / delete
+actions over the candidate `document` entities → produce a `metagen_results`
 row in PostgreSQL with status `pending_review`.
 
 The LLM step in the Generation Pipeline runs inside the
@@ -533,14 +535,16 @@ or manual `POST /method/run`):
    that body; otherwise fall back to `ontogen_config.default_run_prompt` (used by both
    the periodic Airflow DAG and bodyless manual calls). The one-shot prompt is
    appended after the seeds and is not stored.
-5. LLM proposes nodes per dataset. For each candidate, look up the closest approved
+5. LLM proposes nodes per dataset. For each candidate, look up the closest existing
    node via `node_embeddings` (cosine similarity, threshold
-   `ONTOLOGY_NODE_REUSE_THRESHOLD`); if a match exists, reuse the approved node ID,
-   otherwise emit a new pending node.
-6. LLM proposes the edge (predicate) vocabulary, again preferring reuse of approved
-   `ontogen_edges` rows.
-7. LLM composes triples referencing already-proposed nodes and edges (mix of approved
-   and pending). Reuse existing approved triples when subject / edge / object match.
+   `ONTOLOGY_NODE_REUSE_THRESHOLD`); if a match exists, reuse the existing node ID.
+   The reuse pool spans all non-`rejected` statuses (`llm_pending`, `llm_approved`,
+   `approved`) so same-name proposals consolidate to one row regardless of which
+   gate it has cleared. Otherwise emit a new `llm_pending` node.
+6. LLM proposes the edge (predicate) vocabulary, applying the same reuse rule
+   against `ontogen_edges`.
+7. LLM composes triples referencing already-proposed nodes and edges. Reuse
+   existing triples when subject / edge / object match.
 8. Score confidence per node, edge, and triple (below
    `ONTOLOGY_CONFIDENCE_THRESHOLD` queued for human review).
 9. Persist new / updated rows to PostgreSQL (relational + pgvector); refresh
@@ -569,9 +573,11 @@ graph lives entirely in DataSpoke (relational + pgvector).
   memberships as approved.
 - **Edge** `verdict: "approve"` → mark the edge (predicate vocabulary entry) as
   approved.
-- **Triple** `verdict: "approve"` → requires both endpoint nodes and the edge to be
-  already approved (otherwise `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`); on success,
-  mark the triple as approved.
+- **Triple** `verdict: "approve"` → requires both endpoint nodes and the edge to
+  carry `status='approved'` (human-approved). An `llm_approved` dependency does NOT
+  satisfy the gate — the human must explicitly approve each component first.
+  Otherwise returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`. On success, marks the
+  triple as `approved`.
 - `verdict: "reject"` → mark the result as rejected. Rejecting a node or edge does
   not auto-reject dependent triples — those simply remain stuck on
   `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` until reinference produces a different

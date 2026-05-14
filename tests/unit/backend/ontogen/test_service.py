@@ -1,12 +1,14 @@
 """Unit tests for src/backend/ontogen/service.py — OntogenService."""
 
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.backend.ontogen.debate_models import DebateResult
-from src.backend.ontogen.service import OntogenRunSummary, OntogenService
+from src.backend.ontogen.service import OntogenRunSummary, OntogenService, _status_for_outcome
+from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
 from src.shared.db.models import Event, OntogenEdge, OntogenNode, OntogenTriple
 from src.shared.events import ONTOGEN_RUN_COMPLETE
 from src.shared.exceptions import (
@@ -162,7 +164,7 @@ async def test_delete_seed_sets_retired_status(svc: OntogenService, db: AsyncMoc
 @pytest.mark.asyncio
 async def test_review_node_rejects_invalid_verdict(svc: OntogenService, db: AsyncMock) -> None:
     """review_node raises PreconditionFailedError for unknown verdicts."""
-    node = make_ontogen_node_row(status="pending_review")
+    node = make_ontogen_node_row(status="llm_pending")
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = node
     # cache get returns None
@@ -177,7 +179,7 @@ async def test_review_node_rejects_invalid_verdict(svc: OntogenService, db: Asyn
 @pytest.mark.asyncio
 async def test_review_edge_rejects_invalid_verdict(svc: OntogenService, db: AsyncMock) -> None:
     """review_edge raises PreconditionFailedError for unknown verdicts."""
-    edge = make_ontogen_edge_row(status="pending_review")
+    edge = make_ontogen_edge_row(status="llm_pending")
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = edge
     db.execute = AsyncMock(return_value=result_mock)
@@ -190,7 +192,7 @@ async def test_review_edge_rejects_invalid_verdict(svc: OntogenService, db: Asyn
 @pytest.mark.asyncio
 async def test_review_triple_rejects_invalid_verdict(svc: OntogenService, db: AsyncMock) -> None:
     """review_triple raises PreconditionFailedError for unknown verdicts."""
-    triple = make_ontogen_triple_row(status="pending_review")
+    triple = make_ontogen_triple_row(status="llm_pending")
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = triple
     db.execute = AsyncMock(return_value=result_mock)
@@ -210,13 +212,13 @@ async def test_review_triple_dependency_gate_raises_when_nodes_not_approved(
     """review_triple(approve) raises ONTOGEN_TRIPLE_DEPENDENCY_PENDING when nodes aren't approved."""
     triple = make_ontogen_triple_row(
         subject_node_id="book",
-        edge_id="has-edition",
+        edge_id="has_edition",
         object_node_id="edition",
-        status="pending_review",
+        status="llm_pending",
     )
-    # subject node: pending_review (not approved)
-    subj_node = make_ontogen_node_row(id="book", status="pending_review")
-    edge_row = make_ontogen_edge_row(id="has-edition", status="approved")
+    # subject node: llm_pending (not approved)
+    subj_node = make_ontogen_node_row(id="book", status="llm_pending")
+    edge_row = make_ontogen_edge_row(id="has_edition", status="approved")
     obj_node = make_ontogen_node_row(id="edition", status="approved")
 
     # Execute will be called multiple times: get_triple, then subj, edge, obj
@@ -576,7 +578,7 @@ async def test_review_node_approve_sets_approved_status(
     node status and propagates to dataset_node_map; no DataHub writes are performed
     (DataHub is read-only for UC3; approved metadata is read by UC4 from the DB).
     """
-    node = make_ontogen_node_row(id="book", status="pending_review")
+    node = make_ontogen_node_row(id="book", status="llm_pending")
     dm = make_dataset_node_map_row(node_id="book")
 
     call_count = [0]
@@ -639,12 +641,12 @@ async def test_review_triple_approve_writes_no_datahub_aspect(
     """
     triple = make_ontogen_triple_row(
         subject_node_id="book",
-        edge_id="has-edition",
+        edge_id="has_edition",
         object_node_id="edition",
-        status="pending_review",
+        status="llm_pending",
     )
     subj_node = make_ontogen_node_row(id="book", status="approved")
-    edge_row = make_ontogen_edge_row(id="has-edition", status="approved")
+    edge_row = make_ontogen_edge_row(id="has_edition", status="approved")
     obj_node = make_ontogen_node_row(id="edition", status="approved")
 
     def make_result(row):
@@ -709,12 +711,12 @@ async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
     """
     triple = make_ontogen_triple_row(
         subject_node_id="book",
-        edge_id="has-edition",
+        edge_id="has_edition",
         object_node_id="edition",
-        status="pending_review",
+        status="llm_pending",
     )
-    subj_node = make_ontogen_node_row(id="book", status="pending_review")  # not approved — triggers gate
-    edge_row = make_ontogen_edge_row(id="has-edition", status="approved")
+    subj_node = make_ontogen_node_row(id="book", status="llm_pending")  # not approved — triggers gate
+    edge_row = make_ontogen_edge_row(id="has_edition", status="approved")
     obj_node = make_ontogen_node_row(id="edition", status="approved")
 
     def make_result(row):
@@ -743,7 +745,7 @@ async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
         if "ontogen_edges" in sql:
             return make_result(edge_row)
         if "book" in sql:
-            # subject node lookup — still pending_review, triggers dependency gate
+            # subject node lookup — still llm_pending (not approved) — triggers dependency gate
             return make_result(subj_node)
         if "edition" in sql:
             return make_result(obj_node)
@@ -864,3 +866,395 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
         f"got {detail.get('validation_errors_dropped')!r}. "
         "Spec: BACKEND.md §LLM Inference Loop — 'run-complete event carries validation_errors_dropped'."
     )
+
+
+# ── _status_for_outcome regression gate (plan §8) ────────────────────────────
+
+
+def test_status_for_outcome_approved_only_when_accept_and_high_confidence() -> None:
+    """_status_for_outcome returns 'llm_approved' only for outcome='accept' with score >= threshold.
+
+    Spec: plan §8 — four-state vocabulary: 'llm_approved' when accept + high confidence;
+    'llm_pending' in all other cases.  Non-accept outcomes (turns_exhausted, cycle_detected)
+    must never produce 'llm_approved' regardless of confidence_score.
+
+    Four representative combos are checked; threshold is read from shared config so
+    the test remains correct if the constant is changed.
+    """
+    high = ONTOLOGY_CONFIDENCE_THRESHOLD + 0.01  # clearly above
+    low = max(0.0, ONTOLOGY_CONFIDENCE_THRESHOLD - 0.01)  # clearly below
+
+    # (1) accept + high confidence → llm_approved
+    assert _status_for_outcome(high, "accept") == "llm_approved", (
+        f"accept+high must produce 'llm_approved'; threshold={ONTOLOGY_CONFIDENCE_THRESHOLD}"
+    )
+
+    # (2) accept + low confidence → llm_pending
+    assert _status_for_outcome(low, "accept") == "llm_pending", (
+        f"accept+low must produce 'llm_pending'; threshold={ONTOLOGY_CONFIDENCE_THRESHOLD}"
+    )
+
+    # (3) turns_exhausted + high confidence → llm_pending (not llm_approved!)
+    assert _status_for_outcome(high, "turns_exhausted") == "llm_pending", (
+        "turns_exhausted with high confidence must NOT produce 'llm_approved'. "
+        "Spec: plan §8 — non-accept outcomes always yield llm_pending."
+    )
+
+    # (4) cycle_detected + high confidence → llm_pending (not llm_approved!)
+    assert _status_for_outcome(high, "cycle_detected") == "llm_pending", (
+        "cycle_detected with high confidence must NOT produce 'llm_approved'. "
+        "Spec: plan §8 — non-accept outcomes always yield llm_pending."
+    )
+
+
+@pytest.mark.asyncio
+async def test_turns_exhausted_persists_rows_as_llm_pending(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock
+) -> None:
+    """When debate outcome='turns_exhausted', every persisted row has status='llm_pending'.
+
+    Spec: BACKEND_LLM.md §Adversarial Debate Framework — Termination — turns_exhausted row:
+    'rows persist with status=llm_pending regardless of confidence_score.'
+    The debate loop was cut off before a final reviewer accept, so the result is
+    placed in the human review queue (llm_pending), not auto-approved.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock(return_value=None)
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = True
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+
+    def make_result(scalar_val=None, scalars_val=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_val
+        ms = MagicMock()
+        ms.all.return_value = scalars_val or []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    # Provide enough results for get_conf + seeds + existing nodes/edges/triples +
+    # per-node select (for new-vs-existing check) + per-edge select + per-triple check
+    def _any_result(*_args, **_kwargs):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = None
+        ms = MagicMock()
+        ms.all.return_value = []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    db.execute = AsyncMock(side_effect=[conf_result] + [_any_result() for _ in range(20)])
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    # turns_exhausted with high-confidence payload — status must still be llm_pending
+    high_score = ONTOLOGY_CONFIDENCE_THRESHOLD + 0.1
+    debate_stub = DebateResult(
+        payload={
+            "nodes": [
+                {
+                    "name": "BookTitle",
+                    "id": "book_title",
+                    "confidence_score": high_score,  # above threshold
+                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog,PROD)"],
+                }
+            ],
+            "edges": [
+                {
+                    "id": "has_edition",
+                    "label": "has edition",
+                    "confidence_score": high_score,
+                }
+            ],
+            "triples": [
+                {
+                    "subject_node_id": "book_title",
+                    "edge_id": "has_edition",
+                    "object_node_id": "book_title",
+                    "confidence_score": high_score,
+                }
+            ],
+        },
+        transcript={
+            "turns_completed": 4,
+            "outcome": "turns_exhausted",
+            "final_reviewer_verdict": "revise",
+            "rag_anchors": [],
+            "history": [],
+            "producer_iterations": 4,
+            "producer_errors_dropped": 0,
+            "item_verdicts": [],
+        },
+        outcome="turns_exhausted",
+    )
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)), \
+         patch("src.backend.ontogen.service._search_node_embeddings", new=AsyncMock(return_value=[])), \
+         patch("src.backend.ontogen.service._upsert_node_embedding", new=AsyncMock(return_value=None)), \
+         patch("src.backend.ontogen.service._upsert_edge_embedding", new=AsyncMock(return_value=None)):
+        await svc.run(dry_run=False)
+
+    # Every OntogenNode / OntogenEdge / OntogenTriple added must have status='llm_pending'
+    added_args = [call.args[0] for call in db.add.call_args_list]
+
+    persisted_nodes = [a for a in added_args if isinstance(a, OntogenNode)]
+    persisted_edges = [a for a in added_args if isinstance(a, OntogenEdge)]
+    persisted_triples = [a for a in added_args if isinstance(a, OntogenTriple)]
+
+    for node in persisted_nodes:
+        assert node.status == "llm_pending", (
+            f"OntogenNode.status must be 'llm_pending' for turns_exhausted outcome; "
+            f"got {node.status!r} for node {node.id!r}. "
+            "Spec: BACKEND_LLM.md §Termination — turns_exhausted → llm_pending always."
+        )
+    for edge in persisted_edges:
+        assert edge.status == "llm_pending", (
+            f"OntogenEdge.status must be 'llm_pending' for turns_exhausted outcome; "
+            f"got {edge.status!r} for edge {edge.id!r}. "
+            "Spec: BACKEND_LLM.md §Termination — turns_exhausted → llm_pending always."
+        )
+    for triple in persisted_triples:
+        assert triple.status == "llm_pending", (
+            f"OntogenTriple.status must be 'llm_pending' for turns_exhausted outcome; "
+            f"got {triple.status!r} for triple {triple.id!r}. "
+            "Spec: BACKEND_LLM.md §Termination — turns_exhausted → llm_pending always."
+        )
+
+    # At least one row should have been attempted — verify the debate payload was processed
+    assert (persisted_nodes or persisted_edges or persisted_triples), (
+        "No OntogenNode/Edge/Triple rows were added to db — "
+        "check that the debate stub payload is not being silently skipped."
+    )
+
+
+@pytest.mark.asyncio
+async def test_cycle_detected_persists_rows_as_llm_pending(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock
+) -> None:
+    """When debate outcome='cycle_detected', every persisted row has status='llm_pending'.
+
+    Spec: BACKEND_LLM.md §Adversarial Debate Framework — Termination — cycle_detected row:
+    'rows persist with status=llm_pending regardless of confidence_score.'
+    Same contract as turns_exhausted; separate test to lock down each outcome independently.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock(return_value=None)
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = True
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+
+    def _any_result(*_args, **_kwargs):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = None
+        ms = MagicMock()
+        ms.all.return_value = []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    db.execute = AsyncMock(side_effect=[conf_result] + [_any_result() for _ in range(20)])
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    high_score = ONTOLOGY_CONFIDENCE_THRESHOLD + 0.1
+    debate_stub = DebateResult(
+        payload={
+            "nodes": [
+                {
+                    "name": "Customer",
+                    "id": "customer",
+                    "confidence_score": high_score,
+                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.customers,PROD)"],
+                }
+            ],
+            "edges": [
+                {
+                    "id": "placed_by",
+                    "label": "placed by",
+                    "confidence_score": high_score,
+                }
+            ],
+            "triples": [
+                {
+                    "subject_node_id": "customer",
+                    "edge_id": "placed_by",
+                    "object_node_id": "customer",
+                    "confidence_score": high_score,
+                }
+            ],
+        },
+        transcript={
+            "turns_completed": 3,
+            "outcome": "cycle_detected",
+            "final_reviewer_verdict": "revise",
+            "rag_anchors": [],
+            "history": [],
+            "producer_iterations": 3,
+            "producer_errors_dropped": 0,
+            "item_verdicts": [],
+        },
+        outcome="cycle_detected",
+    )
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)), \
+         patch("src.backend.ontogen.service._search_node_embeddings", new=AsyncMock(return_value=[])), \
+         patch("src.backend.ontogen.service._upsert_node_embedding", new=AsyncMock(return_value=None)), \
+         patch("src.backend.ontogen.service._upsert_edge_embedding", new=AsyncMock(return_value=None)):
+        await svc.run(dry_run=False)
+
+    added_args = [call.args[0] for call in db.add.call_args_list]
+
+    persisted_nodes = [a for a in added_args if isinstance(a, OntogenNode)]
+    persisted_edges = [a for a in added_args if isinstance(a, OntogenEdge)]
+    persisted_triples = [a for a in added_args if isinstance(a, OntogenTriple)]
+
+    for node in persisted_nodes:
+        assert node.status == "llm_pending", (
+            f"OntogenNode.status must be 'llm_pending' for cycle_detected outcome; "
+            f"got {node.status!r}. "
+            "Spec: BACKEND_LLM.md §Termination — cycle_detected → llm_pending always."
+        )
+    for edge in persisted_edges:
+        assert edge.status == "llm_pending", (
+            f"OntogenEdge.status must be 'llm_pending' for cycle_detected outcome; "
+            f"got {edge.status!r}. "
+            "Spec: BACKEND_LLM.md §Termination — cycle_detected → llm_pending always."
+        )
+    for triple in persisted_triples:
+        assert triple.status == "llm_pending", (
+            f"OntogenTriple.status must be 'llm_pending' for cycle_detected outcome; "
+            f"got {triple.status!r}. "
+            "Spec: BACKEND_LLM.md §Termination — cycle_detected → llm_pending always."
+        )
+
+    assert (persisted_nodes or persisted_edges or persisted_triples), (
+        "No OntogenNode/Edge/Triple rows were added to db — "
+        "check that the debate stub payload is not being silently skipped."
+    )
+
+
+# ── New regression tests (plan §9) ───────────────────────────────────────────
+
+
+# ── F1: Reuse-lookup includes llm_pending — verifies WHERE clause directly ───
+
+
+@pytest.mark.asyncio
+async def test_reuse_lookup_where_clause_includes_all_three_eligible_statuses(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock
+) -> None:
+    """The eligible-nodes/edges SQL query's WHERE clause must include all 3 non-rejected statuses.
+
+    Captures the actual `select()` statement the service emits to db.execute, compiles
+    it to SQL with literal binds, and asserts each of `'approved'`, `'llm_approved'`,
+    `'llm_pending'` appears as a status literal. If anyone narrows the WHERE clause
+    (e.g. drops `llm_pending`), this test fails immediately — the regression is
+    observable in the compiled SQL string, not in any downstream behaviour that a
+    dumb mock could fake.
+
+    Spec: plan §7 reuse-lookup — `status IN ('approved','llm_approved','llm_pending')`.
+    Spec: BACKEND.md §Inference Pipeline Step 7 — eligible-nodes load for reuse.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock(return_value=None)
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = True
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+
+    def make_result(scalar_val=None, scalars_val=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_val
+        ms = MagicMock()
+        ms.all.return_value = scalars_val or []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    canned = [
+        conf_result,                # get_conf
+        make_result(scalars_val=[]),  # OntogenSeed query
+        make_result(scalars_val=[]),  # eligible_nodes
+        make_result(scalars_val=[]),  # eligible_edges
+        make_result(scalars_val=[]),  # approved_triples (or similar)
+    ]
+    captured_stmts: list[Any] = []
+
+    async def capture_execute(stmt, *args, **kwargs):
+        captured_stmts.append(stmt)
+        # Return the next canned result (or a safe default if more queries fire)
+        if len(captured_stmts) <= len(canned):
+            return canned[len(captured_stmts) - 1]
+        return make_result()
+
+    db.execute = capture_execute
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    debate_stub = DebateResult(
+        payload={"nodes": [], "edges": [], "triples": []},
+        transcript={
+            "turns_completed": 1, "outcome": "accept", "final_reviewer_verdict": "accept",
+            "rag_anchors": [], "history": [], "producer_iterations": 1,
+            "producer_errors_dropped": 0, "item_verdicts": [],
+        },
+        outcome="accept",
+    )
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch(
+             "src.backend.ontogen.service.run_debate",
+             new=AsyncMock(return_value=debate_stub),
+         ):
+        await svc.run(dry_run=True)
+
+    # Find the OntogenNode and OntogenEdge select statements among captured queries.
+    # Compile each to SQL with literal binds so we can string-match the status literals.
+    def compiled_sql(stmt: Any) -> str:
+        try:
+            return str(
+                stmt.compile(compile_kwargs={"literal_binds": True})
+            )
+        except Exception:
+            return str(stmt)
+
+    node_sql = next(
+        (compiled_sql(s) for s in captured_stmts if "ontogen_nodes" in compiled_sql(s).lower()),
+        None,
+    )
+    edge_sql = next(
+        (compiled_sql(s) for s in captured_stmts if "ontogen_edges" in compiled_sql(s).lower()),
+        None,
+    )
+
+    assert node_sql is not None, (
+        f"No SELECT against ontogen_nodes captured; got {[compiled_sql(s) for s in captured_stmts]!r}. "
+        "Spec: plan §7 — service must query eligible nodes for reuse."
+    )
+    assert edge_sql is not None, (
+        "No SELECT against ontogen_edges captured. Spec: plan §7 — eligible edges loaded for reuse."
+    )
+
+    for sql, table in [(node_sql, "ontogen_nodes"), (edge_sql, "ontogen_edges")]:
+        for required in ("'approved'", "'llm_approved'", "'llm_pending'"):
+            assert required in sql, (
+                f"{table} WHERE clause must include {required}; got SQL:\n{sql}\n"
+                "Spec: plan §7 — reuse-lookup is `status IN (approved, llm_approved, llm_pending)`."
+            )

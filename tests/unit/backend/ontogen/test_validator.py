@@ -30,6 +30,7 @@ from src.backend.ontogen.models import (
 )
 from src.backend.ontogen.validator import (
     ValidationError,
+    _check_slug,
     build_ontogen_validate_tool,
     partition_clean_rows,
     validate_ontogen_output,
@@ -121,88 +122,67 @@ def test_schema_failure_short_circuits_other_rules() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_slug_uppercase_fires_slug_format() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'node.id matches ^[a-z0-9][a-z0-9_-]*$; SLUG_FORMAT'.
-    A node id with uppercase letter 'Order' does not match the slug regex.
-    """
-    payload = {
-        "nodes": [
-            {
-                "name": "Order",
-                "id": "Order",  # uppercase → SLUG_FORMAT
-                "confidence_score": 0.9,
-                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
-            }
-        ],
-        "edges": [],
-        "triples": [],
-    }
-    errors = validate_ontogen_output(payload, _SCOPE)
-    slug_errors = [e for e in errors if e.code == "SLUG_FORMAT"]
-    assert len(slug_errors) >= 1
-    assert slug_errors[0].path == "nodes[0].id"
-
-
-def test_slug_starts_with_hyphen_fires_slug_format() -> None:
+def test_check_slug_rejects_uppercase() -> None:
     """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
-    id='-foo' starts with a hyphen which is not matched by ^[a-z0-9][a-z0-9_-]*$.
+    _check_slug (defence-in-depth layer) fires SLUG_FORMAT for an uppercase id 'Order'
+    even though the model_validator normalises LLM-supplied ids upstream.
+    This test pins the _check_slug contract directly — it is the low-level guard
+    that protects against any caller that bypasses model_validate.
     """
-    payload = {
-        "nodes": [
-            {
-                "name": "Foo",
-                "id": "-foo",  # starts with hyphen → SLUG_FORMAT
-                "confidence_score": 0.5,
-                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
-            }
-        ],
-        "edges": [],
-        "triples": [],
-    }
-    errors = validate_ontogen_output(payload, _SCOPE)
+    errors: list[ValidationError] = []
+    _check_slug("nodes[0].id", "Order", errors)  # uppercase → SLUG_FORMAT
     slug_errors = [e for e in errors if e.code == "SLUG_FORMAT"]
     assert len(slug_errors) >= 1
     assert slug_errors[0].path == "nodes[0].id"
 
 
-def test_double_underscore_fires_double_underscore_code() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'no __; DOUBLE_UNDERSCORE'.
-    id='order__line' contains __ and must produce DOUBLE_UNDERSCORE, NOT SLUG_FORMAT.
-    The validator explicitly separates the two codes.
+def test_check_slug_rejects_leading_hyphen() -> None:
+    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
+    _check_slug fires SLUG_FORMAT for id='-foo' (leading hyphen) which does not match
+    ^[a-z0-9_]{1,64}$.  Tests the defence-in-depth guard directly; model_validator
+    normalises hyphens upstream but this layer remains the invariant sentinel.
     """
-    payload = {
-        "nodes": [
-            {
-                "name": "Order Line",
-                "id": "order__line",  # double underscore → DOUBLE_UNDERSCORE
-                "confidence_score": 0.8,
-                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
-            }
-        ],
-        "edges": [],
-        "triples": [],
-    }
-    errors = validate_ontogen_output(payload, _SCOPE)
+    errors: list[ValidationError] = []
+    _check_slug("nodes[0].id", "-foo", errors)  # leading hyphen → SLUG_FORMAT
+    slug_errors = [e for e in errors if e.code == "SLUG_FORMAT"]
+    assert len(slug_errors) >= 1
+    assert slug_errors[0].path == "nodes[0].id"
+
+
+def test_check_slug_flags_double_underscore() -> None:
+    """Spec: BACKEND.md §Ontogen validator rules — 'no __; DOUBLE_UNDERSCORE'.
+    _check_slug fires DOUBLE_UNDERSCORE (not SLUG_FORMAT) for id='order__line'.
+    Tests the defence-in-depth guard directly; model_validator collapses __ → _
+    upstream, but _check_slug remains the authoritative slug-invariant sentinel.
+    """
+    errors: list[ValidationError] = []
+    _check_slug("nodes[0].id", "order__line", errors)  # double underscore → DOUBLE_UNDERSCORE
     codes = [e.code for e in errors]
     assert "DOUBLE_UNDERSCORE" in codes
     assert "SLUG_FORMAT" not in codes
 
 
-def test_valid_slug_passes() -> None:
+def test_valid_node_slug_passes() -> None:
     """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
-    id='order-line_v1' matches ^[a-z0-9][a-z0-9_-]*$ (lowercase, hyphen, underscore, digit).
+    id='order_line_v1' is a valid snake_case slug (^[a-z0-9_]{1,64}$) on the node path.
     No SLUG_FORMAT or DOUBLE_UNDERSCORE error must appear.
     """
     payload = {
         "nodes": [
             {
                 "name": "Order Line",
-                "id": "order-line_v1",  # valid slug
+                "id": "order_line_v1",  # valid snake_case slug
                 "confidence_score": 0.8,
                 "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
             }
         ],
-        "edges": [],
+        "edges": [
+            {
+                "label": "has edition",
+                "id": "has_edition",  # valid snake_case slug on edge path
+                "confidence_score": 0.8,
+            }
+        ],
         "triples": [],
     }
     errors = validate_ontogen_output(payload, _SCOPE)
@@ -210,29 +190,14 @@ def test_valid_slug_passes() -> None:
     assert slug_errors == []
 
 
-def test_edge_id_slug_format_also_checked() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'edge.id matches ^[a-z0-9][a-z0-9_-]*$; SLUG_FORMAT'.
-    The same slug rules apply to edge.id; a violation must set path='edges[i].id'.
+def test_check_slug_applies_to_edge_path() -> None:
+    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT applied to edge.id.
+    _check_slug fires SLUG_FORMAT for edge id 'HAS-ITEM' (uppercase + hyphen).
+    Tests the defence-in-depth guard directly on an edge path; model_validator
+    normalises upstream but this sentinel layer must flag it regardless.
     """
-    payload = {
-        "nodes": [
-            {
-                "name": "Order",
-                "id": "order",
-                "confidence_score": 0.9,
-                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
-            }
-        ],
-        "edges": [
-            {
-                "label": "has item",
-                "id": "HAS-ITEM",  # uppercase → SLUG_FORMAT on edges
-                "confidence_score": 0.8,
-            }
-        ],
-        "triples": [],
-    }
-    errors = validate_ontogen_output(payload, _SCOPE)
+    errors: list[ValidationError] = []
+    _check_slug("edges[0].id", "HAS-ITEM", errors)  # uppercase → SLUG_FORMAT
     slug_errors = [e for e in errors if e.code == "SLUG_FORMAT"]
     assert len(slug_errors) >= 1
     assert slug_errors[0].path == "edges[0].id"
@@ -918,14 +883,20 @@ async def test_tool_returns_ok_false_with_errors_on_invalid() -> None:
     """Spec: BACKEND.md §Ontogen validator rules — build_ontogen_validate_tool.
     A payload that fires SLUG_FORMAT must cause the tool to return
     {'ok': False, 'errors': [{'path': 'nodes[0].id', 'code': 'SLUG_FORMAT', 'message': ...}]}.
+
+    An id of 65 lowercase letters passes model_validate (max_length=200) and survives
+    model_validator normalisation unchanged, but exceeds the 64-char cap in _SLUG_RE
+    (^[a-z0-9_]{1,64}$) so _check_slug fires SLUG_FORMAT.  This is the canonical way to
+    test the validator layer independently of the upstream normaliser.
     """
+    oversized_id = "a" * 65  # passes model_validate, bypasses normaliser, fails _SLUG_RE
     tool = build_ontogen_validate_tool(_SCOPE)
     result = await tool.ainvoke({
         "payload": {
             "nodes": [
                 {
                     "name": "Order",
-                    "id": "Order",  # uppercase → SLUG_FORMAT
+                    "id": oversized_id,
                     "confidence_score": 0.9,
                     "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
                 }
@@ -1249,3 +1220,210 @@ def test_too_many_nodes_rejected_by_pydantic() -> None:
             edges=[],
             triples=[],
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Group M: model_validator / _check_slug new contract tests (plan §10)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_hyphen_in_id_fails_check_slug() -> None:
+    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
+    _check_slug rejects 'has-edition' because hyphen is not in ^[a-z0-9_]{1,64}$.
+    This is the spec-mandated defence-in-depth guard for slug-format enforcement.
+    """
+    errors: list[ValidationError] = []
+    _check_slug("nodes[0].id", "has-edition", errors)
+    slug_errors = [e for e in errors if e.code == "SLUG_FORMAT"]
+    assert len(slug_errors) == 1, (
+        "SLUG_FORMAT must fire for 'has-edition' (hyphen not allowed in snake_case slugs). "
+        "spec: BACKEND.md §Ontogen validator rules — id regex ^[a-z0-9_]{1,64}$"
+    )
+    assert slug_errors[0].path == "nodes[0].id"
+
+
+def test_model_validator_normalizes_node_id() -> None:
+    """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
+    OntogenLLMOutput.model_validate normalises node id='Order Line' (spaced, mixed case)
+    to snake_case 'order_line' before any field validators run.
+    spec: plan §3 — server-side normalisation at schema boundary via @model_validator(mode='before')
+    """
+    result = OntogenLLMOutput.model_validate({
+        "nodes": [
+            {
+                "id": "Order Line",
+                "name": "Order Line",
+                "confidence_score": 1.0,
+                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+            }
+        ],
+        "edges": [],
+        "triples": [],
+    })
+    assert result.nodes[0].id == "order_line", (
+        f"model_validator must normalise 'Order Line' → 'order_line'; "
+        f"got {result.nodes[0].id!r}. "
+        "spec: plan §3 — server-side slug normalisation"
+    )
+
+
+def test_model_validator_normalizes_edge_id() -> None:
+    """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
+    OntogenLLMOutput.model_validate normalises edge id='Has Edition' (spaced, mixed case)
+    to snake_case 'has_edition'.
+    spec: plan §3 — model_validator normalises both node and edge id fields
+    """
+    result = OntogenLLMOutput.model_validate({
+        "nodes": [],
+        "edges": [
+            {
+                "id": "Has Edition",
+                "label": "Has Edition",
+                "confidence_score": 0.9,
+            }
+        ],
+        "triples": [],
+    })
+    assert result.edges[0].id == "has_edition", (
+        f"model_validator must normalise 'Has Edition' → 'has_edition'; "
+        f"got {result.edges[0].id!r}. "
+        "spec: plan §3 — server-side slug normalisation for edge ids"
+    )
+
+
+def test_model_validator_remaps_triples() -> None:
+    """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
+    When node id='Order Line' normalises to 'order_line' and edge id='Has Edition' normalises
+    to 'has_edition', any triple referencing the original pre-normalisation ids must be
+    rewritten to the post-normalisation ids.
+    spec: plan §3 — triple subject/edge/object refs rewritten via id_remap dict
+    """
+    result = OntogenLLMOutput.model_validate({
+        "nodes": [
+            {
+                "id": "Order Line",
+                "name": "Order Line",
+                "confidence_score": 0.9,
+                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+            }
+        ],
+        "edges": [
+            {
+                "id": "Has Edition",
+                "label": "Has Edition",
+                "confidence_score": 0.8,
+            }
+        ],
+        "triples": [
+            {
+                "subject_node_id": "Order Line",  # original pre-normalisation id
+                "edge_id": "Has Edition",         # original pre-normalisation id
+                "object_node_id": "Order Line",   # original pre-normalisation id
+                "confidence_score": 0.7,
+            }
+        ],
+    })
+    assert result.nodes[0].id == "order_line"
+    assert result.edges[0].id == "has_edition"
+    triple = result.triples[0]
+    assert triple.subject_node_id == "order_line", (
+        f"triple.subject_node_id must be remapped to 'order_line'; got {triple.subject_node_id!r}. "
+        "spec: plan §3 — triple refs rewritten through id_remap"
+    )
+    assert triple.edge_id == "has_edition", (
+        f"triple.edge_id must be remapped to 'has_edition'; got {triple.edge_id!r}. "
+        "spec: plan §3 — triple refs rewritten through edge_id_remap"
+    )
+    assert triple.object_node_id == "order_line", (
+        f"triple.object_node_id must be remapped to 'order_line'; got {triple.object_node_id!r}. "
+        "spec: plan §3 — triple refs rewritten through id_remap"
+    )
+
+
+def test_model_validator_absent_id_left_as_none() -> None:
+    """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
+    A node submitted without an 'id' key (absent, not null) must have id=None after validate.
+    The service derives the final id via make_snake_id(name) later; absent id is a valid
+    LLM omission and must not be overwritten with a placeholder.
+    spec: plan §3 — 'Absent id fields stay None — service.py derives them via make_snake_id later'
+    """
+    result = OntogenLLMOutput.model_validate({
+        "nodes": [
+            {
+                # 'id' key intentionally absent
+                "name": "Order Line",
+                "confidence_score": 0.9,
+                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+            }
+        ],
+        "edges": [],
+        "triples": [],
+    })
+    assert result.nodes[0].id is None, (
+        f"node with absent 'id' key must have id=None after model_validate; "
+        f"got {result.nodes[0].id!r}. "
+        "spec: plan §3 — absent id stays None for service.py to derive"
+    )
+
+
+def test_model_validator_passes_through_unmodified_when_already_normalized() -> None:
+    """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
+    Proves two distinct properties:
+      (a) The validator ran and normalised the non-snake_case input 'Order Line' → 'order_line'.
+      (b) Idempotency: an already-snake_case id 'line_item' is unchanged.
+      (c) Triple refs referencing the pre-normalisation id are rewritten; already-snake_case
+          triple ref is kept verbatim.
+    spec: plan §3 — server-side normalisation at schema boundary; to_snake is idempotent
+    """
+    result = OntogenLLMOutput.model_validate({
+        "nodes": [
+            {
+                "id": "Order Line",   # needs normalisation → 'order_line'
+                "name": "Order Line",
+                "confidence_score": 0.9,
+                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+            },
+            {
+                "id": "line_item",    # already snake_case → must be unchanged (idempotency)
+                "name": "Line Item",
+                "confidence_score": 0.8,
+                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+            },
+        ],
+        "edges": [
+            {
+                "id": "has_line",
+                "label": "has line",
+                "confidence_score": 0.75,
+            }
+        ],
+        "triples": [
+            {
+                "subject_node_id": "Order Line",  # pre-normalisation ref → must be rewritten
+                "edge_id": "has_line",
+                "object_node_id": "line_item",    # already snake_case → must stay
+                "confidence_score": 0.7,
+            }
+        ],
+    })
+    # (a) validator ran and normalised the non-snake_case id
+    assert result.nodes[0].id == "order_line", (
+        f"'Order Line' must normalise to 'order_line'; got {result.nodes[0].id!r}. "
+        "spec: plan §3 — server-side slug normalisation"
+    )
+    # (b) already-snake_case id is unchanged (idempotency)
+    assert result.nodes[1].id == "line_item", (
+        f"Already-snake_case 'line_item' must be unchanged; got {result.nodes[1].id!r}. "
+        "spec: plan §3 — to_snake is idempotent on valid snake_case slugs"
+    )
+    triple = result.triples[0]
+    # (c) triple subject ref was pre-normalisation id → must be rewritten
+    assert triple.subject_node_id == "order_line", (
+        f"triple.subject_node_id must be rewritten from 'Order Line' to 'order_line'; "
+        f"got {triple.subject_node_id!r}. spec: plan §3 — triple refs rewritten through id_remap"
+    )
+    # (c) triple object ref was already snake_case → stays
+    assert triple.object_node_id == "line_item", (
+        f"triple.object_node_id 'line_item' must be unchanged; "
+        f"got {triple.object_node_id!r}. spec: plan §3 — id_remap defaults to identity"
+    )

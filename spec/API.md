@@ -182,8 +182,9 @@ inference-run event log are singletons rooted at `/spoke/common/ontogen` rather 
 under any dataset URN. Inference output follows a **subject / predicate / object
 triple model** with three independently reviewable result types — `node` (subject /
 object), `edge` (predicate), and `triple` (`(subject_node, edge, object_node)` fact).
-A triple may only be composed of pre-approved nodes and edges; review proceeds
-nodes → edges → triples.
+A triple may be human-approved only when its endpoint nodes and edge are themselves
+`status='approved'` (an `llm_approved` dependency does NOT satisfy the gate); review
+proceeds nodes → edges → triples.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -212,7 +213,7 @@ nodes → edges → triples.
 | `GET` | `/spoke/common/ontogen/result/triple/{triple_id}` | Get triple detail (resolved subject node, edge, object node) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/attr` | Get triple attributes (confidence, source evidence) | Ontology Generation | UC3 |
 | `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/event` | Triple-level change history | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/result/triple/{triple_id}/method/review` | Review a pending triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved | Ontology Generation | UC3 |
+| `POST` | `/spoke/common/ontogen/result/triple/{triple_id}/method/review` | Review a triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet `status='approved'` (an `llm_approved` dependency does not satisfy the gate) | Ontology Generation | UC3 |
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.default_run_prompt` ≤ 16,000 chars

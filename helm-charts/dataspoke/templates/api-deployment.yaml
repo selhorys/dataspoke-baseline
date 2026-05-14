@@ -15,6 +15,19 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: dataspoke-api
+      {{/*
+        envFrom env vars are evaluated only at container start; a Secret or
+        ConfigMap content change does not restart consumers. These checksum
+        annotations force a rolling restart whenever rendered Secret/ConfigMap
+        content changes (e.g. DataHub token rotation in dev_env/datahub/install.sh).
+      */}}
+      annotations:
+        {{- if .Values.secrets.createSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.config.createConfigMap }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       enableServiceLinks: false
       {{- if .Values.api.secretReader.enabled }}

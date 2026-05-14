@@ -125,7 +125,7 @@ def make_ontogen_node_row(
     name: str = "Book",
     description: str = "A book entity",
     confidence_score: float = 0.9,
-    status: str = "pending_review",
+    status: str = "llm_pending",
 ) -> MagicMock:
     """Create a mock OntogenNode row."""
     row = MagicMock()
@@ -142,11 +142,11 @@ def make_ontogen_node_row(
 
 def make_ontogen_edge_row(
     *,
-    id: str = "has-edition",
+    id: str = "has_edition",
     label: str = "has edition",
     semantics: str | None = "One book has many editions",
     confidence_score: float = 0.85,
-    status: str = "pending_review",
+    status: str = "llm_pending",
 ) -> MagicMock:
     """Create a mock OntogenEdge row."""
     row = MagicMock()
@@ -164,10 +164,10 @@ def make_ontogen_edge_row(
 def make_ontogen_triple_row(
     *,
     subject_node_id: str = "book",
-    edge_id: str = "has-edition",
+    edge_id: str = "has_edition",
     object_node_id: str = "edition",
     confidence_score: float = 0.8,
-    status: str = "pending_review",
+    status: str = "llm_pending",
 ) -> MagicMock:
     """Create a mock OntogenTriple row.
 
@@ -191,7 +191,7 @@ def make_dataset_node_map_row(
     dataset_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,test.table,PROD)",
     node_id: str = "book",
     confidence_score: float = 0.9,
-    status: str = "pending",
+    status: str = "llm_pending",
     is_primary: bool = True,
 ) -> MagicMock:
     """Create a mock DatasetNodeMap row."""

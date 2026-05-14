@@ -253,7 +253,7 @@ async def test_post_triple_review_dependency_error_returns_422(client, mock_svc:
     mock_svc.review_triple = AsyncMock(
         side_effect=PreconditionFailedError("ONTOGEN_TRIPLE_DEPENDENCY_PENDING", "not approved")
     )
-    triple_id = "book__has-edition__edition"
+    triple_id = "book__has_edition__edition"
     resp = await client.post(
         f"{_BASE}/result/triple/{triple_id}/method/review",
         json={"verdict": "approve"},

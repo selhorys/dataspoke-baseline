@@ -13,10 +13,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-# Slug pattern: lowercase letters, digits, hyphens, underscores only.
+# Slug pattern: lowercase letters, digits, underscores only.
 # Must match the _SLUG_RE used in src/shared/graph/client.py and the DB CHECK
 # constraints so the API/DB/graph layers agree on a single valid shape.
-_SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
+_SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 def _validate_slug(value: str, field_name: str) -> str:
@@ -25,7 +25,7 @@ def _validate_slug(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} must not contain '__' (reserved as triple-ID separator)")
     if not _SLUG_RE.match(value):
         raise ValueError(
-            f"{field_name} must match ^[a-z0-9_-]+$ (got {value!r})"
+            f"{field_name} must match ^[a-z0-9_]+$ (got {value!r})"
         )
     return value
 
@@ -58,7 +58,7 @@ class OntogenNode(BaseModel):
     name: str
     description: str
     confidence_score: float
-    status: str = "pending_review"  # "approved" | "pending_review" | "rejected"
+    status: str = "llm_pending"  # "llm_pending" | "llm_approved" | "approved" | "rejected"
     evidence: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
@@ -76,7 +76,7 @@ class OntogenEdge(BaseModel):
     label: str
     semantics: str | None = None
     confidence_score: float
-    status: str = "pending_review"  # "approved" | "pending_review" | "rejected"
+    status: str = "llm_pending"  # "llm_pending" | "llm_approved" | "approved" | "rejected"
     evidence: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
@@ -98,7 +98,7 @@ class OntogenTriple(BaseModel):
     edge_id: str
     object_node_id: str
     confidence_score: float
-    status: str = "pending_review"  # "approved" | "pending_review" | "rejected"
+    status: str = "llm_pending"  # "llm_pending" | "llm_approved" | "approved" | "rejected"
     evidence: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
@@ -135,6 +135,6 @@ class DatasetNodeMap(BaseModel):
     dataset_urn: str
     node_id: str
     confidence_score: float
-    status: str = "pending"  # "approved" | "pending"
+    status: str = "llm_pending"  # "llm_pending" | "llm_approved" | "approved" | "rejected"
     is_primary: bool = False
     created_at: datetime

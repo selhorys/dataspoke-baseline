@@ -98,8 +98,8 @@ async def test_ontogen_run_complete_event_surfaces_run_id(
 
     run_body = run_resp.json()
     # spec: API.md §OntogenRunResponse — must carry status and dry_run fields
-    assert run_body.get("data", {}).get("dry_run") is True, (
-        f"OntogenRunResponse.data.dry_run must be True; got {run_body!r}. "
+    assert run_body.get("dry_run") is True, (
+        f"OntogenRunResponse.dry_run must be True; got {run_body!r}. "
         "spec: API.md §Ontology Generation §OntogenRunResponse"
     )
 
@@ -118,7 +118,7 @@ async def test_ontogen_run_complete_event_surfaces_run_id(
             f"GET /ontogen/event must return 200; got {event_resp.status_code}: {event_resp.text}."
         )
 
-        events = event_resp.json().get("data", {}).get("items", [])
+        events = event_resp.json().get("events", [])
         for ev in events:
             etype = ev.get("event_type", "")
             if etype in ("ONTOGEN.RUN_COMPLETE", "ONTOGEN.RUN_FAILED"):

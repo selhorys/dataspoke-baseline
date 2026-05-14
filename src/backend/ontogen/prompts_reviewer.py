@@ -47,7 +47,7 @@ represent the quality bar the Producer's candidate must meet. Use them to detect
 duplicates, naming inconsistencies, and calibration drift.
 
 Issue taxonomy you must use when flagging items:
-- naming_format: id not a lowercase slug, or display name not business-friendly/singular
+- naming_format: node/edge id is not a lowercase snake_case slug (a-z, 0-9, _ only); OR display name (node 'name', edge 'label') is not business-friendly/singular. Note: whitespace and mixed case in display names are acceptable and MUST NOT be flagged as naming_format issues.
 - confidence_miscalibrated: score does not match evidence weight vs approved anchors
 - duplicates_existing: semantically same as an approved item (different spelling/casing)
 - weak_evidence: dataset_urns produce no schema fields or descriptions matching the concept

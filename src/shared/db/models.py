@@ -334,7 +334,7 @@ class OntogenNode(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -370,7 +370,7 @@ class OntogenEdge(Base):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     semantics: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -411,7 +411,7 @@ class OntogenTriple(Base):
         Text, ForeignKey(f"{SCHEMA}.ontogen_nodes.id"), nullable=False
     )
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -447,7 +447,7 @@ class DatasetNodeMap(Base):
         Text, ForeignKey(f"{SCHEMA}.ontogen_nodes.id"), primary_key=True
     )
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -474,7 +474,7 @@ class NodeEmbedding(Base):
     # The HNSW index (node_embeddings_embedding_hnsw_idx) is created by the alembic migration via raw DDL.
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -494,7 +494,7 @@ class EdgeEmbedding(Base):
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
     label: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -513,7 +513,7 @@ class TripleEmbedding(Base):
         Text, ForeignKey(f"{SCHEMA}.ontogen_triples.id"), primary_key=True
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending_review")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

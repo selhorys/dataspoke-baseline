@@ -55,11 +55,11 @@ def test_assert_slug_rejects_special_chars() -> None:
 
 
 def test_assert_slug_accepts_valid_slugs() -> None:
-    """Valid slug IDs pass _assert_slug without exception."""
+    """Valid slug IDs pass _assert_slug without exception (a-z, 0-9, _ only; no hyphens)."""
     _assert_slug("book", "label")
-    _assert_slug("has-edition", "label")
+    _assert_slug("has_edition", "label")
     _assert_slug("node_123", "label")
-    _assert_slug("a-b-c-1", "label")
+    _assert_slug("a_b_c_1", "label")
 
 
 # ── materialize_triple ────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ async def test_materialize_triple_uses_bind_params() -> None:
     age = AgeGraph(session_factory=factory)
     await age.materialize_triple(
         subject_id="book",
-        edge_id="has-edition",
+        edge_id="has_edition",
         object_id="edition",
         edge_label="has edition",
     )
@@ -107,7 +107,7 @@ async def test_set_local_search_path_used() -> None:
     age = AgeGraph(session_factory=factory)
     await age.materialize_triple(
         subject_id="book",
-        edge_id="has-edition",
+        edge_id="has_edition",
         object_id="edition",
         edge_label="has edition",
     )
@@ -139,7 +139,7 @@ async def test_age_failures_wrapped_as_dataspoke_error() -> None:
     with pytest.raises(DataSpokeError) as exc_info:
         await age.materialize_triple(
             subject_id="book",
-            edge_id="has-edition",
+            edge_id="has_edition",
             object_id="edition",
             edge_label="has edition",
         )
@@ -164,7 +164,7 @@ async def test_delete_triple_uses_bind_params() -> None:
     age = AgeGraph(session_factory=factory)
     await age.delete_triple(
         subject_id="book",
-        edge_id="has-edition",
+        edge_id="has_edition",
         object_id="edition",
     )
 
@@ -218,8 +218,8 @@ async def test_traverse_returns_tuples() -> None:
     session = _make_session()
 
     # AGE returns agtype scalar strings as '"value"' — simulate that
-    fake_row1 = ('"book"', '"has-edition"', '"edition"')
-    fake_row2 = ('"edition"', '"belongs-to"', '"publisher"')
+    fake_row1 = ('"book"', '"has_edition"', '"edition"')
+    fake_row2 = ('"edition"', '"belongs_to"', '"publisher"')
 
     result_mock = MagicMock()
     result_mock.fetchall.return_value = [fake_row1, fake_row2]
@@ -232,5 +232,5 @@ async def test_traverse_returns_tuples() -> None:
     triples = await age.traverse("book", max_hops=2)
 
     assert len(triples) == 2
-    assert triples[0] == ("book", "has-edition", "edition")
-    assert triples[1] == ("edition", "belongs-to", "publisher")
+    assert triples[0] == ("book", "has_edition", "edition")
+    assert triples[1] == ("edition", "belongs_to", "publisher")

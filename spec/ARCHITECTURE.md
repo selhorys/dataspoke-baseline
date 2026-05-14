@@ -314,7 +314,8 @@ on related `document` entities) and human-authored Markdown seeds.
 
 **Properties**: Re-inference on the configured `schedule_tier`; dry-run mode evaluates without
 persisting; human-in-the-loop review at three layers (node, edge, triple) with a triple
-gated on its endpoint nodes and edge being approved (`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`
+gated on its endpoint nodes and edge being `status='approved'` (human-approved; an
+`llm_approved` dependency does not satisfy the gate — `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`
 otherwise); approval flips the entry's `status` in DataSpoke storage with no DataHub side
 effect.
 

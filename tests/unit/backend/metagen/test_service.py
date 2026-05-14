@@ -851,10 +851,10 @@ async def test_gather_evidence_ontogen_triples_query_filters_all_statuses_approv
     # Build an approved triple row and a pending triple row (only approved should surface)
     approved_triple = MagicMock()
     approved_triple.subject_node_id = "book"
-    approved_triple.edge_id = "has-edition"
+    approved_triple.edge_id = "has_edition"
     approved_triple.object_node_id = "edition"
 
-    approved_edge = make_ontogen_edge_row(id="has-edition", label="has edition", status="approved")
+    approved_edge = make_ontogen_edge_row(id="has_edition", label="has edition", status="approved")
 
     pending_triple = MagicMock()
     pending_triple.subject_node_id = "book"
@@ -935,8 +935,8 @@ async def test_gather_evidence_ontogen_triples_query_filters_all_statuses_approv
     # approved pair (approved_triple, approved_edge) only — matching what a correct WHERE
     # clause returns from the DB.
     ontogen_triples_evidence = captured_evidence.get("ontogen_triples", [])
-    assert any(t.get("edge_id") == "has-edition" for t in ontogen_triples_evidence), (
-        "Approved triple (has-edition) must appear in evidence['ontogen_triples']"
+    assert any(t.get("edge_id") == "has_edition" for t in ontogen_triples_evidence), (
+        "Approved triple (has_edition) must appear in evidence['ontogen_triples']"
     )
     # The pending triple (wrote) must NOT appear — it was not in the mock result.
     assert not any(t.get("edge_id") == "wrote" for t in ontogen_triples_evidence), (

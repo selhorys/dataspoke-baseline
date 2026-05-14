@@ -12,7 +12,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from src.backend.ontogen.models import OntogenLLMOutput
 
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_SLUG_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _PATH_INDEX_RE = re.compile(r"^(nodes|edges|triples)\[(\d+)\]")
 
 
@@ -289,6 +289,6 @@ def _check_slug(path: str, value: str, errors: list[ValidationError]) -> None:
             ValidationError(
                 path=path,
                 code="SLUG_FORMAT",
-                message=f"{path} does not match ^[a-z0-9][a-z0-9_-]*$: {value!r}",
+                message=f"{path} does not match ^[a-z0-9_]{{1,64}}$ (a-z 0-9 _): {value!r}",
             )
         )
