@@ -75,8 +75,9 @@ Run `configure` first if `dev_env/.env` does not exist or is missing required va
 ### Partial install (specific components)
 
 1. Ensure namespaces exist (create if needed, same logic as `install.sh`).
-2. For each requested component **in dependency order** (nginx-ingress → datahub → langfuse → dataspoke-infra → dataspoke-example → dataspoke-lock), run the component's install script directly: `bash dev_env/<component>/install.sh`
-3. Monitor with `/k8s-work` after each component completes.
+2. **Resuming an interrupted full install** (starting component plus every component after it in dependency order): prefer `bash dev_env/install.sh --from-component <name>` — it inherits the orchestrator's step markers, error handling, and final summary.
+3. **Installing one or a few specific components** out of sequence: run each component's install script directly in dependency order (nginx-ingress → datahub → langfuse → dataspoke-infra → dataspoke-example → dataspoke-lock): `bash dev_env/<component>/install.sh`.
+4. Monitor with `/k8s-work` after each component completes.
 
 ### Post-install
 

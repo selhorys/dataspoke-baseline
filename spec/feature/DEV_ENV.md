@@ -264,6 +264,11 @@ Langfuse runs before `dataspoke-infra` so the umbrella chart's API/Airflow pods 
 `dataspoke-langfuse-secret` in `dataspoke-01` on their first start.
 Prints ingress endpoint summary on completion.
 
+| Flag | Effect |
+|------|--------|
+| `--from-component <name>` | Skip components before `<name>`; resume an interrupted install from a known starting point in the dependency-ordered sequence |
+| `--help`, `-h` | Print usage and the component list |
+
 ### uninstall.sh
 
 Reverse order: `dataspoke-lock/` → `dataspoke-example/` → `dataspoke-infra/` → `langfuse/` →
@@ -283,6 +288,10 @@ To reset a single infrastructure component cleanly, run its own
 `uninstall.sh` followed by `install.sh` (each sub-installer is idempotent and tears down PVCs +
 Helm release for its scope). Example:
 `cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh`.
+
+To resume an interrupted full install rather than reset a single component, use
+`./install.sh --from-component <name>` — it skips earlier components and runs the remainder in
+dependency order.
 
 ### Shell conventions
 

@@ -123,6 +123,12 @@ Reinstall a single component by running its `uninstall.sh` followed by `install.
 bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
 ```
 
+To resume an interrupted full install from a specific component (skips earlier ones, runs the remainder in dependency order):
+
+```bash
+./install.sh --from-component dataspoke-infra
+```
+
 ## Uninstall
 
 ```bash
