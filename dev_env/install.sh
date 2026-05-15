@@ -10,12 +10,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/helpers.sh"
 
 # ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+FROM_COMPONENT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from-component) FROM_COMPONENT="${2:-}"; shift 2 ;;
+    --help|-h)
+      echo "Usage: $0 [--from-component <name>]"
+      echo ""
+      echo "Components (in order): nginx-ingress datahub langfuse dataspoke-infra dataspoke-example dataspoke-lock"
+      exit 0
+      ;;
+    *) error "Unknown option: $1 (use --help)" ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
 if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
   error ".env not found at $SCRIPT_DIR/.env — copy and edit it before running this script."
 fi
 source "$SCRIPT_DIR/.env"
+
+# Capture start time for step progress markers.
+START_TIME=$SECONDS
+export START_TIME
 
 echo ""
 echo "=== Installing DataSpoke dev environment ==="
@@ -25,84 +46,66 @@ echo ""
 # Verify required tools
 # ---------------------------------------------------------------------------
 info "Checking required tools..."
-command -v kubectl >/dev/null 2>&1 || error "kubectl is not installed or not in PATH."
-command -v helm    >/dev/null 2>&1 || error "helm is not installed or not in PATH."
+require_tools kubectl helm
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
 # Switch Kubernetes context
 # ---------------------------------------------------------------------------
-info "Switching to Kubernetes context: ${DATASPOKE_DEV_KUBE_CLUSTER}"
-kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}"
+use_context "${DATASPOKE_DEV_KUBE_CLUSTER}"
 
 # ---------------------------------------------------------------------------
-# Create namespaces (idempotent)
+# Create namespaces (idempotent — always runs regardless of --from-component)
 # ---------------------------------------------------------------------------
-NAMESPACES=(
-  "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
-  "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
-  "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
-  "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
-)
+ensure_namespace "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
+ensure_namespace "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
+ensure_namespace "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
+ensure_namespace "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 
-for NS in "${NAMESPACES[@]}"; do
-  if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-    info "Namespace '${NS}' already exists — skipping."
-  else
-    info "Creating namespace '${NS}'..."
-    kubectl create namespace "${NS}"
+# ---------------------------------------------------------------------------
+# Component list (single source of truth for ordering)
+# ---------------------------------------------------------------------------
+COMPONENTS=(nginx-ingress datahub langfuse dataspoke-infra dataspoke-example dataspoke-lock)
+TOTAL=${#COMPONENTS[@]}
+
+# Resolve start index for --from-component
+START_INDEX=0
+if [[ -n "$FROM_COMPONENT" ]]; then
+  found=false
+  for i in "${!COMPONENTS[@]}"; do
+    if [[ "${COMPONENTS[$i]}" == "$FROM_COMPONENT" ]]; then
+      START_INDEX=$i
+      found=true
+      break
+    fi
+  done
+  if [[ "$found" != "true" ]]; then
+    error "Unknown component '${FROM_COMPONENT}'. Valid names: ${COMPONENTS[*]}"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Install components
+# ---------------------------------------------------------------------------
+for i in "${!COMPONENTS[@]}"; do
+  comp="${COMPONENTS[$i]}"
+  n=$(( i + 1 ))
+
+  if (( i < START_INDEX )); then
+    info "Skipping ${comp} (--from-component ${FROM_COMPONENT})"
+    continue
+  fi
+
+  step "$n" "$TOTAL" "$comp"
+  bash "$SCRIPT_DIR/${comp}/install.sh"
 done
-
-# ---------------------------------------------------------------------------
-# Install nginx-ingress controller
-# ---------------------------------------------------------------------------
-info "Running nginx-ingress/install.sh..."
-bash "$SCRIPT_DIR/nginx-ingress/install.sh"
-
-# Re-source .env to pick up DATASPOKE_DEV_INGRESS_IP and DATASPOKE_DEV_INGRESS_DOMAIN
-source "$SCRIPT_DIR/.env"
-
-# ---------------------------------------------------------------------------
-# Install DataHub
-# ---------------------------------------------------------------------------
-info "Running datahub/install.sh..."
-bash "$SCRIPT_DIR/datahub/install.sh"
-
-# ---------------------------------------------------------------------------
-# Install Langfuse (LLM observability)
-# Must run before dataspoke-infra: the umbrella chart's API/Airflow pods
-# reference dataspoke-langfuse-secret via existingSecretKeyRef in their own
-# namespace. Langfuse runs its own bundled Postgres/Redis/ClickHouse/MinIO
-# subcharts and has no runtime dependency on dataspoke-infra.
-# ---------------------------------------------------------------------------
-info "Running langfuse/install.sh..."
-bash "$SCRIPT_DIR/langfuse/install.sh"
-
-# Re-source .env to pick up DATASPOKE_LANGFUSE_HOST written by install.sh
-source "$SCRIPT_DIR/.env"
-
-# ---------------------------------------------------------------------------
-# Install DataSpoke infrastructure
-# ---------------------------------------------------------------------------
-info "Running dataspoke-infra/install.sh..."
-bash "$SCRIPT_DIR/dataspoke-infra/install.sh"
-
-# ---------------------------------------------------------------------------
-# Install dataspoke-example sources
-# ---------------------------------------------------------------------------
-info "Running dataspoke-example/install.sh..."
-bash "$SCRIPT_DIR/dataspoke-example/install.sh"
-
-# ---------------------------------------------------------------------------
-# Install lock service
-# ---------------------------------------------------------------------------
-info "Running dataspoke-lock/install.sh..."
-bash "$SCRIPT_DIR/dataspoke-lock/install.sh"
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+# Re-read .env so the summary prints values written by child scripts.
+source "$SCRIPT_DIR/.env"
+
 echo ""
 echo "=== Installation complete ==="
 echo ""
@@ -141,4 +144,6 @@ echo ""
 echo "Seed dummy data:"
 echo "  cd .. && uv sync"
 echo "  uv run python -m tests.integration.util --reset-seed"
+echo ""
+info "Total elapsed: $((SECONDS - START_TIME))s ($(printf '%dm%02ds' $(( (SECONDS - START_TIME) / 60 )) $(( (SECONDS - START_TIME) % 60 ))))"
 echo ""

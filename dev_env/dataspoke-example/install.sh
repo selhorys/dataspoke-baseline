@@ -29,12 +29,7 @@ PG_DB="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB:-example_db}"
 # ---------------------------------------------------------------------------
 # Ensure namespace exists
 # ---------------------------------------------------------------------------
-if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-  info "Namespace '${NS}' already exists."
-else
-  info "Creating namespace '${NS}'..."
-  kubectl create namespace "${NS}"
-fi
+ensure_namespace "${NS}"
 
 # ---------------------------------------------------------------------------
 # Create Postgres secret (idempotent)

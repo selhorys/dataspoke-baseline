@@ -9,58 +9,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/helpers.sh
 source "$SCRIPT_DIR/../lib/helpers.sh"
 
-wait_for_pod() {
-  local name="$1" ns="$2" timeout_secs="$3"
-  info "  Waiting for pod $name to be Ready (up to ${timeout_secs}s)..."
-  local elapsed=0
-  while (( elapsed < timeout_secs )); do
-    # kubectl wait fails instantly if pod is in CrashLoopBackOff, so we
-    # poll manually to tolerate transient restarts during startup.
-    local ready
-    ready=$(kubectl get "pod/$name" -n "$ns" \
-      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
-    if [[ "$ready" == "True" ]]; then
-      info "  Pod $name is Ready."
-      return 0
-    fi
-    if (( elapsed % 30 == 0 && elapsed > 0 )); then
-      local phase restarts
-      phase=$(kubectl get "pod/$name" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-      restarts=$(kubectl get "pod/$name" -n "$ns" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "?")
-      info "  [$name] ${elapsed}s — phase=$phase restarts=$restarts"
-    fi
-    sleep 10
-    (( elapsed += 10 ))
-  done
-  error "Pod $name not ready after ${timeout_secs}s"
-}
-
-wait_for_job() {
-  local name="$1" ns="$2" timeout_secs="$3"
-  info "  Waiting for job $name to complete (up to ${timeout_secs}s)..."
-  local elapsed=0
-  while (( elapsed < timeout_secs )); do
-    local phase
-    phase=$(kubectl get pod -l "job-name=$name" -n "$ns" \
-      -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Pending")
-    if [[ "$phase" == "Succeeded" ]]; then
-      info "  Job $name completed."
-      return 0
-    elif [[ "$phase" == "Failed" ]]; then
-      error "Job $name failed. Check logs: kubectl logs -l job-name=$name -n $ns"
-    fi
-    # Print progress every 30s
-    if (( elapsed % 30 == 0 && elapsed > 0 )); then
-      local tail
-      tail=$(kubectl logs -l "job-name=$name" -n "$ns" --tail=1 2>/dev/null || echo "...")
-      info "  [$name] ${elapsed}s elapsed — ${tail}"
-    fi
-    sleep 10
-    (( elapsed += 10 ))
-  done
-  error "Job $name timed out after ${timeout_secs}s"
-}
-
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
@@ -68,6 +16,10 @@ if [[ ! -f "$SCRIPT_DIR/../.env" ]]; then
   error ".env not found at $SCRIPT_DIR/../.env — run from dev_env/ and ensure .env exists."
 fi
 source "$SCRIPT_DIR/../.env"
+
+# Fix #2: fail-fast — nginx-ingress must have populated DATASPOKE_DEV_INGRESS_IP
+# before Kafka's EXTERNAL advertised listener can be configured correctly.
+: "${DATASPOKE_DEV_INGRESS_IP:?required — run dev_env/nginx-ingress/install.sh first to populate this in .env}"
 
 NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 
@@ -79,37 +31,25 @@ echo ""
 # Verify required tools
 # ---------------------------------------------------------------------------
 info "Checking required tools..."
-command -v kubectl >/dev/null 2>&1 || error "kubectl is not installed or not in PATH."
-command -v helm    >/dev/null 2>&1 || error "helm is not installed or not in PATH."
+require_tools kubectl helm
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
 # Switch Kubernetes context
 # ---------------------------------------------------------------------------
-info "Switching to Kubernetes context: ${DATASPOKE_DEV_KUBE_CLUSTER}"
-kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}"
+use_context "${DATASPOKE_DEV_KUBE_CLUSTER}"
 
 # ---------------------------------------------------------------------------
 # Add / update Helm repo
 # ---------------------------------------------------------------------------
 info "Adding/updating datahub Helm repository..."
-if helm repo list 2>/dev/null | grep -q "^datahub"; then
-  info "Helm repo 'datahub' already added — updating."
-  helm repo update datahub
-else
-  helm repo add datahub https://helm.datahubproject.io/
-  helm repo update datahub
-fi
+helm_repo_add_if_missing datahub https://helm.datahubproject.io/
+helm repo update datahub
 
 # ---------------------------------------------------------------------------
 # Ensure namespace exists
 # ---------------------------------------------------------------------------
-if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-  info "Namespace '${NS}' already exists."
-else
-  info "Creating namespace '${NS}'..."
-  kubectl create namespace "${NS}"
-fi
+ensure_namespace "${NS}"
 
 # ---------------------------------------------------------------------------
 # Create mysql-secrets (idempotent)
@@ -130,7 +70,7 @@ helm upgrade --install datahub-prerequisites datahub/datahub-prerequisites \
   --version "${PREREQS_VERSION}" \
   --namespace "${NS}" \
   --values "$SCRIPT_DIR/prerequisites-values.yaml" \
-  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${DATASPOKE_DEV_INGRESS_IP:-localhost}:9005" \
+  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${DATASPOKE_DEV_INGRESS_IP}:9005" \
   --timeout 5m
 
 # ---------------------------------------------------------------------------
@@ -188,23 +128,6 @@ wait_for_job "datahub-system-update" "$NS" 600
 # ---------------------------------------------------------------------------
 info "Waiting for DataHub services to become ready..."
 
-wait_for_pod_by_label() {
-  local label="$1" ns="$2" timeout_secs="$3"
-  local name
-  name=$(kubectl get pod -l "$label" -n "$ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-  if [[ -z "$name" ]]; then
-    info "  No pod found with label $label yet, waiting..."
-    local waited=0
-    while (( waited < timeout_secs )); do
-      sleep 10; (( waited += 10 ))
-      name=$(kubectl get pod -l "$label" -n "$ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-      [[ -n "$name" ]] && break
-    done
-    [[ -z "$name" ]] && error "No pod found for label $label after ${timeout_secs}s"
-  fi
-  wait_for_pod "$name" "$ns" "$timeout_secs"
-}
-
 info "[1/3] GMS..."
 wait_for_pod_by_label "app.kubernetes.io/name=datahub-gms" "$NS" 600
 
@@ -225,14 +148,22 @@ wait_for_pod_by_label "app.kubernetes.io/name=acryl-datahub-actions" "$NS" 300
 KAFKA_POD="datahub-prerequisites-kafka-controller-0"
 MAE_GROUP="generic-mae-consumer-job-client"
 
-# Check if the MAE consumer has active members (healthy) or is stalled
-MAE_STATE=$(kubectl exec -n "$NS" "$KAFKA_POD" -- \
-  /opt/bitnami/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server localhost:9092 \
-  --describe --group "$MAE_GROUP" 2>&1 || true)
+# Poll 3 times with 5s gaps; only reset if all 3 checks confirm stalled.
+# A single check can race with a consumer rebalance and falsely look stalled.
+STALLED_COUNT=0
+for attempt in 1 2 3; do
+  MAE_STATE=$(kubectl exec -n "$NS" "$KAFKA_POD" -- \
+    /opt/bitnami/kafka/bin/kafka-consumer-groups.sh \
+    --bootstrap-server localhost:9092 \
+    --describe --group "$MAE_GROUP" 2>&1 || true)
+  if echo "$MAE_STATE" | grep -q "has no active members"; then
+    (( STALLED_COUNT++ ))
+  fi
+  (( attempt < 3 )) && sleep 5
+done
 
-if echo "$MAE_STATE" | grep -q "has no active members"; then
-  info "MAE consumer is stalled — resetting offsets to skip stale backlog..."
+if (( STALLED_COUNT == 3 )); then
+  info "MAE consumer is stalled (3/3 checks confirm) — resetting offsets..."
   kubectl exec -n "$NS" "$KAFKA_POD" -- \
     /opt/bitnami/kafka/bin/kafka-consumer-groups.sh \
     --bootstrap-server localhost:9092 \
@@ -246,7 +177,7 @@ if echo "$MAE_STATE" | grep -q "has no active members"; then
   kubectl delete pod -n "$NS" -l app.kubernetes.io/name=datahub-gms
   wait_for_pod_by_label "app.kubernetes.io/name=datahub-gms" "$NS" 600
 else
-  info "MAE consumer is active — no offset reset needed."
+  info "MAE consumer is active (stalled count: ${STALLED_COUNT}/3) — no offset reset needed."
 fi
 
 # ---------------------------------------------------------------------------
@@ -348,7 +279,8 @@ if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
 
     NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
     if [[ -n "$NEW_TOKEN" ]]; then
-      sed -i '' "s|^DATASPOKE_DATAHUB_TOKEN=.*|DATASPOKE_DATAHUB_TOKEN=${NEW_TOKEN}|" "$SCRIPT_DIR/../.env"
+      # Fix #1: portable upsert — works on GNU and BSD sed; appends if missing.
+      upsert_env_var DATASPOKE_DATAHUB_TOKEN "${NEW_TOKEN}" "$SCRIPT_DIR/../.env"
       info "DataHub PAT written to .env."
     else
       warn "Failed to generate DataHub PAT. You may need to create one manually."

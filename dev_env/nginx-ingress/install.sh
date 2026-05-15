@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -12,10 +13,10 @@ source "$SCRIPT_DIR/../lib/helpers.sh"
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
-if [[ ! -f "$SCRIPT_DIR/../.env" ]]; then
-  error ".env not found at $SCRIPT_DIR/../.env — run from dev_env/ and ensure .env exists."
+if [[ ! -f "$ENV_FILE" ]]; then
+  error ".env not found at $ENV_FILE — run from dev_env/ and ensure .env exists."
 fi
-source "$SCRIPT_DIR/../.env"
+source "$ENV_FILE"
 
 echo ""
 echo "=== Installing nginx-ingress controller ==="
@@ -25,38 +26,26 @@ echo ""
 # Verify required tools
 # ---------------------------------------------------------------------------
 info "Checking required tools..."
-command -v kubectl >/dev/null 2>&1 || error "kubectl is not installed or not in PATH."
-command -v helm    >/dev/null 2>&1 || error "helm is not installed or not in PATH."
+require_tools kubectl helm
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
 # Switch Kubernetes context
 # ---------------------------------------------------------------------------
-info "Switching to Kubernetes context: ${DATASPOKE_DEV_KUBE_CLUSTER}"
-kubectl config use-context "${DATASPOKE_DEV_KUBE_CLUSTER}"
+use_context "${DATASPOKE_DEV_KUBE_CLUSTER}"
 
 # ---------------------------------------------------------------------------
 # Add / update Helm repo
 # ---------------------------------------------------------------------------
 info "Adding/updating ingress-nginx Helm repository..."
-if helm repo list 2>/dev/null | grep -q "^ingress-nginx"; then
-  info "Helm repo 'ingress-nginx' already added — updating."
-  helm repo update ingress-nginx
-else
-  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-  helm repo update ingress-nginx
-fi
+helm_repo_add_if_missing ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update ingress-nginx
 
 # ---------------------------------------------------------------------------
 # Ensure namespace exists
 # ---------------------------------------------------------------------------
+ensure_namespace "ingress-nginx"
 NS="ingress-nginx"
-if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-  info "Namespace '${NS}' already exists."
-else
-  info "Creating namespace '${NS}'..."
-  kubectl create namespace "${NS}"
-fi
 
 # ---------------------------------------------------------------------------
 # Install / upgrade ingress-nginx
@@ -99,52 +88,34 @@ info "External IP assigned: ${EXTERNAL_IP}"
 # Compute domain and write to .env
 # ---------------------------------------------------------------------------
 INGRESS_DOMAIN="${EXTERNAL_IP}.nip.io"
-ENV_FILE="$SCRIPT_DIR/../.env"
 
-# Update or append DATASPOKE_DEV_INGRESS_IP
+# Write ingress IP/domain first; the comment block is written only on first append.
 if grep -q "^DATASPOKE_DEV_INGRESS_IP=" "${ENV_FILE}"; then
-  sed -i.bak "s|^DATASPOKE_DEV_INGRESS_IP=.*|DATASPOKE_DEV_INGRESS_IP=${EXTERNAL_IP}|" "${ENV_FILE}"
+  upsert_env_var DATASPOKE_DEV_INGRESS_IP "${EXTERNAL_IP}" "${ENV_FILE}"
 else
   echo "" >> "${ENV_FILE}"
   echo "# --- Dev: nginx-ingress (written by nginx-ingress/install.sh) -------" >> "${ENV_FILE}"
   echo "DATASPOKE_DEV_INGRESS_IP=${EXTERNAL_IP}" >> "${ENV_FILE}"
 fi
-
-# Update or append DATASPOKE_DEV_INGRESS_DOMAIN
-if grep -q "^DATASPOKE_DEV_INGRESS_DOMAIN=" "${ENV_FILE}"; then
-  sed -i.bak "s|^DATASPOKE_DEV_INGRESS_DOMAIN=.*|DATASPOKE_DEV_INGRESS_DOMAIN=${INGRESS_DOMAIN}|" "${ENV_FILE}"
-else
-  echo "DATASPOKE_DEV_INGRESS_DOMAIN=${INGRESS_DOMAIN}" >> "${ENV_FILE}"
-fi
+upsert_env_var DATASPOKE_DEV_INGRESS_DOMAIN "${INGRESS_DOMAIN}" "${ENV_FILE}"
 
 # ---------------------------------------------------------------------------
 # Derive and write runtime variables that depend on the ingress IP/domain.
 # These are read by Python app code and integration tests via os.environ.
 # ---------------------------------------------------------------------------
-update_env() {
-  local key="$1" value="$2"
-  if grep -q "^${key}=" "${ENV_FILE}"; then
-    sed -i.bak "s|^${key}=.*|${key}=${value}|" "${ENV_FILE}"
-  else
-    echo "${key}=${value}" >> "${ENV_FILE}"
-  fi
-}
 
 # Tier A: HTTP endpoints (use domain-based URLs)
-update_env "DATASPOKE_DATAHUB_GMS_URL"      "http://datahub.${INGRESS_DOMAIN}/gms"
-update_env "DATASPOKE_DATAHUB_KAFKA_BROKERS" "${EXTERNAL_IP}:9005"
-update_env "DATASPOKE_AIRFLOW_URL"           "http://airflow.${INGRESS_DOMAIN}"
+upsert_env_var DATASPOKE_DATAHUB_GMS_URL      "http://datahub.${INGRESS_DOMAIN}/gms" "${ENV_FILE}"
+upsert_env_var DATASPOKE_DATAHUB_KAFKA_BROKERS "${EXTERNAL_IP}:9005"                  "${ENV_FILE}"
+upsert_env_var DATASPOKE_AIRFLOW_URL           "http://airflow.${INGRESS_DOMAIN}"      "${ENV_FILE}"
 
 # Tier B: TCP endpoints (use IP directly)
-update_env "DATASPOKE_POSTGRES_HOST"         "${EXTERNAL_IP}"
-update_env "DATASPOKE_REDIS_HOST"            "${EXTERNAL_IP}"
+upsert_env_var DATASPOKE_POSTGRES_HOST         "${EXTERNAL_IP}"                        "${ENV_FILE}"
+upsert_env_var DATASPOKE_REDIS_HOST            "${EXTERNAL_IP}"                        "${ENV_FILE}"
 
 # Example data sources
-update_env "DATASPOKE_EXAMPLE_PG_HOST"       "${EXTERNAL_IP}"
-update_env "DATASPOKE_EXAMPLE_KAFKA_BROKERS" "${EXTERNAL_IP}:9104"
-
-# Clean up sed backup files
-rm -f "${ENV_FILE}.bak"
+upsert_env_var DATASPOKE_EXAMPLE_PG_HOST       "${EXTERNAL_IP}"                        "${ENV_FILE}"
+upsert_env_var DATASPOKE_EXAMPLE_KAFKA_BROKERS "${EXTERNAL_IP}:9104"                   "${ENV_FILE}"
 
 info "Written to .env:"
 info "  DATASPOKE_DEV_INGRESS_IP=${EXTERNAL_IP}"

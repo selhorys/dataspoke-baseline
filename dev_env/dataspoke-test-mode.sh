@@ -157,7 +157,8 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   kubectl rollout restart deployment/dataspoke-api -n "${NS}"
 fi
 info "Waiting for dataspoke-api rollout..."
-kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=120s \
+# Fix #3: raise timeout to 5m — Autopilot cold-start can exceed 120s.
+kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
   && info "dataspoke-api is ready." \
   || { warn "dataspoke-api did not become ready in time — check pod logs."; }
 

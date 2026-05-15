@@ -28,19 +28,13 @@ echo ""
 # Verify required tools
 # ---------------------------------------------------------------------------
 info "Checking required tools..."
-command -v kubectl >/dev/null 2>&1 || error "kubectl is not installed or not in PATH."
-command -v helm    >/dev/null 2>&1 || error "helm is not installed or not in PATH."
+require_tools kubectl helm
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
 # Ensure namespace exists
 # ---------------------------------------------------------------------------
-if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-  info "Namespace '${NS}' already exists."
-else
-  info "Creating namespace '${NS}'..."
-  kubectl create namespace "${NS}"
-fi
+ensure_namespace "${NS}"
 
 # ---------------------------------------------------------------------------
 # Create secrets from .env variables (idempotent)
@@ -77,19 +71,9 @@ kubectl create secret generic dataspoke-internal-auth \
 # ---------------------------------------------------------------------------
 # Register required Helm repositories (idempotent)
 # ---------------------------------------------------------------------------
-add_repo_if_missing() {
-  local name="$1" url="$2"
-  if helm repo list 2>/dev/null | grep -q "^${name}"; then
-    info "Helm repo '${name}' already added."
-  else
-    info "Adding Helm repo '${name}' (${url})..."
-    helm repo add "${name}" "${url}"
-  fi
-}
-
 info "Adding/updating Helm repositories..."
-add_repo_if_missing bitnami         "https://charts.bitnami.com/bitnami"
-add_repo_if_missing apache-airflow  "https://airflow.apache.org"
+helm_repo_add_if_missing bitnami        "https://charts.bitnami.com/bitnami"
+helm_repo_add_if_missing apache-airflow "https://airflow.apache.org"
 helm repo update
 
 # ---------------------------------------------------------------------------
@@ -179,7 +163,9 @@ fi
 # on every reinstall without granting the app user superuser rights.
 # ---------------------------------------------------------------------------
 info "Ensuring pgvector + age extensions in the dataspoke database..."
-kubectl rollout status statefulset/dataspoke-postgresql -n "${NS}" --timeout=120s >/dev/null 2>&1 || true
+# Fix #3a: raise timeout to 5m — Autopilot cold-start can take > 2 min.
+# Keep || true: the subsequent psql block has its own success/warn handling.
+kubectl rollout status statefulset/dataspoke-postgresql -n "${NS}" --timeout=5m >/dev/null 2>&1 || true
 kubectl exec -n "${NS}" dataspoke-postgresql-0 -- \
   env PGPASSWORD="${DATASPOKE_POSTGRES_PASSWORD}" \
   psql -U postgres -d "${DATASPOKE_POSTGRES_DB}" -c "
@@ -193,11 +179,13 @@ kubectl exec -n "${NS}" dataspoke-postgresql-0 -- \
 
 # ---------------------------------------------------------------------------
 # Wait for Airflow api-server to become ready (Airflow 3.x renamed webserver → api-server)
+# Fix #3b: raise timeout to 5m (observed 4m31s on cold Autopilot start).
+# Change failure from warn to error — a hung api-server should fail loudly.
 # ---------------------------------------------------------------------------
 info "Waiting for Airflow api-server to become ready..."
-kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=120s \
+kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=5m \
   && info "Airflow api-server is ready." \
-  || warn "Airflow api-server did not become ready in time — check pod logs."
+  || error "Airflow api-server did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
 # Print access instructions

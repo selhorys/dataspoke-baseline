@@ -50,14 +50,8 @@ _env_set_or_generate() {
   info "${var_name} not set — generating with openssl rand -hex 32..."
   local generated
   generated="$(openssl rand -hex 32)"
-  if grep -q "^${var_name}=" "$ENV_FILE" 2>/dev/null; then
-    sed -i.bak "s|^${var_name}=.*|${var_name}=${generated}|" "$ENV_FILE" \
-      && rm -f "${ENV_FILE}.bak"
-    info "  ${var_name} generated and updated in .env."
-  else
-    printf '\n%s=%s\n' "${var_name}" "${generated}" >> "$ENV_FILE"
-    info "  ${var_name} generated and appended to .env."
-  fi
+  upsert_env_var "${var_name}" "${generated}" "${ENV_FILE}"
+  info "  ${var_name} generated and written to .env."
   export "${var_name}=${generated}"
 }
 
@@ -91,24 +85,14 @@ DATASPOKE_LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_LANGFUSE_INIT_PROJECT_NAME:-da
 if [[ -z "${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" ]]; then
   info "DATASPOKE_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
   DATASPOKE_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
-  if grep -q "^DATASPOKE_LANGFUSE_PUBLIC_KEY=" "$ENV_FILE" 2>/dev/null; then
-    sed -i.bak "s|^DATASPOKE_LANGFUSE_PUBLIC_KEY=.*|DATASPOKE_LANGFUSE_PUBLIC_KEY=${DATASPOKE_LANGFUSE_PUBLIC_KEY}|" "$ENV_FILE" \
-      && rm -f "${ENV_FILE}.bak"
-  else
-    printf '\n%s=%s\n' "DATASPOKE_LANGFUSE_PUBLIC_KEY" "${DATASPOKE_LANGFUSE_PUBLIC_KEY}" >> "$ENV_FILE"
-  fi
+  upsert_env_var DATASPOKE_LANGFUSE_PUBLIC_KEY "${DATASPOKE_LANGFUSE_PUBLIC_KEY}" "${ENV_FILE}"
   export DATASPOKE_LANGFUSE_PUBLIC_KEY
   info "  DATASPOKE_LANGFUSE_PUBLIC_KEY=${DATASPOKE_LANGFUSE_PUBLIC_KEY} persisted to .env."
 fi
 if [[ -z "${DATASPOKE_LANGFUSE_SECRET_KEY:-}" ]]; then
   info "DATASPOKE_LANGFUSE_SECRET_KEY not set — generating sk-lf-dataspoke-dev-<hex>..."
   _generated_sk="sk-lf-dataspoke-dev-$(openssl rand -hex 24)"
-  if grep -q "^DATASPOKE_LANGFUSE_SECRET_KEY=" "$ENV_FILE" 2>/dev/null; then
-    sed -i.bak "s|^DATASPOKE_LANGFUSE_SECRET_KEY=.*|DATASPOKE_LANGFUSE_SECRET_KEY=${_generated_sk}|" "$ENV_FILE" \
-      && rm -f "${ENV_FILE}.bak"
-  else
-    printf '\n%s=%s\n' "DATASPOKE_LANGFUSE_SECRET_KEY" "${_generated_sk}" >> "$ENV_FILE"
-  fi
+  upsert_env_var DATASPOKE_LANGFUSE_SECRET_KEY "${_generated_sk}" "${ENV_FILE}"
   export DATASPOKE_LANGFUSE_SECRET_KEY="${_generated_sk}"
   info "  DATASPOKE_LANGFUSE_SECRET_KEY generated and persisted to .env."
 fi
@@ -119,29 +103,18 @@ chmod 600 "$ENV_FILE"
 # Verify required tools
 # ---------------------------------------------------------------------------
 info "Checking required tools..."
-command -v kubectl >/dev/null 2>&1 || error "kubectl is not installed or not in PATH."
-command -v helm    >/dev/null 2>&1 || error "helm is not installed or not in PATH."
+require_tools kubectl helm
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
 # Ensure langfuse namespace exists
 # ---------------------------------------------------------------------------
-if kubectl get namespace "${LANGFUSE_NS}" >/dev/null 2>&1; then
-  info "Namespace '${LANGFUSE_NS}' already exists."
-else
-  info "Creating namespace '${LANGFUSE_NS}'..."
-  kubectl create namespace "${LANGFUSE_NS}"
-fi
+ensure_namespace "${LANGFUSE_NS}"
 
 # ---------------------------------------------------------------------------
 # Add Langfuse Helm repo
 # ---------------------------------------------------------------------------
-if helm repo list 2>/dev/null | grep -q "^langfuse"; then
-  info "Helm repo 'langfuse' already added."
-else
-  info "Adding Helm repo 'langfuse'..."
-  helm repo add langfuse https://langfuse.github.io/langfuse-k8s
-fi
+helm_repo_add_if_missing langfuse https://langfuse.github.io/langfuse-k8s
 helm repo update langfuse
 info "Helm repo 'langfuse' up to date."
 
@@ -195,14 +168,7 @@ info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
 # so we mirror only the two keys the umbrella chart needs.
 # ---------------------------------------------------------------------------
 info "Creating dataspoke-langfuse-secret in ${DATASPOKE_NS} (consumer subset: PUBLIC_KEY + SECRET_KEY)..."
-# Ensure dataspoke namespace exists (install.sh creates it up front, but this
-# script may also be run standalone before dataspoke-infra).
-if kubectl get namespace "${DATASPOKE_NS}" >/dev/null 2>&1; then
-  info "Namespace '${DATASPOKE_NS}' already exists."
-else
-  info "Creating namespace '${DATASPOKE_NS}'..."
-  kubectl create namespace "${DATASPOKE_NS}"
-fi
+ensure_namespace "${DATASPOKE_NS}"
 kubectl create secret generic dataspoke-langfuse-secret \
   --namespace "${DATASPOKE_NS}" \
   --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
@@ -250,12 +216,7 @@ kubectl rollout status deployment/langfuse-worker \
 # dataspoke-infra/install.sh reads this on its initial helm upgrade --install,
 # so no post-hoc reupgrade of the umbrella chart is needed.
 # ---------------------------------------------------------------------------
-if grep -q "^DATASPOKE_LANGFUSE_HOST=" "$ENV_FILE" 2>/dev/null; then
-  sed -i.bak "s|^DATASPOKE_LANGFUSE_HOST=.*|DATASPOKE_LANGFUSE_HOST=${LANGFUSE_HOST}|" "$ENV_FILE" \
-    && rm -f "${ENV_FILE}.bak"
-else
-  printf '\nDATASPOKE_LANGFUSE_HOST=%s\n' "${LANGFUSE_HOST}" >> "$ENV_FILE"
-fi
+upsert_env_var DATASPOKE_LANGFUSE_HOST "${LANGFUSE_HOST}" "${ENV_FILE}"
 info "DATASPOKE_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
 
 # ---------------------------------------------------------------------------

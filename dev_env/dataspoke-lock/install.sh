@@ -26,12 +26,7 @@ NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
 # ---------------------------------------------------------------------------
 # Ensure namespace exists
 # ---------------------------------------------------------------------------
-if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-  info "Namespace '${NS}' already exists."
-else
-  info "Creating namespace '${NS}'..."
-  kubectl create namespace "${NS}"
-fi
+ensure_namespace "${NS}"
 
 # ---------------------------------------------------------------------------
 # Apply manifests
