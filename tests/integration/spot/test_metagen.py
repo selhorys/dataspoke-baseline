@@ -16,6 +16,9 @@ Concerns covered:
 - PATCH /data/{urn}/attr/metagen/result/{result_id} — review (approve and reject)
 - PATCH /data/{urn}/attr/metagen/result/{result_id} — field-level approve subset
 - PATCH /data/{urn}/attr/metagen/result/{result_id} — cross_data.md action approve
+    (create, modify, delete)
+- PATCH /data/{urn}/attr/metagen/result/{result_id} — follow-up PATCH preserves prior
+    field_status entries
 - GET /data/{urn}/event/metagen — event list envelope
 
 Spec traceability:
@@ -830,4 +833,248 @@ async def test_metagen_result_latest_returns_at_most_one(
             await _delete_metagen_result(async_session, result_id1, _TEST_URN)
         if result_id2 is not None:
             await _delete_metagen_result(async_session, result_id2, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_cross_data_modify_and_delete_actions(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session,
+) -> None:
+    """PATCH approving cross_data.md modify and delete actions flips both to 'approved'.
+
+    Companion to test_metagen_cross_data_action_approve, which covers the create action.
+    Seeds a result with two actions:
+      - a1: modify (requires document_urn and body)
+      - a2: delete (requires document_urn only)
+    PATCH approves both; asserts both field_status entries flip to 'approved' and the
+    proposals payload round-trips with the correct action types.
+
+    document_urn values are fictitious; on approval apply_actions() warns and continues
+    per impl best-effort emit. End-to-end DataHub apply for modify/delete actions is out
+    of scope for this test.
+
+    spec: BACKEND.md §Cross-data MD action types — modify: document_urn + body;
+    delete: document_urn only.
+    spec: BACKEND_SCHEMA.md L134-L135 — field_status uses cross_data.md.<action_id> keys.
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    result_id: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["cross_data.md"],
+                "is_enabled": False,
+                "schedule_tier": None,
+                "owner": "spot-test@imazon.com",
+            },
+        )
+
+        result_id = await _insert_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals={
+                "cross_data.md": [
+                    {
+                        "action_id": "a1",
+                        "action": "modify",
+                        "document_urn": "urn:li:document:spot-test-existing-doc-1",
+                        "body": "Updated cross-data body for modify action test.",
+                        "confidence": 0.78,
+                    },
+                    {
+                        "action_id": "a2",
+                        "action": "delete",
+                        "document_urn": "urn:li:document:spot-test-existing-doc-2",
+                        "confidence": 0.65,
+                    },
+                ],
+            },
+            field_status={
+                "cross_data.md.a1": "pending",
+                "cross_data.md.a2": "pending",
+            },
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        approve_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "approve",
+                "fields": ["cross_data.md.a1", "cross_data.md.a2"],
+                "reason": "spot-test: modify+delete action approve",
+            },
+        )
+        assert approve_resp.status_code == 200, (
+            f"PATCH approve modify+delete actions failed: "
+            f"{approve_resp.status_code} {approve_resp.text}"
+        )
+        body = approve_resp.json()
+        assert body["id"] == result_id
+        # spec: BACKEND_SCHEMA.md L134-L135 — field_status key is cross_data.md.<action_id>
+        assert body["field_status"].get("cross_data.md.a1") == "approved", (
+            f"field_status['cross_data.md.a1'] (modify) should be 'approved'; "
+            f"got {body['field_status'].get('cross_data.md.a1')!r}. "
+            "spec: BACKEND_SCHEMA.md L134"
+        )
+        assert body["field_status"].get("cross_data.md.a2") == "approved", (
+            f"field_status['cross_data.md.a2'] (delete) should be 'approved'; "
+            f"got {body['field_status'].get('cross_data.md.a2')!r}. "
+            "spec: BACKEND_SCHEMA.md L134"
+        )
+        # Shape-check: proposals round-trip with correct action types
+        # spec: BACKEND.md §Cross-data MD action types
+        actions_by_id = {a["action_id"]: a for a in body["proposals"]["cross_data.md"]}
+        assert actions_by_id.get("a1", {}).get("action") == "modify", (
+            f"Proposal a1 should have action='modify'; got {actions_by_id.get('a1')!r}. "
+            "spec: BACKEND.md §Cross-data MD action types"
+        )
+        assert actions_by_id.get("a2", {}).get("action") == "delete", (
+            f"Proposal a2 should have action='delete'; got {actions_by_id.get('a2')!r}. "
+            "spec: BACKEND.md §Cross-data MD action types"
+        )
+    finally:
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
+        await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_review_preserves_prior_field_status_on_followup_patch(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session,
+) -> None:
+    """Follow-up PATCH only mutates listed fields; prior approved/pending entries stay intact.
+
+    Seeds a five-field result, then issues two PATCHes:
+      1. verdict=approve on three fields → those flip to 'approved'
+      2. verdict=reject on one different field → only that field flips to 'rejected'
+
+    Asserts that after the second PATCH:
+      - the three fields approved by PATCH 1 are still 'approved' (not clobbered)
+      - the one field never referenced is still 'pending'
+      - the one field rejected by PATCH 2 is 'rejected'
+
+    spec: BACKEND.md L296-L302 — field-level review preserves prior status for fields
+    not referenced in the current PATCH.
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    result_id: str | None = None
+
+    try:
+        await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "targets": ["dataset.description", "column.description", "cross_data.md"],
+                "is_enabled": False,
+                "schedule_tier": None,
+                "owner": "spot-test@imazon.com",
+            },
+        )
+
+        result_id = await _insert_pending_metagen_result(
+            async_session,
+            dataset_urn=_TEST_URN,
+            proposals={
+                "dataset.description": "Master catalog of every title Imazon offers.",
+                "column.description": {
+                    "book_id": "Stable, opaque identifier for a book.",
+                    "title": "Display title shown to customers.",
+                    "author": "Free-text author / creator name.",
+                },
+                "cross_data.md": [
+                    {
+                        "action_id": "a1",
+                        "action": "create",
+                        "title": "How orders reference books",
+                        "body": (
+                            "`orders.order_items.book_id` joins to "
+                            "`catalog.title_master.book_id`."
+                        ),
+                        "related_assets": [
+                            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+                            "example_db.catalog.title_master,DEV)",
+                        ],
+                        "confidence": 0.81,
+                    },
+                ],
+            },
+            field_status={
+                "dataset.description": "pending",
+                "column.description.book_id": "pending",
+                "column.description.title": "pending",
+                "column.description.author": "pending",
+                "cross_data.md.a1": "pending",
+            },
+        )
+        encoded_result_id = urllib.parse.quote(result_id, safe="")
+        patch_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
+        )
+
+        # PATCH 1: approve a subset of three fields
+        approve_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "approve",
+                "fields": [
+                    "dataset.description",
+                    "column.description.book_id",
+                    "column.description.title",
+                ],
+                "reason": "spot-test: approve three fields",
+            },
+        )
+        assert approve_resp.status_code == 200, approve_resp.text
+
+        # PATCH 2: reject a different field (cross_data.md.a1)
+        # spec: BACKEND.md L296-L302 — second PATCH must not clobber the first PATCH's approvals
+        reject_resp = await api_client.patch(
+            patch_url,
+            headers=admin_headers,
+            json={
+                "verdict": "reject",
+                "fields": ["cross_data.md.a1"],
+                "reason": "spot-test: reject one cross_data action",
+            },
+        )
+        assert reject_resp.status_code == 200, reject_resp.text
+        fs = reject_resp.json()["field_status"]
+
+        # The rejected field flips to 'rejected'
+        assert fs.get("cross_data.md.a1") == "rejected", (
+            f"'cross_data.md.a1' should be 'rejected' after second PATCH; "
+            f"got {fs.get('cross_data.md.a1')!r}. spec: BACKEND.md L296-L302"
+        )
+        # Previously-approved fields stay 'approved' — second PATCH must not clobber them
+        for field in (
+            "dataset.description",
+            "column.description.book_id",
+            "column.description.title",
+        ):
+            assert fs.get(field) == "approved", (
+                f"{field!r} should remain 'approved' after follow-up PATCH; "
+                f"got {fs.get(field)!r}. spec: BACKEND.md L296-L302"
+            )
+        # Never-touched field stays 'pending'
+        assert fs.get("column.description.author") == "pending", (
+            f"'column.description.author' should remain 'pending' (never referenced); "
+            f"got {fs.get('column.description.author')!r}. spec: BACKEND.md L296-L302"
+        )
+    finally:
+        if result_id is not None:
+            await _delete_metagen_result(async_session, result_id, _TEST_URN)
         await api_client.delete(base_conf, headers=admin_headers)
