@@ -69,7 +69,7 @@ Tool name `ontogen_validate(payload)`. Schema model `OntogenLLMOutput`
 | Rule | Failure code |
 |------|--------------|
 | Pydantic shape of `OntogenLLMOutput` | `SCHEMA` |
-| `node.id` and `edge.id` match `^[a-z0-9][a-z0-9_-]*$`; no `__` | `SLUG_FORMAT` / `DOUBLE_UNDERSCORE` |
+| `node.id` and `edge.id` match `^[a-z0-9_]{1,64}$` (lowercase snake_case only — `a-z`, `0-9`, `_`; no hyphens, max 64 chars); no `__` | `SLUG_FORMAT` / `DOUBLE_UNDERSCORE` |
 | No duplicate ids within `nodes`, within `edges` | `DUP_ID` |
 | Every `triple.subject_node_id` and `triple.object_node_id` resolves to a node in the payload | `UNKNOWN_NODE_REF` |
 | Every `triple.edge_id` resolves to an edge in the payload | `UNKNOWN_EDGE_REF` |
@@ -189,11 +189,11 @@ anchor pool is `status IN ('approved', 'llm_approved')` — i.e. anything that
 passed at least one gate (human review or the Adversarial Debate's auto-approval
 path) qualifies, keeping cold-start ergonomics workable on fresh installs:
 
-| Kind | Embed text | Source table |
+| Kind | Embed text | Source table (anchor pool: `status IN ('approved','llm_approved')`) |
 |------|-----------|--------------|
-| node | `name + description` | `OntogenNode where status IN ('approved','llm_approved')` |
-| edge | `label + semantics`  | `OntogenEdge where status IN ('approved','llm_approved')` |
-| triple | composite of (subject_node.embed_text, edge.embed_text, object_node.embed_text) | anchor pool same as nodes/edges (`status IN ('approved','llm_approved')`) |
+| node | `name + description` | `node_embeddings` (status cached on the embedding row) |
+| edge | `label + semantics`  | `edge_embeddings` JOIN `ontogen_edges` for status filter |
+| triple | composite of (subject_node.embed_text, edge.embed_text, object_node.embed_text) | `triple_embeddings` JOIN `ontogen_triples` for status filter |
 
 Anchors are injected as a `RAG ANCHORS` block in the Reviewer prompt. The
 Producer never sees them. This asymmetric context is the source of
@@ -256,7 +256,7 @@ Producer revision attempts; when revisions are exhausted the row lands in
 
 Downstream query rules:
 - **RAG anchors** (this section): `status IN ('approved','llm_approved')`.
-- **Reuse lookup** (Inference Pipeline Step 7): `status IN ('llm_pending','llm_approved','approved')` — anything non-`rejected`.
+- **Reuse lookup** ([BACKEND §Inference Pipeline](BACKEND.md#ontology-generation-service-srcbackendontogen)): `status IN ('llm_pending','llm_approved','approved')` — anything non-`rejected`.
 - **Triple-review dependency gate**: dependencies must be `status='approved'` (strict; an `llm_approved` dep does not satisfy the gate).
 - **Metagen reads** (UC4): `status='approved'` only — only human-curated entities feed user-facing metadata.
 

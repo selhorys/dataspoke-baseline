@@ -144,7 +144,7 @@ Singleton row holding the Ontology Generation conf (UC3).
 |--------|------|-------------|
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
-| `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence (required when `is_enabled=true`) |
+| `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
 | `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `metric_definitions.measurement_query.dataset_filter` |
 | `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -390,6 +390,53 @@ endpoint.
   `node_embeddings.updated_at` precedes `ontogen_nodes.updated_at` is re-embedded
 - On-demand: rebuilt as part of an `ontogen` manual run when name or description
   changed for an approved node
+
+### `edge_embeddings`
+
+Embeddings over ontology edges (predicates) for similarity recall. Used by the
+Adversarial Debate Reviewer to sample RAG anchors over approved edges (see
+[BACKEND_LLM §RAG anchors](BACKEND_LLM.md#rag-anchors)). Lives in the
+`dataspoke` schema.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `edge_id` | `TEXT` PK FK → `ontogen_edges(id)` | Edge identifier |
+| `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time |
+| `label` | `TEXT` | Cached edge display label (denormalised for query convenience) |
+| `status` | `TEXT` | Cached edge status; RAG-anchor lookups join through `ontogen_edges` and filter to `status IN ('approved','llm_approved')` |
+| `updated_at` | `TIMESTAMPTZ` NOT NULL | Last embedding refresh |
+
+**Index**: `edge_embeddings_embedding_hnsw_idx` — HNSW over `embedding` with
+`vector_cosine_ops`.
+
+**Embedding input**: Concatenation of edge label and semantics. Processed through
+the LLM embedding endpoint.
+
+**Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
+DAG / on-demand `ontogen` manual run that refreshes `node_embeddings`.
+
+### `triple_embeddings`
+
+Embeddings over ontology triples for similarity recall. Used by the Adversarial
+Debate Reviewer to sample RAG anchors over approved triples. Lives in the
+`dataspoke` schema.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `triple_id` | `TEXT` PK FK → `ontogen_triples(id)` | Triple identifier |
+| `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time |
+| `status` | `TEXT` | Cached triple status; RAG-anchor lookups join through `ontogen_triples` and filter to `status IN ('approved','llm_approved')` |
+| `updated_at` | `TIMESTAMPTZ` NOT NULL | Last embedding refresh |
+
+**Index**: `triple_embeddings_embedding_hnsw_idx` — HNSW over `embedding` with
+`vector_cosine_ops`.
+
+**Embedding input**: Composite text of subject node (name + description), edge
+(label + semantics), and object node (name + description). Processed through
+the LLM embedding endpoint.
+
+**Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
+DAG / on-demand `ontogen` manual run that refreshes `node_embeddings`.
 
 ### Graph (Apache AGE, reserved)
 

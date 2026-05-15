@@ -218,8 +218,8 @@ proceeds nodes → edges → triples.
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.default_run_prompt` ≤ 16,000 chars
 - `attr/conf.dataset_filter.dataset_urns` ≤ 1,000 entries
-- `attr/seed` Markdown body ≤ 64 KiB
-- `method/run` one-shot Markdown body ≤ 64 KiB
+- `attr/seed` Markdown body ≤ 128 KiB
+- `method/run` one-shot Markdown body ≤ 128 KiB
 - node / edge / triple `method/review.reason` ≤ 2,000 chars
 
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
@@ -615,6 +615,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `404 Not Found` | Resource does not exist |
 | `409 Conflict` | Duplicate resource or concurrent run attempt |
 | `422 Unprocessable Entity` | Pydantic validation failure (field type mismatch, constraint violation), or a request that is well-formed but cannot be processed because a referenced precondition is not met (e.g. dataset not yet present in DataHub) |
+| `413 Content Too Large` | Request body exceeds the route's size cap (e.g. `text/markdown` body on ontogen seed / run endpoints) |
 | `429 Too Many Requests` | Rate limit exceeded. Body uses the standard error envelope with `error_code: "RATE_LIMIT_EXCEEDED"`; response carries `Retry-After` and `X-RateLimit-*` headers (limit, remaining, reset) |
 | `500 Internal Server Error` | Fallback for an unhandled `DataSpokeError` with no specific status mapping |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
@@ -648,6 +649,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
 | `ONTOGEN_DISABLED` | 409 | Ontogen conf has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
+| `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/common/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/common/ontogen/method/run`) bodies are capped at 128 KiB |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for both `ontogen/attr/conf` and `metric/{id}/attr/conf` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |

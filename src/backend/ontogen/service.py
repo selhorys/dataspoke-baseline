@@ -418,7 +418,7 @@ class OntogenService:
         7. Load approved nodes/edges + embeddings for reuse.
         8. Call LLM, process proposals (node/edge/triple reuse, confidence scoring).
         9. If dry_run: return summary without persisting.
-        10. Persist nodes/edges/triples; materialise AGE edges; refresh embeddings.
+        10. Persist nodes/edges/triples; refresh node/edge/triple embeddings.
         11. Refresh dataset_embeddings for in-scope datasets.
         12. Emit ONTOGEN.RUN_COMPLETE.
         """

@@ -26,7 +26,7 @@ _BASE = "/api/v1/spoke/common/ontogen"
 # Named constants — cap values from the implementation
 # impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
 _REASON_MAX_LEN = 2000
-_BODY_MAX_BYTES = 64 * 1024  # 64 KiB
+_BODY_MAX_BYTES = 128 * 1024  # 128 KiB
 # impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
 _DATASET_FILTER_LIST_CAP = 1000
 
@@ -162,11 +162,11 @@ async def test_post_seed_returns_201(client, mock_svc: AsyncMock) -> None:
 
 @pytest.mark.asyncio
 async def test_post_seed_body_too_large_returns_413(client, mock_svc: AsyncMock) -> None:
-    """POST /ontogen/attr/seed with body > 64 KiB returns 413.
+    """POST /ontogen/attr/seed with body > 128 KiB returns 413.
 
-    Cap: _BODY_MAX_BYTES (impl-cap; spec gap surfaced 2026-05-01).
+    Cap: _BODY_MAX_BYTES; spec API.md §Ontology Generation Payload caps.
     """
-    big_body = b"x" * (_BODY_MAX_BYTES + 1)  # impl-cap; spec gap surfaced 2026-05-01
+    big_body = b"x" * (_BODY_MAX_BYTES + 1)
     resp = await client.post(
         f"{_BASE}/attr/seed",
         content=big_body,
@@ -227,11 +227,11 @@ async def test_post_run_returns_200_with_run_summary_body(client, mock_svc: Asyn
 
 @pytest.mark.asyncio
 async def test_post_run_body_too_large_returns_413(client, mock_svc: AsyncMock) -> None:
-    """POST /ontogen/method/run with body > 64 KiB returns 413.
+    """POST /ontogen/method/run with body > 128 KiB returns 413.
 
-    Cap: _BODY_MAX_BYTES (impl-cap; spec gap surfaced 2026-05-01).
+    Cap: _BODY_MAX_BYTES; spec API.md §Ontology Generation Payload caps.
     """
-    big_body = b"x" * (_BODY_MAX_BYTES + 1)  # impl-cap; spec gap surfaced 2026-05-01
+    big_body = b"x" * (_BODY_MAX_BYTES + 1)
     resp = await client.post(
         f"{_BASE}/method/run",
         content=big_body,

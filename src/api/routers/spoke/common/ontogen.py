@@ -12,7 +12,7 @@ Routes:
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
 Auth: require_common (de/da/dg/admin groups).
-Spec: API.md §Ontology Generation (lines 178–215).
+Spec: API.md §Ontology Generation.
 """
 
 from datetime import datetime
@@ -50,8 +50,8 @@ router = APIRouter(
     dependencies=[Depends(require_common)],
 )
 
-# Maximum allowed size for text/markdown request bodies (64 KiB).
-_MAX_MARKDOWN_BYTES = 64 * 1024
+# Maximum allowed size for text/markdown request bodies (128 KiB).
+_MAX_MARKDOWN_BYTES = 128 * 1024
 
 
 async def _read_markdown_body(
