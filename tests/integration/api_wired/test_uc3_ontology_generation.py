@@ -739,12 +739,16 @@ async def test_uc3_debate_smoke_under_stub(
     is asserted in test_uc3_debate_real_when_test_llm_real, not here, because the stub
     Producer's empty payload prevents new row persistence under default test mode.
 
-    Steps mirror USE_CASE_en.md §UC3 §Debate transcript:
+    Steps mirror USE_CASE_en.md §UC3 §Debate transcript and stay structurally
+    symmetric with test_uc3_debate_real_when_test_llm_real:
       1. PUT conf (is_enabled=True, dataset_filter)
       2. POST seed (Markdown)
-      3. POST run (no dry_run) — real run under stub mode
-      4. GET result/node — if any rows returned, verify evidence.debate shape
-      5. Cleanup: DELETE seed, PATCH conf disabled
+      3. POST run (no dry_run) — assert OntogenRunSummary status/dry_run/counts/unresolved_urns
+      4. GET event/ontogen — assert ONTOGEN.RUN_COMPLETE detail (debate_outcome,
+         producer_iterations, producer_errors_dropped)
+      5. GET result/{node,edge,triple} — for each persisted row, verify evidence.debate
+         shape (zero rows is expected under stub; per-row block is a no-op then)
+      6. Cleanup: DELETE seed, PATCH conf disabled
 
     Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
     — debate transcript stored in evidence JSONB with keys:
@@ -803,17 +807,28 @@ async def test_uc3_debate_smoke_under_stub(
 
         # OntogenRunSummary shape must be present regardless of LLM mode
         # spec: USE_CASE_en.md §UC3 — OntogenRunSummary: status, dry_run, counts, unresolved_urns
-        assert "status" in run_body and isinstance(run_body["status"], str), (
-            "OntogenRunSummary missing 'status'. spec: USE_CASE_en.md §UC3"
+        assert run_body.get("status") == "success", (
+            f"OntogenRunSummary status must be 'success' on healthy run; "
+            f"got {run_body.get('status')!r}. spec: USE_CASE_en.md §UC3"
         )
         actual_dry_run = run_body.get("dry_run")
         assert actual_dry_run is False, (
             f"OntogenRunSummary dry_run must be False on real run; got {actual_dry_run!r}. "
             "spec: USE_CASE_en.md §UC3"
         )
-        assert isinstance(run_body.get("counts"), dict), (
+        assert isinstance(run_body.get("unresolved_urns"), list), (
+            f"OntogenRunSummary unresolved_urns must be a list; "
+            f"got {type(run_body.get('unresolved_urns')).__name__}. spec: USE_CASE_en.md §UC3"
+        )
+        counts = run_body.get("counts")
+        assert isinstance(counts, dict), (
             "OntogenRunSummary missing 'counts' (dict). spec: USE_CASE_en.md §UC3"
         )
+        for key in ("nodes_added", "edges_added", "triples_added"):
+            assert key in counts and isinstance(counts[key], int) and counts[key] >= 0, (
+                f"OntogenRunSummary counts.{key} must be non-negative int; "
+                f"got {counts.get(key)!r}. spec: USE_CASE_en.md §UC3"
+            )
 
         # ── Step 4: GET /event/ontogen — ONTOGEN.RUN_COMPLETE detail must carry debate fields ──
         # spec: BACKEND_LLM.md §Adversarial Debate Framework §Wiring — _run_inner emits
@@ -853,59 +868,74 @@ async def test_uc3_debate_smoke_under_stub(
             "spec: BACKEND_LLM.md §Inference Loop"
         )
 
-        # ── Step 5: GET result/node — assert debate shape on any persisted rows ──
+        # ── Step 5: GET result/{node,edge,triple} — assert debate shape on any persisted rows ──
         # spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
-        node_resp = await api_client.get(
-            "/api/v1/spoke/common/ontogen/result/node?offset=0&limit=10",
-            headers=admin_headers,
-        )
-        assert node_resp.status_code == 200, (
-            f"GET result/node failed: {node_resp.status_code}"
-        )
-        nodes = node_resp.json().get("nodes", [])
-
-        # Under stub mode: Producer returns empty → no rows persisted.
-        # Soft assertion: if any rows are present, verify evidence.debate shape.
-        # Evidence is not surfaced on the list response — fetch /attr per row to read it.
-        # spec: BACKEND_LLM.md §Evidence shape
-        for node in nodes:
-            attr_resp = await api_client.get(
-                f"/api/v1/spoke/common/ontogen/result/node/{node['id']}/attr",
+        # Symmetric with test_uc3_debate_real_when_test_llm_real: iterate all three
+        # result types. Under stub mode the Producer returns an empty payload so no rows
+        # are persisted; the per-row block accepts zero rows by design. The real-LLM
+        # variant additionally asserts any_rows_found == True (impossible under stub).
+        for result_type, list_key in [
+            ("node", "nodes"),
+            ("edge", "edges"),
+            ("triple", "triples"),
+        ]:
+            list_resp = await api_client.get(
+                f"/api/v1/spoke/common/ontogen/result/{result_type}?offset=0&limit=10",
                 headers=admin_headers,
             )
-            assert attr_resp.status_code == 200, (
-                f"GET result/node/{node['id']}/attr failed: {attr_resp.status_code}"
+            assert list_resp.status_code == 200, (
+                f"GET result/{result_type} failed: {list_resp.status_code}"
             )
-            evidence = attr_resp.json().get("evidence") or {}
-            debate = evidence.get("debate")
-            assert debate is not None, (
-                f"Node {node['id']!r} evidence missing 'debate' key. "
-                "spec: BACKEND_LLM.md §Evidence shape — debate key required in evidence JSONB"
-            )
-            # spec: §Evidence shape — required top-level keys
-            for key in ("turns_completed", "outcome", "final_reviewer_verdict",
-                        "rag_anchors", "history"):
-                assert key in debate, (
-                    f"evidence.debate for node {node.get('id')!r} missing key {key!r}. "
-                    f"spec: BACKEND_LLM.md §Evidence shape"
+            rows = list_resp.json().get(list_key, [])
+            for row in rows:
+                attr_resp = await api_client.get(
+                    f"/api/v1/spoke/common/ontogen/result/{result_type}/{row['id']}/attr",
+                    headers=admin_headers,
                 )
-            # spec: §Termination — outcome must be one of the three canonical values
-            assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
-                f"evidence.debate.outcome must be a canonical value; "
-                f"got {debate['outcome']!r}. "
-                "spec: BACKEND_LLM.md §Termination"
-            )
-            # spec: §Loop shape — turns_completed ≥ 2 (at least 1 Producer + 1 Reviewer)
-            assert isinstance(debate["turns_completed"], int) and debate["turns_completed"] >= 2, (
-                f"evidence.debate.turns_completed must be int ≥ 2; "
-                f"got {debate['turns_completed']!r}. "
-                "spec: BACKEND_LLM.md §Loop shape"
-            )
-            assert isinstance(debate["history"], list) and len(debate["history"]) >= 1, (
-                f"evidence.debate.history must be a non-empty list; "
-                f"got {debate['history']!r}. "
-                "spec: BACKEND_LLM.md §Evidence shape"
-            )
+                assert attr_resp.status_code == 200, (
+                    f"GET result/{result_type}/{row['id']}/attr failed: "
+                    f"{attr_resp.status_code}"
+                )
+                evidence = attr_resp.json().get("evidence") or {}
+                debate = evidence.get("debate")
+                assert debate is not None, (
+                    f"{result_type} {row['id']!r} evidence missing 'debate'. "
+                    "spec: BACKEND_LLM.md §Evidence shape"
+                )
+                # spec: §Evidence shape — required top-level keys
+                for key in ("turns_completed", "outcome", "final_reviewer_verdict",
+                            "rag_anchors", "history"):
+                    assert key in debate, (
+                        f"evidence.debate for {result_type} {row['id']!r} missing {key!r}. "
+                        "spec: BACKEND_LLM.md §Evidence shape"
+                    )
+                # spec: §Termination — outcome must be one of the three canonical values
+                assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
+                    f"{result_type} {row['id']!r} debate.outcome invalid: "
+                    f"{debate['outcome']!r}. spec: BACKEND_LLM.md §Termination"
+                )
+                # spec: §Loop shape — at least 1 Producer + 1 Reviewer turn
+                tc = debate["turns_completed"]
+                assert isinstance(tc, int) and tc >= 2, (
+                    f"{result_type} {row['id']!r} turns_completed must be int ≥ 2; "
+                    f"got {tc!r}. spec: BACKEND_LLM.md §Loop shape"
+                )
+                # spec: §Evidence shape — history non-empty with both actor entries
+                history = debate.get("history", [])
+                assert isinstance(history, list) and len(history) >= 2, (
+                    f"{result_type} {row['id']!r} history must have ≥ 2 entries "
+                    f"(at least 1 Producer + 1 Reviewer); got {len(history)}. "
+                    "spec: BACKEND_LLM.md §Evidence shape §history"
+                )
+                actors = {h.get("actor") for h in history}
+                assert "producer" in actors, (
+                    f"{result_type} {row['id']!r} history must include a producer turn. "
+                    "spec: BACKEND_LLM.md §Evidence shape"
+                )
+                assert "reviewer" in actors, (
+                    f"{result_type} {row['id']!r} history must include a reviewer turn. "
+                    "spec: BACKEND_LLM.md §Evidence shape"
+                )
 
     finally:
         # ── Step 5: Cleanup ───────────────────────────────────────────────────
