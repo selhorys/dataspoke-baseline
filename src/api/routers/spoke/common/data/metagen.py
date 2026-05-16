@@ -1,275 +1,232 @@
 """Metadata Generation sub-resource handlers: /data/{dataset_urn}/attr/metagen/*
-   and siblings: /data/{dataset_urn}/method/metagen/run
-                  /data/{dataset_urn}/event/metagen
+   and siblings: /data/{dataset_urn}/event/metagen
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Spec: API.md §Data Resource (lines 246–253).
+Spec: API.md §Data Resource — metagen rows (lines 294–301).
 """
 
 from datetime import datetime
+from typing import Any, Literal, cast
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies import get_metagen_service
-from src.api.schemas._paths import DatasetUrnPath, UuidPath
-from src.api.schemas.common import parse_sort
-from src.api.schemas.events import EventListResponse, EventResponse
+from src.api.auth.dependencies import require_auth
+from src.api.dependencies import get_db, get_metagen_service
+from src.api.routers.spoke.common._metagen_mappers import (
+    event_list,
+    to_item_detail,
+    to_item_summary,
+)
+from src.api.schemas._paths import DatasetUrnPath
+from src.api.schemas.events import EventListResponse
 from src.api.schemas.metagen import (
-    MetagenConfPatchRequest,
-    MetagenConfPutRequest,
-    MetagenConfResponse,
-    MetagenResultListResponse,
-    MetagenResultResponse,
-    MetagenRunResponse,
-    ReviewResultRequest,
-    RunMetagenRequest,
+    MetagenBoundaryPatchRequest,
+    MetagenBoundaryPutRequest,
+    MetagenBoundaryResponse,
+    MetagenCandidate,
+    MetagenItemDetailResponse,
+    MetagenItemListResponse,
+    MetagenReviewRequest,
 )
 from src.backend.metagen.service import MetagenService
 from src.shared.db.models import Event
+from src.shared.events import METAGEN_PREFIX
 
 sub_router = APIRouter()
 
+_CandStatus = Literal["llm_approved", "approved", "rejected"]
+_AllowedKind = Literal["dataset.description", "column.description"]
 
-# ── Conf CRUD ─────────────────────────────────────────────────────────────────
+
+def _boundary_response(dto: Any) -> MetagenBoundaryResponse:
+    return MetagenBoundaryResponse(
+        dataset_urn=dto.dataset_urn,
+        is_enabled=dto.is_enabled,
+        allowed=cast(list[_AllowedKind], dto.allowed),
+        owner=dto.owner,
+        created_at=dto.created_at,
+        updated_at=dto.updated_at,
+    )
 
 
-@sub_router.get("/{dataset_urn}/attr/metagen/conf", response_model=MetagenConfResponse)
+# ── Boundary CRUD ─────────────────────────────────────────────────────────────
+
+
+@sub_router.get(
+    "/{dataset_urn}/attr/metagen/conf",
+    response_model=MetagenBoundaryResponse | None,
+)
 async def get_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenConfResponse:
-    """Get the metadata generation config for a dataset."""
-    from src.shared.exceptions import EntityNotFoundError
-
-    config = await service.get_config(dataset_urn)
-    if config is None:
-        raise EntityNotFoundError("config", dataset_urn)
-    return MetagenConfResponse(
-        id=config.id,
-        dataset_urn=config.dataset_urn,
-        targets=config.targets,
-        code_refs=config.code_refs,
-        is_enabled=config.is_enabled,
-        schedule_tier=config.schedule_tier,
-        status=config.status,
-        owner=config.owner,
-        created_at=config.created_at,
-        updated_at=config.updated_at,
-    )
+) -> MetagenBoundaryResponse | None:
+    dto = await service.get_boundary(dataset_urn)
+    return _boundary_response(dto) if dto is not None else None
 
 
-@sub_router.put("/{dataset_urn}/attr/metagen/conf", response_model=MetagenConfResponse)
+@sub_router.put(
+    "/{dataset_urn}/attr/metagen/conf",
+    response_model=MetagenBoundaryResponse,
+)
 async def put_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
-    body: MetagenConfPutRequest,
-    response: Response,
+    body: MetagenBoundaryPutRequest,
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenConfResponse:
-    """Create or replace the metadata generation config for a dataset (upsert)."""
-    config, created = await service.upsert_config(
-        dataset_urn=dataset_urn,
-        targets=body.targets,
-        code_refs=body.code_refs,
-        is_enabled=body.is_enabled,
-        schedule_tier=body.schedule_tier,
-        owner=body.owner,
-    )
-    if created:
-        response.status_code = status.HTTP_201_CREATED
-    return MetagenConfResponse(
-        id=config.id,
-        dataset_urn=config.dataset_urn,
-        targets=config.targets,
-        code_refs=config.code_refs,
-        is_enabled=config.is_enabled,
-        schedule_tier=config.schedule_tier,
-        status=config.status,
-        owner=config.owner,
-        created_at=config.created_at,
-        updated_at=config.updated_at,
-    )
+) -> MetagenBoundaryResponse:
+    dto = await service.put_boundary(dataset_urn, body.model_dump())
+    return _boundary_response(dto)
 
 
-@sub_router.patch("/{dataset_urn}/attr/metagen/conf", response_model=MetagenConfResponse)
+@sub_router.patch(
+    "/{dataset_urn}/attr/metagen/conf",
+    response_model=MetagenBoundaryResponse,
+)
 async def patch_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
-    body: MetagenConfPatchRequest,
+    body: MetagenBoundaryPatchRequest,
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenConfResponse:
-    """Partially update the metadata generation config for a dataset."""
-    config = await service.patch_config(dataset_urn, body.model_dump(exclude_unset=True))
-    return MetagenConfResponse(
-        id=config.id,
-        dataset_urn=config.dataset_urn,
-        targets=config.targets,
-        code_refs=config.code_refs,
-        is_enabled=config.is_enabled,
-        schedule_tier=config.schedule_tier,
-        status=config.status,
-        owner=config.owner,
-        created_at=config.created_at,
-        updated_at=config.updated_at,
-    )
+) -> MetagenBoundaryResponse:
+    dto = await service.patch_boundary(dataset_urn, body.model_dump(exclude_unset=True))
+    return _boundary_response(dto)
 
 
 @sub_router.delete(
-    "/{dataset_urn}/attr/metagen/conf", status_code=status.HTTP_204_NO_CONTENT
+    "/{dataset_urn}/attr/metagen/conf",
+    status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
     service: MetagenService = Depends(get_metagen_service),
 ) -> None:
-    """Delete the metadata generation config for a dataset."""
-    await service.delete_config(dataset_urn)
+    await service.delete_boundary(dataset_urn)
 
 
-# ── Results ───────────────────────────────────────────────────────────────────
+# ── Per-dataset items ─────────────────────────────────────────────────────────
 
 
 @sub_router.get(
-    "/{dataset_urn}/attr/metagen/result", response_model=MetagenResultListResponse
+    "/{dataset_urn}/attr/metagen/item",
+    response_model=MetagenItemListResponse,
 )
-async def get_data_metagen_results(
+async def get_data_metagen_items(
     dataset_urn: DatasetUrnPath,
-    latest: bool = Query(default=False),
-    approved: bool | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-    sort: str | None = Query(default=None),
-    from_time: datetime | None = Query(default=None, alias="from"),
-    to_time: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=50, ge=1, le=200),
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenResultListResponse:
-    """List metadata proposals.
-
-    Use ?latest=true for the most recent only; ?approved=true for approved only.
-    """
-    from src.shared.db.models import MetagenResult
-
-    order_by = parse_sort(sort, {"generated_at": MetagenResult.generated_at}, None)
-    results, total = await service.list_results(
-        dataset_urn=dataset_urn,
-        latest=latest,
-        approved=approved,
-        from_dt=from_time,
-        to_dt=to_time,
-        offset=offset,
-        limit=limit,
-        order_by=order_by,
-    )
-    return MetagenResultListResponse(
-        offset=offset,
-        limit=limit,
+) -> MetagenItemListResponse:
+    dtos, total = await service.list_items_for_dataset(dataset_urn, offset=offset, limit=limit)
+    return MetagenItemListResponse(
+        items=[to_item_summary(d) for d in dtos],
         total_count=total,
-        results=[
-            MetagenResultResponse(
-                id=r.id,
-                dataset_urn=r.dataset_urn,
-                proposals=r.proposals,
-                field_status=r.field_status,
-                run_id=r.run_id,
-                generated_at=r.generated_at,
-                last_reviewed_at=r.last_reviewed_at,
-            )
-            for r in results
-        ],
+        offset=offset,
+        limit=limit,
     )
 
 
-@sub_router.patch(
-    "/{dataset_urn}/attr/metagen/result/{result_id}", response_model=MetagenResultResponse
+@sub_router.get(
+    "/{dataset_urn}/attr/metagen/item/{item_id}",
+    response_model=MetagenItemDetailResponse,
 )
-async def patch_data_metagen_result(
+async def get_data_metagen_item(
     dataset_urn: DatasetUrnPath,
-    result_id: UuidPath,
-    body: ReviewResultRequest,
+    item_id: str,
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenResultResponse:
-    """Review a pending metadata proposal — approve (all or selected fields) or reject.
-
-    On approval, DataSpoke writes approved field values to DataHub editable aspects.
-    """
-    record = await service.review_result(
-        result_id=result_id,
-        verdict=body.verdict,
-        fields=body.fields,
-        reason=body.reason,
-    )
-    return MetagenResultResponse(
-        id=record.id,
-        dataset_urn=record.dataset_urn,
-        proposals=record.proposals,
-        field_status=record.field_status,
-        run_id=record.run_id,
-        generated_at=record.generated_at,
-        last_reviewed_at=record.last_reviewed_at,
-    )
+) -> MetagenItemDetailResponse:
+    dto = await service.get_item_for_dataset(dataset_urn, item_id)
+    return to_item_detail(dto)
 
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# ── Candidate review ──────────────────────────────────────────────────────────
 
 
 @sub_router.post(
-    "/{dataset_urn}/method/metagen/run", response_model=MetagenRunResponse
+    "/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review",
+    response_model=MetagenCandidate,
 )
-async def post_data_metagen_run(
+async def post_data_metagen_item_candidate_review(
     dataset_urn: DatasetUrnPath,
-    body: RunMetagenRequest,
+    item_id: str,
+    candidate_id: str,
+    body: MetagenReviewRequest,
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenRunResponse:
-    """Trigger a metadata generation run for the dataset.
+    user: dict[str, Any] = Depends(require_auth),
+) -> MetagenCandidate:
+    """Review a candidate — approve or reject.
 
-    Concurrent runs return 409 GENERATION_RUNNING (via Airflow conf-dedup).
+    409 METAGEN_CANNOT_REJECT_APPROVED if rejecting an approved candidate.
+    422 METAGEN_DATASET_NOT_IN_BOUNDARY if no is_enabled=true boundary.
     """
-    record = await service.run(dataset_urn=dataset_urn, dry_run=body.dry_run)
-    return MetagenRunResponse(
-        id=record.id,
-        dataset_urn=record.dataset_urn,
-        proposals=record.proposals,
-        field_status=record.field_status,
-        run_id=record.run_id,
-        generated_at=record.generated_at,
-        last_reviewed_at=record.last_reviewed_at,
+    reviewer_id: str | None = user.get("sub") or user.get("username") or None
+    dto = await service.review_candidate(
+        dataset_urn=dataset_urn,
+        item_id=item_id,
+        candidate_id=candidate_id,
+        verdict=body.verdict,
+        reason=body.reason,
+        reviewer_id=reviewer_id,
+    )
+    return MetagenCandidate(
+        candidate_id=dto.candidate_id,
+        item_id=dto.item_id,
+        dataset_urn=dto.dataset_urn,
+        value=dto.value,
+        confidence_score=dto.confidence_score,
+        status=cast(_CandStatus, dto.status),
+        evidence=dto.evidence,
+        created_at=dto.created_at,
+        reviewed_at=dto.reviewed_at,
+        reviewer_id=dto.reviewer_id,
     )
 
 
-# ── Events ────────────────────────────────────────────────────────────────────
+# ── Per-dataset metagen events ────────────────────────────────────────────────
 
 
-@sub_router.get("/{dataset_urn}/event/metagen", response_model=EventListResponse)
+@sub_router.get(
+    "/{dataset_urn}/event/metagen",
+    response_model=EventListResponse,
+)
 async def get_data_metagen_events(
     dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-    sort: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
-    service: MetagenService = Depends(get_metagen_service),
+    db: AsyncSession = Depends(get_db),
 ) -> EventListResponse:
-    """Metadata generation event reports (METAGEN.COMPLETE, METAGEN.APPROVE, METAGEN.REJECT)."""
-    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
-    events, total = await service.get_events(
-        dataset_urn=dataset_urn,
-        offset=offset,
-        limit=limit,
-        from_dt=from_time,
-        to_dt=to_time,
-        order_by=order_by,
+    """Per-dataset metagen events (METAGEN.CANDIDATE_APPROVE, METAGEN.CANDIDATE_REJECT)."""
+    base = select(Event).where(
+        Event.entity_type == "dataset",
+        Event.entity_id == dataset_urn,
+        Event.event_type.startswith(METAGEN_PREFIX),
     )
-    return EventListResponse(
-        offset=offset,
-        limit=limit,
-        total_count=total,
-        events=[
-            EventResponse(
-                id=str(e["id"]),
-                entity_type=e["entity_type"],
-                entity_id=e["entity_id"],
-                event_type=e["event_type"],
-                status=e["status"],
-                detail=e.get("detail", {}),
-                occurred_at=e["occurred_at"],
-            )
-            for e in events
+    if from_time is not None:
+        base = base.where(Event.occurred_at >= from_time)
+    if to_time is not None:
+        base = base.where(Event.occurred_at <= to_time)
+
+    count_q = select(func.count()).select_from(base.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+
+    rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+    rows = (await db.execute(rows_q)).scalars().all()
+
+    return event_list(
+        [
+            {
+                "id": str(r.id),
+                "entity_type": r.entity_type,
+                "entity_id": r.entity_id,
+                "event_type": r.event_type,
+                "status": r.status,
+                "detail": dict(r.detail) if r.detail else {},
+                "occurred_at": r.occurred_at,
+            }
+            for r in rows
         ],
+        int(total),
+        offset,
+        limit,
     )

@@ -14,11 +14,6 @@ from src.api.schemas.ingestion import (
     IngestionConfigResponse,
     RunResultResponse,
 )
-from src.api.schemas.metagen import (
-    MetagenConfPutRequest,
-    MetagenListResponse,
-    MetagenResultListResponse,
-)
 from src.api.schemas.metrics import (
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
@@ -218,33 +213,6 @@ class TestValidationSchemas:
         # spec: API.md §Standard Response Envelope — content key named after the resource
         resp = ValidationListResponse()
         assert resp.validations == []
-
-
-class TestMetagenSchemas:
-    def test_put_request_valid_targets(self) -> None:
-        req = MetagenConfPutRequest(
-            dataset_urn="urn:li:dataset:test",
-            targets=["dataset.description", "column.description"],
-            owner="admin",
-        )
-        assert "dataset.description" in req.targets
-
-    def test_put_request_invalid_target(self) -> None:
-        with pytest.raises(ValidationError):
-            MetagenConfPutRequest(
-                dataset_urn="urn:li:dataset:test",
-                targets=["invalid.field"],
-                owner="admin",
-            )
-
-    def test_list_response(self) -> None:
-        resp = MetagenListResponse()
-        assert resp.results == []
-        assert resp.total_count == 0
-
-    def test_result_list_response(self) -> None:
-        resp = MetagenResultListResponse()
-        assert resp.results == []
 
 
 class TestOntogenSchemas:

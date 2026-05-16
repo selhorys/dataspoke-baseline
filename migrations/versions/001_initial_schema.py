@@ -111,40 +111,125 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── metagen_configs ──────────────────────────────────────────────────
+    # ── metagen_config (singleton) ───────────────────────────────────────
     op.create_table(
-        "metagen_configs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("dataset_urn", sa.Text(), nullable=False),
-        sa.Column("targets", JSONB, nullable=False),
-        sa.Column("code_refs", JSONB, nullable=True),
+        "metagen_config",
+        sa.Column("id", sa.Integer(), primary_key=True, server_default="1"),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("status", sa.Text(), nullable=False, server_default="draft"),
-        sa.Column("owner", sa.Text(), nullable=False),
-        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("result_limit", sa.Integer(), nullable=False, server_default="3"),
+        sa.Column("overwrite_pending", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("dataset_urn"),
+        sa.CheckConstraint("id = 1", name="ck_metagen_config_singleton"),
+        sa.CheckConstraint(
+            "result_limit BETWEEN 1 AND 20", name="ck_metagen_config_result_limit"
+        ),
         schema=SCHEMA,
     )
 
-    # ── metagen_results ──────────────────────────────────────────────────
+    # ── metagen_boundary ─────────────────────────────────────────────────
     op.create_table(
-        "metagen_results",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        "metagen_boundary",
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("allowed", sa.ARRAY(sa.Text()), nullable=False),
+        sa.Column("owner", sa.Text(), nullable=True),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+
+    # ── metagen_items ────────────────────────────────────────────────────
+    op.create_table(
+        "metagen_items",
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column("item_id", sa.Text(), primary_key=True),
+        sa.Column("kind", sa.Text(), nullable=False),
+        sa.Column("field_path", sa.Text(), nullable=True),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "kind IN ('dataset.description', 'column.description')",
+            name="ck_metagen_items_kind",
+        ),
+        schema=SCHEMA,
+    )
+
+    # ── metagen_candidates ───────────────────────────────────────────────
+    op.create_table(
+        "metagen_candidates",
+        sa.Column("candidate_id", UUID(as_uuid=True), primary_key=True),
         sa.Column("dataset_urn", sa.Text(), nullable=False),
-        sa.Column("proposals", JSONB, nullable=False),
-        sa.Column("field_status", JSONB, nullable=False),
+        sa.Column(
+            "item_id",
+            sa.Text(),
+            nullable=False,
+        ),
         sa.Column("run_id", UUID(as_uuid=True), nullable=False),
-        sa.Column("generated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.Column("last_reviewed_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("value", sa.Text(), nullable=False),
+        sa.Column("confidence_score", sa.Float(), nullable=False),
+        sa.Column("status", sa.Text(), nullable=False),
+        sa.Column("evidence", JSONB, nullable=False),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("reviewed_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("reviewer_id", sa.Text(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["dataset_urn", "item_id"],
+            [f"{SCHEMA}.metagen_items.dataset_urn", f"{SCHEMA}.metagen_items.item_id"],
+        ),
+        sa.CheckConstraint(
+            "status IN ('llm_approved', 'approved', 'rejected')",
+            name="ck_metagen_candidates_status",
+        ),
         schema=SCHEMA,
     )
     op.create_index(
-        "ix_metagen_results_urn_generated",
-        "metagen_results",
-        ["dataset_urn", sa.text("generated_at DESC")],
+        "ix_metagen_candidates_item_status_created",
+        "metagen_candidates",
+        ["dataset_urn", "item_id", "status", sa.text("created_at")],
         schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_metagen_candidates_run_id",
+        "metagen_candidates",
+        ["run_id"],
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"CREATE UNIQUE INDEX ix_metagen_candidates_one_approved "
+        f"ON {SCHEMA}.metagen_candidates (dataset_urn, item_id) "
+        f"WHERE status = 'approved'"
+    )
+
+    # ── metagen_candidate_embeddings (pgvector) ──────────────────────────
+    METAGEN_CANDIDATE_EMBEDDINGS_TABLE = "metagen_candidate_embeddings"
+    METAGEN_CANDIDATE_EMBEDDINGS_HNSW_INDEX = "metagen_candidate_embeddings_embedding_hnsw_idx"
+
+    op.create_table(
+        METAGEN_CANDIDATE_EMBEDDINGS_TABLE,
+        sa.Column(
+            "candidate_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.metagen_candidates.candidate_id"),
+            primary_key=True,
+        ),
+        sa.Column("kind", sa.Text(), nullable=False),
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{METAGEN_CANDIDATE_EMBEDDINGS_TABLE} "
+        f"ADD COLUMN embedding vector({EMBEDDING_DIMENSION}) NOT NULL "
+        f"DEFAULT array_fill(0, ARRAY[{EMBEDDING_DIMENSION}])::vector({EMBEDDING_DIMENSION})"
+    )
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.{METAGEN_CANDIDATE_EMBEDDINGS_TABLE} "
+        f"ALTER COLUMN embedding DROP DEFAULT"
+    )
+    op.execute(
+        f"CREATE INDEX {METAGEN_CANDIDATE_EMBEDDINGS_HNSW_INDEX} "
+        f"ON {SCHEMA}.{METAGEN_CANDIDATE_EMBEDDINGS_TABLE} "
+        f"USING hnsw (embedding vector_cosine_ops)"
     )
 
     # ── metric_definitions ───────────────────────────────────────────────

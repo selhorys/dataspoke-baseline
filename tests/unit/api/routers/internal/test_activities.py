@@ -4,7 +4,6 @@ Routes under test:
   POST /internal/activities/ingestion/list-active
   POST /internal/activities/ingestion/run
   POST /internal/activities/ingestion/passive-sync
-  POST /internal/activities/metagen/list-active
   POST /internal/activities/metagen/run
   POST /internal/activities/metrics/list-active
   POST /internal/activities/metrics/run
@@ -28,7 +27,6 @@ _INTERNAL_TOKEN = "test-internal-secret-act"
 _INGESTION_LIST = "/internal/activities/ingestion/list-active"
 _INGESTION_RUN = "/internal/activities/ingestion/run"
 _INGESTION_PASSIVE = "/internal/activities/ingestion/passive-sync"
-_METAGEN_LIST = "/internal/activities/metagen/list-active"
 _METAGEN_RUN = "/internal/activities/metagen/run"
 _METRICS_LIST = "/internal/activities/metrics/list-active"
 _METRICS_RUN = "/internal/activities/metrics/run"
@@ -56,17 +54,6 @@ async def test_ingestion_list_active_without_token_returns_401(client) -> None:
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(_INGESTION_LIST, json={"tier": "daily"})
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_metagen_list_active_without_token_returns_401(client) -> None:
-    """POST /internal/activities/metagen/list-active without token returns 401.
-
-    spec: API.md §Internal routes — X-Internal-Token required.
-    """
-    with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
-        resp = await client.post(_METAGEN_LIST, json={"tier": "hourly"})
     assert resp.status_code == 401
 
 

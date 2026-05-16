@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.backend.metagen.cross_data import DOCUMENT_EVIDENCE_CAP_PER_DATASET
+from src.shared.datahub.documents import DOCUMENT_EVIDENCE_CAP_PER_DATASET
 from src.backend.ontogen.evidence import gather_evidence
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)"

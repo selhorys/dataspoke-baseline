@@ -1,11 +1,11 @@
 """Airflow DAG: metagen
 
-On-demand LLM-powered metadata generation for a single dataset.
-Triggered via POST /api/v1/spoke/common/attr/{dataset_urn}/method/metagen/run.
+On-demand metagen inference pipeline. Triggered via
+POST /api/v1/spoke/common/metagen/method/run.
 
 Concurrency guard: the triggering API route calls
-AirflowClient.check_no_duplicate("metagen", "conf_key", metagen-{md5(urn)[:12]})
-before triggering; duplicate runs for the same dataset return 409.
+AirflowClient.check_no_duplicate("metagen", "conf_key", "metagen-singleton")
+before triggering; a second run returns 409 while one is already running.
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue, §Concurrency Guards
 """
@@ -21,11 +21,11 @@ _DAG_ID = "metagen"
 
 with DAG(
     dag_id=_DAG_ID,
-    description="On-demand LLM metadata generation for a single dataset",
+    description="On-demand metagen inference pipeline",
     schedule=None,
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    max_active_runs=2,
+    max_active_runs=1,
     is_paused_upon_creation=False,
     default_args={
         "retries": 3,
@@ -36,12 +36,12 @@ with DAG(
     doc_md="""
 ## metagen
 
-Triggered by the DataSpoke API for a specific dataset URN.
+Triggered by the DataSpoke API for a full metagen inference run.
 
 **Inputs** (via `dag_run.conf`):
-- `dataset_urn`: fully-qualified DataHub URN (required)
-- `dry_run`: boolean (default: false)
-- `conf_key`: dedup key of the form `metagen-{md5(urn)[:12]}` (for duplicate detection)
+- `dataset_urns`: optional list of dataset URNs to scope the run (default: null — all in-scope datasets)
+- `dry_run`: boolean (default: false) — compute without persisting
+- `conf_key`: always "metagen-singleton" (for duplicate detection)
 
 **Tasks**:
 1. `run_metagen` — POST `/internal/activities/metagen/run`
@@ -54,7 +54,7 @@ Triggered by the DataSpoke API for a specific dataset URN.
         method="POST",
         headers=internal_headers(),
         data=(
-            '{"dataset_urn": "{{ dag_run.conf.get(\'dataset_urn\', \'\') }}",'
+            '{"dataset_urns": {{ dag_run.conf.get(\'dataset_urns\', None) | tojson }},'
             ' "dry_run": {{ dag_run.conf.get(\'dry_run\', false) | lower }}}'
         ),
         response_filter=lambda r: r.json(),

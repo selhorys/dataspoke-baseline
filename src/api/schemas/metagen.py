@@ -1,288 +1,147 @@
 """Metadata Generation request/response schemas — UC4."""
 
-import re
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from src.api.schemas.common import PaginatedResponse, SingleResponse
+from src.api.schemas.common import PaginatedResponse
 
-# Max length for individual field-path entries in ReviewResultRequest.fields
-_BoundedFieldEntry = Annotated[str, StringConstraints(max_length=512)]
-
-_VALID_TARGETS = frozenset({"dataset.description", "column.description", "cross_data.md"})
-_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
-
-_DOCUMENT_URN_PREFIX = "urn:li:document:"
-_DATASET_URN_PREFIX = "urn:li:dataset:"
-_URN_MAX_LEN = 500
-
-_RE_DOCUMENT_URN = re.compile(r"^urn:li:document:.+$")
-_RE_DATASET_URN = re.compile(r"^urn:li:dataset:.+$")
-
-# ── Cross-data action ─────────────────────────────────────────────────────────
+_DATASET_FILTER_LIST_CAP = 1000
 
 
-class CrossDataAction(BaseModel):
-    """One cross_data.md action proposal item.
+def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
+    """Raise ValueError if dataset_filter.dataset_urns exceeds the cap.
 
-    Field constraints by action type:
-      create  — title, body, related_assets (non-empty) required; document_urn must be absent/null
-      modify  — document_urn, body required; related_assets optional; title must be absent/null
-      delete  — document_urn required; title, body, related_assets must be absent/null
-
-    URN constraints:
-      document_urn must match ^urn:li:document: and be ≤ 500 chars.
-      Each related_assets item must match ^urn:li:dataset:.
+    Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
     """
+    val = dataset_filter.get("dataset_urns")
+    if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
+        raise ValueError(
+            f"dataset_filter.dataset_urns may not exceed {_DATASET_FILTER_LIST_CAP} entries"
+        )
 
-    action_id: str = Field(description="Unique identifier for this action within the proposal")
-    action: Literal["create", "modify", "delete"] = Field(description="Document action type")
-    confidence: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="LLM confidence score (0–1)",
-    )
-    title: str | None = Field(
-        default=None,
-        max_length=300,
-        description="Document title — required for 'create'",
-    )
-    body: str | None = Field(
-        default=None,
-        max_length=50_000,
-        description="Document body (Markdown) — required for 'create' and 'modify'",
-    )
-    related_assets: list[str] | None = Field(
-        default=None,
-        description=(
-            "Dataset URNs to link as relatedAssets — required (non-empty) for 'create'; "
-            "optional for 'modify'; unused for 'delete'"
-        ),
-    )
-    document_urn: str | None = Field(
-        default=None,
-        max_length=_URN_MAX_LEN,
-        description=(
-            "Existing document URN (urn:li:document:*) — required for 'modify' and 'delete'"
-        ),
-    )
 
-    @field_validator("document_urn", mode="after")
-    @classmethod
-    def _validate_document_urn_format(cls, v: str | None) -> str | None:
-        if v is not None and not _RE_DOCUMENT_URN.match(v):
-            raise ValueError(f"document_urn must match ^urn:li:document: — got {v!r}")
-        return v
+# ── Global conf ───────────────────────────────────────────────────────────────
 
-    @field_validator("related_assets", mode="after")
-    @classmethod
-    def _validate_related_assets_urns(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return v
-        bad = [u for u in v if not _RE_DATASET_URN.match(u)]
-        if bad:
-            raise ValueError(
-                f"All related_assets items must match ^urn:li:dataset: — invalid: {bad}"
-            )
-        return v
+
+class MetagenGlobalConfResponse(BaseModel):
+    is_enabled: bool
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None
+    dataset_filter: dict[str, Any] = Field(default_factory=dict)
+    result_limit: int
+    overwrite_pending: bool
+    updated_at: datetime
+
+
+class MetagenGlobalConfPutRequest(BaseModel):
+    is_enabled: bool
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
+    dataset_filter: dict[str, Any] = Field(default_factory=dict)
+    result_limit: int = Field(default=3, ge=1, le=20)
+    overwrite_pending: bool = True
 
     @model_validator(mode="after")
-    def _validate_action_fields(self) -> "CrossDataAction":
-        action = self.action
-        if action == "create":
-            if not self.title:
-                raise ValueError("'title' is required for action='create'")
-            if not self.body:
-                raise ValueError("'body' is required for action='create'")
-            if self.related_assets is None:
-                raise ValueError("'related_assets' is required for action='create'")
-            if self.related_assets == []:
-                raise ValueError(
-                    "'related_assets' must be non-empty for action='create' — "
-                    "a cross-data document with no dataset links has no purpose"
-                )
-        elif action == "modify":
-            if not self.document_urn:
-                raise ValueError("'document_urn' is required for action='modify'")
-            if not self.body:
-                raise ValueError("'body' is required for action='modify'")
-        elif action == "delete":
-            if not self.document_urn:
-                raise ValueError("'document_urn' is required for action='delete'")
+    def validate_dataset_filter_bounds(self) -> "MetagenGlobalConfPutRequest":
+        _check_dataset_filter_bounds(self.dataset_filter)
         return self
 
 
-# ── Conf ──────────────────────────────────────────────────────────────────────
+class MetagenGlobalConfPatchRequest(BaseModel):
+    is_enabled: bool | None = None
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
+    dataset_filter: dict[str, Any] | None = None
+    result_limit: int | None = Field(default=None, ge=1, le=20)
+    overwrite_pending: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_dataset_filter_bounds(self) -> "MetagenGlobalConfPatchRequest":
+        if self.dataset_filter is not None:
+            _check_dataset_filter_bounds(self.dataset_filter)
+        return self
 
 
-class MetagenConfPutRequest(BaseModel):
-    targets: list[str] = Field(
-        description=(
-            "Metadata fields to generate. Allowed values: "
-            "'dataset.description', 'column.description', 'cross_data.md'"
-        )
+# ── Per-dataset boundary ──────────────────────────────────────────────────────
+
+
+class MetagenBoundaryResponse(BaseModel):
+    dataset_urn: str
+    is_enabled: bool
+    allowed: list[Literal["dataset.description", "column.description"]]
+    owner: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MetagenBoundaryPutRequest(BaseModel):
+    is_enabled: bool
+    allowed: list[Literal["dataset.description", "column.description"]] = Field(
+        default_factory=list
     )
-    code_refs: dict[str, Any] | None = Field(
-        default=None, description="Optional code references used as LLM context"
-    )
-    is_enabled: bool = Field(
-        default=False,
-        description="Whether scheduled metagen runs are enabled",
-    )
-    schedule_tier: str | None = Field(
-        default=None,
-        description=(
-            "Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'. "
-            "Required when is_enabled is true."
-        ),
-    )
-    owner: str = Field(
-        description="Owner identifier (email or user URN) responsible for this config",
-    )
-
-    @field_validator("targets")
-    @classmethod
-    def validate_targets(cls, v: list[str]) -> list[str]:
-        invalid = [t for t in v if t not in _VALID_TARGETS]
-        if invalid:
-            raise ValueError(f"Invalid targets: {invalid}. Allowed: {sorted(_VALID_TARGETS)}")
-        return v
-
-    @field_validator("schedule_tier")
-    @classmethod
-    def validate_schedule_tier(cls, v: str | None) -> str | None:
-        if v is not None and v not in _VALID_TIERS:
-            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
-        return v
+    owner: str | None = None
 
 
-class MetagenConfPatchRequest(BaseModel):
-    targets: list[str] | None = Field(default=None)
-    code_refs: dict[str, Any] | None = Field(default=None)
-    is_enabled: bool | None = Field(default=None)
-    schedule_tier: str | None = Field(default=None)
-    owner: str | None = Field(default=None)
-
-    @field_validator("targets")
-    @classmethod
-    def validate_targets(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return v
-        invalid = [t for t in v if t not in _VALID_TARGETS]
-        if invalid:
-            raise ValueError(f"Invalid targets: {invalid}. Allowed: {sorted(_VALID_TARGETS)}")
-        return v
-
-    @field_validator("schedule_tier")
-    @classmethod
-    def validate_schedule_tier(cls, v: str | None) -> str | None:
-        if v is not None and v not in _VALID_TIERS:
-            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
-        return v
+class MetagenBoundaryPatchRequest(BaseModel):
+    is_enabled: bool | None = None
+    allowed: list[Literal["dataset.description", "column.description"]] | None = None
+    owner: str | None = None
 
 
-class MetagenConfResponse(SingleResponse):
-    id: str = Field(description="Unique identifier of the metagen config")
-    dataset_urn: str = Field(description="DataHub URN of the dataset")
-    targets: list[str] = Field(description="Configured generation targets")
-    code_refs: dict[str, Any] | None = Field(
-        default=None, description="Code references used as LLM context"
-    )
-    is_enabled: bool = Field(description="Whether scheduled metagen runs are enabled")
-    schedule_tier: str | None = Field(
-        description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'"
-    )
-    status: str = Field(description="Config lifecycle status")
-    owner: str = Field(description="Owner identifier responsible for this config")
-    created_at: datetime = Field(description="UTC timestamp when the config was created")
-    updated_at: datetime = Field(description="UTC timestamp of the most recent update")
+# ── Item & candidate ──────────────────────────────────────────────────────────
 
 
-# ── Results ───────────────────────────────────────────────────────────────────
+class MetagenItemSummary(BaseModel):
+    dataset_urn: str
+    item_id: str
+    kind: Literal["dataset.description", "column.description"]
+    field_path: str | None
+    status: Literal["pending", "llm_approved", "approved"]
+    candidate_count: int
+    composite_id: str
 
 
-class MetagenResultResponse(SingleResponse):
-    id: str = Field(description="Unique identifier of the metagen result")
-    dataset_urn: str = Field(description="DataHub URN of the dataset")
-    proposals: dict[str, Any] = Field(description="LLM-proposed metadata per target field")
-    field_status: dict[str, Any] = Field(
-        description="Per-field review status: pending, approved, or rejected"
-    )
-    run_id: str = Field(description="Run identifier that produced this result")
-    generated_at: datetime = Field(description="UTC timestamp when proposals were generated")
-    last_reviewed_at: datetime | None = Field(
-        default=None, description="UTC timestamp of the most recent review action"
-    )
+class MetagenItemListResponse(PaginatedResponse):
+    items: list[MetagenItemSummary] = Field(default_factory=list)
 
 
-class MetagenResultListResponse(PaginatedResponse):
-    results: list[MetagenResultResponse] = Field(
-        default=[], description="Page of metagen result records"
-    )
+class MetagenCandidate(BaseModel):
+    candidate_id: str
+    item_id: str
+    dataset_urn: str
+    value: str
+    confidence_score: float
+    status: Literal["llm_approved", "approved", "rejected"]
+    evidence: dict[str, Any]
+    created_at: datetime
+    reviewed_at: datetime | None
+    reviewer_id: str | None
 
 
-# ── Review ────────────────────────────────────────────────────────────────────
-
-
-class ReviewResultRequest(BaseModel):
-    verdict: Literal["approve", "reject"] = Field(
-        description=(
-            "Review decision: 'approve' to accept, 'reject' to dismiss. "
-            "Combined with 'fields' for partial approval."
-        )
-    )
-    fields: list[_BoundedFieldEntry] | None = Field(
-        default=None,
-        max_length=200,
-        description=(
-            "Optional list of field paths / cross-data action IDs to "
-            "approve or reject selectively. "
-            "Omit for whole-proposal verdict."
-        ),
-    )
-    reason: str | None = Field(
-        default=None,
-        max_length=2000,
-        description="Optional human-readable explanation for the verdict",
-    )
+class MetagenItemDetailResponse(MetagenItemSummary):
+    candidates: list[MetagenCandidate]
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 
-class RunMetagenRequest(BaseModel):
-    dry_run: bool = Field(
-        default=False,
-        description="When true, generate proposals without persisting results",
-    )
+class MetagenRunRequest(BaseModel):
+    dataset_urns: list[str] | None = None
+    dry_run: bool = False
 
 
-class MetagenRunResponse(SingleResponse):
-    id: str = Field(description="Result ID (run_id on dry_run)")
-    dataset_urn: str = Field(description="DataHub URN of the dataset")
-    proposals: dict[str, Any] = Field(description="LLM-proposed metadata per target")
-    field_status: dict[str, Any] = Field(description="Per-field review status")
-    run_id: str = Field(description="Run identifier")
-    generated_at: datetime = Field(description="UTC timestamp when proposals were generated")
-    last_reviewed_at: datetime | None = Field(default=None)
+class MetagenRunResponse(BaseModel):
+    run_id: str
+    status: Literal["success", "skipped", "failure"]
+    dry_run: bool
+    unresolved_urns: list[str]
+    counts: dict[str, int]
+    producer_iterations: int | None
+    debate_outcome: Literal["accept", "turns_exhausted", "cycle_detected"] | None
 
 
-# ── Cross-dataset list view ───────────────────────────────────────────────────
+# ── Review ────────────────────────────────────────────────────────────────────
 
 
-class MetagenListItem(BaseModel):
-    dataset_urn: str = Field(description="DataHub URN of the dataset")
-    run_id: str = Field(description="Most recent run identifier")
-    proposals: dict[str, Any] = Field(description="Most recent LLM proposals")
-    field_status: dict[str, Any] = Field(description="Per-field review status")
-    generated_at: datetime = Field(description="UTC timestamp of the most recent run")
-    last_reviewed_at: datetime | None = Field(default=None)
-
-
-class MetagenListResponse(PaginatedResponse):
-    results: list[MetagenListItem] = Field(
-        default=[], description="Page of cross-dataset metagen records"
-    )
+class MetagenReviewRequest(BaseModel):
+    verdict: Literal["approve", "reject"]
+    reason: str = Field(default="", max_length=2000)

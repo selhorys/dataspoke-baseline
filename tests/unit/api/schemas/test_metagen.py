@@ -1,283 +1,436 @@
-"""Unit tests for src/api/schemas/metagen.py — CrossDataAction Pydantic schema.
+"""Unit tests for src/api/schemas/metagen.py — new UC4 global-conf schema surface.
 
-Tests pin spec invariants:
-  - action enum is exactly {create, modify, delete}
-  - per-action required fields enforced
-  - URN prefix validators enforced
-  - max_length constraints enforced
+Spec: spec/API.md §Metadata Generation
+      spec/feature/BACKEND_SCHEMA.md — metagen tables constraints
 
-Spec: spec/feature/BACKEND_SCHEMA.md — proposals action shape
-      {action_id, action: create|modify|delete, title?, body?, related_assets?, document_urn?}
-Spec: spec/DATAHUB_INTEGRATION.md §Document Aspects — urn:li:document: prefix,
-      related_assets urn:li:dataset: prefix
+Constraints tested:
+  - result_limit ∈ [1, 20] (MetagenGlobalConfPutRequest and PatchRequest)
+  - dataset_filter.dataset_urns ≤ 1000 (both PUT and PATCH)
+  - reason max_length=2000 (MetagenReviewRequest)
+  - verdict ∈ {approve, reject} (MetagenReviewRequest)
+  - MetagenBoundaryPutRequest.allowed ∈ {dataset.description, column.description}
+  - MetagenItemListResponse envelope shape uses 'total_count' (not 'total')
+  - MetagenRunResponse carries status: Literal["success","skipped","failure"]
 """
 
 import pytest
 from pydantic import ValidationError
 
-from src.api.schemas.metagen import CrossDataAction
+from src.api.schemas.metagen import (
+    MetagenBoundaryPatchRequest,
+    MetagenBoundaryPutRequest,
+    MetagenGlobalConfPatchRequest,
+    MetagenGlobalConfPutRequest,
+    MetagenGlobalConfResponse,
+    MetagenItemListResponse,
+    MetagenItemSummary,
+    MetagenReviewRequest,
+    MetagenRunRequest,
+    MetagenRunResponse,
+)
 
-_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)"
-_DOCUMENT_URN = "urn:li:document:abc123def456"
+_DATASET_FILTER_LIST_CAP = 1000
+_REASON_MAX_LEN = 2000
+
+_VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 
 
-# ── Action enum ───────────────────────────────────────────────────────────────
+# ── MetagenGlobalConfPutRequest ───────────────────────────────────────────────
 
 
-def test_action_literal_accepts_create() -> None:
-    """action='create' with all required fields parses without error.
+class TestMetagenGlobalConfPutRequest:
+    def test_valid_minimal_request(self) -> None:
+        """Minimal PUT request with is_enabled only is valid.
 
-    Spec: BACKEND_SCHEMA.md — action enum {create, modify, delete}.
+        Spec: API.md §Metadata Generation — PUT /metagen/attr/conf accepts is_enabled.
+        """
+        req = MetagenGlobalConfPutRequest(is_enabled=False)
+        assert req.is_enabled is False
+        assert req.result_limit == 3  # default
+        assert req.overwrite_pending is True  # default
+
+    def test_result_limit_minimum_valid(self) -> None:
+        """result_limit=1 is the minimum valid value.
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — metagen_config.result_limit ∈ [1, 20].
+        """
+        req = MetagenGlobalConfPutRequest(is_enabled=False, result_limit=1)
+        assert req.result_limit == 1
+
+    def test_result_limit_maximum_valid(self) -> None:
+        """result_limit=20 is the maximum valid value.
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — metagen_config.result_limit ∈ [1, 20].
+        """
+        req = MetagenGlobalConfPutRequest(is_enabled=False, result_limit=20)
+        assert req.result_limit == 20
+
+    def test_result_limit_below_minimum_raises(self) -> None:
+        """result_limit=0 raises ValidationError (below minimum of 1).
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — CHECK result_limit BETWEEN 1 AND 20.
+        """
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPutRequest(is_enabled=False, result_limit=0)
+
+    def test_result_limit_above_maximum_raises(self) -> None:
+        """result_limit=21 raises ValidationError (above maximum of 20).
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — CHECK result_limit BETWEEN 1 AND 20.
+        """
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPutRequest(is_enabled=False, result_limit=21)
+
+    def test_dataset_filter_urns_at_cap_valid(self) -> None:
+        """dataset_filter.dataset_urns with exactly 1000 entries is valid.
+
+        Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
+        """
+        urns = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP)]
+        req = MetagenGlobalConfPutRequest(
+            is_enabled=False,
+            dataset_filter={"dataset_urns": urns},
+        )
+        assert len(req.dataset_filter["dataset_urns"]) == _DATASET_FILTER_LIST_CAP
+
+    def test_dataset_filter_urns_exceeds_cap_raises(self) -> None:
+        """dataset_filter.dataset_urns with 1001 entries raises ValidationError.
+
+        Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
+        """
+        too_many = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPutRequest(
+                is_enabled=False,
+                dataset_filter={"dataset_urns": too_many},
+            )
+
+    def test_schedule_tier_accepts_valid_values(self) -> None:
+        """schedule_tier accepts hourly, daily, weekly, and None.
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — schedule_tier ∈ {hourly, daily, weekly, null}.
+        """
+        for tier in ("hourly", "daily", "weekly", None):
+            req = MetagenGlobalConfPutRequest(is_enabled=False, schedule_tier=tier)
+            assert req.schedule_tier == tier
+
+    def test_schedule_tier_rejects_invalid_value(self) -> None:
+        """schedule_tier='minutely' raises ValidationError.
+
+        Spec: API.md §Metadata Generation — schedule_tier is a Literal type.
+        """
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPutRequest(is_enabled=False, schedule_tier="minutely")  # type: ignore[arg-type]
+
+
+# ── MetagenGlobalConfPatchRequest ─────────────────────────────────────────────
+
+
+class TestMetagenGlobalConfPatchRequest:
+    def test_empty_patch_is_valid(self) -> None:
+        """An empty PATCH body is valid (no fields to update).
+
+        Spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH is partial update.
+        """
+        req = MetagenGlobalConfPatchRequest()
+        assert req.is_enabled is None
+        assert req.result_limit is None
+
+    def test_result_limit_below_minimum_raises(self) -> None:
+        """result_limit=0 in PATCH raises ValidationError.
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — result_limit ∈ [1, 20].
+        """
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPatchRequest(result_limit=0)
+
+    def test_result_limit_above_maximum_raises(self) -> None:
+        """result_limit=21 in PATCH raises ValidationError.
+
+        Spec: spec/feature/BACKEND_SCHEMA.md — result_limit ∈ [1, 20].
+        """
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPatchRequest(result_limit=21)
+
+    def test_dataset_filter_urns_exceeds_cap_raises(self) -> None:
+        """PATCH with dataset_filter.dataset_urns > 1000 raises ValidationError.
+
+        Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
+        """
+        too_many = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPatchRequest(dataset_filter={"dataset_urns": too_many})
+
+
+# ── MetagenBoundaryPutRequest ──────────────────────────────────────────────────
+
+
+class TestMetagenBoundaryPutRequest:
+    def test_valid_with_both_kinds(self) -> None:
+        """PUT boundary with both dataset.description and column.description is valid.
+
+        Spec: API.md §Metadata Generation — boundary allowed ∈ {dataset.description, column.description}.
+        """
+        req = MetagenBoundaryPutRequest(
+            is_enabled=True,
+            allowed=["dataset.description", "column.description"],
+        )
+        assert len(req.allowed) == 2
+
+    def test_valid_with_empty_allowed(self) -> None:
+        """PUT boundary with allowed=[] is valid (no generation for this dataset).
+
+        Spec: API.md §Metadata Generation — empty allowed list is a valid opt-in state.
+        """
+        req = MetagenBoundaryPutRequest(is_enabled=True, allowed=[])
+        assert req.allowed == []
+
+    def test_invalid_allowed_kind_raises(self) -> None:
+        """PUT boundary with invalid kind 'cross_data.md' raises ValidationError.
+
+        Spec: API.md §Metadata Generation — allowed values are a Literal type.
+        """
+        with pytest.raises(ValidationError):
+            MetagenBoundaryPutRequest(is_enabled=True, allowed=["cross_data.md"])  # type: ignore[list-item]
+
+
+class TestMetagenBoundaryPatchRequest:
+    def test_empty_patch_valid(self) -> None:
+        """Empty PATCH is valid for boundary.
+
+        Spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH is partial.
+        """
+        req = MetagenBoundaryPatchRequest()
+        assert req.is_enabled is None
+        assert req.allowed is None
+
+
+# ── MetagenItemListResponse ────────────────────────────────────────────────────
+
+
+class TestMetagenItemListResponse:
+    def test_envelope_uses_total_count_field(self) -> None:
+        """MetagenItemListResponse envelope carries 'total_count', not 'total'.
+
+        Spec: API.md §Standard Response Envelope — pagination uses total_count.
+        """
+        resp = MetagenItemListResponse(total_count=42)
+        assert resp.total_count == 42, (
+            "MetagenItemListResponse must use 'total_count'. "
+            "spec: API.md §Standard Response Envelope"
+        )
+        assert not hasattr(resp, "total") or not hasattr(MetagenItemListResponse, "total"), (
+            "MetagenItemListResponse must not expose a bare 'total' field. "
+            "spec: API.md §Standard Response Envelope"
+        )
+
+    def test_items_defaults_to_empty_list(self) -> None:
+        """MetagenItemListResponse.items defaults to empty list.
+
+        Spec: API.md §Standard Response Envelope — list responses start empty.
+        """
+        resp = MetagenItemListResponse(total_count=0)
+        assert resp.items == []
+
+    def test_envelope_has_offset_and_limit(self) -> None:
+        """MetagenItemListResponse inherits offset/limit from PaginatedResponse.
+
+        Spec: API.md §Standard Response Envelope — pagination fields offset, limit.
+        """
+        resp = MetagenItemListResponse(total_count=5, offset=10, limit=20)
+        assert resp.offset == 10
+        assert resp.limit == 20
+        assert resp.total_count == 5
+
+
+# ── MetagenRunRequest ──────────────────────────────────────────────────────────
+
+
+class TestMetagenRunRequest:
+    def test_defaults(self) -> None:
+        """MetagenRunRequest defaults: dataset_urns=None, dry_run=False.
+
+        Spec: API.md §Metadata Generation — POST method/run optional fields.
+        """
+        req = MetagenRunRequest()
+        assert req.dataset_urns is None
+        assert req.dry_run is False
+
+    def test_dataset_urns_list(self) -> None:
+        """MetagenRunRequest accepts a list of dataset_urns.
+
+        Spec: API.md §Metadata Generation — optional dataset_urns scopes the run.
+        """
+        req = MetagenRunRequest(dataset_urns=[_VALID_URN])
+        assert req.dataset_urns == [_VALID_URN]
+
+    def test_dry_run_true(self) -> None:
+        """MetagenRunRequest accepts dry_run=True.
+
+        Spec: API.md §Metadata Generation — dry_run flag.
+        """
+        req = MetagenRunRequest(dry_run=True)
+        assert req.dry_run is True
+
+
+# ── MetagenRunResponse ─────────────────────────────────────────────────────────
+
+
+class TestMetagenRunResponse:
+    def test_status_accepts_success(self) -> None:
+        """MetagenRunResponse accepts status='success'.
+
+        Spec: API.md §Metadata Generation — status ∈ {success, skipped, failure}.
+        """
+        from datetime import UTC, datetime
+        resp = MetagenRunResponse(
+            run_id="run-1",
+            status="success",
+            dry_run=False,
+            unresolved_urns=[],
+            counts={"items_considered": 3},
+            producer_iterations=None,
+            debate_outcome=None,
+        )
+        assert resp.status == "success"
+
+    def test_status_accepts_skipped(self) -> None:
+        """MetagenRunResponse accepts status='skipped'.
+
+        Spec: API.md §Metadata Generation — 'skipped' when tier mismatches.
+        """
+        resp = MetagenRunResponse(
+            run_id="run-2",
+            status="skipped",
+            dry_run=False,
+            unresolved_urns=[],
+            counts={},
+            producer_iterations=None,
+            debate_outcome=None,
+        )
+        assert resp.status == "skipped"
+
+    def test_status_accepts_failure(self) -> None:
+        """MetagenRunResponse accepts status='failure'.
+
+        Spec: API.md §Metadata Generation — 'failure' on error.
+        """
+        resp = MetagenRunResponse(
+            run_id="run-3",
+            status="failure",
+            dry_run=False,
+            unresolved_urns=[],
+            counts={},
+            producer_iterations=None,
+            debate_outcome=None,
+        )
+        assert resp.status == "failure"
+
+    def test_status_rejects_invalid(self) -> None:
+        """MetagenRunResponse rejects unknown status value.
+
+        Spec: API.md §Metadata Generation — status is a Literal type.
+        """
+        with pytest.raises(ValidationError):
+            MetagenRunResponse(
+                run_id="run-4",
+                status="running",  # type: ignore[arg-type]
+                dry_run=False,
+                unresolved_urns=[],
+                counts={},
+                producer_iterations=None,
+                debate_outcome=None,
+            )
+
+
+# ── MetagenReviewRequest ───────────────────────────────────────────────────────
+
+
+class TestMetagenReviewRequest:
+    def test_verdict_approve_valid(self) -> None:
+        """verdict='approve' is valid.
+
+        Spec: API.md §Metadata Generation — verdict ∈ {approve, reject}.
+        """
+        req = MetagenReviewRequest(verdict="approve")
+        assert req.verdict == "approve"
+
+    def test_verdict_reject_valid(self) -> None:
+        """verdict='reject' is valid.
+
+        Spec: API.md §Metadata Generation — verdict ∈ {approve, reject}.
+        """
+        req = MetagenReviewRequest(verdict="reject")
+        assert req.verdict == "reject"
+
+    def test_verdict_invalid_raises(self) -> None:
+        """verdict='maybe' raises ValidationError.
+
+        Spec: API.md §Metadata Generation — verdict is a Literal type.
+        """
+        with pytest.raises(ValidationError):
+            MetagenReviewRequest(verdict="maybe")  # type: ignore[arg-type]
+
+    def test_reason_at_max_length_valid(self) -> None:
+        """reason at exactly max_length=2000 characters is valid.
+
+        Spec: API.md §Metadata Generation — reason max_length 2000.
+        """
+        req = MetagenReviewRequest(verdict="approve", reason="x" * _REASON_MAX_LEN)
+        assert len(req.reason) == _REASON_MAX_LEN
+
+    def test_reason_exceeds_max_length_raises(self) -> None:
+        """reason with 2001 characters raises ValidationError.
+
+        Spec: API.md §Metadata Generation — reason max_length 2000.
+        """
+        with pytest.raises(ValidationError):
+            MetagenReviewRequest(verdict="approve", reason="x" * (_REASON_MAX_LEN + 1))
+
+    def test_reason_defaults_to_empty_string(self) -> None:
+        """reason defaults to empty string when omitted.
+
+        Spec: API.md §Metadata Generation — reason is optional.
+        """
+        req = MetagenReviewRequest(verdict="approve")
+        assert req.reason == ""
+
+
+# ── Schema field existence checks ─────────────────────────────────────────────
+
+
+def test_global_conf_response_has_required_fields() -> None:
+    """MetagenGlobalConfResponse has all spec-mandated fields.
+
+    Spec: API.md §Metadata Generation — GET /metagen/attr/conf response shape.
     """
-    action = CrossDataAction.model_validate(
-        {
-            "action_id": "a1",
-            "action": "create",
-            "title": "My new document",
-            "body": "## Overview\n\nContent.",
-            "related_assets": [_DATASET_URN],
-        }
+    fields = MetagenGlobalConfResponse.model_fields
+    for field in ("is_enabled", "schedule_tier", "dataset_filter", "result_limit", "overwrite_pending", "updated_at"):
+        assert field in fields, (
+            f"MetagenGlobalConfResponse must have field '{field}'. "
+            "spec: API.md §Metadata Generation"
+        )
+
+
+def test_metagen_item_summary_has_composite_id() -> None:
+    """MetagenItemSummary carries composite_id field.
+
+    Spec: API.md §Metadata Generation — item detail path uses composite_id = {dataset_urn}::{item_id}.
+    """
+    assert "composite_id" in MetagenItemSummary.model_fields, (
+        "MetagenItemSummary must expose composite_id. "
+        "spec: API.md §Metadata Generation — composite_id for item detail lookup"
     )
-    assert action.action == "create"
 
 
-def test_action_literal_accepts_modify() -> None:
-    """action='modify' with all required fields parses without error.
+def test_run_request_does_not_require_dataset_urn_singular() -> None:
+    """MetagenRunRequest does not require a singular 'dataset_urn' field.
 
-    Spec: BACKEND_SCHEMA.md — action enum {create, modify, delete}.
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service — global singleton run
+    accepts optional dataset_urns (plural list), not a single required dataset_urn.
     """
-    action = CrossDataAction.model_validate(
-        {
-            "action_id": "a2",
-            "action": "modify",
-            "document_urn": _DOCUMENT_URN,
-            "body": "Updated content.",
-        }
+    assert "dataset_urn" not in MetagenRunRequest.model_fields, (
+        "MetagenRunRequest must not have singular 'dataset_urn' (use dataset_urns list). "
+        "spec: BACKEND.md §Metadata Generation Service — global run"
     )
-    assert action.action == "modify"
-
-
-def test_action_literal_accepts_delete() -> None:
-    """action='delete' with document_urn parses without error.
-
-    Spec: BACKEND_SCHEMA.md — action enum {create, modify, delete}.
-    """
-    action = CrossDataAction.model_validate(
-        {
-            "action_id": "a3",
-            "action": "delete",
-            "document_urn": _DOCUMENT_URN,
-        }
-    )
-    assert action.action == "delete"
-
-
-def test_action_literal_rejects_split() -> None:
-    """action='split' raises ValidationError — not in the allowed enum.
-
-    Spec: BACKEND_SCHEMA.md — action enum is strictly {create, modify, delete};
-    legacy or invented values must be rejected.
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "s1",
-                "action": "split",
-                "title": "Title",
-                "body": "Body",
-                "related_assets": [_DATASET_URN],
-            }
-        )
-
-
-def test_action_literal_rejects_retitle() -> None:
-    """action='retitle' raises ValidationError — not in the allowed enum.
-
-    Spec: BACKEND_SCHEMA.md — action enum is strictly {create, modify, delete}.
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "r1",
-                "action": "retitle",
-                "document_urn": _DOCUMENT_URN,
-                "title": "New title",
-            }
-        )
-
-
-# ── create required fields ────────────────────────────────────────────────────
-
-
-def test_create_requires_title() -> None:
-    """create without title raises ValidationError.
-
-    Spec: BACKEND_SCHEMA.md — create action requires title (str, ≤300 chars).
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "c1",
-                "action": "create",
-                "body": "Body",
-                "related_assets": [_DATASET_URN],
-            }
-        )
-
-
-def test_create_requires_body() -> None:
-    """create without body raises ValidationError.
-
-    Spec: BACKEND_SCHEMA.md — create action requires body (Markdown, ≤50000 chars).
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "c2",
-                "action": "create",
-                "title": "Title",
-                "related_assets": [_DATASET_URN],
-            }
-        )
-
-
-def test_create_requires_related_assets() -> None:
-    """create without related_assets raises ValidationError.
-
-    Spec: BACKEND_SCHEMA.md — create action requires related_assets (non-empty list).
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "c3",
-                "action": "create",
-                "title": "Title",
-                "body": "Body",
-            }
-        )
-
-
-def test_create_rejects_empty_related_assets() -> None:
-    """create with related_assets=[] raises ValidationError.
-
-    Spec: spec/feature/BACKEND.md §Cross-data MD action types (create row) —
-    relatedAssets lists the involved dataset URNs (at least one); a cross-data
-    document with no related datasets has no purpose.
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "c4",
-                "action": "create",
-                "title": "Title",
-                "body": "Body",
-                "related_assets": [],  # empty list — spec rejects this
-            }
-        )
-
-
-# ── modify required fields ────────────────────────────────────────────────────
-
-
-def test_modify_requires_document_urn() -> None:
-    """modify without document_urn raises ValidationError.
-
-    Spec: BACKEND_SCHEMA.md — modify action requires document_urn (urn:li:document:*).
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "m1",
-                "action": "modify",
-                "body": "Body",
-            }
-        )
-
-
-def test_modify_requires_body() -> None:
-    """modify without body raises ValidationError.
-
-    Spec: BACKEND_SCHEMA.md — modify action requires body (Markdown, ≤50000 chars).
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "m2",
-                "action": "modify",
-                "document_urn": _DOCUMENT_URN,
-            }
-        )
-
-
-# ── delete required fields ────────────────────────────────────────────────────
-
-
-def test_delete_requires_document_urn() -> None:
-    """delete without document_urn raises ValidationError.
-
-    Spec: BACKEND_SCHEMA.md — delete action requires document_urn.
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "d1",
-                "action": "delete",
-            }
-        )
-
-
-def test_delete_succeeds_with_only_document_urn() -> None:
-    """delete with only action_id, action, document_urn is valid.
-
-    Spec: BACKEND_SCHEMA.md — delete action only requires document_urn;
-    title, body, related_assets must be absent/null.
-    """
-    action = CrossDataAction.model_validate(
-        {
-            "action_id": "d2",
-            "action": "delete",
-            "document_urn": _DOCUMENT_URN,
-        }
-    )
-    assert action.action == "delete"
-    assert action.title is None
-    assert action.body is None
-    assert action.related_assets is None
-
-
-# ── URN format validators ─────────────────────────────────────────────────────
-
-
-def test_document_urn_must_match_prefix() -> None:
-    """document_urn with dataset: prefix raises ValidationError.
-
-    Spec: DATAHUB_INTEGRATION.md §Document Aspects — document_urn must match
-    ^urn:li:document: not urn:li:dataset:.
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "u1",
-                "action": "modify",
-                "document_urn": _DATASET_URN,  # wrong prefix
-                "body": "Body",
-            }
-        )
-
-
-def test_related_assets_items_must_be_dataset_urns() -> None:
-    """related_assets containing a document URN raises ValidationError.
-
-    Spec: DATAHUB_INTEGRATION.md §Document Aspects — each related_assets item
-    must match ^urn:li:dataset:.
-    """
-    with pytest.raises(ValidationError):
-        CrossDataAction.model_validate(
-            {
-                "action_id": "u2",
-                "action": "create",
-                "title": "Title",
-                "body": "Body",
-                "related_assets": [_DOCUMENT_URN],  # wrong: document URN not dataset URN
-            }
-        )
+    assert "dataset_urns" in MetagenRunRequest.model_fields

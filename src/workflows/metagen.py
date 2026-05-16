@@ -16,11 +16,13 @@ from pydantic import BaseModel
 
 
 class MetagenRunParams(BaseModel):
-    """Parameters for a single metagen pipeline run.
+    """Parameters for a singleton metagen pipeline run.
 
-    - dataset_urn: fully-qualified DataHub URN for the target dataset (required).
+    - dataset_urns: optional list of DataHub dataset URNs to scope the run.
+      When omitted, MetagenService.run() enumerates all in-scope datasets
+      from the global conf's dataset_filter intersected with enabled boundaries.
     - dry_run: when True, compute and return proposals without persisting.
     """
 
-    dataset_urn: str
+    dataset_urns: list[str] | None = None
     dry_run: bool = False

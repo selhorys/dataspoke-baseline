@@ -5,15 +5,15 @@ Routes under test:
   PUT    /data/{urn}/attr/metagen/conf
   PATCH  /data/{urn}/attr/metagen/conf
   DELETE /data/{urn}/attr/metagen/conf
-  GET    /data/{urn}/attr/metagen/result
-  PATCH  /data/{urn}/attr/metagen/result/{id}
-  POST   /data/{urn}/method/metagen/run
+  GET    /data/{urn}/attr/metagen/item
+  GET    /data/{urn}/attr/metagen/item/{item_id}
+  POST   /data/{urn}/attr/metagen/item/{item_id}/candidate/{cid}/method/review
   GET    /data/{urn}/event/metagen
 
 spec: API.md §Common (/spoke/common) §Metadata Generation routes.
 spec: API.md §Authentication — all spoke/common routes require valid JWT.
 spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics.
-spec: feature/BACKEND.md §Metadata Generation Service.
+spec: feature/BACKEND.md §Metadata Generation Service — boundary, item, candidate review.
 """
 
 import uuid
@@ -24,7 +24,7 @@ import pytest
 
 from src.api.dependencies import get_metagen_service
 from src.api.main import app
-from src.shared.exceptions import EntityNotFoundError
+from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
 
 from tests.unit.api.conftest import auth_headers
 
@@ -33,37 +33,84 @@ _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.reviews.us
 _VALID_URN_ENC = (
     _VALID_URN.replace("(", "%28").replace(")", "%29").replace(",", "%2C")
 )
-_CONF_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/conf"
-_RESULT_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/result"
-_RUN_URL = f"{_BASE}/{_VALID_URN_ENC}/method/metagen/run"
+
+_BOUNDARY_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/conf"
+_ITEM_LIST_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/item"
 _EVENTS_URL = f"{_BASE}/{_VALID_URN_ENC}/event/metagen"
 
 
-def _make_config_record() -> MagicMock:
-    rec = MagicMock()
-    rec.id = str(uuid.uuid4())
-    rec.dataset_urn = _VALID_URN
-    rec.targets = ["dataset.description"]
-    rec.code_refs = None
-    rec.is_enabled = True
-    rec.schedule_tier = "daily"
-    rec.status = "active"
-    rec.owner = "test@example.com"
-    rec.created_at = datetime.now(tz=UTC)
-    rec.updated_at = datetime.now(tz=UTC)
-    return rec
+def _item_id(kind: str = "dataset") -> str:
+    return "dataset.description" if kind == "dataset" else "column.field_a.description"
 
 
-def _make_result_record() -> MagicMock:
-    rec = MagicMock()
-    rec.id = str(uuid.uuid4())
-    rec.dataset_urn = _VALID_URN
-    rec.proposals = {"dataset.description": "A test rating dataset."}
-    rec.field_status = {"dataset.description": "pending"}
-    rec.run_id = str(uuid.uuid4())
-    rec.generated_at = datetime.now(tz=UTC)
-    rec.last_reviewed_at = None
-    return rec
+def _candidate_review_url(item_id: str, candidate_id: str) -> str:
+    encoded_urn = _VALID_URN_ENC
+    return (
+        f"{_BASE}/{encoded_urn}/attr/metagen/item"
+        f"/{item_id}/candidate/{candidate_id}/method/review"
+    )
+
+
+def _make_boundary_dto() -> MagicMock:
+    dto = MagicMock()
+    dto.dataset_urn = _VALID_URN
+    dto.is_enabled = True
+    dto.allowed = ["dataset.description", "column.description"]
+    dto.owner = "alice@example.com"
+    dto.created_at = datetime.now(tz=UTC)
+    dto.updated_at = datetime.now(tz=UTC)
+    return dto
+
+
+def _make_item_summary_dto(
+    item_id: str = "dataset.description",
+    kind: str = "dataset.description",
+    has_approved: bool = False,
+    candidate_count: int = 1,
+) -> MagicMock:
+    dto = MagicMock()
+    dto.dataset_urn = _VALID_URN
+    dto.item_id = item_id
+    dto.kind = kind
+    dto.field_path = None
+    dto.has_approved = has_approved
+    dto.candidate_count = candidate_count
+    dto.created_at = datetime.now(tz=UTC)
+    dto.updated_at = datetime.now(tz=UTC)
+    return dto
+
+
+def _make_candidate_dto(
+    status: str = "llm_approved",
+    candidate_id: str | None = None,
+    item_id: str = "dataset.description",
+) -> MagicMock:
+    dto = MagicMock()
+    dto.candidate_id = candidate_id or str(uuid.uuid4())
+    dto.item_id = item_id
+    dto.dataset_urn = _VALID_URN
+    dto.value = "A synthetic description from the LLM."
+    dto.confidence_score = 0.87
+    dto.status = status
+    dto.evidence = {}
+    dto.created_at = datetime.now(tz=UTC)
+    dto.reviewed_at = None
+    dto.reviewer_id = None
+    return dto
+
+
+def _make_item_detail_dto(candidates: list | None = None) -> MagicMock:
+    dto = MagicMock()
+    dto.dataset_urn = _VALID_URN
+    dto.item_id = "dataset.description"
+    dto.kind = "dataset.description"
+    dto.field_path = None
+    dto.has_approved = False
+    dto.candidate_count = 1
+    dto.created_at = datetime.now(tz=UTC)
+    dto.updated_at = datetime.now(tz=UTC)
+    dto.candidates = candidates if candidates is not None else [_make_candidate_dto()]
+    return dto
 
 
 @pytest.fixture
@@ -78,221 +125,703 @@ def override_service(mock_svc: AsyncMock):
     app.dependency_overrides.pop(get_metagen_service, None)
 
 
-# ── Auth gates: 401 without token ────────────────────────────────────────────
+# ── Auth gates: 401 without token ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_get_metagen_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — spoke/common routes require valid JWT."""
-    resp = await client.get(_CONF_URL)
+async def test_get_boundary_without_token_returns_401(client) -> None:
+    """GET /attr/metagen/conf requires a valid JWT.
+
+    spec: API.md §Authentication — all spoke/common routes require a valid token.
+    """
+    resp = await client.get(_BOUNDARY_URL)
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_put_metagen_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
+async def test_put_boundary_without_token_returns_401(client) -> None:
+    """PUT /attr/metagen/conf requires a valid JWT.
+
+    spec: API.md §Authentication — all write routes require valid JWT.
+    """
     resp = await client.put(
-        _CONF_URL,
-        json={"targets": ["dataset.description"], "is_enabled": True, "owner": "a@b.com"},
+        _BOUNDARY_URL,
+        json={"is_enabled": True, "allowed": ["dataset.description"]},
     )
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_patch_metagen_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.patch(_CONF_URL, json={"is_enabled": False})
+async def test_patch_boundary_without_token_returns_401(client) -> None:
+    """PATCH /attr/metagen/conf requires a valid JWT.
+
+    spec: API.md §Authentication — all write routes require valid JWT.
+    """
+    resp = await client.patch(_BOUNDARY_URL, json={"is_enabled": False})
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_delete_metagen_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.delete(_CONF_URL)
+async def test_delete_boundary_without_token_returns_401(client) -> None:
+    """DELETE /attr/metagen/conf requires a valid JWT.
+
+    spec: API.md §Authentication — all write routes require valid JWT.
+    """
+    resp = await client.delete(_BOUNDARY_URL)
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_get_metagen_results_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — spoke/common routes require valid JWT."""
-    resp = await client.get(_RESULT_URL)
+async def test_get_item_list_without_token_returns_401(client) -> None:
+    """GET /attr/metagen/item requires a valid JWT.
+
+    spec: API.md §Authentication — all spoke/common routes require a valid token.
+    """
+    resp = await client.get(_ITEM_LIST_URL)
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_patch_metagen_result_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    result_id = str(uuid.uuid4())
-    resp = await client.patch(
-        f"{_RESULT_URL}/{result_id}",
-        json={"verdict": "approve"},
-    )
+async def test_candidate_review_without_token_returns_401(client) -> None:
+    """POST .../candidate/{id}/method/review requires a valid JWT.
+
+    spec: API.md §Authentication — all write routes require valid JWT.
+    """
+    url = _candidate_review_url("dataset.description", str(uuid.uuid4()))
+    resp = await client.post(url, json={"verdict": "approve"})
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_post_metagen_run_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.post(_RUN_URL, json={"dry_run": False})
-    assert resp.status_code == 401
+async def test_get_events_without_token_returns_401(client) -> None:
+    """GET /event/metagen requires a valid JWT.
 
-
-@pytest.mark.asyncio
-async def test_get_metagen_events_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — spoke/common routes require valid JWT."""
+    spec: API.md §Authentication — all spoke/common routes require a valid token.
+    """
     resp = await client.get(_EVENTS_URL)
     assert resp.status_code == 401
 
 
-# ── Happy paths ───────────────────────────────────────────────────────────────
+# ── Boundary CRUD ─────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_get_metagen_conf_200_when_present(client, mock_svc: AsyncMock) -> None:
-    """GET /attr/metagen/conf returns 200 when config exists.
+async def test_get_boundary_returns_200_when_present(client, mock_svc: AsyncMock) -> None:
+    """GET /attr/metagen/conf returns 200 with boundary fields when one exists.
 
     spec: API.md §Data Resource — GET returns 200 when resource present.
+    spec: feature/BACKEND.md §Metadata Generation Service §Boundary CRUD.
     """
-    mock_svc.get_config = AsyncMock(return_value=_make_config_record())
+    mock_svc.get_boundary = AsyncMock(return_value=_make_boundary_dto())
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_BOUNDARY_URL, headers=auth_headers(["de"]))
+
     assert resp.status_code == 200
-    assert resp.json()["dataset_urn"] == _VALID_URN
+    body = resp.json()
+    assert body["dataset_urn"] == _VALID_URN
+    assert body["is_enabled"] is True
+    assert "dataset.description" in body["allowed"]
+    assert "column.description" in body["allowed"]
+    assert body["owner"] == "alice@example.com"
 
 
 @pytest.mark.asyncio
-async def test_get_metagen_conf_404_when_absent(client, mock_svc: AsyncMock) -> None:
-    """GET /attr/metagen/conf returns 404 when not configured.
+async def test_get_boundary_returns_null_when_absent(client, mock_svc: AsyncMock) -> None:
+    """GET /attr/metagen/conf returns null body (200) when no boundary exists.
 
-    spec: API_DESIGN_PRINCIPLE_en.md §HTTP status codes — 404 for unknown resource.
+    spec: API.md §Data Resource — absent boundary is a 200 null, not 404.
     """
-    mock_svc.get_config = AsyncMock(return_value=None)
+    mock_svc.get_boundary = AsyncMock(return_value=None)
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
-    assert resp.status_code == 404
+    resp = await client.get(_BOUNDARY_URL, headers=auth_headers(["de"]))
+
+    assert resp.status_code == 200
+    assert resp.json() is None
 
 
 @pytest.mark.asyncio
-async def test_put_metagen_conf_201_on_create(client, mock_svc: AsyncMock) -> None:
-    """PUT /attr/metagen/conf returns 201 on first creation.
+async def test_put_boundary_returns_200_with_boundary_fields(client, mock_svc: AsyncMock) -> None:
+    """PUT /attr/metagen/conf returns 200 with boundary fields (create-or-replace).
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PUT is create-or-replace.
+    spec: feature/BACKEND.md §Metadata Generation Service §Boundary CRUD.
     """
-    mock_svc.upsert_config = AsyncMock(return_value=(_make_config_record(), True))
+    mock_svc.put_boundary = AsyncMock(return_value=_make_boundary_dto())
 
     resp = await client.put(
-        _CONF_URL,
-        json={"targets": ["dataset.description"], "is_enabled": True, "owner": "a@b.com"},
+        _BOUNDARY_URL,
+        json={"is_enabled": True, "allowed": ["dataset.description", "column.description"]},
         headers=auth_headers(["de"]),
     )
-    assert resp.status_code == 201
 
-
-@pytest.mark.asyncio
-async def test_put_metagen_conf_200_on_update(client, mock_svc: AsyncMock) -> None:
-    """PUT /attr/metagen/conf returns 200 on subsequent update.
-
-    spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PUT returns 200 on update.
-    """
-    mock_svc.upsert_config = AsyncMock(return_value=(_make_config_record(), False))
-
-    resp = await client.put(
-        _CONF_URL,
-        json={"targets": ["dataset.description"], "is_enabled": False, "owner": "a@b.com"},
-        headers=auth_headers(["de"]),
-    )
     assert resp.status_code == 200
+    body = resp.json()
+    assert body["dataset_urn"] == _VALID_URN
+    assert body["is_enabled"] is True
 
 
 @pytest.mark.asyncio
-async def test_patch_metagen_conf_200(client, mock_svc: AsyncMock) -> None:
-    """PATCH /attr/metagen/conf returns 200 with merged record.
+async def test_put_boundary_rejects_invalid_kind(client, mock_svc: AsyncMock) -> None:
+    """PUT /attr/metagen/conf with an unknown 'allowed' kind returns 422.
+
+    spec: API.md §Data Resource — metagen boundary allowed values are
+    'dataset.description' and 'column.description' only.
+    """
+    resp = await client.put(
+        _BOUNDARY_URL,
+        json={"is_enabled": True, "allowed": ["invalid.kind"]},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_put_boundary_with_owner_returns_owner_in_response(client, mock_svc: AsyncMock) -> None:
+    """PUT /attr/metagen/conf with owner returns the owner field in the response body.
+
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Boundary CRUD —
+    boundary has optional owner field; PUT round-trips it in the response.
+    """
+    dto = _make_boundary_dto()
+    dto.owner = "some-user"
+    mock_svc.put_boundary = AsyncMock(return_value=dto)
+
+    resp = await client.put(
+        _BOUNDARY_URL,
+        json={"is_enabled": True, "allowed": ["dataset.description"], "owner": "some-user"},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["owner"] == "some-user", (
+        "PUT with owner must round-trip the owner value in the response. "
+        "spec: BACKEND.md §Boundary CRUD — boundary has optional owner field"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_boundary_returns_200_with_updated_fields(client, mock_svc: AsyncMock) -> None:
+    """PATCH /attr/metagen/conf returns 200 with the updated boundary.
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH returns 200.
     """
-    mock_svc.patch_config = AsyncMock(return_value=_make_config_record())
+    updated = _make_boundary_dto()
+    updated.is_enabled = False
+    mock_svc.patch_boundary = AsyncMock(return_value=updated)
 
     resp = await client.patch(
-        _CONF_URL,
+        _BOUNDARY_URL,
         json={"is_enabled": False},
         headers=auth_headers(["de"]),
     )
+
     assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_enabled"] is False
 
 
 @pytest.mark.asyncio
-async def test_delete_metagen_conf_204(client, mock_svc: AsyncMock) -> None:
+async def test_delete_boundary_returns_204(client, mock_svc: AsyncMock) -> None:
     """DELETE /attr/metagen/conf returns 204 No Content.
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — DELETE returns 204.
     """
-    mock_svc.delete_config = AsyncMock(return_value=None)
+    mock_svc.delete_boundary = AsyncMock(return_value=None)
 
-    resp = await client.delete(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.delete(_BOUNDARY_URL, headers=auth_headers(["de"]))
+
     assert resp.status_code == 204
 
 
+# ── Per-dataset item list ─────────────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_get_metagen_results_200_with_results_key(client, mock_svc: AsyncMock) -> None:
-    """GET /attr/metagen/result returns 200 with 'results' key.
+async def test_get_items_returns_200_with_items_and_total_count(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /attr/metagen/item returns 200 with items list and total_count.
 
-    spec: API.md §Standard Response Envelope — list responses use resource-named key.
+    spec: API.md §Standard Response Envelope — list responses carry total_count.
+    spec: feature/BACKEND.md §Metadata Generation Service §Item list.
     """
-    mock_svc.list_results = AsyncMock(return_value=([], 0))
+    dto = _make_item_summary_dto()
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto], 1))
 
-    resp = await client.get(_RESULT_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+
     assert resp.status_code == 200
     body = resp.json()
-    assert "results" in body
-    assert body["total_count"] == 0
+    assert body["total_count"] == 1
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["dataset_urn"] == _VALID_URN
+    assert item["item_id"] == "dataset.description"
+    assert item["kind"] == "dataset.description"
 
 
 @pytest.mark.asyncio
-async def test_patch_metagen_result_200_approve(client, mock_svc: AsyncMock) -> None:
-    """PATCH /attr/metagen/result/{id} with approve returns 200.
+async def test_get_items_returns_empty_list_when_none_exist(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /attr/metagen/item returns empty items list when dataset has no items.
 
-    spec: feature/BACKEND.md §Metadata Generation Service §Approval flow.
+    spec: API.md §Standard Response Envelope — empty list is valid.
     """
-    record = _make_result_record()
-    mock_svc.review_result = AsyncMock(return_value=record)
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([], 0))
 
-    resp = await client.patch(
-        f"{_RESULT_URL}/{record.id}",
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_count"] == 0
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_items_item_status_approved_when_has_approved_true(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Item status is 'approved' when has_approved=True.
+
+    spec: feature/BACKEND.md — metagen_candidates.status ∈ {llm_approved, approved, rejected}.
+    When an item has at least one approved candidate, its summary status is 'approved'.
+    """
+    dto_approved = _make_item_summary_dto(
+        item_id="dataset.description",
+        has_approved=True,
+        candidate_count=2,
+    )
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_approved], 1))
+
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items[0]["status"] == "approved", (
+        "has_approved=True must yield status='approved'. "
+        "spec: BACKEND.md — metagen_candidates.status values"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_items_item_status_llm_approved_when_no_approved_but_candidates_exist(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Item status is 'llm_approved' when has_approved=False and candidate_count > 0.
+
+    spec: feature/BACKEND.md — metagen_candidates.status ∈ {llm_approved, approved, rejected}.
+    When an item has candidates but none is approved, its summary status is 'llm_approved'.
+    """
+    dto_llm_approved = _make_item_summary_dto(
+        item_id="column.field_a.description",
+        kind="column.description",
+        has_approved=False,
+        candidate_count=1,
+    )
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_llm_approved], 1))
+
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items[0]["status"] == "llm_approved", (
+        "has_approved=False with candidates must yield status='llm_approved'. "
+        "spec: BACKEND.md — metagen_candidates.status values"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_items_item_status_zero_candidates_returns_200_with_string_status(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Item with has_approved=False and candidate_count=0 returns 200 with a non-null string status.
+
+    # Impl-specific: spec does not define status for items with 0 candidates;
+    # assertion verifies router does not crash, not the exact value.
+    """
+    dto_no_cands = _make_item_summary_dto(
+        item_id="column.field_b.description",
+        kind="column.description",
+        has_approved=False,
+        candidate_count=0,
+    )
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_no_cands], 1))
+
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert isinstance(items[0]["status"], str), (
+        "Router must return a string status even for items with 0 candidates."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_items_composite_id_uses_double_colon_separator(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Item composite_id is '{dataset_urn}::{item_id}'.
+
+    spec: API.md §Data Resource — composite_id format is {dataset_urn}::{item_id}.
+    """
+    dto = _make_item_summary_dto(item_id="dataset.description")
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto], 1))
+
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    expected_composite = f"{_VALID_URN}::dataset.description"
+    assert item["composite_id"] == expected_composite
+
+
+@pytest.mark.asyncio
+async def test_get_items_respects_offset_and_limit(client, mock_svc: AsyncMock) -> None:
+    """GET /attr/metagen/item passes offset and limit to the service.
+
+    spec: API.md §Pagination — offset and limit query params forwarded to service.
+    """
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([], 0))
+
+    resp = await client.get(
+        f"{_ITEM_LIST_URL}?offset=10&limit=5",
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 200
+    mock_svc.list_items_for_dataset.assert_called_once_with(
+        _VALID_URN, offset=10, limit=5
+    )
+
+
+# ── Per-dataset item detail ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_item_detail_returns_200_with_candidates(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /attr/metagen/item/{item_id} returns 200 with candidates list.
+
+    spec: API.md §Data Resource — item detail includes candidates.
+    spec: feature/BACKEND.md §Metadata Generation Service §Item detail.
+    """
+    cand = _make_candidate_dto(status="llm_approved")
+    detail_dto = _make_item_detail_dto(candidates=[cand])
+    mock_svc.get_item_for_dataset = AsyncMock(return_value=detail_dto)
+
+    resp = await client.get(
+        f"{_ITEM_LIST_URL}/dataset.description",
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item_id"] == "dataset.description"
+    assert len(body["candidates"]) == 1
+    assert body["candidates"][0]["status"] == "llm_approved"
+    assert body["candidates"][0]["confidence_score"] == pytest.approx(0.87)
+
+
+@pytest.mark.asyncio
+async def test_get_item_detail_returns_404_when_not_found(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /attr/metagen/item/{item_id} returns 404 when item does not exist.
+
+    spec: API_DESIGN_PRINCIPLE_en.md §HTTP status codes — 404 for unknown resource.
+    """
+    mock_svc.get_item_for_dataset = AsyncMock(
+        side_effect=EntityNotFoundError("metagen_item", "dataset.description")
+    )
+
+    resp = await client.get(
+        f"{_ITEM_LIST_URL}/dataset.description",
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 404
+
+
+# ── Candidate review ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_review_approve_returns_200_with_approved_status(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST .../candidate/{id}/method/review with verdict=approve returns 200.
+
+    Approved candidate dto is returned with status='approved'.
+
+    spec: feature/BACKEND.md §Metadata Generation Service §Approval flow —
+    approve transitions candidate to 'approved'.
+    """
+    cid = str(uuid.uuid4())
+    approved_dto = _make_candidate_dto(status="approved", candidate_id=cid)
+    mock_svc.review_candidate = AsyncMock(return_value=approved_dto)
+
+    url = _candidate_review_url("dataset.description", cid)
+    resp = await client.post(
+        url,
+        json={"verdict": "approve", "reason": "Looks good"},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["candidate_id"] == cid
+    assert body["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_review_reject_returns_200_with_rejected_status(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST .../candidate/{id}/method/review with verdict=reject returns 200.
+
+    Rejected candidate dto is returned with status='rejected'.
+
+    spec: feature/BACKEND.md §Metadata Generation Service §Approval flow —
+    reject transitions llm_approved candidate to 'rejected'.
+    """
+    cid = str(uuid.uuid4())
+    rejected_dto = _make_candidate_dto(status="rejected", candidate_id=cid)
+    mock_svc.review_candidate = AsyncMock(return_value=rejected_dto)
+
+    url = _candidate_review_url("dataset.description", cid)
+    resp = await client.post(
+        url,
+        json={"verdict": "reject", "reason": "Not relevant"},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["candidate_id"] == cid
+    assert body["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_review_reject_approved_returns_409(client, mock_svc: AsyncMock) -> None:
+    """POST .../method/review with verdict=reject on an approved candidate returns 409.
+
+    spec: feature/BACKEND.md §Metadata Generation Service §Approval flow —
+    cannot reject an approved candidate (METAGEN_CANNOT_REJECT_APPROVED).
+    """
+    cid = str(uuid.uuid4())
+    mock_svc.review_candidate = AsyncMock(
+        side_effect=ConflictError(
+            "METAGEN_CANNOT_REJECT_APPROVED",
+            "Cannot reject an approved candidate — approve a different sibling to demote it",
+        )
+    )
+
+    url = _candidate_review_url("dataset.description", cid)
+    resp = await client.post(
+        url,
+        json={"verdict": "reject"},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error_code"] == "METAGEN_CANNOT_REJECT_APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_review_dataset_not_in_boundary_returns_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST .../method/review returns 422 when dataset has no active boundary.
+
+    spec: feature/BACKEND.md §Metadata Generation Service — review_candidate
+    raises METAGEN_DATASET_NOT_IN_BOUNDARY when no is_enabled=true boundary exists.
+    """
+    cid = str(uuid.uuid4())
+    mock_svc.review_candidate = AsyncMock(
+        side_effect=PreconditionFailedError(
+            "METAGEN_DATASET_NOT_IN_BOUNDARY",
+            f"Dataset {_VALID_URN!r} has no active boundary",
+        )
+    )
+
+    url = _candidate_review_url("dataset.description", cid)
+    resp = await client.post(
+        url,
         json={"verdict": "approve"},
         headers=auth_headers(["de"]),
     )
-    assert resp.status_code == 200
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_code"] == "METAGEN_DATASET_NOT_IN_BOUNDARY"
 
 
 @pytest.mark.asyncio
-async def test_post_metagen_run_200(client, mock_svc: AsyncMock) -> None:
-    """POST /method/metagen/run returns 200 with result.
+async def test_review_candidate_not_found_returns_404(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST .../method/review returns 404 when candidate_id does not exist.
 
-    spec: feature/BACKEND.md §Metadata Generation Service — run returns MetagenResult.
+    spec: API_DESIGN_PRINCIPLE_en.md §HTTP status codes — 404 for unknown resource.
     """
-    record = _make_result_record()
-    mock_svc.run = AsyncMock(return_value=record)
+    cid = str(uuid.uuid4())
+    mock_svc.review_candidate = AsyncMock(
+        side_effect=EntityNotFoundError("metagen_candidate", cid)
+    )
 
+    url = _candidate_review_url("dataset.description", cid)
     resp = await client.post(
-        _RUN_URL,
-        json={"dry_run": False},
+        url,
+        json={"verdict": "approve"},
         headers=auth_headers(["de"]),
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "dataset_urn" in body
+
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_get_metagen_events_200_with_events_key(client, mock_svc: AsyncMock) -> None:
-    """GET /event/metagen returns 200 with 'events' key.
+async def test_review_invalid_verdict_returns_422(client, mock_svc: AsyncMock) -> None:
+    """POST .../method/review with invalid verdict returns 422.
+
+    spec: API.md §Data Resource — verdict must be 'approve' or 'reject'.
+    """
+    cid = str(uuid.uuid4())
+    url = _candidate_review_url("dataset.description", cid)
+
+    resp = await client.post(
+        url,
+        json={"verdict": "invalid_verdict"},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_review_reason_too_long_returns_422(client, mock_svc: AsyncMock) -> None:
+    """POST .../method/review with reason > 2000 chars returns 422.
+
+    spec: API.md §Data Resource — reason max_length=2000.
+    """
+    cid = str(uuid.uuid4())
+    url = _candidate_review_url("dataset.description", cid)
+
+    resp = await client.post(
+        url,
+        json={"verdict": "approve", "reason": "x" * 2001},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_review_reason_exactly_2000_chars_is_accepted(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST .../method/review with reason exactly 2000 chars is valid.
+
+    spec: API.md §Data Resource — reason max_length=2000 is inclusive.
+    """
+    cid = str(uuid.uuid4())
+    approved_dto = _make_candidate_dto(status="approved", candidate_id=cid)
+    mock_svc.review_candidate = AsyncMock(return_value=approved_dto)
+
+    url = _candidate_review_url("dataset.description", cid)
+    resp = await client.post(
+        url,
+        json={"verdict": "approve", "reason": "x" * 2000},
+        headers=auth_headers(["de"]),
+    )
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_review_reviewer_id_forwarded_from_auth_token(
+    client, mock_svc: AsyncMock
+) -> None:
+    """review_candidate is called with reviewer_id equal to the token's subject claim.
+
+    spec: feature/BACKEND.md §Metadata Generation Service §Approval flow —
+    reviewer_id is the authenticated user's identity (token sub claim).
+
+    auth_headers(["de"]) calls make_token with default subject "test-user"
+    (see tests/unit/api/conftest.py). A regression that forwards reviewer_id=None
+    must fail this test.
+    """
+    cid = str(uuid.uuid4())
+    approved_dto = _make_candidate_dto(status="approved", candidate_id=cid)
+    mock_svc.review_candidate = AsyncMock(return_value=approved_dto)
+
+    url = _candidate_review_url("dataset.description", cid)
+    resp = await client.post(
+        url,
+        json={"verdict": "approve"},
+        headers=auth_headers(["de"]),  # subject defaults to "test-user"
+    )
+
+    assert resp.status_code == 200
+    call_kwargs = mock_svc.review_candidate.call_args.kwargs
+    assert "reviewer_id" in call_kwargs, (
+        "review_candidate must be called with reviewer_id kwarg. "
+        "spec: BACKEND.md §Approval flow — reviewer_id is the authenticated user's identity"
+    )
+    assert call_kwargs["reviewer_id"] == "test-user", (
+        "reviewer_id must equal the token's 'sub' claim ('test-user' from auth_headers default). "
+        "A regression forwarding reviewer_id=None must fail this assertion. "
+        "spec: BACKEND.md §Approval flow — reviewer_id is the authenticated user's identity"
+    )
+
+
+# ── Per-dataset metagen events ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_events_returns_200_with_events_envelope(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /event/metagen returns 200 with 'events' key and total_count.
 
     spec: API.md §Standard Response Envelope — list responses use resource-named key.
     """
-    mock_svc.get_events = AsyncMock(return_value=([], 0))
+    # The event route queries DB directly (no service method); mock db via dependency
+    # override is not straightforward here — test at the network boundary using the
+    # route's empty-result happy path via the real DB dep being replaced by a mock.
+    # For this unit test we verify the route is wired and returns the correct shape
+    # by letting the DB mock return empty results through the existing override chain.
+    # Since the route uses get_db (not get_metagen_service), we override get_db.
+    from sqlalchemy.ext.asyncio import AsyncSession
 
-    resp = await client.get(_EVENTS_URL, headers=auth_headers(["de"]))
+    from src.api.dependencies import get_db
+
+    mock_db = AsyncMock(spec=AsyncSession)
+
+    # count query
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    # rows query
+    rows_result = MagicMock()
+    rows_scalars = MagicMock()
+    rows_scalars.all.return_value = []
+    rows_result.scalars.return_value = rows_scalars
+
+    mock_db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        resp = await client.get(_EVENTS_URL, headers=auth_headers(["de"]))
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
     assert resp.status_code == 200
     body = resp.json()
     assert "events" in body
     assert body["total_count"] == 0
+    assert body["events"] == []

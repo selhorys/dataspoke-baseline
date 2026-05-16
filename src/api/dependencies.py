@@ -86,12 +86,13 @@ async def get_validation_service(
 async def get_metagen_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
-    llm: LLMClient = Depends(get_llm),
     cache: RedisClient = Depends(get_redis),
+    llm: LLMClient = Depends(get_llm),
+    vector: PgVectorManager = Depends(get_vector),
 ) -> "MetagenService":
     from src.backend.metagen.service import MetagenService
 
-    return MetagenService(datahub=datahub, db=db, llm=llm, cache=cache)
+    return MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
 
 async def get_ontogen_service(

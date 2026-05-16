@@ -8,6 +8,16 @@ distinguish between errors worth retrying and permanent failures.
 These endpoints are NOT exposed to end users — they are called by the Airflow
 orchestrator running inside the same K8s namespace, gated by X-Internal-Token.
 
+Activities:
+  /ingestion/list-active  — list dataset URNs with active ingestion configs for a tier
+  /ingestion/run          — execute ingestion pipeline for a single dataset
+  /ingestion/passive-sync — mirror DataHub run history for passive-mode configs
+  /metagen/run            — execute global metagen inference pipeline (singleton)
+  /metrics/list-active    — list metric IDs with is_enabled=True for a tier
+  /metrics/run            — execute metric measurement for a single metric
+  /ontogen/run            — execute the ontogen inference pipeline (singleton)
+  /datahub/sync           — reconcile dataset_registry against live DataHub URN set
+
 Spec: spec/feature/BACKEND.md §DAG Catalogue + §Dependency Injection.
 """
 
@@ -116,50 +126,37 @@ async def ingestion_passive_sync() -> dict[str, object]:
 # ── /metagen ──────────────────────────────────────────────────────────────────
 
 
-class MetagenListActiveRequest(BaseModel):
-    tier: str
-
-
-@router.post("/metagen/list-active")
-async def metagen_list_active(body: MetagenListActiveRequest) -> list[str]:
-    """Return dataset URNs with is_enabled metagen configs matching the given tier."""
-    try:
-        async with make_db_session() as db:
-            from src.backend.metagen.service import MetagenService
-
-            datahub = make_datahub()
-            llm = make_llm()
-            service = MetagenService(datahub=datahub, db=db, llm=llm)
-            configs = await service.list_active_for_tier(body.tier)
-            return [c.dataset_urn for c in configs]
-    except DataSpokeError as exc:
-        return _error_response(exc)  # type: ignore[return-value]
-
-
 class MetagenRunRequest(BaseModel):
-    dataset_urn: str
+    # Internal variant; public counterpart is src/api/schemas/metagen.MetagenRunRequest (no `tier`).
+    tier: str | None = None
+    dataset_urns: list[str] | None = None
     dry_run: bool = False
 
 
 @router.post("/metagen/run")
 async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
-    """Execute metadata generation pipeline for a single dataset."""
+    """Execute the metagen pipeline (singleton).
+
+    Called by the metagen tier DAGs and the on-demand metagen DAG.
+    """
     datahub = make_datahub()
+    cache = make_cache()
     llm = make_llm()
+    vector = make_vector()
     try:
         async with make_db_session() as db:
             from src.backend.metagen.service import MetagenService
 
-            service = MetagenService(datahub=datahub, db=db, llm=llm)
-            result = await service.run(body.dataset_urn, dry_run=body.dry_run)
-            return {
-                "id": result.id,
-                "dataset_urn": result.dataset_urn,
-                "run_id": result.run_id,
-                "status": "success",
-            }
+            service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
+            result = await service.run(
+                tier=body.tier,
+                dataset_urns=body.dataset_urns,
+                dry_run=body.dry_run,
+            )
+            return result.model_dump()
     except DataSpokeError as exc:
-        return _error_response(exc)  # type: ignore[return-value]
+        non_retryable = exc.error_code != "METAGEN_RUNNING" if hasattr(exc, "error_code") else True
+        return _error_response(exc, non_retryable=non_retryable)  # type: ignore[return-value]
 
 
 # ── /metrics ──────────────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ All workflow IDs follow the pattern ``{type}-{identifier}``:
   ============  =============================  ==============================
   Scope         Format                         Example
   ============  =============================  ==============================
-  URN-scoped    ``{type}-{md5(urn)[:12]}``     ``metagen-6eb5d0afa434``
+  URN-scoped    ``{type}-{md5(urn)[:12]}``     ``ingestion-6eb5d0afa434``
   Key-scoped    ``{type}-{key}``               ``metrics-imazon.freshness``
   Singleton     ``{type}``                     ``ontogen-singleton``
   Test          ``test-{type}-{short-label}``  ``test-ingestion-title-master``
@@ -140,11 +140,13 @@ def make_metagen() -> tuple:  # type: ignore[type-arg]
     """Construct MetagenService with all required dependencies.
 
     Spec: spec/feature/BACKEND.md §Feature Services — MetagenService requires
-    datahub, db, cache, llm.
+    datahub, db, cache, llm, vector.
     """
     from src.backend.metagen.service import MetagenService
 
     datahub = make_datahub()
+    cache = make_cache()
     llm = make_llm()
+    vector = make_vector()
     # db session is provided by callers via async context manager
-    return MetagenService, datahub, llm
+    return MetagenService, datahub, cache, llm, vector

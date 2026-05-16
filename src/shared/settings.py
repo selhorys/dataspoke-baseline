@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     ontogen_debate_rag_k: int = Field(default=5, ge=0, le=20)
     ontogen_debate_reviewer_model: str | None = None
 
+    # Metagen inference loop + adversarial debate
+    metagen_llm_max_iterations: int = Field(default=3, ge=1, le=20)
+    metagen_debate_max_turns: int = Field(default=4, ge=2, le=10)
+    metagen_debate_rag_k: int = Field(default=5, ge=0, le=20)
+    metagen_debate_reviewer_model: str | None = None
+    metagen_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
     # Langfuse observability (all optional — when unset no traces are emitted)
     langfuse_host: str | None = None
     langfuse_public_key: str | None = None

@@ -60,16 +60,19 @@ class ConflictError(DataSpokeError):
     """Raised when an operation conflicts with current state (HTTP 409).
 
     Valid error_code values:
-      DUPLICATE_CONFIG         — attempt to create a config that already exists
-      INGESTION_RUNNING        — concurrent active ingestion run for the dataset
-      GENERATION_RUNNING       — concurrent metadata-generation run for the dataset
-      METRIC_RUNNING           — concurrent metric measurement
-      ONTOGEN_RUNNING          — ontogen singleton inference already in progress
-      INGESTION_DISABLED       — ingestion conf has is_enabled=false; only dry-run permitted
-      INGESTION_NOT_APPLICABLE — method/run called on a passive config; run externally
-      GENERATION_DISABLED      — metagen conf has is_enabled=false; only dry-run permitted
-      METRIC_DISABLED          — metric definition has is_enabled=false; only dry-run permitted
-      ONTOGEN_DISABLED         — ontogen conf has is_enabled=false; only dry-run permitted
+      DUPLICATE_CONFIG              — attempt to create a config that already exists
+      INGESTION_RUNNING             — concurrent active ingestion run for the dataset
+      GENERATION_RUNNING            — concurrent metadata-generation run for the dataset
+      METRIC_RUNNING                — concurrent metric measurement
+      ONTOGEN_RUNNING               — ontogen singleton inference already in progress
+      METAGEN_RUNNING               — metagen singleton inference already in progress
+      INGESTION_DISABLED            — ingestion conf has is_enabled=false; only dry-run permitted
+      INGESTION_NOT_APPLICABLE      — method/run called on a passive config; run externally
+      GENERATION_DISABLED           — metagen conf has is_enabled=false; only dry-run permitted
+      METRIC_DISABLED               — metric definition has is_enabled=false; only dry-run permitted
+      ONTOGEN_DISABLED              — ontogen conf has is_enabled=false; only dry-run permitted
+      METAGEN_DISABLED              — metagen conf has is_enabled=false; only dry-run permitted
+      METAGEN_CANNOT_REJECT_APPROVED — reject verdict on a candidate whose status is approved
     """
 
     def __init__(self, error_code: str, message: str = "") -> None:
@@ -87,6 +90,8 @@ class PreconditionFailedError(DataSpokeError):
       UNKNOWN_VARIABLE                  — result POST carries variable keys not declared
                                           in the dataset's validation conf
       INVALID_SCORE                     — result POST has score outside [0.0, 1.0]
+      METAGEN_DATASET_NOT_IN_BOUNDARY   — candidate review on a dataset with no
+                                          is_enabled=true metagen boundary
     """
 
     def __init__(self, error_code: str, message: str = "", detail: dict | None = None) -> None:

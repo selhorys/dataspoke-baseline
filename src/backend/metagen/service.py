@@ -2,66 +2,147 @@
 
 Spec: spec/feature/BACKEND.md §Metadata Generation Service
       spec/DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects
-          §Document Aspects
 """
 
 import logging
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
-from sqlalchemy import func, or_, select
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.schemas.metagen import CrossDataAction
-from src.backend.metagen.cross_data import apply_actions, fetch_related_documents
+from src.backend.metagen.debate import run_debate
+from src.backend.metagen.debate_models import MetagenLLMOutput
+from src.backend.metagen.prompts import build_run_prompt
+from src.backend.metagen.reviewer import build_metagen_review_tool
+from src.backend.metagen.validator import build_metagen_validate_tool
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
+from src.shared.datahub.documents import fetch_related_documents
 from src.shared.db.models import (
     DatasetNodeMap,
     Event,
+    MetagenBoundary,
+    MetagenCandidate,
+    MetagenCandidateEmbedding,
     MetagenConfig,
-    MetagenResult,
-    OntogenEdge,
+    MetagenItem,
     OntogenNode,
-    OntogenTriple,
 )
 from src.shared.events import (
-    METAGEN_APPROVE,
-    METAGEN_COMPLETE,
+    METAGEN_CANDIDATE_APPROVE,
+    METAGEN_CANDIDATE_REJECT,
     METAGEN_CONFIG_CREATE,
     METAGEN_CONFIG_DELETE,
     METAGEN_CONFIG_UPDATE,
-    METAGEN_PREFIX,
-    METAGEN_REJECT,
+    METAGEN_RUN_COMPLETE,
+    METAGEN_RUN_FAILED,
 )
-from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
+from src.shared.exceptions import (
+    ConflictError,
+    EntityNotFoundError,
+    InvalidDatasetUrnError,
+    PreconditionFailedError,
+)
 from src.shared.llm.client import LLMClient
+from src.shared.settings import settings
+from src.shared.vector.client import PgVectorManager
 
 logger = logging.getLogger(__name__)
 
-# Valid target values per spec/feature/BACKEND.md §Metadata Generation Service
-_VALID_TARGETS = frozenset({"dataset.description", "column.description", "cross_data.md"})
-_VALID_SCHEDULE_TIERS = frozenset({"hourly", "daily", "weekly"})
-_VALID_VERDICTS = frozenset({"approve", "reject"})
+_LOCK_KEY = "metagen:running:singleton"
+_LOCK_TTL_SECONDS = 3600
 
-# ── Input-validation helpers ──────────────────────────────────────────────────
-
-
-def _validate_targets(targets: list[str]) -> None:
-    """Raise PreconditionFailedError for any unknown target value (Fix #9)."""
-    for t in targets:
-        if t not in _VALID_TARGETS:
-            raise PreconditionFailedError(
-                "INVALID_PARAMETER",
-                f"Unknown target {t!r}. Valid values: {sorted(_VALID_TARGETS)}",
-            )
+_DATASET_URN_RE = re.compile(r"^urn:li:dataset:\(.+\)$")
+_VALID_SCHEDULE_TIERS: frozenset[str] = frozenset({"hourly", "daily", "weekly"})
+_VALID_KINDS: frozenset[str] = frozenset({"dataset.description", "column.description"})
 
 
-def _validate_metagen_schedule_tier(tier: str | None) -> None:
-    """Raise PreconditionFailedError for unknown schedule_tier values (Fix #9)."""
+# ── Value objects ─────────────────────────────────────────────────────────────
+
+
+class MetagenGlobalConfDTO(BaseModel):
+    is_enabled: bool
+    schedule_tier: str | None
+    dataset_filter: dict[str, Any]
+    result_limit: int
+    overwrite_pending: bool
+    updated_at: datetime
+
+
+class MetagenBoundaryDTO(BaseModel):
+    dataset_urn: str
+    is_enabled: bool
+    allowed: list[str]
+    owner: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CandidateDTO(BaseModel):
+    candidate_id: str
+    dataset_urn: str
+    item_id: str
+    run_id: str
+    value: str
+    confidence_score: float
+    status: str
+    evidence: dict[str, Any]
+    created_at: datetime
+    reviewed_at: datetime | None
+    reviewer_id: str | None
+
+
+class ItemSummaryDTO(BaseModel):
+    dataset_urn: str
+    item_id: str
+    kind: str
+    field_path: str | None
+    candidate_count: int
+    has_approved: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ItemDetailDTO(BaseModel):
+    dataset_urn: str
+    item_id: str
+    kind: str
+    field_path: str | None
+    created_at: datetime
+    updated_at: datetime
+    candidates: list[CandidateDTO]
+
+
+class RunResultDTO(BaseModel):
+    run_id: str
+    status: str
+    dry_run: bool
+    unresolved_urns: list[str]
+    counts: dict[str, int]
+    debate_outcome: str | None = None
+    producer_iterations: int | None = None
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _validate_dataset_urn(urn: str) -> None:
+    if not _DATASET_URN_RE.match(urn):
+        raise InvalidDatasetUrnError(urn)
+
+
+def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
+    for urn in dataset_filter.get("dataset_urns", []) or []:
+        _validate_dataset_urn(str(urn))
+
+
+def _validate_schedule_tier(tier: str | None) -> None:
     if tier is not None and tier not in _VALID_SCHEDULE_TIERS:
         raise PreconditionFailedError(
             "INVALID_PARAMETER",
@@ -69,1086 +150,1167 @@ def _validate_metagen_schedule_tier(tier: str | None) -> None:
         )
 
 
-def _validate_metagen_verdict(verdict: str) -> None:
-    """Raise PreconditionFailedError for unknown verdict values (Fix #9)."""
-    if verdict not in _VALID_VERDICTS:
-        raise PreconditionFailedError(
-            "INVALID_PARAMETER",
-            f"verdict must be one of {sorted(_VALID_VERDICTS)}, got {verdict!r}",
-        )
-
-
-# ── Value objects ─────────────────────────────────────────────────────────────
-
-
-class MetagenConfigRecord(BaseModel):
-    """Value object mirroring ORM MetagenConfig."""
-
-    id: str
-    dataset_urn: str
-    targets: list[str]
-    code_refs: dict[str, Any] | None = None
-    is_enabled: bool
-    schedule_tier: str | None = None
-    status: str
-    owner: str
-    created_at: datetime
-    updated_at: datetime
-
-
-class MetagenResultRecord(BaseModel):
-    """Value object mirroring ORM MetagenResult."""
-
-    id: str
-    dataset_urn: str
-    proposals: dict[str, Any]
-    field_status: dict[str, Any]
-    run_id: str
-    generated_at: datetime
-    last_reviewed_at: datetime | None = None
-
-
-# ── ORM converters ────────────────────────────────────────────────────────────
-
-
-def _config_from_row(row: MetagenConfig) -> MetagenConfigRecord:
-    return MetagenConfigRecord(
-        id=str(row.id),
-        dataset_urn=row.dataset_urn,
-        targets=list(row.targets),
-        code_refs=row.code_refs,
+def _conf_to_dto(row: MetagenConfig) -> MetagenGlobalConfDTO:
+    return MetagenGlobalConfDTO(
         is_enabled=row.is_enabled,
         schedule_tier=row.schedule_tier,
-        status=row.status,
+        dataset_filter=dict(row.dataset_filter) if row.dataset_filter else {},
+        result_limit=row.result_limit,
+        overwrite_pending=row.overwrite_pending,
+        updated_at=row.updated_at,
+    )
+
+
+def _boundary_to_dto(row: MetagenBoundary) -> MetagenBoundaryDTO:
+    return MetagenBoundaryDTO(
+        dataset_urn=row.dataset_urn,
+        is_enabled=row.is_enabled,
+        allowed=list(row.allowed),
         owner=row.owner,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
 
 
-def _result_from_row(row: MetagenResult) -> MetagenResultRecord:
-    return MetagenResultRecord(
-        id=str(row.id),
+def _candidate_to_dto(row: MetagenCandidate) -> CandidateDTO:
+    return CandidateDTO(
+        candidate_id=str(row.candidate_id),
         dataset_urn=row.dataset_urn,
-        proposals=dict(row.proposals),
-        field_status=dict(row.field_status),
+        item_id=row.item_id,
         run_id=str(row.run_id),
-        generated_at=row.generated_at,
-        last_reviewed_at=row.last_reviewed_at,
+        value=row.value,
+        confidence_score=row.confidence_score,
+        status=row.status,
+        evidence=dict(row.evidence) if row.evidence else {},
+        created_at=row.created_at,
+        reviewed_at=row.reviewed_at,
+        reviewer_id=row.reviewer_id,
+    )
+
+
+def _event_row(
+    entity_type: str,
+    entity_id: str,
+    event_type: str,
+    status: str,
+    detail: dict[str, Any],
+) -> Event:
+    return Event(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        event_type=event_type,
+        status=status,
+        detail=detail,
+        occurred_at=datetime.now(tz=UTC),
     )
 
 
 # ── Service ───────────────────────────────────────────────────────────────────
 
 
-_METAGEN_LOCK_TTL = 3600  # 1 hour
-
-
 class MetagenService:
-    """Per-dataset metadata generation config CRUD, run pipeline, and review flow.
+    """Global singleton metadata generation service.
 
-    Constructor-injected (stateless service pattern per BACKEND.md §Service Pattern):
+    Constructor-injected dependencies (stateless service pattern per
+    spec/feature/BACKEND.md §Service Pattern):
+
     - datahub: DataHubClient
     - db: AsyncSession
-    - cache: RedisClient (optional; used for SETNX concurrency guard on run())
+    - cache: RedisClient
     - llm: LLMClient
+    - vector: PgVectorManager
     """
 
     def __init__(
         self,
         datahub: DataHubClient,
         db: AsyncSession,
+        cache: RedisClient,
         llm: LLMClient,
-        cache: RedisClient | None = None,
+        vector: PgVectorManager,
     ) -> None:
         self._datahub = datahub
         self._db = db
-        self._llm = llm
         self._cache = cache
+        self._llm = llm
+        self._vector = vector
 
-    # ── Config CRUD ───────────────────────────────────────────────────────────
+    # ── Singleton conf CRUD ───────────────────────────────────────────────────
 
-    async def get_config(self, dataset_urn: str) -> MetagenConfigRecord | None:
-        result = await self._db.execute(
-            select(MetagenConfig).where(MetagenConfig.dataset_urn == dataset_urn)
-        )
+    async def get_global_conf(self) -> MetagenGlobalConfDTO | None:
+        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         row = result.scalar_one_or_none()
-        return _config_from_row(row) if row else None
+        return _conf_to_dto(row) if row else None
 
-    async def upsert_config(
-        self,
-        dataset_urn: str,
-        targets: list[str],
-        code_refs: dict[str, Any] | None,
-        is_enabled: bool,
-        schedule_tier: str | None,
-        owner: str,
-    ) -> tuple[MetagenConfigRecord, bool]:
-        """Create or replace a metagen config.  Emits METAGEN.CONFIG_CREATE/UPDATE."""
-        # Fix #9: validate enum fields before touching the DB
-        _validate_targets(targets)
-        _validate_metagen_schedule_tier(schedule_tier)
+    async def put_global_conf(self, conf: dict[str, Any]) -> MetagenGlobalConfDTO:
+        """Full replacement of the singleton conf. Emits METAGEN.CONFIG_CREATE or UPDATE."""
+        dataset_filter = conf.get("dataset_filter", {}) or {}
+        _validate_dataset_filter(dataset_filter)
+        _validate_schedule_tier(conf.get("schedule_tier"))
 
-        result = await self._db.execute(
-            select(MetagenConfig).where(MetagenConfig.dataset_urn == dataset_urn)
-        )
+        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         existing = result.scalar_one_or_none()
+        created = existing is None
 
-        if existing:
-            existing.targets = targets
-            existing.code_refs = code_refs
-            existing.is_enabled = is_enabled
-            existing.schedule_tier = schedule_tier
-            existing.owner = owner
-            existing.updated_at = datetime.now(tz=UTC)
+        if existing is None:
+            existing = MetagenConfig(id=1)
             self._db.add(existing)
-            created = False
-        else:
-            existing = MetagenConfig(
-                dataset_urn=dataset_urn,
-                targets=targets,
-                code_refs=code_refs,
-                is_enabled=is_enabled,
-                schedule_tier=schedule_tier,
-                owner=owner,
-            )
-            self._db.add(existing)
-            created = True
+
+        existing.is_enabled = conf.get("is_enabled", False)
+        existing.schedule_tier = conf.get("schedule_tier")
+        existing.dataset_filter = dataset_filter
+        existing.result_limit = conf.get("result_limit", 3)
+        existing.overwrite_pending = conf.get("overwrite_pending", True)
+        existing.updated_at = datetime.now(tz=UTC)
 
         await self._db.commit()
         await self._db.refresh(existing)
 
         event_type = METAGEN_CONFIG_CREATE if created else METAGEN_CONFIG_UPDATE
-        await self._record_event(
-            dataset_urn,
+        await self._record_metagen_event(
+            "singleton",
             event_type,
             "success",
-            {
-                "operation": "PUT",
-                "config_id": str(existing.id),
-                "targets": targets,
-                "is_enabled": is_enabled,
-            },
+            {"operation": "PUT"},
         )
-        return _config_from_row(existing), created
+        return _conf_to_dto(existing)
 
-    async def patch_config(self, dataset_urn: str, patch: dict[str, Any]) -> MetagenConfigRecord:
-        """Partial config update.  Emits METAGEN.CONFIG_UPDATE."""
-        # Fix #9: validate enum fields if present in patch
-        if "targets" in patch and patch["targets"] is not None:
-            _validate_targets(patch["targets"])
-        if "schedule_tier" in patch:
-            _validate_metagen_schedule_tier(patch["schedule_tier"])
+    async def patch_global_conf(self, partial: dict[str, Any]) -> MetagenGlobalConfDTO:
+        """Partial update of the singleton conf. Emits METAGEN.CONFIG_UPDATE."""
+        if "dataset_filter" in partial and partial["dataset_filter"] is not None:
+            _validate_dataset_filter(partial["dataset_filter"])
+        if "schedule_tier" in partial:
+            _validate_schedule_tier(partial["schedule_tier"])
 
-        result = await self._db.execute(
-            select(MetagenConfig).where(MetagenConfig.dataset_urn == dataset_urn)
-        )
+        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("config", dataset_urn)
+            raise EntityNotFoundError("metagen_conf", "singleton")
 
-        for field_name in ("targets", "code_refs", "schedule_tier", "owner"):
-            if field_name in patch and patch[field_name] is not None:
-                setattr(row, field_name, patch[field_name])
-        if "is_enabled" in patch and patch["is_enabled"] is not None:
-            row.is_enabled = patch["is_enabled"]
+        for field_name in ("is_enabled", "schedule_tier", "dataset_filter", "result_limit", "overwrite_pending"):
+            if field_name in partial and partial[field_name] is not None:
+                setattr(row, field_name, partial[field_name])
+            elif field_name == "schedule_tier" and field_name in partial and partial[field_name] is None:
+                row.schedule_tier = None
 
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
         await self._db.commit()
         await self._db.refresh(row)
 
-        await self._record_event(
-            dataset_urn,
+        await self._record_metagen_event(
+            "singleton",
             METAGEN_CONFIG_UPDATE,
             "success",
-            {
-                "operation": "PATCH",
-                "config_id": str(row.id),
-                "fields_changed": list(patch.keys()),
-            },
+            {"operation": "PATCH", "fields_changed": list(partial.keys())},
         )
-        return _config_from_row(row)
+        return _conf_to_dto(row)
 
-    async def delete_config(self, dataset_urn: str) -> None:
-        """Delete a metagen config.  Emits METAGEN.CONFIG_DELETE."""
+    async def delete_global_conf(self) -> None:
+        """Delete the singleton conf. Emits METAGEN.CONFIG_DELETE."""
+        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
+        row = result.scalar_one_or_none()
+        if row is not None:
+            await self._db.delete(row)
+            await self._db.commit()
+
+        await self._record_metagen_event(
+            "singleton",
+            METAGEN_CONFIG_DELETE,
+            "success",
+            {"operation": "DELETE"},
+        )
+
+    # ── Boundary CRUD ─────────────────────────────────────────────────────────
+
+    async def get_boundary(self, urn: str) -> MetagenBoundaryDTO | None:
         result = await self._db.execute(
-            select(MetagenConfig).where(MetagenConfig.dataset_urn == dataset_urn)
+            select(MetagenBoundary).where(MetagenBoundary.dataset_urn == urn)
+        )
+        row = result.scalar_one_or_none()
+        return _boundary_to_dto(row) if row else None
+
+    async def put_boundary(self, urn: str, boundary: dict[str, Any]) -> MetagenBoundaryDTO:
+        """Create or replace a boundary row."""
+        allowed = boundary.get("allowed", [])
+        for kind in allowed:
+            if kind not in _VALID_KINDS:
+                raise PreconditionFailedError(
+                    "INVALID_PARAMETER",
+                    f"allowed kind {kind!r} must be one of {sorted(_VALID_KINDS)}",
+                )
+
+        result = await self._db.execute(
+            select(MetagenBoundary).where(MetagenBoundary.dataset_urn == urn)
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing is None:
+            existing = MetagenBoundary(dataset_urn=urn)
+            self._db.add(existing)
+
+        existing.is_enabled = boundary.get("is_enabled", False)
+        existing.allowed = allowed
+        existing.owner = boundary.get("owner")
+        existing.updated_at = datetime.now(tz=UTC)
+
+        await self._db.commit()
+        await self._db.refresh(existing)
+        return _boundary_to_dto(existing)
+
+    async def patch_boundary(self, urn: str, patch: dict[str, Any]) -> MetagenBoundaryDTO:
+        """Partial update of a boundary row."""
+        if "allowed" in patch and patch["allowed"] is not None:
+            for kind in patch["allowed"]:
+                if kind not in _VALID_KINDS:
+                    raise PreconditionFailedError(
+                        "INVALID_PARAMETER",
+                        f"allowed kind {kind!r} must be one of {sorted(_VALID_KINDS)}",
+                    )
+
+        result = await self._db.execute(
+            select(MetagenBoundary).where(MetagenBoundary.dataset_urn == urn)
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("config", dataset_urn)
+            raise EntityNotFoundError("metagen_boundary", urn)
 
-        config_id = str(row.id)
+        for field_name in ("is_enabled", "allowed", "owner"):
+            if field_name in patch and patch[field_name] is not None:
+                setattr(row, field_name, patch[field_name])
+            elif field_name == "owner" and "owner" in patch and patch["owner"] is None:
+                row.owner = None
+
+        row.updated_at = datetime.now(tz=UTC)
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+        return _boundary_to_dto(row)
+
+    async def delete_boundary(self, urn: str) -> None:
+        """Delete a boundary row."""
+        result = await self._db.execute(
+            select(MetagenBoundary).where(MetagenBoundary.dataset_urn == urn)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise EntityNotFoundError("metagen_boundary", urn)
         await self._db.delete(row)
         await self._db.commit()
 
-        await self._record_event(
-            dataset_urn,
-            METAGEN_CONFIG_DELETE,
-            "success",
-            {"operation": "DELETE", "config_id": config_id},
-        )
+    # ── Items ─────────────────────────────────────────────────────────────────
 
-    async def list_configs(
+    async def list_items(
         self,
+        *,
+        dataset_urn: str | None = None,
+        kind: str | None = None,
+        status: str | None = None,
         offset: int = 0,
         limit: int = 20,
-        is_enabled_filter: bool | None = None,
-        order_by: Any = None,
-    ) -> tuple[list[MetagenConfigRecord], int]:
-        base = select(MetagenConfig)
-        if is_enabled_filter is not None:
-            base = base.where(MetagenConfig.is_enabled == is_enabled_filter)
+    ) -> tuple[list[ItemSummaryDTO], int]:
+        base = select(MetagenItem)
+        if dataset_urn is not None:
+            base = base.where(MetagenItem.dataset_urn == dataset_urn)
+        if kind is not None:
+            base = base.where(MetagenItem.kind == kind)
 
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
-        default_order = MetagenConfig.created_at.desc()
-        rows_q = (
-            base.order_by(order_by if order_by is not None else default_order)
-            .offset(offset)
-            .limit(limit)
-        )
+        rows_q = base.order_by(MetagenItem.updated_at.desc()).offset(offset).limit(limit)
         rows = (await self._db.execute(rows_q)).scalars().all()
-        return [_config_from_row(r) for r in rows], total
 
-    async def list_active_for_tier(self, tier: str) -> list[MetagenConfigRecord]:
-        """Return all is_enabled=True configs matching the given schedule_tier."""
+        summaries: list[ItemSummaryDTO] = []
+        for row in rows:
+            summary = await self._build_item_summary(row, status_filter=status)
+            if summary is not None:
+                summaries.append(summary)
+
+        return summaries, total
+
+    async def get_item(self, dataset_urn: str, item_id: str) -> ItemDetailDTO:
         result = await self._db.execute(
-            select(MetagenConfig).where(
-                MetagenConfig.is_enabled.is_(True),
-                MetagenConfig.schedule_tier == tier,
+            select(MetagenItem).where(
+                MetagenItem.dataset_urn == dataset_urn,
+                MetagenItem.item_id == item_id,
             )
-        )
-        return [_config_from_row(r) for r in result.scalars().all()]
-
-    # ── Results ───────────────────────────────────────────────────────────────
-
-    async def list_results(
-        self,
-        dataset_urn: str,
-        latest: bool = False,
-        approved: bool | None = None,
-        from_dt: datetime | None = None,
-        to_dt: datetime | None = None,
-        offset: int = 0,
-        limit: int = 20,
-        order_by: Any = None,
-    ) -> tuple[list[MetagenResultRecord], int]:
-        base = select(MetagenResult).where(MetagenResult.dataset_urn == dataset_urn)
-
-        if from_dt is not None:
-            base = base.where(MetagenResult.generated_at >= from_dt)
-        if to_dt is not None:
-            base = base.where(MetagenResult.generated_at <= to_dt)
-
-        count_q = select(func.count()).select_from(base.subquery())
-        total = (await self._db.execute(count_q)).scalar() or 0
-
-        default_order = MetagenResult.generated_at.desc()
-        rows_q = (
-            base.order_by(order_by if order_by is not None else default_order)
-            .offset(offset)
-            .limit(1 if latest else limit)
-        )
-        rows = (await self._db.execute(rows_q)).scalars().all()
-        return [_result_from_row(r) for r in rows], total
-
-    async def get_result(self, result_id: str) -> MetagenResultRecord:
-        try:
-            result_uuid = uuid.UUID(result_id)
-        except ValueError:
-            raise EntityNotFoundError("metagen_result", result_id)
-        result = await self._db.execute(
-            select(MetagenResult).where(MetagenResult.id == result_uuid)
         )
         row = result.scalar_one_or_none()
         if row is None:
-            raise EntityNotFoundError("metagen_result", result_id)
-        return _result_from_row(row)
+            raise EntityNotFoundError("metagen_item", f"{dataset_urn}::{item_id}")
+        return await self._build_item_detail(row)
 
-    async def list_metagen(
-        self,
-        offset: int = 0,
-        limit: int = 20,
-        order_by: Any = None,
-    ) -> tuple[list[MetagenResultRecord], int]:
-        """Cross-dataset list view — one row per dataset (latest result).
+    async def list_items_for_dataset(
+        self, urn: str, *, offset: int = 0, limit: int = 20
+    ) -> tuple[list[ItemSummaryDTO], int]:
+        return await self.list_items(dataset_urn=urn, offset=offset, limit=limit)
 
-        Uses PostgreSQL DISTINCT ON to return only the most recent
-        MetagenResult per dataset_urn.  total_count reflects the number
-        of distinct datasets, not the total result count.
-        """
-        # DISTINCT ON (dataset_urn) selects the first row per group when
-        # ordered by (dataset_urn, generated_at desc) — i.e. the latest.
-        dedup_q = (
-            select(MetagenResult)
-            .order_by(
-                MetagenResult.dataset_urn,
-                MetagenResult.generated_at.desc(),
-            )
-            .distinct(MetagenResult.dataset_urn)
-        )
-        # Count distinct datasets by wrapping the dedup query as a subquery
-        count_q = select(func.count()).select_from(dedup_q.subquery())
-        total = (await self._db.execute(count_q)).scalar() or 0
-
-        paginated_q = dedup_q.offset(offset).limit(limit)
-        rows = (await self._db.execute(paginated_q)).scalars().all()
-        return [_result_from_row(r) for r in rows], total
+    async def get_item_for_dataset(self, urn: str, item_id: str) -> ItemDetailDTO:
+        return await self.get_item(urn, item_id)
 
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
     async def run(
         self,
-        dataset_urn: str,
         *,
+        tier: str | None = None,
+        dataset_urns: list[str] | None = None,
         dry_run: bool = False,
-        run_id: str | None = None,
-    ) -> MetagenResultRecord:
-        """Generate metadata proposals for *dataset_urn*.
+    ) -> RunResultDTO:
+        """Global metagen inference pipeline, serialised by Redis lock.
 
-        Pipeline:
-        1. Acquire Redis SETNX guard (if cache is available).
-        2. Load metagen config; raise EntityNotFoundError if absent.
-        3. Gather DataHub evidence (unified six-aspect proofread boundary).
-        4. Resolve node membership from dataset_node_map (UC3 integration).
-        5. Build LLM prompt per target; call LLM.
-        6. For cross_data.md: inspect existing related document entities.
-        7. Persist MetagenResult with all fields in ``pending`` status.
-        8. Emit METAGEN.COMPLETE.
-
-        Raises ConflictError("GENERATION_RUNNING") when a concurrent run is
-        already in progress for the same dataset_urn.
+        - Raises ConflictError(METAGEN_RUNNING) if already running.
+        - Raises ConflictError(METAGEN_DISABLED) if conf.is_enabled=false and not dry_run.
+        - Returns early (no-op success) when tier is provided but conf.schedule_tier != tier.
         """
-        # Step 1: Redis SETNX concurrency guard (CAS token prevents cross-worker deletion)
-        lock_key = f"metagen:running:{dataset_urn}"
-        lock_token: str | None = None
-        if self._cache is not None:
-            lock_token = secrets.token_urlsafe(16)
-            acquired = await self._cache.set_nx(lock_key, lock_token, ttl_seconds=_METAGEN_LOCK_TTL)
-            if not acquired:
-                raise ConflictError(
-                    "GENERATION_RUNNING",
-                    f"Metadata generation is already running for {dataset_urn}",
-                )
+        run_id = str(uuid.uuid4())
+        lock_token = secrets.token_urlsafe(16)
+        acquired = await self._cache.set_nx(_LOCK_KEY, lock_token, ttl_seconds=_LOCK_TTL_SECONDS)
+        if not acquired:
+            raise ConflictError("METAGEN_RUNNING", "Metagen inference is already running")
 
         try:
-            return await self._run_inner(dataset_urn, dry_run=dry_run, run_id=run_id)
+            return await self._run_inner(
+                tier=tier, dataset_urns=dataset_urns, dry_run=dry_run, run_id=run_id
+            )
+        except ConflictError:
+            raise
+        except Exception as exc:
+            logger.error("metagen_run_failed", exc_info=True)
+            try:
+                await self._record_metagen_event(
+                    "singleton",
+                    METAGEN_RUN_FAILED,
+                    "failure",
+                    {"error": str(exc), "run_id": run_id},
+                )
+            except Exception:
+                logger.warning("metagen_run_failed_event_emit_failed", exc_info=True)
+            raise
         finally:
-            if self._cache is not None and lock_token is not None:
-                await self._cache.delete_if_value(lock_key, lock_token)
+            await self._cache.delete_if_value(_LOCK_KEY, lock_token)
 
     async def _run_inner(
         self,
-        dataset_urn: str,
         *,
-        dry_run: bool = False,
-        run_id: str | None = None,
-    ) -> MetagenResultRecord:
-        """Inner run logic (called inside the SETNX guard)."""
-        config = await self.get_config(dataset_urn)
-        if config is None:
-            raise EntityNotFoundError("config", dataset_urn)
+        tier: str | None,
+        dataset_urns: list[str] | None,
+        dry_run: bool,
+        run_id: str,
+    ) -> RunResultDTO:
+        conf = await self._load_conf_or_default()
 
-        if not config.is_enabled and not dry_run:
-            raise ConflictError(
-                "GENERATION_DISABLED",
-                f"Metadata generation is disabled for {dataset_urn}; only dry-run is permitted",
+        # Tier short-circuit: DAG-triggered runs check schedule_tier before doing work.
+        # This runs before the enabled check so disabled+wrong-tier runs silently no-op.
+        if tier is not None and conf.schedule_tier != tier:
+            return RunResultDTO(
+                run_id=run_id,
+                status="skipped",
+                dry_run=dry_run,
+                unresolved_urns=[],
+                counts={"items_considered": 0},
             )
 
-        run_id_str = run_id or str(uuid.uuid4())
+        if not conf.is_enabled and not dry_run:
+            raise ConflictError("METAGEN_DISABLED", "Metagen is disabled; only dry-run is permitted")
 
-        # Step 2: Gather evidence
-        evidence = await self._gather_evidence(dataset_urn, config.targets)
-
-        # Step 3: Node membership (UC3 integration)
-        node_map = (
-            (
-                await self._db.execute(
-                    select(DatasetNodeMap).where(
-                        DatasetNodeMap.dataset_urn == dataset_urn,
-                        DatasetNodeMap.status == "approved",
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        # Step 1: Enumerate in-scope datasets
+        in_scope_urns, unresolved_urns = await self._enumerate_in_scope_datasets(
+            conf, dataset_urns
         )
-        approved_node_ids = [m.node_id for m in node_map]
-        evidence["ontogen_node_ids"] = approved_node_ids
 
-        # Step 3b: Fetch approved triples touching these nodes (UC3 → UC4 integration).
-        # Spec: spec/feature/BACKEND.md §Generation Pipeline; spec/USE_CASE_en.md §UC4 Inputs.
-        if approved_node_ids:
-            triples_result = await self._db.execute(
-                select(OntogenTriple, OntogenEdge)
-                .join(OntogenEdge, OntogenTriple.edge_id == OntogenEdge.id)
-                .join(
-                    OntogenNode,
-                    or_(
-                        OntogenTriple.subject_node_id == OntogenNode.id,
-                        OntogenTriple.object_node_id == OntogenNode.id,
-                    ),
-                )
-                .where(
-                    OntogenTriple.status == "approved",
-                    OntogenEdge.status == "approved",
-                    OntogenNode.status == "approved",
-                    or_(
-                        OntogenTriple.subject_node_id.in_(approved_node_ids),
-                        OntogenTriple.object_node_id.in_(approved_node_ids),
-                    ),
-                )
-                .distinct()
+        run_uuid = uuid.UUID(run_id)
+        items_considered = 0
+        candidates_added = 0
+        candidates_evicted = 0
+        rejected_cleared = 0
+        debate_outcome: str | None = None
+        producer_iterations: int | None = None
+
+        # Step 2: Clear rejected candidates across in-scope datasets
+        if not dry_run:
+            rejected_cleared = await self._clear_rejected_candidates(in_scope_urns)
+
+        for urn in in_scope_urns:
+            # Step 3: Fetch evidence
+            evidence = await self._fetch_evidence(urn)
+
+            # Step 4: Enumerate target items for this dataset
+            boundary_result = await self._db.execute(
+                select(MetagenBoundary).where(MetagenBoundary.dataset_urn == urn)
             )
-            evidence["ontogen_triples"] = [
-                {
-                    "subject_node_id": triple.subject_node_id,
-                    "edge_id": triple.edge_id,
-                    "edge_label": edge.label,
-                    "object_node_id": triple.object_node_id,
-                }
-                for triple, edge in triples_result.all()
-            ]
-        else:
-            evidence["ontogen_triples"] = []
+            boundary = boundary_result.scalar_one_or_none()
+            if boundary is None or not boundary.is_enabled:
+                continue
 
-        # Step 4+5: Call LLM per target
-        proposals: dict[str, Any] = {}
-        for target in config.targets:
-            try:
-                proposals[target] = await self._propose_target(target, dataset_urn, evidence)
-            except Exception:
-                logger.warning(
-                    "metagen_proposal_failed",
-                    extra={"target": target, "dataset_urn": dataset_urn},
-                    exc_info=True,
+            # Get approved items to skip in producer
+            approved_result = await self._db.execute(
+                select(MetagenCandidate.dataset_urn, MetagenCandidate.item_id).where(
+                    MetagenCandidate.dataset_urn == urn,
+                    MetagenCandidate.status == "approved",
                 )
-                proposals[target] = None
+            )
+            approved_item_ids: frozenset[tuple[str, str]] = frozenset(
+                (r.dataset_urn, r.item_id) for r in approved_result.fetchall()
+            )
+
+            target_items = list(
+                self._enumerate_target_items(urn, boundary, evidence, approved_item_ids)
+            )
+            items_considered += len(target_items)
+
+            if not target_items:
+                continue
+
+            # Step 5: Run adversarial debate
+            run_nonce = secrets.token_hex(8)
+            prompt = build_run_prompt(
+                evidence_per_dataset={urn: evidence},
+                target_items=target_items,
+                nonce=run_nonce,
+            )
+
+            schema_field_paths = {
+                urn: {
+                    f.get("fieldPath", "")
+                    for f in evidence.get("schemaMetadata", {}).get("fields", [])
+                    if f.get("fieldPath")
+                }
+            }
+            boundary_allowed = {urn: list(boundary.allowed)}
+
+            validate_tool = build_metagen_validate_tool(
+                in_scope_urns=frozenset([urn]),
+                boundary_allowed=boundary_allowed,
+                schema_field_paths=schema_field_paths,
+                approved_item_ids=approved_item_ids,
+            )
+            review_tool = build_metagen_review_tool()
+
+            debate_result = await run_debate(
+                llm=self._llm,
+                vector=self._vector,
+                db=self._db,
+                producer_prompt=prompt,
+                validate_tool=validate_tool,
+                review_tool=review_tool,
+                in_scope_urns=frozenset([urn]),
+                max_turns=settings.metagen_debate_max_turns,
+                rag_k=settings.metagen_debate_rag_k,
+                reviewer_model=settings.metagen_debate_reviewer_model,
+                producer_schema=MetagenLLMOutput,
+                producer_max_iterations=settings.metagen_llm_max_iterations,
+                run_id=run_id,
+            )
+            debate_outcome = debate_result.outcome
+            producer_iterations = debate_result.transcript.get("producer_iterations", 1)
+
+            # Only accept outcome persists candidates; drop on turns_exhausted / cycle_detected
+            if debate_result.outcome != "accept":
+                logger.info(
+                    "metagen_debate_candidates_dropped",
+                    extra={
+                        "dataset_urn": urn,
+                        "outcome": debate_result.outcome,
+                        "run_id": run_id,
+                    },
+                )
+                continue
+
+            try:
+                candidate_output = MetagenLLMOutput.model_validate(debate_result.payload)
+            except PydanticValidationError:
+                logger.warning(
+                    "metagen_llm_output_validation_failed",
+                    extra={"dataset_urn": urn},
+                )
+                continue
+
+            accepted = [
+                c for c in candidate_output.candidates
+                if c.confidence_score >= settings.metagen_confidence_threshold
+            ]
+
+            if dry_run:
+                candidates_added += len(accepted)
+                continue
+
+            for cand in accepted:
+                added, evicted = await self._apply_per_item_budget(
+                    urn=cand.dataset_urn,
+                    item_id=cand.item_id,
+                    new_candidate_value=cand.value,
+                    new_candidate_confidence=cand.confidence_score,
+                    new_candidate_evidence=dict(debate_result.transcript),
+                    run_id=run_uuid,
+                    conf=conf,
+                )
+                if added:
+                    candidates_added += 1
+                if evicted:
+                    candidates_evicted += 1
 
         if dry_run:
-            # Emit METAGEN.COMPLETE before returning — dry-run is recorded same as real run
-            await self._record_event(
-                dataset_urn,
-                METAGEN_COMPLETE,
-                "success",
-                {
-                    "run_id": run_id_str,
-                    "result_id": None,
-                    "targets": config.targets,
-                    "dry_run": True,
-                },
-            )
-            return MetagenResultRecord(
-                id=run_id_str,
-                dataset_urn=dataset_urn,
-                proposals=proposals,
-                field_status={k: "pending" for k in proposals},
-                run_id=run_id_str,
-                generated_at=datetime.now(tz=UTC),
-            )
+            counts: dict[str, int] = {
+                "items_considered": items_considered,
+                "candidates_proposed": candidates_added,
+            }
+        else:
+            counts = {
+                "items_considered": items_considered,
+                "candidates_added": candidates_added,
+                "candidates_evicted": candidates_evicted,
+                "rejected_cleared": rejected_cleared,
+            }
 
-        # Step 6: Build field_status — all fields start as pending
-        field_status = _build_initial_field_status(proposals)
-
-        # Step 6: Persist
-        result_row = MetagenResult(
-            dataset_urn=dataset_urn,
-            proposals=proposals,
-            field_status=field_status,
-            run_id=uuid.UUID(run_id_str),
-            generated_at=datetime.now(tz=UTC),
-        )
-        self._db.add(result_row)
-        await self._db.commit()
-        await self._db.refresh(result_row)
-
-        # Step 7: Emit METAGEN.COMPLETE
-        await self._record_event(
-            dataset_urn,
-            METAGEN_COMPLETE,
+        await self._record_metagen_event(
+            "singleton",
+            METAGEN_RUN_COMPLETE,
             "success",
             {
-                "run_id": run_id_str,
-                "result_id": str(result_row.id),
-                "targets": config.targets,
-                "dry_run": False,
+                "run_id": run_id,
+                "unresolved_urns": unresolved_urns,
+                "counts": counts,
+                "dry_run": dry_run,
+                "producer_iterations": producer_iterations,
+                "debate_outcome": debate_outcome,
             },
         )
-        return _result_from_row(result_row)
+
+        return RunResultDTO(
+            run_id=run_id,
+            status="success",
+            dry_run=dry_run,
+            unresolved_urns=unresolved_urns,
+            counts=counts,
+            debate_outcome=debate_outcome,
+            producer_iterations=producer_iterations,
+        )
 
     # ── Review ────────────────────────────────────────────────────────────────
 
-    async def review_result(
+    async def review_candidate(
         self,
-        result_id: str,
-        verdict: str,
-        fields: list[str] | None = None,
-        reason: str | None = None,
-    ) -> MetagenResultRecord:
-        """Apply a review verdict to a MetagenResult.
+        *,
+        dataset_urn: str,
+        item_id: str,
+        candidate_id: str,
+        verdict: Literal["approve", "reject"],
+        reason: str,
+        reviewer_id: str | None = None,
+    ) -> CandidateDTO:
+        """Apply a human review verdict to a candidate.
 
-        ``verdict: "approve"`` + ``fields=None`` → approve all.
-        ``verdict: "approve"`` + ``fields=[...]`` → approve only listed.
-        ``verdict: "reject"`` + ``fields=None`` → reject all.
-        ``verdict: "reject"`` + ``fields=[...]`` → reject only listed.
-
-        On approval, writes to editable DataHub aspects via ``emit_mcp``
-        (one emit per affected entity).  For cross_data.md actions, calls
-        ``apply_actions``.
-
-        Emits METAGEN.APPROVE or METAGEN.REJECT.
+        - approve: demote any existing approved sibling; flip target to approved;
+          emit to DataHub editable aspect; emit METAGEN.CANDIDATE_APPROVE.
+        - reject: only valid for llm_approved; raises 409 if already approved;
+          emit METAGEN.CANDIDATE_REJECT.
+        - Raises 422 METAGEN_DATASET_NOT_IN_BOUNDARY if boundary absent/disabled.
         """
-        # Fix #9: validate verdict before any DB work
-        _validate_metagen_verdict(verdict)
+        # Boundary guard
+        bnd_result = await self._db.execute(
+            select(MetagenBoundary).where(MetagenBoundary.dataset_urn == dataset_urn)
+        )
+        boundary = bnd_result.scalar_one_or_none()
+        if boundary is None or not boundary.is_enabled:
+            raise PreconditionFailedError(
+                "METAGEN_DATASET_NOT_IN_BOUNDARY",
+                f"Dataset {dataset_urn!r} has no active boundary — add one via PUT .../attr/metagen/conf",
+            )
 
         try:
-            result_uuid = uuid.UUID(result_id)
+            cand_uuid = uuid.UUID(candidate_id)
         except ValueError:
-            raise EntityNotFoundError("metagen_result", result_id)
-        result = await self._db.execute(
-            select(MetagenResult).where(MetagenResult.id == result_uuid)
+            raise EntityNotFoundError("metagen_candidate", candidate_id)
+
+        cand_result = await self._db.execute(
+            select(MetagenCandidate).where(
+                MetagenCandidate.candidate_id == cand_uuid,
+                MetagenCandidate.dataset_urn == dataset_urn,
+                MetagenCandidate.item_id == item_id,
+            )
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            raise EntityNotFoundError("metagen_result", result_id)
+        cand = cand_result.scalar_one_or_none()
+        if cand is None:
+            raise EntityNotFoundError("metagen_candidate", candidate_id)
 
-        proposals: dict[str, Any] = dict(row.proposals)
-        field_status: dict[str, Any] = dict(row.field_status)
+        now = datetime.now(tz=UTC)
 
-        # Determine which fields to update
-        if fields is None:
-            # All fields
-            target_fields = list(field_status.keys())
-        else:
-            target_fields = fields
-
-        new_status = "approved" if verdict == "approve" else "rejected"
-        for field_path in target_fields:
-            if field_path in field_status:
-                field_status[field_path] = new_status
-
-        row.field_status = field_status
-        row.last_reviewed_at = datetime.now(tz=UTC)
-        self._db.add(row)
-        await self._db.commit()
-        await self._db.refresh(row)
-
-        # On approval: write to DataHub
         if verdict == "approve":
-            approved_fields = [f for f in target_fields if field_status.get(f) == "approved"]
-            await self._apply_approved_fields(row.dataset_urn, proposals, approved_fields)
+            # Atomically demote any existing approved sibling
+            sibling_result = await self._db.execute(
+                select(MetagenCandidate).where(
+                    MetagenCandidate.dataset_urn == dataset_urn,
+                    MetagenCandidate.item_id == item_id,
+                    MetagenCandidate.status == "approved",
+                    MetagenCandidate.candidate_id != cand_uuid,
+                )
+            )
+            sibling = sibling_result.scalar_one_or_none()
+            if sibling is not None:
+                sibling.status = "llm_approved"
+                sibling.reviewed_at = now
+                self._db.add(sibling)
+                # Flush the demotion first so the partial unique index
+                # (UNIQUE (dataset_urn, item_id) WHERE status='approved')
+                # does not see two approved rows simultaneously.
+                await self._db.flush()
 
-        event_type = METAGEN_APPROVE if verdict == "approve" else METAGEN_REJECT
-        await self._record_event(
-            row.dataset_urn,
-            event_type,
-            "success",
-            {
-                "result_id": result_id,
-                "verdict": verdict,
-                "fields": target_fields,
-                "reason": reason,
-            },
-        )
-        return _result_from_row(row)
+            cand.status = "approved"
+            cand.reviewed_at = now
+            cand.reviewer_id = reviewer_id
+            self._db.add(cand)
+            await self._db.commit()
+            await self._db.refresh(cand)
 
-    # ── Events ────────────────────────────────────────────────────────────────
+            # Emit to DataHub editable aspect (best-effort)
+            await self._emit_to_datahub(
+                urn=dataset_urn,
+                item_id=item_id,
+                value=cand.value,
+            )
 
-    async def get_events(
-        self,
-        dataset_urn: str,
-        offset: int = 0,
-        limit: int = 20,
-        from_dt: datetime | None = None,
-        to_dt: datetime | None = None,
-        order_by: Any = None,
-    ) -> tuple[list[dict[str, Any]], int]:
-        base = select(Event).where(
-            Event.entity_type == "dataset",
-            Event.entity_id == dataset_urn,
-            Event.event_type.startswith(METAGEN_PREFIX),
-        )
-        if from_dt is not None:
-            base = base.where(Event.occurred_at >= from_dt)
-        if to_dt is not None:
-            base = base.where(Event.occurred_at <= to_dt)
+            # Refresh embedding for the newly approved candidate
+            await self._refresh_candidate_embedding(cand)
 
-        count_q = select(func.count()).select_from(base.subquery())
-        total = (await self._db.execute(count_q)).scalar() or 0
+            await self._record_dataset_event(
+                dataset_urn,
+                METAGEN_CANDIDATE_APPROVE,
+                "success",
+                {
+                    "item_id": item_id,
+                    "candidate_id": candidate_id,
+                    "reason": reason,
+                },
+            )
 
-        default_order = Event.occurred_at.desc()
-        rows_q = (
-            base.order_by(order_by if order_by is not None else default_order)
-            .offset(offset)
-            .limit(limit)
-        )
-        rows = (await self._db.execute(rows_q)).scalars().all()
-        return [
-            {
-                "id": str(r.id),
-                "entity_type": r.entity_type,
-                "entity_id": r.entity_id,
-                "event_type": r.event_type,
-                "status": r.status,
-                "detail": r.detail,
-                "occurred_at": r.occurred_at,
-            }
-            for r in rows
-        ], total
+        elif verdict == "reject":
+            if cand.status == "approved":
+                raise ConflictError(
+                    "METAGEN_CANNOT_REJECT_APPROVED",
+                    "Cannot reject an approved candidate — approve a different sibling to demote it",
+                )
+
+            cand.status = "rejected"
+            cand.reviewed_at = now
+            cand.reviewer_id = reviewer_id
+            self._db.add(cand)
+            await self._db.commit()
+            await self._db.refresh(cand)
+
+            await self._record_dataset_event(
+                dataset_urn,
+                METAGEN_CANDIDATE_REJECT,
+                "success",
+                {
+                    "item_id": item_id,
+                    "candidate_id": candidate_id,
+                    "reason": reason,
+                },
+            )
+
+        return _candidate_to_dto(cand)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    async def _gather_evidence(
+    async def _load_conf_or_default(self) -> MetagenGlobalConfDTO:
+        """Return the singleton conf or a disabled-default if not yet created."""
+        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
+        row = result.scalar_one_or_none()
+        if row is None:
+            row = MetagenConfig(
+                id=1,
+                is_enabled=False,
+                dataset_filter={},
+                result_limit=3,
+                overwrite_pending=True,
+            )
+            self._db.add(row)
+            await self._db.commit()
+            await self._db.refresh(row)
+        return _conf_to_dto(row)
+
+    async def _enumerate_in_scope_datasets(
         self,
-        dataset_urn: str,
-        targets: list[str],
-    ) -> dict[str, Any]:
-        """Gather DataHub evidence for the LLM generation step (best-effort)."""
+        conf: MetagenGlobalConfDTO,
+        override_urns: list[str] | None,
+    ) -> tuple[list[str], list[str]]:
+        """Intersect DataHub dataset_filter with metagen_boundary.is_enabled=true rows.
+
+        Returns (in_scope_urns, unresolved_urns).
+        """
+        dataset_filter = conf.dataset_filter or {}
+        tags: list[str] = dataset_filter.get("tags") or []
+        glossary_terms: list[str] = dataset_filter.get("glossary_terms") or []
+        explicit_urns: list[str] = override_urns or dataset_filter.get("dataset_urns") or []
+
+        # Resolve from DataHub
+        if not tags and not glossary_terms and not explicit_urns:
+            try:
+                all_urns = await self._datahub.enumerate_datasets()
+                datahub_urn_set: set[str] = set(all_urns)
+            except Exception:
+                logger.warning("metagen_enumerate_all_datasets_failed", exc_info=True)
+                datahub_urn_set = set()
+        else:
+            datahub_urn_set = set()
+            try:
+                if tags or glossary_terms:
+                    matched = await self._datahub.enumerate_datasets(
+                        tags=tags if tags else None,
+                        glossary_terms=glossary_terms if glossary_terms else None,
+                    )
+                    datahub_urn_set.update(matched)
+            except Exception:
+                logger.warning("metagen_enumerate_filtered_datasets_failed", exc_info=True)
+
+        unresolved: list[str] = []
+        for urn in explicit_urns:
+            try:
+                from datahub.metadata.schema_classes import DatasetPropertiesClass
+
+                props = await self._datahub.get_aspect(urn, DatasetPropertiesClass)
+                if props is not None:
+                    datahub_urn_set.add(urn)
+                else:
+                    unresolved.append(urn)
+            except Exception:
+                logger.warning(
+                    "metagen_explicit_urn_check_failed", extra={"urn": urn}, exc_info=True
+                )
+                unresolved.append(urn)
+
+        if not datahub_urn_set:
+            return [], unresolved
+
+        # Intersect with boundary rows where is_enabled=true
+        bnd_result = await self._db.execute(
+            select(MetagenBoundary.dataset_urn).where(MetagenBoundary.is_enabled.is_(True))
+        )
+        enabled_boundary_urns: set[str] = {r.dataset_urn for r in bnd_result.fetchall()}
+
+        in_scope = sorted(datahub_urn_set & enabled_boundary_urns)
+        return in_scope, unresolved
+
+    async def _clear_rejected_candidates(self, in_scope_urns: list[str]) -> int:
+        """Delete rejected candidates across in-scope datasets. Returns deleted row count."""
+        from sqlalchemy.engine import CursorResult
+
+        raw = await self._db.execute(
+            delete(MetagenCandidate).where(
+                MetagenCandidate.dataset_urn.in_(in_scope_urns),
+                MetagenCandidate.status == "rejected",
+            )
+        )
+        await self._db.commit()
+        return (raw.rowcount or 0) if isinstance(raw, CursorResult) else 0
+
+    async def _fetch_evidence(self, urn: str) -> dict[str, Any]:
+        """Fetch DataHub aspects for a single dataset.
+
+        Collects: datasetProperties, schemaMetadata, editableDatasetProperties,
+        editableSchemaMetadata, glossaryTerms, plus UC3-approved nodes/triples.
+        """
         evidence: dict[str, Any] = {}
-
         try:
-            from datahub.metadata.schema_classes import DatasetPropertiesClass
+            from datahub.metadata.schema_classes import (
+                DatasetPropertiesClass,
+                EditableDatasetPropertiesClass,
+                EditableSchemaMetadataClass,
+                GlossaryTermsClass,
+                SchemaMetadataClass,
+            )
 
-            props = await self._datahub.get_aspect(dataset_urn, DatasetPropertiesClass)
+            props = await self._datahub.get_aspect(urn, DatasetPropertiesClass)
             if props:
-                evidence["dataset_name"] = getattr(props, "name", "") or ""
-                evidence["description"] = getattr(props, "description", "") or ""
-        except Exception:
-            logger.warning(
-                "metagen_evidence_props_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
+                evidence["datasetProperties"] = {
+                    "name": getattr(props, "name", None),
+                    "description": getattr(props, "description", None),
+                    "tags": getattr(props, "tags", None),
+                }
 
-        try:
-            from datahub.metadata.schema_classes import SchemaMetadataClass
-
-            schema = await self._datahub.get_aspect(dataset_urn, SchemaMetadataClass)
+            schema = await self._datahub.get_aspect(urn, SchemaMetadataClass)
             if schema and hasattr(schema, "fields"):
-                evidence["schema_fields"] = [
-                    {
-                        "fieldPath": getattr(f, "fieldPath", ""),
-                        "nativeDataType": getattr(f, "nativeDataType", "") or "",
-                        "description": getattr(f, "description", "") or "",
-                    }
-                    for f in schema.fields
-                ]
-        except Exception:
-            logger.warning(
-                "metagen_evidence_schema_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
-            evidence.setdefault("schema_fields", [])
+                evidence["schemaMetadata"] = {
+                    "fields": [
+                        {
+                            "fieldPath": getattr(f, "fieldPath", ""),
+                            "type": str(getattr(f, "type", "")),
+                            "description": getattr(f, "description", None),
+                        }
+                        for f in schema.fields
+                    ]
+                }
 
-        try:
-            from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
-
-            editable_props = await self._datahub.get_aspect(
-                dataset_urn, EditableDatasetPropertiesClass
-            )
+            editable_props = await self._datahub.get_aspect(urn, EditableDatasetPropertiesClass)
             if editable_props:
-                evidence["editable_description"] = getattr(editable_props, "description", None)
-        except Exception:
-            logger.warning(
-                "metagen_evidence_editable_props_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
+                evidence["editableDatasetProperties"] = {
+                    "description": getattr(editable_props, "description", None),
+                }
 
-        try:
-            from datahub.metadata.schema_classes import EditableSchemaMetadataClass
-
-            editable_schema = await self._datahub.get_aspect(
-                dataset_urn, EditableSchemaMetadataClass
-            )
+            editable_schema = await self._datahub.get_aspect(urn, EditableSchemaMetadataClass)
             if editable_schema and hasattr(editable_schema, "editableSchemaFieldInfo"):
-                evidence["editable_field_descriptions"] = [
-                    {
-                        "fieldPath": getattr(f, "fieldPath", ""),
-                        "description": getattr(f, "description", "") or "",
-                    }
-                    for f in editable_schema.editableSchemaFieldInfo
-                    if getattr(f, "description", None)
+                evidence["editableSchemaMetadata"] = {
+                    "editableSchemaFieldInfo": [
+                        {
+                            "fieldPath": getattr(f, "fieldPath", ""),
+                            "description": getattr(f, "description", None),
+                        }
+                        for f in editable_schema.editableSchemaFieldInfo
+                    ]
+                }
+
+            glossary = await self._datahub.get_aspect(urn, GlossaryTermsClass)
+            if glossary and hasattr(glossary, "terms"):
+                evidence["glossaryTerms"] = [
+                    getattr(t, "urn", str(t)) for t in glossary.terms
                 ]
-            else:
-                evidence["editable_field_descriptions"] = []
         except Exception:
-            logger.warning(
-                "metagen_evidence_editable_schema_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
-            )
-            evidence.setdefault("editable_field_descriptions", [])
+            logger.warning("metagen_evidence_fetch_failed", extra={"urn": urn}, exc_info=True)
 
+        # Related document entities (best-effort)
         try:
-            from datahub.metadata.schema_classes import GlossaryTermsClass
-
-            glossary_terms = await self._datahub.get_aspect(dataset_urn, GlossaryTermsClass)
-            if glossary_terms and hasattr(glossary_terms, "terms"):
-                evidence["glossary_terms"] = [str(t.urn) for t in glossary_terms.terms]
-            else:
-                evidence["glossary_terms"] = []
+            evidence["related_documents"] = await fetch_related_documents(urn, self._datahub)
         except Exception:
             logger.warning(
-                "metagen_evidence_glossary_terms_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
+                "metagen_evidence_related_documents_failed", extra={"urn": urn}, exc_info=True
             )
-            evidence.setdefault("glossary_terms", [])
+            evidence.setdefault("related_documents", [])
 
-        # Gather related documents (always, not only for cross_data.md targets)
-        # fetch_related_documents is best-effort and handles its own exceptions internally.
+        # UC3-approved ontology context (human-approved nodes only)
         try:
-            evidence["related_documents"] = await fetch_related_documents(
-                dataset_urn, self._datahub
+            node_map_result = await self._db.execute(
+                select(DatasetNodeMap).where(
+                    DatasetNodeMap.dataset_urn == urn,
+                    DatasetNodeMap.status == "approved",
+                )
             )
+            approved_node_ids = [r.node_id for r in node_map_result.scalars().all()]
+            if approved_node_ids:
+                nodes_result = await self._db.execute(
+                    select(OntogenNode).where(
+                        OntogenNode.id.in_(approved_node_ids),
+                        OntogenNode.status == "approved",
+                    )
+                )
+                nodes = nodes_result.scalars().all()
+                evidence["ontology"] = {
+                    "approved_nodes": [
+                        {"id": n.id, "name": n.name, "description": n.description}
+                        for n in nodes
+                    ]
+                }
         except Exception:
             logger.warning(
-                "metagen_evidence_related_documents_failed",
-                extra={"dataset_urn": dataset_urn},
-                exc_info=True,
+                "metagen_ontology_context_fetch_failed", extra={"urn": urn}, exc_info=True
             )
-            evidence["related_documents"] = []
 
         return evidence
 
-    async def _propose_target(
+    def _enumerate_target_items(
         self,
-        target: str,
-        dataset_urn: str,
+        urn: str,
+        boundary: MetagenBoundary,
         evidence: dict[str, Any],
-    ) -> Any:
-        """Call LLM to generate a proposal for one target.
-
-        Returns:
-          - dataset.description → str
-          - column.description → dict[fieldPath, description]
-          - cross_data.md → list[{action_id, action, ...}]
-        """
-        if target == "dataset.description":
-            return await self._propose_dataset_description(evidence)
-        elif target == "column.description":
-            return await self._propose_column_descriptions(evidence)
-        elif target == "cross_data.md":
-            return await self._propose_cross_data(dataset_urn, evidence)
-        else:
-            logger.warning(
-                "metagen_unknown_target",
-                extra={"target": target, "dataset_urn": dataset_urn},
-            )
-            return None
-
-    async def _propose_dataset_description(self, evidence: dict[str, Any]) -> str:
-        name = evidence.get("dataset_name", "")
-        current_desc = evidence.get("description", "")
-        fields = evidence.get("schema_fields", [])
-        field_summary = ", ".join(f.get("fieldPath", "") for f in fields[:20])
-        node_ids = evidence.get("ontogen_node_ids", [])
-        triples = evidence.get("ontogen_triples", [])
-
-        triple_lines = "\n".join(
-            f"  {t['subject_node_id']} --[{t['edge_label']}]--> {t['object_node_id']}"
-            for t in triples[:30]
-        )
-
-        prompt = (
-            f"Dataset: {name}\n"
-            f"Current description: {current_desc!r}\n"
-            f"Columns: {field_summary}\n"
-            f"Ontology nodes: {node_ids}\n"
-            f"Ontology triples:\n{triple_lines or '(none)'}\n\n"
-            "Write a concise one-paragraph business description for this dataset. "
-            "Return ONLY the description text — no JSON, no formatting."
-        )
-        return await self._llm.complete(prompt)
-
-    async def _propose_column_descriptions(self, evidence: dict[str, Any]) -> dict[str, str]:
-        name = evidence.get("dataset_name", "")
-        schema_fields = evidence.get("schema_fields", [])
-        if not schema_fields:
-            return {}
-
-        field_lines = "\n".join(
-            f"  - {f['fieldPath']} ({f.get('nativeDataType', '')}): {f.get('description', '')}"
-            for f in schema_fields[:40]
-        )
-        triples = evidence.get("ontogen_triples", [])
-        triple_lines = "\n".join(
-            f"  {t['subject_node_id']} --[{t['edge_label']}]--> {t['object_node_id']}"
-            for t in triples[:30]
-        )
-
-        prompt = (
-            f"Dataset: {name}\n"
-            f"Schema:\n{field_lines}\n"
-            f"Ontology triples:\n{triple_lines or '(none)'}\n\n"
-            "For each column, write a concise business-friendly description. "
-            "Return a JSON object mapping fieldPath to description string. "
-            "Respond with ONLY the JSON object."
-        )
-        result = await self._llm.complete_json(prompt)
-        # Ensure it's a flat string-to-string dict
-        if isinstance(result, dict):
-            return {str(k): str(v) for k, v in result.items()}
-        return {}
-
-    async def _propose_cross_data(
-        self,
-        dataset_urn: str,
-        evidence: dict[str, Any],
+        approved_item_ids: frozenset[tuple[str, str]],
     ) -> list[dict[str, Any]]:
-        """Propose cross-dataset document actions for cross_data.md.
+        """Yield target item dicts for the producer prompt.
 
-        The raw LLM response is validated through CrossDataAction before being
-        stored in metagen_results.proposals.  Invalid individual actions are
-        dropped with a WARNING rather than failing the entire proposal.
+        Skips items whose kind is not in boundary.allowed.
+        Skips items that already have an approved candidate.
         """
-        related_docs = evidence.get("related_documents", [])
-        dataset_name = evidence.get("dataset_name", dataset_urn)
-        triples = evidence.get("ontogen_triples", [])
+        items: list[dict[str, Any]] = []
+        allowed = set(boundary.allowed)
 
-        doc_summary = "\n".join(
-            f"  - URN: {doc['urn']}  Title: {doc.get('title', '')}  "
-            f"Related assets: {doc.get('related_assets', [])}\n"
-            f"    Body (excerpt): {doc.get('body', '')[:200]}"
-            for doc in related_docs
-        )
-        triple_lines = "\n".join(
-            f"  {t['subject_node_id']} --[{t['edge_label']}]--> {t['object_node_id']}"
-            for t in triples[:30]
-        )
-
-        prompt = (
-            f"Dataset: {dataset_name} ({dataset_urn})\n"
-            f"Ontology triples:\n{triple_lines or '(none)'}\n"
-            f"Existing documents referencing this dataset:\n{doc_summary or '(none)'}\n\n"
-            "Propose a list of document actions to organize cross-data documentation "
-            "for this dataset. "
-            "Return a JSON array of action objects. Each object must have:\n"
-            '  action_id (str, unique), action (one of: "create", "modify", "delete"),\n'
-            "  confidence (float 0–1),\n"
-            "  and action-specific fields:\n"
-            "    create: title (str, ≤300 chars), body (str, Markdown, ≤50000 chars), "
-            "related_assets (non-empty list of urn:li:dataset:* URNs)\n"
-            "    modify: document_urn (urn:li:document:* URN), body (str, Markdown, ≤50000 chars), "
-            "related_assets (list of urn:li:dataset:* URNs, optional)\n"
-            "    delete: document_urn (urn:li:document:* URN)\n"
-            "Return ONLY the JSON array."
-        )
-        raw_result = await self._llm.complete_json(prompt)
-
-        # Normalise LLM output to a list
-        raw_list: list[Any]
-        if isinstance(raw_result, list):
-            raw_list = raw_result
-        elif isinstance(raw_result, dict):
-            raw_list = []
-            for key in ("actions", "proposals", "items"):
-                val = raw_result.get(key)
-                if isinstance(val, list):
-                    raw_list = val
-                    break
-        else:
-            raw_list = []
-
-        # Validate each item through the schema — drop invalid ones.
-        validated: list[dict[str, Any]] = []
-        _adapter: TypeAdapter[CrossDataAction] = TypeAdapter(CrossDataAction)
-        for idx, item in enumerate(raw_list):
-            try:
-                action = _adapter.validate_python(item)
-                validated.append(action.model_dump())
-            except ValidationError as exc:
-                logger.warning(
-                    "metagen_cross_data_llm_action_invalid",
-                    extra={
-                        "dataset_urn": dataset_urn,
-                        "index": idx,
-                        "error": str(exc),
-                    },
+        if "dataset.description" in allowed:
+            item_id = "dataset.description"
+            if (urn, item_id) not in approved_item_ids:
+                items.append(
+                    {
+                        "dataset_urn": urn,
+                        "item_id": item_id,
+                        "kind": "dataset.description",
+                        "field_path": None,
+                    }
                 )
-        return validated
 
-    async def _apply_approved_fields(
+        if "column.description" in allowed:
+            for field in evidence.get("schemaMetadata", {}).get("fields", []):
+                field_path = field.get("fieldPath", "")
+                if not field_path:
+                    continue
+                item_id = f"column.{field_path}.description"
+                if (urn, item_id) not in approved_item_ids:
+                    items.append(
+                        {
+                            "dataset_urn": urn,
+                            "item_id": item_id,
+                            "kind": "column.description",
+                            "field_path": field_path,
+                        }
+                    )
+
+        return items
+
+    async def _apply_per_item_budget(
         self,
-        dataset_urn: str,
-        proposals: dict[str, Any],
-        approved_fields: list[str],
-    ) -> None:
-        """Write approved field proposals to DataHub editable aspects.
+        urn: str,
+        item_id: str,
+        new_candidate_value: str,
+        new_candidate_confidence: float,
+        new_candidate_evidence: dict[str, Any],
+        run_id: uuid.UUID,
+        conf: MetagenGlobalConfDTO,
+    ) -> tuple[bool, bool]:
+        """Ensure the per-item budget and persist the new candidate.
 
-        Groups writes per entity and issues a single emit_mcp per entity.
+        Returns (added, evicted).
+
+        When budget is full and overwrite_pending=true: evict oldest llm_approved,
+        then add. When budget is full and overwrite_pending=false: skip (no add, no evict).
         """
-        # Separate dataset.description, column.description.{fieldPath}, cross_data.md.*
-        dataset_desc: str | None = None
-        column_descs: dict[str, str] = {}
-        cross_data_action_ids: list[str] = []
+        # Materialise the item row (upsert)
+        item_result = await self._db.execute(
+            select(MetagenItem).where(
+                MetagenItem.dataset_urn == urn, MetagenItem.item_id == item_id
+            )
+        )
+        item_row = item_result.scalar_one_or_none()
+        if item_row is None:
+            kind = "dataset.description" if item_id == "dataset.description" else "column.description"
+            field_path: str | None = None
+            if kind == "column.description":
+                field_path = item_id[len("column.") : -len(".description")]
+            item_row = MetagenItem(
+                dataset_urn=urn,
+                item_id=item_id,
+                kind=kind,
+                field_path=field_path,
+            )
+            self._db.add(item_row)
+            await self._db.flush()
 
-        for field_path in approved_fields:
-            if field_path == "dataset.description":
-                val = proposals.get("dataset.description")
-                if isinstance(val, str):
-                    dataset_desc = val
-            elif field_path.startswith("column.description."):
-                fp = field_path[len("column.description.") :]
-                col_proposals = proposals.get("column.description") or {}
-                if isinstance(col_proposals, dict) and fp in col_proposals:
-                    column_descs[fp] = str(col_proposals[fp])
-            elif field_path.startswith("cross_data.md."):
-                action_id = field_path[len("cross_data.md.") :]
-                cross_data_action_ids.append(action_id)
+        # Count non-rejected candidates
+        count_result = await self._db.execute(
+            select(func.count()).where(
+                MetagenCandidate.dataset_urn == urn,
+                MetagenCandidate.item_id == item_id,
+                MetagenCandidate.status != "rejected",
+            )
+        )
+        non_rejected_count = count_result.scalar() or 0
 
-        # Write dataset.description
-        if dataset_desc:
-            try:
+        evicted = False
+        if non_rejected_count >= conf.result_limit:
+            if not conf.overwrite_pending:
+                return False, False
+            # Evict oldest llm_approved
+            oldest_result = await self._db.execute(
+                select(MetagenCandidate)
+                .where(
+                    MetagenCandidate.dataset_urn == urn,
+                    MetagenCandidate.item_id == item_id,
+                    MetagenCandidate.status == "llm_approved",
+                )
+                .order_by(MetagenCandidate.created_at.asc())
+                .limit(1)
+            )
+            oldest = oldest_result.scalar_one_or_none()
+            if oldest is None:
+                # No llm_approved to evict (all are approved); skip
+                return False, False
+            await self._db.delete(oldest)
+            await self._db.flush()
+            evicted = True
+
+        new_cand = MetagenCandidate(
+            candidate_id=uuid.uuid4(),
+            dataset_urn=urn,
+            item_id=item_id,
+            run_id=run_id,
+            value=new_candidate_value,
+            confidence_score=new_candidate_confidence,
+            status="llm_approved",
+            evidence=new_candidate_evidence,
+        )
+        self._db.add(new_cand)
+        await self._db.commit()
+        await self._db.refresh(new_cand)
+
+        # Refresh embedding for the new candidate (best-effort)
+        await self._refresh_candidate_embedding(new_cand)
+
+        return True, evicted
+
+    async def _emit_to_datahub(self, urn: str, item_id: str, value: str) -> None:
+        """Write the approved value to the appropriate DataHub editable aspect.
+
+        dataset.description → editableDatasetProperties.description
+        column.<fieldPath>.description → editableSchemaMetadata[fieldPath].description
+        """
+        try:
+            if item_id == "dataset.description":
                 from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
 
-                editable_props = EditableDatasetPropertiesClass(description=dataset_desc)
-                await self._datahub.emit_aspect(dataset_urn, editable_props)
-            except Exception:
-                logger.warning(
-                    "metagen_apply_dataset_description_failed",
-                    extra={"dataset_urn": dataset_urn},
-                    exc_info=True,
+                await self._datahub.emit_aspect(
+                    urn, EditableDatasetPropertiesClass(description=value)
                 )
 
-        # Write column descriptions (read-modify-write to preserve prior approvals)
-        # Fix #10: fetch existing aspect and splice new entries in by fieldPath
-        if column_descs:
-            try:
+            elif item_id.startswith("column.") and item_id.endswith(".description"):
+                field_path = item_id[len("column.") : -len(".description")]
                 from datahub.metadata.schema_classes import (
                     EditableSchemaFieldInfoClass,
                     EditableSchemaMetadataClass,
                 )
 
-                existing_schema = await self._datahub.get_aspect(
-                    dataset_urn, EditableSchemaMetadataClass
+                # Fetch existing to merge (preserve other field edits)
+                existing = await self._datahub.get_aspect(
+                    urn, EditableSchemaMetadataClass
                 )
-                if existing_schema is not None:
-                    # Build a dict of existing entries keyed by fieldPath
-                    existing_info: dict[str, Any] = {
-                        getattr(f, "fieldPath", ""): f
-                        for f in (existing_schema.editableSchemaFieldInfo or [])
-                    }
-                    # Splice in the new/updated entries
-                    for fp, desc in column_descs.items():
-                        existing_info[fp] = EditableSchemaFieldInfoClass(
-                            fieldPath=fp, description=desc
+                if existing and hasattr(existing, "editableSchemaFieldInfo"):
+                    field_infos = list(existing.editableSchemaFieldInfo)
+                    for fi in field_infos:
+                        if getattr(fi, "fieldPath", None) == field_path:
+                            fi.description = value
+                            break
+                    else:
+                        field_infos.append(
+                            EditableSchemaFieldInfoClass(
+                                fieldPath=field_path, description=value
+                            )
                         )
-                    merged_fields = list(existing_info.values())
                 else:
-                    merged_fields = [
-                        EditableSchemaFieldInfoClass(fieldPath=fp, description=desc)
-                        for fp, desc in column_descs.items()
+                    field_infos = [
+                        EditableSchemaFieldInfoClass(fieldPath=field_path, description=value)
                     ]
-
-                editable_schema = EditableSchemaMetadataClass(editableSchemaFieldInfo=merged_fields)
-                await self._datahub.emit_aspect(dataset_urn, editable_schema)
-            except Exception:
-                logger.warning(
-                    "metagen_apply_column_descriptions_failed",
-                    extra={"dataset_urn": dataset_urn},
-                    exc_info=True,
+                await self._datahub.emit_aspect(
+                    urn, EditableSchemaMetadataClass(editableSchemaFieldInfo=field_infos)
                 )
+        except Exception:
+            logger.warning(
+                "metagen_datahub_emit_failed",
+                extra={"urn": urn, "item_id": item_id},
+                exc_info=True,
+            )
 
-        # Apply cross_data.md actions
-        if cross_data_action_ids:
-            cross_data_proposals: list[dict[str, Any]] = proposals.get("cross_data.md") or []
-            if not isinstance(cross_data_proposals, list):
-                cross_data_proposals = []
+    async def _refresh_candidate_embedding(self, cand: MetagenCandidate) -> None:
+        """Embed the candidate value and upsert metagen_candidate_embeddings (best-effort)."""
+        try:
+            kind = "dataset.description" if cand.item_id == "dataset.description" else "column.description"
+            vec = await self._llm.embed(cand.value)
+            await _upsert_candidate_embedding(
+                self._vector, str(cand.candidate_id), kind, vec
+            )
+        except Exception:
+            logger.warning(
+                "metagen_candidate_embedding_upsert_failed",
+                extra={"candidate_id": str(cand.candidate_id)},
+                exc_info=True,
+            )
 
-            # Defense-in-depth: re-validate proposals from mutable JSONB before dispatch.
-            _action_id_set = set(cross_data_action_ids)
-            approved_actions: list[dict[str, Any]] = []
-            _adapter: TypeAdapter[CrossDataAction] = TypeAdapter(CrossDataAction)
-            for raw_action in cross_data_proposals:
-                if not isinstance(raw_action, dict):
-                    continue
-                if raw_action.get("action_id") not in _action_id_set:
-                    continue
-                try:
-                    action = _adapter.validate_python(raw_action)
-                    approved_actions.append(action.model_dump())
-                except ValidationError as exc:
-                    logger.warning(
-                        "metagen_apply_cross_data_revalidation_failed",
-                        extra={
-                            "dataset_urn": dataset_urn,
-                            "action_id": raw_action.get("action_id"),
-                            "error": str(exc),
-                        },
-                    )
+    async def _build_item_summary(
+        self, row: MetagenItem, status_filter: str | None = None
+    ) -> ItemSummaryDTO | None:
+        """Build an ItemSummaryDTO from a MetagenItem row."""
+        q = select(MetagenCandidate).where(
+            MetagenCandidate.dataset_urn == row.dataset_urn,
+            MetagenCandidate.item_id == row.item_id,
+        )
+        if status_filter is not None:
+            q = q.where(MetagenCandidate.status == status_filter)
 
-            if approved_actions:
-                try:
-                    outcomes = await apply_actions(approved_actions, datahub=self._datahub)
-                    logger.info(
-                        "metagen_apply_cross_data_complete",
-                        extra={
-                            "dataset_urn": dataset_urn,
-                            "action_ids": cross_data_action_ids,
-                            "outcomes": outcomes,
-                        },
-                    )
-                except Exception:
-                    logger.warning(
-                        "metagen_apply_cross_data_failed",
-                        extra={"dataset_urn": dataset_urn, "action_ids": cross_data_action_ids},
-                        exc_info=True,
-                    )
+        cands = (await self._db.execute(q)).scalars().all()
 
-    async def _record_event(
+        has_approved = any(c.status == "approved" for c in cands)
+
+        if status_filter is not None and not cands:
+            return None
+
+        return ItemSummaryDTO(
+            dataset_urn=row.dataset_urn,
+            item_id=row.item_id,
+            kind=row.kind,
+            field_path=row.field_path,
+            candidate_count=len(cands),
+            has_approved=has_approved,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    async def _build_item_detail(self, row: MetagenItem) -> ItemDetailDTO:
+        """Build an ItemDetailDTO from a MetagenItem row (includes candidates)."""
+        cands_result = await self._db.execute(
+            select(MetagenCandidate)
+            .where(
+                MetagenCandidate.dataset_urn == row.dataset_urn,
+                MetagenCandidate.item_id == row.item_id,
+            )
+            .order_by(MetagenCandidate.created_at.desc())
+        )
+        candidates = [_candidate_to_dto(c) for c in cands_result.scalars().all()]
+        return ItemDetailDTO(
+            dataset_urn=row.dataset_urn,
+            item_id=row.item_id,
+            kind=row.kind,
+            field_path=row.field_path,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            candidates=candidates,
+        )
+
+    async def _record_metagen_event(
+        self,
+        entity_id: str,
+        event_type: str,
+        status: str,
+        detail: dict[str, Any],
+    ) -> None:
+        event = _event_row("metagen", entity_id, event_type, status, detail)
+        self._db.add(event)
+        await self._db.commit()
+
+    async def _record_dataset_event(
         self,
         dataset_urn: str,
         event_type: str,
         status: str,
         detail: dict[str, Any],
     ) -> None:
-        event = Event(
-            entity_type="dataset",
-            entity_id=dataset_urn,
-            event_type=event_type,
-            status=status,
-            detail=detail,
-            occurred_at=datetime.now(tz=UTC),
-        )
+        event = _event_row("dataset", dataset_urn, event_type, status, detail)
         self._db.add(event)
         await self._db.commit()
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── pgvector helper for metagen_candidate_embeddings ─────────────────────────
 
 
-def _build_initial_field_status(proposals: dict[str, Any]) -> dict[str, Any]:
-    """Build the initial field_status dict with every field set to 'pending'.
+async def _upsert_candidate_embedding(
+    vector: PgVectorManager,
+    candidate_id: str,
+    kind: str,
+    embedding: list[float],
+) -> None:
+    """Upsert a row in metagen_candidate_embeddings for *candidate_id*."""
+    from sqlalchemy import text
 
-    Key format:
-      - "dataset.description"  → single key
-      - "column.description.{fieldPath}" → one key per column
-      - "cross_data.md.{action_id}" → one key per action
-    """
-    status: dict[str, Any] = {}
-
-    for target, value in proposals.items():
-        if target == "dataset.description":
-            status["dataset.description"] = "pending"
-        elif target == "column.description":
-            if isinstance(value, dict):
-                for fp in value:
-                    status[f"column.description.{fp}"] = "pending"
-        elif target == "cross_data.md":
-            if isinstance(value, list):
-                for action in value:
-                    action_id = action.get("action_id")
-                    if action_id:
-                        status[f"cross_data.md.{action_id}"] = "pending"
-            elif isinstance(value, dict):
-                action_id = value.get("action_id")
-                if action_id:
-                    status[f"cross_data.md.{action_id}"] = "pending"
-
-    return status
+    vector_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+    sql = text(
+        """
+        INSERT INTO dataspoke.metagen_candidate_embeddings (candidate_id, kind, embedding)
+        VALUES (CAST(:candidate_id AS uuid), :kind, CAST(:embedding AS vector))
+        ON CONFLICT (candidate_id) DO UPDATE SET
+            kind      = EXCLUDED.kind,
+            embedding = EXCLUDED.embedding
+        """
+    )
+    async with vector._session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sql,
+                {
+                    "candidate_id": candidate_id,
+                    "kind": kind,
+                    "embedding": vector_literal,
+                },
+            )

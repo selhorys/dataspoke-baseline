@@ -450,6 +450,16 @@ dataset. Baseline values: `dataset.description`, `column.description`.
 
 Future scope: `domains` and `globalTags` proposals.
 
+**Item status** (derived from sibling candidates, surfaced on `GET .../metagen/item` and `.../metagen/item/{item_id}` responses):
+
+| Status | Condition |
+|--------|-----------|
+| `approved` | The item has one candidate with `status='approved'` (the partial unique index guarantees at most one). |
+| `llm_approved` | No approved candidate, but at least one `llm_approved` candidate awaits review. |
+| `pending` | No non-rejected candidates exist for the item yet — typically a freshly enumerated slot before its first successful debate run. |
+
+Status is not persisted; it is computed per request from `(has_approved, candidate_count)` over the item's candidates.
+
 **Generation Pipeline** (Airflow tier DAG, schedule from
 `metagen_config.schedule_tier`, or manual `POST /method/run`):
 
@@ -459,7 +469,10 @@ Future scope: `domains` and `globalTags` proposals.
    `is_enabled=true`. Boundary-less or boundary-disabled datasets are
    excluded regardless of `dataset_filter`. Unresolved
    `dataset_urns` entries are accumulated for the run-complete event's
-   `unresolved_urns`.
+   `unresolved_urns`. If the in-scope set is empty, the run still
+   completes successfully and emits `METAGEN.RUN_COMPLETE` with all
+   counts at zero so reviewers and ops dashboards see every scheduled
+   tick.
 2. **Clear `rejected` candidates** across all in-scope datasets so the
    per-item budget frees up.
 3. Per in-scope dataset, fetch DataHub evidence — `datasetProperties`,

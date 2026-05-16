@@ -15,12 +15,14 @@ from sqlalchemy import (
     CheckConstraint,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Text,
     UniqueConstraint,
     desc,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -134,24 +136,39 @@ class ValidationResult(Base):
     )
 
 
-# ── metagen_configs ───────────────────────────────────────────────────────────
+# ── metagen_config (singleton) ────────────────────────────────────────────────
 
 
 class MetagenConfig(Base):
-    __tablename__ = "metagen_configs"
+    __tablename__ = "metagen_config"
     __table_args__ = (
-        UniqueConstraint("dataset_urn"),
+        CheckConstraint("id = 1", name="ck_metagen_config_singleton"),
+        CheckConstraint("result_limit BETWEEN 1 AND 20", name="ck_metagen_config_result_limit"),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    targets: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
-    code_refs: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
-    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    result_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    overwrite_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ── metagen_boundary ──────────────────────────────────────────────────────────
+
+
+class MetagenBoundary(Base):
+    __tablename__ = "metagen_boundary"
+    __table_args__ = {"schema": SCHEMA}
+
+    dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    allowed: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -160,25 +177,102 @@ class MetagenConfig(Base):
     )
 
 
-# ── metagen_results ───────────────────────────────────────────────────────────
+# ── metagen_items ─────────────────────────────────────────────────────────────
 
 
-class MetagenResult(Base):
-    __tablename__ = "metagen_results"
+class MetagenItem(Base):
+    __tablename__ = "metagen_items"
     __table_args__ = (
-        Index("ix_metagen_results_urn_generated", "dataset_urn", desc("generated_at")),
+        CheckConstraint(
+            "kind IN ('dataset.description', 'column.description')",
+            name="ck_metagen_items_kind",
+        ),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    proposals: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    field_status: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    generated_at: Mapped[datetime] = mapped_column(
+    dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
+    item_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    field_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
-    last_reviewed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ── metagen_candidates ────────────────────────────────────────────────────────
+
+
+class MetagenCandidate(Base):
+    __tablename__ = "metagen_candidates"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dataset_urn", "item_id"],
+            [f"{SCHEMA}.metagen_items.dataset_urn", f"{SCHEMA}.metagen_items.item_id"],
+        ),
+        Index(
+            "ix_metagen_candidates_item_status_created",
+            "dataset_urn",
+            "item_id",
+            "status",
+            "created_at",
+        ),
+        Index("ix_metagen_candidates_run_id", "run_id"),
+        Index(
+            "ix_metagen_candidates_one_approved",
+            "dataset_urn",
+            "item_id",
+            unique=True,
+            postgresql_where=text("status = 'approved'"),
+        ),
+        CheckConstraint(
+            "status IN ('llm_approved', 'approved', 'rejected')",
+            name="ck_metagen_candidates_status",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
+    item_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    reviewer_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    embedding: Mapped["MetagenCandidateEmbedding | None"] = relationship(
+        "MetagenCandidateEmbedding", back_populates="candidate", uselist=False
+    )
+
+
+# ── metagen_candidate_embeddings (pgvector) ───────────────────────────────────
+
+
+class MetagenCandidateEmbedding(Base):
+    __tablename__ = "metagen_candidate_embeddings"
+    __table_args__ = {"schema": SCHEMA}
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.metagen_candidates.candidate_id"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+
+    candidate: Mapped["MetagenCandidate"] = relationship(
+        "MetagenCandidate", back_populates="embedding"
+    )
 
 
 # ── metric_definitions ───────────────────────────────────────────────────────

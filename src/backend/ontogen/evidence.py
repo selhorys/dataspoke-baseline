@@ -21,8 +21,8 @@ Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
 import logging
 from typing import Any
 
-from src.backend.metagen.cross_data import fetch_related_documents
 from src.shared.datahub.client import DataHubClient
+from src.shared.datahub.documents import fetch_related_documents
 
 logger = logging.getLogger(__name__)
 
@@ -144,15 +144,14 @@ async def gather_evidence(
         )
         evidence.setdefault("editable_field_descriptions", [])
 
-    # ── Document entities whose relatedAssets include this dataset ────────
+    # ── Related document entities ─────────────────────────────────────────
 
-    # fetch_related_documents is best-effort and returns [] on failure internally;
-    # wrap anyway so any unexpected raise doesn't lose prior evidence keys.
     try:
-        evidence["related_documents"] = await fetch_related_documents(dataset_urn, datahub)
+        docs = await fetch_related_documents(dataset_urn, datahub)
+        evidence["related_documents"] = docs
     except Exception:
         logger.warning(
-            "ontogen_evidence_documents_failed",
+            "ontogen_evidence_related_documents_failed",
             extra={"dataset_urn": dataset_urn},
             exc_info=True,
         )

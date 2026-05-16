@@ -19,8 +19,11 @@ from src.shared.db.models import (
     EdgeEmbedding,
     Event,
     IngestionConfig,
+    MetagenBoundary,
+    MetagenCandidate,
+    MetagenCandidateEmbedding,
     MetagenConfig,
-    MetagenResult,
+    MetagenItem,
     MetricDefinition,
     MetricResult,
     NodeEmbedding,
@@ -41,7 +44,10 @@ ALL_MODELS = [
     ValidationConfig,
     ValidationResult,
     MetagenConfig,
-    MetagenResult,
+    MetagenBoundary,
+    MetagenItem,
+    MetagenCandidate,
+    MetagenCandidateEmbedding,
     MetricDefinition,
     MetricResult,
     Event,
@@ -63,8 +69,11 @@ EXPECTED_TABLES = {
     "dataset_registry",
     "validation_configs",
     "validation_results",
-    "metagen_configs",
-    "metagen_results",
+    "metagen_config",
+    "metagen_boundary",
+    "metagen_items",
+    "metagen_candidates",
+    "metagen_candidate_embeddings",
     "metric_definitions",
     "metric_results",
     "events",
@@ -106,11 +115,11 @@ def test_all_models_use_dataspoke_schema() -> None:
 def test_uuid_primary_keys() -> None:
     # spec: BACKEND_SCHEMA.md — UUID PKs on result/config/event tables.
     # ValidationConfig PK is TEXT (dataset_urn), not UUID — see test_validation_config_text_pk.
+    # MetagenConfig PK is INTEGER (singleton); MetagenCandidate PK is UUID.
     uuid_pk_models = [
         IngestionConfig,
         ValidationResult,
-        MetagenConfig,
-        MetagenResult,
+        MetagenCandidate,
         MetricResult,
         Event,
         OntogenSeed,
@@ -183,9 +192,8 @@ def test_jsonb_columns() -> None:
         (IngestionConfig, "auth"),
         # ValidationConfig: no JSONB column — variables is ARRAY(Text)
         (ValidationResult, "variables"),  # measured variable values
-        (MetagenConfig, "targets"),
-        (MetagenResult, "proposals"),
-        (MetagenResult, "field_status"),
+        (MetagenConfig, "dataset_filter"),
+        (MetagenCandidate, "evidence"),
         (MetricDefinition, "measurement_query"),
         (MetricResult, "breakdown"),
         (Event, "detail"),
@@ -204,9 +212,9 @@ def test_is_enabled_column_on_config_models() -> None:
     """Mutable config models that have lifecycle scheduling use is_enabled (not is_active).
 
     spec: BACKEND_SCHEMA.md — is_enabled present on IngestionConfig, MetagenConfig,
-    MetricDefinition, OntogenConfig. ValidationConfig uses is_removed (soft-delete) instead.
+    MetagenBoundary, MetricDefinition, OntogenConfig. ValidationConfig uses is_removed instead.
     """
-    enabled_models = [IngestionConfig, MetagenConfig, MetricDefinition, OntogenConfig]
+    enabled_models = [IngestionConfig, MetagenConfig, MetagenBoundary, MetricDefinition, OntogenConfig]
     for model in enabled_models:
         col_names = {col.name for col in model.__table__.columns}
         assert "is_enabled" in col_names, f"{model.__name__} missing is_enabled column"
@@ -362,17 +370,26 @@ def test_ingestion_config_has_mode_column() -> None:
     assert "mode" in col_names
 
 
-def test_metagen_result_has_field_status_column() -> None:
-    col_names = {col.name for col in MetagenResult.__table__.columns}
-    assert "field_status" in col_names
-    assert "proposals" in col_names
+def test_metagen_candidate_columns() -> None:
+    """MetagenCandidate must have the columns added in the reshape."""
+    col_names = {col.name for col in MetagenCandidate.__table__.columns}
+    assert "candidate_id" in col_names
+    assert "dataset_urn" in col_names
+    assert "item_id" in col_names
+    assert "run_id" in col_names
+    assert "value" in col_names
+    assert "confidence_score" in col_names
+    assert "status" in col_names
+    assert "evidence" in col_names
 
 
 def test_indexes_exist() -> None:
     # spec: BACKEND_SCHEMA.md §indexes — required indexes per table.
     expected_indexes = {
         "ix_validation_results_urn_data_time",  # (dataset_urn, data_time DESC) for LWW collapse
-        "ix_metagen_results_urn_generated",
+        "ix_metagen_candidates_item_status_created",
+        "ix_metagen_candidates_run_id",
+        "ix_metagen_candidates_one_approved",
         "ix_metric_results_metric_measured",
         "ix_events_entity_occurred",
         "ix_ontogen_triples_subject",

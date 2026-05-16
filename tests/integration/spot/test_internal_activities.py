@@ -190,68 +190,6 @@ async def test_ingestion_run_activity(
 
 
 @pytest.mark.asyncio
-async def test_metagen_list_active_weekly(
-    api_client: httpx.AsyncClient,
-    internal_headers: dict[str, str],
-    admin_headers: dict[str, str],
-) -> None:
-    """POST /internal/activities/metagen/list-active returns URNs for the requested tier
-    and excludes URNs assigned to a different tier.
-
-    spec: BACKEND.md §Tier-DAG selection — tier filter applies to metagen_configs
-    """
-    # spec: BACKEND.md §Tier-DAG selection
-    conf_weekly = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    conf_hourly = f"/api/v1/spoke/common/data/{_ENCODED_URN_2}/attr/metagen/conf"
-
-    # Seed an enabled config in the target tier (weekly)
-    await api_client.put(
-        conf_weekly,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": True,
-            "schedule_tier": "weekly",
-            "owner": "spot-list@imazon.com",
-        },
-    )
-
-    # Seed an enabled config in a DIFFERENT tier (hourly) — must NOT appear in weekly results
-    await api_client.put(
-        conf_hourly,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": True,
-            "schedule_tier": "hourly",
-            "owner": "spot-list@imazon.com",
-        },
-    )
-
-    resp = await api_client.post(
-        "/internal/activities/metagen/list-active",
-        headers=internal_headers,
-        json={"tier": "weekly"},
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-    # Weekly-tier URN must appear
-    assert _TEST_URN in body, (
-        f"Expected {_TEST_URN} in weekly metagen list, got: {body}"
-    )
-    # Hourly-tier URN must NOT appear in weekly results
-    assert _TEST_URN_2 not in body, (
-        f"Tier isolation violated: {_TEST_URN_2} (hourly tier) appeared in weekly list"
-    )
-
-    # Cleanup
-    await api_client.delete(conf_weekly, headers=admin_headers)
-    await api_client.delete(conf_hourly, headers=admin_headers)
-
-
-@pytest.mark.asyncio
 async def test_metagen_run_activity(
     api_client: httpx.AsyncClient,
     internal_headers: dict[str, str],
