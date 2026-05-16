@@ -190,46 +190,27 @@ async def test_ingestion_run_activity(
 
 
 @pytest.mark.asyncio
-async def test_metagen_run_activity(
+async def test_metagen_run_activity_dry(
     api_client: httpx.AsyncClient,
     internal_headers: dict[str, str],
-    admin_headers: dict[str, str],
 ) -> None:
-    """POST /internal/activities/metagen/run executes metagen for a dataset URN.
+    """POST /internal/activities/metagen/run executes the global metagen pipeline (dry_run).
 
-    spec: BACKEND.md §Generation Pipeline — response carries status field.
+    spec: BACKEND.md §UC4 Generation Pipeline — singleton run, response carries status.
+    spec: USE_CASE_en.md §UC4 — dry_run permitted regardless of is_enabled.
     """
-    # spec: BACKEND.md §Metadata Generation Service
-    conf_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    # Create metagen config
-    await api_client.put(
-        conf_url,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": True,
-            "schedule_tier": "weekly",
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
     resp = await api_client.post(
         "/internal/activities/metagen/run",
         headers=internal_headers,
-        json={"dataset_urn": _TEST_URN, "dry_run": False},
+        json={"dry_run": True},
     )
 
     assert resp.status_code == 200
     body = resp.json()
-    # spec: BACKEND.md §Generation Pipeline — response must contain a status indicator
-    # and dataset context; 'id' or 'dataset_urn' are acceptable alongside 'status'
+    # spec: BACKEND.md §UC4 — MetagenRunResponse carries status
     assert "status" in body, (
         f"Expected 'status' in metagen run response, got: {list(body.keys())}"
     )
-
-    # Cleanup
-    await api_client.delete(conf_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio
