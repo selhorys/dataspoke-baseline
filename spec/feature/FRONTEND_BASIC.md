@@ -100,7 +100,7 @@ that violate the project's review model:
 | Approve / reject ontogen node, edge, triple | DG only | `POST /spoke/common/ontogen/result/{node\|edge\|triple}/{id}/method/review` |
 | Trigger ontogen / ingestion / metagen / metric runs | DE, DA, DG | `POST /spoke/.../method/run` |
 | Edit `attr/conf` for any feature | DE, DA, DG | `PUT/PATCH/DELETE /spoke/.../attr/conf` |
-| Approve metagen result fields | DE, DA, DG | `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` |
+| Approve / reject metagen candidates | DE, DA, DG | `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` |
 
 DE and DA render ontogen review **status** but hide the action buttons; the
 governance team holds approval per UC3.

@@ -104,37 +104,91 @@ Multiple rows may share `(dataset_urn, data_time)` — append-only matches DataH
 timeseries aspect semantics. The GET endpoint collapses duplicates with last-write-wins
 per distinct `data_time`.
 
-#### `metagen_configs`
+#### `metagen_config`
 
-Stores per-dataset metadata generation configuration (UC4).
+Singleton row holding the Metadata Generation conf (UC4).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Config identifier |
-| `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `targets` | `JSONB` | List of target documentation fields. Baseline values: `dataset.description`, `column.description`, `cross_data.md` |
-| `code_refs` | `JSONB` NULL | GitHub repo/file references for code analysis |
-| `is_enabled` | `BOOLEAN` | Enable scheduled execution via Airflow |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for periodic runs — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
-| `status` | `TEXT` | `draft` |
-| `owner` | `TEXT` | Owner user ID |
+| `id` | `INTEGER` PK (=1) | Singleton row |
+| `is_enabled` | `BOOLEAN` | Master switch for the metagen DAG |
+| `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.measurement_query.dataset_filter` |
+| `result_limit` | `INTEGER` | Max non-rejected candidates per item (range `[1, 20]`, default `3`) |
+| `overwrite_pending` | `BOOLEAN` | When the per-item budget is full and the item is not finalized, true = evict oldest `llm_approved` candidate; false = skip the item (default true) |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+A `CHECK (id = 1)` constraint enforces singleton.
+
+#### `metagen_boundary`
+
+Per-dataset opt-in boundary for UC4 metagen. Absence of a row, or a row with
+`is_enabled=false`, means the dataset is excluded regardless of the global
+`dataset_filter`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `dataset_urn` | `TEXT` PK | Target dataset URN |
+| `is_enabled` | `BOOLEAN` | When true, this dataset participates in global metagen |
+| `allowed` | `TEXT[]` | Element kinds the global generator may write — subset of `{"dataset.description", "column.description"}` |
+| `owner` | `TEXT` NULL | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-#### `metagen_results`
+#### `metagen_items`
 
-Historical metadata generation proposals, pending review. Each row represents one
-generation run for one dataset.
+One row per (dataset, item slot). Materialized lazily by each run for in-scope
+(dataset, allowed kind) pairs.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Result identifier |
-| `dataset_urn` | `TEXT` | Target dataset |
-| `proposals` | `JSONB` | Per-field proposals keyed by target — `dataset.description`, `column.description.{fieldPath}`, `cross_data.md` (the latter holds an ordered list of `{action_id, action: create\|modify\|delete, title?, body?, related_assets?, document_urn?, ...}` items targeting DataHub `document` entities; `action_id` is the stable string used to reference an individual action via `cross_data.md.<action_id>` in PATCH `fields`) |
-| `field_status` | `JSONB` | Per-field review status — keyed identically to `proposals`, value is `pending` / `approved` / `rejected` / `edited`. Field-level review (a single PATCH may approve a subset) updates only the listed entries. |
-| `run_id` | `UUID` | Airflow DAG run ID |
-| `generated_at` | `TIMESTAMPTZ` | |
-| `last_reviewed_at` | `TIMESTAMPTZ` NULL | Last PATCH timestamp |
+| `dataset_urn` | `TEXT` | Target dataset URN |
+| `item_id` | `TEXT` | `dataset.description` or `column.<fieldPath>.description` |
+| `kind` | `TEXT` | `dataset.description` or `column.description` |
+| `field_path` | `TEXT` NULL | Schema field path (set for `column.description`; null otherwise) |
+| `status` | `TEXT` | `pending` or `finalized`. Set to `finalized` when any candidate row reaches `status='approved'` |
+| `finalized_candidate_id` | `UUID` NULL | FK to the `metagen_candidates` row whose approval finalized this item |
+| `created_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+Primary key: `(dataset_urn, item_id)`.
+
+#### `metagen_candidates`
+
+One row per generated candidate value. Candidates accumulate per item across
+runs up to `metagen_config.result_limit`; `rejected` rows are deleted at the
+start of the next run.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `candidate_id` | `UUID` PK | Candidate identifier |
+| `dataset_urn` | `TEXT` | Target dataset URN |
+| `item_id` | `TEXT` | Item this candidate belongs to (FK `(dataset_urn, item_id)` → `metagen_items`) |
+| `run_id` | `UUID` | The metagen run that produced this candidate |
+| `value` | `TEXT` | Markdown proposal (≤ 16 KiB) |
+| `confidence_score` | `REAL` | Producer-Reviewer debate confidence (`[0.0, 1.0]`) |
+| `status` | `TEXT` | `llm_approved` (debate-accepted, awaiting human), `approved` (human accepted, emitted to DataHub), `rejected` (human rejected, deleted next run) |
+| `evidence` | `JSONB` | Debate transcript (same shape as ontogen `evidence`) plus per-item Reviewer verdicts |
+| `created_at` | `TIMESTAMPTZ` | |
+| `reviewed_at` | `TIMESTAMPTZ` NULL | Human review timestamp |
+| `reviewer_id` | `TEXT` NULL | User ID of the reviewer |
+
+Indexes: `(dataset_urn, item_id, status, created_at)` for FIFO eviction
+queries and per-item budget checks; `(run_id)` for run-scoped cleanup.
+
+#### `metagen_candidate_embeddings`
+
+Vector embeddings of `approved` candidate `value`s. Used by the Reviewer's
+RAG anchor pool in subsequent runs (see
+[BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate)).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `candidate_id` | `UUID` PK | FK to `metagen_candidates` |
+| `kind` | `TEXT` | `dataset.description` or `column.description` (cached for filtered KNN) |
+| `embedding` | `VECTOR` | pgvector embedding of the candidate's `value` |
+
+HNSW index on `embedding` with cosine distance.
 
 #### `ontogen_config`
 
@@ -265,7 +319,7 @@ structure so clients can process them generically (see
 | `id` | `UUID` PK | Event identifier |
 | `entity_type` | `TEXT` | `dataset`, `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds) — classifies the entity, not the feature domain |
 | `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events) |
-| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `NODE.APPROVE`, `TRIPLE.APPROVE`, `METAGEN.APPROVE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
+| `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `NODE.APPROVE`, `TRIPLE.APPROVE`, `METAGEN.CANDIDATE_APPROVE`, `METAGEN.RUN_COMPLETE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |
@@ -311,7 +365,8 @@ Singleton configuration for the multi-perspective overview visualization.
 | Table | Index | Purpose |
 |-------|-------|---------|
 | `validation_results` | `(dataset_urn, data_time DESC)` | Time-range queries on results (historical-baseline GET) |
-| `metagen_results` | `(dataset_urn, generated_at DESC)` | Time-range queries on results |
+| `metagen_candidates` | `(dataset_urn, item_id, status, created_at)` | Per-item FIFO eviction and budget checks |
+| `metagen_candidates` | `(run_id)` | Run-scoped cleanup |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
 | `dataset_node_map` | `(node_id)` | Node-to-datasets lookup |
@@ -437,6 +492,32 @@ the LLM embedding endpoint.
 
 **Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
 DAG / on-demand `ontogen` manual run that refreshes `node_embeddings`.
+
+### `metagen_candidate_embeddings`
+
+Embeddings over `approved` UC4 metagen candidate `value`s. Used by the
+Metagen Adversarial Debate Reviewer to sample RAG anchors of prior
+human-approved descriptions of the same kind (see
+[BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate)).
+Lives in the `dataspoke` schema.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `candidate_id` | `UUID` PK FK → `metagen_candidates(candidate_id)` | Candidate identifier |
+| `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time |
+| `kind` | `TEXT` | Cached item kind (`dataset.description` or `column.description`) for filtered KNN |
+| `updated_at` | `TIMESTAMPTZ` NOT NULL | Last embedding refresh |
+
+**Index**: `metagen_candidate_embeddings_embedding_hnsw_idx` — HNSW over
+`embedding` with `vector_cosine_ops`.
+
+**Embedding input**: The candidate's Markdown `value`. Processed through the
+LLM embedding endpoint.
+
+**Sync triggers**: Inserted at the moment a candidate flips to
+`status='approved'` (synchronous with the DataHub emit). Deleted only when
+the candidate row is deleted (which baseline metagen never does for
+approved rows).
 
 ### Graph (Apache AGE, reserved)
 

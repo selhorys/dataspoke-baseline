@@ -149,19 +149,20 @@ enforces the `groups` claim against the URI tier before dispatching.
 
 All routes are prefixed with `/api/v1`.
 
-> **Routing principle**: Baseline features live under `/spoke/common/` (shared
-> dataset-centric operations: ingestion, validation, ontology generation, metadata generation) and
-> `/spoke/dg/` (governance metrics and overviews). The `/spoke/de/` and
-> `/spoke/da/` tiers exist as extensibility surfaces for organization-specific
-> routes and contain no baseline endpoints. For dataset-centric operations, the
-> `/spoke/common/data/{dataset_urn}/…` structure is the **canonical surface** for
-> per-dataset state (`attr/<feat>/`), actions (`method/<feat>/`), and events
-> (`event/<feat>` or `event`). The dedicated routers
-> `/spoke/common/{ingestion,validation,metagen}` expose only cross-dataset list views
-> that aggregate the per-dataset `attr/<feat>/*` data — they do not expose
-> per-dataset detail (use the canonical `data/{dataset_urn}` surface for that).
-> Any team that owns a dataset can access per-dataset features regardless of
-> group membership.
+> **Routing principle**: Baseline features live under `/spoke/common/` (ingestion,
+> validation, ontology generation, metadata generation) and `/spoke/dg/`
+> (governance metrics and overviews). The `/spoke/de/` and `/spoke/da/` tiers
+> exist as extensibility surfaces for organization-specific routes and contain
+> no baseline endpoints. Per-dataset operations use the canonical
+> `/spoke/common/data/{dataset_urn}/…` surface for state (`attr/<feat>/`),
+> actions (`method/<feat>/`), and events (`event/<feat>` or `event`).
+> Cross-dataset features come in two shapes: `/spoke/common/{ingestion,validation}`
+> are list-view aggregators over the per-dataset `attr/<feat>/*` data;
+> `/spoke/common/{ontogen,metagen}` are full singleton-conf surfaces — a global
+> conf, a manual run trigger, an event log, and result collections — because
+> their lifecycle is one global pipeline rather than per-dataset state. Any
+> team that owns a dataset can access per-dataset features regardless of group
+> membership.
 
 ### Auth
 
@@ -222,17 +223,56 @@ proceeds nodes → edges → triples.
 - `method/run` one-shot Markdown body ≤ 128 KiB
 - node / edge / triple `method/review.reason` ≤ 2,000 chars
 
+#### Metadata Generation (`/spoke/common/metagen`)
+
+Metadata generation is a global pipeline that proposes documentation for
+**editable** DataHub description aspects — table descriptions and column
+descriptions — and lets reviewers approve one value per slot. The conf, the
+manual run trigger, and the inference-run event log are singletons rooted at
+`/spoke/common/metagen`. Per-dataset participation is opt-in via a separate
+boundary row at `/spoke/common/data/{dataset_urn}/attr/metagen/conf`; datasets
+without a boundary row (or with `is_enabled=false`) are skipped regardless of
+the global `dataset_filter`.
+
+The **result granularity is the item, not the run**. An `item` is one
+editable-metadata slot — either `dataset.description` for a dataset, or
+`column.<fieldPath>.description` for one column. Each item holds up to
+`result_limit` candidate values that accumulate across runs. A reviewer
+approves at most one candidate per item (immediate DataHub emit, item
+locked from further generation) and may reject any number of candidates
+(rejected candidates are deleted at the start of the next run). Service
+surface: [BACKEND §Metadata Generation Service](feature/BACKEND.md#metadata-generation-service-srcbackendmetagen).
+LLM step (producer-reviewer adversarial debate, identical wiring to UC3
+ontogen): [BACKEND_LLM §Metagen Adversarial Debate](feature/BACKEND_LLM.md#metagen-adversarial-debate).
+
+| Method | Path | Purpose | Feature | UC |
+|--------|------|---------|---------|-----|
+| `GET` | `/spoke/common/metagen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) | Metadata Generation | UC4 |
+| `PUT` | `/spoke/common/metagen/attr/conf` | Create or replace operational conf | Metadata Generation | UC4 |
+| `PATCH` | `/spoke/common/metagen/attr/conf` | Partially update operational conf | Metadata Generation | UC4 |
+| `DELETE` | `/spoke/common/metagen/attr/conf` | Remove operational conf (effectively disables) | Metadata Generation | UC4 |
+| `POST` | `/spoke/common/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}` narrows scope or evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`. Rejected with `409 METAGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/metagen/event` | Global generation-run event history (e.g. `METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}` — includes all candidates with their statuses | Metadata Generation | UC4 |
+
+**Payload caps** (validated at the schema layer; cap violations return `422`):
+- `attr/conf.dataset_filter.dataset_urns` ≤ 1,000 entries
+- `attr/conf.result_limit` ∈ `[1, 20]`
+- candidate `value` Markdown body ≤ 16 KiB
+- candidate `method/review.reason` ≤ 2,000 chars
+
 #### Data Resource (`/spoke/common/data/{dataset_urn}`)
 
 The canonical resource for a dataset. All teams (DE, DA, DG) access dataset attributes,
-ingestion, validation, and generation through this shared path. The three meta-classifiers
-group sub-resources by feature: state and configuration live under `attr/<feature>/`
-(`conf`, plus `result` for validation and metagen as periodic timeseries), action triggers
-under `method/<feature>/<action>`, and lifecycle events under `event/<feature>` (or
-`event` alone for the unified per-dataset timeline). In a data-mesh organization any team
-that owns a dataset can register and manage ingestion, validation, and generation — DE
-teams provide deep technical specs while DA or other teams may register simpler
-configurations.
+ingestion, validation, and metagen participation through this shared path. The three
+meta-classifiers group sub-resources by feature: state and configuration live under
+`attr/<feature>/` (`conf`, plus `result` for validation timeseries and `item` for the
+per-dataset metagen review queue), action triggers under `method/<feature>/<action>`,
+and lifecycle events under `event/<feature>` (or `event` alone for the unified
+per-dataset timeline). In a data-mesh organization any team that owns a dataset can
+register and manage ingestion, validation, and metagen opt-in — DE teams provide deep
+technical specs while DA or other teams may register simpler configurations.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -251,14 +291,14 @@ configurations.
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a pipeline-emitted result `{data_time, score, variables}`. Unknown variable keys return `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` returns `422 INVALID_SCORE` | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get historical results (timeseries on `data_time`; `?from=…&until=…&limit=…`, default `limit=1000`, server cap `10000`) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get metadata generation configuration (target fields, schedule_tier, status) | Metadata Generation | UC4 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace metadata generation configuration | Metadata Generation | UC4 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Partially update metadata generation configuration | Metadata Generation | UC4 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove metadata generation configuration | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/result` | Get metadata proposals (historical; `?latest=true` for most recent only; `?approved=true` to filter to approved proposals) | Metadata Generation | UC4 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/result/{result_id}` | Approve (or reject, or partially approve specific fields of) a pending metadata proposal — body: `{"verdict": "approve"\|"reject", "fields": [...] (optional, omit for full approval), "reason": "…"}`. On approval, DataSpoke writes the approved subset to DataHub. | Metadata Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/metagen/run` | Trigger metadata generation run; concurrent runs return `409 GENERATION_RUNNING`. Rejected with `409 GENERATION_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Metadata generation event reports (success/failure notices) | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Get per-dataset metagen boundary (`is_enabled`, `allowed`) | Metadata Generation | UC4 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Create or replace the per-dataset boundary; sets which element kinds (`dataset.description`, `column.description`) the global generator may write | Metadata Generation | UC4 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Partially update the boundary | Metadata Generation | UC4 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove the boundary — dataset is excluded from future runs | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/item` | List items for this dataset (each row carries `item_id`, `kind`, `status`, `candidate_count`) | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}` | Item detail including all candidates (`candidate_id`, `value`, `confidence_score`, `status`, `created_at`) | Metadata Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect and locks the item from further generation. Returns `409 METAGEN_ITEM_FINALIZED` if the item already has an approved sibling; `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation, and metagen) | Data Resource | — |
 
 #### Redefined DataHub Functions *(TBD)*
@@ -325,25 +365,6 @@ Per-dataset detail and result writes live on the canonical `data/{dataset_urn}` 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, filterable) | Validation | UC2, UC5 |
-
-#### Metadata Generation (`/spoke/common/metagen`)
-
-A cross-dataset list view of metadata generation attributes. Each row combines dataset
-identity with the metadata generation attributes stored under
-`common/data/{dataset_urn}/attr/metagen/*` (`conf` and latest `result`). Useful for
-monitoring generation status across all datasets and bulk management.
-
-Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
-surface: `attr/metagen/{conf,result}` (PATCH on `result/{result_id}` performs review), `method/metagen/run`, `event/metagen`.
-
-| Method | Path | Purpose | Feature | UC |
-|--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/metagen` | List metadata generation attributes across datasets — each row aggregates the per-dataset `attr/metagen/*` (conf and latest result) (paginated, filterable) | Metadata Generation | UC4 |
-
-**Payload caps** (per-dataset PATCH on `attr/metagen/result/{result_id}`; validated at schema; violations return `422`):
-- `reason` ≤ 2,000 chars
-- `fields` list ≤ 200 entries
-- each `fields[*]` entry ≤ 512 chars
 
 ### Data Governance (`/spoke/dg`)
 
@@ -526,11 +547,12 @@ definitions:
 - `attr` — Read or update a subset of resource attributes. Two flavours:
   - **Configuration / state attributes** (`attr/<feat>/conf`, `attr/conf`): use `GET` to
     read, `PUT` to replace, `PATCH` to update partial fields, `DELETE` to remove.
-  - **Result attributes** (`attr/<feat>/result`, `attr/result`): periodic measurement or
-    proposal records — use `GET` to read (supports `?from=…&to=…`, `?latest=true`, and
-    feature-specific filters such as `?approved=true`). `PATCH` on an individual result
-    row (`attr/<feat>/result/{result_id}`) is permitted for state transitions on that row
-    (e.g. review verdict on a generation proposal); body shape is feature-specific.
+  - **Result attributes** (`attr/<feat>/result`, `attr/result`): periodic measurement
+    records — use `GET` to read (supports `?from=…&to=…`, `?latest=true`, and
+    feature-specific filters). Results are immutable in baseline; feature-specific
+    state transitions on individual proposals (e.g. UC4 metagen candidate review)
+    live on their own `attr/<feat>/<thing>/{id}/method/<action>` sub-paths rather
+    than on `result`.
 - `method` — Business actions that go beyond CRUD. Action vocabulary used in this spec:
   `run` (trigger a pipeline), `review` (approve/reject a proposal via `verdict` body
   field). Always `POST`. Use `dry_run` in the request body for no-write mode instead
@@ -642,15 +664,17 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
 | `UNKNOWN_VARIABLE` | 422 | `POST .../attr/validation/result` body carries `variables` keys not declared in the dataset's `attr/validation/conf.variables` |
 | `INVALID_SCORE` | 422 | `POST .../attr/validation/result` body has `score` outside `[0.0, 1.0]` |
-| `GENERATION_RUNNING` | 409 | A generation run is already in progress for this dataset |
-| `GENERATION_DISABLED` | 409 | Metagen conf has `is_enabled=false`; non-dry-run rejected |
+| `METAGEN_RUNNING` | 409 | A metagen run is already in progress |
+| `METAGEN_DISABLED` | 409 | Metagen conf has `is_enabled=false`; non-dry-run rejected |
+| `METAGEN_ITEM_FINALIZED` | 409 | Candidate review attempted on an item that already has an approved sibling; the item is locked |
+| `METAGEN_DATASET_NOT_IN_BOUNDARY` | 422 | Candidate review attempted on an item whose dataset has no `is_enabled=true` per-dataset metagen boundary |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `METRIC_DISABLED` | 409 | Metric definition has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
 | `ONTOGEN_DISABLED` | 409 | Ontogen conf has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/common/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/common/ontogen/method/run`) bodies are capped at 128 KiB |
-| `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for both `ontogen/attr/conf` and `metric/{id}/attr/conf` |
+| `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for `ontogen/attr/conf`, `metagen/attr/conf`, and `metric/{id}/attr/conf` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |

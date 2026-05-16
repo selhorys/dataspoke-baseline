@@ -13,6 +13,7 @@ and the Metadata Generation Service (UC4).
    - [Ontogen Validator](#ontogen-validator)
    - [Metagen Validator](#metagen-validator)
 4. [Adversarial Debate Framework](#adversarial-debate-framework)
+   - [Metagen Adversarial Debate](#metagen-adversarial-debate)
 5. [Test Mode](#test-mode)
 6. [Settings Reference](#settings-reference)
 7. [Open Questions](#open-questions)
@@ -23,7 +24,7 @@ and the Metadata Generation Service (UC4).
 |---|---|
 | Loop semantics for structured-output LLM calls (UC3 ontogen, UC4 metagen) | Provider-specific request shapes — LangChain owns those |
 | Per-service validator tool contracts and rule tables | Validator implementations — `src/backend/{service}/validator.py` |
-| Adversarial Producer/Reviewer debate layered on the inference loop (UC3, always on) | Single-call completions (e.g. ad-hoc summarisation) — no loop, no validator |
+| Adversarial Producer/Reviewer debate layered on the inference loop (UC3 ontogen and UC4 metagen, always on for both) | Single-call completions (e.g. ad-hoc summarisation) — no loop, no validator |
 | Test-mode stubbing conventions for both Producer and Reviewer | Provider credential resolution — see `SECRET_RESOLUTION.md` |
 
 Single-call completions go through `LLMClient.complete` / `complete_json` /
@@ -83,33 +84,33 @@ mentioned) are rejected.
 
 ### Metagen Validator
 
-Tool name `metagen_validate(payload)`. Schema model `MetagenLLMOutput`
-(per-target proposal entries).
+Tool name `metagen_validate(payload)`. Schema model `MetagenLLMOutput` — a
+list of candidate entries, each `{dataset_urn, item_id, value,
+confidence_score}`.
 
 | Rule | Failure code |
 |------|--------------|
 | Pydantic shape of `MetagenLLMOutput` | `SCHEMA` |
-| Every proposal entry's `target` ∈ the config's configured `targets` | `TARGET_NOT_CONFIGURED` |
-| For `column.description`: `field_path` resolves to a real column in the dataset's `schemaMetadata` | `UNKNOWN_FIELD_PATH` |
-| For `cross_data.md`: `action_type ∈ {create, modify, delete}` | `INVALID_ACTION_TYPE` |
-| For `cross_data.md` `modify` / `delete` actions: `document_urn` references an existing document with `relatedAssets` overlapping the in-scope dataset set | `UNKNOWN_DOCUMENT_URN` |
-| For `cross_data.md` `create` / `modify` actions: `related_dataset_urns` is non-empty and every entry ∈ in-scope dataset URNs | `OUT_OF_SCOPE_URN` |
-| For `cross_data.md` `create` / `modify`: Markdown body is non-empty | `EMPTY_BODY` |
-| `action_id` (cross_data.md only) matches `^[a-z0-9][a-z0-9_-]*$`; no `__` | `SLUG_FORMAT` / `DOUBLE_UNDERSCORE` |
-| No duplicate `action_id` within a single proposal | `DUP_ACTION_ID` |
-| For `dataset.description` / `column.description`: proposed text is non-empty | `EMPTY_DESCRIPTION` |
-
-The Metadata Generation pipeline currently uses a single-call LLM
-implementation; the validator rules above describe the target shape when it
-adopts the inference loop.
+| `dataset_urn` ∈ the run's in-scope dataset set (intersection of `dataset_filter` and `metagen_boundary.is_enabled=true`) | `OUT_OF_SCOPE_URN` |
+| `item_id` matches `^dataset\.description$` or `^column\.[^.]+\.description$` | `INVALID_ITEM_ID` |
+| For `column.<field_path>.description`: `field_path` resolves to a real column in the dataset's `schemaMetadata` | `UNKNOWN_FIELD_PATH` |
+| `item_id`'s element kind (`dataset.description` / `column.description`) ∈ the dataset's `metagen_boundary.allowed` | `KIND_NOT_ALLOWED` |
+| `value` is non-empty Markdown ≤ 16 KiB | `EMPTY_VALUE` / `VALUE_TOO_LARGE` |
+| `confidence_score ∈ [0.0, 1.0]` | `CONF_OUT_OF_RANGE` |
+| No duplicate `(dataset_urn, item_id)` within a single Producer turn | `DUP_ITEM` |
+| For finalized items (`metagen_items.status='finalized'`): rejected at the validator | `ITEM_ALREADY_FINALIZED` |
 
 ## Adversarial Debate Framework
 
 Second loop layered on top of the inference loop. A **Reviewer** agent
 critiques the **Producer's** validated output and gates acceptance until
 both the deterministic validator and the Reviewer's adversarial verdict
-agree. Runs on every UC3 ontogen call; UC4 metagen wiring deferred (see
-§Open Questions).
+agree. Runs on every UC3 ontogen call and every UC4 metagen call. The
+loop shape, Reviewer tool, issue taxonomy, RAG anchors, Producer revision
+rules, cycle detection, and termination outcomes documented in the
+following subsections are shared by both services; the differences are
+isolated in [§Metagen Adversarial Debate](#metagen-adversarial-debate)
+below.
 
 ### Loop shape
 
@@ -258,7 +259,7 @@ Downstream query rules:
 - **RAG anchors** (this section): `status IN ('approved','llm_approved')`.
 - **Reuse lookup** ([BACKEND §Inference Pipeline](BACKEND.md#ontology-generation-service-srcbackendontogen)): `status IN ('llm_pending','llm_approved','approved')` — anything non-`rejected`.
 - **Triple-review dependency gate**: dependencies must be `status='approved'` (strict; an `llm_approved` dep does not satisfy the gate).
-- **Metagen reads** (UC4): `status='approved'` only — only human-curated entities feed user-facing metadata.
+- **Metagen reads of UC3 ontogen** (UC4): `status='approved'` only — only human-curated ontology entities feed metagen's generation context. UC4's own candidate statuses (`llm_approved` / `approved` / `rejected`) are independent — there is no `llm_pending` for metagen, since debate-rejected candidates are dropped rather than persisted (see [§Metagen Adversarial Debate](#metagen-adversarial-debate)).
 
 ### Evidence shape
 
@@ -317,6 +318,26 @@ transcript assembly; it lives in `src/backend/ontogen/debate.py`. The rest
 of `_run_inner` (enumeration, evidence gathering, persistence) is
 unchanged. The debate's per-turn LLM stubbing is governed by the test-mode
 env vars in §Test Mode below.
+
+### Metagen Adversarial Debate
+
+The debate shape above is reused verbatim by `MetagenService._run_inner`
+via `src/backend/metagen/debate.py`. Differences from ontogen:
+
+| Concern | Ontogen | Metagen |
+|---------|---------|---------|
+| Producer output schema | `OntogenLLMOutput` (nodes / edges / triples) | `MetagenLLMOutput` (list of `{dataset_urn, item_id, value, confidence_score}` candidates) |
+| Validator tool | `ontogen_validate` | `metagen_validate` |
+| Reviewer tool | `ontogen_review` (per-item verdict `item_kind ∈ {node, edge, triple}`) | `metagen_review` (per-item verdict `item_kind ∈ {dataset_description, column_description}`, addresses `dataset_urn` + `item_id`) |
+| Issue taxonomy | `naming_format`, `confidence_miscalibrated`, `duplicates_existing`, `weak_evidence`, `ontology_incoherent`, `out_of_scope` | `value_too_generic`, `value_factually_wrong`, `value_redundant_with_approved`, `confidence_miscalibrated`, `style_inconsistent`, `out_of_scope` |
+| RAG anchors | Approved nodes / edges / triples | Approved candidate `value`s grouped by `kind` (dataset descriptions in one pool, column descriptions in another); embedded in `metagen_candidate_embeddings` |
+| Confidence threshold | `ONTOLOGY_CONFIDENCE_THRESHOLD` (default `0.7`) | `METAGEN_CONFIDENCE_THRESHOLD` (default `0.7`) |
+| Persistence threshold | Below-threshold rows persist as `status='llm_pending'` for human triage | **Below-threshold candidates are dropped** — metagen has no `llm_pending` state. Only candidates with `outcome=accept` AND `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` persist as `status='llm_approved'`. |
+| Termination | `accept` → persist; `turns_exhausted` / `cycle_detected` → keep last candidate with `status='llm_pending'` | `accept` → persist surviving candidates as `llm_approved`; `turns_exhausted` / `cycle_detected` → **drop all candidates from this run**. The next scheduled run is the recovery path. |
+
+The shared scaffolding (cycle detection by SHA-256 hash, soft-fail
+philosophy, per-turn Langfuse trace, test-mode stub behaviour) is
+identical.
 
 ## Test Mode
 
@@ -416,10 +437,7 @@ access (auth annotation or IP allowlist). With Langfuse's default open-signup, a
 create an account and read all traces including raw prompts and completions. Dev deployments under
 `.nip.io` are intentionally open for developer convenience.
 
-### Partial coverage and availability notes
-
-Metagen (UC4) LLM calls flow through the same `LLMClient` and produce Langfuse traces but without
-`session_id`/`actor`/`turn` metadata; full UC4 wiring is deferred alongside the metagen debate framework.
+### Availability notes
 
 Langfuse unavailability does not affect LLM call success — the exporter buffers and retries in the
 background; on permanent failure traces are dropped silently.
@@ -439,6 +457,11 @@ class (`src/shared/settings.py`).
 | `DATASPOKE_ONTOGEN_DEBATE_MAX_TURNS` | `4` | ontogen debate |
 | `DATASPOKE_ONTOGEN_DEBATE_RAG_K` | `5` | ontogen debate |
 | `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | ontogen debate |
+| `DATASPOKE_ONTOLOGY_CONFIDENCE_THRESHOLD` | `0.7` | ontogen persistence gate |
+| `DATASPOKE_METAGEN_DEBATE_MAX_TURNS` | `4` | metagen debate |
+| `DATASPOKE_METAGEN_DEBATE_RAG_K` | `5` | metagen debate |
+| `DATASPOKE_METAGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | metagen debate |
+| `DATASPOKE_METAGEN_CONFIDENCE_THRESHOLD` | `0.7` | metagen persistence gate |
 | `DATASPOKE_TEST_MODE` | unset | test infra |
 | `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
 | `DATASPOKE_LANGFUSE_HOST` | unset | observability |
@@ -447,6 +470,5 @@ class (`src/shared/settings.py`).
 
 ## Open Questions
 
-- [ ] Reviewer model separation: when `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` differs from the Producer model, the debate has two API keys / two SDK clients in flight. Pricing telemetry and rate-limit accounting need a per-role split.
+- [ ] Reviewer model separation: when `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` (or its metagen counterpart) differs from the Producer model, the debate has two API keys / two SDK clients in flight. Pricing telemetry and rate-limit accounting need a per-role split.
 - [ ] Per-item Reviewer verdicts emitted on turn N can contradict turn N-1 verdicts on the same item; spec currently relies on the Reviewer's own consistency. If this drifts in practice, fold prior-turn verdicts into the Reviewer prompt as a constraint.
-- [ ] Metagen debate: UC4 has the same Producer/Validator shape as UC3, so the debate framework is theoretically portable. Deferred until the Metagen pipeline migrates to the inference loop and the human-review surface for cross_data.md / column.description proposals lands.

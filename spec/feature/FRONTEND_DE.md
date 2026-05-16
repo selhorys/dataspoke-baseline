@@ -17,8 +17,8 @@ features at `/spoke/common/...` with engineering-flavoured framing.
 | `/de/ingestion/[urn]` | Ingestion detail | per-dataset ingestion |
 | `/de/validation` | Validation list | `/spoke/common/validation`, `/spoke/common/data/{urn}/attr/validation/...` |
 | `/de/validation/[urn]` | Validation detail | per-dataset validation |
-| `/de/metagen` | Metagen list | `/spoke/common/metagen`, `/spoke/common/data/{urn}/attr/metagen/...` |
-| `/de/metagen/[urn]` | Metagen detail | per-dataset metagen |
+| `/de/metagen` | Metagen workspace | singleton `/spoke/common/metagen/attr/conf` + global `/spoke/common/metagen/item` review queue |
+| `/de/metagen/[urn]` | Per-dataset metagen | `/spoke/common/data/{urn}/attr/metagen/{conf,item}/...` |
 | `/de/ontogen` | Ontogen browser | `/spoke/common/ontogen/...` |
 | `/de/ontogen/conf` | Ontogen conf | singleton `/spoke/common/ontogen/attr/conf` |
 | `/de/ontogen/seed` | Ontogen seeds | `/spoke/common/ontogen/attr/seed/...` |
@@ -153,35 +153,47 @@ consumes `GET .../event/validation` (one entry per accepted result POST).
 
 | Page | Read | Write |
 |---|---|---|
-| `/de/metagen` | `GET /spoke/common/metagen` | — |
-| `/de/metagen/[urn]` | `GET .../attr/metagen/conf`, `GET .../attr/metagen/result?latest=true`, `GET .../event/metagen` | `PUT/PATCH/DELETE .../attr/metagen/conf` (fields: `targets[]`, `is_enabled`, `schedule_tier`); `POST .../method/metagen/run`; `PATCH .../attr/metagen/result/{result_id}` body `{verdict: "approve"\|"reject", fields: ["dataset.description", "column.description.<fieldPath>", "cross_data.md.<action_id>", ...], reason}` |
+| `/de/metagen` | `GET /spoke/common/metagen/attr/conf`, `GET /spoke/common/metagen/item`, `GET /spoke/common/metagen/event` | `PUT/PATCH/DELETE /spoke/common/metagen/attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`); `POST /spoke/common/metagen/method/run` (optional body `{dataset_urns?, dry_run?}`) |
+| `/de/metagen/[urn]` | `GET .../attr/metagen/conf`, `GET .../attr/metagen/item`, `GET .../attr/metagen/item/{item_id}` (per-item candidates), `GET .../event/metagen` | `PUT/PATCH/DELETE .../attr/metagen/conf` (fields: `is_enabled`, `allowed[]`); `POST .../attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-`targets[]` is drawn from `dataset.description`, `column.description`,
-`cross_data.md`. Approval writes only to the editable DataHub aspects
-(`editableDatasetProperties`, `editableSchemaMetadata.editableSchemaFieldInfo`)
-and to `documentInfo` on `document` entities (with `Status.removed=true` for
-`cross_data.md` delete actions); the confirm dialog labels the destination
-aspect.
+The global page (`/de/metagen`) is the singleton conf editor plus a
+cross-dataset queue of pending items (filterable by `dataset_urn`, `kind`,
+`status`). The per-dataset page (`/de/metagen/[urn]`) shows boundary
+(`is_enabled`, `allowed`) and the dataset's items grouped by kind. Each item
+renders as a card with up to `result_limit` candidate sub-cards; each
+candidate sub-card carries Approve / Reject buttons. Approval writes to the
+editable description aspect (`editableDatasetProperties.description` for
+`dataset.description`, `editableSchemaMetadata.editableSchemaFieldInfo[].description`
+for `column.<fieldPath>.description`) and locks the item; the confirm
+dialog labels the destination aspect. Finalized items collapse to a single
+"✓ approved on {date} by {reviewer}" row with sibling `llm_approved`
+candidates shown as read-only history.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ← catalog.books               [Generate Now]        │
+│  ← catalog.books             boundary: [edit]        │
+│  is_enabled: ✓   allowed: [dataset.description,      │
+│                            column.description]       │
 ├──────────────────────────────────────────────────────┤
-│  attr/metagen/result?latest=true (id: 7e8b…)         │
+│  dataset.description            status: pending      │
+│   ┌────────────────────────────────────────────────┐ │
+│   │ c1  conf 0.92        [Approve] [Reject]        │ │
+│   │ "# Books\n\nMaster catalog of every title…"    │ │
+│   └────────────────────────────────────────────────┘ │
+│   ┌────────────────────────────────────────────────┐ │
+│   │ c2  conf 0.88        [Approve] [Reject]        │ │
+│   │ "# Catalog: Books\n\nThe authoritative…"       │ │
+│   └────────────────────────────────────────────────┘ │
+│   ┌────────────────────────────────────────────────┐ │
+│   │ c3  conf 0.85        [Approve] [Reject]        │ │
+│   │ "Books table — Imazon's primary title…"        │ │
+│   └────────────────────────────────────────────────┘ │
 │                                                      │
-│  dataset.description           [✓] [✏] [✕]           │
-│    "# Books\n\nMaster catalog of every title…"       │
-│                                                      │
-│  column.description.book_id    [✓] [✏] [✕]           │
-│  column.description.title      [✓] [✏] [✕]           │
-│  column.description.author     [✓] [✏] [✕]           │
-│  column.description.isbn       [✓] [✏] [✕]           │
-│  column.description.price      [✓] [✏] [✕]           │
-│                                                      │
-│  cross_data.md.a1  (create)    [✓] [✏] [✕]           │
-│    title: "How orders reference books"               │
+│  column.book_id.description     status: finalized    │
+│   ✓ approved by alice on 2026-05-12                  │
+│   (2 sibling candidates collapsed — expand to view)  │
 └──────────────────────────────────────────────────────┘
-        Detail (`/de/metagen/[urn]`) — PATCH … /result/{result_id}
+        Detail (`/de/metagen/[urn]`)
 ```
 
 ### Ontogen (UC3) — read-only

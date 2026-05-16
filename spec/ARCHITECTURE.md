@@ -189,7 +189,7 @@ toggles in [`spec/feature/BACKEND_LLM.md`](feature/BACKEND_LLM.md). Data contrac
 | Ingestion Control | `active-custom` and `passive` ingestion modes — DataSpoke either runs an in-house extractor on a tier schedule or observes externally-ingested datasets via `DataProcessInstance` polling; single control surface for lifecycle management |
 | Validation | One validation slot per dataset (description + declared variable names) emitted as DataHub `assertionInfo`; ingestion of pipeline-emitted timeseries results emitted as `assertionRunEvent`; historical-result query (`from`/`until`) for use as a baseline cache. |
 | Ontology Generation | Singleton-config + Markdown-seed LLM pipeline that emits a subject / predicate / object triple ontology — nodes (subjects/objects), edges (predicates), and triples (facts) — from a fixed DataHub aspect set (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on related `document` entities); persisted in PostgreSQL (relational + pgvector) and surfaced through the ontogen API with independent review queues per result type |
-| Metadata Generation | Per-dataset proposals for documentation fields — table description, column descriptions, and cross-data Markdown documents on DataHub `document` entities (create/modify/delete actions; `relatedAssets` links to involved datasets); review queue with field-level approve/edit/reject; approved writes go to editable DataHub aspects and to `documentInfo` (with `Status.removed=true` for delete) |
+| Metadata Generation | Singleton-config LLM pipeline that proposes candidate values for the editable description aspects — `editableDatasetProperties.description` (one slot per dataset) and `editableSchemaMetadata.editableSchemaFieldInfo[].description` (one slot per column) — gated by a per-dataset opt-in boundary. Each item accumulates up to `result_limit` candidates across runs; reviewer approves one (immediate DataHub emit, item locked) and rejects others (cleared at next run). Producer-Reviewer adversarial debate identical to UC3 ontogen, except only debate-accepted candidates persist. |
 | Governance | Metric aggregation (pure aggregation over DataHub metadata + DataSpoke results), per-dataset breakdown, trend analysis, and a multi-perspective overview (metric values, blind spots, ontology graph, medallion layers, ownership topology) |
 
 Source layout: `src/backend/` (feature services), `src/workflows/` (Airflow DAGs + helpers),
@@ -230,7 +230,7 @@ the cross-cutting flow that ties the features together.
 | UC1 Ingestion Control | Airflow tier DAG (`active-custom` mode) or hourly `ingestion-passive-hourly` DAG (`passive` mode); manual `POST .../method/ingestion/run` (`active-custom` only) | `IngestionService` | `active-custom`: emits `Status` + `DatasetProperties` + `SchemaMetadata` + `DataProcessInstance` aspects. `passive`: no aspect writes; mirrors externally-emitted `DataProcessInstance` run history into `event/ingestion`. |
 | UC2 Validation | External pipeline `POST .../attr/validation/result` after each partition write; `PUT/PATCH/DELETE .../attr/validation/conf` for configuration | `ValidationService` (config + result store; runs no validation logic) | Emits `assertionInfo` on conf upsert; emits `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emits `status.removed` on DELETE / resurrection. |
 | UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | None — UC3 is read-only on the DataHub side; approval flips status in DataSpoke storage only. |
-| UC4 Metadata Generation | Airflow tier DAG; manual `POST .../method/metagen/run` | `MetagenService` | On reviewer approval only: writes to editable dataset aspects (`editableDatasetProperties`, `editableSchemaMetadata`) — never to non-editable counterparts — and to `documentInfo` on `document` entities for cross-data MDs (with `Status.removed=true` for delete actions). |
+| UC4 Metadata Generation | Airflow tier DAG (singleton conf); manual `POST /spoke/common/metagen/method/run` | `MetagenService` | On reviewer approval of a candidate only: writes to the editable description aspect (`editableDatasetProperties.description` for dataset-description items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for column-description items) — never to non-editable counterparts. |
 | UC5 Governance | Airflow tier DAG; manual `POST /spoke/dg/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
 
 Cross-cutting invariants:
@@ -239,9 +239,10 @@ Cross-cutting invariants:
   `weekly`) plus on-demand `POST .../method/run`. UC2 is pipeline-driven — the data
   pipeline computes results and POSTs them to `attr/validation/result`. The Kafka
   consumer pattern is reserved for organisation-specific extensions.
-- All `dataset_filter`-bearing features (UC3 ontogen conf, UC5 metric definitions) share
-  the same `tags` / `glossary_terms` / `dataset_urns` shape; unresolved `dataset_urns`
-  surface on the corresponding `RUN_COMPLETE` event's `unresolved_urns` field.
+- All `dataset_filter`-bearing features (UC3 ontogen conf, UC4 metagen conf, UC5 metric
+  definitions) share the same `tags` / `glossary_terms` / `dataset_urns` shape; unresolved
+  `dataset_urns` surface on the corresponding `RUN_COMPLETE` event's `unresolved_urns`
+  field.
 - All `method/run` actions (UC1, UC3, UC4, UC5) are guarded by per-resource concurrency
   locks (`409 *_RUNNING`), and reviewer triples gate on dependency status
   (`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`).
@@ -259,7 +260,7 @@ route tiers are reserved for organization-specific extensions and have no baseli
 | Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
 | Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/attr/validation/{conf,result}`, `/spoke/common/data/{urn}/event/validation` | Validation Config Manager (PUT/PATCH/DELETE conf → `assertionInfo` / `status`), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
 | Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector), Airflow (tier-based periodic DAG) |
-| Metadata Generation | UC4 | `/spoke/common/metagen/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/metagen/` | Metadata Generation Service, Source-Code Analyzer, Document Composer, Review Queue (field-level + action-level) | LLM API, PostgreSQL, DataHub SDK (read + approved writes to editable aspects and to `document` entities) |
+| Metadata Generation | UC4 | `/spoke/common/metagen/` (singleton conf + manual run + global item browse), `/spoke/common/data/{urn}/attr/metagen/{conf,item}`, `/spoke/common/data/{urn}/event/metagen` | Metadata Generation Service, Producer-Reviewer Adversarial Debate, Per-Item Candidate Review Queue | LLM API, PostgreSQL (pgvector for `metagen_candidate_embeddings`), DataHub SDK (read context + approved writes to editable description aspects), Airflow (tier-based periodic DAG) |
 | Governance | UC5 | `/spoke/dg/metric/`, `/spoke/dg/overview/` | Metrics Aggregator (pure aggregation, no source-DB reads), Per-Dataset Breakdown, Overview Composer (metric values, blind spots, ontology graph, medallion layers, ownership topology) | Airflow (tier-based periodic DAGs), PostgreSQL, DataHub GraphQL |
 
 ### Optional / future routes

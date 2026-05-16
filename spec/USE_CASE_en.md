@@ -45,7 +45,7 @@ pipelines that Imazon already operates. DataSpoke covers both modes.
 | UC1 | Ingestion Control | [Active-Custom and Passive Ingestion](#uc1-ingestion-control) |
 | UC2 | Validation | [Single-rule Slot, Pipeline-Posted Results, Historical Baseline](#uc2-validation) |
 | UC3 | Ontology Generation | [Node, Edge, and Triple Inference Across Imazon Datasets](#uc3-ontology-generation) |
-| UC4 | Metadata Generation | [Description and MD Doc Proposals](#uc4-metadata-generation) |
+| UC4 | Metadata Generation | [Per-Item Description Proposals](#uc4-metadata-generation) |
 | UC5 | Governance | [Ingestion Freshness and Validation Score](#uc5-governance) |
 
 ---
@@ -370,18 +370,20 @@ slug `subject_node_id__edge_id__object_node_id` (e.g.,
 `order_line__references__book`), so the ID itself encodes the fact and is
 inherently idempotent across re-inference runs.
 
-**Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2 / UC4, the
+**Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2, the
 ontology is a global artifact. The operational conf at `/spoke/common/ontogen/attr/conf`
-controls when the inference DAG runs and which datasets are in scope.
+controls when the inference DAG runs and which datasets are in scope. UC4
+metagen follows the same singleton-conf shape (`/spoke/common/metagen/attr/conf`)
+with a per-dataset boundary for opt-in.
 
 **Inputs (proofread DataHub boundary).** UC3 reads the same set of DataHub
 aspects as UC4: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
 `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
 `document` entities whose `relatedAssets` reference an in-scope dataset
-(Markdown body by convention). DataSpoke writes the editable aspects only after a
-UC4 reviewer approves the proposal, so their *presence* in DataHub is the
-approval signal — UC3 needs no separate join, and UC4 draft states (`pending` /
-`edited`) are never written to DataHub, so the LLM never learns from another
+(Markdown body by convention). DataSpoke writes editable description aspects
+only after a UC4 reviewer approves a candidate, so their *presence* in DataHub
+is the approval signal — UC3 needs no separate join, and unreviewed UC4
+candidates stay in DataSpoke storage so the LLM never learns from another
 LLM's unreviewed guess.
 
 | `attr/conf` field | Purpose |
@@ -553,23 +555,26 @@ When `is_enabled=false`, non-dry-run calls to `method/run` return `409 ONTOGEN_D
 state of data documentation and proposes metadata via generative AI, including APIs and
 a review process.*
 
-This feature proposes values for documentation fields that already exist in DataHub
-metadata. It does **not** propose ontology structure (UC3 owns that).
+This feature proposes values for **editable description aspects** that already exist
+in DataHub metadata — one for the dataset, one per column. It does **not** propose
+ontology structure (UC3 owns that).
 
 **Inputs (proofread DataHub boundary).** UC4 reads the same DataHub aspect set
 as UC3: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
 `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
 `document` entities whose `relatedAssets` reference the in-scope dataset.
 UC4 also reads the UC3-approved ontology nodes and triples (filtered to
-`status='approved'` via `dataset_node_map`) from DataSpoke storage.
+`status='approved'` via `dataset_node_map`) from DataSpoke storage as
+generation context.
 
 ### User Story
 
 > *As a* dataset owner or governance reviewer,
-> *I want* DataSpoke to propose documentation for under-documented datasets, and let me
-> approve, edit, or reject proposals field-by-field,
-> *so that* documentation coverage improves without me writing every description by
-> hand.
+> *I want* DataSpoke to propose documentation candidates for under-documented
+> datasets and let me browse several alternatives per slot, approve one, and reject
+> the ones that miss,
+> *so that* documentation coverage improves without me writing every description
+> by hand and I can still steer the wording.
 
 **Supported documentation fields in baseline**
 
@@ -579,130 +584,187 @@ for ingestion connectors; writing to them risks the next connector run overwriti
 human-approved text. DataHub treats both editable description fields as rich text and
 the UI renders Markdown.
 
-| Scope | Field | Format | DataHub target |
-|---|---|---|---|
-| Per-data | Table description | Markdown | `editableDatasetProperties.description` |
-| Per-data | Column description | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (keyed by `fieldPath`) |
-| Cross-data | Cross-data documentation | Markdown | `documentInfo.contents.text` on `document` entities (whose `relatedAssets` list the related datasets); the generator may propose create / modify / delete actions — see Design decision below |
+| Item kind | Format | DataHub target |
+|---|---|---|
+| `dataset.description` | Markdown | `editableDatasetProperties.description` |
+| `column.<fieldPath>.description` | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` keyed by `fieldPath` |
 
-Future scope (mentioned, not modelled here): proposals for `domains` and `globalTags`.
+Future scope (mentioned, not modelled here): proposals for `domains` and
+`globalTags`.
 
-> *(Design decision)* `cross_data.md` proposals are not simply keyed off an ontology 
-> node. The doc generator reads existing `document` entities whose `relatedAssets` 
-> overlap the in-scope dataset (their titles and bodies) as input context and decides
-> itself what to propose. A single `cross_data.md` proposal is a **list of actions**,
-> each one of:
-> - **create** — a new `document` with a generator-chosen descriptive title (a topic
->   phrase), Markdown body in `documentInfo.contents.text`, and `relatedAssets`
->   listing the dataset URNs the topic spans, when an uncovered topic is identified
->   and existing documents are fine as-is;
-> - **modify** — replace `documentInfo.contents.text` on an existing `document` (and
->   optionally extend `relatedAssets`) while keeping its title and URN;
-> - **delete** — soft-delete an existing `document` via `status.removed = true` when
->   its topic is fully absorbed into a new replacement.
->
-> Each action carries a stable `action_id` in the result payload. The reviewer
-> approves, edits, or rejects each action individually via the same PATCH mechanism
-> used for per-field proposals — the `fields` array references actions as
-> `cross_data.md.<action_id>`.
+**Conf is a singleton.** Like UC3 ontogen, UC4 metagen has one global operational
+conf at `/spoke/common/metagen/attr/conf` that controls when the generation DAG runs
+and which datasets are in scope. Per-dataset participation is a separate opt-in
+boundary at `/spoke/common/data/{urn}/attr/metagen/conf`.
+
+| `attr/conf` field | Purpose |
+|---|---|
+| `is_enabled` | Master switch for the metagen DAG |
+| `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence |
+| `dataset_filter` | Optional scope filter — `tags`, `glossary_terms`, `dataset_urns` (OR-ed across dimensions; `{}` means all). Same shape and validation as UC3 ontogen `attr/conf.dataset_filter` and UC5 `measurement_query.dataset_filter` |
+| `result_limit` | Maximum candidate count per item at any time (integer ≥ 1, default `3`) |
+| `overwrite_pending` | When an item already holds `result_limit` non-rejected candidates and is not finalized, controls whether a new run overwrites the oldest `llm_approved` candidate (`true`, default) or skips the item (`false`) |
+
+**Per-dataset boundary.** Each dataset that wants to participate sets a row at
+`/spoke/common/data/{urn}/attr/metagen/conf`:
+
+| Field | Purpose |
+|---|---|
+| `is_enabled` | When `true`, this dataset opts in to global metagen writes. **Missing row or `false` means opt-out** — the dataset is excluded regardless of the global `dataset_filter` |
+| `allowed` | Element kinds the global generator may write on this dataset. Baseline values: `"dataset.description"`, `"column.description"`. An element kind outside `allowed` is skipped for this dataset |
+
+**Items and candidates.** An **item** is one editable-metadata slot on a dataset:
+one `dataset.description` per dataset, one `column.<fieldPath>.description` per
+column. A **candidate** is one generated Markdown value for an item, with its own
+`candidate_id`, `confidence_score`, and `status`. Each item holds up to
+`result_limit` candidates that accumulate across runs.
+
+Candidate statuses:
+
+- `llm_approved` — the producer-reviewer debate accepted this candidate; awaiting
+  human review.
+- `approved` — a human approved this candidate. Its `value` is emitted to DataHub
+  on the same call, and the item is locked from further generation.
+- `rejected` — a human rejected this candidate. It remains visible until the next
+  run starts, then it is deleted.
+
+There is **no `llm_pending` status** in metagen — every persisted candidate is at
+least debate-accepted.
+
+**Item-level rules.** Each item is **finalized** iff it has at least one `approved`
+candidate. Finalized items receive no new candidates. At the start of each run, all
+`rejected` candidates are deleted (so room frees up). For each in-scope
+(dataset, allowed kind) pair the run then:
+
+- skips the item if it is finalized;
+- appends a new candidate if non-rejected count `< result_limit`;
+- evicts the oldest `llm_approved` candidate (FIFO by `created_at`) and appends a
+  new one if non-rejected count `= result_limit` and `overwrite_pending=true`;
+- skips the item if non-rejected count `= result_limit` and
+  `overwrite_pending=false`.
+
+Approving a candidate writes its `value` to the corresponding editable DataHub
+aspect synchronously and flips the candidate's status to `approved`. Sibling
+`llm_approved` candidates on the same item retain their status as read-only
+history — the reviewer's "leave the rest as-is" choice is honored verbatim.
+
+**Run semantics.** Generation runs are serialised: a duplicate `method/run` while
+one is in flight returns `409 METAGEN_RUNNING`. `?dry_run=true` (or body
+`{"dry_run": true}`) evaluates the run without persisting candidates or emitting
+events of state changes — useful for previewing a `dataset_filter` change. Manual
+`POST /method/run` may carry a body `{"dataset_urns": [...], "dry_run": bool}` to
+narrow the run's scope or evaluate without persisting; the periodic Airflow DAG
+fires with no body and sweeps every in-scope dataset.
+
+**LLM debate (producer-reviewer).** The LLM step uses the same adversarial-debate
+inference loop as UC3 ontogen (see [BACKEND_LLM §Inference Loop](feature/BACKEND_LLM.md#inference-loop)).
+The producer proposes candidates per `(dataset, item_id)`; the reviewer evaluates
+each one against ontology context and existing approved candidates (RAG over
+embeddings of approved descriptions). Only candidates whose
+`confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` and whose reviewer outcome is
+`accept` persist as `llm_approved`. All others are dropped — there is no
+`llm_pending` row in metagen, unlike ontogen.
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | Configure target fields, schedule_tier, status |
-| `POST /spoke/common/data/{urn}/method/metagen/run` | Trigger a generation run |
-| `GET /spoke/common/data/{urn}/attr/metagen/result?latest=true` | Get the latest proposal for a dataset |
-| `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` | Approve / partial-approve / reject — body `{ "verdict": "approve"\|"reject", "fields": [...], "reason": "…" }`. Approval writes the chosen subset to DataHub. |
-| `GET /spoke/common/data/{urn}/event/metagen` | Per-dataset generation event history |
-| `GET /spoke/common/metagen` | Cross-dataset list with conf + latest result |
+| `PUT/PATCH/GET/DELETE /spoke/common/metagen/attr/conf` | Singleton operational conf — see field table above |
+| `POST /spoke/common/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}`. Concurrent runs return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
+| `GET /spoke/common/metagen/event` | Global generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
+| `GET /spoke/common/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) |
+| `GET /spoke/common/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}`, including every candidate |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | Per-dataset boundary (`is_enabled`, `allowed`) |
+| `GET /spoke/common/data/{urn}/attr/metagen/item` | List items for one dataset |
+| `GET /spoke/common/data/{urn}/attr/metagen/item/{item_id}` | One item with all candidates |
+| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Approve or reject one candidate — body `{ "verdict": "approve"\|"reject", "reason": "…" }`. Approve emits to DataHub and locks the item |
+| `GET /spoke/common/data/{urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) |
 
 ### Imazon Example
 
-The catalog team enables doc generation on `catalog.books`:
+**Conf.** The governance team enables metagen globally:
+
+```http
+PUT /api/v1/spoke/common/metagen/attr/conf
+```
+```json
+{
+  "is_enabled": true,
+  "schedule_tier": "daily",
+  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+  "result_limit": 3,
+  "overwrite_pending": true
+}
+```
+
+**Boundary.** The catalog team opts `catalog.books` in for both kinds:
 
 ```http
 PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/conf
 ```
 ```json
 {
-  "targets": ["dataset.description", "column.description", "cross_data.md"],
-  "schedule_tier": "weekly",
-  "is_enabled": true
+  "is_enabled": true,
+  "allowed": ["dataset.description", "column.description"]
 }
 ```
 
-**Run.**
+**Run.** The daily Airflow DAG fires, or a reviewer triggers an immediate run:
 
 ```http
-POST .../method/metagen/run
+POST /api/v1/spoke/common/metagen/method/run
 ```
 
-**Latest proposal.**
+**Browse items.** After the run, the catalog dashboard lists the dataset's items:
 
 ```http
-GET .../attr/metagen/result?latest=true
+GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/item
 ```
 
-Returns:
-
-```
-result_id: 7e8b…
-status:    pending_review
-
-dataset.description (markdown, confidence 0.92):
-  "# Books\n\nMaster catalog of every title Imazon offers...\n## Notes\n- Primary key: `book_id`."
-
-column.description proposals (markdown):
-  book_id   — "Stable, opaque identifier for a book."
-  title     — "Display title shown to customers."
-  author    — "Free-text author / creator name."
-  isbn      — "ISBN-13 string; '0000000000000' when unknown."
-  price     — "List price in USD, two decimal places."
-
-cross_data.md actions:
-  Existing documents considered: (none)
-  Proposed:
-    - action_id: a1
-      action:    create
-      title:     "How orders reference books"
-      body:      "`orders.line_items.book_id` joins to `catalog.books.book_id` ..."
-      related_assets:
-        - urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)
-        - urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)
-      confidence: 0.81
-```
-
-**Review.** The reviewer approves the table description and 4 of 5 columns, then issues
-follow-up calls to edit `author` and reject the cross-data MD:
+Returns one `dataset.description` item plus one `column.<fieldPath>.description` item
+per column. Inspecting the dataset description item:
 
 ```http
-PATCH .../attr/metagen/result/7e8b…
-```
-```json
-{
-  "verdict": "approve",
-  "fields": ["dataset.description",
-             "column.description.book_id",
-             "column.description.title",
-             "column.description.isbn",
-             "column.description.price"],
-  "reason": "Approved as generated."
-}
+GET .../attr/metagen/item/dataset.description
 ```
 
-A second PATCH approves an edited `author` description; a third PATCH rejects the
-proposed `cross_data.md` create action with `{"verdict": "reject", "fields":
-["cross_data.md.a1"], "reason": "..."}`. DataSpoke writes each approved action to
-DataHub on the same call.
+```
+item_id: dataset.description
+kind:    dataset.description
+status:  pending           # no approved candidate yet
+candidates (3 of result_limit=3):
+  - candidate_id: c1   status: llm_approved   confidence 0.92
+      "# Books\n\nMaster catalog of every title Imazon offers..."
+  - candidate_id: c2   status: llm_approved   confidence 0.88
+      "# Catalog: Books\n\nThe authoritative book catalog..."
+  - candidate_id: c3   status: llm_approved   confidence 0.85
+      "Books table — Imazon's primary title catalog..."
+```
 
-The team can then watch the proposal lifecycle:
+**Review.** The reviewer approves `c1`, rejects `c3`, and leaves `c2` as-is:
+
+```http
+POST .../attr/metagen/item/dataset.description/candidate/c1/method/review
+{ "verdict": "approve", "reason": "Best framing of the catalog role." }
+
+POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
+{ "verdict": "reject", "reason": "Truncated and lacks the key fact." }
+```
+
+On `c1`'s approve call, DataSpoke writes the value to
+`editableDatasetProperties.description` on the dataset and marks the item
+**finalized**. `c2` stays `llm_approved` as visible history; `c3` will be deleted
+at the start of the next run.
+
+**Event history.**
 
 ```http
 GET .../event/metagen
 ```
 
-When `is_enabled=false`, non-dry-run calls to `method/metagen/run` return `409 GENERATION_DISABLED`. Dry-run is always permitted regardless of `is_enabled`. Dry-run records `METAGEN.COMPLETE` with `dry_run: true` in the event detail, same as real runs.
+When `is_enabled=false` on the global conf, non-dry-run calls to `method/run`
+return `409 METAGEN_DISABLED`. Dry-run is permitted regardless of `is_enabled` and
+records `METAGEN.RUN_COMPLETE` with `dry_run: true` in the event detail.
 
 ---
 

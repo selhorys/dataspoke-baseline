@@ -102,7 +102,8 @@ Route handler function names must mirror the REST path they serve.
 | `GET /metric/{id}/attr/conf` | `get_metric_conf` |
 | `POST /metric/{id}/method/run` | `post_metric_run` |
 | `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
-| `POST /data/{urn}/method/metagen/run` | `post_data_metagen_run` |
+| `POST /metagen/method/run` | `post_metagen_run` |
+| `POST /data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
 | `POST /ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
 | `POST /ontogen/result/edge/{edge_id}/method/review` | `post_ontogen_edge_review` |
 | `POST /ontogen/result/triple/{triple_id}/method/review` | `post_ontogen_triple_review` |
@@ -139,8 +140,9 @@ for current method signatures.
 
 Bounded ReAct loop wrapping every structured-output LLM call (UC3 ontogen,
 UC4 metagen). The mechanics (two-layer enforcement, iteration bounds,
-exhaustion behaviour), per-service validator rule tables, the opt-in
-adversarial debate framework, and the test-mode env-var toggles all live in
+exhaustion behaviour), per-service validator rule tables, the
+producer-reviewer adversarial debate framework (used by both UC3 ontogen
+and UC4 metagen), and the test-mode env-var toggles all live in
 [BACKEND_LLM](BACKEND_LLM.md). Service sections below point at it where
 they invoke the loop.
 
@@ -409,67 +411,117 @@ shortcut for the 80% case, not the only path.
 
 ### Metadata Generation Service (`src/backend/metagen/`)
 
-**Covers**: MANIFESTO §2.1 Metadata Generation (UC4)
+**Covers**: MANIFESTO §2.1 Metadata Generation (UC4). Behavioural narrative —
+including the global-conf / per-dataset-boundary split, item / candidate
+model, and approval lifecycle — lives in
+[USE_CASE §UC4](../USE_CASE_en.md#uc4-metadata-generation). DataHub aspect
+write rules are catalogued in
+[DATAHUB_INTEGRATION §Editable vs Non-Editable Description Aspects](../DATAHUB_INTEGRATION.md#editable-vs-non-editable-description-aspects).
+This section describes the implementation only.
 
-CRUD for per-dataset metadata generation configs (PostgreSQL: `metagen_configs`).
-LLM-powered proposals for documentation fields that already exist in DataHub. **Writes
-only to editable DataHub aspects** (see
-[DATAHUB_INTEGRATION §Editable vs Non-Editable Description Aspects](../DATAHUB_INTEGRATION.md#editable-vs-non-editable-description-aspects)).
-Approval is field-level — reviewers may approve a subset of proposed fields in a single
-PATCH.
+**Singleton conf** at `/spoke/common/metagen/attr/conf` — there is no
+per-dataset operational config; the per-dataset row
+(`/spoke/common/data/{urn}/attr/metagen/conf`) is the opt-in boundary only.
+Fields:
 
-**`targets` enum** on `attr/metagen/conf`. Three values are supported in baseline:
+| Field | Purpose |
+|-------|---------|
+| `is_enabled` | Master switch for the metagen DAG. |
+| `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence. |
+| `dataset_filter` | Optional scope filter — `tags`, `glossary_terms`, `dataset_urns` (OR-ed across dimensions; `{}` means all). URN format validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter`. |
+| `result_limit` | Integer ∈ `[1, 20]`, default `3`. Maximum candidate count per item at any time. |
+| `overwrite_pending` | Boolean, default `true`. When an item already holds `result_limit` non-rejected candidates and is not finalized, controls whether a new run evicts the oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
 
-| Value | Scope | DataHub write target |
-|-------|-------|----------------------|
-| `dataset.description` | Per-data | `editableDatasetProperties.description` |
-| `column.description` | Per-data, one entry per column | `editableSchemaMetadata.editableSchemaFieldInfo[].description` keyed by `fieldPath` |
-| `cross_data.md` | Cross-data | `documentInfo.contents.text` (Markdown) on `document` entities whose `relatedAssets` list the involved dataset URNs — the proposal carries a list of actions (see below) |
+The conf is a single row in `metagen_config` (singleton table; see
+[BACKEND_SCHEMA §metagen_config](BACKEND_SCHEMA.md#metagen_config)).
 
-Future scope: proposals for `domains` and `globalTags`.
+**Per-dataset boundary** at `/spoke/common/data/{urn}/attr/metagen/conf`,
+stored in `metagen_boundary`. A row with `is_enabled=true` opts the dataset
+in; missing row or `is_enabled=false` is opt-out. The `allowed` array
+restricts which element kinds the global generator may write on this
+dataset. Baseline values: `dataset.description`, `column.description`.
 
-**Generation Pipeline** (Airflow DAG): read DataHub evidence — `datasetProperties`,
-`schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
-`glossaryTerms`, and `documentInfo.contents.text` on `document` entities whose
-`relatedAssets` overlap the in-scope dataset — plus UC3-approved nodes and triples
-filtered by `dataset_node_map.status='approved'` (human-approved only — metagen
-intentionally excludes `llm_approved` rows so user-facing metadata is gated to
-human-curated entities) → LLM analysis to draft per-field proposals for the
-configured `targets` → for `cross_data.md`, decide create / modify / delete
-actions over the candidate `document` entities → produce a `metagen_results`
-row in PostgreSQL with status `pending_review`.
+**Item kinds**. Two values supported in baseline:
 
-The LLM step in the Generation Pipeline runs inside the
-[Inference Loop](BACKEND_LLM.md#inference-loop). Bound tool
-`metagen_validate(payload)`, schema model `MetagenLLMOutput` (per-target
-proposal entries). The full validator rule table lives in
-[BACKEND_LLM §Metagen Validator](BACKEND_LLM.md#metagen-validator); the
-Generation Pipeline currently uses a single-call LLM implementation and
-adopts those rules once it migrates to the inference loop.
+| `kind` | DataHub write target |
+|--------|----------------------|
+| `dataset.description` | `editableDatasetProperties.description` |
+| `column.description` | `editableSchemaMetadata.editableSchemaFieldInfo[].description` keyed by `fieldPath` |
 
-**Cross-data MD action types**. A single `cross_data.md` proposal carries an ordered list
-of actions, each independently approvable:
+Future scope: `domains` and `globalTags` proposals.
 
-| Action | Effect on DataHub |
-|--------|-------------------|
-| `create` | New `document` with a generator-chosen descriptive title (topic phrase), Markdown body in `documentInfo.contents.text`, and `relatedAssets` listing the involved dataset URNs (at least one — a cross-data document with no related datasets has no purpose). `documentInfo.source.sourceType = NATIVE`. |
-| `modify` | Replace `documentInfo.contents.text` on an existing `document`; URN and title preserved. `relatedAssets` may be extended when the topic now covers additional datasets. |
-| `delete` | Soft-delete an existing `document` via `Status.removed = true` when its topic is fully absorbed into a new replacement. No hard delete. |
+**Generation Pipeline** (Airflow tier DAG, schedule from
+`metagen_config.schedule_tier`, or manual `POST /method/run`):
 
-**Approval flow**. `PATCH /attr/metagen/result/{result_id}` with
-`{verdict, fields, reason}`:
+1. Enumerate **in-scope datasets** — union of datasets matching the global
+   `dataset_filter` (`tags`, `glossary_terms`, `dataset_urns`) **intersected**
+   with the set of datasets that have a `metagen_boundary` row with
+   `is_enabled=true`. Boundary-less or boundary-disabled datasets are
+   excluded regardless of `dataset_filter`. Unresolved
+   `dataset_urns` entries are accumulated for the run-complete event's
+   `unresolved_urns`.
+2. **Clear `rejected` candidates** across all in-scope datasets so the
+   per-item budget frees up.
+3. Per in-scope dataset, fetch DataHub evidence — `datasetProperties`,
+   `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
+   `glossaryTerms`, and `documentInfo.contents.text` on `document` entities
+   whose `relatedAssets` overlap the dataset — plus UC3-approved nodes and
+   triples filtered by `dataset_node_map.status='approved'` (human-approved
+   only — metagen excludes `llm_approved` rows so user-facing metadata is
+   gated to human-curated ontology entities).
+4. **Enumerate target items** — `(dataset_urn, dataset.description)` and one
+   `(dataset_urn, column.<fieldPath>.description)` per column. Drop items
+   whose kind is outside the dataset's `metagen_boundary.allowed`. Drop
+   items already finalized (those with an `approved` candidate).
+5. **Producer-Reviewer Adversarial Debate** generates candidates per
+   surviving (dataset, item) pair. See
+   [BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate).
+   The producer emits candidate `value`s; the reviewer evaluates each
+   against ontology context and existing approved descriptions; only
+   candidates with reviewer outcome `accept` and
+   `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` persist.
+6. **Apply per-item budget** — for each (dataset, item) whose surviving
+   candidate count exceeds the slack (`result_limit - non_rejected_count`),
+   either evict the oldest `llm_approved` candidate (FIFO by `created_at`,
+   when `overwrite_pending=true`) or drop the new candidate
+   (when `overwrite_pending=false`).
+7. **Persist** the accepted candidates as `metagen_candidates` rows with
+   `status='llm_approved'`. Refresh `metagen_candidate_embeddings` for the
+   approved candidates that will inform the next run's Reviewer RAG.
 
-- `verdict: "approve"` + `fields` omitted → approve all proposed fields and actions.
-- `verdict: "approve"` + `fields: [...]` → approve only the listed field paths and / or
-  cross-data actions referenced as `cross_data.md.<action_id>`.
-- `verdict: "reject"` → reject the whole proposal (or the listed `fields` only).
+The LLM step in step 5 runs inside the
+[Inference Loop](BACKEND_LLM.md#inference-loop) with the producer-reviewer
+adversarial debate enabled. Bound tool `metagen_validate(payload)`, schema
+model `MetagenLLMOutput`. Validator rule table:
+[BACKEND_LLM §Metagen Validator](BACKEND_LLM.md#metagen-validator).
 
-On approval, the service writes the approved subset to the editable DataHub aspects in a
-single `emit_mcp` per affected entity. Each successful write emits a `METAGEN.APPROVE`
-event; rejections emit `METAGEN.REJECT` (see [Event Catalogue](#event-catalogue)).
+**Approval flow**.
+`POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review`
+with body `{verdict, reason}`:
 
-**Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
-raises `409 GENERATION_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
+- `verdict: "approve"` → write the candidate's `value` to the corresponding
+  editable DataHub aspect via a single `emit_mcp`, flip the candidate's
+  status to `approved`, and emit `METAGEN.CANDIDATE_APPROVE`. The item is now
+  **finalized** — subsequent runs skip it.
+- `verdict: "reject"` → flip the candidate's status to `rejected` and emit
+  `METAGEN.CANDIDATE_REJECT`. The row is deleted at the start of the next
+  run.
+
+Sibling `llm_approved` candidates on the same item are not auto-touched on
+approval — they remain visible as read-only history.
+
+**Concurrency**. Generation runs are serialised by a global Redis lock
+(`metagen`). A duplicate `method/run` while one is in flight returns
+`409 METAGEN_RUNNING`.
+
+**Disabled-config rejection**. `method/run` with `is_enabled=false` and
+`dry_run=false` raises `409 METAGEN_DISABLED`. Dry-run is permitted
+regardless of `is_enabled`.
+
+**Boundary guard**. Candidate review against a dataset whose
+`metagen_boundary` is absent or `is_enabled=false` returns
+`422 METAGEN_DATASET_NOT_IN_BOUNDARY`. Review against an item that already
+has an approved sibling returns `409 METAGEN_ITEM_FINALIZED`.
 
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
@@ -526,10 +578,10 @@ or manual `POST /method/run`):
    `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
    `document` entities whose `relatedAssets` reference an in-scope dataset
    (Markdown body, capped per dataset). DataSpoke writes the editable aspects
-   only after a UC4 reviewer approves the proposal (UC4 `field_status='approved'`);
-   draft states (`pending` / `edited`) stay in `metagen_results.proposals`, so
-   *presence* in DataHub is the approval signal — UC3 reads DataHub directly with
-   no JOIN against `metagen_results`.
+   only after a UC4 reviewer approves a candidate; unreviewed candidates stay in
+   `metagen_candidates` with `status='llm_approved'`, so *presence* in DataHub is
+   the approval signal — UC3 reads DataHub directly with no JOIN against
+   `metagen_candidates`.
 4. Load active seeds (`ontogen_seeds.status='active'`). Resolve the one-shot prompt:
    if the `POST /method/run` request carries a non-empty `text/markdown` body, use
    that body; otherwise fall back to `ontogen_config.default_run_prompt` (used by both
@@ -679,15 +731,15 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 ### Event Catalogue
 
 Config-lifecycle actions (`CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE`) are emitted
-by every domain that owns a config — `INGESTION`, `VALIDATION`, `METAGEN`, `METRIC`,
-`ONTOGEN` (singleton). Domain-specific actions:
+by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
+`ONTOGEN` (singleton), `METAGEN` (singleton). Domain-specific actions:
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
 | `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | `POST method/ingestion/run` succeeds / errors |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
-| `METAGEN` (`dataset`) | `COMPLETE` | `POST method/metagen/run` succeeds; recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id`, `result_id` (UUID on real-run, `null` on dry-run), `targets` (list mirroring the conf's `targets`), `dry_run` |
-| `METAGEN` (`dataset`) | `APPROVE` / `REJECT` | `PATCH attr/metagen/result/{id}` with `verdict: "approve"\|"reject"` |
+| `METAGEN` (`metagen`) | `RUN_COMPLETE` / `RUN_FAILED` | global generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
+| `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
 | `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds; payload carries `unresolved_urns` for any `dataset_filter.dataset_urns` entries that didn't resolve in DataHub |
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
 | `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `nodes_added/edges_added/triples_added` on real-run, `nodes_proposed/edges_proposed/triples_proposed` on dry-run), `dry_run`, `producer_iterations` (inference-loop turns the Producer took), `producer_errors_dropped` (validator-rejected row count), `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
@@ -748,10 +800,10 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
 
 > **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
-> (`ingestion`, `metrics`, `metagen`), the periodic DAG that runs at a given tier
-> fetches only the configs whose `schedule_tier` matches the DAG's tier. For
-> `ontogen`, only the tier listed on the singleton conf runs at that tier (the other
-> two tier DAGs short-circuit when triggered).
+> (`ingestion`, `metrics`), the periodic DAG that runs at a given tier fetches
+> only the configs whose `schedule_tier` matches the DAG's tier. For singleton-conf
+> features (`ontogen`, `metagen`), only the tier listed on the singleton conf
+> runs at that tier (the other two tier DAGs short-circuit when triggered).
 
 ### DataHub Sync
 
@@ -791,12 +843,12 @@ smoke check by `dataspoke-test-mode.sh` and by the test fixture
 
 | DAG | Conf Key |
 |-----|----------|
-| `metagen` | `metagen-{md5(urn)[:12]}` |
+| `metagen` | `metagen-singleton` |
 | `metrics` | `metrics-{metric_id}` |
 | `ontogen` | `ontogen-singleton` |
 
 If a duplicate is detected, the API returns `409 Conflict` with the appropriate `*_RUNNING`
-error code (`GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …).
+error code (`METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …).
 
 ### Ingestion Workflow
 
@@ -869,7 +921,7 @@ failures.
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `GENERATION_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `GENERATION_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_ITEM_FINALIZED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |
@@ -886,9 +938,8 @@ completes with reduced enrichment. All failures are logged at WARNING with `exc_
 | Operation | Service | Fallback |
 |-----------|---------|----------|
 | `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
-| pgvector similarity search | MetagenService | No alternative suggestions |
+| pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
 | LLM dataset classification | OntogenService | Dataset excluded from classification |
-| LLM cross-data MD synthesis | MetagenService | `cross_data.md` action list empty for the run |
 | DataHub run-history poll | IngestionService (passive sync) | Skip the affected dataset for this hourly tick; retry next tick |
 
 ---
@@ -911,7 +962,8 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `BULK_BATCH_SIZE` | 100 | DataHub bulk scan batch size |
 | `BULK_BATCH_DELAY_MS` | 100 | Delay between bulk batches |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
-| `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Below this -> pending human review |
+| `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Ontogen: below this -> row persists as `llm_pending` |
+| `METAGEN_CONFIDENCE_THRESHOLD` | 0.7 | Metagen: below this -> candidate is dropped (metagen has no `llm_pending`) |
 
 ---
 

@@ -112,7 +112,7 @@ Each MANIFESTO feature has a clear integration direction:
 | Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
-| Metadata Generation | UC4 | **Read + Write (editable only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval, write to the *editable* aspect counterparts (`editableDatasetProperties`, `editableSchemaMetadata`) and create / modify / delete `document` entities (Markdown body in `documentInfo.contents.text`, `relatedAssets` listing the involved datasets). Tag / glossary-term proposals are future scope. |
+| Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
 
@@ -266,13 +266,10 @@ Mandatory conventions for the DataSpoke emission path:
 DataHub's `document` entity (URN `urn:li:document:<id>`, server-assigned) is a
 knowledge-base entity for prose attached to data assets — Markdown notes,
 runbooks, design memos, and ingested third-party docs (Confluence, Notion, Slack).
-DataSpoke uses it as the home for **cross-data documentation**: UC4 (Metadata
-Generation) `cross_data.md` proposals create, modify, or delete `document` entities
-whose `relatedAssets` list the involved datasets, and UC3 (Ontology Generation)
-reads documents whose `relatedAssets` overlap an in-scope dataset as evidence.
-
-The generator chooses a descriptive title (a topic phrase) for new documents — the
-URN is server-assigned and not keyed off any UC3 node, edge, or triple ID.
+DataSpoke reads documents whose `relatedAssets` overlap an in-scope dataset as
+context for UC3 ontology inference; baseline DataSpoke does not write document
+entities. (Generative document-entity authoring is future scope for UC4
+metadata generation.)
 
 #### `documentInfo` aspect fields
 
@@ -291,16 +288,14 @@ URN is server-assigned and not keyed off any UC3 node, edge, or triple ID.
 #### DataSpoke conventions
 
 - **Body format.** `documentInfo.contents.text` is Markdown by convention.
-- **Provenance.** DataSpoke-authored documents emit `documentInfo.source.sourceType = NATIVE`; `externalUrl` and `externalId` stay unset.
-- **Soft-delete.** Document deletion uses the regular `Status` aspect with `removed = true` on the document URN. DataSpoke never hard-deletes documents.
 - **Discovery.** Find documents that reference a given dataset via the GraphQL `searchAcrossEntities` query, filtering on `entityType: DOCUMENT` and `relatedAssets` containing the dataset URN. Sort by `lastModified` descending and apply a per-dataset cap when feeding documents to the LLM as evidence.
 
-#### Aspect reference
+#### Aspect reference (read-only in baseline)
 
-| Aspect | SDK Class | Entity Type | Key Fields | REST Write Path |
+| Aspect | SDK Class | Entity Type | Key Fields | REST Read Path |
 |--------|----------|-------------|------------|----------------|
-| `documentInfo` | `DocumentInfoClass` | `document` | `title`, `contents.text` (Markdown), `relatedAssets[]`, `source` (`NATIVE` for DataSpoke-authored), `status` (`published`), `created`, `lastModified` | `POST /openapi/v3/entity/document` |
-| `status` | `StatusClass` | `document` | `removed` (bool, used for soft-delete) | `POST /openapi/v3/entity/document` |
+| `documentInfo` | `DocumentInfoClass` | `document` | `title`, `contents.text` (Markdown), `relatedAssets[]`, `source`, `status`, `created`, `lastModified` | `GET /openapi/v3/entity/document/{urn}` |
+| `status` | `StatusClass` | `document` | `removed` (bool) | `GET /openapi/v3/entity/document/{urn}` |
 
 #### `relatedAssets` entityType whitelist
 
@@ -341,7 +336,7 @@ per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-inge
 | `datasetUsageStatistics` | — | — | — | — | R |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | — | W | — | — | R |
-| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | R + W (create / modify / delete on approval; delete via `Status.removed=true`) | R |
+| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | R (read as generation context only) | R |
 
 ## Custom Ingestor Guide
 

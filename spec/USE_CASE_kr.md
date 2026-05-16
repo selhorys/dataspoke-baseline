@@ -53,7 +53,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 | UC1 | Ingestion Control | [Active-custom과 Passive 인제스천](#uc1-ingestion-control) |
 | UC2 | Validation | [단일 슬롯, 파이프라인이 POST하는 결과, 과거 베이스라인](#uc2-validation) |
 | UC3 | Ontology Generation | [Imazon 데이터셋 전반의 노드·엣지·트리플 추론](#uc3-ontology-generation) |
-| UC4 | Metadata Generation | [설명·MD 문서 제안](#uc4-metadata-generation) |
+| UC4 | Metadata Generation | [아이템별 설명 제안](#uc4-metadata-generation) |
 | UC5 | Governance | [인제스천 신선도와 검증 점수](#uc5-governance) |
 
 ---
@@ -381,19 +381,21 @@ GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:
 (예: `order_line__references__book`)로, ID 자체가 사실을 인코딩하므로 재추론 사이에
 자연히 idempotent하다.
 
-**Conf는 싱글톤.** UC1 / UC2 / UC4의 데이터셋별 conf와 달리, 온톨로지는 글로벌
+**Conf는 싱글톤.** UC1 / UC2의 데이터셋별 conf와 달리, 온톨로지는 글로벌
 아티팩트이다. `/spoke/common/ontogen/attr/conf`의 운영 conf는 추론 DAG 실행 시점과
-스코프 데이터셋을 제어한다.
+스코프 데이터셋을 제어한다. UC4 metagen 역시 같은 싱글톤 conf 형태
+(`/spoke/common/metagen/attr/conf`)를 따르며, 데이터셋별 옵트인은 별도 경계 row로
+관리한다.
 
 **입력(검증된 DataHub 경계).** UC3는 UC4와 동일한 DataHub aspect 집합 —
 `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
 `editableSchemaMetadata`, `glossaryTerms`, 그리고 스코프 데이터셋을
 `relatedAssets`로 참조하는 `document` 엔티티의
 `documentInfo.contents.text`(관례상 Markdown 본문) — 만 입력으로 사용한다.
-DataSpoke는 UC4 리뷰어가 제안을 승인한 뒤에만 해당 editable aspect를
-DataHub에 쓰므로, DataHub에 *존재*한다는 사실 자체가 승인 신호다 — UC3는
-별도 조인이 필요 없고, UC4의 *초안* 상태(`pending` / `edited`)는 DataHub에
-기록되지 않으므로 LLM이 다른 LLM의 미승인 추측을 학습할 수 없다.
+DataSpoke는 UC4 리뷰어가 후보(candidate)를 승인한 뒤에만 editable description
+aspect를 DataHub에 쓰므로, DataHub에 *존재*한다는 사실 자체가 승인 신호다 —
+UC3는 별도 조인이 필요 없고, UC4의 미승인 후보는 DataSpoke 저장소에만 남으므로
+LLM이 다른 LLM의 미승인 추측을 학습할 수 없다.
 
 | `attr/conf` 필드 | 용도 |
 |---|---|
@@ -563,25 +565,25 @@ PostgreSQL(관계형 + pgvector)에서 유지한다.
 *Metadata Generation — 온톨로지를 바탕으로 데이터 문서의 상태를 점검하고
 생성 AI로 메타데이터를 제안한다. API와 리뷰 프로세스를 포함한다.*
 
-이 기능은 DataHub 메타데이터에 이미 존재하는
-문서 필드의 값을 제안한다.
-온톨로지 구조 자체는 제안하지 않는다 (UC3가 담당).
+이 기능은 DataHub 메타데이터에 이미 존재하는 **편집 가능 설명 aspect** —
+데이터셋 설명 하나, 컬럼 설명 하나씩 — 의 값을 제안한다. 온톨로지 구조
+자체는 제안하지 않는다 (UC3가 담당).
 
 **입력(검증된 DataHub 경계).** UC4는 UC3와 동일한 DataHub aspect 집합을
 입력으로 사용한다: `datasetProperties`, `schemaMetadata`,
 `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`,
 그리고 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
 `documentInfo.contents.text`. 그 위에 UC3에서 승인된 노드와 트리플
-(`dataset_node_map.status='approved'` 필터)을 DataSpoke 저장소에서 추가로
-읽는다.
+(`dataset_node_map.status='approved'` 필터)을 DataSpoke 저장소에서 생성
+컨텍스트로 추가로 읽는다.
 
 ### User Story
 
 > *데이터셋 오너 또는 거버넌스 리뷰어로서*,
-> *DataSpoke가 문서가 부족한 데이터셋의 문서를 제안하고,
-> 필드 단위로 승인·편집·거부할 수 있기를 원한다*,
-> *그래서* 모든 설명을 일일이 작성하지 않고도
-> 문서 커버리지가 향상되도록 한다.
+> *DataSpoke가 문서가 부족한 데이터셋의 슬롯마다 여러 후보 설명을 제안하고,
+> 그중 하나를 승인하고 부족한 것은 거부할 수 있기를 원한다*,
+> *그래서* 모든 설명을 일일이 작성하지 않으면서도 표현은 직접 선택할 수
+> 있도록 한다.
 
 **베이스라인에서 지원하는 문서 필드**
 
@@ -592,131 +594,181 @@ DataSpoke는 DataHub의 **편집 가능(editable)** aspect에만 기록한다.
 DataHub은 두 편집 가능 설명 필드를 모두 리치 텍스트로 취급하며,
 UI는 Markdown으로 렌더링한다.
 
-| 범위 | 필드 | 형식 | DataHub 타깃 |
-|---|---|---|---|
-| Per-data | 테이블 설명 | Markdown | `editableDatasetProperties.description` |
-| Per-data | 컬럼 설명 | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (`fieldPath` 키) |
-| Cross-data | 크로스 데이터 문서 | Markdown | `relatedAssets`에 관련 데이터셋 URN들을 담은 `document` 엔티티의 `documentInfo.contents.text`. 생성기가 생성·수정·삭제 액션을 제안할 수 있다 — 아래 설계 결정 참조 |
+| 아이템 종류 | 형식 | DataHub 타깃 |
+|---|---|---|
+| `dataset.description` | Markdown | `editableDatasetProperties.description` |
+| `column.<fieldPath>.description` | Markdown | `editableSchemaMetadata.editableSchemaFieldInfo[].description` (`fieldPath` 키) |
 
-향후 범위(언급만, 여기서는 모델링하지 않음):
-`domains`와 `globalTags` 제안.
+향후 범위(언급만, 여기서는 모델링하지 않음): `domains`·`globalTags` 제안.
 
-> *(설계 결정)* `cross_data.md` 제안은 단순히 온톨로지 노드를 키로 삼지 않는다.
-> 문서 생성기는 스코프 데이터셋을 `relatedAssets`로 참조하는 기존 `document`
-> 엔티티(제목과 본문)를 입력 컨텍스트로 읽고, 무엇을 제안할지 스스로 결정한다.
-> 하나의 `cross_data.md` 제안은 **액션 묶음**이며, 각 액션은 다음 중 하나다:
-> - **생성(create)** — 누락된 주제를 발견했고 기존 문서들은 그대로 둬도 괜찮다고
->   판단되면, 생성기가 정한 서술적 제목(주제 구문)과 Markdown 본문
->   (`documentInfo.contents.text`), 그리고 주제가 걸쳐 있는 데이터셋 URN들을 담은
->   `relatedAssets`를 가진 `document`를 새로 만든다.
->   `documentInfo.source.sourceType = NATIVE`.
-> - **수정(modify)** — 기존 `document`의 제목·URN은 유지한 채
->   `documentInfo.contents.text`를 교체한다. 주제가 더 많은 데이터셋을 다루게 되면
->   `relatedAssets`를 확장할 수 있다.
-> - **삭제(delete)** — 주제가 새 대체 문서로 완전히 흡수된 경우, 기존 `document`를
->   `Status.removed = true`로 소프트 삭제한다. 하드 삭제는 하지 않는다.
->
-> 각 액션은 result 페이로드 안에 안정적인 `action_id`를 가진다. 리뷰어는 각 액션을
-> 필드별 제안과 동일한 PATCH 메커니즘으로 개별 승인·편집·거부하며, `fields` 배열은
-> 액션을 `cross_data.md.<action_id>` 형식으로 참조한다.
+**Conf는 싱글톤.** UC3 ontogen처럼 UC4 metagen은 `/spoke/common/metagen/attr/conf`에
+글로벌 운영 conf 하나를 둔다. 이 conf가 생성 DAG 실행 시점과 스코프 데이터셋을
+제어한다. 데이터셋별 참여는 별도의 옵트인 경계 — `/spoke/common/data/{urn}/attr/metagen/conf` — 가
+관리한다.
+
+| `attr/conf` 필드 | 용도 |
+|---|---|
+| `is_enabled` | metagen DAG 마스터 스위치 |
+| `schedule_tier` | `hourly` / `daily` / `weekly` 재생성 주기 |
+| `dataset_filter` | 선택적 스코프 필터 — `tags`, `glossary_terms`, `dataset_urns` (차원 간 OR; `{}`이면 전체). UC3 ontogen `attr/conf.dataset_filter`·UC5 `measurement_query.dataset_filter`와 같은 형태와 검증 규칙 |
+| `result_limit` | 아이템당 최대 후보 수 (정수 ≥ 1, 기본 `3`) |
+| `overwrite_pending` | 아이템이 `result_limit`만큼의 비-거부 후보를 이미 가지고 finalize되지 않은 상태일 때, 새 실행이 가장 오래된 `llm_approved` 후보를 덮어쓸지(`true`, 기본) 그냥 건너뛸지(`false`) 결정 |
+
+**데이터셋별 경계.** 참여하려는 각 데이터셋은 다음 행을 등록한다:
+
+| 필드 | 용도 |
+|---|---|
+| `is_enabled` | `true`이면 글로벌 metagen이 이 데이터셋에 쓸 수 있다. **행이 없거나 `false`이면 옵트아웃** — 글로벌 `dataset_filter`와 무관하게 제외 |
+| `allowed` | 글로벌 생성기가 이 데이터셋에 쓸 수 있는 아이템 종류 목록. 베이스라인 값: `"dataset.description"`, `"column.description"`. `allowed`에 없는 종류는 이 데이터셋에서 건너뛴다 |
+
+**아이템과 후보.** **아이템(item)** 은 한 데이터셋에서 편집 가능한 메타데이터
+슬롯 하나 — 데이터셋당 하나의 `dataset.description`, 컬럼당 하나의
+`column.<fieldPath>.description`. **후보(candidate)** 는 그 아이템을 위한 생성된
+Markdown 값 하나로, 자체적인 `candidate_id`·`confidence_score`·`status`를 가진다.
+각 아이템은 여러 실행에 걸쳐 누적된 후보를 최대 `result_limit`개까지 보관한다.
+
+후보 상태:
+
+- `llm_approved` — Producer-Reviewer 토론이 수락한 후보. 사람 리뷰 대기.
+- `approved` — 사람이 승인. 같은 호출에서 `value`가 DataHub에 emit되고
+  아이템은 이후 생성으로부터 잠긴다.
+- `rejected` — 사람이 거부. 다음 실행 시작 시점에 삭제된다.
+
+metagen에는 **`llm_pending` 상태가 없다** — 저장되는 모든 후보는 최소한
+토론이 수락한 후보다.
+
+**아이템 규칙.** `approved` 후보가 하나라도 있으면 아이템은 **finalized**다.
+finalized 아이템은 새 후보를 받지 않는다. 각 실행 시작 시점에 모든 `rejected`
+후보를 삭제해 자리를 비운다. 이후 스코프 내 (데이터셋, 허용 종류) 쌍마다:
+
+- finalized 아이템이면 건너뛴다.
+- 비-거부 후보 수가 `< result_limit`이면 새 후보를 추가한다.
+- 비-거부 후보 수가 `= result_limit`이고 `overwrite_pending=true`이면 가장
+  오래된 `llm_approved` 후보(`created_at` FIFO)를 제거한 뒤 추가한다.
+- 비-거부 후보 수가 `= result_limit`이고 `overwrite_pending=false`이면
+  건너뛴다.
+
+후보를 승인하면 `value`가 동기적으로 DataHub의 해당 editable aspect에
+기록되고, 그 후보의 상태가 `approved`로 바뀐다. 같은 아이템의 다른
+`llm_approved` 후보는 그대로 `llm_approved`로 남아 읽기 전용 히스토리가 된다 —
+리뷰어의 "나머지는 그대로 둔다"는 선택이 그대로 보존된다.
+
+**실행 의미.** 생성 실행은 직렬화된다: 진행 중에 같은 `method/run`이 다시
+들어오면 `409 METAGEN_RUNNING`을 반환한다. `?dry_run=true`(또는 body
+`{"dry_run": true}`)는 후보를 저장하지 않고 평가만 한다 — `dataset_filter`
+변경 미리보기에 유용하다. 수동 `POST /method/run`은 body
+`{"dataset_urns": [...], "dry_run": bool}`로 스코프를 좁히거나 평가만 할 수
+있다. 정기 Airflow DAG는 body 없이 호출되어 스코프 내 모든 데이터셋을 훑는다.
+
+**LLM 토론(Producer-Reviewer).** LLM 단계는 UC3 ontogen과 같은 적대적 토론
+추론 루프를 사용한다 ([BACKEND_LLM §Inference Loop](feature/BACKEND_LLM.md#inference-loop)
+참조). Producer가 `(dataset, item_id)` 쌍별로 후보를 제안하고, Reviewer는
+온톨로지 컨텍스트와 기존 승인 후보(승인된 설명의 임베딩에 대한 RAG)에 비추어
+각 후보를 평가한다. `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD`이고
+Reviewer의 outcome이 `accept`인 후보만 `llm_approved`로 저장된다. 그 외는
+모두 폐기된다 — ontogen과 달리 metagen에는 `llm_pending` 행이 없다.
 
 ### API Mapping
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | 타깃 필드·schedule_tier·상태 설정 |
-| `POST /spoke/common/data/{urn}/method/metagen/run` | 생성 실행 트리거 |
-| `GET /spoke/common/data/{urn}/attr/metagen/result?latest=true` | 데이터셋의 최신 제안 조회 |
-| `PATCH /spoke/common/data/{urn}/attr/metagen/result/{result_id}` | 승인/부분 승인/거부 — body `{ "verdict": "approve"\|"reject", "fields": [...], "reason": "…" }`. 승인 시 선택된 부분이 DataHub에 기록된다. |
-| `GET /spoke/common/data/{urn}/event/metagen` | 데이터셋별 생성 이벤트 이력 |
-| `GET /spoke/common/metagen` | 설정과 최신 결과를 담은 크로스 데이터셋 리스트 |
+| `PUT/PATCH/GET/DELETE /spoke/common/metagen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
+| `POST /spoke/common/metagen/method/run` | 수동 생성 실행 트리거. body `{"dataset_urns": [...], "dry_run": bool}`은 선택. 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
+| `GET /spoke/common/metagen/event` | 글로벌 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
+| `GET /spoke/common/metagen/item` | 데이터셋 전반의 아이템 목록 (페이지네이션·`dataset_urn`·`kind`·`status` 필터) |
+| `GET /spoke/common/metagen/item/{composite_id}` | `{dataset_urn}::{item_id}` 복합 ID로 아이템과 모든 후보 조회 |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | 데이터셋별 경계 (`is_enabled`, `allowed`) |
+| `GET /spoke/common/data/{urn}/attr/metagen/item` | 한 데이터셋의 아이템 목록 |
+| `GET /spoke/common/data/{urn}/attr/metagen/item/{item_id}` | 아이템과 모든 후보 |
+| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | 단일 후보 승인·거부 — body `{ "verdict": "approve"\|"reject", "reason": "…" }`. 승인 시 DataHub emit과 아이템 잠금 |
+| `GET /spoke/common/data/{urn}/event/metagen` | 데이터셋별 metagen 이벤트 (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) |
 
 ### Imazon 예시
 
-카탈로그 팀이 `catalog.books`에 문서 생성을 활성화한다:
+**Conf.** 거버넌스 팀이 metagen을 글로벌하게 활성화한다:
+
+```http
+PUT /api/v1/spoke/common/metagen/attr/conf
+```
+```json
+{
+  "is_enabled": true,
+  "schedule_tier": "daily",
+  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+  "result_limit": 3,
+  "overwrite_pending": true
+}
+```
+
+**경계.** 카탈로그 팀이 `catalog.books`를 두 종류 모두 옵트인한다:
 
 ```http
 PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/conf
 ```
 ```json
 {
-  "targets": ["dataset.description", "column.description", "cross_data.md"],
-  "schedule_tier": "weekly",
-  "is_enabled": true
+  "is_enabled": true,
+  "allowed": ["dataset.description", "column.description"]
 }
 ```
 
-**실행.**
+**실행.** 일일 Airflow DAG가 실행되거나, 리뷰어가 즉시 실행을 트리거한다:
 
 ```http
-POST .../method/metagen/run
+POST /api/v1/spoke/common/metagen/method/run
 ```
 
-**최신 제안.**
+**아이템 조회.** 실행 후, 카탈로그 대시보드가 해당 데이터셋의 아이템 목록을
+받는다:
 
 ```http
-GET .../attr/metagen/result?latest=true
+GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/item
 ```
 
-반환:
-
-```
-result_id: 7e8b…
-status:    pending_review
-
-dataset.description (markdown, confidence 0.92):
-  "# Books\n\nImazon이 제공하는 모든 타이틀의 마스터 카탈로그...\n## 메모\n- 기본 키: `book_id`."
-
-column.description 제안(markdown):
-  book_id   — "도서의 안정적이고 불투명한 식별자."
-  title     — "고객에게 노출되는 표시 제목."
-  author    — "자유 텍스트 저자/작성자명."
-  isbn      — "ISBN-13 문자열; 미상이면 '0000000000000'."
-  price     — "USD 정가, 소수점 두 자리."
-
-cross_data.md actions:
-  검토한 기존 document: (없음)
-  제안:
-    - action_id: a1
-      action:    create
-      title:     "주문이 도서를 어떻게 참조하는가"
-      body:      "`orders.line_items.book_id`는 `catalog.books.book_id`와 조인된다 ..."
-      related_assets:
-        - urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)
-        - urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)
-      confidence: 0.81
-```
-
-**리뷰.** 리뷰어가 테이블 설명과 5개 컬럼 중 4개를 승인하고,
-이어서 `author`를 편집해 승인하고, cross-data MD는 거부한다:
+`dataset.description` 아이템 하나와 컬럼당 `column.<fieldPath>.description`
+아이템이 반환된다. 데이터셋 설명 아이템을 살펴보면:
 
 ```http
-PATCH .../attr/metagen/result/7e8b…
-```
-```json
-{
-  "verdict": "approve",
-  "fields": ["dataset.description",
-             "column.description.book_id",
-             "column.description.title",
-             "column.description.isbn",
-             "column.description.price"],
-  "reason": "생성된 그대로 승인."
-}
+GET .../attr/metagen/item/dataset.description
 ```
 
-두 번째 PATCH는 편집한 `author` 설명을 승인하고,
-세 번째 PATCH는 제안된 `cross_data.md` create 액션을
-`{"verdict": "reject", "fields": ["cross_data.md.a1"], "reason": "..."}`로 거부한다.
-DataSpoke는 같은 호출 안에서 승인된 액션을 DataHub에 기록한다.
+```
+item_id: dataset.description
+kind:    dataset.description
+status:  pending           # 아직 승인된 후보 없음
+candidates (3 of result_limit=3):
+  - candidate_id: c1   status: llm_approved   confidence 0.92
+      "# Books\n\nImazon이 제공하는 모든 타이틀의 마스터 카탈로그..."
+  - candidate_id: c2   status: llm_approved   confidence 0.88
+      "# Catalog: Books\n\n공식 도서 카탈로그..."
+  - candidate_id: c3   status: llm_approved   confidence 0.85
+      "Books 테이블 — Imazon의 주요 타이틀 카탈로그..."
+```
 
-이후 팀은 제안 라이프사이클을 관찰한다:
+**리뷰.** 리뷰어가 `c1`을 승인하고, `c3`을 거부하고, `c2`는 그대로 둔다:
+
+```http
+POST .../attr/metagen/item/dataset.description/candidate/c1/method/review
+{ "verdict": "approve", "reason": "카탈로그의 역할을 가장 잘 표현했음." }
+
+POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
+{ "verdict": "reject", "reason": "내용이 부족하고 핵심 사실을 빠뜨림." }
+```
+
+`c1` 승인 호출 시 DataSpoke는 그 값을 데이터셋의
+`editableDatasetProperties.description`에 기록하고 아이템을 **finalized**로
+표시한다. `c2`는 보이는 히스토리로 `llm_approved`인 채 남는다. `c3`는 다음
+실행 시작 시점에 삭제된다.
+
+**이벤트 이력.**
 
 ```http
 GET .../event/metagen
 ```
 
-`is_enabled=false`이면 non-dry-run `method/metagen/run` 호출은 `409 GENERATION_DISABLED`를 반환한다. Dry-run은 `is_enabled`와 관계없이 항상 허용된다. Dry-run도 실제 실행과 동일하게 이벤트 detail에 `dry_run: true`를 담아 `METAGEN.COMPLETE`를 기록한다.
+글로벌 conf의 `is_enabled=false`이면 비-dry-run `method/run` 호출은
+`409 METAGEN_DISABLED`를 반환한다. Dry-run은 `is_enabled`와 관계없이 허용되며,
+이벤트 detail에 `dry_run: true`를 담아 `METAGEN.RUN_COMPLETE`를 기록한다.
 
 ---
 
