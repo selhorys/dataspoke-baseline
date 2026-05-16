@@ -587,11 +587,11 @@ the UI renders Markdown.
 
 Future scope (mentioned, not modelled here): proposals for `domains` and `globalTags`.
 
-> *(Design decision)* `cross_data.md` proposals are not keyed off a UC3 node. The
-> doc generator reads existing `document` entities whose `relatedAssets` overlap the
-> in-scope dataset (their titles and bodies) as input context and decides itself
-> what to propose. A single `cross_data.md` proposal is a **list of actions**, each
-> one of:
+> *(Design decision)* `cross_data.md` proposals are not simply keyed off an ontology 
+> node. The doc generator reads existing `document` entities whose `relatedAssets` 
+> overlap the in-scope dataset (their titles and bodies) as input context and decides
+> itself what to propose. A single `cross_data.md` proposal is a **list of actions**,
+> each one of:
 > - **create** — a new `document` with a generator-chosen descriptive title (a topic
 >   phrase), Markdown body in `documentInfo.contents.text`, and `relatedAssets`
 >   listing the dataset URNs the topic spans, when an uncovered topic is identified
