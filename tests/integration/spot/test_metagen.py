@@ -1,1080 +1,1896 @@
-"""Spot tests for Metadata Generation endpoints.
+"""Spot tests for Metadata Generation (UC4) — reshaped surface.
 
-Concerns covered:
-- GET /spoke/common/metagen — list configs (paginated envelope)
-- GET /data/{urn}/attr/metagen/conf — 404 for unknown URN
-- PUT /data/{urn}/attr/metagen/conf — create config (201)
-- PATCH /data/{urn}/attr/metagen/conf — partial update
-- DELETE /data/{urn}/attr/metagen/conf — remove config (204)
-- POST /data/{urn}/method/metagen/run — dry_run=true emits METAGEN.COMPLETE with
-    dry_run=true; result_id=None in detail
-- POST /data/{urn}/method/metagen/run — dry_run=false (non-dry-run persisted path)
-- POST /data/{urn}/method/metagen/run — 409 GENERATION_DISABLED when is_enabled=False;
-    no METAGEN.COMPLETE event emitted on rejected call
-- GET /data/{urn}/attr/metagen/result — result list (paginated)
-- GET /data/{urn}/attr/metagen/result?latest=true — returns at most one result
-- PATCH /data/{urn}/attr/metagen/result/{result_id} — review (approve and reject)
-- PATCH /data/{urn}/attr/metagen/result/{result_id} — field-level approve subset
-- PATCH /data/{urn}/attr/metagen/result/{result_id} — cross_data.md action approve
-    (create, modify, delete)
-- PATCH /data/{urn}/attr/metagen/result/{result_id} — follow-up PATCH preserves prior
-    field_status entries
-- GET /data/{urn}/event/metagen — event list envelope
+Concerns covered (21 test functions across 6 groups):
 
-Spec traceability:
-- spec/feature/BACKEND.md §Metadata Generation Service §Approval flow (L440-L453)
-- spec/feature/BACKEND.md §Cross-data MD action types
-- spec/feature/BACKEND_SCHEMA.md §metagen_results
-- spec/USE_CASE_en.md L700 — GENERATION_DISABLED on non-dry run with is_enabled=False
-- spec/feature/BACKEND.md L657 — METAGEN.COMPLETE emitted for dry-run and non-dry-run;
-    dry_run flag in detail
-- spec/API.md L257 — ?latest=true returns most recent result row
+Singleton conf CRUD:
+  test_metagen_global_conf_roundtrip_put_get_patch_delete
+  test_metagen_global_conf_get_when_unset_returns_null_body
+  test_metagen_global_conf_put_invalid_result_limit_422
+  test_metagen_global_conf_put_invalid_dataset_urn_422
+
+Per-dataset boundary CRUD:
+  test_metagen_boundary_roundtrip_put_get_patch_delete
+  test_metagen_boundary_get_unknown_urn_returns_null_body
+  test_metagen_boundary_put_allowed_validation_422
+
+Run-method gating:
+  test_metagen_run_disabled_conf_non_dry_run_returns_409_METAGEN_DISABLED
+  test_metagen_run_dry_run_permitted_when_disabled
+  test_metagen_run_concurrent_returns_409_METAGEN_RUNNING
+  test_metagen_run_empty_scope_completes_with_zero_items
+
+Item endpoints (raw-SQL seeded):
+  test_metagen_items_list_global_paginated_envelope
+  test_metagen_items_list_filters_dataset_kind_status
+  test_metagen_item_detail_by_composite_id
+
+Candidate review (raw-SQL seeded):
+  test_metagen_candidate_approve_flips_status_and_emits_event
+  test_metagen_candidate_approve_demotes_prior_approved_sibling
+  test_metagen_candidate_reject_emits_event
+  test_metagen_candidate_reject_approved_returns_409_METAGEN_CANNOT_REJECT_APPROVED
+  test_metagen_candidate_review_without_enabled_boundary_returns_422_METAGEN_DATASET_NOT_IN_BOUNDARY
+
+Event endpoints:
+  test_metagen_global_event_list_envelope_filters_by_time
+  test_metagen_dataset_event_list_envelope
+
+Per-item budget rules (result_limit, overwrite_pending FIFO eviction) are
+covered at the unit level in tests/unit/backend/metagen/test_service.py
+(_apply_per_item_budget); integration coverage would be redundant.
+
+NOTE (concurrent run test): The MetagenService serialises concurrency via a
+Redis cache lock ("metagen:running:singleton"), not a DB table — there is no
+metagen_runs table.  The test pre-sets the Redis key directly via the
+redis_client fixture to simulate an in-progress run, then calls POST run.
+
+spec: USE_CASE_en.md §UC4 (L552-776)
+spec: BACKEND.md §UC4 Metadata Generation — singleton conf, boundary,
+      run pipeline, mutable approval, partial unique index on approved
+spec: TESTING.md §Spot vs Api-Wired Integration Tests
 """
 
+import json
 import urllib.parse
+import uuid
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-# Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
-# before this module's tests run (autoused by tests/integration/conftest.py).
+# Declare DataHub fixture dependency so module_dummy_data ingests catalog.title_master
+# into DataHub + PG before any tests run.
+# spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
-# title_master is a DataHub-seeded Imazon dataset (catalog schema)
+# Primary test dataset — catalog.title_master (Imazon UC4 table).
+# spec: TESTING.md §Imazon Dummy-Data Reference
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+_TEST_URN2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.book_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
+_ENCODED_URN2 = urllib.parse.quote(_TEST_URN2, safe="")
 
-# Named constants for cap values
-# impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
-_REASON_MAX_LEN = 2000
-_FIELDS_MAX_COUNT = 200  # impl-cap; spec gap surfaced 2026-05-01
-_FIELD_ENTRY_MAX_LEN = 512  # impl-cap; spec gap surfaced 2026-05-01
-
-
-@pytest.mark.asyncio
-async def test_metagen_list_paginated_envelope(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """GET /spoke/common/metagen returns a paginated collection envelope."""
-    resp = await api_client.get(
-        "/api/v1/spoke/common/metagen?offset=0&limit=10",
-        headers=admin_headers,
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "results" in body
-    assert "offset" in body
-    assert "limit" in body
-    assert "total_count" in body
-    assert isinstance(body["results"], list)
+# ── Raw-SQL seed/cleanup helpers ──────────────────────────────────────────────
+# Inline at top of this file per spec/TESTING.md §Spot vs Api-Wired Integration Tests
+# and plan §Raw-SQL helpers. Not extracted to shared util.
 
 
-@pytest.mark.asyncio
-async def test_metagen_conf_get_404_unknown_urn(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """GET metagen conf for an unknown URN returns 404."""
-    unknown_urn = urllib.parse.quote(
-        "urn:li:dataset:(urn:li:dataPlatform:postgres,nonexistent.table,DEV)", safe=""
-    )
-    resp = await api_client.get(
-        f"/api/v1/spoke/common/data/{unknown_urn}/attr/metagen/conf",
-        headers=admin_headers,
-    )
-
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_metagen_conf_put(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """PUT creates metagen conf (201) with targets, schedule_tier, is_enabled."""
-    base = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    put_resp = await api_client.put(
-        base,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description", "column.description"],
-            "is_enabled": False,
-            "schedule_tier": "weekly",
-            "owner": "spot-test@imazon.com",
-        },
-    )
-    assert put_resp.status_code in (200, 201), put_resp.text
-    body = put_resp.json()
-    assert body["dataset_urn"] == _TEST_URN
-    assert "dataset.description" in body["targets"]
-
-    # Cleanup
-    await api_client.delete(base, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metagen_conf_patch(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """PATCH updates targets on existing metagen conf."""
-    base = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    await api_client.put(
-        base,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    patch_resp = await api_client.patch(
-        base,
-        headers=admin_headers,
-        json={"targets": ["dataset.description", "column.description"]},
-    )
-    assert patch_resp.status_code == 200
-    assert "column.description" in patch_resp.json()["targets"]
-
-    # Cleanup
-    await api_client.delete(base, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metagen_conf_delete(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """DELETE removes metagen conf; subsequent GET returns 404."""
-    base = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    await api_client.put(
-        base,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    del_resp = await api_client.delete(base, headers=admin_headers)
-    assert del_resp.status_code == 204
-
-    get_resp = await api_client.get(base, headers=admin_headers)
-    assert get_resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_metagen_run_dry_run(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """POST method/metagen/run with dry_run=true returns MetagenRunResponse envelope
-    and emits exactly one METAGEN.COMPLETE event with dry_run=true and result_id=None.
-
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline
-    — dry_run returns a synthetic MetagenResultRecord without persisting.
-    MetagenRunResponse must contain id, dataset_urn, proposals.
-    Spec: spec/feature/BACKEND.md L657 — METAGEN.COMPLETE recorded for both dry-run and
-    non-dry-run; dry_run flag in detail; result_id is null for dry-run (no persisted row).
-    """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
-    event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
-    conf_targets = ["dataset.description"]
-
-    # Ensure config exists
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "targets": conf_targets,
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    # Snapshot count of METAGEN.COMPLETE events before the POST
-    pre_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
-    assert pre_resp.status_code == 200, pre_resp.text
-    pre_events = pre_resp.json()["events"]
-    pre_count = sum(1 for e in pre_events if e["event_type"] == "METAGEN.COMPLETE")
-
-    run_resp = await api_client.post(
-        base_run,
-        headers=admin_headers,
-        json={"dry_run": True},
-    )
-
-    assert run_resp.status_code == 200
-    body = run_resp.json()
-    # All three keys must be present per MetagenRunResponse schema
-    # Spec: spec/feature/BACKEND.md §Metadata Generation Service §Run pipeline
-    assert "id" in body and "dataset_urn" in body and "proposals" in body
-    assert body["dataset_urn"] == _TEST_URN
-
-    # Assert exactly one new METAGEN.COMPLETE event was emitted
-    # spec: BACKEND.md L657 — COMPLETE recorded for dry-run; dry_run flag in detail
-    post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
-    assert post_resp.status_code == 200, post_resp.text
-    post_events = post_resp.json()["events"]
-    complete_events = [e for e in post_events if e["event_type"] == "METAGEN.COMPLETE"]
-    post_count = len(complete_events)
-
-    assert post_count == pre_count + 1, (
-        f"Expected exactly one new METAGEN.COMPLETE event after dry-run; "
-        f"pre_count={pre_count}, post_count={post_count}. "
-        "spec: BACKEND.md L657 — dry-run must emit METAGEN.COMPLETE"
-    )
-
-    new_event = complete_events[0]  # newest first (ordered by occurred_at desc)
-    assert new_event["detail"].get("dry_run") is True, (
-        f"METAGEN.COMPLETE event detail must carry dry_run=true; "
-        f"got detail={new_event['detail']!r}. "
-        "spec: BACKEND.md L657 — dry_run flag in detail"
-    )
-    # result_id must be None for dry-run — no row is persisted
-    # spec: BACKEND.md L657 — result_id is null for dry-run
-    assert new_event["detail"].get("result_id") is None, (
-        f"METAGEN.COMPLETE event detail result_id must be None for dry-run; "
-        f"got {new_event['detail'].get('result_id')!r}. "
-        "spec: BACKEND.md L657 — dry-run does not persist a result row"
-    )
-    # targets in event detail must match the conf's targets list
-    # spec: BACKEND.md L657 — event detail carries targets
-    assert new_event["detail"].get("targets") == conf_targets, (
-        f"METAGEN.COMPLETE event detail targets={new_event['detail'].get('targets')!r} "
-        f"must match conf targets={conf_targets!r}. "
-        "spec: BACKEND.md L657"
-    )
-
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metagen_result_list_paginated(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """GET attr/metagen/result returns paginated result list (may be empty)."""
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    base_results = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result"
-
-    # Create config
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    resp = await api_client.get(base_results, headers=admin_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "results" in body
-    assert "offset" in body
-    assert "limit" in body
-    assert "total_count" in body
-    assert isinstance(body["results"], list)
-
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
-
-
-async def _insert_pending_metagen_result(
-    session,
+async def _seed_metagen_item(
+    session: AsyncSession,
     *,
     dataset_urn: str,
-    proposals: dict | None = None,
-    field_status: dict | None = None,
-) -> str:
-    """Seed a metagen_results row directly via async_session (deterministic state).
+    item_id: str,
+    kind: str = "dataset.description",
+    field_path: str | None = None,
+) -> None:
+    """Insert a metagen_items row (composite PK: dataset_urn, item_id).
 
-    Mirrors the DB-seeding pattern from test_ontogen.py review tests so the
-    approve/reject paths can be exercised without depending on the stub LLM
-    returning non-empty proposals.
-    Spec: spec/feature/BACKEND.md L440-L453 (approve writes DataHub editable aspects).
+    Uses ON CONFLICT DO NOTHING so callers can safely call this multiple
+    times for the same (dataset_urn, item_id) pair.
+
+    spec: src/shared/db/models.py — MetagenItem composite PK (dataset_urn, item_id)
+    spec: BACKEND.md §UC4 — item kind in {dataset.description, column.description}
     """
-    import json
-    import uuid as _uuid
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.metagen_items"
+            " (dataset_urn, item_id, kind, field_path)"
+            " VALUES (:urn, :item_id, :kind, :fp)"
+            " ON CONFLICT (dataset_urn, item_id) DO NOTHING"
+        ),
+        {"urn": dataset_urn, "item_id": item_id, "kind": kind, "fp": field_path},
+    )
+    await session.commit()
 
-    from sqlalchemy import text
 
-    result_id = _uuid.uuid4()
-    run_id = _uuid.uuid4()
-    _proposals = proposals or {"dataset.description": "Seeded test description."}
-    _field_status = field_status or {"dataset.description": "pending"}
+async def _seed_metagen_candidate(
+    session: AsyncSession,
+    *,
+    dataset_urn: str,
+    item_id: str,
+    value: str,
+    status: str = "llm_approved",
+    confidence: float = 0.85,
+    created_at: datetime | None = None,
+) -> str:
+    """Insert a metagen_candidates row; ensures parent item row exists first.
+
+    Returns the new candidate_id as a str (UUID hex).
+
+    spec: src/shared/db/models.py — MetagenCandidate PK candidate_id UUID;
+      FK (dataset_urn, item_id) -> metagen_items;
+      partial unique index: UNIQUE (dataset_urn, item_id) WHERE status='approved'
+    spec: BACKEND.md §UC4 — candidate status in {llm_approved, approved, rejected}
+    """
+    # Ensure parent item row exists.
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.metagen_items"
+            " (dataset_urn, item_id, kind)"
+            " VALUES (:urn, :item_id, 'dataset.description')"
+            " ON CONFLICT (dataset_urn, item_id) DO NOTHING"
+        ),
+        {"urn": dataset_urn, "item_id": item_id},
+    )
+
+    candidate_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    ts = created_at or datetime.now(tz=UTC)
 
     await session.execute(
         text(
-            "INSERT INTO dataspoke.metagen_results"
-            " (id, dataset_urn, proposals, field_status, run_id, generated_at)"
-            " VALUES (:id, :dataset_urn, CAST(:proposals AS jsonb),"
-            " CAST(:field_status AS jsonb), :run_id, now())"
+            "INSERT INTO dataspoke.metagen_candidates"
+            " (candidate_id, dataset_urn, item_id, run_id, value,"
+            "  confidence_score, status, evidence, created_at)"
+            " VALUES (:candidate_id, :urn, :item_id, :run_id, :value,"
+            "         :confidence, :status, '{}'::jsonb, :created_at)"
         ),
         {
-            "id": str(result_id),
-            "dataset_urn": dataset_urn,
-            "proposals": json.dumps(_proposals),
-            "field_status": json.dumps(_field_status),
-            "run_id": str(run_id),
+            "candidate_id": candidate_id,
+            "urn": dataset_urn,
+            "item_id": item_id,
+            "run_id": run_id,
+            "value": value,
+            "confidence": confidence,
+            "status": status,
+            "created_at": ts,
         },
     )
     await session.commit()
-    return str(result_id)
+    return str(candidate_id)
 
 
-async def _delete_metagen_result(session, result_id: str, dataset_urn: str) -> None:
-    """Clean up a seeded metagen_results row."""
-    from sqlalchemy import text
+async def _seed_metagen_event(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: str,
+    event_type: str,
+    detail: dict,
+    occurred_at: datetime,
+) -> str:
+    """Insert a row into dataspoke.events.  Returns the event id as str.
 
+    spec: src/shared/db/models.py — Event table schema
+    spec: src/shared/events.py — event_type constants (METAGEN.* prefix)
+    """
+    event_id = uuid.uuid4()
     await session.execute(
-        text("DELETE FROM dataspoke.metagen_results WHERE id = :id AND dataset_urn = :urn"),
-        {"id": result_id, "urn": dataset_urn},
+        text(
+            "INSERT INTO dataspoke.events"
+            " (id, entity_type, entity_id, event_type, status, detail, occurred_at)"
+            " VALUES (:id, :etype, :eid, :evtype, 'success',"
+            "         CAST(:detail AS jsonb), :occurred_at)"
+        ),
+        {
+            "id": event_id,
+            "etype": entity_type,
+            "eid": entity_id,
+            "evtype": event_type,
+            "detail": json.dumps(detail),
+            "occurred_at": occurred_at,
+        },
     )
     await session.commit()
+    return str(event_id)
 
 
-@pytest.mark.asyncio
-async def test_metagen_result_review_reject(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    async_session,
+async def _delete_metagen_state_for_urn(
+    session: AsyncSession,
+    dataset_urn: str,
 ) -> None:
-    """PATCH result/{id} with 'reject' sets all field_status entries to 'rejected'.
+    """Cascade-delete all metagen rows for dataset_urn.
 
-    Seeds a metagen_results row directly (no LLM dependency) so the reject path
-    is deterministic regardless of stub LLM behaviour.
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L440-L453.
+    Deletion order (FK chain): embeddings -> candidates -> items -> events.
+    Each step wrapped in suppress(Exception) so a single failure does not
+    abort later cleanup steps.
+
+    spec: src/shared/db/models.py L267 —
+      metagen_candidate_embeddings.candidate_id FK -> metagen_candidates.candidate_id
+    spec: TESTING.md §Integration Testing — teardown must not leak state
     """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    # Ensure config exists for the URN
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    result_id = await _insert_pending_metagen_result(
-        async_session,
-        dataset_urn=_TEST_URN,
-        proposals={"dataset.description": "Seeded description for rejection test."},
-        field_status={"dataset.description": "pending"},
-    )
-
-    encoded_result_id = urllib.parse.quote(result_id, safe="")
-    try:
-        review_resp = await api_client.patch(
-            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}",
-            headers=admin_headers,
-            json={"verdict": "reject", "reason": "spot-test rejection"},
+    with suppress(Exception):
+        await session.execute(
+            text(
+                "DELETE FROM dataspoke.metagen_candidate_embeddings"
+                " WHERE candidate_id IN ("
+                "   SELECT candidate_id FROM dataspoke.metagen_candidates"
+                "   WHERE dataset_urn = :urn"
+                " )"
+            ),
+            {"urn": dataset_urn},
         )
-        assert review_resp.status_code == 200, review_resp.text
-        body = review_resp.json()
-        assert body["id"] == result_id
-        # All fields must be rejected
-        # Spec: spec/feature/BACKEND.md L295 — verdict=reject sets all to 'rejected'
-        for status_val in body["field_status"].values():
-            assert status_val == "rejected"
-    finally:
-        await _delete_metagen_result(async_session, result_id, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
+        await session.commit()
 
-
-@pytest.mark.asyncio
-async def test_metagen_result_review_approve(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    async_session,
-) -> None:
-    """PATCH result/{id} with 'approve' writes DataHub editable aspects.
-
-    Seeds a metagen_results row directly (no LLM dependency) so the approve path
-    is deterministic regardless of stub LLM behaviour.
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow L440-L453
-    — on approval the service writes to editable DataHub aspects in a single emit_mcp
-    per affected entity and emits METAGEN.APPROVE event.
-    """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    # Ensure config exists for the URN
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    result_id = await _insert_pending_metagen_result(
-        async_session,
-        dataset_urn=_TEST_URN,
-        proposals={"dataset.description": "Seeded description for approval test."},
-        field_status={"dataset.description": "pending"},
-    )
-
-    encoded_result_id = urllib.parse.quote(result_id, safe="")
-    try:
-        review_resp = await api_client.patch(
-            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}",
-            headers=admin_headers,
-            json={"verdict": "approve", "reason": "spot-test approval"},
+    with suppress(Exception):
+        await session.execute(
+            text(
+                "DELETE FROM dataspoke.metagen_candidates WHERE dataset_urn = :urn"
+            ),
+            {"urn": dataset_urn},
         )
-        assert review_resp.status_code == 200, review_resp.text
-        body = review_resp.json()
-        assert body["id"] == result_id
-        # All fields must be approved
-        # Spec: spec/feature/BACKEND.md L440 — verdict=approve flips all pending fields
-        for status_val in body["field_status"].values():
-            assert status_val == "approved"
-    finally:
-        await _delete_metagen_result(async_session, result_id, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
+        await session.commit()
+
+    with suppress(Exception):
+        await session.execute(
+            text("DELETE FROM dataspoke.metagen_items WHERE dataset_urn = :urn"),
+            {"urn": dataset_urn},
+        )
+        await session.commit()
+
+    with suppress(Exception):
+        await session.execute(
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_type = 'dataset' AND entity_id = :urn"
+                "   AND event_type LIKE 'METAGEN.%'"
+            ),
+            {"urn": dataset_urn},
+        )
+        await session.commit()
+
+
+# ── Group 1: Singleton conf CRUD ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_metagen_events_list_envelope(
+async def test_metagen_global_conf_roundtrip_put_get_patch_delete(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET event/metagen returns paginated event envelope (may be empty)."""
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    base_events = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+    """PUT -> GET -> PATCH -> DELETE singleton conf; events observable on /metagen/event.
 
-    # Create config so events endpoint is accessible
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "targets": ["dataset.description"],
-            "is_enabled": False,
-            "schedule_tier": None,
-            "owner": "spot-test@imazon.com",
-        },
-    )
-
-    resp = await api_client.get(base_events, headers=admin_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "events" in body
-    assert "offset" in body
-    assert "limit" in body
-    assert "total_count" in body
-    assert isinstance(body["events"], list)
-
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
-
-
-# ── New-boundary + negative-coverage tests ─────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_metagen_run_is_enabled_false_non_dry_run_returns_409_GENERATION_DISABLED(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """POST method/metagen/run with is_enabled=False returns 409 GENERATION_DISABLED;
-    no METAGEN.COMPLETE event is emitted on the rejected call.
-
-    spec: USE_CASE_en.md L700 — 'When is_enabled=false, non-dry-run calls to
-    method/metagen/run return 409 GENERATION_DISABLED.'
-    spec: BACKEND.md L452 — 'method/run with is_enabled=false and dry_run=false raises
-    409 GENERATION_DISABLED. Dry-run is permitted regardless of is_enabled.'
-    spec: BACKEND.md L657 — METAGEN.COMPLETE is emitted only when the run completes;
-    a rejected (409) call must not emit it.
+    spec: USE_CASE_en.md §UC4 L604-608 — global conf fields: is_enabled,
+      schedule_tier, dataset_filter, result_limit, overwrite_pending
+    spec: BACKEND.md §UC4 — METAGEN.CONFIG_CREATE / CONFIG_UPDATE / CONFIG_DELETE
+      events emitted by each mutation; entity_type='metagen', entity_id='singleton'
     """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    base_run = f"/api/v1/spoke/common/data/{_ENCODED_URN}/method/metagen/run"
-    event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    event_url = "/api/v1/spoke/common/metagen/event"
 
     try:
-        # Ensure config exists with is_enabled=False
-        await api_client.put(
-            base_conf,
+        # PUT — create singleton conf
+        put_resp = await api_client.put(
+            conf_url,
             headers=admin_headers,
             json={
-                "targets": ["dataset.description"],
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"dataset_urns": [_TEST_URN]},
+                "result_limit": 5,
+                "overwrite_pending": False,
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT conf failed: {put_resp.status_code} {put_resp.text}. "
+            "spec: USE_CASE_en.md §UC4 L604"
+        )
+        put_body = put_resp.json()
+        assert put_body["is_enabled"] is True, (
+            f"is_enabled not preserved: {put_body.get('is_enabled')!r}. "
+            "spec: USE_CASE_en.md §UC4 L604"
+        )
+        assert put_body["schedule_tier"] == "daily", (
+            f"schedule_tier not preserved: {put_body.get('schedule_tier')!r}. "
+            "spec: USE_CASE_en.md §UC4 L604"
+        )
+        assert put_body["result_limit"] == 5, (
+            f"result_limit not preserved: {put_body.get('result_limit')!r}. "
+            "spec: USE_CASE_en.md §UC4 L605"
+        )
+        assert put_body["overwrite_pending"] is False, (
+            f"overwrite_pending not preserved: {put_body.get('overwrite_pending')!r}. "
+            "spec: USE_CASE_en.md §UC4 L606"
+        )
+        assert put_body["dataset_filter"] == {"dataset_urns": [_TEST_URN]}, (
+            f"dataset_filter not preserved: {put_body.get('dataset_filter')!r}. "
+            "spec: USE_CASE_en.md §UC4 L604"
+        )
+        assert "updated_at" in put_body, (
+            "MetagenGlobalConfResponse missing updated_at. spec: USE_CASE_en.md §UC4"
+        )
+
+        # GET — verify round-trip
+        get_resp = await api_client.get(conf_url, headers=admin_headers)
+        assert get_resp.status_code == 200, (
+            f"GET conf failed: {get_resp.status_code}. spec: USE_CASE_en.md §UC4"
+        )
+        get_body = get_resp.json()
+        assert get_body["result_limit"] == 5, (
+            f"GET round-trip result_limit mismatch: {get_body.get('result_limit')!r}"
+        )
+        assert get_body["schedule_tier"] == "daily", (
+            f"GET round-trip schedule_tier mismatch: {get_body.get('schedule_tier')!r}"
+        )
+
+        # PATCH — partial update schedule_tier only
+        patch_resp = await api_client.patch(
+            conf_url,
+            headers=admin_headers,
+            json={"schedule_tier": "weekly"},
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH conf failed: {patch_resp.status_code}. spec: USE_CASE_en.md §UC4"
+        )
+        patch_body = patch_resp.json()
+        assert patch_body["schedule_tier"] == "weekly", (
+            f"PATCH schedule_tier not applied: {patch_body.get('schedule_tier')!r}. "
+            "spec: USE_CASE_en.md §UC4"
+        )
+        # Non-patched fields preserved
+        assert patch_body["result_limit"] == 5, (
+            f"PATCH must preserve non-patched fields; result_limit changed: "
+            f"{patch_body.get('result_limit')!r}. spec: USE_CASE_en.md §UC4"
+        )
+
+        # Events: CONFIG_CREATE (from PUT) or CONFIG_UPDATE (from PATCH) must appear
+        # spec: BACKEND.md §UC4 — _record_metagen_event writes entity_type='metagen'
+        ev_resp = await api_client.get(f"{event_url}?limit=50", headers=admin_headers)
+        assert ev_resp.status_code == 200
+        ev_body = ev_resp.json()
+        assert "events" in ev_body and isinstance(ev_body["events"], list), (
+            "EventListResponse must have 'events' list. spec: API.md §Standard Envelope"
+        )
+        event_types = {e["event_type"] for e in ev_body["events"]}
+        assert "METAGEN.CONFIG_CREATE" in event_types or "METAGEN.CONFIG_UPDATE" in event_types, (
+            f"Expected CONFIG_CREATE or CONFIG_UPDATE event; got {event_types!r}. "
+            "spec: BACKEND.md §UC4 — conf mutations emit METAGEN.CONFIG_* events"
+        )
+
+        # DELETE — 204 no content
+        del_resp = await api_client.delete(conf_url, headers=admin_headers)
+        assert del_resp.status_code == 204, (
+            f"DELETE conf expected 204; got {del_resp.status_code}. "
+            "spec: USE_CASE_en.md §UC4 L604"
+        )
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_conf_get_when_unset_returns_null_body(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """GET /metagen/attr/conf before any PUT returns 200 with null body.
+
+    The route is declared as response_model=MetagenGlobalConfResponse | None,
+    so an absent singleton row returns 200 null — not 404.
+
+    spec: src/api/routers/spoke/common/metagen.py L68-73 —
+      get_metagen_conf returns None when no row exists
+    spec: USE_CASE_en.md §UC4 — conf is optional until first PUT
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+
+    # Ensure no conf exists
+    with suppress(Exception):
+        await api_client.delete(conf_url, headers=admin_headers)
+
+    get_resp = await api_client.get(conf_url, headers=admin_headers)
+    assert get_resp.status_code == 200, (
+        f"GET conf when unset must return 200; got {get_resp.status_code}. "
+        "spec: src/api/routers/spoke/common/metagen.py L68-73"
+    )
+    body = get_resp.json()
+    assert body is None, (
+        f"GET conf when unset must return null body; got {body!r}. "
+        "spec: src/api/routers/spoke/common/metagen.py L73 — returns None"
+    )
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_conf_put_invalid_result_limit_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with result_limit=0 rejected with 422 (Pydantic constraint: ge=1).
+
+    spec: src/api/schemas/metagen.py L41 — result_limit: int = Field(default=3, ge=1, le=20)
+    spec: USE_CASE_en.md §UC4 L605 — result_limit must be a positive integer
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+
+    resp = await api_client.put(
+        conf_url,
+        headers=admin_headers,
+        json={
+            "is_enabled": False,
+            "result_limit": 0,
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT with result_limit=0 must return 422; got {resp.status_code} {resp.text}. "
+        "spec: src/api/schemas/metagen.py L41 — result_limit ge=1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_conf_put_invalid_dataset_urn_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with malformed URN in dataset_filter.dataset_urns rejected with 422.
+
+    The service validates each URN via _validate_dataset_filter -> _validate_dataset_urn
+    which raises InvalidDatasetUrnError, mapped to 422 INVALID_DATASET_URN.
+
+    spec: src/backend/metagen/service.py L135-142 — _validate_dataset_urn raises
+      InvalidDatasetUrnError for URNs not matching ^urn:li:dataset:\\(.+\\)$
+    spec: USE_CASE_en.md §UC4 L604 — dataset_filter.dataset_urns must be valid URNs
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+
+    resp = await api_client.put(
+        conf_url,
+        headers=admin_headers,
+        json={
+            "is_enabled": False,
+            "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT with malformed URN must return 422; got {resp.status_code} {resp.text}. "
+        "spec: src/backend/metagen/service.py L135-142"
+    )
+
+
+# ── Group 2: Per-dataset boundary CRUD ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metagen_boundary_roundtrip_put_get_patch_delete(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT -> GET -> PATCH -> DELETE per-dataset boundary for a URN.
+
+    spec: USE_CASE_en.md §UC4 L609-615 — boundary fields: is_enabled, allowed,
+      owner; allowed in {dataset.description, column.description}
+    spec: BACKEND.md §UC4 — MetagenBoundaryResponse echoes dataset_urn
+    """
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    try:
+        # PUT
+        put_resp = await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "allowed": ["dataset.description", "column.description"],
+                "owner": "test-owner",
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT boundary failed: {put_resp.status_code} {put_resp.text}. "
+            "spec: USE_CASE_en.md §UC4 L609"
+        )
+        put_body = put_resp.json()
+        assert put_body["dataset_urn"] == _TEST_URN, (
+            f"boundary dataset_urn not echoed: {put_body.get('dataset_urn')!r}. "
+            "spec: USE_CASE_en.md §UC4 L613"
+        )
+        assert put_body["is_enabled"] is True, (
+            f"is_enabled not preserved: {put_body.get('is_enabled')!r}. "
+            "spec: USE_CASE_en.md §UC4 L613"
+        )
+        assert set(put_body["allowed"]) == {"dataset.description", "column.description"}, (
+            f"allowed not preserved: {put_body.get('allowed')!r}. "
+            "spec: USE_CASE_en.md §UC4 L614"
+        )
+        assert put_body["owner"] == "test-owner", (
+            f"owner not preserved: {put_body.get('owner')!r}. spec: USE_CASE_en.md §UC4"
+        )
+        assert "created_at" in put_body and "updated_at" in put_body, (
+            "MetagenBoundaryResponse missing created_at/updated_at. "
+            "spec: USE_CASE_en.md §UC4"
+        )
+
+        # GET
+        get_resp = await api_client.get(boundary_url, headers=admin_headers)
+        assert get_resp.status_code == 200, (
+            f"GET boundary failed: {get_resp.status_code}. spec: USE_CASE_en.md §UC4"
+        )
+        get_body = get_resp.json()
+        assert get_body["is_enabled"] is True, (
+            f"GET round-trip is_enabled mismatch: {get_body.get('is_enabled')!r}"
+        )
+        assert set(get_body["allowed"]) == {"dataset.description", "column.description"}, (
+            f"GET round-trip allowed mismatch: {get_body.get('allowed')!r}"
+        )
+
+        # PATCH — disable boundary
+        patch_resp = await api_client.patch(
+            boundary_url,
+            headers=admin_headers,
+            json={"is_enabled": False},
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH boundary failed: {patch_resp.status_code}. spec: USE_CASE_en.md §UC4"
+        )
+        patch_body = patch_resp.json()
+        assert patch_body["is_enabled"] is False, (
+            f"PATCH is_enabled not applied: {patch_body.get('is_enabled')!r}. "
+            "spec: USE_CASE_en.md §UC4"
+        )
+        # Non-patched fields preserved
+        assert set(patch_body["allowed"]) == {"dataset.description", "column.description"}, (
+            f"PATCH must not alter non-patched allowed field: {patch_body.get('allowed')!r}"
+        )
+
+        # DELETE — 204
+        del_resp = await api_client.delete(boundary_url, headers=admin_headers)
+        assert del_resp.status_code == 204, (
+            f"DELETE boundary expected 204; got {del_resp.status_code}. "
+            "spec: USE_CASE_en.md §UC4"
+        )
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_boundary_get_unknown_urn_returns_null_body(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """GET boundary for a URN with no row returns 200 with null body.
+
+    The route response_model is MetagenBoundaryResponse | None: when no
+    boundary row exists the endpoint returns 200 with a null body, not 404.
+    This is the same contract as the global conf get-when-unset endpoint.
+
+    spec: USE_CASE_en.md §UC4 L613 — boundary is optional; absent means
+      dataset is not in metagen scope
+    spec: src/api/routers/spoke/common/data/metagen.py L57-66 —
+      returns None (200 null body) when service returns None
+    """
+    # Use a URN that will never have a boundary seeded by any other test.
+    unknown_urn = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+        "example_db.catalog.no_such_table_spot_metagen_test,DEV)"
+    )
+    encoded = urllib.parse.quote(unknown_urn, safe="")
+    boundary_url = f"/api/v1/spoke/common/data/{encoded}/attr/metagen/conf"
+
+    get_resp = await api_client.get(boundary_url, headers=admin_headers)
+    assert get_resp.status_code == 200, (
+        f"GET boundary for unknown URN must return 200; got {get_resp.status_code}. "
+        "spec: src/api/routers/spoke/common/data/metagen.py L57-66"
+    )
+    body = get_resp.json()
+    assert body is None, (
+        f"GET boundary for unknown URN must return null body; got {body!r}. "
+        "spec: src/api/routers/spoke/common/data/metagen.py L66 — returns None"
+    )
+
+
+@pytest.mark.asyncio
+async def test_metagen_boundary_put_allowed_validation_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT boundary with a removed kind ('cross_data.md') in allowed returns 422.
+
+    'cross_data.md' was the pre-reshape action type and is no longer valid.
+    The Pydantic schema for MetagenBoundaryPutRequest only accepts
+    'dataset.description' | 'column.description' in the allowed list.
+
+    spec: src/api/schemas/metagen.py L77-80 — allowed field:
+      list[Literal['dataset.description', 'column.description']]
+    spec: USE_CASE_en.md §UC4 L614 — allowed kinds are dataset.description and
+      column.description only (cross_data.md removed in reshape commit 3fa7d59)
+    """
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    resp = await api_client.put(
+        boundary_url,
+        headers=admin_headers,
+        json={
+            "is_enabled": True,
+            "allowed": ["cross_data.md"],  # removed kind — must be rejected
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT boundary with removed kind 'cross_data.md' must return 422; "
+        f"got {resp.status_code} {resp.text}. "
+        "spec: src/api/schemas/metagen.py L77-80"
+    )
+
+
+# ── Group 3: Run-method gating ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metagen_run_disabled_conf_non_dry_run_returns_409_METAGEN_DISABLED(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Non-dry run with is_enabled=false returns 409 METAGEN_DISABLED.
+
+    No METAGEN.RUN_COMPLETE event must be emitted for this rejected call.
+
+    spec: USE_CASE_en.md §UC4 L774 — disabled guard: non-dry run rejected
+      when conf.is_enabled=false
+    spec: BACKEND.md L949 — error-code table: METAGEN_DISABLED -> 409
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    run_url = "/api/v1/spoke/common/metagen/method/run"
+    event_url = "/api/v1/spoke/common/metagen/event"
+
+    try:
+        # Ensure conf exists with is_enabled=false
+        await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
                 "is_enabled": False,
-                "schedule_tier": None,
-                "owner": "spot-test@imazon.com",
+                "result_limit": 3,
             },
         )
 
-        # Snapshot METAGEN.COMPLETE count before the rejected call
-        pre_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
-        assert pre_resp.status_code == 200, pre_resp.text
-        pre_complete_count = sum(
-            1 for e in pre_resp.json()["events"]
-            if e["event_type"] == "METAGEN.COMPLETE"
-        )
+        # Capture current time before the rejected POST so we can assert no
+        # RUN_COMPLETE event was emitted *by this call*.
+        time_before_post = datetime.now(tz=UTC)
 
         run_resp = await api_client.post(
-            base_run,
+            run_url,
             headers=admin_headers,
             json={"dry_run": False},
         )
         assert run_resp.status_code == 409, (
-            f"Expected 409 GENERATION_DISABLED when is_enabled=False and dry_run=False; "
-            f"got {run_resp.status_code}: {run_resp.text}. "
-            "spec: USE_CASE_en.md L700"
+            f"Non-dry run with is_enabled=false must return 409; "
+            f"got {run_resp.status_code} {run_resp.text}. "
+            "spec: BACKEND.md L949 — METAGEN_DISABLED -> 409"
         )
-        body = run_resp.json()
-        assert body.get("error_code") == "GENERATION_DISABLED", (
-            f"Expected error_code 'GENERATION_DISABLED'; got: {body!r}. "
-            "spec: USE_CASE_en.md L700; BACKEND.md L452"
-        )
-
-        # Negative-parity: no METAGEN.COMPLETE event must have been emitted
-        # spec: BACKEND.md L657 — event is for completed runs only; rejected calls are not runs
-        post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
-        assert post_resp.status_code == 200, post_resp.text
-        post_complete_count = sum(
-            1 for e in post_resp.json()["events"]
-            if e["event_type"] == "METAGEN.COMPLETE"
-        )
-        assert post_complete_count == pre_complete_count, (
-            f"No new METAGEN.COMPLETE event must be emitted after a 409-rejected run; "
-            f"pre={pre_complete_count}, post={post_complete_count}. "
-            "spec: BACKEND.md L657"
+        run_body = run_resp.json()
+        # Error code must be METAGEN_DISABLED
+        assert "METAGEN_DISABLED" in str(run_body), (
+            f"409 response must carry METAGEN_DISABLED code; got {run_body!r}. "
+            "spec: BACKEND.md L949 — error-code table"
         )
 
-        # Dry-run must still succeed when is_enabled=False — disabled gate is
-        # scoped to non-dry-run only. spec: USE_CASE_en.md L700; BACKEND.md L452
-        dry_resp = await api_client.post(
-            base_run,
+        # No RUN_COMPLETE event must have been emitted for this rejected call.
+        # Assert by time: no METAGEN.RUN_COMPLETE event has occurred_at >= time_before_post.
+        # spec: BACKEND.md §UC4 — METAGEN.RUN_COMPLETE only emitted on completed runs
+        ev_resp = await api_client.get(f"{event_url}?limit=200", headers=admin_headers)
+        assert ev_resp.status_code == 200
+        events_after = ev_resp.json().get("events", [])
+        stale_run_complete = [
+            e for e in events_after
+            if e["event_type"] == "METAGEN.RUN_COMPLETE"
+            and datetime.fromisoformat(e["occurred_at"]) >= time_before_post
+        ]
+        assert len(stale_run_complete) == 0, (
+            f"No METAGEN.RUN_COMPLETE event should be emitted when run was rejected "
+            f"(occurred_at >= {time_before_post.isoformat()}); "
+            f"found {stale_run_complete!r}. spec: BACKEND.md §UC4"
+        )
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_run_dry_run_permitted_when_disabled(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """dry_run=true is permitted even when is_enabled=false; event detail has dry_run=true.
+
+    Counts shape for dry runs: {items_considered, candidates_proposed}.
+
+    spec: USE_CASE_en.md §UC4 L660-662 — dry_run=true bypasses the disabled guard
+    spec: BACKEND.md §766 — dry-run response counts shape: items_considered,
+      candidates_proposed (not candidates_added); dry_run=true in RUN_COMPLETE detail
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    run_url = "/api/v1/spoke/common/metagen/method/run"
+    event_url = "/api/v1/spoke/common/metagen/event"
+
+    try:
+        # Conf disabled, dataset_filter scoped to _TEST_URN
+        await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "dataset_filter": {"dataset_urns": [_TEST_URN]},
+                "result_limit": 3,
+            },
+        )
+
+        run_resp = await api_client.post(
+            run_url,
             headers=admin_headers,
             json={"dry_run": True},
         )
-        assert dry_resp.status_code == 200, (
-            f"Dry-run must succeed even when is_enabled=False; "
-            f"got {dry_resp.status_code}: {dry_resp.text}. "
-            "spec: USE_CASE_en.md L700; BACKEND.md L452"
+        assert run_resp.status_code == 200, (
+            f"dry_run=true with is_enabled=false must return 200; "
+            f"got {run_resp.status_code} {run_resp.text}. "
+            "spec: USE_CASE_en.md §UC4 L660-662"
         )
+        run_body = run_resp.json()
+        run_id = run_body.get("run_id")
+
+        # dry_run must be echoed as True
+        assert run_body.get("dry_run") is True, (
+            f"MetagenRunResponse dry_run must be True; got {run_body.get('dry_run')!r}. "
+            "spec: BACKEND.md §766"
+        )
+        # Dry-run counts shape: items_considered + candidates_proposed (NOT candidates_added)
+        counts = run_body.get("counts", {})
+        assert isinstance(counts, dict), (
+            "MetagenRunResponse counts must be dict. spec: BACKEND.md §766"
+        )
+        assert "items_considered" in counts, (
+            "Dry-run counts must contain 'items_considered'. "
+            "spec: BACKEND.md §766 — dry-run counts shape"
+        )
+        assert "candidates_proposed" in counts, (
+            "Dry-run counts must contain 'candidates_proposed' (not candidates_added). "
+            "spec: BACKEND.md §766 — dry-run counts shape"
+        )
+        assert "candidates_added" not in counts, (
+            "Dry-run counts must NOT contain 'candidates_added'. "
+            "spec: BACKEND.md §766 — dry-run counts shape"
+        )
+        # unresolved_urns: present and is a list (may be empty for zero-scope dry run)
+        assert isinstance(run_body.get("unresolved_urns"), list), (
+            f"MetagenRunResponse unresolved_urns must be a list; "
+            f"got {run_body.get('unresolved_urns')!r}. "
+            "spec: BACKEND.md §UC4 — MetagenRunResponse schema"
+        )
+        # producer_iterations and debate_outcome keys must be present
+        # (may be None for a dry run with empty in-scope; spec does not require populated values)
+        assert "producer_iterations" in run_body, (
+            "MetagenRunResponse must carry producer_iterations key. "
+            "spec: BACKEND.md §UC4 — MetagenRunResponse schema"
+        )
+        assert "debate_outcome" in run_body, (
+            "MetagenRunResponse must carry debate_outcome key. "
+            "spec: BACKEND.md §UC4 — MetagenRunResponse schema"
+        )
+
+        # RUN_COMPLETE event must be emitted for dry run; bind to this run's run_id.
+        # spec: BACKEND.md §766 — RUN_COMPLETE emitted unconditionally (dry and non-dry)
+        ev_resp = await api_client.get(f"{event_url}?limit=50", headers=admin_headers)
+        assert ev_resp.status_code == 200
+        events = ev_resp.json().get("events", [])
+        dry_run_event = next(
+            (
+                e for e in events
+                if e["event_type"] == "METAGEN.RUN_COMPLETE"
+                and e["detail"].get("run_id") == run_id
+            ),
+            None,
+        )
+        assert dry_run_event is not None, (
+            f"METAGEN.RUN_COMPLETE event for run_id={run_id!r} must be emitted for dry run. "
+            "spec: BACKEND.md §766 event catalogue"
+        )
+        assert dry_run_event["detail"].get("dry_run") is True, (
+            f"RUN_COMPLETE detail dry_run must be True; "
+            f"got {dry_run_event['detail'].get('dry_run')!r}. "
+            "spec: BACKEND.md §766 event catalogue"
+        )
+
     finally:
-        await api_client.delete(base_conf, headers=admin_headers)
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio
-async def test_metagen_field_level_approve_subset(
+async def test_metagen_run_concurrent_returns_409_METAGEN_RUNNING(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
-    async_session,
+    redis_client,
 ) -> None:
-    """PATCH result with verdict=approve + fields=[subset] only flips those fields to 'approved'.
+    """A run while another is in-progress returns 409 METAGEN_RUNNING.
 
-    Fields not in the subset must remain 'pending'.
+    The MetagenService serialises runs via a Redis cache lock (set_nx on
+    'metagen:running:singleton'). We pre-set that Redis key directly via the
+    redis_client fixture to simulate an in-progress run before calling POST run.
+    The service's set_nx will then return False and raise
+    ConflictError('METAGEN_RUNNING').
 
-    spec: BACKEND.md L444 — 'verdict: approve + fields: [...] → approve only the listed
-    field paths and/or cross-data actions'
+    spec: USE_CASE_en.md §UC4 L659-660 — concurrent run guard
+    spec: BACKEND.md L949 — error-code table: METAGEN_RUNNING -> 409
     """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    encoded_urn = urllib.parse.quote(_TEST_URN, safe="")
-
-    result_id: str | None = None
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    run_url = "/api/v1/spoke/common/metagen/method/run"
+    lock_key = "metagen:running:singleton"
+    fake_token = f"spot-test-concurrent-{uuid.uuid4().hex[:8]}"
 
     try:
+        # Ensure conf exists with is_enabled=true so METAGEN_DISABLED is not raised first.
         await api_client.put(
-            base_conf,
+            conf_url,
             headers=admin_headers,
             json={
-                "targets": ["dataset.description", "column.description"],
-                "is_enabled": False,
-                "schedule_tier": None,
-                "owner": "spot-test@imazon.com",
+                "is_enabled": True,
+                "dataset_filter": {"dataset_urns": [_TEST_URN]},
+                "result_limit": 3,
             },
         )
 
-        # Seed a result with four pending fields
-        result_id = await _insert_pending_metagen_result(
-            async_session,
-            dataset_urn=_TEST_URN,
-            proposals={
-                "dataset.description": "Book catalog master list.",
-                "column.description": {
-                    "book_id": "Unique identifier for a book.",
-                    "title": "Book title shown to customers.",
-                    "author": "Author name.",
-                },
-            },
-            field_status={
-                "dataset.description": "pending",
-                "column.description.book_id": "pending",
-                "column.description.title": "pending",
-                "column.description.author": "pending",
-            },
+        # Pre-set the Redis lock key to simulate a running job.
+        # set_nx returns True if key was absent (we acquired it),
+        # or False if already held (another test is running — still fine,
+        # the POST run will 409 either way).
+        await redis_client.set_nx(lock_key, fake_token, ttl_seconds=60)
+
+        run_resp = await api_client.post(run_url, headers=admin_headers)
+        assert run_resp.status_code == 409, (
+            f"POST run while lock is held must return 409; "
+            f"got {run_resp.status_code} {run_resp.text}. "
+            "spec: BACKEND.md L949 — METAGEN_RUNNING -> 409"
         )
-        encoded_result_id = urllib.parse.quote(result_id, safe="")
-        patch_url = (
-            f"/api/v1/spoke/common/data/{encoded_urn}/attr/metagen/result/{encoded_result_id}"
+        assert "METAGEN_RUNNING" in str(run_resp.json()), (
+            f"409 response must carry METAGEN_RUNNING code; got {run_resp.json()!r}. "
+            "spec: BACKEND.md L949 — error-code table"
         )
 
-        approve_resp = await api_client.patch(
-            patch_url,
-            headers=admin_headers,
-            json={
-                "verdict": "approve",
-                "fields": ["dataset.description", "column.description.book_id"],
-                "reason": "spot-test field-level approve",
-            },
-        )
-        assert approve_resp.status_code == 200, approve_resp.text
-        body = approve_resp.json()
-        fs = body["field_status"]
-
-        # Approved fields must flip
-        # spec: BACKEND.md L444 — field-level approve flips only listed fields
-        assert fs.get("dataset.description") == "approved", (
-            f"'dataset.description' should be 'approved'; got {fs.get('dataset.description')!r}. "
-            "spec: BACKEND.md L444"
-        )
-        assert fs.get("column.description.book_id") == "approved", (
-            f"'column.description.book_id' should be 'approved'; "
-            f"got {fs.get('column.description.book_id')!r}. spec: BACKEND.md L444"
-        )
-        # Non-listed fields must remain pending
-        assert fs.get("column.description.title") == "pending", (
-            f"'column.description.title' should remain 'pending'; "
-            f"got {fs.get('column.description.title')!r}. spec: BACKEND.md L444"
-        )
-        assert fs.get("column.description.author") == "pending", (
-            f"'column.description.author' should remain 'pending'; "
-            f"got {fs.get('column.description.author')!r}. spec: BACKEND.md L444"
-        )
     finally:
-        if result_id is not None:
-            await _delete_metagen_result(async_session, result_id, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
+        # Release the Redis lock and clean up conf.
+        with suppress(Exception):
+            await redis_client.delete(lock_key)
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio
-async def test_metagen_cross_data_action_approve(
+async def test_metagen_run_empty_scope_completes_with_zero_items(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
-    async_session,
 ) -> None:
-    """PATCH result approving cross_data.md.a1 flips that action's field_status to 'approved'.
+    """Run with no enabled boundary in scope returns RUN_COMPLETE with items_considered=0.
 
-    spec: BACKEND_SCHEMA.md L134 — proposals['cross_data.md'] is a list of action dicts;
-    field_status uses flat cross_data.md.<action_id> keys.
-    spec: BACKEND.md §Cross-data MD action types (create action: title, body,
-    related_assets required).
+    Enable conf with dataset_filter scoped to _TEST_URN but do NOT set any
+    boundary (or ensure it is absent). The intersection of DataHub URN set
+    and metagen_boundary.is_enabled=true rows is empty -> items_considered=0.
+
+    spec: USE_CASE_en.md §UC4 L613 — boundary controls per-dataset scope;
+      absent boundary means dataset not in scope
+    spec: BACKEND.md §UC4 — RUN_COMPLETE emitted even for zero-item runs;
+      counts.items_considered == 0
     """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    encoded_urn = urllib.parse.quote(_TEST_URN, safe="")
-
-    result_id: str | None = None
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    run_url = "/api/v1/spoke/common/metagen/method/run"
+    event_url = "/api/v1/spoke/common/metagen/event"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
 
     try:
+        # Enable conf but scope to _TEST_URN; explicitly delete any boundary
         await api_client.put(
-            base_conf,
+            conf_url,
             headers=admin_headers,
             json={
-                "targets": ["cross_data.md"],
-                "is_enabled": False,
-                "schedule_tier": None,
-                "owner": "spot-test@imazon.com",
+                "is_enabled": True,
+                "dataset_filter": {"dataset_urns": [_TEST_URN]},
+                "result_limit": 3,
             },
+        )
+        # Ensure no boundary exists (suppress 404 if absent)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+        run_resp = await api_client.post(run_url, headers=admin_headers)
+        assert run_resp.status_code == 200, (
+            f"POST run with no enabled boundary must return 200; "
+            f"got {run_resp.status_code} {run_resp.text}. "
+            "spec: BACKEND.md §UC4"
+        )
+        run_body = run_resp.json()
+        run_id = run_body.get("run_id")
+        assert run_body.get("status") == "success", (
+            f"run status must be 'success'; got {run_body.get('status')!r}. "
+            "spec: BACKEND.md §UC4"
+        )
+        counts = run_body.get("counts", {})
+        assert isinstance(counts, dict), (
+            "MetagenRunResponse counts must be dict. spec: BACKEND.md §UC4"
+        )
+        assert "items_considered" in counts, (
+            "counts must contain 'items_considered'. spec: BACKEND.md §UC4"
+        )
+        assert counts["items_considered"] == 0, (
+            f"items_considered must be 0 with no enabled boundary; "
+            f"got {counts.get('items_considered')!r}. "
+            "spec: USE_CASE_en.md §UC4 L613 — absent boundary -> not in scope"
         )
 
-        # Seed a result with a cross_data.md create action
-        # spec: BACKEND.md §Cross-data MD action types — create requires title, body, related_assets
-        result_id = await _insert_pending_metagen_result(
-            async_session,
-            dataset_urn=_TEST_URN,
-            proposals={
-                "cross_data.md": [
-                    {
-                        "action_id": "a1",
-                        "action": "create",
-                        "title": "title_master onboarding guide for catalog editors",
-                        "body": (
-                            "# title_master onboarding\n\n"
-                            "`catalog.title_master` is the per-ISBN source of truth for every "
-                            "Imazon listing — title, subtitle, primary author, publisher, "
-                            "genre code, and the manufacturer suggested retail price that the "
-                            "storefront falls back to when an edition is missing its own price.\n\n"
-                            "Editors update this row when a publisher submits cover artwork or "
-                            "revises the marketing blurb; the `editions` table holds the "
-                            "per-format variants (Hardcover, Paperback, eBook, Audiobook) and "
-                            "joins back here on `isbn`. Inactive titles are kept for historical "
-                            "sales analytics rather than being deleted, so set `is_active=false` "
-                            "instead of removing the row."
-                        ),
-                        "related_assets": [
-                            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
-                            "example_db.catalog.title_master,DEV)"
-                        ],
-                        "confidence": 0.75,
-                    }
-                ]
-            },
-            field_status={"cross_data.md.a1": "pending"},
+        # RUN_COMPLETE event recorded with items_considered=0; bind to this run's run_id.
+        ev_resp = await api_client.get(f"{event_url}?limit=50", headers=admin_headers)
+        assert ev_resp.status_code == 200
+        events = ev_resp.json().get("events", [])
+        run_complete = next(
+            (
+                e for e in events
+                if e["event_type"] == "METAGEN.RUN_COMPLETE"
+                and e["detail"].get("run_id") == run_id
+            ),
+            None,
         )
-        encoded_result_id = urllib.parse.quote(result_id, safe="")
-        patch_url = (
-            f"/api/v1/spoke/common/data/{encoded_urn}/attr/metagen/result/{encoded_result_id}"
+        assert run_complete is not None, (
+            f"METAGEN.RUN_COMPLETE for run_id={run_id!r} must be emitted for zero-item run. "
+            "spec: BACKEND.md §UC4 event catalogue"
+        )
+        assert run_complete["detail"].get("counts", {}).get("items_considered") == 0, (
+            f"RUN_COMPLETE detail counts.items_considered must be 0; "
+            f"got {run_complete['detail'].get('counts')!r}. "
+            "spec: BACKEND.md §UC4"
         )
 
-        approve_resp = await api_client.patch(
-            patch_url,
-            headers=admin_headers,
-            json={
-                "verdict": "approve",
-                "fields": ["cross_data.md.a1"],
-                "reason": "spot-test cross_data action approve",
-            },
-        )
-        assert approve_resp.status_code == 200, approve_resp.text
-        body = approve_resp.json()
-        # spec: BACKEND_SCHEMA.md L134-L135 — field_status key is cross_data.md.<action_id>
-        assert body["field_status"].get("cross_data.md.a1") == "approved", (
-            f"field_status['cross_data.md.a1'] should be 'approved'; "
-            f"got {body['field_status'].get('cross_data.md.a1')!r}. "
-            "spec: BACKEND_SCHEMA.md L134; BACKEND.md §Cross-data MD action types"
-        )
     finally:
-        # Approval emits a urn:li:document:<uuid> via metagen cross_data.create_document.
-        # The URN is not deterministic, so clean up by scanning relatedAssets for _TEST_URN.
-        from tests.integration.util.datahub import hard_delete_documents_for_dataset
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
 
-        hard_delete_documents_for_dataset(_TEST_URN)
-        if result_id is not None:
-            await _delete_metagen_result(async_session, result_id, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
+
+# ── Group 4: Item endpoints (raw-SQL seeded) ──────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_metagen_result_latest_returns_at_most_one(
+async def test_metagen_items_list_global_paginated_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
-    async_session,
+    async_session: AsyncSession,
 ) -> None:
-    """GET attr/metagen/result?latest=true returns at most one result row for the dataset.
+    """GET /metagen/item returns MetagenItemListResponse envelope with pagination keys.
 
-    Seeds two results rows with different generated_at values; asserts the response
-    carries at most one row and that row belongs to _TEST_URN.
+    Seeds two items across two datasets; verifies envelope structure and
+    pagination parameters are echoed correctly.
 
-    spec: API.md L257 — '?latest=true for most recent only'
+    spec: USE_CASE_en.md §UC4 — item list endpoint
+    spec: API.md §Standard Envelope — items, offset, limit, total_count
+    spec: src/api/schemas/metagen.py L103-104 — MetagenItemListResponse
     """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-    base_results = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result"
-
-    result_id1: str | None = None
-    result_id2: str | None = None
+    item_list_url = "/api/v1/spoke/common/metagen/item"
 
     try:
-        await api_client.put(
-            base_conf,
-            headers=admin_headers,
-            json={
-                "targets": ["dataset.description"],
-                "is_enabled": False,
-                "schedule_tier": None,
-                "owner": "spot-test@imazon.com",
-            },
-        )
-
-        result_id1 = await _insert_pending_metagen_result(
+        await _seed_metagen_item(
             async_session,
             dataset_urn=_TEST_URN,
-            proposals={"dataset.description": "First seeded description."},
-            field_status={"dataset.description": "pending"},
+            item_id="dataset.description",
+            kind="dataset.description",
         )
-        result_id2 = await _insert_pending_metagen_result(
+        await _seed_metagen_item(
             async_session,
-            dataset_urn=_TEST_URN,
-            proposals={"dataset.description": "Second seeded description."},
-            field_status={"dataset.description": "pending"},
+            dataset_urn=_TEST_URN2,
+            item_id="dataset.description",
+            kind="dataset.description",
         )
 
-        latest_resp = await api_client.get(
-            f"{base_results}?latest=true",
+        # Paginated GET
+        resp = await api_client.get(
+            f"{item_list_url}?offset=0&limit=10",
             headers=admin_headers,
         )
-        assert latest_resp.status_code == 200, latest_resp.text
-        body = latest_resp.json()
-        assert "results" in body and isinstance(body["results"], list)
-        # spec: API.md L257 — ?latest=true returns the most recent row; two rows
-        # were seeded for this URN, so exactly one must be returned.
-        assert len(body["results"]) == 1, (
-            f"?latest=true must return exactly one result row when results exist; "
-            f"got {len(body['results'])}. spec: API.md L257"
+        assert resp.status_code == 200, (
+            f"GET /metagen/item failed: {resp.status_code} {resp.text}. "
+            "spec: USE_CASE_en.md §UC4"
         )
-        assert body["results"][0]["dataset_urn"] == _TEST_URN, (
-            f"latest result dataset_urn expected {_TEST_URN!r}; "
-            f"got {body['results'][0].get('dataset_urn')!r}. spec: API.md L257"
+        body = resp.json()
+
+        # Envelope keys
+        assert "items" in body and isinstance(body["items"], list), (
+            "MetagenItemListResponse must have 'items' list. spec: API.md §Standard Envelope"
         )
-    finally:
-        if result_id1 is not None:
-            await _delete_metagen_result(async_session, result_id1, _TEST_URN)
-        if result_id2 is not None:
-            await _delete_metagen_result(async_session, result_id2, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metagen_cross_data_modify_and_delete_actions(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    async_session,
-) -> None:
-    """PATCH approving cross_data.md modify and delete actions flips both to 'approved'.
-
-    Companion to test_metagen_cross_data_action_approve, which covers the create action.
-    Seeds a result with two actions:
-      - a1: modify (requires document_urn and body)
-      - a2: delete (requires document_urn only)
-    PATCH approves both; asserts both field_status entries flip to 'approved' and the
-    proposals payload round-trips with the correct action types.
-
-    document_urn values are fictitious; on approval apply_actions() warns and continues
-    per impl best-effort emit. End-to-end DataHub apply for modify/delete actions is out
-    of scope for this test.
-
-    spec: BACKEND.md §Cross-data MD action types — modify: document_urn + body;
-    delete: document_urn only.
-    spec: BACKEND_SCHEMA.md L134-L135 — field_status uses cross_data.md.<action_id> keys.
-    """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    result_id: str | None = None
-
-    try:
-        await api_client.put(
-            base_conf,
-            headers=admin_headers,
-            json={
-                "targets": ["cross_data.md"],
-                "is_enabled": False,
-                "schedule_tier": None,
-                "owner": "spot-test@imazon.com",
-            },
+        assert "offset" in body, (
+            "MetagenItemListResponse must have 'offset'. spec: API.md §Standard Envelope"
+        )
+        assert "limit" in body, (
+            "MetagenItemListResponse must have 'limit'. spec: API.md §Standard Envelope"
+        )
+        assert "total_count" in body and isinstance(body["total_count"], int), (
+            "MetagenItemListResponse must have 'total_count' int. "
+            "spec: API.md §Standard Envelope"
+        )
+        assert body["offset"] == 0, (
+            f"offset echo mismatch: {body.get('offset')!r}. spec: API.md §Standard Envelope"
+        )
+        assert body["limit"] == 10, (
+            f"limit echo mismatch: {body.get('limit')!r}. spec: API.md §Standard Envelope"
+        )
+        assert body["total_count"] >= 2, (
+            f"total_count must be >= 2 after seeding two items; got {body.get('total_count')!r}"
         )
 
-        result_id = await _insert_pending_metagen_result(
-            async_session,
-            dataset_urn=_TEST_URN,
-            proposals={
-                "cross_data.md": [
-                    {
-                        "action_id": "a1",
-                        "action": "modify",
-                        "document_urn": "urn:li:document:spot-test-existing-doc-1",
-                        "body": "Updated cross-data body for modify action test.",
-                        "confidence": 0.78,
-                    },
-                    {
-                        "action_id": "a2",
-                        "action": "delete",
-                        "document_urn": "urn:li:document:spot-test-existing-doc-2",
-                        "confidence": 0.65,
-                    },
-                ],
-            },
-            field_status={
-                "cross_data.md.a1": "pending",
-                "cross_data.md.a2": "pending",
-            },
-        )
-        encoded_result_id = urllib.parse.quote(result_id, safe="")
-        patch_url = (
-            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
-        )
-
-        approve_resp = await api_client.patch(
-            patch_url,
-            headers=admin_headers,
-            json={
-                "verdict": "approve",
-                "fields": ["cross_data.md.a1", "cross_data.md.a2"],
-                "reason": "spot-test: modify+delete action approve",
-            },
-        )
-        assert approve_resp.status_code == 200, (
-            f"PATCH approve modify+delete actions failed: "
-            f"{approve_resp.status_code} {approve_resp.text}"
-        )
-        body = approve_resp.json()
-        assert body["id"] == result_id
-        # spec: BACKEND_SCHEMA.md L134-L135 — field_status key is cross_data.md.<action_id>
-        assert body["field_status"].get("cross_data.md.a1") == "approved", (
-            f"field_status['cross_data.md.a1'] (modify) should be 'approved'; "
-            f"got {body['field_status'].get('cross_data.md.a1')!r}. "
-            "spec: BACKEND_SCHEMA.md L134"
-        )
-        assert body["field_status"].get("cross_data.md.a2") == "approved", (
-            f"field_status['cross_data.md.a2'] (delete) should be 'approved'; "
-            f"got {body['field_status'].get('cross_data.md.a2')!r}. "
-            "spec: BACKEND_SCHEMA.md L134"
-        )
-        # Shape-check: proposals round-trip with correct action types
-        # spec: BACKEND.md §Cross-data MD action types
-        actions_by_id = {a["action_id"]: a for a in body["proposals"]["cross_data.md"]}
-        assert actions_by_id.get("a1", {}).get("action") == "modify", (
-            f"Proposal a1 should have action='modify'; got {actions_by_id.get('a1')!r}. "
-            "spec: BACKEND.md §Cross-data MD action types"
-        )
-        assert actions_by_id.get("a2", {}).get("action") == "delete", (
-            f"Proposal a2 should have action='delete'; got {actions_by_id.get('a2')!r}. "
-            "spec: BACKEND.md §Cross-data MD action types"
-        )
-    finally:
-        if result_id is not None:
-            await _delete_metagen_result(async_session, result_id, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metagen_review_preserves_prior_field_status_on_followup_patch(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    async_session,
-) -> None:
-    """Follow-up PATCH only mutates listed fields; prior approved/pending entries stay intact.
-
-    Seeds a five-field result, then issues two PATCHes:
-      1. verdict=approve on three fields → those flip to 'approved'
-      2. verdict=reject on one different field → only that field flips to 'rejected'
-
-    Asserts that after the second PATCH:
-      - the three fields approved by PATCH 1 are still 'approved' (not clobbered)
-      - the one field never referenced is still 'pending'
-      - the one field rejected by PATCH 2 is 'rejected'
-
-    spec: BACKEND.md L296-L302 — field-level review preserves prior status for fields
-    not referenced in the current PATCH.
-    """
-    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
-
-    result_id: str | None = None
-
-    try:
-        await api_client.put(
-            base_conf,
-            headers=admin_headers,
-            json={
-                "targets": ["dataset.description", "column.description", "cross_data.md"],
-                "is_enabled": False,
-                "schedule_tier": None,
-                "owner": "spot-test@imazon.com",
-            },
-        )
-
-        result_id = await _insert_pending_metagen_result(
-            async_session,
-            dataset_urn=_TEST_URN,
-            proposals={
-                "dataset.description": "Master catalog of every title Imazon offers.",
-                "column.description": {
-                    "book_id": "Stable, opaque identifier for a book.",
-                    "title": "Display title shown to customers.",
-                    "author": "Free-text author / creator name.",
-                },
-                "cross_data.md": [
-                    {
-                        "action_id": "a1",
-                        "action": "create",
-                        "title": "How orders reference books",
-                        "body": (
-                            "`orders.order_items.book_id` joins to "
-                            "`catalog.title_master.book_id`."
-                        ),
-                        "related_assets": [
-                            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
-                            "example_db.catalog.title_master,DEV)",
-                        ],
-                        "confidence": 0.81,
-                    },
-                ],
-            },
-            field_status={
-                "dataset.description": "pending",
-                "column.description.book_id": "pending",
-                "column.description.title": "pending",
-                "column.description.author": "pending",
-                "cross_data.md.a1": "pending",
-            },
-        )
-        encoded_result_id = urllib.parse.quote(result_id, safe="")
-        patch_url = (
-            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/result/{encoded_result_id}"
-        )
-
-        # PATCH 1: approve a subset of three fields
-        approve_resp = await api_client.patch(
-            patch_url,
-            headers=admin_headers,
-            json={
-                "verdict": "approve",
-                "fields": [
-                    "dataset.description",
-                    "column.description.book_id",
-                    "column.description.title",
-                ],
-                "reason": "spot-test: approve three fields",
-            },
-        )
-        assert approve_resp.status_code == 200, approve_resp.text
-
-        # PATCH 2: reject a different field (cross_data.md.a1)
-        # spec: BACKEND.md L296-L302 — second PATCH must not clobber the first PATCH's approvals
-        reject_resp = await api_client.patch(
-            patch_url,
-            headers=admin_headers,
-            json={
-                "verdict": "reject",
-                "fields": ["cross_data.md.a1"],
-                "reason": "spot-test: reject one cross_data action",
-            },
-        )
-        assert reject_resp.status_code == 200, reject_resp.text
-        fs = reject_resp.json()["field_status"]
-
-        # The rejected field flips to 'rejected'
-        assert fs.get("cross_data.md.a1") == "rejected", (
-            f"'cross_data.md.a1' should be 'rejected' after second PATCH; "
-            f"got {fs.get('cross_data.md.a1')!r}. spec: BACKEND.md L296-L302"
-        )
-        # Previously-approved fields stay 'approved' — second PATCH must not clobber them
-        for field in (
-            "dataset.description",
-            "column.description.book_id",
-            "column.description.title",
-        ):
-            assert fs.get(field) == "approved", (
-                f"{field!r} should remain 'approved' after follow-up PATCH; "
-                f"got {fs.get(field)!r}. spec: BACKEND.md L296-L302"
+        # Each item must have the required summary fields
+        for item in body["items"]:
+            assert "dataset_urn" in item, "item missing dataset_urn"
+            assert "item_id" in item, "item missing item_id"
+            assert item["kind"] in (
+                "dataset.description",
+                "column.description",
+            ), f"item kind invalid: {item.get('kind')!r}"
+            assert item["status"] in (
+                "pending",
+                "llm_approved",
+                "approved",
+            ), f"item status invalid: {item.get('status')!r}"
+            assert "candidate_count" in item, "item missing candidate_count"
+            assert "composite_id" in item, (
+                "item missing composite_id. spec: USE_CASE_en.md §UC4 API Mapping L684"
             )
-        # Never-touched field stays 'pending'
-        assert fs.get("column.description.author") == "pending", (
-            f"'column.description.author' should remain 'pending' (never referenced); "
-            f"got {fs.get('column.description.author')!r}. spec: BACKEND.md L296-L302"
-        )
+            assert item["composite_id"] == f"{item['dataset_urn']}::{item['item_id']}", (
+                f"composite_id format mismatch: {item['composite_id']!r}. "
+                "spec: USE_CASE_en.md §UC4 L684"
+            )
+
     finally:
-        if result_id is not None:
-            await _delete_metagen_result(async_session, result_id, _TEST_URN)
-        await api_client.delete(base_conf, headers=admin_headers)
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN2)
+
+
+@pytest.mark.asyncio
+async def test_metagen_items_list_filters_dataset_kind_status(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /metagen/item with dataset_urn / kind / status filters returns matching subset.
+
+    Seeds:
+      _TEST_URN: item_id="dataset.description" (kind=dataset.description,
+          one llm_approved candidate -> status=llm_approved)
+      _TEST_URN: item_id="column.isbn.description" (kind=column.description,
+          zero candidates -> status=pending)
+      _TEST_URN2: item_id="dataset.description" (kind=dataset.description)
+
+    Verifies:
+      ?dataset_urn=_TEST_URN returns only _TEST_URN items
+      ?kind=column.description returns only column-kind items
+      ?status=llm_approved includes the dataset.description item with llm_approved cand
+
+    spec: USE_CASE_en.md §UC4 L683 — item list filterable by dataset_urn, kind, status
+    spec: src/api/routers/spoke/common/metagen.py L184-207 — filter params
+    """
+    item_list_url = "/api/v1/spoke/common/metagen/item"
+
+    try:
+        # Seed dataset.description item with one llm_approved candidate
+        await _seed_metagen_item(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id="dataset.description",
+            kind="dataset.description",
+        )
+        await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id="dataset.description",
+            value="Imazon title master catalog.",
+            status="llm_approved",
+        )
+
+        # Seed column.description item with no candidates (status=pending)
+        await _seed_metagen_item(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id="column.isbn.description",
+            kind="column.description",
+            field_path="isbn",
+        )
+
+        # Seed an item for URN2 (to confirm dataset_urn filter excludes it)
+        await _seed_metagen_item(
+            async_session,
+            dataset_urn=_TEST_URN2,
+            item_id="dataset.description",
+            kind="dataset.description",
+        )
+
+        # Filter by dataset_urn — must return only _TEST_URN items
+        encoded_urn = urllib.parse.quote(_TEST_URN, safe="")
+        resp_by_urn = await api_client.get(
+            f"{item_list_url}?dataset_urn={encoded_urn}&limit=50",
+            headers=admin_headers,
+        )
+        assert resp_by_urn.status_code == 200, (
+            f"GET items?dataset_urn failed: {resp_by_urn.status_code}"
+        )
+        by_urn_items = resp_by_urn.json()["items"]
+        urn_set = {i["dataset_urn"] for i in by_urn_items}
+        assert urn_set <= {_TEST_URN}, (
+            f"dataset_urn filter returned items for other URNs: {urn_set!r}. "
+            "spec: src/api/routers/spoke/common/metagen.py L195"
+        )
+
+        # Filter by kind=column.description
+        resp_by_kind = await api_client.get(
+            f"{item_list_url}?dataset_urn={encoded_urn}&kind=column.description&limit=50",
+            headers=admin_headers,
+        )
+        assert resp_by_kind.status_code == 200
+        by_kind_items = resp_by_kind.json()["items"]
+        assert all(i["kind"] == "column.description" for i in by_kind_items), (
+            f"kind filter returned non-column items: {[i['kind'] for i in by_kind_items]!r}. "
+            "spec: src/api/routers/spoke/common/metagen.py L196"
+        )
+
+        # Filter by status=llm_approved — must include the seeded dataset.description item
+        resp_by_status = await api_client.get(
+            f"{item_list_url}?dataset_urn={encoded_urn}&status=llm_approved&limit=50",
+            headers=admin_headers,
+        )
+        assert resp_by_status.status_code == 200
+        by_status_items = resp_by_status.json()["items"]
+        assert all(
+            i["status"] in ("llm_approved", "approved") for i in by_status_items
+        ), (
+            f"status=llm_approved filter returned non-matching items: "
+            f"{[i['status'] for i in by_status_items]!r}. "
+            "spec: src/api/routers/spoke/common/metagen.py L197"
+        )
+        item_ids = {i["item_id"] for i in by_status_items}
+        assert "dataset.description" in item_ids, (
+            f"status=llm_approved filter must include the seeded dataset.description item; "
+            f"got {item_ids!r}"
+        )
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN2)
+
+
+@pytest.mark.asyncio
+async def test_metagen_item_detail_by_composite_id(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /metagen/item/{urn}::{item_id} returns full item detail with candidate list.
+
+    Seeds one item with two candidates; verifies both appear in the candidates
+    list of the detail response.
+
+    spec: USE_CASE_en.md §UC4 L684 — composite_id = '{dataset_urn}::{item_id}'
+    spec: src/api/routers/spoke/common/metagen.py L213-229 — composite_id parsing
+    spec: src/api/schemas/metagen.py L120 — MetagenItemDetailResponse.candidates
+    """
+    item_id = "dataset.description"
+    composite_id = f"{_TEST_URN}::{item_id}"
+    encoded_composite = urllib.parse.quote(composite_id, safe="")
+    item_detail_url = f"/api/v1/spoke/common/metagen/item/{encoded_composite}"
+
+    try:
+        cid1 = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="First candidate value.",
+            status="llm_approved",
+            confidence=0.91,
+        )
+        cid2 = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Second candidate value.",
+            status="llm_approved",
+            confidence=0.80,
+        )
+
+        resp = await api_client.get(item_detail_url, headers=admin_headers)
+        assert resp.status_code == 200, (
+            f"GET item detail by composite_id failed: {resp.status_code} {resp.text}. "
+            "spec: src/api/routers/spoke/common/metagen.py L213"
+        )
+        body = resp.json()
+
+        # Item fields
+        assert body["dataset_urn"] == _TEST_URN, (
+            f"detail dataset_urn mismatch: {body.get('dataset_urn')!r}"
+        )
+        assert body["item_id"] == item_id, (
+            f"detail item_id mismatch: {body.get('item_id')!r}"
+        )
+        assert body["composite_id"] == composite_id, (
+            f"detail composite_id mismatch: {body.get('composite_id')!r}. "
+            "spec: USE_CASE_en.md §UC4 L684"
+        )
+
+        # Both seeded candidates must be present
+        assert "candidates" in body and isinstance(body["candidates"], list), (
+            "MetagenItemDetailResponse must have 'candidates' list. "
+            "spec: src/api/schemas/metagen.py L120"
+        )
+        returned_ids = {c["candidate_id"] for c in body["candidates"]}
+        assert cid1 in returned_ids, (
+            f"Seeded candidate {cid1!r} not in detail response. "
+            "spec: USE_CASE_en.md §UC4 L617-631"
+        )
+        assert cid2 in returned_ids, (
+            f"Seeded candidate {cid2!r} not in detail response. "
+            "spec: USE_CASE_en.md §UC4 L617-631"
+        )
+
+        # Each candidate has required fields
+        for cand in body["candidates"]:
+            assert "candidate_id" in cand, "candidate missing candidate_id"
+            assert "value" in cand, "candidate missing value"
+            assert "confidence_score" in cand, "candidate missing confidence_score"
+            assert cand["status"] in (
+                "llm_approved",
+                "approved",
+                "rejected",
+            ), f"candidate status invalid: {cand.get('status')!r}"
+            assert "evidence" in cand, "candidate missing evidence"
+            assert "created_at" in cand, "candidate missing created_at"
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+
+
+# ── Group 5: Candidate review (raw-SQL seeded) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metagen_candidate_approve_flips_status_and_emits_event(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Approving an llm_approved candidate flips its status to 'approved'.
+
+    Also emits METAGEN.CANDIDATE_APPROVE event on per-dataset event endpoint.
+
+    spec: USE_CASE_en.md §UC4 L649-657 — approve verdict -> status=approved
+    spec: BACKEND.md §766-767 — METAGEN.CANDIDATE_APPROVE detail keys:
+      item_id, candidate_id, reason
+    """
+    item_id = "dataset.description"
+    unique_reason = f"spot test approve {uuid.uuid4()}"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    review_prefix = (
+        f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+        f"/attr/metagen/item/{item_id}/candidate"
+    )
+    dataset_event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+
+    try:
+        # Boundary required for review
+        await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={"is_enabled": True, "allowed": ["dataset.description"]},
+        )
+
+        cid = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Approved candidate value.",
+            status="llm_approved",
+        )
+
+        review_url = f"{review_prefix}/{cid}/method/review"
+        review_resp = await api_client.post(
+            review_url,
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": unique_reason},
+        )
+        assert review_resp.status_code == 200, (
+            f"POST review (approve) failed: {review_resp.status_code} {review_resp.text}. "
+            "spec: USE_CASE_en.md §UC4 L649"
+        )
+        review_body = review_resp.json()
+        assert review_body.get("status") == "approved", (
+            f"candidate status after approve must be 'approved'; "
+            f"got {review_body.get('status')!r}. spec: USE_CASE_en.md §UC4 L649"
+        )
+        assert review_body.get("candidate_id") == cid, (
+            "candidate_id mismatch in review response. spec: BACKEND.md §766"
+        )
+
+        # METAGEN.CANDIDATE_APPROVE event emitted on per-dataset endpoint;
+        # bind by candidate_id and unique reason to avoid stale event matches.
+        ev_resp = await api_client.get(
+            f"{dataset_event_url}?limit=20",
+            headers=admin_headers,
+        )
+        assert ev_resp.status_code == 200
+        events = ev_resp.json().get("events", [])
+        approve_event = next(
+            (
+                e for e in events
+                if e["event_type"] == "METAGEN.CANDIDATE_APPROVE"
+                and e["detail"].get("candidate_id") == cid
+            ),
+            None,
+        )
+        assert approve_event is not None, (
+            f"METAGEN.CANDIDATE_APPROVE event for candidate_id={cid!r} must be emitted. "
+            "spec: BACKEND.md §766 event catalogue"
+        )
+        ev_detail = approve_event["detail"]
+        assert ev_detail["candidate_id"] == cid, (
+            f"CANDIDATE_APPROVE detail candidate_id must be {cid!r}; "
+            f"got {ev_detail.get('candidate_id')!r}. spec: BACKEND.md §766"
+        )
+        assert ev_detail["item_id"] == item_id, (
+            f"CANDIDATE_APPROVE detail item_id must be {item_id!r}; "
+            f"got {ev_detail.get('item_id')!r}. spec: BACKEND.md §766"
+        )
+        assert ev_detail["reason"] == unique_reason, (
+            f"CANDIDATE_APPROVE detail reason must be {unique_reason!r}; "
+            f"got {ev_detail.get('reason')!r}. spec: BACKEND.md §766"
+        )
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_candidate_approve_demotes_prior_approved_sibling(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Approving candidate B when candidate A is approved atomically demotes A to llm_approved.
+
+    Covers the mutable approval contract and partial unique index
+    UNIQUE (dataset_urn, item_id) WHERE status='approved'.
+
+    spec: USE_CASE_en.md §UC4 L649-657 — "approving a new candidate atomically
+      demotes the previously approved sibling"
+    spec: BACKEND.md §UC4 — partial unique index enforced; sibling demotion via
+      flush + commit pattern in service
+    spec: src/backend/metagen/service.py L742-764 — flush demotion before commit
+    """
+    item_id = "dataset.description"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    review_prefix = (
+        f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+        f"/attr/metagen/item/{item_id}/candidate"
+    )
+    item_detail_url = (
+        f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/item/{item_id}"
+    )
+
+    try:
+        await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={"is_enabled": True, "allowed": ["dataset.description"]},
+        )
+
+        # Seed candidate A (llm_approved)
+        cid_a = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Candidate A value.",
+            status="llm_approved",
+        )
+        # Seed candidate B (llm_approved)
+        cid_b = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Candidate B value.",
+            status="llm_approved",
+        )
+
+        # Approve A first
+        resp_a = await api_client.post(
+            f"{review_prefix}/{cid_a}/method/review",
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "approve A first"},
+        )
+        assert resp_a.status_code == 200, (
+            f"Approve A failed: {resp_a.status_code} {resp_a.text}"
+        )
+        assert resp_a.json().get("status") == "approved", (
+            f"candidate A must be approved; got {resp_a.json().get('status')!r}"
+        )
+
+        # Approve B — must atomically demote A back to llm_approved
+        resp_b = await api_client.post(
+            f"{review_prefix}/{cid_b}/method/review",
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "approve B to demote A"},
+        )
+        assert resp_b.status_code == 200, (
+            f"Approve B failed: {resp_b.status_code} {resp_b.text}. "
+            "spec: BACKEND.md §UC4 — mutable approval must not raise unique constraint error"
+        )
+        assert resp_b.json().get("status") == "approved", (
+            f"candidate B must be approved; got {resp_b.json().get('status')!r}. "
+            "spec: USE_CASE_en.md §UC4 L649"
+        )
+
+        # GET item detail — A must now be llm_approved again
+        detail_resp = await api_client.get(item_detail_url, headers=admin_headers)
+        assert detail_resp.status_code == 200, (
+            f"GET item detail failed: {detail_resp.status_code}"
+        )
+        candidates = {
+            c["candidate_id"]: c["status"]
+            for c in detail_resp.json().get("candidates", [])
+        }
+        assert candidates.get(cid_b) == "approved", (
+            f"candidate B must be approved after demotion; got {candidates.get(cid_b)!r}. "
+            "spec: USE_CASE_en.md §UC4 L649"
+        )
+        assert candidates.get(cid_a) == "llm_approved", (
+            f"candidate A must be demoted to llm_approved; got {candidates.get(cid_a)!r}. "
+            "spec: BACKEND.md §UC4 — partial unique index UNIQUE (dataset_urn, item_id)"
+            " WHERE status='approved' — at most one approved candidate per item"
+        )
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_candidate_reject_emits_event(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Rejecting an llm_approved candidate flips status to 'rejected' and emits event.
+
+    spec: USE_CASE_en.md §UC4 L649-657 — reject verdict -> status=rejected
+    spec: BACKEND.md §766-767 — METAGEN.CANDIDATE_REJECT detail keys:
+      item_id, candidate_id, reason
+    """
+    item_id = "dataset.description"
+    unique_reason = f"spot test reject {uuid.uuid4()}"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+    dataset_event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+
+    try:
+        await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={"is_enabled": True, "allowed": ["dataset.description"]},
+        )
+
+        cid = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Rejected candidate value.",
+            status="llm_approved",
+        )
+
+        review_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+            f"/attr/metagen/item/{item_id}/candidate/{cid}/method/review"
+        )
+        review_resp = await api_client.post(
+            review_url,
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": unique_reason},
+        )
+        assert review_resp.status_code == 200, (
+            f"POST review (reject) failed: {review_resp.status_code} {review_resp.text}. "
+            "spec: USE_CASE_en.md §UC4 L649"
+        )
+        review_body = review_resp.json()
+        assert review_body.get("status") == "rejected", (
+            f"candidate status after reject must be 'rejected'; "
+            f"got {review_body.get('status')!r}. spec: USE_CASE_en.md §UC4 L649"
+        )
+
+        # METAGEN.CANDIDATE_REJECT event emitted;
+        # bind by candidate_id and unique reason to avoid stale event matches.
+        ev_resp = await api_client.get(
+            f"{dataset_event_url}?limit=20",
+            headers=admin_headers,
+        )
+        assert ev_resp.status_code == 200
+        events = ev_resp.json().get("events", [])
+        reject_event = next(
+            (
+                e for e in events
+                if e["event_type"] == "METAGEN.CANDIDATE_REJECT"
+                and e["detail"].get("candidate_id") == cid
+            ),
+            None,
+        )
+        assert reject_event is not None, (
+            f"METAGEN.CANDIDATE_REJECT event for candidate_id={cid!r} must be emitted. "
+            "spec: BACKEND.md §767 event catalogue"
+        )
+        ev_detail = reject_event["detail"]
+        assert ev_detail["candidate_id"] == cid, (
+            f"CANDIDATE_REJECT detail candidate_id must be {cid!r}; "
+            f"got {ev_detail.get('candidate_id')!r}. spec: BACKEND.md §767"
+        )
+        assert ev_detail["item_id"] == item_id, (
+            f"CANDIDATE_REJECT detail item_id must be {item_id!r}; "
+            f"got {ev_detail.get('item_id')!r}. spec: BACKEND.md §767"
+        )
+        assert ev_detail["reason"] == unique_reason, (
+            f"CANDIDATE_REJECT detail reason must be {unique_reason!r}; "
+            f"got {ev_detail.get('reason')!r}. spec: BACKEND.md §767"
+        )
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_candidate_reject_approved_returns_409_METAGEN_CANNOT_REJECT_APPROVED(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Rejecting an already-approved candidate returns 409 METAGEN_CANNOT_REJECT_APPROVED.
+
+    spec: USE_CASE_en.md §UC4 L655-656 — rejecting an approved candidate is refused
+      with 409 METAGEN_CANNOT_REJECT_APPROVED
+    spec: BACKEND.md L531-532 — reject is only valid for llm_approved candidates;
+      approved returns 409 METAGEN_CANNOT_REJECT_APPROVED
+    spec: BACKEND.md L949 — ConflictError error-code table: METAGEN_CANNOT_REJECT_APPROVED
+    spec: src/backend/metagen/service.py L788-792 — ConflictError raised when
+      cand.status == 'approved' and verdict == 'reject'
+    """
+    item_id = "dataset.description"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    try:
+        await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={"is_enabled": True, "allowed": ["dataset.description"]},
+        )
+
+        # Seed a candidate directly with status='approved' (bypasses approve flow)
+        cid = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Already approved candidate.",
+            status="approved",
+        )
+
+        review_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+            f"/attr/metagen/item/{item_id}/candidate/{cid}/method/review"
+        )
+        reject_resp = await api_client.post(
+            review_url,
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": "attempt to reject approved"},
+        )
+        assert reject_resp.status_code == 409, (
+            f"Reject on approved candidate must return 409; "
+            f"got {reject_resp.status_code} {reject_resp.text}. "
+            "spec: src/backend/metagen/service.py L788-792"
+        )
+        assert "METAGEN_CANNOT_REJECT_APPROVED" in str(reject_resp.json()), (
+            f"409 response must carry METAGEN_CANNOT_REJECT_APPROVED code; "
+            f"got {reject_resp.json()!r}. "
+            "spec: BACKEND.md L949 — ConflictError table; "
+            "spec: BACKEND.md L531-532 — reject of approved returns 409"
+        )
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_candidate_review_without_enabled_boundary_returns_422_METAGEN_DATASET_NOT_IN_BOUNDARY(  # noqa: E501
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Review attempt with no active boundary returns 422 METAGEN_DATASET_NOT_IN_BOUNDARY.
+
+    spec: BACKEND.md L547-549 — boundary guard: candidate review against a dataset whose
+      metagen_boundary is absent or is_enabled=false returns 422 METAGEN_DATASET_NOT_IN_BOUNDARY
+    spec: BACKEND.md L953 — PreconditionFailedError maps to HTTP 422
+    spec: src/backend/metagen/service.py L712-720 — PreconditionFailedError raised
+      when boundary is None or boundary.is_enabled=false
+    """
+    item_id = "dataset.description"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
+
+    try:
+        # Ensure no boundary exists for _TEST_URN
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+
+        cid = await _seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="Candidate without boundary.",
+            status="llm_approved",
+        )
+
+        review_url = (
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+            f"/attr/metagen/item/{item_id}/candidate/{cid}/method/review"
+        )
+        review_resp = await api_client.post(
+            review_url,
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "should fail"},
+        )
+        assert review_resp.status_code == 422, (
+            f"Review without boundary must return 422; "
+            f"got {review_resp.status_code} {review_resp.text}. "
+            "spec: src/backend/metagen/service.py L712-720"
+        )
+        assert "METAGEN_DATASET_NOT_IN_BOUNDARY" in str(review_resp.json()), (
+            f"422 response must carry METAGEN_DATASET_NOT_IN_BOUNDARY code; "
+            f"got {review_resp.json()!r}. "
+            "spec: BACKEND.md L547-549 — boundary guard; "
+            "spec: BACKEND.md L953 — PreconditionFailedError → 422"
+        )
+
+    finally:
+        await _delete_metagen_state_for_urn(async_session, _TEST_URN)
+
+
+# ── Group 6: Event endpoints ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_event_list_envelope_filters_by_time(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /metagen/event with 'after' param filters events by occurred_at.
+
+    Seeds two METAGEN.RUN_COMPLETE events with controlled occurred_at timestamps;
+    verifies that the 'after' query parameter on the global event endpoint
+    correctly excludes events older than the cutoff.
+
+    NOTE: The global metagen event endpoint uses 'after' (not 'from'/'to') as
+    its time-filter parameter — per route signature at
+    src/api/routers/spoke/common/metagen.py L139.
+
+    spec: USE_CASE_en.md §UC4 L682 — GET /spoke/common/metagen/event (global event history)
+    spec: API.md §Standard Envelope — events, offset, limit, total_count
+    spec: src/api/routers/spoke/common/metagen.py L137-178 — GET /metagen/event
+      with optional 'after' query param; EventListResponse envelope
+    """
+    event_url = "/api/v1/spoke/common/metagen/event"
+
+    # Two timestamps: older (yesterday) and newer (5s ago)
+    now = datetime.now(tz=UTC)
+    older_time = now - timedelta(days=1)
+    newer_time = now - timedelta(seconds=5)
+
+    older_event_id: str | None = None
+    newer_event_id: str | None = None
+
+    try:
+        # Seed two METAGEN.RUN_COMPLETE events — entity_type='metagen' required
+        # by the global endpoint's WHERE clause.
+        older_event_id = await _seed_metagen_event(
+            async_session,
+            entity_type="metagen",
+            entity_id="singleton",
+            event_type="METAGEN.RUN_COMPLETE",
+            detail={"run_id": str(uuid.uuid4()), "dry_run": False, "counts": {}},
+            occurred_at=older_time,
+        )
+        newer_event_id = await _seed_metagen_event(
+            async_session,
+            entity_type="metagen",
+            entity_id="singleton",
+            event_type="METAGEN.RUN_COMPLETE",
+            detail={"run_id": str(uuid.uuid4()), "dry_run": False, "counts": {}},
+            occurred_at=newer_time,
+        )
+
+        # GET all (no time filter) — verify envelope shape
+        all_resp = await api_client.get(f"{event_url}?limit=200", headers=admin_headers)
+        assert all_resp.status_code == 200, (
+            f"GET /metagen/event failed: {all_resp.status_code}"
+        )
+        all_body = all_resp.json()
+        assert "events" in all_body and isinstance(all_body["events"], list), (
+            "EventListResponse must have 'events' list. spec: API.md §Standard Envelope"
+        )
+        assert "total_count" in all_body and isinstance(all_body["total_count"], int), (
+            "EventListResponse must have 'total_count'. spec: API.md §Standard Envelope"
+        )
+        assert "offset" in all_body and "limit" in all_body, (
+            "EventListResponse must have offset and limit. spec: API.md §Standard Envelope"
+        )
+
+        # Both seeded events must appear in unfiltered list
+        all_ids = {e["id"] for e in all_body["events"]}
+        assert older_event_id in all_ids, (
+            f"Older seeded event {older_event_id!r} not found in unfiltered list."
+        )
+        assert newer_event_id in all_ids, (
+            f"Newer seeded event {newer_event_id!r} not found in unfiltered list."
+        )
+
+        # GET with 'after' set to a cutoff between the two events
+        # (older_time + 30min < cutoff < newer_time)
+        cutoff = (older_time + timedelta(minutes=30)).isoformat()
+        filtered_resp = await api_client.get(
+            f"{event_url}?after={urllib.parse.quote(cutoff, safe='')}&limit=200",
+            headers=admin_headers,
+        )
+        assert filtered_resp.status_code == 200, (
+            f"GET /metagen/event?after failed: {filtered_resp.status_code}"
+        )
+        filtered_ids = {e["id"] for e in filtered_resp.json().get("events", [])}
+        assert newer_event_id in filtered_ids, (
+            f"Newer event must appear with after filter; got {filtered_ids!r}. "
+            "spec: src/api/routers/spoke/common/metagen.py L151"
+        )
+        assert older_event_id not in filtered_ids, (
+            f"Older event must be excluded by after filter; got {filtered_ids!r}. "
+            "spec: src/api/routers/spoke/common/metagen.py L151"
+        )
+
+    finally:
+        for eid in (older_event_id, newer_event_id):
+            if eid is not None:
+                with suppress(Exception):
+                    await async_session.execute(
+                        text("DELETE FROM dataspoke.events WHERE id = CAST(:id AS uuid)"),
+                        {"id": eid},
+                    )
+                    await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_metagen_dataset_event_list_envelope(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /data/{urn}/event/metagen returns METAGEN.* events for that URN only.
+
+    Seeds a METAGEN.CANDIDATE_APPROVE event for _TEST_URN and one for _TEST_URN2;
+    verifies:
+      - Proper EventListResponse envelope (events, offset, limit, total_count)
+      - Only _TEST_URN events appear (entity_id filter applied)
+      - Only METAGEN.* event_types returned (prefix filter)
+      - 'from' query param in the future excludes the seeded event
+
+    spec: USE_CASE_en.md §UC4 L689 — GET /spoke/common/data/{urn}/event/metagen
+      (per-dataset metagen events: METAGEN.CANDIDATE_APPROVE, METAGEN.CANDIDATE_REJECT)
+    spec: API.md §Standard Envelope — events, offset, limit, total_count
+    spec: src/api/routers/spoke/common/data/metagen.py L187-232 —
+      GET /{dataset_urn}/event/metagen with from/to params
+    spec: src/shared/events.py — METAGEN_CANDIDATE_APPROVE event type constant
+    """
+    dataset_event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+
+    now = datetime.now(tz=UTC)
+    event_id_1: str | None = None
+    event_id_2: str | None = None
+
+    try:
+        # Seed METAGEN.CANDIDATE_APPROVE for _TEST_URN
+        event_id_1 = await _seed_metagen_event(
+            async_session,
+            entity_type="dataset",
+            entity_id=_TEST_URN,
+            event_type="METAGEN.CANDIDATE_APPROVE",
+            detail={
+                "item_id": "dataset.description",
+                "candidate_id": str(uuid.uuid4()),
+                "reason": "spot test",
+            },
+            occurred_at=now - timedelta(seconds=10),
+        )
+        # Seed same event type for _TEST_URN2 (must NOT appear on URN1's endpoint)
+        event_id_2 = await _seed_metagen_event(
+            async_session,
+            entity_type="dataset",
+            entity_id=_TEST_URN2,
+            event_type="METAGEN.CANDIDATE_APPROVE",
+            detail={
+                "item_id": "dataset.description",
+                "candidate_id": str(uuid.uuid4()),
+                "reason": "other urn",
+            },
+            occurred_at=now - timedelta(seconds=5),
+        )
+
+        # GET per-dataset events for _TEST_URN
+        resp = await api_client.get(f"{dataset_event_url}?limit=50", headers=admin_headers)
+        assert resp.status_code == 200, (
+            f"GET per-dataset metagen events failed: {resp.status_code} {resp.text}. "
+            "spec: src/api/routers/spoke/common/data/metagen.py L187"
+        )
+        body = resp.json()
+
+        # Envelope keys
+        assert "events" in body and isinstance(body["events"], list), (
+            "EventListResponse must have 'events' list. spec: API.md §Standard Envelope"
+        )
+        assert "total_count" in body and isinstance(body["total_count"], int), (
+            "EventListResponse must have 'total_count'. spec: API.md §Standard Envelope"
+        )
+        assert "offset" in body and "limit" in body, (
+            "EventListResponse must have offset and limit. spec: API.md §Standard Envelope"
+        )
+
+        returned_ids = {e["id"] for e in body["events"]}
+        # _TEST_URN event must appear
+        assert event_id_1 in returned_ids, (
+            f"Seeded event for _TEST_URN must appear in per-dataset events; "
+            f"got {returned_ids!r}"
+        )
+        # _TEST_URN2 event must NOT appear on _TEST_URN endpoint
+        assert event_id_2 not in returned_ids, (
+            f"Event for _TEST_URN2 must NOT appear on _TEST_URN per-dataset endpoint; "
+            f"got {returned_ids!r}. "
+            "spec: src/api/routers/spoke/common/data/metagen.py L200 — "
+            "entity_id == dataset_urn filter"
+        )
+
+        # All returned events must be METAGEN.* types
+        for ev in body["events"]:
+            assert ev["event_type"].startswith("METAGEN."), (
+                f"Per-dataset metagen event endpoint must only return METAGEN.* events; "
+                f"got {ev['event_type']!r}. "
+                "spec: src/api/routers/spoke/common/data/metagen.py L201"
+            )
+
+        # 'from' filter in the future excludes the seeded event
+        future_from = (now + timedelta(hours=1)).isoformat()
+        filtered_resp = await api_client.get(
+            f"{dataset_event_url}?from={urllib.parse.quote(future_from, safe='')}&limit=50",
+            headers=admin_headers,
+        )
+        assert filtered_resp.status_code == 200
+        filtered_ids = {e["id"] for e in filtered_resp.json().get("events", [])}
+        assert event_id_1 not in filtered_ids, (
+            f"Seeded event must be excluded by from= filter set in the future; "
+            f"got {filtered_ids!r}. "
+            "spec: src/api/routers/spoke/common/data/metagen.py L206-208"
+        )
+
+    finally:
+        for eid in (event_id_1, event_id_2):
+            if eid is not None:
+                with suppress(Exception):
+                    await async_session.execute(
+                        text("DELETE FROM dataspoke.events WHERE id = CAST(:id AS uuid)"),
+                        {"id": eid},
+                    )
+                    await async_session.commit()

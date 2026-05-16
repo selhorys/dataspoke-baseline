@@ -669,6 +669,7 @@ async def test_apply_per_item_budget_adds_when_under_limit(svc, db) -> None:
         count_result,                    # non-rejected count
     ])
     mock_db_refresh(db)
+    svc._refresh_candidate_embedding = AsyncMock()
 
     run_id = uuid.uuid4()
     added, evicted = await svc._apply_per_item_budget(
@@ -716,6 +717,7 @@ async def test_apply_per_item_budget_evicts_oldest_when_overwrite_pending_true(s
         oldest_result,  # oldest llm_approved to evict
     ])
     mock_db_refresh(db)
+    svc._refresh_candidate_embedding = AsyncMock()
 
     added, evicted = await svc._apply_per_item_budget(
         urn=_VALID_URN,
