@@ -115,7 +115,7 @@ Singleton row holding the Metadata Generation conf (UC4).
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
 | `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.measurement_query.dataset_filter` |
 | `result_limit` | `INTEGER` | Max non-rejected candidates per item (range `[1, 20]`, default `3`) |
-| `overwrite_pending` | `BOOLEAN` | When the per-item budget is full and the item is not finalized, true = evict oldest `llm_approved` candidate; false = skip the item (default true) |
+| `overwrite_pending` | `BOOLEAN` | When the per-item budget is full and the item has no `approved` candidate, true = evict oldest `llm_approved` candidate; false = skip the item (default true) |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 A `CHECK (id = 1)` constraint enforces singleton.
@@ -138,7 +138,9 @@ Per-dataset opt-in boundary for UC4 metagen. Absence of a row, or a row with
 #### `metagen_items`
 
 One row per (dataset, item slot). Materialized lazily by each run for in-scope
-(dataset, allowed kind) pairs.
+(dataset, allowed kind) pairs. The item carries identity only — whether it
+currently has an approved candidate is derived from the sibling rows in
+`metagen_candidates`.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -146,8 +148,6 @@ One row per (dataset, item slot). Materialized lazily by each run for in-scope
 | `item_id` | `TEXT` | `dataset.description` or `column.<fieldPath>.description` |
 | `kind` | `TEXT` | `dataset.description` or `column.description` |
 | `field_path` | `TEXT` NULL | Schema field path (set for `column.description`; null otherwise) |
-| `status` | `TEXT` | `pending` or `finalized`. Set to `finalized` when any candidate row reaches `status='approved'` |
-| `finalized_candidate_id` | `UUID` NULL | FK to the `metagen_candidates` row whose approval finalized this item |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -175,6 +175,11 @@ start of the next run.
 
 Indexes: `(dataset_urn, item_id, status, created_at)` for FIFO eviction
 queries and per-item budget checks; `(run_id)` for run-scoped cleanup.
+
+A partial unique index `UNIQUE (dataset_urn, item_id) WHERE status='approved'`
+enforces the invariant that an item has at most one `approved` candidate at
+any time. Approving a sibling un-approves the previously-approved one in the
+same transaction (see [BACKEND §Metadata Generation Service](BACKEND.md#metadata-generation-service-srcbackendmetagen)).
 
 #### `metagen_candidate_embeddings`
 

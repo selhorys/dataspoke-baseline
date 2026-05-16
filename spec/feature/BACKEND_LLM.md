@@ -98,7 +98,7 @@ confidence_score}`.
 | `value` is non-empty Markdown ≤ 16 KiB | `EMPTY_VALUE` / `VALUE_TOO_LARGE` |
 | `confidence_score ∈ [0.0, 1.0]` | `CONF_OUT_OF_RANGE` |
 | No duplicate `(dataset_urn, item_id)` within a single Producer turn | `DUP_ITEM` |
-| For finalized items (`metagen_items.status='finalized'`): rejected at the validator | `ITEM_ALREADY_FINALIZED` |
+| For items that currently have an `approved` candidate: rejected at the validator | `ITEM_ALREADY_APPROVED` |
 
 ## Adversarial Debate Framework
 

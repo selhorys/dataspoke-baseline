@@ -430,7 +430,7 @@ Fields:
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence. |
 | `dataset_filter` | Optional scope filter — `tags`, `glossary_terms`, `dataset_urns` (OR-ed across dimensions; `{}` means all). URN format validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter`. |
 | `result_limit` | Integer ∈ `[1, 20]`, default `3`. Maximum candidate count per item at any time. |
-| `overwrite_pending` | Boolean, default `true`. When an item already holds `result_limit` non-rejected candidates and is not finalized, controls whether a new run evicts the oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
+| `overwrite_pending` | Boolean, default `true`. When an item already holds `result_limit` non-rejected candidates and has no `approved` candidate, controls whether a new run evicts the oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
 
 The conf is a single row in `metagen_config` (singleton table; see
 [BACKEND_SCHEMA §metagen_config](BACKEND_SCHEMA.md#metagen_config)).
@@ -472,7 +472,9 @@ Future scope: `domains` and `globalTags` proposals.
 4. **Enumerate target items** — `(dataset_urn, dataset.description)` and one
    `(dataset_urn, column.<fieldPath>.description)` per column. Drop items
    whose kind is outside the dataset's `metagen_boundary.allowed`. Drop
-   items already finalized (those with an `approved` candidate).
+   items that currently have an `approved` candidate — the reviewer has
+   expressed a settled preference, so the run pauses on this item until
+   the approval is moved to a different sibling.
 5. **Producer-Reviewer Adversarial Debate** generates candidates per
    surviving (dataset, item) pair. See
    [BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate).
@@ -495,20 +497,31 @@ adversarial debate enabled. Bound tool `metagen_validate(payload)`, schema
 model `MetagenLLMOutput`. Validator rule table:
 [BACKEND_LLM §Metagen Validator](BACKEND_LLM.md#metagen-validator).
 
-**Approval flow**.
+**Approval flow** (mutable).
 `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review`
 with body `{verdict, reason}`:
 
-- `verdict: "approve"` → write the candidate's `value` to the corresponding
-  editable DataHub aspect via a single `emit_mcp`, flip the candidate's
-  status to `approved`, and emit `METAGEN.CANDIDATE_APPROVE`. The item is now
-  **finalized** — subsequent runs skip it.
+- `verdict: "approve"` → in a single transaction: flip the target
+  candidate's status to `approved`, flip any previously-`approved` sibling
+  on the same item back to `llm_approved`, then emit the new value to the
+  corresponding editable DataHub aspect and emit `METAGEN.CANDIDATE_APPROVE`.
+  Approval is mutable — the reviewer can switch which sibling is approved at
+  any time, and the partial unique index `UNIQUE (dataset_urn, item_id)
+  WHERE status='approved'` keeps "at most one approved per item" a hard
+  invariant. Generation runs skip items that currently have an `approved`
+  candidate, so accumulating siblings only happens before the first
+  approval (or after the user demotes the current approval by approving a
+  different sibling).
 - `verdict: "reject"` → flip the candidate's status to `rejected` and emit
   `METAGEN.CANDIDATE_REJECT`. The row is deleted at the start of the next
-  run.
+  run. Reject is only valid for `llm_approved` candidates; rejecting an
+  `approved` candidate returns `409 METAGEN_CANNOT_REJECT_APPROVED` (to
+  drop the current approval the reviewer approves a different sibling,
+  which atomically demotes the current one).
 
 Sibling `llm_approved` candidates on the same item are not auto-touched on
-approval — they remain visible as read-only history.
+approval — they remain visible as read-only history and are eligible for
+later approval.
 
 **Concurrency**. Generation runs are serialised by a global Redis lock
 (`metagen`). A duplicate `method/run` while one is in flight returns
@@ -520,8 +533,7 @@ regardless of `is_enabled`.
 
 **Boundary guard**. Candidate review against a dataset whose
 `metagen_boundary` is absent or `is_enabled=false` returns
-`422 METAGEN_DATASET_NOT_IN_BOUNDARY`. Review against an item that already
-has an approved sibling returns `409 METAGEN_ITEM_FINALIZED`.
+`422 METAGEN_DATASET_NOT_IN_BOUNDARY`.
 
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
@@ -921,7 +933,7 @@ failures.
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_ITEM_FINALIZED` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |

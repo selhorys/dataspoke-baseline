@@ -189,8 +189,8 @@ candidates shown as read-only history.
 │   │ "Books table — Imazon's primary title…"        │ │
 │   └────────────────────────────────────────────────┘ │
 │                                                      │
-│  column.book_id.description     status: finalized    │
-│   ✓ approved by alice on 2026-05-12                  │
+│  column.book_id.description     status: approved     │
+│   ✓ approved by alice on 2026-05-12 (switchable)     │
 │   (2 sibling candidates collapsed — expand to view)  │
 └──────────────────────────────────────────────────────┘
         Detail (`/de/metagen/[urn]`)

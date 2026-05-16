@@ -603,7 +603,7 @@ boundary at `/spoke/common/data/{urn}/attr/metagen/conf`.
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence |
 | `dataset_filter` | Optional scope filter — `tags`, `glossary_terms`, `dataset_urns` (OR-ed across dimensions; `{}` means all). Same shape and validation as UC3 ontogen `attr/conf.dataset_filter` and UC5 `measurement_query.dataset_filter` |
 | `result_limit` | Maximum candidate count per item at any time (integer ≥ 1, default `3`) |
-| `overwrite_pending` | When an item already holds `result_limit` non-rejected candidates and is not finalized, controls whether a new run overwrites the oldest `llm_approved` candidate (`true`, default) or skips the item (`false`) |
+| `overwrite_pending` | When an item already holds `result_limit` non-rejected candidates and has no `approved` candidate, controls whether a new run overwrites the oldest `llm_approved` candidate (`true`, default) or skips the item (`false`) |
 
 **Per-dataset boundary.** Each dataset that wants to participate sets a row at
 `/spoke/common/data/{urn}/attr/metagen/conf`:
@@ -623,30 +623,38 @@ Candidate statuses:
 
 - `llm_approved` — the producer-reviewer debate accepted this candidate; awaiting
   human review.
-- `approved` — a human approved this candidate. Its `value` is emitted to DataHub
-  on the same call, and the item is locked from further generation.
+- `approved` — a human approved this candidate. Its `value` was emitted to
+  DataHub on the same call. At most one sibling per item can hold this status;
+  approving a different sibling atomically demotes the current one back to
+  `llm_approved`.
 - `rejected` — a human rejected this candidate. It remains visible until the next
   run starts, then it is deleted.
 
 There is **no `llm_pending` status** in metagen — every persisted candidate is at
 least debate-accepted.
 
-**Item-level rules.** Each item is **finalized** iff it has at least one `approved`
-candidate. Finalized items receive no new candidates. At the start of each run, all
-`rejected` candidates are deleted (so room frees up). For each in-scope
-(dataset, allowed kind) pair the run then:
+**Item-level rules.** An item has at most one `approved` candidate at any time
+(enforced by a partial unique DB index). At the start of each run, all `rejected`
+candidates are deleted so room frees up. For each in-scope (dataset, allowed
+kind) pair the run then:
 
-- skips the item if it is finalized;
+- skips the item if it currently has an `approved` candidate (the reviewer has
+  expressed a settled preference);
 - appends a new candidate if non-rejected count `< result_limit`;
 - evicts the oldest `llm_approved` candidate (FIFO by `created_at`) and appends a
   new one if non-rejected count `= result_limit` and `overwrite_pending=true`;
 - skips the item if non-rejected count `= result_limit` and
   `overwrite_pending=false`.
 
-Approving a candidate writes its `value` to the corresponding editable DataHub
-aspect synchronously and flips the candidate's status to `approved`. Sibling
-`llm_approved` candidates on the same item retain their status as read-only
-history — the reviewer's "leave the rest as-is" choice is honored verbatim.
+**Approval is mutable.** Approving an `llm_approved` candidate flips it to
+`approved`, atomically demotes any previously-`approved` sibling back to
+`llm_approved`, and emits the new `value` to the corresponding editable DataHub
+aspect. The reviewer can switch which sibling holds the approval at any time —
+all non-rejected siblings remain visible as candidates. Reject is valid only
+for `llm_approved` candidates; rejecting an `approved` candidate is refused with
+`409 METAGEN_CANNOT_REJECT_APPROVED`. To remove the current approval the
+reviewer approves a different sibling, which atomically supersedes the prior
+choice.
 
 **Run semantics.** Generation runs are serialised: a duplicate `method/run` while
 one is in flight returns `409 METAGEN_RUNNING`. `?dry_run=true` (or body
@@ -752,9 +760,10 @@ POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 ```
 
 On `c1`'s approve call, DataSpoke writes the value to
-`editableDatasetProperties.description` on the dataset and marks the item
-**finalized**. `c2` stays `llm_approved` as visible history; `c3` will be deleted
-at the start of the next run.
+`editableDatasetProperties.description` on the dataset; the item now reports
+`status: approved`. `c2` stays `llm_approved` as visible history, eligible for
+later approval if the reviewer changes their mind (approving `c2` would
+atomically demote `c1`). `c3` will be deleted at the start of the next run.
 
 **Event history.**
 

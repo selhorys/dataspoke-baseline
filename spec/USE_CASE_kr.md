@@ -612,7 +612,7 @@ UI는 Markdown으로 렌더링한다.
 | `schedule_tier` | `hourly` / `daily` / `weekly` 재생성 주기 |
 | `dataset_filter` | 선택적 스코프 필터 — `tags`, `glossary_terms`, `dataset_urns` (차원 간 OR; `{}`이면 전체). UC3 ontogen `attr/conf.dataset_filter`·UC5 `measurement_query.dataset_filter`와 같은 형태와 검증 규칙 |
 | `result_limit` | 아이템당 최대 후보 수 (정수 ≥ 1, 기본 `3`) |
-| `overwrite_pending` | 아이템이 `result_limit`만큼의 비-거부 후보를 이미 가지고 finalize되지 않은 상태일 때, 새 실행이 가장 오래된 `llm_approved` 후보를 덮어쓸지(`true`, 기본) 그냥 건너뛸지(`false`) 결정 |
+| `overwrite_pending` | 아이템이 `result_limit`만큼의 비-거부 후보를 이미 가지고 `approved` 후보가 없을 때, 새 실행이 가장 오래된 `llm_approved` 후보를 덮어쓸지(`true`, 기본) 그냥 건너뛸지(`false`) 결정 |
 
 **데이터셋별 경계.** 참여하려는 각 데이터셋은 다음 행을 등록한다:
 
@@ -630,28 +630,35 @@ Markdown 값 하나로, 자체적인 `candidate_id`·`confidence_score`·`status
 후보 상태:
 
 - `llm_approved` — Producer-Reviewer 토론이 수락한 후보. 사람 리뷰 대기.
-- `approved` — 사람이 승인. 같은 호출에서 `value`가 DataHub에 emit되고
-  아이템은 이후 생성으로부터 잠긴다.
+- `approved` — 사람이 승인. 같은 호출에서 `value`가 DataHub에 emit된다.
+  한 아이템에서 이 상태를 가지는 후보는 최대 하나로 제한된다. 다른
+  형제 후보를 승인하면 현재 `approved` 후보는 같은 트랜잭션 안에서
+  `llm_approved`로 강등된다.
 - `rejected` — 사람이 거부. 다음 실행 시작 시점에 삭제된다.
 
 metagen에는 **`llm_pending` 상태가 없다** — 저장되는 모든 후보는 최소한
 토론이 수락한 후보다.
 
-**아이템 규칙.** `approved` 후보가 하나라도 있으면 아이템은 **finalized**다.
-finalized 아이템은 새 후보를 받지 않는다. 각 실행 시작 시점에 모든 `rejected`
+**아이템 규칙.** 한 아이템이 동시에 가질 수 있는 `approved` 후보는 최대
+하나다(부분 unique DB 인덱스로 보장). 각 실행 시작 시점에 모든 `rejected`
 후보를 삭제해 자리를 비운다. 이후 스코프 내 (데이터셋, 허용 종류) 쌍마다:
 
-- finalized 아이템이면 건너뛴다.
+- 현재 `approved` 후보가 있는 아이템이면 건너뛴다(리뷰어가 이미 선택을 굳혔다고
+  본다).
 - 비-거부 후보 수가 `< result_limit`이면 새 후보를 추가한다.
 - 비-거부 후보 수가 `= result_limit`이고 `overwrite_pending=true`이면 가장
   오래된 `llm_approved` 후보(`created_at` FIFO)를 제거한 뒤 추가한다.
 - 비-거부 후보 수가 `= result_limit`이고 `overwrite_pending=false`이면
   건너뛴다.
 
-후보를 승인하면 `value`가 동기적으로 DataHub의 해당 editable aspect에
-기록되고, 그 후보의 상태가 `approved`로 바뀐다. 같은 아이템의 다른
-`llm_approved` 후보는 그대로 `llm_approved`로 남아 읽기 전용 히스토리가 된다 —
-리뷰어의 "나머지는 그대로 둔다"는 선택이 그대로 보존된다.
+**승인은 변경 가능하다.** `llm_approved` 후보를 승인하면 그 후보가
+`approved`로 바뀌고, 같은 트랜잭션 안에서 이전에 `approved`였던 형제 후보가
+`llm_approved`로 강등되고, 새 `value`가 해당 editable DataHub aspect로
+emit된다. 리뷰어는 언제든 다른 형제로 승인을 옮길 수 있고, 비-거부 형제들은
+모두 후보로 보인 채 남아있다. `reject`는 `llm_approved` 후보에만 유효하며,
+`approved` 후보에 대한 reject는 `409 METAGEN_CANNOT_REJECT_APPROVED`로
+거부된다. 현재 승인을 취소하려면 리뷰어가 다른 형제를 승인하면 되고, 그
+호출이 현재 승인을 원자적으로 대체한다.
 
 **실행 의미.** 생성 실행은 직렬화된다: 진행 중에 같은 `method/run`이 다시
 들어오면 `409 METAGEN_RUNNING`을 반환한다. `?dry_run=true`(또는 body
@@ -756,9 +763,10 @@ POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 ```
 
 `c1` 승인 호출 시 DataSpoke는 그 값을 데이터셋의
-`editableDatasetProperties.description`에 기록하고 아이템을 **finalized**로
-표시한다. `c2`는 보이는 히스토리로 `llm_approved`인 채 남는다. `c3`는 다음
-실행 시작 시점에 삭제된다.
+`editableDatasetProperties.description`에 기록한다. 아이템 상태는
+`status: approved`로 보고된다. `c2`는 보이는 히스토리로 `llm_approved`인
+채 남고, 리뷰어가 마음을 바꾸면 `c2`를 승인할 수 있다(그 호출이 `c1`을
+원자적으로 강등한다). `c3`는 다음 실행 시작 시점에 삭제된다.
 
 **이벤트 이력.**
 

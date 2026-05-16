@@ -297,7 +297,7 @@ technical specs while DA or other teams may register simpler configurations.
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/conf` | Remove the boundary — dataset is excluded from future runs | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/item` | List items for this dataset (each row carries `item_id`, `kind`, `status`, `candidate_count`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}` | Item detail including all candidates (`candidate_id`, `value`, `confidence_score`, `status`, `created_at`) | Metadata Generation | UC4 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect and locks the item from further generation. Returns `409 METAGEN_ITEM_FINALIZED` if the item already has an approved sibling; `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect; if a sibling on the same item was previously `approved`, it is atomically demoted to `llm_approved` so the new approval supersedes it. Reject is valid only for `llm_approved` candidates; rejecting an `approved` candidate returns `409 METAGEN_CANNOT_REJECT_APPROVED`. Returns `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation, and metagen) | Data Resource | — |
 
@@ -666,7 +666,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `INVALID_SCORE` | 422 | `POST .../attr/validation/result` body has `score` outside `[0.0, 1.0]` |
 | `METAGEN_RUNNING` | 409 | A metagen run is already in progress |
 | `METAGEN_DISABLED` | 409 | Metagen conf has `is_enabled=false`; non-dry-run rejected |
-| `METAGEN_ITEM_FINALIZED` | 409 | Candidate review attempted on an item that already has an approved sibling; the item is locked |
+| `METAGEN_CANNOT_REJECT_APPROVED` | 409 | Reject verdict attempted on a candidate whose status is `approved`. To remove the current approval, approve a different sibling (which atomically demotes the current one) |
 | `METAGEN_DATASET_NOT_IN_BOUNDARY` | 422 | Candidate review attempted on an item whose dataset has no `is_enabled=true` per-dataset metagen boundary |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `METRIC_DISABLED` | 409 | Metric definition has `is_enabled=false`; non-dry-run rejected |
