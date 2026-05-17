@@ -96,7 +96,7 @@ Follow `spec/TESTING.md §Integration Testing` for the full 7-step workflow, pre
 
 - Run `./dev_env/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
 - Run tests in three **separate** groups (unit → spot integration → api-wired integration). Mixing causes Airflow resource contention.
-- Spot/api-wired tests need `dev_env/.env` exported into the shell — its lines have no `export` prefix, so prefix with `set -a && source dev_env/.env && set +a` (a bare `source` will not propagate vars to the pytest subprocess).
+- Spot/api-wired tests need `dev_env/.env` exported into the shell AND `DATASPOKE_TEST_MODE=true` set on the pytest invocation. `DATASPOKE_TEST_MODE` is not in `dev_env/.env`, so the conftest preflight will fail if it is omitted. Canonical command: `set -a && source dev_env/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `dev_env/.env` has no `export` prefixes).
 - Never truncate integration test output (no `| tail`, `| head`, or piped filters) — always show complete pytest output.
 
 ## Testing prauto
