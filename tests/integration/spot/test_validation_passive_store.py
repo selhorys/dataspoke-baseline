@@ -228,7 +228,38 @@ async def test_post_result_emits_assertion_run_event(
     )
 
     data_time = datetime(2026, 3, 15, 0, 0, 0, tzinfo=UTC)
+    expected_ms = _epoch_ms(data_time)
     score = 1.0
+
+    # Snapshot pre-existing runIds at this timestampMillis. DataHub timeseries
+    # accumulates events across test runs and (because hard-delete on an
+    # assertion entity does not purge ES timeseries) prior emissions with the
+    # same data_time may still be queryable. We identify this run's emission
+    # by looking for a runId NOT in the pre-snapshot.
+    assertion_urn = build_assertion_urn(_DATASET_URN)
+    graph = _make_datahub_graph()
+    ts_filter = {
+        "or": [
+            {
+                "and": [
+                    {
+                        "field": "timestampMillis",
+                        "values": [str(expected_ms)],
+                        "condition": "EQUAL",
+                    }
+                ]
+            }
+        ]
+    }
+    pre_run_ids = {
+        e.runId
+        for e in graph.get_timeseries_values(
+            entity_urn=assertion_urn,
+            aspect_type=AssertionRunEventClass,
+            filter=ts_filter,
+            limit=50,
+        )
+    }
 
     resp = await api_client.post(
         _RESULT_URL,
@@ -245,30 +276,30 @@ async def test_post_result_emits_assertion_run_event(
     assert "2026-03-15" in row["data_time"]
     assert row["score"] == score
 
-    # Verify the assertionRunEvent reached DataHub.
-    # assertionRunEvent is a TIMESERIES aspect — must use get_latest_timeseries_value,
-    # not get_aspect (which raises TypeError for timeseries aspects).
-    # ref: datahub ingestion/graph/client.py:354-357
-    # Poll briefly: DataHub timeseries goes through Elasticsearch and is
-    # eventually-consistent; a freshly-emitted aspect can take a couple of
-    # seconds to become queryable.
+    # Poll for this run's emission. Filter by timestampMillis (the spec-mandated
+    # encoding of data_time) and exclude pre-existing runIds, so a stale event
+    # at the same data_time cannot satisfy the assertion.
+    # ref: datahub ingestion/graph/client.py — assertionRunEvent is TIMESERIES;
+    # ES indexing is eventually-consistent, so polling is required.
     import time as _time
-    assertion_urn = build_assertion_urn(_DATASET_URN)
-    graph = _make_datahub_graph()
     deadline = _time.monotonic() + 15.0
     run_event = None
     while _time.monotonic() < deadline:
-        run_event = graph.get_latest_timeseries_value(
+        events = graph.get_timeseries_values(
             entity_urn=assertion_urn,
             aspect_type=AssertionRunEventClass,
-            filter_criteria_map={},
+            filter=ts_filter,
+            limit=50,
         )
-        if run_event is not None and run_event.timestampMillis == _epoch_ms(data_time):
+        run_event = next((e for e in events if e.runId not in pre_run_ids), None)
+        if run_event is not None:
             break
         _time.sleep(0.5)
     if run_event is None:
-        pytest.fail(f"assertionRunEvent not found in DataHub at URN {assertion_urn}")
-    expected_ms = _epoch_ms(data_time)
+        pytest.fail(
+            f"assertionRunEvent for this run not found at URN {assertion_urn} "
+            f"with timestampMillis={expected_ms} (pre_run_ids={pre_run_ids})"
+        )
     assert run_event.timestampMillis == expected_ms, (
         f"timestampMillis={run_event.timestampMillis} != expected {expected_ms} "
         "(must use data_time, not ingest time)"
