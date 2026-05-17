@@ -13,10 +13,14 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
+from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers
 from datahub.metadata.schema_classes import (
     ArrayTypeClass,
     BooleanTypeClass,
+    BrowsePathEntryClass,
+    BrowsePathsV2Class,
     BytesTypeClass,
+    ContainerClass,
     DatasetPropertiesClass,
     DateTypeClass,
     MapTypeClass,
@@ -47,6 +51,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SUPPORTED_PLATFORMS: frozenset[str] = frozenset(p.value for p in Platform)
+
+
+def _parse_env_from_dataset_urn(dataset_urn: str) -> str:
+    """Extract the env component from a dataset URN.
+
+    Dataset URN format: urn:li:dataset:(urn:li:dataPlatform:<plat>,<name>,<env>)
+    Returns "PROD" as a fallback when the URN is malformed.
+    """
+    try:
+        # Strip outer wrapper: urn:li:dataset:(...)
+        inner = dataset_urn[len("urn:li:dataset:("):-1]
+        # inner is: urn:li:dataPlatform:<plat>,<name>,<env>
+        parts = inner.rsplit(",", 1)
+        return parts[-1].strip()
+    except Exception:
+        return "PROD"
+
 
 # ── Type mappings ─────────────────────────────────────────────────────────────
 
@@ -227,7 +248,68 @@ async def _extract_postgresql(
         lastObserved=int(time.time() * 1000),
     )
 
+    # Emit database + schema containers before dataset aspects so DataHub's
+    # browse-path v2 groups all datasets under the same container hierarchy
+    # as managed-ingestion runs (URNs are byte-identical because we use the
+    # same DatabaseKey/SchemaKey helpers with backcompat_env_as_instance=True).
+    env = _parse_env_from_dataset_urn(dataset_urn)
+    schemas_seen: set[str] = set()
+    db_key = DatabaseKey(
+        database=database,
+        platform=platform,
+        instance=None,
+        env=env,
+        backcompat_env_as_instance=True,
+    )
+
+    if not dry_run:
+        for wu in gen_containers(
+            container_key=db_key,
+            name=database,
+            sub_types=["Database"],
+        ):
+            mcp = wu.metadata
+            if (
+                hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
+                and mcp.entityUrn and mcp.aspect
+            ):
+                try:
+                    await datahub.emit_aspect(
+                        mcp.entityUrn, mcp.aspect, system_metadata=sysmeta
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to emit database container aspect: %s", exc)
+
     for (s, t), columns in tables.items():
+        # Emit schema container once per schema (tables share the same schema container).
+        if s not in schemas_seen:
+            schemas_seen.add(s)
+            if not dry_run:
+                schema_key = SchemaKey(
+                    database=database,
+                    schema=s,
+                    platform=platform,
+                    instance=None,
+                    env=env,
+                    backcompat_env_as_instance=True,
+                )
+                for wu in gen_containers(
+                    container_key=schema_key,
+                    name=s,
+                    sub_types=["Schema"],
+                    parent_container_key=db_key,
+                ):
+                    mcp = wu.metadata
+                    if (
+                        hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
+                        and mcp.entityUrn and mcp.aspect
+                    ):
+                        try:
+                            await datahub.emit_aspect(
+                                mcp.entityUrn, mcp.aspect, system_metadata=sysmeta
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to emit schema container aspect: %s", exc)
         # Build the URN for this specific table
         table_urn = dataset_urn  # For single-table configs, reuse the provided URN
 
@@ -249,7 +331,37 @@ async def _extract_postgresql(
 
         if not dry_run:
             try:
-                await datahub.emit_aspect(table_urn, StatusClass(removed=False), system_metadata=sysmeta)
+                schema_key_for_dataset = SchemaKey(
+                    database=database,
+                    schema=s,
+                    platform=platform,
+                    instance=None,
+                    env=env,
+                    backcompat_env_as_instance=True,
+                )
+                schema_container_urn = schema_key_for_dataset.as_urn()
+                db_container_urn = db_key.as_urn()
+                await datahub.emit_aspect(
+                    table_urn, StatusClass(removed=False), system_metadata=sysmeta
+                )
+                await datahub.emit_aspect(
+                    table_urn,
+                    ContainerClass(container=schema_container_urn),
+                    system_metadata=sysmeta,
+                )
+                # Explicit BrowsePathsV2 with container URN refs. DataHub's server-side
+                # generation from Container is unreliable when later aspect writes follow;
+                # upstream sources also emit explicitly via auto_browse_path_v2.
+                await datahub.emit_aspect(
+                    table_urn,
+                    BrowsePathsV2Class(
+                        path=[
+                            BrowsePathEntryClass(id=db_container_urn, urn=db_container_urn),
+                            BrowsePathEntryClass(id=schema_container_urn, urn=schema_container_urn),
+                        ]
+                    ),
+                    system_metadata=sysmeta,
+                )
                 await datahub.emit_aspect(
                     table_urn,
                     DatasetPropertiesClass(

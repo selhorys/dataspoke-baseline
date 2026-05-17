@@ -216,13 +216,20 @@ mode — `passive` mode is platform-agnostic since DataSpoke does not run the ex
 | `mysql`, `oracle`, `bigquery`, `snowflake` | Planned | platform-specific | platform-specific |
 
 **Aspects emitted** (non-dry-run, per discovered dataset, by the `active-custom` extractor):
-`StatusClass(removed=False)`, `DatasetPropertiesClass`, `SchemaMetadataClass`, plus
-`DataProcessInstance` start + complete `RunEvent` aspects per run (see
+`StatusClass(removed=False)`, `ContainerClass(container=<schema_container_urn>)`,
+`DatasetPropertiesClass`, `SchemaMetadataClass`, plus `DataProcessInstance` start +
+complete `RunEvent` aspects per run (see
 [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
+Postgres also emits a two-level container hierarchy (database → schema), one container
+URN per `(database, schema)` pair; see
+[DATAHUB_INTEGRATION §Container URN Construction](../DATAHUB_INTEGRATION.md#container-urn-construction)
+for the URN-parity invariant with DataHub's managed-PG source. Kafka emits no containers
+(topics live at platform root, matching upstream Kafka source behavior).
 For postgres, `DatasetProperties.description` is sourced from the PG `obj_description()`
 COMMENT and each `SchemaField.description` from `col_description()`; when no COMMENT is
 set, the dataset description falls back to `"Ingested by DataSpoke: {database}.{schema}.{table}"`.
-`dry_run: true` runs the extractor and returns the schema preview without emitting any aspects.
+`dry_run: true` runs the extractor and returns the schema preview without emitting any aspects
+(no dataset, no container).
 
 #### Implementation
 

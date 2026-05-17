@@ -34,6 +34,7 @@ from pathlib import Path
 import asyncpg
 import requests
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
+from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers
 from datahub.emitter.rest_emitter import DatahubRestEmitter
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
@@ -41,7 +42,12 @@ from datahub.metadata.schema_classes import (
     AssertionInfoClass,
     AuditStampClass,
     BooleanTypeClass,
+    BrowsePathEntryClass,
+    BrowsePathsV2Class,
     BytesTypeClass,
+    ContainerClass,
+    ContainerPropertiesClass,
+    DataPlatformInstanceClass,
     DatasetFieldProfileClass,
     DatasetProfileClass,
     DatasetPropertiesClass,
@@ -552,26 +558,51 @@ def reset_assertions() -> int:
 
 
 def reset_containers() -> int:
-    """Hard-delete stale postgres/kafka containers from prior runs.
+    """Hard-delete postgres/kafka containers from prior runs.
 
-    The PG/Kafka ingest path here doesn't emit container aspects, so any
-    container whose `containerProperties.customProperties.platform` matches
-    `postgres` or `kafka` is residue from an older ingestion shape.
+    Selection logic (any match triggers deletion):
+    1. ``dataPlatformInstance.platform`` URN ends with ``:postgres`` or ``:kafka``
+       — catches containers emitted by both managed ingestion and the fixture util.
+    2. ``containerProperties.customProperties.platform`` equals ``postgres`` or
+       ``kafka`` — legacy fallback for older residue that predates the platform
+       instance aspect.
+    3. If the ``dataPlatformInstance`` aspect is absent and neither legacy check
+       matches, hard-delete anyway (dev-env is single-tenant; unknown containers
+       are safe to wipe so they don't accumulate as orphans).
     """
-    from datahub.metadata.schema_classes import ContainerPropertiesClass
-
     token = _get_token()
     graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
 
+    _pg_suffix = f":{PG_PLATFORM}"
+    _kafka_suffix = f":{KAFKA_PLATFORM}"
+
     deleted = 0
     for urn in _list_urns_incl_soft_deleted("container"):
-        props = graph.get_aspect(entity_urn=urn, aspect_type=ContainerPropertiesClass)
-        if props is None:
+        # Check dataPlatformInstance aspect first (present on containers emitted
+        # by both managed ingestion and the updated fixture util).
+        dpi = graph.get_aspect(entity_urn=urn, aspect_type=DataPlatformInstanceClass)
+        if dpi is not None:
+            platform_urn: str = getattr(dpi, "platform", "") or ""
+            if platform_urn.endswith(_pg_suffix) or platform_urn.endswith(_kafka_suffix):
+                graph.hard_delete_entity(urn)
+                deleted += 1
+                continue
+            # dataPlatformInstance exists but is neither PG nor Kafka — skip.
             continue
-        custom = props.customProperties or {}
-        if custom.get("platform") in (PG_PLATFORM, KAFKA_PLATFORM):
-            graph.hard_delete_entity(urn)
-            deleted += 1
+
+        # dataPlatformInstance absent: check legacy customProperties marker.
+        props = graph.get_aspect(entity_urn=urn, aspect_type=ContainerPropertiesClass)
+        if props is not None:
+            custom = props.customProperties or {}
+            if custom.get("platform") in (PG_PLATFORM, KAFKA_PLATFORM):
+                graph.hard_delete_entity(urn)
+                deleted += 1
+                continue
+
+        # Neither aspect present — dev-env single-tenant fallback: wipe it.
+        graph.hard_delete_entity(urn)
+        deleted += 1
+
     print(f"  Hard-deleted {deleted} containers.")
     return deleted
 
@@ -775,9 +806,64 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
 
     emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
 
+    # Emit database container once (idempotent — DataHub merges by URN).
+    db_key = DatabaseKey(
+        database=PG_INSTANCE,
+        platform=PG_PLATFORM,
+        instance=None,
+        env=ENV,
+        backcompat_env_as_instance=True,
+    )
+    for wu in gen_containers(container_key=db_key, name=PG_INSTANCE, sub_types=["Database"]):
+        mcp = wu.metadata
+        if (
+            hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
+            and mcp.entityUrn and mcp.aspect
+        ):
+            emitter.emit_mcp(
+                MetadataChangeProposalWrapper(entityUrn=mcp.entityUrn, aspect=mcp.aspect)
+            )
+
+    # Emit schema containers (one per distinct schema, idempotent).
+    schemas_seen: set[str] = set()
+
     for urn, columns in datasets.items():
         schema = columns[0]["schema"]
         table = columns[0]["table"]
+
+        if schema not in schemas_seen:
+            schemas_seen.add(schema)
+            schema_key = SchemaKey(
+                database=PG_INSTANCE,
+                schema=schema,
+                platform=PG_PLATFORM,
+                instance=None,
+                env=ENV,
+                backcompat_env_as_instance=True,
+            )
+            for wu in gen_containers(
+                container_key=schema_key,
+                name=schema,
+                sub_types=["Schema"],
+                parent_container_key=db_key,
+            ):
+                mcp = wu.metadata
+                if (
+                    hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
+                    and mcp.entityUrn and mcp.aspect
+                ):
+                    emitter.emit_mcp(
+                        MetadataChangeProposalWrapper(entityUrn=mcp.entityUrn, aspect=mcp.aspect)
+                    )
+
+        schema_key_for_dataset = SchemaKey(
+            database=PG_INSTANCE,
+            schema=schema,
+            platform=PG_PLATFORM,
+            instance=None,
+            env=ENV,
+            backcompat_env_as_instance=True,
+        )
 
         # 1. Mark as not-deleted (undo any previous soft-delete)
         emitter.emit_mcp(
@@ -787,7 +873,32 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
-        # 2. DatasetProperties
+        # 2. Link dataset to its schema container
+        _schema_container_urn = schema_key_for_dataset.as_urn()
+        _db_container_urn = db_key.as_urn()
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=ContainerClass(container=_schema_container_urn),
+            )
+        )
+
+        # 2b. Explicit BrowsePathsV2 with container URN refs — DataHub's server-side
+        # generation from Container is unreliable across re-emits; upstream sources
+        # also emit explicitly via auto_browse_path_v2.
+        emitter.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=urn,
+                aspect=BrowsePathsV2Class(
+                    path=[
+                        BrowsePathEntryClass(id=_db_container_urn, urn=_db_container_urn),
+                        BrowsePathEntryClass(id=_schema_container_urn, urn=_schema_container_urn),
+                    ]
+                ),
+            )
+        )
+
+        # 3. DatasetProperties
         table_description = columns[0].get("table_description") if columns else None
         emitter.emit_mcp(
             MetadataChangeProposalWrapper(
@@ -805,7 +916,7 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
-        # 3. SchemaMetadata
+        # 4. SchemaMetadata
         emitter.emit_mcp(
             MetadataChangeProposalWrapper(
                 entityUrn=urn,
@@ -820,7 +931,7 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
-        # 4. Operation record (enables freshness validation checks)
+        # 5. Operation record (enables freshness validation checks)
         now_ms = int(time.time() * 1000)
         emitter.emit_mcp(
             MetadataChangeProposalWrapper(
@@ -833,7 +944,7 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
-        # 5. DatasetProfile (enables row-count and field-metric validation checks)
+        # 6. DatasetProfile (enables row-count and field-metric validation checks)
         row_count = row_counts.get((schema, table), 0)
         table_null_counts = null_counts.get((schema, table), {})
         field_profiles = [
@@ -860,7 +971,7 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             )
         )
 
-        # 6. GlobalTags — business-area tag for cross-dataset filtering
+        # 7. GlobalTags — business-area tag for cross-dataset filtering
         area_tag = _PG_DATASET_AREA_TAGS.get(f"{schema}.{table}")
         if area_tag is not None:
             emitter.emit_mcp(

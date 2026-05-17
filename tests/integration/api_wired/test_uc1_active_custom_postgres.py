@@ -343,6 +343,77 @@ async def test_uc1_active_custom_postgres(
             "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
         )
 
+        # ── Step 5b (cont.): Assert container hierarchy in DataHub ───────────
+        # spec: BACKEND.md §Ingestion Service — Aspects emitted (ContainerClass + container hierarchy emission).
+        # spec: DATAHUB_INTEGRATION.md §Container URN Construction — URN parity with upstream plugin;
+        # backcompat_env_as_instance=True is mandatory. GUID dict for schema container:
+        # {"platform": "postgres", "database": "example_db", "schema": "catalog", "instance": "DEV"}
+
+        _SCHEMA_CONTAINER_URN = "urn:li:container:d30ba0aa3cb3374982ca9a9db3466b5e"
+        _DB_CONTAINER_URN = "urn:li:container:877925964b937b391ead54462bf98b9d"
+
+        container_resp = httpx.get(
+            f"{datahub_gms_url}/aspects/{encoded_active_urn}?aspect=container&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert container_resp.status_code == 200, (
+            f"GMS GET container aspect failed: {container_resp.status_code} {container_resp.text}"
+        )
+        container_urn = (
+            container_resp.json()
+            .get("aspect", {})
+            .get("com.linkedin.container.Container", {})
+            .get("container")
+        )
+        assert container_urn == _SCHEMA_CONTAINER_URN, (
+            f"After UC1 active-custom run, dataset container aspect must point to schema "
+            f"container {_SCHEMA_CONTAINER_URN!r}; got {container_urn!r}. "
+            "spec: BACKEND.md §Ingestion Service — Aspects emitted (ContainerClass + container hierarchy emission). "
+            "spec: DATAHUB_INTEGRATION.md §Container URN Construction — dataset emits ContainerClass(container=schema_key.as_urn()). "
+            "spec: USE_CASE_en.md §UC1 Case 1"
+        )
+
+        # Schema container must exist and have name='catalog', subType='Schema', platform=postgres
+        schema_enc = urllib.parse.quote(_SCHEMA_CONTAINER_URN, safe="")
+        schema_props_resp = httpx.get(
+            f"{datahub_gms_url}/aspects/{schema_enc}?aspect=containerProperties&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert schema_props_resp.status_code == 200, (
+            f"GMS GET containerProperties for schema container failed: "
+            f"{schema_props_resp.status_code}"
+        )
+        schema_container_name = (
+            schema_props_resp.json()
+            .get("aspect", {})
+            .get("com.linkedin.container.ContainerProperties", {})
+            .get("name")
+        )
+        assert schema_container_name == "catalog", (
+            f"Schema container ContainerProperties.name must be 'catalog'; "
+            f"got {schema_container_name!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Container URN Construction — SchemaKey fields include schema name"
+        )
+
+        schema_subtypes_resp = httpx.get(
+            f"{datahub_gms_url}/aspects/{schema_enc}?aspect=subTypes&version=0",
+            headers=gms_headers,
+            timeout=15.0,
+        )
+        assert schema_subtypes_resp.status_code == 200
+        schema_subtypes = (
+            schema_subtypes_resp.json()
+            .get("aspect", {})
+            .get("com.linkedin.common.SubTypes", {})
+            .get("typeNames", [])
+        )
+        assert "Schema" in schema_subtypes, (
+            f"Schema container SubTypes must include 'Schema'; got {schema_subtypes!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Container URN Construction — sub_types=['Schema'] and parent_container_key=db_key"
+        )
+
         # ── Step 5b (cont.): Assert dataset.lastIngested via GraphQL ─────────
         # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
         #     "When all aspects carry the default sentinel, lastIngested stays null

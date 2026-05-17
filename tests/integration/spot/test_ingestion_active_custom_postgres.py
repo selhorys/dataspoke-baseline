@@ -622,3 +622,124 @@ async def test_real_run_system_metadata_run_id_convention(
         f"platform slug must contain 'postgres'; got {m.group(1)!r}. "
         "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
     )
+
+
+@pytest.mark.asyncio
+async def test_real_run_dataset_has_container_aspect_pointing_to_schema_container(
+    real_run_state: dict,
+) -> None:
+    """After a real active-custom run, the dataset URN has a 'container' aspect pointing
+    to the schema container URN. The schema container URN must match the deterministic
+    hash for database=example_db, schema=catalog, env=DEV — byte-identical to what
+    DataHub's managed PostgreSQL source plugin would emit.
+
+    spec: BACKEND.md §Ingestion Service — Aspects emitted (ContainerClass + container hierarchy emission)
+    spec: DATAHUB_INTEGRATION.md §Container URN Construction — URN parity with upstream plugin
+    """
+    gms_headers = real_run_state["gms_headers"]
+    encoded_urn = urllib.parse.quote(_TEST_URN, safe="")
+
+    # Expected schema container URN for example_db / catalog / DEV
+    # GUID dict: {"platform": "postgres", "database": "example_db",
+    #             "schema": "catalog", "instance": "DEV"}
+    # (backcompat_env_as_instance=True promotes env into instance key)
+    _SCHEMA_CONTAINER_URN = "urn:li:container:d30ba0aa3cb3374982ca9a9db3466b5e"
+    _DB_CONTAINER_URN = "urn:li:container:877925964b937b391ead54462bf98b9d"
+
+    # ── Dataset has a 'container' aspect pointing to the schema container ──────
+    container_resp = httpx.get(
+        f"{_DATAHUB_GMS_URL}/aspects/{encoded_urn}?aspect=container&version=0",
+        headers=gms_headers,
+        timeout=15.0,
+    )
+    assert container_resp.status_code == 200, (
+        f"GET container aspect from DataHub GMS returned {container_resp.status_code}"
+    )
+    container_urn = (
+        container_resp.json()
+        .get("aspect", {})
+        .get("com.linkedin.container.Container", {})
+        .get("container")
+    )
+    assert container_urn == _SCHEMA_CONTAINER_URN, (
+        f"Dataset container aspect must point to schema container "
+        f"{_SCHEMA_CONTAINER_URN!r}; got {container_urn!r}. "
+        "spec: BACKEND.md §Ingestion Service — Aspects emitted (ContainerClass + container hierarchy emission)"
+    )
+
+    # ── Schema container has ContainerProperties with name='catalog' ──────────
+    schema_enc = urllib.parse.quote(_SCHEMA_CONTAINER_URN, safe="")
+    schema_props_resp = httpx.get(
+        f"{_DATAHUB_GMS_URL}/aspects/{schema_enc}?aspect=containerProperties&version=0",
+        headers=gms_headers,
+        timeout=15.0,
+    )
+    assert schema_props_resp.status_code == 200, (
+        f"GET containerProperties for schema container returned {schema_props_resp.status_code}"
+    )
+    schema_name = (
+        schema_props_resp.json()
+        .get("aspect", {})
+        .get("com.linkedin.container.ContainerProperties", {})
+        .get("name")
+    )
+    assert schema_name == "catalog", (
+        f"Schema container ContainerProperties.name must be 'catalog'; got {schema_name!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Container URN Construction — SchemaKey fields include schema name"
+    )
+
+    # ── Schema container SubTypes = ["Schema"] ────────────────────────────────
+    schema_subtypes_resp = httpx.get(
+        f"{_DATAHUB_GMS_URL}/aspects/{schema_enc}?aspect=subTypes&version=0",
+        headers=gms_headers,
+        timeout=15.0,
+    )
+    assert schema_subtypes_resp.status_code == 200
+    schema_subtypes = (
+        schema_subtypes_resp.json()
+        .get("aspect", {})
+        .get("com.linkedin.common.SubTypes", {})
+        .get("typeNames", [])
+    )
+    assert "Schema" in schema_subtypes, (
+        f"Schema container SubTypes must include 'Schema'; got {schema_subtypes!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Container URN Construction — sub_types=['Schema'] and parent_container_key=db_key"
+    )
+
+    # ── Schema container DataPlatformInstance.platform = postgres ────────────
+    schema_dpi_resp = httpx.get(
+        f"{_DATAHUB_GMS_URL}/aspects/{schema_enc}?aspect=dataPlatformInstance&version=0",
+        headers=gms_headers,
+        timeout=15.0,
+    )
+    assert schema_dpi_resp.status_code == 200
+    schema_platform = (
+        schema_dpi_resp.json()
+        .get("aspect", {})
+        .get("com.linkedin.common.DataPlatformInstance", {})
+        .get("platform")
+    )
+    assert schema_platform == "urn:li:dataPlatform:postgres", (
+        f"Schema container DataPlatformInstance.platform must be 'urn:li:dataPlatform:postgres'; "
+        f"got {schema_platform!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Container URN Construction — platform URN in SchemaKey"
+    )
+
+    # ── Schema container has a parent Container pointing to the database container ──
+    schema_container_resp = httpx.get(
+        f"{_DATAHUB_GMS_URL}/aspects/{schema_enc}?aspect=container&version=0",
+        headers=gms_headers,
+        timeout=15.0,
+    )
+    assert schema_container_resp.status_code == 200
+    schema_parent_urn = (
+        schema_container_resp.json()
+        .get("aspect", {})
+        .get("com.linkedin.container.Container", {})
+        .get("container")
+    )
+    assert schema_parent_urn == _DB_CONTAINER_URN, (
+        f"Schema container's parent Container must be the database container "
+        f"{_DB_CONTAINER_URN!r}; got {schema_parent_urn!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Container URN Construction — schema parented by parent_container_key=db_key"
+    )

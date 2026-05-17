@@ -156,6 +156,42 @@ dataset_urn = make_dataset_urn(platform="oracle", name="catalog.title_master", e
 dataset_urn = "urn:li:dataset:(urn:li:dataPlatform:oracle,catalog.title_master,PROD)"
 ```
 
+### Container URN Construction
+
+Container URNs for database/schema hierarchies must be **byte-identical** to those
+emitted by DataHub's upstream managed-source plugins (e.g. the managed PostgreSQL
+source). Without parity, Browse v2 renders two folders for the same logical
+database — one container-backed (from managed ingestion), one path-text-derived
+(from container-less emission) — and users see duplicates.
+
+Use the upstream SDK key classes; never compute container GUIDs manually:
+
+```python
+from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers
+
+db_key = DatabaseKey(
+    database="example_db",
+    platform="postgres",
+    instance=None,
+    env="DEV",
+    backcompat_env_as_instance=True,  # required for parity with upstream PG source
+)
+schema_key = SchemaKey(
+    database="example_db", schema="catalog",
+    platform="postgres", instance=None, env="DEV",
+    backcompat_env_as_instance=True,
+)
+```
+
+Invariants:
+- `backcompat_env_as_instance=True` is mandatory — upstream sources set it, so omitting
+  it produces a different GUID and a sibling-duplicate folder.
+- Database container is emitted with `sub_types=["Database"]`, schema container with
+  `sub_types=["Schema"]` and `parent_container_key=db_key`.
+- Each dataset emits `ContainerClass(container=schema_key.as_urn())` so it nests under
+  its schema container.
+- Re-emission is idempotent (DataHub merges by URN).
+
 ## Aspect Reference
 
 ### Regular Aspects
@@ -174,6 +210,7 @@ Regular aspects represent the current state of an entity. Read via `get_aspect()
 | `glossaryTerms` | `GlossaryTermsClass` | `terms[].urn`, `terms[].context` | `GET /aspects/{urn}?aspect=glossaryTerms` | `POST /openapi/v3/entity/dataset` |
 | `upstreamLineage` | `UpstreamLineageClass` | `upstreams[].dataset` (URN), `upstreams[].type` | `GET /aspects/{urn}?aspect=upstreamLineage` | `POST /openapi/v3/entity/dataset` |
 | `status` | `StatusClass` | `removed` (bool) | `GET /aspects/{urn}?aspect=status` | `POST /openapi/v3/entity/dataset` |
+| `container` | `ContainerClass` | `container` (container URN) | `GET /aspects/{urn}?aspect=container` | `POST /openapi/v3/entity/dataset` |
 | `deprecation` | `DeprecationClass` | `deprecated` (bool), `note`, `replacement` (URN), `decommissionTime` | `GET /aspects/{urn}?aspect=deprecation` | `POST /openapi/v3/entity/dataset` |
 
 #### Editable vs Non-Editable Description Aspects

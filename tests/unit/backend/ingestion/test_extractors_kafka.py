@@ -76,6 +76,13 @@ async def test_kafka_run_emits_three_aspects():
         f"Expected exactly {{StatusClass, DatasetPropertiesClass, SchemaMetadataClass}}, "
         f"got {emitted_aspect_types}"
     )
+    # Kafka emits no container aspects — topics live at platform root.
+    # spec: BACKEND.md §Ingestion Service — Kafka emits no containers (topics live at platform root,
+    # matching upstream Kafka source behavior)
+    assert not any(call.args[0].startswith("urn:li:container:") for call in datahub.emit_aspect.call_args_list), (
+        "Kafka extractor must not emit any container URNs. "
+        "spec: BACKEND.md §Ingestion Service — Kafka emits no containers (topics live at platform root)"
+    )
 
 
 # ── Typed PDL union: Kafka schema field types ─────────────────────────────────
