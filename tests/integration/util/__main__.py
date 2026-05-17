@@ -27,12 +27,24 @@ Usage:
 
     uv run python -m tests.integration.util --langfuse
         Langfuse dataspoke project only (delete all traces)
+
+    uv run python -m tests.integration.util --uc4-seed
+        Seed UC4 LLM context (fulfillment doc + ontogen nodes + DataHub masking).
+        Writes state to /tmp/dataspoke_uc4_state.json for use with --uc4-restore.
+
+    uv run python -m tests.integration.util --uc4-restore
+        Restore DataHub aspects and delete UC4 seed state created by --uc4-seed.
+        Reads /tmp/dataspoke_uc4_state.json; idempotent if file is absent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sys
+
+_UC4_STATE_FILE = "/tmp/dataspoke_uc4_state.json"
 
 
 def main() -> None:
@@ -46,6 +58,21 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if "--uc4-seed" in args and "--uc4-restore" in args:
+        print(
+            "[ERROR] --uc4-seed and --uc4-restore are mutually exclusive. Pick one.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if "--uc4-seed" in args:
+        asyncio.run(_uc4_seed())
+        return
+
+    if "--uc4-restore" in args:
+        asyncio.run(_uc4_restore())
+        return
 
     if not args or "--reset-all" in args:
         print("[INFO] Resetting to empty state (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
@@ -92,6 +119,73 @@ def main() -> None:
         asyncio.run(langfuse.reset_project())
 
     print("[INFO] Done.")
+
+
+async def _uc4_seed() -> None:
+    """Seed UC4 LLM context and write state to /tmp/dataspoke_uc4_state.json."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from tests.integration.util.datahub import _gms_url, get_datahub_token
+    from tests.integration.util.metagen import seed_uc4_context
+
+    dh_token = get_datahub_token()
+
+    ds_host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
+    ds_port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
+    ds_user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
+    ds_password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
+    ds_db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+
+    engine = create_async_engine(
+        f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
+    )
+    async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with async_session_factory() as session:
+        state = await seed_uc4_context(session, dh_token=dh_token, gms_url=_gms_url)
+
+    await engine.dispose()
+
+    with open(_UC4_STATE_FILE, "w") as fh:
+        json.dump(state, fh, indent=2)
+
+    print(f"Seeded UC4 context. State file: {_UC4_STATE_FILE}")
+
+
+async def _uc4_restore() -> None:
+    """Restore UC4 context from /tmp/dataspoke_uc4_state.json."""
+    if not os.path.exists(_UC4_STATE_FILE):
+        print(f"State file {_UC4_STATE_FILE} not found — nothing to restore.")
+        return
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from tests.integration.util.datahub import _gms_url, get_datahub_token
+    from tests.integration.util.metagen import restore_uc4_context
+
+    with open(_UC4_STATE_FILE) as fh:
+        state = json.load(fh)
+
+    dh_token = get_datahub_token()
+
+    ds_host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
+    ds_port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
+    ds_user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
+    ds_password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
+    ds_db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+
+    engine = create_async_engine(
+        f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
+    )
+    async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with async_session_factory() as session:
+        await restore_uc4_context(session, state, dh_token=dh_token, gms_url=_gms_url)
+
+    await engine.dispose()
+
+    os.remove(_UC4_STATE_FILE)
+    print("Restored UC4 context (or partial). State file deleted.")
 
 
 if __name__ == "__main__":

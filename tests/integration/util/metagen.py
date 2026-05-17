@@ -1,13 +1,27 @@
 """Raw-SQL seed and cleanup helpers for Metadata Generation integration tests.
 
-Provides four public helpers used by spot and api-wired tests that need to
+Provides public helpers used by spot and api-wired tests that need to
 pre-populate metagen state without going through the REST API (bypassing LLM
 and run-pipeline concerns not under test):
 
-  seed_metagen_item        — insert a metagen_items row
-  seed_metagen_candidate   — insert a metagen_candidates row (ensures parent item)
-  seed_metagen_event       — insert a dataspoke.events row for metagen events
+  seed_metagen_item          — insert a metagen_items row
+  seed_metagen_candidate     — insert a metagen_candidates row (ensures parent item)
+  seed_metagen_event         — insert a dataspoke.events row for metagen events
   delete_metagen_state_for_urn — cascade-delete all metagen rows for a dataset URN
+
+  seed_approved_ontogen_node — insert an approved ontogen_nodes row
+  seed_dataset_node_map      — insert a dataset_node_map row
+  delete_ontogen_node        — delete an ontogen_nodes row (FK-safe)
+
+  load_fulfillment_doc       — read the UC4 fulfillment document fixture from disk
+  FULFILLMENT_DOC_PATH       — pathlib.Path to the markdown fixture file
+
+  seed_uc4_context           — seed all UC4 LLM context + mask DataHub aspects
+  restore_uc4_context        — undo everything seed_uc4_context did (idempotent)
+
+  EU_PROFILES_URN            — URN for the customers.eu_profiles dataset
+  ORDERS_EVENTS_URN          — URN for the imazon.orders.events dataset
+  FULFILLMENT_TAG            — URN for the area:fulfillment tag
 
 spec: spec/TESTING.md §Spot vs Api-Wired Integration Tests — raw-SQL seeding
 is the correct approach when the concern under test is review/query behavior,
@@ -15,12 +29,35 @@ not the run pipeline that would normally produce the data.
 """
 
 import json
+import pathlib
 import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# ── Module-level constants ─────────────────────────────────────────────────────
+
+EU_PROFILES_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)"
+)
+ORDERS_EVENTS_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)"
+)
+FULFILLMENT_TAG = "urn:li:tag:area:fulfillment"
+
+FULFILLMENT_DOC_PATH: pathlib.Path = (
+    pathlib.Path(__file__).parent / "fixtures" / "metagen" / "uc4_fulfillment_doc.md"
+)
+
+
+def load_fulfillment_doc() -> str:
+    """Return the UC4 fulfillment document body as a string."""
+    return FULFILLMENT_DOC_PATH.read_text()
+
+
+# ── Metagen table helpers ──────────────────────────────────────────────────────
 
 
 async def seed_metagen_item(
@@ -114,7 +151,7 @@ async def seed_metagen_event(
     entity_type: str,
     entity_id: str,
     event_type: str,
-    detail: dict,
+    detail: dict,  # type: ignore[type-arg]
     occurred_at: datetime,
 ) -> str:
     """Insert a row into dataspoke.events.  Returns the event id as str.
@@ -196,3 +233,310 @@ async def delete_metagen_state_for_urn(
             {"urn": dataset_urn},
         )
         await session.commit()
+
+
+# ── Ontogen table helpers ──────────────────────────────────────────────────────
+
+
+async def seed_approved_ontogen_node(
+    session: AsyncSession,
+    node_id: str,
+    name: str,
+) -> str:
+    """Insert an approved ontogen_nodes row via raw SQL (UC3 → UC4 coupling setup).
+
+    Returns the id actually stored — either the newly inserted id or the id of
+    the pre-existing row with the same name (idempotent across re-runs).
+
+    spec: BACKEND.md §UC4 — UC4 reads UC3-approved nodes via
+    dataset_node_map.status='approved'.
+    """
+    row = await session.execute(
+        text(
+            "INSERT INTO dataspoke.ontogen_nodes"
+            " (id, name, description, confidence_score, status, evidence)"
+            " VALUES (:id, :name, :desc, :conf, 'approved', CAST(:ev AS jsonb))"
+            " ON CONFLICT (name) DO UPDATE"
+            "  SET description = EXCLUDED.description"
+            " RETURNING id"
+        ),
+        {
+            "id": node_id,
+            "name": name,
+            "desc": "Fulfillment domain ontology node",
+            "conf": 0.90,
+            "ev": json.dumps({"source": "uc4-api-wired-test"}),
+        },
+    )
+    await session.commit()
+    return str(row.scalar_one())
+
+
+async def seed_dataset_node_map(
+    session: AsyncSession,
+    *,
+    dataset_urn: str,
+    node_id: str,
+    status: str = "approved",
+) -> None:
+    """Insert a dataset_node_map row via raw SQL.
+
+    spec: BACKEND.md §UC4 — UC4 reads rows with status='approved'.
+    spec: src/shared/db/models.py — DatasetNodeMap schema.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.dataset_node_map"
+            " (dataset_urn, node_id, confidence_score, status, is_primary)"
+            " VALUES (:dataset_urn, :node_id, :conf, :status, false)"
+            " ON CONFLICT (dataset_urn, node_id) DO UPDATE SET status = EXCLUDED.status"
+        ),
+        {
+            "dataset_urn": dataset_urn,
+            "node_id": node_id,
+            "conf": 0.90,
+            "status": status,
+        },
+    )
+    await session.commit()
+
+
+async def delete_ontogen_node(session: AsyncSession, node_id: str) -> None:
+    """Delete an ontogen_nodes row. Removes dataset_node_map rows first (FK)."""
+    with suppress(Exception):
+        await session.execute(
+            text("DELETE FROM dataspoke.dataset_node_map WHERE node_id = :node_id"),
+            {"node_id": node_id},
+        )
+        await session.commit()
+    with suppress(Exception):
+        await session.execute(
+            text("DELETE FROM dataspoke.ontogen_nodes WHERE id = :id"),
+            {"id": node_id},
+        )
+        await session.commit()
+
+
+# ── High-level UC4 fixture orchestration ──────────────────────────────────────
+
+
+async def seed_uc4_context(
+    session: AsyncSession,
+    *,
+    dh_token: str,
+    gms_url: str,
+) -> dict:  # type: ignore[type-arg]
+    """Seed UC4 LLM context and mask DataHub aspects.
+
+    Returns a state dict suitable for passing to restore_uc4_context.
+
+    Actions performed:
+    - Seed the fulfillment document via seed_native_document.
+    - Seed 5 approved ontogen nodes mapped to both EU_PROFILES_URN and
+      ORDERS_EVENTS_URN via seed_dataset_node_map.
+    - Snapshot eu_profiles DatasetProperties + SchemaMetadata and
+      orders.events SchemaMetadata; capture original descriptions.
+    - Mask: blank eu_profiles dataset description, None all eu_profiles field
+      descriptions, None first 4 orders.events field descriptions.
+
+    spec: USE_CASE_en.md §UC4 — LLM context seeding + DataHub masking
+    spec: TESTING.md §Api-Wired Integration Tests — setup may use raw SQL
+    """
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper
+    from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
+    from datahub.metadata.schema_classes import (
+        DatasetPropertiesClass,
+        SchemaMetadataClass,
+    )
+
+    from tests.integration.util.datahub import seed_native_document
+
+    # 1a. Seed fulfillment document.
+    document_id = uuid.uuid4().hex[:16]
+    document_urn = seed_native_document(
+        document_id=document_id,
+        title="Imazon Fulfillment Process Guide",
+        body_markdown=load_fulfillment_doc(),
+        related_dataset_urns=[EU_PROFILES_URN, ORDERS_EVENTS_URN],
+        token=dh_token,
+    )
+
+    # 1b. Seed 5 approved ontogen nodes mapped to both datasets.
+    suffix = uuid.uuid4().hex[:8]
+    node_names = ["Order", "OrderLine", "Customer", "ShipmentEvent", "DeliveryStatus"]
+    node_ids: list[str] = []
+    for name in node_names:
+        candidate_id = f"uc4-{name.lower()}-{suffix}"
+        actual_id = await seed_approved_ontogen_node(session, candidate_id, name)
+        node_ids.append(actual_id)
+        for urn in (EU_PROFILES_URN, ORDERS_EVENTS_URN):
+            await seed_dataset_node_map(session, dataset_urn=urn, node_id=actual_id)
+
+    # 2. Snapshot DataHub aspects before masking, capture original descriptions.
+    graph = DataHubGraph(DatahubClientConfig(server=gms_url, token=dh_token))
+
+    eu_props = graph.get_aspect(entity_urn=EU_PROFILES_URN, aspect_type=DatasetPropertiesClass)
+    eu_schema = graph.get_aspect(entity_urn=EU_PROFILES_URN, aspect_type=SchemaMetadataClass)
+    oe_schema = graph.get_aspect(entity_urn=ORDERS_EVENTS_URN, aspect_type=SchemaMetadataClass)
+
+    eu_original_dataset_description: str | None = eu_props.description if eu_props else None
+
+    eu_original_field_descs: dict[str, str | None] = {}
+    if eu_schema is not None and hasattr(eu_schema, "fields"):
+        for f in eu_schema.fields:
+            eu_original_field_descs[f.fieldPath] = f.description
+
+    oe_original_field_descs: dict[str, str | None] = {}
+    masked_oe_field_paths: list[str] = []
+    if oe_schema is not None and hasattr(oe_schema, "fields"):
+        for f in oe_schema.fields:
+            oe_original_field_descs[f.fieldPath] = f.description
+        all_field_paths = [f.fieldPath for f in oe_schema.fields]
+        masked_oe_field_paths = all_field_paths[:4]
+
+    # Mask eu_profiles DatasetProperties: blank description, preserve other fields.
+    if eu_props is not None:
+        masked_eu_props = DatasetPropertiesClass(
+            name=eu_props.name,
+            qualifiedName=eu_props.qualifiedName,
+            description="",
+            customProperties=eu_props.customProperties,
+        )
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(entityUrn=EU_PROFILES_URN, aspect=masked_eu_props)
+        )
+
+    # Mask eu_profiles SchemaMetadata: None all field descriptions in-place.
+    if eu_schema is not None and hasattr(eu_schema, "fields"):
+        for f in eu_schema.fields:
+            f.description = None
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(entityUrn=EU_PROFILES_URN, aspect=eu_schema)
+        )
+
+    # Mask orders.events SchemaMetadata: None first 4 field descriptions in-place.
+    if oe_schema is not None and hasattr(oe_schema, "fields"):
+        for f in oe_schema.fields:
+            if f.fieldPath in masked_oe_field_paths:
+                f.description = None
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(entityUrn=ORDERS_EVENTS_URN, aspect=oe_schema)
+        )
+
+    return {
+        "document_urn": document_urn,
+        "node_ids": node_ids,
+        "eu_original_dataset_description": eu_original_dataset_description,
+        "eu_original_field_descs": eu_original_field_descs,
+        "oe_original_field_descs": oe_original_field_descs,
+        "masked_oe_field_paths": masked_oe_field_paths,
+    }
+
+
+async def restore_uc4_context(
+    session: AsyncSession,
+    state: dict,  # type: ignore[type-arg]
+    *,
+    dh_token: str,
+    gms_url: str,
+) -> None:
+    """Undo everything seed_uc4_context did.
+
+    Idempotent — each step is wrapped in suppress(Exception) so a single
+    failure does not abort later steps.
+
+    Actions performed (in order):
+    - Restore eu_profiles DatasetProperties.description.
+    - Restore eu_profiles SchemaMetadata field descriptions.
+    - Restore orders.events SchemaMetadata field descriptions.
+    - Emit EditableDatasetPropertiesClass(description=None) on eu_profiles.
+    - Emit EditableSchemaMetadataClass(editableSchemaFieldInfo=[]) on both URNs.
+    - Hard-delete the fulfillment document.
+    - delete_metagen_state_for_urn for both URNs.
+    - delete_ontogen_node for each node_id in state["node_ids"].
+
+    spec: TESTING.md §Integration Testing — teardown must not leak state
+    """
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper
+    from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
+    from datahub.metadata.schema_classes import (
+        DatasetPropertiesClass,
+        EditableDatasetPropertiesClass,
+        EditableSchemaMetadataClass,
+        SchemaMetadataClass,
+    )
+
+    from tests.integration.util.datahub import hard_delete_document
+
+    graph = DataHubGraph(DatahubClientConfig(server=gms_url, token=dh_token))
+
+    # Restore eu_profiles DatasetProperties.description (re-fetch to avoid stale object).
+    with suppress(Exception):
+        eu_props = graph.get_aspect(entity_urn=EU_PROFILES_URN, aspect_type=DatasetPropertiesClass)
+        if eu_props is not None:
+            eu_props.description = state.get("eu_original_dataset_description")
+            graph.emit_mcp(
+                MetadataChangeProposalWrapper(entityUrn=EU_PROFILES_URN, aspect=eu_props)
+            )
+
+    # Restore eu_profiles SchemaMetadata field descriptions (re-fetch).
+    with suppress(Exception):
+        eu_schema = graph.get_aspect(entity_urn=EU_PROFILES_URN, aspect_type=SchemaMetadataClass)
+        if eu_schema is not None and hasattr(eu_schema, "fields"):
+            original_descs: dict[str, str | None] = state.get("eu_original_field_descs", {})
+            for f in eu_schema.fields:
+                f.description = original_descs.get(f.fieldPath)
+            graph.emit_mcp(
+                MetadataChangeProposalWrapper(entityUrn=EU_PROFILES_URN, aspect=eu_schema)
+            )
+
+    # Restore orders.events SchemaMetadata field descriptions (re-fetch).
+    with suppress(Exception):
+        oe_schema = graph.get_aspect(entity_urn=ORDERS_EVENTS_URN, aspect_type=SchemaMetadataClass)
+        if oe_schema is not None and hasattr(oe_schema, "fields"):
+            oe_original_descs: dict[str, str | None] = state.get("oe_original_field_descs", {})
+            for f in oe_schema.fields:
+                f.description = oe_original_descs.get(f.fieldPath)
+            graph.emit_mcp(
+                MetadataChangeProposalWrapper(entityUrn=ORDERS_EVENTS_URN, aspect=oe_schema)
+            )
+
+    # Clear approve-flow side effects: editable aspects.
+    with suppress(Exception):
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=EU_PROFILES_URN,
+                aspect=EditableDatasetPropertiesClass(description=None),
+            )
+        )
+    with suppress(Exception):
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=EU_PROFILES_URN,
+                aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
+            )
+        )
+    with suppress(Exception):
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=ORDERS_EVENTS_URN,
+                aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
+            )
+        )
+
+    # Hard-delete fulfillment document.
+    document_urn: str | None = state.get("document_urn")
+    if document_urn:
+        with suppress(Exception):
+            hard_delete_document(document_urn=document_urn, token=dh_token)
+
+    # Delete metagen state for both datasets.
+    with suppress(Exception):
+        await delete_metagen_state_for_urn(session, EU_PROFILES_URN)
+    with suppress(Exception):
+        await delete_metagen_state_for_urn(session, ORDERS_EVENTS_URN)
+
+    # Delete ontogen nodes.
+    for nid in state.get("node_ids", []):
+        with suppress(Exception):
+            await delete_ontogen_node(session, nid)

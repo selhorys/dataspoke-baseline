@@ -56,6 +56,8 @@ Run `./dev_env/health-check.sh`. On any FAIL:
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
 Yes → `set -a && source dev_env/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
 
+For UC4 scenarios: after reset-seed, run `uv run python -m tests.integration.util --uc4-seed` to pre-stage the LLM context (fulfillment doc + ontogen nodes + DataHub masking); run `uv run python -m tests.integration.util --uc4-restore` to clean up when done.
+
 Bootstrap env:
 ```bash
 bash .claude/skills/test-api-wired-manual/helpers/setup_env.sh
