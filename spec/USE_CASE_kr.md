@@ -98,6 +98,9 @@ DataProcessInstance emission 계약, 그리고 DataSpoke의 시간별 passive �
 | `GET /spoke/common/data/{urn}/event/ingestion` | 데이터셋별 인제스천 이벤트 이력 (active-custom: DataSpoke 실행이 기록; passive: DataHub의 DataProcessInstance 레코드를 시간별 폴링이 기록) |
 | `GET /spoke/common/ingestion` | 데이터셋별 `attr/ingestion/*`을 집계하는 크로스 데이터셋 리스트 뷰 |
 
+각 `event/ingestion` 행은 `event_type`(성공이면 `INGESTION.COMPLETE`, 실패면
+`INGESTION.FAIL`)과 그에 대응하는 `status`(`success` / `failure`)를 담는다.
+
 ### Imazon 예시
 
 #### Case 1 — Active-custom, Postgres `catalog.title_master` (daily)
@@ -295,6 +298,9 @@ POST .../attr/validation/result
 `FAILURE`로 표시된다. 원본 score는 partial-success 시맨틱을 위해
 `actualAggValue`에 보존된다.
 
+Kafka 토픽 `orders.events`에도 두 번째 슬롯을 둔다 (플랫폼이 다르고 변수도
+다르다). 동일한 surface가 관계형과 스트리밍 소스를 모두 다룬다.
+
 **과거 데이터 베이스라인 캐시.** 다음 날의 품질 태스크는 14일 롤링 베이스라인 대비
 오늘의 행 수 anomaly를 계산한다. `orders.line_items`를 다시 집계하는 대신 다음을
 호출해 과거 `row_cnt` 시계열을 그대로 사용한다:
@@ -303,8 +309,16 @@ POST .../attr/validation/result
 GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:00Z
 ```
 
-**크로스 데이터셋 오버뷰.** 운영팀이 `GET /spoke/common/validation`에서
-데이터셋별 description, 변수 개수, 최신 score를 본다.
+결과는 최신 행부터(즉 `data_time` 내림차순) 반환된다.
+
+**폐기와 부활.** `DELETE attr/validation/conf`는 슬롯을 soft-delete한다
+(`204` 반환; 이후 `GET conf`는 `404`). 같은 URN에 `PUT`을 다시 호출하면 슬롯이
+부활하며(`201` 반환), 부활된 슬롯은 새로운 설명과 변수 집합을 가질 수 있다.
+
+**크로스 데이터셋 오버뷰.** `GET /spoke/common/validation`은 데이터셋별로
+`description`, `variable_count`, `latest_data_time`, `latest_score`, `is_removed`
+를 보여준다. 리스트는 `?removed=true|false`로 soft-delete된 슬롯의 포함 여부를
+제어한다.
 
 ---
 
@@ -508,7 +522,9 @@ UI는 Markdown으로 렌더링한다.
 (기본 `3`)개의 후보를 누적한다. 리뷰어는 후보를 살펴보고 하나를 승인하면(그 값이
 DataHub의 편집 가능 aspect로 emit되며 아이템이 잠긴다), 마음에 들지 않는 후보는
 거부한다. **승인은 변경 가능하다**: 다른 형제 후보를 승인하면 이전에 승인된 후보가
-같은 트랜잭션 안에서 강등되므로, 리뷰어는 언제든 마음을 바꿀 수 있다.
+같은 트랜잭션 안에서 강등되므로, 리뷰어는 언제든 마음을 바꿀 수 있다. **다음
+실행부터**, `approved` 후보가 있는 아이템은 통째로 건너뛰며, 거부된 후보는 다음
+실행 시작 시점에 일괄 삭제되어 해당 아이템이 처음부터 다시 제안된다.
 
 conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책, 실행 파이프라인,
 그리고 Producer / Reviewer 적대적 토론은

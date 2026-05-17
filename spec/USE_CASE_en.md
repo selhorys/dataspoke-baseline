@@ -90,6 +90,9 @@ and
 | `GET /spoke/common/data/{urn}/event/ingestion` | Per-dataset ingestion event history (active-custom: written by DataSpoke runs; passive: written by the hourly poll observing DataProcessInstance records in DataHub) |
 | `GET /spoke/common/ingestion` | Cross-dataset list view aggregating per-dataset `attr/ingestion/*` |
 
+Each `event/ingestion` row carries an `event_type` (`INGESTION.COMPLETE` on success,
+`INGESTION.FAIL` on failure) and a matching `status` (`success` / `failure`).
+
 ### Imazon Examples
 
 #### Case 1 — Active-custom, Postgres `catalog.title_master` (daily)
@@ -285,6 +288,10 @@ The result appears in the DataHub Quality tab as an `assertionRunEvent` timestam
 DataHub's UI; the raw score is preserved in `actualAggValue` for partial-success
 semantics later.
 
+A second slot is configured on the Kafka topic `orders.events` (different platform,
+different variables), so the same surface covers both relational and streaming
+sources.
+
 **Historical baseline cache.** Tomorrow's quality task computes today's row-count
 anomaly against a 14-day rolling baseline. Instead of re-aggregating
 `orders.line_items`, it issues:
@@ -293,10 +300,18 @@ anomaly against a 14-day rolling baseline. Instead of re-aggregating
 GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:00Z
 ```
 
-and uses the prior `row_cnt` series directly.
+and uses the prior `row_cnt` series directly. Results are returned newest first
+(descending `data_time`).
 
-**Cross-dataset overview.** Ops teams browse `GET /spoke/common/validation` to see
-per-dataset description, variable count, and latest score.
+**Retire and resurrect.** `DELETE attr/validation/conf` soft-deletes the slot
+(returns `204`; subsequent `GET conf` returns `404`). Re-issuing `PUT` on the same
+URN reinstates it (returns `201`) and the resurrected slot may carry a new
+description and variable set.
+
+**Cross-dataset overview.** `GET /spoke/common/validation` lists each dataset's
+`description`, `variable_count`, `latest_data_time`, `latest_score`, and
+`is_removed`. The list accepts `?removed=true|false` to include or exclude
+soft-deleted slots.
 
 ---
 
@@ -501,7 +516,9 @@ For each in-scope (dataset, item) pair the generator accumulates up to
 candidates, approves one (which emits the value to the editable DataHub aspect
 and locks the item), and rejects the misses. **Approval is mutable**: approving
 a different sibling atomically demotes the previously-approved candidate, so the
-reviewer can change their mind at any time.
+reviewer can change their mind at any time. **On subsequent runs**, items with
+an `approved` candidate are skipped entirely; rejected candidates are cleared
+at the start of the next run so the item is re-proposed from scratch.
 
 Conf field semantics, candidate status lifecycle, per-item eviction policy, run
 pipeline, and the producer / reviewer adversarial debate are specified in
