@@ -202,19 +202,25 @@ async def _seed_approved_ontogen_node(
     session: AsyncSession,
     node_id: str,
     name: str,
-) -> None:
+) -> str:
     """Insert an approved ontogen_nodes row via raw SQL (UC3 → UC4 coupling setup).
+
+    Returns the id actually stored — either the newly inserted id or the id of
+    the pre-existing row with the same name (idempotent across re-runs).
 
     spec: BACKEND.md §UC4 — UC4 reads UC3-approved nodes via
     dataset_node_map.status='approved'.
     """
     from sqlalchemy import text
 
-    await session.execute(
+    row = await session.execute(
         text(
             "INSERT INTO dataspoke.ontogen_nodes"
             " (id, name, description, confidence_score, status, evidence)"
             " VALUES (:id, :name, :desc, :conf, 'approved', CAST(:ev AS jsonb))"
+            " ON CONFLICT (name) DO UPDATE"
+            "  SET description = EXCLUDED.description"
+            " RETURNING id"
         ),
         {
             "id": node_id,
@@ -225,6 +231,7 @@ async def _seed_approved_ontogen_node(
         },
     )
     await session.commit()
+    return row.scalar_one()
 
 
 async def _seed_dataset_node_map(
@@ -319,6 +326,7 @@ async def test_uc4_metadata_generation_under_stub(
     # Mutable state captured during the try block for use in finally.
     document_urn: str | None = None
     node_ids: list[str] = []
+    graph: DataHubGraph | None = None
     # Aspect snapshots captured before masking — restored in cleanup.
     eu_props_snapshot: DatasetPropertiesClass | None = None
     eu_schema_snapshot: SchemaMetadataClass | None = None
@@ -353,11 +361,11 @@ async def test_uc4_metadata_generation_under_stub(
         suffix = uuid.uuid4().hex[:8]
         node_names = ["Order", "OrderLine", "Customer", "ShipmentEvent", "DeliveryStatus"]
         for name in node_names:
-            node_id = f"uc4-{name.lower()}-{suffix}"
-            node_ids.append(node_id)
-            await _seed_approved_ontogen_node(async_session, node_id, name)
+            candidate_id = f"uc4-{name.lower()}-{suffix}"
+            actual_id = await _seed_approved_ontogen_node(async_session, candidate_id, name)
+            node_ids.append(actual_id)
             for urn in (EU_PROFILES_URN, ORDERS_EVENTS_URN):
-                await _seed_dataset_node_map(async_session, dataset_urn=urn, node_id=node_id)
+                await _seed_dataset_node_map(async_session, dataset_urn=urn, node_id=actual_id)
 
         # ── Step 2: Mask descriptions in DataHub ──────────────────────────────
         # Snapshot the current aspects before mutation so cleanup can restore them.
@@ -521,7 +529,7 @@ async def test_uc4_metadata_generation_under_stub(
         # spec: USE_CASE_en.md §UC4 L720–723 — POST with no body
         # spec: BACKEND.md §UC4 — MetagenRunResponse: run_id, status, dry_run,
         #   unresolved_urns, counts, producer_iterations, debate_outcome
-        run_resp = await api_client.post(run_url, headers=admin_headers)
+        run_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
         assert run_resp.status_code == 200, (
             f"POST method/run (first run) failed: "
             f"{run_resp.status_code} {run_resp.text}. "
@@ -935,7 +943,7 @@ async def test_uc4_metadata_generation_under_stub(
         # spec: BACKEND.md §UC4 — _enumerate_target_items skips approved (dataset_urn, item_id)
         # spec: BACKEND.md §UC4 — _clear_rejected_candidates deletes rejected candidates
         #   before each run so they can be re-generated fresh
-        run2_resp = await api_client.post(run_url, headers=admin_headers)
+        run2_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
         assert run2_resp.status_code == 200, (
             f"POST method/run (second run) failed: "
             f"{run2_resp.status_code} {run2_resp.text}. "
@@ -989,14 +997,10 @@ async def test_uc4_metadata_generation_under_stub(
                 "spec: BACKEND.md §UC4 — partial unique index ensures at most one approved "
                 "candidate per (dataset_urn, item_id)"
             )
-            new_llm_approved = [
-                c
-                for c in candidates2
-                if c["status"] == "llm_approved" and c.get("run_id") == second_run_id
-            ]
-            assert len(new_llm_approved) == 0, (
-                f"Approved eu_profiles dataset.description should not have new llm_approved "
-                f"candidates from second run; found {len(new_llm_approved)}. "
+            assert len(candidates2) == 1, (
+                f"Approved item should have only the approved candidate after second run; "
+                f"got {len(candidates2)} candidates with statuses "
+                f"{[c['status'] for c in candidates2]}. "
                 "spec: BACKEND.md §UC4 — _enumerate_target_items skips approved items"
             )
 
@@ -1106,6 +1110,30 @@ async def test_uc4_metadata_generation_under_stub(
                     )
                 )
 
+        # Remove editable overrides written by approve flow.
+        if graph is not None:
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=EU_PROFILES_URN,
+                        aspect=EditableDatasetPropertiesClass(description=None),
+                    )
+                )
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=EU_PROFILES_URN,
+                        aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
+                    )
+                )
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=ORDERS_EVENTS_URN,
+                        aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
+                    )
+                )
+
         # Hard-delete the fulfillment document seeded in step 1a.
         if document_urn is not None:
             with suppress(Exception):
@@ -1163,6 +1191,7 @@ async def test_uc4_metadata_generation_with_real_llm(
 
     document_urn: str | None = None
     node_ids: list[str] = []
+    graph: DataHubGraph | None = None
     eu_props_snapshot: DatasetPropertiesClass | None = None
     eu_schema_snapshot: SchemaMetadataClass | None = None
     oe_schema_snapshot: SchemaMetadataClass | None = None
@@ -1188,11 +1217,11 @@ async def test_uc4_metadata_generation_with_real_llm(
         suffix = uuid.uuid4().hex[:8]
         node_names = ["Order", "OrderLine", "Customer", "ShipmentEvent", "DeliveryStatus"]
         for name in node_names:
-            node_id = f"uc4-{name.lower()}-{suffix}"
-            node_ids.append(node_id)
-            await _seed_approved_ontogen_node(async_session, node_id, name)
+            candidate_id = f"uc4-{name.lower()}-{suffix}"
+            actual_id = await _seed_approved_ontogen_node(async_session, candidate_id, name)
+            node_ids.append(actual_id)
             for urn in (EU_PROFILES_URN, ORDERS_EVENTS_URN):
-                await _seed_dataset_node_map(async_session, dataset_urn=urn, node_id=node_id)
+                await _seed_dataset_node_map(async_session, dataset_urn=urn, node_id=actual_id)
 
         # ── Step 2: Mask descriptions in DataHub ──────────────────────────────
         graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=dh_token))
@@ -1341,7 +1370,7 @@ async def test_uc4_metadata_generation_with_real_llm(
         )
 
         # ── Step 5: POST method/run (first run) ───────────────────────────────
-        run_resp = await api_client.post(run_url, headers=admin_headers)
+        run_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
         assert run_resp.status_code == 200, (
             f"POST method/run (first run) failed: "
             f"{run_resp.status_code} {run_resp.text}. "
@@ -1646,7 +1675,7 @@ async def test_uc4_metadata_generation_with_real_llm(
             assert "reason" in rj_detail
 
         # ── Step 11: POST method/run (second run) — idempotency ───────────────
-        run2_resp = await api_client.post(run_url, headers=admin_headers)
+        run2_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
         assert run2_resp.status_code == 200, (
             f"POST method/run (second run) failed: "
             f"{run2_resp.status_code} {run2_resp.text}. "
@@ -1690,13 +1719,10 @@ async def test_uc4_metadata_generation_with_real_llm(
                 f"after second run; got {len(approved_candidates)}. "
                 "spec: BACKEND.md §UC4 — partial unique index ensures at most one approved"
             )
-            new_llm_approved = [
-                c
-                for c in candidates2
-                if c["status"] == "llm_approved" and c.get("run_id") == second_run_id
-            ]
-            assert len(new_llm_approved) == 0, (
-                "Approved item should not have new llm_approved candidates from second run. "
+            assert len(candidates2) == 1, (
+                f"Approved item should have only the approved candidate after second run; "
+                f"got {len(candidates2)} candidates with statuses "
+                f"{[c['status'] for c in candidates2]}. "
                 "spec: BACKEND.md §UC4 — _enumerate_target_items skips approved items"
             )
 
@@ -1785,6 +1811,30 @@ async def test_uc4_metadata_generation_with_real_llm(
                 graph.emit_mcp(
                     MetadataChangeProposalWrapper(
                         entityUrn=ORDERS_EVENTS_URN, aspect=oe_schema_snapshot
+                    )
+                )
+
+        # Remove editable overrides written by approve flow.
+        if graph is not None:
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=EU_PROFILES_URN,
+                        aspect=EditableDatasetPropertiesClass(description=None),
+                    )
+                )
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=EU_PROFILES_URN,
+                        aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
+                    )
+                )
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=ORDERS_EVENTS_URN,
+                        aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
                     )
                 )
 
