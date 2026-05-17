@@ -89,6 +89,50 @@ class StubLLMClient:
                 },
                 trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),
             )
+
+        if success_tool_name == "metagen_review":
+            return LoopResult(
+                payload={
+                    "overall_verdict": "accept",
+                    "item_verdicts": [],
+                    "summary": "stub-accept",
+                },
+                trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),
+            )
+
+        if success_tool_name == "metagen_validate":
+            try:
+                import json as _json
+
+                marker = "TARGET ITEMS (generate one candidate per item):\n"
+                end_marker = "\n\nDATASET EVIDENCE:"
+                start_idx = prompt.index(marker) + len(marker)
+                end_idx = prompt.index(end_marker, start_idx)
+                target_items = _json.loads(prompt[start_idx:end_idx])
+                candidates = []
+                for entry in target_items:
+                    dataset_urn = entry["dataset_urn"]
+                    item_id = entry["item_id"]
+                    field_path = entry.get("field_path") or ""
+                    if item_id == "dataset.description":
+                        value = f"[stub] Description for {dataset_urn}"
+                    else:
+                        value = f"[stub] Column {field_path} description"
+                    candidates.append(
+                        {
+                            "dataset_urn": dataset_urn,
+                            "item_id": item_id,
+                            "value": value,
+                            "confidence_score": 0.85,
+                        }
+                    )
+                return LoopResult(
+                    payload={"candidates": candidates},
+                    trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),
+                )
+            except Exception:
+                pass  # fall through to _minimal_dict_for_schema below
+
         return LoopResult(
             payload=_minimal_dict_for_schema(schema),
             trace=LoopTrace(iterations=1, errors_per_iter=[], final_errors=[]),

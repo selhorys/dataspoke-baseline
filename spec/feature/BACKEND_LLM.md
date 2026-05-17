@@ -356,8 +356,9 @@ behaviour.
 
 | Surface | Stub returns |
 |---------|--------------|
-| `complete_with_tools` (Producer side) | One schema-valid empty payload (`OntogenLLMOutput(nodes=[], edges=[], triples=[])` or the metagen equivalent) on iteration 1. The loop never iterates. |
-| `complete_with_tools` (Reviewer side, when debate enabled) | One tool call to `ontogen_review` with `overall_verdict="accept"`, empty `item_verdicts`, summary `"stub-accept"`. The debate terminates after turn 1. |
+| `complete_with_tools` (Producer side — ontogen) | One schema-valid empty payload (`OntogenLLMOutput(nodes=[], edges=[], triples=[])`) on iteration 1. The loop never iterates. |
+| `complete_with_tools` (Producer side — metagen) | One candidate per target item parsed from the prompt's TARGET ITEMS block; falls back to `{"candidates": []}` if the block is absent. |
+| `complete_with_tools` (Reviewer side, when debate enabled) | `overall_verdict="accept"`, empty `item_verdicts`, summary `"stub-accept"`. The debate terminates after turn 1. |
 | `embed` | Deterministic zero vector of `EMBEDDING_DIMENSION` length. |
 
 **Dual-mode test code.** A single api-wired test file may be written to

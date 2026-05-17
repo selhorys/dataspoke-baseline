@@ -256,3 +256,154 @@ def test_stub_redis_does_not_have_fewer_methods_than_real() -> None:
         f"StubRedisClient is missing async methods: {missing}. "
         "Update _stubs.py to match RedisClient."
     )
+
+
+# ── Metagen stub branches ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stub_metagen_validate_well_formed_prompt_returns_valid_output() -> None:
+    """complete_with_tools with a well-formed metagen prompt returns MetagenLLMOutput
+    with at least one candidate per target item using the expected per-item value pattern.
+
+    Uses build_run_prompt to construct the prompt so the test fails if prompts.py
+    formatting drifts away from the format the stub parser expects.
+
+    spec: TESTING.md §Test-Mode Stubs — metagen Producer stub emits one candidate per
+    target item.
+    spec: BACKEND_LLM.md §Test Mode — metagen Producer stub emits one candidate per
+    target item; metagen Reviewer stub accepts.
+    """
+    from src.backend.metagen.debate_models import MetagenLLMOutput
+    from src.backend.metagen.prompts import build_run_prompt
+    from src.workflows._stubs import StubLLMClient
+
+    dataset_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,test_db.orders,DEV)"
+    target_items = [
+        {
+            "dataset_urn": dataset_urn,
+            "item_id": "dataset.description",
+            "kind": "dataset.description",
+            "field_path": None,
+        },
+        {
+            "dataset_urn": dataset_urn,
+            "item_id": "column.order_id.description",
+            "kind": "column.description",
+            "field_path": "order_id",
+        },
+    ]
+    evidence_per_dataset = {
+        dataset_urn: {
+            "datasetProperties": {"name": "orders"},
+            "schemaMetadata": {
+                "fields": [
+                    {"fieldPath": "order_id", "type": "string", "description": ""},
+                ]
+            },
+            "editableDatasetProperties": {},
+            "editableSchemaMetadata": {"editableSchemaFieldInfo": []},
+            "glossaryTerms": [],
+            "ontology": {},
+        }
+    }
+
+    prompt = build_run_prompt(
+        evidence_per_dataset=evidence_per_dataset,
+        target_items=target_items,
+        nonce="testtest",
+    )
+
+    stub = StubLLMClient()
+    result = await stub.complete_with_tools(
+        prompt=prompt,
+        tools=[],
+        success_tool_name="metagen_validate",
+        schema=MetagenLLMOutput,
+    )
+
+    # Payload must validate against MetagenLLMOutput.
+    output = MetagenLLMOutput.model_validate(result.payload)
+    assert len(output.candidates) >= 1, (
+        "Stub metagen_validate must produce at least one candidate for a well-formed prompt. "
+        "spec: BACKEND_LLM.md §Test Mode — one candidate per target item."
+    )
+    # Each candidate must have the expected per-item value pattern.
+    for candidate in output.candidates:
+        assert candidate.dataset_urn == dataset_urn, (
+            f"Stub candidate dataset_urn={candidate.dataset_urn!r} does not match "
+            f"target {dataset_urn!r}."
+        )
+        assert candidate.item_id in (
+            "dataset.description",
+            "column.order_id.description",
+        ), f"Unexpected item_id in stub candidate: {candidate.item_id!r}"
+        assert isinstance(candidate.value, str) and candidate.value, (
+            f"Stub candidate value must be a non-empty string; got {candidate.value!r}. "
+            "spec: BACKEND_LLM.md §Test Mode — metagen producer stub emits one "
+            "candidate per target item"
+        )
+        assert 0.0 <= candidate.confidence_score <= 1.0, (
+            f"Stub candidate confidence_score out of range: {candidate.confidence_score!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_stub_metagen_validate_malformed_prompt_falls_back_to_empty_candidates() -> None:
+    """complete_with_tools with a malformed metagen prompt (missing TARGET ITEMS block)
+    falls through to _minimal_dict_for_schema and returns {"candidates": []}.
+
+    spec: TESTING.md §Test-Mode Stubs — stub parser falls through gracefully.
+    """
+    from src.backend.metagen.debate_models import MetagenLLMOutput
+    from src.workflows._stubs import StubLLMClient
+
+    malformed_prompt = "This prompt has no TARGET ITEMS block at all."
+
+    stub = StubLLMClient()
+    result = await stub.complete_with_tools(
+        prompt=malformed_prompt,
+        tools=[],
+        success_tool_name="metagen_validate",
+        schema=MetagenLLMOutput,
+    )
+
+    # _minimal_dict_for_schema produces {"candidates": []} for MetagenLLMOutput.
+    assert "candidates" in result.payload, (
+        "Fallback payload must have 'candidates' key. "
+        "spec: TESTING.md §Test-Mode Stubs — _minimal_dict_for_schema returns list default."
+    )
+    assert result.payload["candidates"] == [], (
+        f"Malformed prompt must produce candidates=[] via _minimal_dict_for_schema; "
+        f"got {result.payload['candidates']!r}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_stub_metagen_review_returns_accept() -> None:
+    """complete_with_tools with success_tool_name='metagen_review' always returns
+    overall_verdict='accept' regardless of prompt content.
+
+    spec: BACKEND_LLM.md §Test Mode — metagen Reviewer stub accepts.
+    """
+    from src.backend.metagen.debate_models import MetagenReviewOutput
+    from src.workflows._stubs import StubLLMClient
+
+    stub = StubLLMClient()
+    result = await stub.complete_with_tools(
+        prompt="any prompt content",
+        tools=[],
+        success_tool_name="metagen_review",
+        schema=MetagenReviewOutput,
+    )
+
+    # Payload must validate against MetagenReviewOutput.
+    review = MetagenReviewOutput.model_validate(result.payload)
+    assert review.overall_verdict == "accept", (
+        f"Stub metagen_review must return overall_verdict='accept'; "
+        f"got {review.overall_verdict!r}. "
+        "spec: BACKEND_LLM.md §Test Mode — metagen Reviewer stub accepts."
+    )
+    assert review.summary == "stub-accept", (
+        f"Stub metagen_review summary must be 'stub-accept'; got {review.summary!r}."
+    )

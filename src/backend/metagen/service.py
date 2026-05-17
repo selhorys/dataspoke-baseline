@@ -894,9 +894,24 @@ class MetagenService:
         return in_scope, unresolved
 
     async def _clear_rejected_candidates(self, in_scope_urns: list[str]) -> int:
-        """Delete rejected candidates across in-scope datasets. Returns deleted row count."""
+        """Delete rejected candidates across in-scope datasets. Returns deleted row count.
+
+        Embeddings rows in `metagen_candidate_embeddings` carry a FK to
+        `metagen_candidates.candidate_id`; delete them first so the candidate
+        delete does not raise ForeignKeyViolationError.
+        """
         from sqlalchemy.engine import CursorResult
 
+        await self._db.execute(
+            delete(MetagenCandidateEmbedding).where(
+                MetagenCandidateEmbedding.candidate_id.in_(
+                    select(MetagenCandidate.candidate_id).where(
+                        MetagenCandidate.dataset_urn.in_(in_scope_urns),
+                        MetagenCandidate.status == "rejected",
+                    )
+                )
+            )
+        )
         raw = await self._db.execute(
             delete(MetagenCandidate).where(
                 MetagenCandidate.dataset_urn.in_(in_scope_urns),
