@@ -1658,3 +1658,300 @@ async def test_review_candidate_approve_upserts_embedding(svc, db) -> None:
     assert emitted_embedding == [0.1] * 10, (
         "Embedding upsert must use the vector returned by _llm.embed."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Group I: _fetch_evidence — per-dataset ontology RAG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_result_with_unique(rows: list) -> MagicMock:
+    """Build a SQLAlchemy execute result mock that supports .unique().scalars().all().
+
+    The triple hydration path in _fetch_evidence calls
+    ``result.unique().scalars().all()`` — the standard _make_result helper only
+    wires ``result.scalars().all()``.
+    """
+    m = MagicMock()
+    scalars_mock = MagicMock()
+    scalars_mock.all.return_value = rows
+    unique_mock = MagicMock()
+    unique_mock.scalars.return_value = scalars_mock
+    m.unique.return_value = unique_mock
+    # Keep .scalars().all() wired too for callers that don't use .unique()
+    m.scalars.return_value = scalars_mock
+    m.fetchall.return_value = rows
+    return m
+
+
+def _make_ontogen_node(*, id: str, name: str, description: str) -> MagicMock:
+    row = MagicMock()
+    row.id = id
+    row.name = name
+    row.description = description
+    row.status = "approved"
+    return row
+
+
+def _make_ontogen_edge(*, id: str, label: str) -> MagicMock:
+    row = MagicMock()
+    row.id = id
+    row.label = label
+    row.status = "approved"
+    return row
+
+
+def _make_ontogen_triple_with_relations(
+    *,
+    id: str,
+    subject_name: str,
+    edge_label: str,
+    object_name: str,
+) -> MagicMock:
+    row = MagicMock()
+    row.id = id
+    subject_node = MagicMock()
+    subject_node.name = subject_name
+    edge = MagicMock()
+    edge.label = edge_label
+    object_node = MagicMock()
+    object_node.name = object_name
+    row.subject_node = subject_node
+    row.edge = edge
+    row.object_node = object_node
+    return row
+
+
+@pytest.mark.asyncio
+async def test_fetch_evidence_attaches_ontology_rag(svc, db) -> None:
+    """_fetch_evidence populates evidence["ontology_rag"] with hydrated node/edge/triple dicts.
+
+    Patches:
+    - self._datahub.get_aspect / fetch_related_documents for the DataHub evidence layer
+    - self._llm.embed to return a fixed vector
+    - search_{node,edge,triple}_embeddings at the service-layer import site to return
+      scripted VectorHit lists
+    - DB execute sequence for DatasetNodeMap + OntogenNode + hydration queries
+
+    Verifies that the resulting evidence["ontology_rag"] contains dicts with the expected
+    fields for each collection.
+
+    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests §test_service.py — test_fetch_evidence_attaches_ontology_rag
+    """
+    from src.shared.vector.client import VectorHit
+
+    # DataHub aspects: return None for all (minimal evidence)
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+
+    # fetch_related_documents returns empty list
+    with patch("src.backend.metagen.service.fetch_related_documents", new=AsyncMock(return_value=[])):
+        # LLM embed returns fixed vector
+        svc._llm.embed = AsyncMock(return_value=[0.1] * 10)
+
+        # Scripted VectorHit results for each collection
+        node_hit = VectorHit(dataset_urn="order", score=0.9)
+        edge_hit = VectorHit(dataset_urn="has_part_edge", score=0.8)
+        triple_hit = VectorHit(dataset_urn="order__has_part__orderline", score=0.7)
+
+        with (
+            patch(
+                "src.backend.metagen.service.search_node_embeddings",
+                new=AsyncMock(return_value=[node_hit]),
+            ),
+            patch(
+                "src.backend.metagen.service.search_edge_embeddings",
+                new=AsyncMock(return_value=[edge_hit]),
+            ),
+            patch(
+                "src.backend.metagen.service.search_triple_embeddings",
+                new=AsyncMock(return_value=[triple_hit]),
+            ),
+        ):
+            # DB execute sequence:
+            # 1. DatasetNodeMap query → empty (no curated approved nodes)
+            # 2. OntogenNode hydration for node_hit
+            # 3. OntogenEdge hydration for edge_hit
+            # 4. OntogenTriple hydration for triple_hit (needs .unique())
+            node_row = _make_ontogen_node(id="order", name="Order", description="A customer order")
+            edge_row = _make_ontogen_edge(id="has_part_edge", label="has_part")
+            triple_row = _make_ontogen_triple_with_relations(
+                id="order__has_part__orderline",
+                subject_name="Order",
+                edge_label="has_part",
+                object_name="OrderLine",
+            )
+
+            no_map_rows = MagicMock()
+            no_map_rows.scalars.return_value.all.return_value = []
+
+            node_hydration = _make_result([node_row])
+            edge_hydration = _make_result([edge_row])
+            triple_hydration = _make_result_with_unique([triple_row])
+
+            # Content-aware routing: inspect the rendered SQL to identify the target
+            # table, so reordering or adding queries does not silently corrupt results.
+            async def _route_execute(stmt, *args, **kwargs):
+                sql = str(stmt)
+                if "dataset_node_map" in sql:
+                    return no_map_rows
+                if "ontogen_triples" in sql:
+                    return triple_hydration
+                if "ontogen_edges" in sql:
+                    return edge_hydration
+                if "ontogen_nodes" in sql:
+                    return node_hydration
+                raise AssertionError(f"unexpected query target in SQL: {sql[:200]!r}")
+
+            db.execute = AsyncMock(side_effect=_route_execute)
+
+            evidence = await svc._fetch_evidence(_VALID_URN)
+
+    assert "ontology_rag" in evidence, (
+        "evidence must contain 'ontology_rag' key after _fetch_evidence. "
+        "plan: glittery-crafting-kazoo.md §_fetch_evidence shape — per-dataset ontology RAG"
+    )
+    rag = evidence["ontology_rag"]
+
+    # Shape checks
+    assert isinstance(rag, dict), "ontology_rag must be a dict."
+    assert set(rag.keys()) >= {"nodes", "edges", "triples"}, (
+        "ontology_rag must have 'nodes', 'edges', 'triples' keys. "
+        "plan: glittery-crafting-kazoo.md §_fetch_evidence shape"
+    )
+
+    # Node assertions
+    assert len(rag["nodes"]) == 1, "One node hit must produce one hydrated node dict."
+    node = rag["nodes"][0]
+    assert node.get("id") == "order", "Node dict must have 'id'."
+    assert node.get("name") == "Order", "Node dict must have 'name'."
+    assert node.get("description") == "A customer order", "Node dict must have 'description'."
+    assert "score" in node, "Node dict must carry 'score' for internal ordering."
+    assert node["score"] == pytest.approx(0.9), "Node score must match VectorHit score."
+
+    # Edge assertions
+    assert len(rag["edges"]) == 1, "One edge hit must produce one hydrated edge dict."
+    edge = rag["edges"][0]
+    assert edge.get("id") == "has_part_edge", "Edge dict must have 'id'."
+    assert edge.get("label") == "has_part", "Edge dict must have 'label'."
+    assert "score" in edge, "Edge dict must carry 'score'."
+
+    # Triple assertions
+    assert len(rag["triples"]) == 1, "One triple hit must produce one hydrated triple dict."
+    triple = rag["triples"][0]
+    assert triple.get("subject_name") == "Order", "Triple dict must have 'subject_name'."
+    assert triple.get("edge_label") == "has_part", "Triple dict must have 'edge_label'."
+    assert triple.get("object_name") == "OrderLine", "Triple dict must have 'object_name'."
+    assert "score" in triple, "Triple dict must carry 'score'."
+
+
+@pytest.mark.asyncio
+async def test_fetch_evidence_ontology_rag_k_zero_skips_search(svc, db) -> None:
+    """When metagen_ontology_rag_{node,edge,triple}_k=0, the corresponding search is skipped.
+
+    Plan states: "When any k is 0, skip that search."
+    Setting all three to 0 must leave ontology_rag lists empty without calling
+    any of the three search helpers.
+
+    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests — k=0 skips search
+    """
+    from src.shared.settings import settings
+
+    # DataHub aspects: return None (minimal evidence)
+    svc._datahub.get_aspect = AsyncMock(return_value=None)
+    svc._llm.embed = AsyncMock(return_value=[0.0] * 10)
+
+    with patch("src.backend.metagen.service.fetch_related_documents", new=AsyncMock(return_value=[])):
+        with (
+            patch(
+                "src.backend.metagen.service.search_node_embeddings",
+                new=AsyncMock(return_value=[]),
+            ) as mock_node_search,
+            patch(
+                "src.backend.metagen.service.search_edge_embeddings",
+                new=AsyncMock(return_value=[]),
+            ) as mock_edge_search,
+            patch(
+                "src.backend.metagen.service.search_triple_embeddings",
+                new=AsyncMock(return_value=[]),
+            ) as mock_triple_search,
+            patch.object(settings, "metagen_ontology_rag_node_k", 0),
+            patch.object(settings, "metagen_ontology_rag_edge_k", 0),
+            patch.object(settings, "metagen_ontology_rag_triple_k", 0),
+        ):
+            no_map_rows = MagicMock()
+            no_map_rows.scalars.return_value.all.return_value = []
+            db.execute = AsyncMock(return_value=no_map_rows)
+
+            evidence = await svc._fetch_evidence(_VALID_URN)
+
+    mock_node_search.assert_not_called()
+    mock_edge_search.assert_not_called()
+    mock_triple_search.assert_not_called()
+
+    rag = evidence.get("ontology_rag", {})
+    assert rag.get("nodes") == [], (
+        "nodes must be empty when metagen_ontology_rag_node_k=0. "
+        "plan: glittery-crafting-kazoo.md — k=0 skips that collection entirely"
+    )
+    assert rag.get("edges") == [], "edges must be empty when k=0."
+    assert rag.get("triples") == [], "triples must be empty when k=0."
+
+
+@pytest.mark.asyncio
+async def test_fetch_evidence_ontology_rag_failure_falls_back_to_empty(svc, db) -> None:
+    """When the ontology RAG embed call raises, evidence["ontology_rag"] falls back to empty dicts.
+
+    The try/except around the RAG block must NOT swallow the earlier DataHub
+    and related_documents evidence — those must still be populated.
+
+    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests — RAG failure → empty fallback; evidence intact
+    """
+    from datahub.metadata.schema_classes import DatasetPropertiesClass
+
+    # DataHub returns a real-ish properties object for the dataset
+    mock_props = MagicMock(spec=DatasetPropertiesClass)
+    mock_props.name = "title_master"
+    mock_props.description = "Master title catalog"
+    mock_props.tags = None
+
+    # getattr calls inside _fetch_evidence need real attribute access:
+    svc._datahub.get_aspect = AsyncMock(side_effect=[
+        mock_props,  # DatasetPropertiesClass -> populates evidence["datasetProperties"]
+        None,        # SchemaMetadataClass
+        None,        # EditableDatasetPropertiesClass
+        None,        # EditableSchemaMetadataClass
+        None,        # GlossaryTermsClass
+    ])
+
+    with patch(
+        "src.backend.metagen.service.fetch_related_documents",
+        new=AsyncMock(return_value=[{"title": "SomeDoc", "body": "content"}]),
+    ):
+        # Make embed raise so the RAG block fails
+        svc._llm.embed = AsyncMock(side_effect=RuntimeError("embed service down"))
+
+        no_map_rows = MagicMock()
+        no_map_rows.scalars.return_value.all.return_value = []
+        db.execute = AsyncMock(return_value=no_map_rows)
+
+        evidence = await svc._fetch_evidence(_VALID_URN)
+
+    # Ontology RAG fallback: empty lists, not an exception
+    rag = evidence.get("ontology_rag")
+    assert rag is not None, (
+        "evidence['ontology_rag'] must be set to the fallback dict even when embed raises. "
+        "spec: BACKEND.md §Generation Pipeline — best-effort RAG; fallback on error"
+    )
+    assert rag == {"nodes": [], "edges": [], "triples": []}, (
+        "Fallback ontology_rag must be {nodes: [], edges: [], triples: []}. "
+        "plan: glittery-crafting-kazoo.md §service.py — try/except → empty-dict fallback"
+    )
+
+    # The earlier evidence fetchers must NOT have been swallowed by the RAG try/except.
+    assert "related_documents" in evidence, (
+        "related_documents must still be present when only the RAG block fails. "
+        "plan: glittery-crafting-kazoo.md — try/except is correctly scoped to RAG only"
+    )
+    assert len(evidence["related_documents"]) == 1, (
+        "The seeded document must appear in evidence when the RAG block fails."
+    )

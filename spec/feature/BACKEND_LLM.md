@@ -339,6 +339,19 @@ The shared scaffolding (cycle detection by SHA-256 hash, soft-fail
 philosophy, per-turn Langfuse trace, test-mode stub behaviour) is
 identical.
 
+**Metagen has two distinct RAG paths.** The Reviewer-side anchor RAG above
+(`metagen_candidate_embeddings`, grouped by `kind`) is one. The other is a
+**Producer-side per-dataset ontology RAG** that runs at evidence-fetch time,
+before the debate starts: for each in-scope dataset the service embeds the
+dataset's textual context and pulls bounded top-k hits from the three
+ontogen pgvector collections (`node_embeddings`, `edge_embeddings`,
+`triple_embeddings`). Hits surface in the Producer prompt as approved
+ontology fragments scoped to that dataset's semantics. Reviewer never sees
+them — they are evidence, not anchors. Tunable via
+`DATASPOKE_METAGEN_ONTOLOGY_RAG_{NODE,EDGE,TRIPLE}_K`; see
+[BACKEND §Metadata Generation Service §Generation Pipeline step 3](BACKEND.md#metadata-generation-service-srcbackendmetagen)
+for the evidence-assembly flow.
+
 ## Test Mode
 
 Two orthogonal env vars govern LLM behaviour during integration tests.
@@ -463,6 +476,9 @@ class (`src/shared/settings.py`).
 | `DATASPOKE_METAGEN_DEBATE_RAG_K` | `5` | metagen debate |
 | `DATASPOKE_METAGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | metagen debate |
 | `DATASPOKE_METAGEN_CONFIDENCE_THRESHOLD` | `0.7` | metagen persistence gate |
+| `DATASPOKE_METAGEN_ONTOLOGY_RAG_NODE_K` | `5` | metagen Producer-evidence ontology RAG (set `0` to disable) |
+| `DATASPOKE_METAGEN_ONTOLOGY_RAG_EDGE_K` | `5` | metagen Producer-evidence ontology RAG (set `0` to disable) |
+| `DATASPOKE_METAGEN_ONTOLOGY_RAG_TRIPLE_K` | `5` | metagen Producer-evidence ontology RAG (set `0` to disable) |
 | `DATASPOKE_TEST_MODE` | unset | test infra |
 | `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
 | `DATASPOKE_LANGFUSE_HOST` | unset | observability |

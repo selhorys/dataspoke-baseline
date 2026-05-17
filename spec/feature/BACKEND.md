@@ -482,13 +482,35 @@ Status is not persisted; it is computed per request from `(has_approved, candida
    tick.
 2. **Clear `rejected` candidates** across all in-scope datasets so the
    per-item budget frees up.
-3. Per in-scope dataset, fetch DataHub evidence — `datasetProperties`,
-   `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
-   `glossaryTerms`, and `documentInfo.contents.text` on `document` entities
-   whose `relatedAssets` overlap the dataset — plus UC3-approved nodes and
-   triples filtered by `dataset_node_map.status='approved'` (human-approved
-   only — metagen excludes `llm_approved` rows so user-facing metadata is
-   gated to human-curated ontology entities).
+3. Per in-scope dataset, assemble the Producer evidence dictionary from four
+   sources. The Producer prompt is the union of all four — the LLM never
+   queries DataHub or pgvector itself.
+
+   - **DataHub static + editable aspects.** `datasetProperties`,
+     `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
+     `glossaryTerms`.
+   - **Related documents.** `documentInfo.contents.text` on `document`
+     entities whose `relatedAssets` overlap the dataset. Capped at 5
+     documents; each title/body capped per the shared untrusted-content size
+     limit (see [BACKEND_LLM §Inference Loop](BACKEND_LLM.md#inference-loop)).
+     Matches the UC3 ontogen evidence diet.
+   - **Curated ontology assignments.** UC3 nodes filtered by
+     `dataset_node_map.status='approved'` — the human-authored
+     dataset-to-node binding. Metagen excludes `llm_approved` rows so
+     user-facing metadata is gated to human-curated ontology entities. Empty
+     for datasets with no explicit assignments.
+   - **Per-dataset ontology RAG.** Embed the dataset's textual context (URN +
+     name + description + field paths) and run bounded top-k vector search
+     against `node_embeddings`, `edge_embeddings`, `triple_embeddings` (the
+     three approved-ontology pgvector collections from UC3). Hits hydrate to
+     `{id, name, description}` / `{id, label}` / `{subject_name, edge_label,
+     object_name}` and surface as a distinct prompt section. Top-k is
+     per-collection-tunable; setting a collection's k to `0` disables that
+     contribution. Distinct from the curated-ontology path: the curated path
+     is reviewer-asserted bindings; the RAG path surfaces semantically-nearby
+     approved ontology fragments regardless of assignment. Both coexist in
+     the prompt. RAG failure is best-effort — the evidence dict falls back
+     to empty lists and the run proceeds.
 4. **Enumerate target items** — `(dataset_urn, dataset.description)` and one
    `(dataset_urn, column.<fieldPath>.description)` per column. Drop items
    whose kind is outside the dataset's `metagen_boundary.allowed`. Drop

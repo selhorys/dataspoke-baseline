@@ -388,6 +388,16 @@ config:
     debateMaxTurns: 4
     debateRagK: 5
     debateReviewerModel: ""
+    llmMaxIterations: 3
+  metagen:
+    debateMaxTurns: 4
+    debateRagK: 5
+    debateReviewerModel: ""
+    llmMaxIterations: 3
+    confidenceThreshold: 0.7
+    ontologyRagNodeK: 5
+    ontologyRagEdgeK: 5
+    ontologyRagTripleK: 5
   corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------

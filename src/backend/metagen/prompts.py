@@ -111,6 +111,44 @@ Guidelines:
             if approved_nodes:
                 block += f"Approved ontology nodes: {_cap(json.dumps(approved_nodes))}\n"
 
+        related_docs: list[dict[str, Any]] = evidence.get("related_documents", [])
+        if related_docs:
+            doc_lines = ["Related documents (cross-data Markdown notes):"]
+            for doc in related_docs[:5]:
+                title = _cap(str(doc.get("title", "")))
+                body = _cap(str(doc.get("body", "")))
+                doc_lines.append(f"  - {title}")
+                if body:
+                    doc_lines.append(f"    {body}")
+            block += "\n".join(doc_lines) + "\n"
+
+        ontology_rag: dict[str, list[dict[str, Any]]] = evidence.get("ontology_rag", {})
+        rag_nodes: list[dict[str, Any]] = ontology_rag.get("nodes", [])
+        rag_edges: list[dict[str, Any]] = ontology_rag.get("edges", [])
+        rag_triples: list[dict[str, Any]] = ontology_rag.get("triples", [])
+        if rag_nodes or rag_edges or rag_triples:
+            block += "Per-dataset ontology RAG (top-k approved):\n"
+            if rag_nodes:
+                block += "  Nodes:\n"
+                for node in rag_nodes:
+                    nid = _cap(str(node.get("id", "")))
+                    nname = _cap(str(node.get("name", "")))
+                    ndesc = _cap(str(node.get("description", "")))
+                    block += f"    - {nid} | {nname}: {ndesc}\n"
+            if rag_edges:
+                block += "  Edges:\n"
+                for edge in rag_edges:
+                    eid = _cap(str(edge.get("id", "")))
+                    elabel = _cap(str(edge.get("label", "")))
+                    block += f"    - {eid} | {elabel}\n"
+            if rag_triples:
+                block += "  Triples:\n"
+                for triple in rag_triples:
+                    sname = _cap(str(triple.get("subject_name", "")))
+                    elabel = _cap(str(triple.get("edge_label", "")))
+                    oname = _cap(str(triple.get("object_name", "")))
+                    block += f"    - {sname} —[{elabel}]→ {oname}\n"
+
         dataset_blocks.append(block)
 
     dataset_evidence_text = "\n\n---\n\n".join(dataset_blocks)

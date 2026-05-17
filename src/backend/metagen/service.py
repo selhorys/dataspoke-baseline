@@ -15,12 +15,18 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from src.backend.metagen.debate import run_debate
 from src.backend.metagen.debate_models import MetagenLLMOutput
 from src.backend.metagen.prompts import build_run_prompt
 from src.backend.metagen.reviewer import build_metagen_review_tool
 from src.backend.metagen.validator import build_metagen_validate_tool
+from src.backend.ontogen.embedding_search import (
+    search_edge_embeddings,
+    search_node_embeddings,
+    search_triple_embeddings,
+)
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.datahub.documents import fetch_related_documents
@@ -32,7 +38,9 @@ from src.shared.db.models import (
     MetagenCandidateEmbedding,
     MetagenConfig,
     MetagenItem,
+    OntogenEdge,
     OntogenNode,
+    OntogenTriple,
 )
 from src.shared.events import (
     METAGEN_CANDIDATE_APPROVE,
@@ -1021,6 +1029,113 @@ class MetagenService:
                 "metagen_ontology_context_fetch_failed", extra={"urn": urn}, exc_info=True
             )
 
+        # Per-dataset ontology RAG via approved vector collections (best-effort)
+        try:
+            props = evidence.get("datasetProperties", {})
+            schema_fields = evidence.get("schemaMetadata", {}).get("fields", [])
+            query_text = (
+                f"{urn} "
+                f"{props.get('name', '')} "
+                f"{props.get('description', '')} "
+                f"{' '.join(f.get('fieldPath', '') for f in schema_fields)}"
+            )
+            query_vec = await self._llm.embed(query_text)
+
+            node_k = settings.metagen_ontology_rag_node_k
+            edge_k = settings.metagen_ontology_rag_edge_k
+            triple_k = settings.metagen_ontology_rag_triple_k
+
+            node_hits = (
+                await search_node_embeddings(self._vector, query_vec, top_k=node_k, threshold=None)
+                if node_k > 0
+                else []
+            )
+            edge_hits = (
+                await search_edge_embeddings(self._vector, query_vec, top_k=edge_k, threshold=None)
+                if edge_k > 0
+                else []
+            )
+            triple_hits = (
+                await search_triple_embeddings(
+                    self._vector, query_vec, top_k=triple_k, threshold=None
+                )
+                if triple_k > 0
+                else []
+            )
+
+            # Hydrate nodes
+            rag_nodes: list[dict[str, Any]] = []
+            if node_hits:
+                node_ids = [h.dataset_urn for h in node_hits]
+                score_by_node_id = {h.dataset_urn: h.score for h in node_hits}
+                node_rows_result = await self._db.execute(
+                    select(OntogenNode).where(OntogenNode.id.in_(node_ids))
+                )
+                node_rows = node_rows_result.scalars().all()
+                rag_nodes = [
+                    {
+                        "id": n.id,
+                        "name": n.name,
+                        "description": n.description,
+                        "score": score_by_node_id.get(n.id, 0.0),
+                    }
+                    for n in node_rows
+                ]
+
+            # Hydrate edges
+            rag_edges: list[dict[str, Any]] = []
+            if edge_hits:
+                edge_ids = [h.dataset_urn for h in edge_hits]
+                score_by_edge_id = {h.dataset_urn: h.score for h in edge_hits}
+                edge_rows_result = await self._db.execute(
+                    select(OntogenEdge).where(OntogenEdge.id.in_(edge_ids))
+                )
+                edge_rows = edge_rows_result.scalars().all()
+                rag_edges = [
+                    {
+                        "id": e.id,
+                        "label": e.label,
+                        "score": score_by_edge_id.get(e.id, 0.0),
+                    }
+                    for e in edge_rows
+                ]
+
+            # Hydrate triples (resolve subject/edge/object names via joined load)
+            rag_triples: list[dict[str, Any]] = []
+            if triple_hits:
+                triple_ids = [h.dataset_urn for h in triple_hits]
+                score_by_triple_id = {h.dataset_urn: h.score for h in triple_hits}
+                triple_rows_result = await self._db.execute(
+                    select(OntogenTriple)
+                    .options(
+                        joinedload(OntogenTriple.subject_node),
+                        joinedload(OntogenTriple.edge),
+                        joinedload(OntogenTriple.object_node),
+                    )
+                    .where(OntogenTriple.id.in_(triple_ids))
+                )
+                triple_rows = triple_rows_result.unique().scalars().all()
+                rag_triples = [
+                    {
+                        "subject_name": t.subject_node.name,
+                        "edge_label": t.edge.label,
+                        "object_name": t.object_node.name,
+                        "score": score_by_triple_id.get(t.id, 0.0),
+                    }
+                    for t in triple_rows
+                ]
+
+            evidence["ontology_rag"] = {
+                "nodes": rag_nodes,
+                "edges": rag_edges,
+                "triples": rag_triples,
+            }
+        except Exception:
+            logger.warning(
+                "metagen_evidence_ontology_rag_failed", extra={"urn": urn}, exc_info=True
+            )
+            evidence["ontology_rag"] = {"nodes": [], "edges": [], "triples": []}
+
         return evidence
 
     def _enumerate_target_items(
@@ -1307,8 +1422,6 @@ async def _upsert_candidate_embedding(
     embedding: list[float],
 ) -> None:
     """Upsert a row in metagen_candidate_embeddings for *candidate_id*."""
-    from sqlalchemy import text
-
     vector_literal = "[" + ",".join(str(v) for v in embedding) + "]"
     sql = text(
         """
