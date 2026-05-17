@@ -74,30 +74,20 @@ DataSpoke는 두 모드를 모두 지원한다.
 
 지원하는 인제스천 모드는 두 가지다:
 
-- **`active-custom`** — DataSpoke가 자체 in-house 추출기 프레임워크로
-  인제스터 역할을 한다.
+- **`active-custom`** — DataSpoke가 인제스터 역할을 한다.
   Airflow tier DAG이 설정된 `schedule_tier`(`hourly` / `daily` / `weekly`)에 따라
-  플랫폼별 추출기를 실행하고 결과를 DataHub로 emit한다.
-  수동·dry-run 실행도 지원된다.
-  DataSpoke가 구현해 둔 플랫폼(현재 `postgres`, `kafka`)에 한정된다.
-  실행마다 표준 스키마 aspect와 함께 **`DataProcessInstance`를 emit하며**,
-  이것이 `event/ingestion`의 근거가 된다.
-- **`passive`** — DataSpoke가 추출기를 실행하지 않고,
-  실행을 일으키기 위한 어떠한 프로그램적 조작도 하지 않는다.
-  사용자가 원하는 방식으로 추출을 설정한다:
-  DataHub Managed Ingestion(UI 또는 GraphQL)에서 레시피를 구성하거나,
-  `acryl-datahub` SDK로 일회성 Python 스크립트를 실행하거나,
-  외부 파이프라인에 연결한다.
-  DataSpoke는 URN을 등록하고 시간별 `ingestion-passive-hourly` DAG으로 관찰만 한다.
-  이 DAG은 DataHub의 `DataProcessInstance` 레코드를 폴링해
-  실행마다 한 행씩 `event/ingestion`에 기록한다.
-  외부 인제스터가 무엇이든 **실행마다 `DataProcessInstance`를 emit해야**
-  DataSpoke 이벤트에 노출된다
-  ([DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
+  in-house 추출기를 실행하고 결과를 DataHub로 emit한다.
+  수동 실행과 dry-run 실행도 지원된다.
+- **`passive`** — DataSpoke가 추출기를 실행하지 않는다.
+  사용자가 외부 경로(DataHub Managed Ingestion, 일회성 `acryl-datahub` SDK 스크립트,
+  기존 파이프라인 등)로 추출을 구성한다.
+  DataSpoke는 URN을 등록하고 DataHub를 통해 실행 단위 상태를 관찰한다.
 
-DPI emission 계약은 두 모드에 동일하게 적용된다.
-DataSpoke의 active-custom 추출기도 외부 passive 인제스터와 똑같이 DPI를 emit하므로,
-누가 실행했는지와 무관하게 관찰 동작은 일관된다.
+지원하는 `active-custom` 플랫폼, 외부 인제스터가 실행 단위 관찰을 위해 충족해야 하는
+DataProcessInstance emission 계약, 그리고 DataSpoke의 시간별 passive 관찰 파이프라인은
+[`BACKEND.md §Ingestion Service`](feature/BACKEND.md#ingestion-service-srcbackendingestion)와
+[`DATAHUB_INTEGRATION.md §Custom Ingestor Guide`](DATAHUB_INTEGRATION.md#custom-ingestor-guide)에
+정의되어 있다.
 
 ### API Mapping
 
@@ -176,8 +166,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 `locator`, `auth`, `schedule_tier`는 없다 — 외부 인제스터의 영역이다.
 이 URN에 대한 `POST .../method/ingestion/run`은 `409 INGESTION_NOT_APPLICABLE`을 반환한다.
 
-DataHub의 executor가 실행을 마칠 때마다 데이터셋에 대한 `DataProcessInstance`를 기록한다.
-시간별 `ingestion-passive-hourly` DAG이 이를 픽업한다:
+DataHub의 executor가 실행을 마치면, DataSpoke의 시간별 폴링이 이벤트를 노출한다:
 
 ```http
 GET .../event/ingestion?from=…&to=…
@@ -216,14 +205,6 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.o
 
 스크립트가 실행되어 DPI를 emit하면, 다음 시간별 폴링에서 Case 2와 동일한 형태로
 `event/ingestion`에 한 행이 노출된다.
-**스크립트가 DPI를 emit하지 않으면** 해당 URN의 이벤트 리스트는 비어 있게 된다.
-데이터셋은 여전히 `GET /spoke/common/ingestion`에 노출되고,
-스키마는 여전히 DataHub에 있으며,
-[`ingestion-freshness` 메트릭](#uc5-governance)도 DataHub 타임스탬프로 추적한다.
-다만 `event/ingestion`을 통한 실행 단위 드릴다운은 불가능해진다.
-스크립트 작성자가 따라야 할 DPI emission 계약은
-[DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)에 정의되어 있다.
-DataSpoke의 active-custom 추출기도 동일한 계약을 따른다.
 
 #### 크로스 데이터셋 오버뷰
 
@@ -234,15 +215,6 @@ GET /api/v1/spoke/common/ingestion?limit=100
 데이터셋별로 한 행을 반환한다.
 각 행은 `attr/ingestion/*` 집합(모드, 적용되는 경우 스케줄, 마지막 이벤트 상태)을 담는다.
 대시보드와 일괄 감사에 유용하다.
-
-### 범위 노트
-
-DataSpoke 인제스천의 책임은 **소스 연결, 스키마 디스커버리, 신선도 신호**다.
-프로파일링·컬럼 단위 lineage·사용량 분석은 in-house `active-custom` 경로의 범위 밖이다.
-이를 필요로 하는 팀은 DataHub Managed Ingestion을 직접 설정하고,
-해당 데이터셋을 DataSpoke에 `mode: passive`로 등록한다.
-이로써 DataSpoke 추출기 surface를 작게 유지하고,
-"DataSpoke는 control surface, DataHub는 메타데이터의 SSOT" 원칙과 일관성을 지킨다.
 
 ---
 
@@ -271,22 +243,8 @@ DataHub에 `assertionRunEvent`를 emit하며, 과거 시계열을 조회 가능�
 데이터셋당 여러 개의 점검(별도의 freshness/volume/field assertion, 컬럼 단위 검증,
 다중 팀 소유 등)이 필요한 팀은 **DataHub의 native assertion API**를 직접 사용한다 —
 DataSpoke는 80% 케이스를 위한 의견 있는 단일 슬롯 단축 경로일 뿐, 유일한 경로가 아니다.
-전체 계약은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md) 참조.
-
-**Conf 사전 조건.** PUT `validation/conf`는 데이터셋이 이미 DataHub에 존재해야 한다 —
-DataHub가 모르는 URN에 슬롯을 구성하면 `422 DATASET_NOT_IN_DATAHUB`을 반환한다.
-인제스천(필요 시 데이터셋을 생성)과 달리, 검증은 항상 DataHub가 이미 추적하는
-데이터셋에 대해서만 동작한다.
-
-**Result 행 형태.** 파이프라인의 각 `POST .../attr/validation/result`는
-`data_time`(보통 파티션 타임스탬프)을 키로 한 행을 기록하며 `score`와 명명된 변수
-맵을 담는다. 같은 `data_time`에 대한 다중 POST는 **append-only**이다 — 각 POST가
-DataHub의 별도 `assertionRunEvent` 행이 되며, GET 엔드포인트는 동일 `data_time`별로
-가장 최근 결과(last-write-wins)를 반환한다.
-
-**Soft-delete + 부활.** `DELETE .../attr/validation/conf`는 assertion URN에
-`status.removed = true`를 emit한다. 이후 `PUT`은 동일 결정적 URN을 부활시키며
-(`removed`를 해제하고 `assertionInfo`를 덮어쓴다).
+전체 계약 — conf 사전 조건, 결과 행 형태, soft-delete / 부활 의미, DataHub assertion
+aspect emission — 은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)에 정의되어 있다.
 
 ### API Mapping
 
@@ -381,65 +339,22 @@ GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:
 (예: `order_line__references__book`)로, ID 자체가 사실을 인코딩하므로 재추론 사이에
 자연히 idempotent하다.
 
-**Conf는 싱글톤.** UC1 / UC2의 데이터셋별 conf와 달리, 온톨로지는 글로벌
-아티팩트이다. `/spoke/common/ontogen/attr/conf`의 운영 conf는 추론 DAG 실행 시점과
-스코프 데이터셋을 제어한다. UC4 metagen 역시 같은 싱글톤 conf 형태
-(`/spoke/common/metagen/attr/conf`)를 따르며, 데이터셋별 옵트인은 별도 경계 row로
-관리한다.
+온톨로지는 글로벌 아티팩트이다. `/spoke/common/ontogen/attr/conf`의 싱글톤 운영
+conf가 추론 DAG 실행 시점과 스코프 데이터셋을 제어한다. 사람이 작성한 Markdown
+**seed**(프롬프트·도메인 힌트·명명 규칙)가 데이터 소스와 함께 LLM을 안내하고,
+수동 `POST /method/run`은 Markdown 본문을 해당 실행에만 적용되는 일회성 프롬프트로
+실을 수 있다.
 
-**입력(검증된 DataHub 경계).** UC3는 UC4와 동일한 DataHub aspect 집합 —
-`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
-`editableSchemaMetadata`, `glossaryTerms`, 그리고 스코프 데이터셋을
-`relatedAssets`로 참조하는 `document` 엔티티의
-`documentInfo.contents.text`(관례상 Markdown 본문) — 만 입력으로 사용한다.
-DataSpoke는 UC4 리뷰어가 후보(candidate)를 승인한 뒤에만 editable description
-aspect를 DataHub에 쓰므로, DataHub에 *존재*한다는 사실 자체가 승인 신호다 —
-UC3는 별도 조인이 필요 없고, UC4의 미승인 후보는 DataSpoke 저장소에만 남으므로
-LLM이 다른 LLM의 미승인 추측을 학습할 수 없다.
+트리플을 사람이 승인하려면 양쪽 끝 노드와 엣지가 모두 사람에 의해 승인되어 있어야
+하므로, 리뷰어는 일반적으로 **노드 → 엣지 → 트리플** 순서로 처리한다.
 
-| `attr/conf` 필드 | 용도 |
-|---|---|
-| `is_enabled` | 추론 DAG 마스터 스위치 |
-| `schedule_tier` | `hourly` / `daily` / `weekly` 재추론 주기 |
-| `dataset_filter` | 선택적 스코프 필터 — `tags`(DataHub 태그 URN 리스트), `glossary_terms`(glossary term URN 리스트), `dataset_urns`(고정된 데이터셋 집합을 지정하는 명시적 `urn:li:dataset:(…)` URN 리스트). 세 차원은 OR로 합쳐지며, 어느 한 차원의 빈 배열은 기여하지 않고, `{}`는 모든 데이터셋을 의미한다. URN 포맷은 PUT/PATCH 시점에 검증하고, 실행 시점에 DataHub에서 해석되지 않는 항목은 skip하며 run-complete 이벤트의 `unresolved_urns`에 보고한다. UC5의 `measurement_query.dataset_filter`와 동일 형태 |
-| `default_run_prompt` | 본문 없이 호출되는 실행(주기적 Airflow 실행, 본문 없는 수동 `POST /method/run`)의 일회성 프롬프트로 사용되는 선택적 Markdown 문자열. null이면 기본값 비활성 |
-
-**Seed가 추론을 안내한다.** seed는 데이터 소스와 함께 추론 실행이 소비하는
-사람이 작성한 **Markdown 문서**(프롬프트, 도메인 힌트, 명명 규칙)이다.
-seed 본문(요청·응답 모두)은 원시 Markdown(`Content-Type: text/markdown`)이며,
-`seed_id`와 타임스탬프만 별도로 관리된다.
-여러 seed가 공존할 수 있다. POST는 생성(서버가 `seed_id` 부여),
-PATCH는 문서 교체, DELETE는 폐기한다.
-
-**실행 시맨틱.** 추론 실행은 직렬화된다: 실행 중에 `method/run`을 다시 부르면
-`409 ONTOGEN_RUNNING`을 반환한다. `?dry_run=true`는 추론을 평가하고 노드 / 엣지 /
-트리플 결과를 기록 없이 반환하므로, `seed`·`dataset_filter` 변경의 효과를 적용
-전에 미리 보는 데 유용하다.
-
-**증분 추론.** 각 실행은 기존의 재사용 가능한 온톨로지를 기반으로 시작한다 —
-LLM이 매번 온톨로지를 처음부터 다시 도출하지 않는다.
-새 제안은 그 위에 쌓인다: 후보가 이름 또는 임베딩 유사도(`node_embeddings`)로
-기존 노드와 일치하면 기존 노드 ID를 재사용한다. 재사용 풀은
-`rejected`가 아닌 모든 상태(`llm_pending`, `llm_approved`, `approved`)를 포함하므로,
-사람 리뷰를 기다리는 동안 같은 개념이 중복 행으로 분기되지 않는다.
-일치가 없으면 새 `llm_pending` 노드로 제안한다.
-엣지와 트리플도 동일한 재사용 규칙을 따른다.
-`rejected` 결과는 입력으로 이월되지 않는다.
-
-**일회성 실행 프롬프트.** `POST /method/run`은 Markdown 본문(`Content-Type: text/markdown`)을
-실을 수 있으며, 영속 seed 위에 해당 실행에만 적용되는 일회성 프롬프트로 작동한다.
-저장되지 않는다. seed로 굳히지 않은 채 "이번 한 번만 조정해 본다"는 실험에 쓴다.
-
-**기본 일회성 프롬프트.** 본문을 직접 싣지 않는 실행 — 주기적 Airflow 실행과 본문이
-빈 수동 `POST /method/run` — 은 `attr/conf.default_run_prompt`(Markdown)로 폴백한다.
-"매 스케줄 실행을 어떻게 조정할지"의 지침은 여기에 적는다.
-수동 실행에서 본문을 명시하면 기본값을 덮어쓰며, 빈 본문은 항상 기본값을 사용한다.
-
-**리뷰 의존성.** 트리플을 사람이 승인하려면 양쪽 끝 노드와 엣지가 모두
-`status='approved'`여야 한다(`llm_approved` 의존성은 게이트를 충족하지 않는다 —
-각 구성 요소를 사람이 명시적으로 먼저 승인해야 한다).
-이를 어기고 시도하면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`을 반환한다.
-따라서 리뷰어는 일반적으로 **노드 → 엣지 → 트리플** 순서로 처리한다.
+conf 필드 의미, seed 라이프사이클, 추론 파이프라인과 증분 재사용 규칙, 실행
+시맨틱(`dry_run`·동시 실행·`default_run_prompt` 폴백), 그리고 트리플 리뷰 의존성
+계약은
+[`BACKEND.md §Ontology Generation Service`](feature/BACKEND.md#ontology-generation-service-srcbackendontogen)에
+정의되어 있다. Producer / Reviewer 적대적 토론 추론 루프는
+[`BACKEND_LLM.md §Adversarial Debate Framework`](feature/BACKEND_LLM.md#adversarial-debate-framework)
+참조.
 
 ### API Mapping
 
@@ -495,15 +410,8 @@ Imazon은 온라인 서점이다. *order*를 헤더 개념으로, *order line*�
 테이블명보다 비즈니스 친화적인 명명을 선호한다.
 ```
 
-**입력.** 위 conf에 따라 DataSpoke는 세 OLTP 테이블에 대해 다음 DataHub
-aspect 만 읽는다: `datasetProperties`, `schemaMetadata`,
-`editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`,
-그리고 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
-`documentInfo.contents.text`(Markdown 본문). seed가 명명 선택을 안내한다.
-
-**추론 출력.** 노드 셋, 엣지 둘, 트리플 둘. 각 행의 `status`는 Adversarial Debate가
-신뢰도 ≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`로 수락하면 `llm_approved`, 그렇지 않으면
-`llm_pending`이다:
+**추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 각 행의 `status`는 높은 신뢰도면
+`llm_approved`, 사람 리뷰가 필요하면 `llm_pending`이다:
 
 ```
 Nodes (subjects / objects):
@@ -552,10 +460,7 @@ GET /api/v1/spoke/common/ontogen/result/triple
 POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
 ```
 
-승인은 DataSpoke 내부 상태를 갱신한다. 온톨로지 그래프는 DataSpoke의
-PostgreSQL(관계형 + pgvector)에서 유지한다.
-
-`is_enabled=false`이면 non-dry-run `method/run` 호출은 `409 ONTOGEN_DISABLED`를 반환한다. Dry-run(`?dry_run=true`)은 `is_enabled`와 관계없이 항상 허용된다. Dry-run도 실제 실행과 동일하게 이벤트 detail에 `dry_run: true`를 담아 `ONTOGEN.RUN_COMPLETE`를 기록한다.
+승인은 DataSpoke 내부 상태를 갱신한다.
 
 ---
 
@@ -567,15 +472,8 @@ PostgreSQL(관계형 + pgvector)에서 유지한다.
 
 이 기능은 DataHub 메타데이터에 이미 존재하는 **편집 가능 설명 aspect** —
 데이터셋 설명 하나, 컬럼 설명 하나씩 — 의 값을 제안한다. 온톨로지 구조
-자체는 제안하지 않는다 (UC3가 담당).
-
-**입력(검증된 DataHub 경계).** UC4는 UC3와 동일한 DataHub aspect 집합을
-입력으로 사용한다: `datasetProperties`, `schemaMetadata`,
-`editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`,
-그리고 스코프 데이터셋을 `relatedAssets`로 참조하는 `document` 엔티티의
-`documentInfo.contents.text`. 그 위에 UC3에서 승인된 노드와 트리플
-(`dataset_node_map.status='approved'` 필터)을 DataSpoke 저장소에서 생성
-컨텍스트로 추가로 읽는다.
+자체는 제안하지 않는다 (UC3가 담당). 생성은 UC3가 읽는 검증된 DataHub aspect
+집합과 UC3에서 승인된 온톨로지를 함께 입력으로 사용한다.
 
 ### User Story
 
@@ -601,79 +499,22 @@ UI는 Markdown으로 렌더링한다.
 
 향후 범위(언급만, 여기서는 모델링하지 않음): `domains`·`globalTags` 제안.
 
-**Conf는 싱글톤.** UC3 ontogen처럼 UC4 metagen은 `/spoke/common/metagen/attr/conf`에
-글로벌 운영 conf 하나를 둔다. 이 conf가 생성 DAG 실행 시점과 스코프 데이터셋을
-제어한다. 데이터셋별 참여는 별도의 옵트인 경계 — `/spoke/common/data/{urn}/attr/metagen/conf` — 가
-관리한다.
+`/spoke/common/metagen/attr/conf`의 **글로벌** 운영 conf가 생성 DAG 실행 시점과
+스코프 데이터셋을 제어한다. `/spoke/common/data/{urn}/attr/metagen/conf`의
+**데이터셋별** 경계가 옵트인 스위치이다 — `is_enabled=true` 경계 행이 없는
+데이터셋은 글로벌 필터와 무관하게 제외된다.
 
-| `attr/conf` 필드 | 용도 |
-|---|---|
-| `is_enabled` | metagen DAG 마스터 스위치 |
-| `schedule_tier` | `hourly` / `daily` / `weekly` 재생성 주기 |
-| `dataset_filter` | 선택적 스코프 필터 — `tags`, `glossary_terms`, `dataset_urns` (차원 간 OR; `{}`이면 전체). UC3 ontogen `attr/conf.dataset_filter`·UC5 `measurement_query.dataset_filter`와 같은 형태와 검증 규칙 |
-| `result_limit` | 아이템당 최대 후보 수 (정수 ≥ 1, 기본 `3`) |
-| `overwrite_pending` | 아이템이 `result_limit`만큼의 비-거부 후보를 이미 가지고 `approved` 후보가 없을 때, 새 실행이 가장 오래된 `llm_approved` 후보를 덮어쓸지(`true`, 기본) 그냥 건너뛸지(`false`) 결정 |
+스코프 내 (데이터셋, 아이템) 쌍마다 생성기는 여러 실행에 걸쳐 최대 `result_limit`
+(기본 `3`)개의 후보를 누적한다. 리뷰어는 후보를 살펴보고 하나를 승인하면(그 값이
+DataHub의 편집 가능 aspect로 emit되며 아이템이 잠긴다), 마음에 들지 않는 후보는
+거부한다. **승인은 변경 가능하다**: 다른 형제 후보를 승인하면 이전에 승인된 후보가
+같은 트랜잭션 안에서 강등되므로, 리뷰어는 언제든 마음을 바꿀 수 있다.
 
-**데이터셋별 경계.** 참여하려는 각 데이터셋은 다음 행을 등록한다:
-
-| 필드 | 용도 |
-|---|---|
-| `is_enabled` | `true`이면 글로벌 metagen이 이 데이터셋에 쓸 수 있다. **행이 없거나 `false`이면 옵트아웃** — 글로벌 `dataset_filter`와 무관하게 제외 |
-| `allowed` | 글로벌 생성기가 이 데이터셋에 쓸 수 있는 아이템 종류 목록. 베이스라인 값: `"dataset.description"`, `"column.description"`. `allowed`에 없는 종류는 이 데이터셋에서 건너뛴다 |
-
-**아이템과 후보.** **아이템(item)** 은 한 데이터셋에서 편집 가능한 메타데이터
-슬롯 하나 — 데이터셋당 하나의 `dataset.description`, 컬럼당 하나의
-`column.<fieldPath>.description`. **후보(candidate)** 는 그 아이템을 위한 생성된
-Markdown 값 하나로, 자체적인 `candidate_id`·`confidence_score`·`status`를 가진다.
-각 아이템은 여러 실행에 걸쳐 누적된 후보를 최대 `result_limit`개까지 보관한다.
-
-후보 상태:
-
-- `llm_approved` — Producer-Reviewer 토론이 수락한 후보. 사람 리뷰 대기.
-- `approved` — 사람이 승인. 같은 호출에서 `value`가 DataHub에 emit된다.
-  한 아이템에서 이 상태를 가지는 후보는 최대 하나로 제한된다. 다른
-  형제 후보를 승인하면 현재 `approved` 후보는 같은 트랜잭션 안에서
-  `llm_approved`로 강등된다.
-- `rejected` — 사람이 거부. 다음 실행 시작 시점에 삭제된다.
-
-metagen에는 **`llm_pending` 상태가 없다** — 저장되는 모든 후보는 최소한
-토론이 수락한 후보다.
-
-**아이템 규칙.** 한 아이템이 동시에 가질 수 있는 `approved` 후보는 최대
-하나다(부분 unique DB 인덱스로 보장). 각 실행 시작 시점에 모든 `rejected`
-후보를 삭제해 자리를 비운다. 이후 스코프 내 (데이터셋, 허용 종류) 쌍마다:
-
-- 현재 `approved` 후보가 있는 아이템이면 건너뛴다(리뷰어가 이미 선택을 굳혔다고
-  본다).
-- 비-거부 후보 수가 `< result_limit`이면 새 후보를 추가한다.
-- 비-거부 후보 수가 `= result_limit`이고 `overwrite_pending=true`이면 가장
-  오래된 `llm_approved` 후보(`created_at` FIFO)를 제거한 뒤 추가한다.
-- 비-거부 후보 수가 `= result_limit`이고 `overwrite_pending=false`이면
-  건너뛴다.
-
-**승인은 변경 가능하다.** `llm_approved` 후보를 승인하면 그 후보가
-`approved`로 바뀌고, 같은 트랜잭션 안에서 이전에 `approved`였던 형제 후보가
-`llm_approved`로 강등되고, 새 `value`가 해당 editable DataHub aspect로
-emit된다. 리뷰어는 언제든 다른 형제로 승인을 옮길 수 있고, 비-거부 형제들은
-모두 후보로 보인 채 남아있다. `reject`는 `llm_approved` 후보에만 유효하며,
-`approved` 후보에 대한 reject는 `409 METAGEN_CANNOT_REJECT_APPROVED`로
-거부된다. 현재 승인을 취소하려면 리뷰어가 다른 형제를 승인하면 되고, 그
-호출이 현재 승인을 원자적으로 대체한다.
-
-**실행 의미.** 생성 실행은 직렬화된다: 진행 중에 같은 `method/run`이 다시
-들어오면 `409 METAGEN_RUNNING`을 반환한다. `?dry_run=true`(또는 body
-`{"dry_run": true}`)는 후보를 저장하지 않고 평가만 한다 — `dataset_filter`
-변경 미리보기에 유용하다. 수동 `POST /method/run`은 body
-`{"dataset_urns": [...], "dry_run": bool}`로 스코프를 좁히거나 평가만 할 수
-있다. 정기 Airflow DAG는 body 없이 호출되어 스코프 내 모든 데이터셋을 훑는다.
-
-**LLM 토론(Producer-Reviewer).** LLM 단계는 UC3 ontogen과 같은 적대적 토론
-추론 루프를 사용한다 ([BACKEND_LLM §Inference Loop](feature/BACKEND_LLM.md#inference-loop)
-참조). Producer가 `(dataset, item_id)` 쌍별로 후보를 제안하고, Reviewer는
-온톨로지 컨텍스트와 기존 승인 후보(승인된 설명의 임베딩에 대한 RAG)에 비추어
-각 후보를 평가한다. `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD`이고
-Reviewer의 outcome이 `accept`인 후보만 `llm_approved`로 저장된다. 그 외는
-모두 폐기된다 — ontogen과 달리 metagen에는 `llm_pending` 행이 없다.
+conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책, 실행 파이프라인,
+그리고 Producer / Reviewer 적대적 토론은
+[`BACKEND.md §Metadata Generation Service`](feature/BACKEND.md#metadata-generation-service-srcbackendmetagen)와
+[`BACKEND_LLM.md §Metagen Adversarial Debate`](feature/BACKEND_LLM.md#metagen-adversarial-debate)에
+정의되어 있다.
 
 ### API Mapping
 
@@ -774,10 +615,6 @@ POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 GET .../event/metagen
 ```
 
-글로벌 conf의 `is_enabled=false`이면 비-dry-run `method/run` 호출은
-`409 METAGEN_DISABLED`를 반환한다. Dry-run은 `is_enabled`와 관계없이 허용되며,
-이벤트 detail에 `dry_run: true`를 담아 `METAGEN.RUN_COMPLETE`를 기록한다.
-
 ---
 
 ## UC5: Governance
@@ -805,15 +642,12 @@ GET .../event/metagen
 | `ingestion-freshness` | 활성화된 인제스천 설정 중 마지막 성공 `event/ingestion`이 신선도 윈도우 안에 들어오는 비율 (active는 `schedule_tier` 기준; passive는 고정 윈도우 기준). |
 | `validation-score` | 최신 `attr/validation/result` 행의 `score == 1.0`인 데이터셋 비율. 검증 conf가 있는 데이터셋만 분모에 포함. |
 
-**Result 행 형태.** 모든 측정 실행은 `attr/result`에 한 행을 남기며, 각 행은
-집계 `value`와 함께 데이터셋별 `breakdown`(어떤 데이터셋이 어떤 부분 값에
-기여했는지)을 담는다. 덕분에 `attr/result` 시간 범위 조회만으로 "지난주 화요일
-어떤 데이터셋이 실패했는가"에 답할 수 있다 — 메트릭을 다시 실행할 필요 없다.
-
-**실행 시맨틱.** 동일 메트릭의 실행은 직렬화된다: 실행 중에 `method/run`을 다시
-부르면 `409 METRIC_RUNNING`을 반환한다. `dry_run: true`는 쿼리를 평가만 하고
-`attr/result`에 기록하거나 이벤트를 발행하지 않으므로, 새로운
-`measurement_query`를 스케줄에 올리기 전에 시험하기에 유용하다.
+모든 측정 실행은 `attr/result`에 한 행을 남기며, 각 행은 집계 `value`와 함께
+데이터셋별 `breakdown`을 담는다. 덕분에 시간 범위 조회만으로 "지난주 화요일 어떤
+데이터셋이 실패했는가"에 답할 수 있다 — 메트릭을 다시 실행할 필요 없다. 실행
+시맨틱(직렬화·dry-run·비활성 conf 거부)과 breakdown 형태는
+[`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics)에
+정의되어 있다.
 
 **베이스라인 오버뷰(한 개)**
 

@@ -65,25 +65,21 @@ controlling, and managing data ingestion in one place.*
 
 Two ingestion modes are supported:
 
-- **`active-custom`** — DataSpoke is the ingestor, using its own in-house extractor
-  framework. An Airflow tier DAG runs the platform extractor on the configured
-  `schedule_tier` (`hourly` / `daily` / `weekly`) and emits results to DataHub. Manual
-  and dry-run runs are also supported. Limited to platforms DataSpoke has implemented
-  (`postgres`, `kafka` today). Each run emits the standard schema aspects **plus a
-  `DataProcessInstance`** that powers `event/ingestion`.
-- **`passive`** — DataSpoke does **not** run the extractor and does nothing programmatic
-  toward making the run happen. The user sets up extraction however they prefer:
-  configuring a recipe in DataHub Managed Ingestion (UI or GraphQL), running a one-off
-  Python script with the `acryl-datahub` SDK, or wiring it into any external pipeline.
-  DataSpoke registers the URN and observes via the hourly `ingestion-passive-hourly`
-  DAG, which polls DataHub for `DataProcessInstance` records and writes one row per
-  run to `event/ingestion`. Whatever the external ingestor is, **it must emit a
-  `DataProcessInstance` per run** for runs to surface in DataSpoke's events
-  ([DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
+- **`active-custom`** — DataSpoke is the ingestor. An Airflow tier DAG runs an
+  in-house extractor on the configured `schedule_tier` (`hourly` / `daily` /
+  `weekly`) and emits results to DataHub. Manual runs and dry runs are also
+  supported.
+- **`passive`** — DataSpoke does not run the extractor. The user wires up
+  extraction externally (DataHub Managed Ingestion, a one-off `acryl-datahub` SDK
+  script, or any existing pipeline). DataSpoke registers the URN and observes
+  per-run state through DataHub.
 
-The same DPI emission contract applies in both modes — DataSpoke's own active-custom
-extractors emit DPI just as external passive ingestors must, so observation behavior is
-uniform regardless of who ran the job.
+Supported `active-custom` platforms, the DataProcessInstance emission contract that
+external ingestors must satisfy for per-run observability, and DataSpoke's hourly
+passive-observation pipeline are specified in
+[`BACKEND.md §Ingestion Service`](feature/BACKEND.md#ingestion-service-srcbackendingestion)
+and
+[`DATAHUB_INTEGRATION.md §Custom Ingestor Guide`](DATAHUB_INTEGRATION.md#custom-ingestor-guide).
 
 ### API Mapping
 
@@ -159,8 +155,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 No `locator`, `auth`, or `schedule_tier` — those belong to the external ingestor.
 `POST .../method/ingestion/run` returns `409 INGESTION_NOT_APPLICABLE` for this URN.
 
-Each time DataHub's executor finishes a run, it writes a `DataProcessInstance` for
-the dataset. The hourly `ingestion-passive-hourly` DAG picks it up:
+After DataHub's executor finishes a run, DataSpoke's hourly poll surfaces an event:
 
 ```http
 GET .../event/ingestion?from=…&to=…
@@ -198,18 +193,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.o
 ```
 
 When the script runs and emits a DPI, the next hourly poll surfaces a row in
-`event/ingestion` exactly as in Case 2. **If the script emits neither a DPI nor an
-ingestion-like `Operation` aspect (INSERT/UPDATE/CREATE/ALTER)**, the events list
-stays empty for that URN — the dataset still appears in `GET /spoke/common/ingestion`,
-the schema is still in DataHub, and the
-[`ingestion-freshness` metric](#uc5-governance) still tracks it via DataHub timestamps;
-only per-run drill-down via `event/ingestion` is unavailable. DataHub Managed
-Ingestion's standard source plugins emit `Operation` aspects automatically, so passive
-URNs ingested via Managed Ingestion are observable without any extra work. Custom
-scripts that want full event detail (terminal status, run identity) must follow the
-DPI emission contract in
-[DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide)
-— the same contract that DataSpoke's own active-custom extractors satisfy.
+`event/ingestion` exactly as in Case 2.
 
 #### Cross-dataset overview
 
@@ -219,15 +203,6 @@ GET /api/v1/spoke/common/ingestion?limit=100
 
 Returns one row per dataset with its full `attr/ingestion/*` aggregate (mode, schedule
 where applicable, last event status). Useful for dashboards and bulk audit.
-
-### Scope Note
-
-DataSpoke ingestion's responsibility is **source connectivity, schema discovery, and
-freshness signals**. Profiling, column-level lineage, and usage analytics are out of
-scope for the in-house `active-custom` path; teams that need them should configure
-DataHub Managed Ingestion directly and register the dataset with `mode: passive` in
-DataSpoke. This keeps DataSpoke's extractor surface small and consistent with the
-"DataSpoke is a control surface, DataHub is the SSOT for metadata" principle.
 
 ---
 
@@ -257,23 +232,9 @@ the named variables, and POSTs them. DataSpoke stores the result, emits a DataHu
 Teams that need multiple distinct checks per dataset (separate freshness / volume /
 field assertions, per-column validators, multi-team ownership) use **DataHub's native
 assertion APIs** directly — DataSpoke is the opinionated single-rule shortcut for the
-80% case, not the only path. See [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)
-for the full contract.
-
-**Conf pre-condition.** PUT `validation/conf` requires the dataset to already exist in
-DataHub — configuring a slot for a URN that DataHub doesn't track returns
-`422 DATASET_NOT_IN_DATAHUB`. Unlike ingestion (which can create the dataset),
-validation always operates on a dataset DataHub already knows about.
-
-**Result row shape.** Each pipeline `POST .../attr/validation/result` writes one
-timeseries row keyed by `data_time` (typically the partition timestamp) with `score`
-and a map of named variables. Multiple POSTs with the same `data_time` are
-**append-only**: each becomes a distinct `assertionRunEvent` row in DataHub, and the
-GET endpoint returns the most recent (last-write-wins) per distinct `data_time`.
-
-**Soft-delete + resurrect.** `DELETE .../attr/validation/conf` emits
-`status.removed = true` on the assertion URN; a subsequent `PUT` resurrects the same
-deterministic URN (clears `removed`, overwrites `assertionInfo`).
+80% case, not the only path. The full contract — conf pre-conditions, result row
+shape, soft-delete / resurrect semantics, and DataHub assertion-aspect emission —
+lives in [`spec/feature/VALIDATION.md`](feature/VALIDATION.md).
 
 ### API Mapping
 
@@ -364,72 +325,27 @@ three independently reviewable result types:
   composed of pre-approved nodes and edges, so the conceptual vocabulary is approved
   once and reused across many specific facts.
 
-Node and edge IDs are slugs (`book`, `placed_by`); node and edge slugs may not
-contain `__` (reserved as the triple-ID separator). A triple ID is the composite
+Node and edge IDs are slugs (`book`, `placed_by`); a triple ID is the composite
 slug `subject_node_id__edge_id__object_node_id` (e.g.,
-`order_line__references__book`), so the ID itself encodes the fact and is
-inherently idempotent across re-inference runs.
+`order_line__references__book`), so the ID itself encodes the fact.
 
-**Conf is a singleton.** Unlike the per-dataset configs in UC1 / UC2, the
-ontology is a global artifact. The operational conf at `/spoke/common/ontogen/attr/conf`
-controls when the inference DAG runs and which datasets are in scope. UC4
-metagen follows the same singleton-conf shape (`/spoke/common/metagen/attr/conf`)
-with a per-dataset boundary for opt-in.
+The ontology is a global artifact. A singleton operational conf at
+`/spoke/common/ontogen/attr/conf` controls when the inference DAG runs and which
+datasets are in scope. Human-authored Markdown **seeds** (prompts, domain hints,
+naming conventions) steer the LLM alongside the data sources, and a manual
+`POST /method/run` may carry an inline Markdown body as a one-shot prompt for that
+single run.
 
-**Inputs (proofread DataHub boundary).** UC3 reads the same set of DataHub
-aspects as UC4: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
-`editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
-`document` entities whose `relatedAssets` reference an in-scope dataset
-(Markdown body by convention). DataSpoke writes editable description aspects
-only after a UC4 reviewer approves a candidate, so their *presence* in DataHub
-is the approval signal — UC3 needs no separate join, and unreviewed UC4
-candidates stay in DataSpoke storage so the LLM never learns from another
-LLM's unreviewed guess.
+A triple may only be human-approved once both its endpoint nodes and its edge are
+themselves human-approved, so reviewers typically process **nodes → edges →
+triples**.
 
-| `attr/conf` field | Purpose |
-|---|---|
-| `is_enabled` | Master switch for the inference DAG |
-| `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence |
-| `dataset_filter` | Optional scope filter — `tags` (list of DataHub tag URNs), `glossary_terms` (list of glossary term URNs), and `dataset_urns` (list of explicit `urn:li:dataset:(…)` URNs for pinning to a known set). Filters are OR-ed across all three dimensions; an empty array on any dimension contributes nothing; `{}` means all datasets. URN format is validated at PUT/PATCH time; entries that don't resolve in DataHub at run time are skipped and reported in the run-complete event's `unresolved_urns` field. Same shape as UC5's `measurement_query.dataset_filter` |
-| `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs that do not supply their own — i.e., periodic Airflow runs, and manual `POST /method/run` calls with no body. Null disables the default |
-
-**Seeds steer inference.** A seed is a human-authored **Markdown document** (prompt,
-domain hint, naming convention) that the inference run consumes alongside the data
-sources. The seed body — request and response — is raw Markdown
-(`Content-Type: text/markdown`); only `seed_id` and timestamps are managed
-out-of-band. Multiple seeds coexist. POST creates (server assigns `seed_id`), PATCH
-replaces the document, DELETE retires.
-
-**Run semantics.** Inference runs are serialised: a duplicate `method/run` while one
-is in flight returns `409 ONTOGEN_RUNNING`. `?dry_run=true` evaluates the inference and
-returns the would-be node / edge / triple set without persisting changes — useful for
-previewing the effect of a `seed` or `dataset_filter` change before committing.
-
-**Incremental inference.** Each run starts from the existing reusable ontology —
-the LLM does not re-derive from scratch. New proposals are layered on top: when a
-candidate matches an existing node by name or embedding similarity (via
-`node_embeddings`), the existing node ID is reused. The reuse pool spans all
-non-`rejected` statuses (`llm_pending`, `llm_approved`, `approved`) so the same
-concept doesn't fork into duplicate rows while awaiting human review. Otherwise a
-new `llm_pending` node is proposed. Edges and triples follow the same reuse rule.
-`rejected` results are not carried forward as inputs.
-
-**One-shot run prompt.** A `POST /method/run` may carry a Markdown body
-(`Content-Type: text/markdown`) that acts as a transient prompt for that single run,
-on top of the persistent seeds. It is not stored. Use this for "steer this one run"
-experiments without committing to a seed.
-
-**Default one-shot prompt.** Runs that do not supply their own body — periodic
-Airflow runs and manual `POST /method/run` calls with an empty body — fall back to
-`attr/conf.default_run_prompt` (Markdown). This is the place to encode the
-"how every scheduled run should be steered" guidance. An explicit body on a manual run
-overrides the default; sending an empty body always uses the default.
-
-**Review dependency.** A triple cannot be human-approved until both its endpoint
-nodes and its edge are `status='approved'` (an `llm_approved` dependency does NOT
-satisfy the gate — the human must explicitly approve each component first).
-Attempting otherwise returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`. The reviewer
-therefore typically processes **nodes → edges → triples**.
+Conf field semantics, seed lifecycle, the inference pipeline and its incremental
+reuse rules, run semantics (`dry_run`, concurrency, prompt fallback to
+`default_run_prompt`), and the triple review-dependency contract are specified in
+[`BACKEND.md §Ontology Generation Service`](feature/BACKEND.md#ontology-generation-service-srcbackendontogen).
+The producer / reviewer adversarial-debate inference loop is in
+[`BACKEND_LLM.md §Adversarial Debate Framework`](feature/BACKEND_LLM.md#adversarial-debate-framework).
 
 ### API Mapping
 
@@ -485,15 +401,8 @@ Imazon is an online bookstore. Treat *order* as a header concept and *order line
 the per-book row. Prefer business-friendly names over table names.
 ```
 
-**Inputs.** Per the conf, DataSpoke reads DataHub aspects for the three OLTP
-tables: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
-`editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
-`document` entities whose `relatedAssets` reference one of the in-scope datasets
-(Markdown body). The seed shapes naming choices.
-
-**Inferred output.** Three nodes, two edges, two triples. Each row's `status` is
-either `llm_approved` (if the Adversarial Debate accepted it with confidence
-≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`) or `llm_pending` (otherwise):
+**Inferred output.** Three nodes, two edges, two triples — each row's `status` is
+either `llm_approved` (high confidence) or `llm_pending` (awaiting human review):
 
 ```
 Nodes (subjects / objects):
@@ -542,10 +451,7 @@ GET /api/v1/spoke/common/ontogen/result/triple
 POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
 ```
 
-Approval marks the entry as approved in DataSpoke storage. The ontology graph
-lives in DataSpoke (PostgreSQL relational + pgvector).
-
-When `is_enabled=false`, non-dry-run calls to `method/run` return `409 ONTOGEN_DISABLED`. Dry-run (`?dry_run=true`) is always permitted regardless of `is_enabled`. Dry-run records `ONTOGEN.RUN_COMPLETE` with `dry_run: true` in the event detail, same as real runs.
+Approval marks the entry as approved in DataSpoke storage.
 
 ---
 
@@ -557,15 +463,8 @@ a review process.*
 
 This feature proposes values for **editable description aspects** that already exist
 in DataHub metadata — one for the dataset, one per column. It does **not** propose
-ontology structure (UC3 owns that).
-
-**Inputs (proofread DataHub boundary).** UC4 reads the same DataHub aspect set
-as UC3: `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
-`editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
-`document` entities whose `relatedAssets` reference the in-scope dataset.
-UC4 also reads the UC3-approved ontology nodes and triples (filtered to
-`status='approved'` via `dataset_node_map`) from DataSpoke storage as
-generation context.
+ontology structure (UC3 owns that). Generation is grounded in the same proofread
+DataHub aspect set UC3 reads, plus the UC3-approved ontology as additional context.
 
 ### User Story
 
@@ -592,86 +491,23 @@ the UI renders Markdown.
 Future scope (mentioned, not modelled here): proposals for `domains` and
 `globalTags`.
 
-**Conf is a singleton.** Like UC3 ontogen, UC4 metagen has one global operational
-conf at `/spoke/common/metagen/attr/conf` that controls when the generation DAG runs
-and which datasets are in scope. Per-dataset participation is a separate opt-in
-boundary at `/spoke/common/data/{urn}/attr/metagen/conf`.
+A **global** operational conf at `/spoke/common/metagen/attr/conf` controls when the
+generation DAG runs and which datasets are in scope. A **per-dataset** boundary at
+`/spoke/common/data/{urn}/attr/metagen/conf` is the opt-in switch — datasets without
+an `is_enabled=true` boundary row are excluded regardless of the global filter.
 
-| `attr/conf` field | Purpose |
-|---|---|
-| `is_enabled` | Master switch for the metagen DAG |
-| `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence |
-| `dataset_filter` | Optional scope filter — `tags`, `glossary_terms`, `dataset_urns` (OR-ed across dimensions; `{}` means all). Same shape and validation as UC3 ontogen `attr/conf.dataset_filter` and UC5 `measurement_query.dataset_filter` |
-| `result_limit` | Maximum candidate count per item at any time (integer ≥ 1, default `3`) |
-| `overwrite_pending` | When an item already holds `result_limit` non-rejected candidates and has no `approved` candidate, controls whether a new run overwrites the oldest `llm_approved` candidate (`true`, default) or skips the item (`false`) |
+For each in-scope (dataset, item) pair the generator accumulates up to
+`result_limit` candidates across runs (default `3`). The reviewer browses
+candidates, approves one (which emits the value to the editable DataHub aspect
+and locks the item), and rejects the misses. **Approval is mutable**: approving
+a different sibling atomically demotes the previously-approved candidate, so the
+reviewer can change their mind at any time.
 
-**Per-dataset boundary.** Each dataset that wants to participate sets a row at
-`/spoke/common/data/{urn}/attr/metagen/conf`:
-
-| Field | Purpose |
-|---|---|
-| `is_enabled` | When `true`, this dataset opts in to global metagen writes. **Missing row or `false` means opt-out** — the dataset is excluded regardless of the global `dataset_filter` |
-| `allowed` | Element kinds the global generator may write on this dataset. Baseline values: `"dataset.description"`, `"column.description"`. An element kind outside `allowed` is skipped for this dataset |
-
-**Items and candidates.** An **item** is one editable-metadata slot on a dataset:
-one `dataset.description` per dataset, one `column.<fieldPath>.description` per
-column. A **candidate** is one generated Markdown value for an item, with its own
-`candidate_id`, `confidence_score`, and `status`. Each item holds up to
-`result_limit` candidates that accumulate across runs.
-
-Candidate statuses:
-
-- `llm_approved` — the producer-reviewer debate accepted this candidate; awaiting
-  human review.
-- `approved` — a human approved this candidate. Its `value` was emitted to
-  DataHub on the same call. At most one sibling per item can hold this status;
-  approving a different sibling atomically demotes the current one back to
-  `llm_approved`.
-- `rejected` — a human rejected this candidate. It remains visible until the next
-  run starts, then it is deleted.
-
-There is **no `llm_pending` status** in metagen — every persisted candidate is at
-least debate-accepted.
-
-**Item-level rules.** An item has at most one `approved` candidate at any time
-(enforced by a partial unique DB index). At the start of each run, all `rejected`
-candidates are deleted so room frees up. For each in-scope (dataset, allowed
-kind) pair the run then:
-
-- skips the item if it currently has an `approved` candidate (the reviewer has
-  expressed a settled preference);
-- appends a new candidate if non-rejected count `< result_limit`;
-- evicts the oldest `llm_approved` candidate (FIFO by `created_at`) and appends a
-  new one if non-rejected count `= result_limit` and `overwrite_pending=true`;
-- skips the item if non-rejected count `= result_limit` and
-  `overwrite_pending=false`.
-
-**Approval is mutable.** Approving an `llm_approved` candidate flips it to
-`approved`, atomically demotes any previously-`approved` sibling back to
-`llm_approved`, and emits the new `value` to the corresponding editable DataHub
-aspect. The reviewer can switch which sibling holds the approval at any time —
-all non-rejected siblings remain visible as candidates. Reject is valid only
-for `llm_approved` candidates; rejecting an `approved` candidate is refused with
-`409 METAGEN_CANNOT_REJECT_APPROVED`. To remove the current approval the
-reviewer approves a different sibling, which atomically supersedes the prior
-choice.
-
-**Run semantics.** Generation runs are serialised: a duplicate `method/run` while
-one is in flight returns `409 METAGEN_RUNNING`. `?dry_run=true` (or body
-`{"dry_run": true}`) evaluates the run without persisting candidates or emitting
-events of state changes — useful for previewing a `dataset_filter` change. Manual
-`POST /method/run` may carry a body `{"dataset_urns": [...], "dry_run": bool}` to
-narrow the run's scope or evaluate without persisting; the periodic Airflow DAG
-fires with no body and sweeps every in-scope dataset.
-
-**LLM debate (producer-reviewer).** The LLM step uses the same adversarial-debate
-inference loop as UC3 ontogen (see [BACKEND_LLM §Inference Loop](feature/BACKEND_LLM.md#inference-loop)).
-The producer proposes candidates per `(dataset, item_id)`; the reviewer evaluates
-each one against ontology context and existing approved candidates (RAG over
-embeddings of approved descriptions). Only candidates whose
-`confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` and whose reviewer outcome is
-`accept` persist as `llm_approved`. All others are dropped — there is no
-`llm_pending` row in metagen, unlike ontogen.
+Conf field semantics, candidate status lifecycle, per-item eviction policy, run
+pipeline, and the producer / reviewer adversarial debate are specified in
+[`BACKEND.md §Metadata Generation Service`](feature/BACKEND.md#metadata-generation-service-srcbackendmetagen)
+and
+[`BACKEND_LLM.md §Metagen Adversarial Debate`](feature/BACKEND_LLM.md#metagen-adversarial-debate).
 
 ### API Mapping
 
@@ -771,10 +607,6 @@ atomically demote `c1`). `c3` will be deleted at the start of the next run.
 GET .../event/metagen
 ```
 
-When `is_enabled=false` on the global conf, non-dry-run calls to `method/run`
-return `409 METAGEN_DISABLED`. Dry-run is permitted regardless of `is_enabled` and
-records `METAGEN.RUN_COMPLETE` with `dry_run: true` in the event detail.
-
 ---
 
 ## UC5: Governance
@@ -799,15 +631,11 @@ defining new `measurement_query` types via the same `attr/conf` endpoint.
 | `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active-custom mode; per a fixed window for passive). |
 | `validation-score` | Percentage of datasets whose latest `attr/validation/result` row has `score == 1.0`, among datasets that have a validation conf. |
 
-**Result row shape.** Every measurement run persists one `attr/result` row carrying
-both an aggregate `value` and a per-dataset `breakdown` — which datasets contributed
-which sub-values. The breakdown lets time-range queries on `attr/result` answer
-"which datasets failed last Tuesday" without re-running the metric.
-
-**Run semantics.** Runs are serialized per metric: a duplicate `method/run` while one
-is in flight returns `409 METRIC_RUNNING`. `dry_run: true` evaluates the query and
-returns the would-be result without persisting to `attr/result` or emitting events —
-useful for testing a new `measurement_query` before letting the schedule fire.
+Every measurement run persists one `attr/result` row carrying both an aggregate
+`value` and a per-dataset `breakdown`, so time-range queries can answer "which
+datasets failed last Tuesday" without re-running the metric. Run semantics
+(serialization, dry-run, disabled-conf rejection) and breakdown shape are
+specified in [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics).
 
 **Baseline overview (one)**
 
@@ -883,5 +711,3 @@ GET /api/v1/spoke/dg/overview
 `orders.line_items`, `customers.profiles`, `orders.shipments`, and `orders.events` by
 their freshness and validation status, alongside any blind spots — datasets visible in
 DataHub that have not yet been mapped to a UC3 node.
-
-When `is_enabled=false`, non-dry-run calls to `method/run` on a metric return `409 METRIC_DISABLED`. Dry-run (`dry_run: true`) is always permitted regardless of `is_enabled`.
