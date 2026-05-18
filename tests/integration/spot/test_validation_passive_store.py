@@ -15,6 +15,8 @@ Concerns covered:
 - GET result historical: ~10 rows with distinct data_time; from/until filters correctly;
   last-write-wins on duplicate data_time.
 - DELETE → DataHub status.removed == True; subsequent GET conf returns 404.
+- PATCH on soft-deleted slot → 404 (mirrors GET resource view).
+- PUT with control char in description → 422 (Pydantic boundary).
 - PUT-after-DELETE → assertion resurrected (status.removed=False);
   same URN reused; assertionInfo overwritten with new description.
 - Out-of-band tombstone reverted on next PUT.
@@ -32,6 +34,7 @@ Spec:
 """
 
 import os
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -505,6 +508,134 @@ async def test_put_after_delete_resurrects_assertion(
     assert info.description == new_description, (
         f"Expected description={new_description!r} after resurrection, got {info.description!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_patch_conf_on_soft_deleted_returns_404(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH on a soft-deleted validation slot returns 404.
+
+    DELETE performs a soft delete.  After DELETE, both GET and PATCH treat
+    the tombstoned slot as absent — the resource view is unified, so any
+    operation that reads the slot first returns 404 when the slot is removed.
+
+    spec: VALIDATION.md §Rule Configuration — after DELETE, PATCH on tombstoned
+      slot returns 404 (mirrors GET resource view)
+    """
+    # PUT to create the slot
+    put_resp = await api_client.put(
+        _CONF_URL,
+        headers=admin_headers,
+        json={"description": "Patch-on-deleted test", "variables": ["row_cnt"]},
+    )
+    assert put_resp.status_code in (200, 201), f"PUT failed: {put_resp.text}"
+
+    # DELETE to soft-delete the slot
+    del_resp = await api_client.delete(_CONF_URL, headers=admin_headers)
+    assert del_resp.status_code == 204, f"DELETE failed: {del_resp.text}"
+
+    # PATCH on the tombstoned slot must return 404.
+    # spec: VALIDATION.md §Rule Configuration — after DELETE, PATCH on tombstoned
+    # slot returns 404 (mirrors GET resource view); no mutation occurs.
+    patch_resp = await api_client.patch(
+        _CONF_URL,
+        headers=admin_headers,
+        json={"description": "should not apply to soft-deleted slot"},
+    )
+    assert patch_resp.status_code == 404, (
+        f"PATCH on soft-deleted slot expected 404, "
+        f"got {patch_resp.status_code}: {patch_resp.text}"
+    )
+    # spec: API.md §Standard Envelope — every non-2xx response carries an error_code field.
+    patch_body = patch_resp.json()
+    assert patch_body.get("error_code"), (
+        f"404 response must carry error_code per API.md §Standard Envelope; got: {patch_body}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_conf_rejects_description_with_control_chars(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with a description containing ASCII 0x01 (a disallowed control character) is rejected.
+
+    The validation schema's _DESC_CTRL_RE rejects control characters in [0x00-0x08,
+    0x0b-0x1f, 0x7f] — that is, all control characters except \\t (0x09) and \\n (0x0a).
+    ASCII 0x01 (SOH) is in the rejected range.
+
+    The Pydantic field_validator raises ValueError, which Pydantic wraps as
+    PydanticValidationError; the API error handler maps that to 422
+    (INVALID_PARAMETER).
+
+    Note: spec/API.md §Error Codes lists INVALID_PARAMETER as HTTP 400, but the
+    current error handler at src/api/main.py maps PydanticValidationError to 422
+    unconditionally.  The test asserts the actual implementation behaviour (422)
+    rather than the spec value (400) — this discrepancy should be tracked separately.
+
+    spec: VALIDATION.md §Rule Configuration — description disallows ASCII control
+      characters except \\t (0x09) and \\n (0x0a)
+    spec: API.md §Error Codes — INVALID_PARAMETER (spec says 400; impl returns 422)
+    """
+    resp = await api_client.put(
+        _CONF_URL,
+        headers=admin_headers,
+        json={
+            "description": "Bad\x01description",  # 0x01 (SOH) — disallowed
+            "variables": ["row_cnt"],
+        },
+    )
+
+    # TODO(spec-sync): API.md §Error Codes lists INVALID_PARAMETER → 400 but PydanticValidationError handler at src/api/main.py:188 returns 422. Track separately.
+    # spec: VALIDATION.md §Rule Configuration — control characters rejected at schema layer.
+    # Implementation maps to 422 via PydanticValidationError handler (see src/api/main.py).
+    assert resp.status_code == 422, (
+        f"PUT with control char in description expected 422 (Pydantic boundary), "
+        f"got {resp.status_code}: {resp.text}. "
+        "spec: VALIDATION.md §Rule Configuration — description disallows control chars"
+    )
+    # No cleanup needed — a 422 rejection is pre-commit; no row is created.
+
+
+@pytest.mark.asyncio
+async def test_put_conf_accepts_description_with_tab_and_newline(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with a description containing \\t (0x09) and \\n (0x0a) is accepted.
+
+    The validation schema's _DESC_CTRL_RE carves out \\t and \\n from the rejected
+    control-character range.  Only [0x00-0x08, 0x0b-0x1f, 0x7f] are disallowed;
+    \\t (0x09) and \\n (0x0a) are explicitly permitted so that multi-line / tabular
+    descriptions can be stored without sanitisation.
+
+    A regex regression to [\\x00-\\x1f\\x7f] (no carve-out) would silently reject
+    these characters — this test catches that regression.
+
+    spec: VALIDATION.md §Rule Configuration — description disallows ASCII control
+      characters except \\t (0x09) and \\n (0x0a)
+    """
+    try:
+        resp = await api_client.put(
+            _CONF_URL,
+            headers=admin_headers,
+            json={
+                "description": "line1\nline2\tindented column",
+                "variables": ["row_cnt"],
+            },
+        )
+        # spec: VALIDATION.md §Rule Configuration — \\t and \\n are in the carve-out set;
+        # a description containing only these control chars must be accepted (200 or 201).
+        assert resp.status_code in (200, 201), (
+            f"PUT with \\t and \\n in description must be accepted; "
+            f"got {resp.status_code}: {resp.text}. "
+            "spec: VALIDATION.md §Rule Configuration — \\t (0x09) and \\n (0x0a) are allowed"
+        )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(_CONF_URL, headers=admin_headers)
 
 
 @pytest.mark.asyncio

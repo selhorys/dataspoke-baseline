@@ -10,6 +10,8 @@ Concerns covered:
 - POST .../method/run dry_run=true → no persisted result, no RUN_COMPLETE event
 - GET /spoke/dg/metric/{metric_id}/attr/result — result list (timeseries envelope)
 - GET /spoke/dg/metric/{metric_id}/event — event list envelope
+- PUT and PATCH with 1,000 entries on measurement_query.dataset_filter dimension → accepted (200/201)
+- PUT and PATCH with 1,001 entries on measurement_query.dataset_filter dimension → 422
 
 Spec:
 - spec/USE_CASE_en.md §UC5 §Baseline overview (baseline metric IDs)
@@ -17,12 +19,15 @@ Spec:
 - spec/USE_CASE_en.md §UC5 §Run semantics (dry_run → no persist, no event)
 - spec/feature/BACKEND.md §Metrics Service (dataset_filter, breakdown shape)
 - spec/feature/BACKEND.md §Event Catalogue (METRIC.RUN_COMPLETE + unresolved_urns)
+- spec/API.md §UC5 Payload caps — measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
+    ≤ 1,000 entries per dimension
 """
 
 import asyncio
+from contextlib import suppress
 
-import pytest
 import httpx
+import pytest
 
 # Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
 # before this module's tests run (autoused by tests/integration/conftest.py).
@@ -664,3 +669,134 @@ async def test_metric_event_list_envelope(
 
     # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
+
+
+# ── Payload cap boundary tests ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("n", "expected_status_set"),
+    [(1000, {200, 201}), (1001, {422})],
+    ids=["at-cap-1000-accepted", "over-cap-1001-rejected"],
+)
+@pytest.mark.parametrize(
+    "dimension",
+    ["tags", "glossary_terms", "dataset_urns"],
+    ids=["tags", "glossary_terms", "dataset_urns"],
+)
+@pytest.mark.parametrize(
+    "method",
+    ["PUT", "PATCH"],
+    ids=["PUT", "PATCH"],
+)
+@pytest.mark.asyncio
+async def test_metric_put_measurement_query_dataset_filter_dimension_caps(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    method: str,
+    dimension: str,
+    n: int,
+    expected_status_set: set[int],
+) -> None:
+    """PUT and PATCH at-cap (n=1000, accepted) and over-cap (n=1001, rejected) on a
+    single measurement_query.dataset_filter dimension.
+
+    PatchMetricConfigRequest.validate_dataset_filter_bounds (src/api/schemas/metrics.py:108)
+    also bounds-checks PATCH.  A regression removing only the PATCH validator goes
+    undetected if only PUT is tested — this parametrize covers both verbs.
+
+    The boundary case (n=1000) pins the cap value: a regression dropping the limit
+    to 500 still passes the n=1001 test but fails here.  Well-formed URNs ensure
+    cap enforcement — not URN validation — determines the result.
+
+    spec: API.md §UC5 Payload caps — measurement_query.dataset_filter.{tags,glossary_terms,
+      dataset_urns} ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted;
+      1,001 MUST be rejected (422).
+    spec: src/api/schemas/metrics.py:108 — PatchMetricConfigRequest.validate_dataset_filter_bounds
+      delegates to _check_measurement_query_dataset_filter_bounds.
+    """
+    _CAPS_METRIC_ID = f"spot-test-cap-{method.lower()}-{dimension}"
+    base = f"/api/v1/spoke/dg/metric/{_CAPS_METRIC_ID}/attr/conf"
+
+    # Build n well-formed URN strings for the chosen dimension.
+    if dimension == "tags":
+        entries = [f"urn:li:tag:t-{i}" for i in range(n)]
+    elif dimension == "glossary_terms":
+        entries = [f"urn:li:glossaryTerm:gt-{i}" for i in range(n)]
+    else:  # dataset_urns
+        entries = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
+            for i in range(n)
+        ]
+
+    try:
+        if method == "PUT":
+            resp = await api_client.put(
+                base,
+                headers=admin_headers,
+                json={
+                    "title": f"Cap test metric ({dimension})",
+                    "description": f"Tests dataset_filter.{dimension} cap enforcement.",
+                    "theme": "freshness",
+                    "measurement_query": {
+                        "aggregation": "pct_fresh",
+                        "dataset_filter": {dimension: entries},
+                    },
+                    "schedule_tier": "hourly",
+                    "is_enabled": False,
+                },
+            )
+        else:  # PATCH — seed a minimal conf first so PATCH has a row to update
+            seed_resp = await api_client.put(
+                base,
+                headers=admin_headers,
+                json={
+                    "title": f"Cap seed metric ({dimension})",
+                    "description": "Seed for PATCH boundary cap test.",
+                    "theme": "freshness",
+                    "measurement_query": {
+                        "aggregation": "pct_fresh",
+                        "dataset_filter": {dimension: ["urn:li:tag:seed-0"] if dimension == "tags"
+                                           else ["urn:li:glossaryTerm:seed-0"] if dimension == "glossary_terms"
+                                           else ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.seed,DEV)"]},
+                    },
+                    "schedule_tier": "hourly",
+                    "is_enabled": False,
+                },
+            )
+            assert seed_resp.status_code in (200, 201), (
+                f"Seed PUT for PATCH boundary test failed: {seed_resp.status_code} {seed_resp.text}"
+            )
+            resp = await api_client.patch(
+                base,
+                headers=admin_headers,
+                json={
+                    "measurement_query": {
+                        "aggregation": "pct_fresh",
+                        "dataset_filter": {dimension: entries},
+                    },
+                },
+            )
+
+        # spec: API.md §UC5 Payload caps — exactly 1,000 entries MUST be accepted
+        # (200 or 201); 1,001 entries MUST be rejected (422) at the Pydantic boundary
+        # before any service-layer or DB call.
+        assert resp.status_code in expected_status_set, (
+            f"{method} with n={n} {dimension} entries: expected status in {expected_status_set}, "
+            f"got {resp.status_code}: {resp.text}. "
+            "spec: API.md §UC5 Payload caps — measurement_query.dataset_filter cap is 1,000 per dimension"
+        )
+
+        if 422 in expected_status_set:
+            # The 422 body must be non-empty JSON (we do not pin the error message wording).
+            # spec: API.md §UC5 Payload caps — over-cap dimension rejected at schema boundary.
+            body = resp.json()
+            assert body, (
+                f"422 response body must be non-empty JSON; got: {resp.text!r}. "
+                "spec: API.md §Error Codes — validation errors return structured JSON body"
+            )
+
+    finally:
+        # Clean up any conf that was created (at-cap PUT/seed PUT may write a row).
+        with suppress(Exception):
+            await api_client.delete(base, headers=admin_headers)

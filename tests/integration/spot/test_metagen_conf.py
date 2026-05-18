@@ -1,6 +1,6 @@
 """Spot tests for Metadata Generation — singleton conf and per-dataset boundary CRUD.
 
-Concerns covered (7 test functions across 2 groups):
+Concerns covered (9 test functions across 3 groups):
 
 Singleton conf CRUD (Group 1):
   test_metagen_global_conf_roundtrip_put_get_patch_delete
@@ -13,10 +13,19 @@ Per-dataset boundary CRUD (Group 2):
   test_metagen_boundary_get_unknown_urn_returns_null_body
   test_metagen_boundary_put_allowed_validation_422
 
+Payload cap and schedule_tier boundary (Group 3):
+  test_metagen_global_conf_put_dataset_filter_dimension_caps
+    parametrized over (n, expected_status_set) x dimension:
+      [at-cap-1000-accepted] x [tags, glossary_terms, dataset_urns] — 200/201 accepted
+      [over-cap-1001-rejected] x [tags, glossary_terms, dataset_urns] — 422 rejected
+    for both PUT and PATCH methods
+  test_metagen_global_conf_put_invalid_schedule_tier_422
+
 These tests are pure REST and do not require raw-SQL seeding.
 
 spec: USE_CASE_en.md §UC4 (L552-776)
-spec: BACKEND.md §UC4 Metadata Generation — singleton conf, boundary
+spec: API.md §UC4 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000
+spec: BACKEND.md §UC4 Metadata Generation — singleton conf, boundary; schedule_tier Literal
 spec: TESTING.md §Spot vs Api-Wired Integration Tests
 """
 
@@ -406,4 +415,146 @@ async def test_metagen_boundary_put_allowed_validation_422(
         f"PUT boundary with removed kind 'cross_data.md' must return 422; "
         f"got {resp.status_code} {resp.text}. "
         "spec: src/api/schemas/metagen.py L77-80"
+    )
+
+
+# ── Group 3: Payload cap and schedule_tier boundary tests ────────────────────
+
+
+@pytest.mark.parametrize(
+    ("n", "expected_status_set"),
+    [(1000, {200, 201}), (1001, {422})],
+    ids=["at-cap-1000-accepted", "over-cap-1001-rejected"],
+)
+@pytest.mark.parametrize(
+    "dimension",
+    ["tags", "glossary_terms", "dataset_urns"],
+    ids=["tags", "glossary_terms", "dataset_urns"],
+)
+@pytest.mark.parametrize(
+    "method",
+    ["PUT", "PATCH"],
+    ids=["PUT", "PATCH"],
+)
+@pytest.mark.asyncio
+async def test_metagen_global_conf_put_dataset_filter_dimension_caps(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    method: str,
+    dimension: str,
+    n: int,
+    expected_status_set: set[int],
+) -> None:
+    """PUT or PATCH at-cap (n=1000, accepted) and over-cap (n=1001, rejected) on a
+    single dataset_filter dimension.
+
+    The boundary test (n=1000) verifies the cap itself: a regression dropping the
+    limit to 500 would still pass the n=1001 test but fail here.  Well-formed URNs
+    are used so cap enforcement — not URN validation — triggers the result.
+
+    spec: API.md §UC4 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
+      ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted; 1,001 MUST be rejected.
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+
+    # Build n well-formed URN strings for the chosen dimension.
+    if dimension == "tags":
+        entries = [f"urn:li:tag:t-{i}" for i in range(n)]
+    elif dimension == "glossary_terms":
+        entries = [f"urn:li:glossaryTerm:gt-{i}" for i in range(n)]
+    else:  # dataset_urns
+        entries = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
+            for i in range(n)
+        ]
+
+    try:
+        if method == "PUT":
+            resp = await api_client.put(
+                conf_url,
+                headers=admin_headers,
+                json={
+                    "is_enabled": False,
+                    "schedule_tier": "daily",
+                    "result_limit": 5,
+                    "overwrite_pending": False,
+                    "dataset_filter": {dimension: entries},
+                },
+            )
+        else:  # PATCH — seed a minimal conf first so PATCH has a row to update
+            seed_resp = await api_client.put(
+                conf_url,
+                headers=admin_headers,
+                json={
+                    "is_enabled": False,
+                    "dataset_filter": {dimension: ["urn:li:tag:seed-0"] if dimension == "tags"
+                                       else ["urn:li:glossaryTerm:seed-0"] if dimension == "glossary_terms"
+                                       else ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.seed,DEV)"]},
+                },
+            )
+            assert seed_resp.status_code in (200, 201), (
+                f"Seed PUT for PATCH boundary test failed: {seed_resp.status_code} {seed_resp.text}"
+            )
+            resp = await api_client.patch(
+                conf_url,
+                headers=admin_headers,
+                json={"dataset_filter": {dimension: entries}},
+            )
+
+        # spec: API.md §UC4 Payload caps — exactly 1,000 entries MUST be accepted
+        # (200 or 201); 1,001 entries MUST be rejected (422) at the Pydantic boundary
+        # before any service-layer or DB call.
+        assert resp.status_code in expected_status_set, (
+            f"{method} with n={n} {dimension} entries: expected status in {expected_status_set}, "
+            f"got {resp.status_code}: {resp.text}. "
+            "spec: API.md §UC4 Payload caps — dataset_filter cap is 1,000 per dimension"
+        )
+
+        if 422 in expected_status_set:
+            # The 422 body must be non-empty JSON (we do not pin the error message wording).
+            # spec: API.md §UC4 Payload caps — over-cap dimension rejected at schema boundary.
+            body = resp.json()
+            assert body, (
+                f"422 response body must be non-empty JSON; got: {resp.text!r}. "
+                "spec: API.md §Error Codes — validation errors return structured JSON body"
+            )
+
+    finally:
+        # The at-cap PUT/PATCH may have written a row; clean up idempotently.
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_conf_put_invalid_schedule_tier_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with an unlisted schedule_tier value returns 422 at the Pydantic boundary.
+
+    schedule_tier is a Literal["hourly","daily","weekly"] | None field; "monthly"
+    is not a member of that union so Pydantic rejects it with 422 before the
+    service layer is reached.  This pins the Pydantic boundary so that a
+    regression back to a service-layer string comparison would still surface via
+    a different error shape (no longer 422 from the schema).
+
+    spec: API.md §UC4 / BACKEND.md — schedule_tier ∈ {"hourly","daily","weekly"};
+      Pydantic Literal auto-422
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+
+    resp = await api_client.put(
+        conf_url,
+        headers=admin_headers,
+        json={
+            "is_enabled": False,
+            "schedule_tier": "monthly",
+        },
+    )
+    # spec: API.md §UC4 / BACKEND.md — schedule_tier ∈ {"hourly","daily","weekly"};
+    # Pydantic Literal auto-422; "monthly" is not a valid member.
+    assert resp.status_code == 422, (
+        f"PUT with schedule_tier='monthly' must return 422; "
+        f"got {resp.status_code}: {resp.text}. "
+        "spec: API.md §UC4 / BACKEND.md — schedule_tier Pydantic Literal auto-422"
     )

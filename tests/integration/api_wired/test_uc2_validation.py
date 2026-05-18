@@ -276,6 +276,25 @@ async def test_uc2_passive_result_store(
             f"Step 5: ?removed=false should still include active kafka dataset; got: {active_urns}"
         )
 
+        # ── Step 5.5: PATCH on soft-deleted slot → 404 ────────────────────────────
+        # spec: VALIDATION.md §Rule Configuration — after DELETE, PATCH targets
+        # the same resource view as GET; tombstoned slot is invisible.
+        patch_deleted_resp = await api_client.patch(
+            _PG_CONF_URL,
+            headers=admin_headers,
+            json={"description": "should not apply to soft-deleted slot"},
+        )
+        assert patch_deleted_resp.status_code == 404, (
+            f"Step 5.5: PATCH on soft-deleted conf expected 404, "
+            f"got {patch_deleted_resp.status_code}: {patch_deleted_resp.text}"
+        )
+        # spec: API.md §Standard Envelope — every non-2xx response carries an error_code field.
+        patch_deleted_body = patch_deleted_resp.json()
+        assert patch_deleted_body.get("error_code"), (
+            f"Step 5.5: 404 response must carry error_code per API.md §Standard Envelope; "
+            f"got: {patch_deleted_body}"
+        )
+
         # ── Step 6: PUT-after-DELETE resurrects the postgres assertion ───────
         # UC2 narrative: "The DE reinstates the rule with updated variable names."
         # spec: VALIDATION.md §Rule Configuration — subsequent PUT resurrects; same URN reused.

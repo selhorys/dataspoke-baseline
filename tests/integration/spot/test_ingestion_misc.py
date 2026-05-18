@@ -8,6 +8,7 @@ Concerns covered:
 - Reference-path: PUT with no password pointing at existing Secret succeeds
 - Reference to non-existent key on existing Secret → 422
 - GET /data/{urn}/event/ingestion — paginated event envelope
+- PUT with schedule_tier="monthly" → 422 (Pydantic Literal boundary)
 """
 # spec: API.md §Standard Envelope
 # spec: SECRET_RESOLUTION.md §Name prefix policy, §Vault-write flow, §Reference-path verify flow
@@ -375,3 +376,56 @@ async def test_ingestion_events_list_envelope(
     assert isinstance(body["events"], list)
 
     await api_client.delete(base_conf, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_ingestion_conf_put_invalid_schedule_tier_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with schedule_tier='monthly' returns 422 at the Pydantic boundary.
+
+    schedule_tier for active-custom ingestion is
+    Literal["hourly","daily","weekly"] | None; "monthly" is not a member of
+    that union so Pydantic rejects it with 422 before the service layer is
+    reached.  This pins the Pydantic boundary so that a regression back to a
+    service-layer string comparison would surface via a different error shape.
+
+    spec: BACKEND.md §UC1 Ingestion Control — schedule_tier ∈ {"hourly","daily","weekly"};
+      Pydantic Literal auto-422
+    """
+    base_conf = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
+
+    resp = await api_client.put(
+        base_conf,
+        headers=admin_headers,
+        json={
+            "mode": "active-custom",
+            "platform": "postgres",
+            "locator": {"host": _PG_HOST, "port": _PG_PORT},
+            "identifier": {
+                "database": _PG_DB,
+                "schema_name": "catalog",
+                "table": "title_master",
+            },
+            "auth": {
+                "username": _PG_USER,
+                "password": _PG_PASSWORD,
+                "secret_ref": {
+                    "name": f"dataspoke-source-cred-spot-sched-tier-{uuid.uuid4().hex[:8]}",
+                    "key": "password",
+                    "force_overwrite": True,
+                },
+            },
+            "schedule_tier": "monthly",
+            "is_enabled": False,
+        },
+    )
+
+    # spec: BACKEND.md §UC1 Ingestion Control — schedule_tier ∈ {"hourly","daily","weekly"};
+    # Pydantic Literal auto-422; "monthly" is not a valid member.
+    assert resp.status_code == 422, (
+        f"PUT with schedule_tier='monthly' must return 422; "
+        f"got {resp.status_code}: {resp.text}. "
+        "spec: BACKEND.md §UC1 Ingestion Control — schedule_tier Pydantic Literal auto-422"
+    )

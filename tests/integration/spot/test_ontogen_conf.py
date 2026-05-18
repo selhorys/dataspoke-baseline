@@ -1,6 +1,6 @@
 """Spot tests for Ontology Generation — singleton conf CRUD and seed CRUD.
 
-Concerns covered (5 test functions):
+Concerns covered (7 test functions):
 
 Singleton conf CRUD:
   test_ontogen_conf_get_returns_defaults
@@ -11,13 +11,23 @@ Singleton conf CRUD:
 Seed CRUD:
   test_ontogen_seed_create_list_get_patch_delete
 
+Payload cap and schedule_tier boundary:
+  test_ontogen_conf_put_dataset_filter_dimension_caps
+    parametrized over (n, expected_status_set) x dimension x method:
+      [at-cap-1000-accepted] — 200/201 accepted
+      [over-cap-1001-rejected] — 422 rejected
+  test_ontogen_conf_put_invalid_schedule_tier_422
+
 These tests are pure REST and do not require raw-SQL seeding or DataHub documents.
 
 Spec traceability:
 - spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
 - spec/USE_CASE_en.md §UC3 L389 — OntogenConfResponse fields
+- spec/API.md §UC3 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000
 - spec/TESTING.md §Spot vs Api-Wired Integration Tests
 """
+
+from contextlib import suppress
 
 import httpx
 import pytest
@@ -182,3 +192,135 @@ async def test_ontogen_seed_create_list_get_patch_delete(
     assert list_after.status_code == 200
     active_ids_after = [s["seed_id"] for s in list_after.json()["seeds"]]
     assert seed_id not in active_ids_after
+
+
+# ── Payload cap and schedule_tier boundary tests ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("n", "expected_status_set"),
+    [(1000, {200, 201}), (1001, {422})],
+    ids=["at-cap-1000-accepted", "over-cap-1001-rejected"],
+)
+@pytest.mark.parametrize(
+    "dimension",
+    ["tags", "glossary_terms", "dataset_urns"],
+    ids=["tags", "glossary_terms", "dataset_urns"],
+)
+@pytest.mark.parametrize(
+    "method",
+    ["PUT", "PATCH"],
+    ids=["PUT", "PATCH"],
+)
+@pytest.mark.asyncio
+async def test_ontogen_conf_put_dataset_filter_dimension_caps(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    method: str,
+    dimension: str,
+    n: int,
+    expected_status_set: set[int],
+) -> None:
+    """PUT or PATCH at-cap (n=1000, accepted) and over-cap (n=1001, rejected) on a
+    single dataset_filter dimension.
+
+    The boundary test (n=1000) verifies the cap itself: a regression dropping the
+    limit to 500 would still pass the n=1001 test but fail here.  Well-formed URNs
+    are used so cap enforcement — not URN validation — triggers the result.
+
+    spec: API.md §UC3 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
+      ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted; 1,001 MUST be rejected.
+    """
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    # Build n well-formed URN strings for the chosen dimension.
+    if dimension == "tags":
+        entries = [f"urn:li:tag:t-{i}" for i in range(n)]
+    elif dimension == "glossary_terms":
+        entries = [f"urn:li:glossaryTerm:gt-{i}" for i in range(n)]
+    else:  # dataset_urns
+        entries = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
+            for i in range(n)
+        ]
+
+    try:
+        if method == "PUT":
+            resp = await api_client.put(
+                conf_url,
+                headers=admin_headers,
+                json={
+                    "is_enabled": False,
+                    "schedule_tier": "daily",
+                    "default_run_prompt": "",
+                    "dataset_filter": {dimension: entries},
+                },
+            )
+        else:  # PATCH — the ontogen conf always exists (singleton with defaults), so
+               # PATCH can target it directly without an explicit seed PUT.
+            resp = await api_client.patch(
+                conf_url,
+                headers=admin_headers,
+                json={"dataset_filter": {dimension: entries}},
+            )
+
+        # spec: API.md §UC3 Payload caps — exactly 1,000 entries MUST be accepted
+        # (200 or 201); 1,001 entries MUST be rejected (422) at the Pydantic boundary
+        # before any service-layer or DB call.
+        assert resp.status_code in expected_status_set, (
+            f"{method} with n={n} {dimension} entries: expected status in {expected_status_set}, "
+            f"got {resp.status_code}: {resp.text}. "
+            "spec: API.md §UC3 Payload caps — dataset_filter cap is 1,000 per dimension"
+        )
+
+        if 422 in expected_status_set:
+            # The 422 body must be non-empty JSON (we do not pin the error message wording).
+            # spec: API.md §UC3 Payload caps — over-cap dimension rejected at schema boundary.
+            body = resp.json()
+            assert body, (
+                f"422 response body must be non-empty JSON; got: {resp.text!r}. "
+                "spec: API.md §Error Codes — validation errors return structured JSON body"
+            )
+
+    finally:
+        # The at-cap PUT/PATCH may have written to the singleton conf; reset to
+        # a clean disabled state so subsequent parameterized cases are independent.
+        with suppress(Exception):
+            await api_client.patch(
+                conf_url,
+                headers=admin_headers,
+                json={"is_enabled": False, "dataset_filter": {}},
+            )
+
+
+@pytest.mark.asyncio
+async def test_ontogen_conf_put_invalid_schedule_tier_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with an unlisted schedule_tier value returns 422 at the Pydantic boundary.
+
+    schedule_tier is a Literal["hourly","daily","weekly"] | None field; "monthly"
+    is not a member of that union so Pydantic rejects it with 422 before the
+    service layer is reached.
+
+    spec: BACKEND.md §UC3 Ontology Generation — schedule_tier ∈ {"hourly","daily","weekly"};
+      Pydantic Literal auto-422
+    """
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    resp = await api_client.put(
+        conf_url,
+        headers=admin_headers,
+        json={
+            "is_enabled": False,
+            "schedule_tier": "monthly",
+        },
+    )
+    # spec: BACKEND.md §UC3 Ontology Generation — schedule_tier ∈ {"hourly","daily","weekly"};
+    # Pydantic Literal auto-422; "monthly" is not a valid member.
+    assert resp.status_code == 422, (
+        f"PUT with schedule_tier='monthly' must return 422; "
+        f"got {resp.status_code}: {resp.text}. "
+        "spec: BACKEND.md §UC3 Ontology Generation — schedule_tier Pydantic Literal auto-422"
+    )
