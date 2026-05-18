@@ -13,7 +13,7 @@ METRICS_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metrics-{tier}" for tier in TIER
 METAGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metagen-{tier}" for tier in TIERS)
 ONTOGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"ontogen-{tier}" for tier in TIERS)
 
-ON_DEMAND_DAG_IDS: tuple[str, ...] = ("metagen", "metrics", "ontogen")
+ON_DEMAND_DAG_IDS: tuple[str, ...] = ("metrics",)
 SYNC_DAG_IDS: tuple[str, ...] = ("datahub-sync-daily",)
 
 ALL_DAG_IDS: frozenset[str] = frozenset(

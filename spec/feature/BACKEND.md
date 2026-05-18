@@ -221,10 +221,13 @@ mode — `passive` mode is platform-agnostic since DataSpoke does not run the ex
 complete `RunEvent` aspects per run (see
 [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
 Postgres also emits a two-level container hierarchy (database → schema), one container
-URN per `(database, schema)` pair; see
+URN per `(database, schema)` pair, plus a `BrowsePathsV2Class` aspect on each dataset
+that references both container URNs (explicit emission for parity with upstream
+managed-PG source; DataHub's server-side generation from `Container` is not reliable
+under subsequent aspect writes). See
 [DATAHUB_INTEGRATION §Container URN Construction](../DATAHUB_INTEGRATION.md#container-urn-construction)
 for the URN-parity invariant with DataHub's managed-PG source. Kafka emits no containers
-(topics live at platform root, matching upstream Kafka source behavior).
+or browse paths (topics live at platform root, matching upstream Kafka source behavior).
 For postgres, `DatasetProperties.description` is sourced from the PG `obj_description()`
 COMMENT and each `SchemaField.description` from `col_description()`; when no COMMENT is
 set, the dataset description falls back to `"Ingested by DataSpoke: {database}.{schema}.{table}"`.
@@ -429,7 +432,9 @@ This section describes the implementation only.
 **Singleton conf** at `/spoke/common/metagen/attr/conf` — there is no
 per-dataset operational config; the per-dataset row
 (`/spoke/common/data/{urn}/attr/metagen/conf`) is the opt-in boundary only.
-Fields:
+`GET` on either resource returns a `null` body with `200 OK` when the row has
+never been written; clients distinguish the unset state by `null` rather than
+by a `404`. Fields:
 
 | Field | Purpose |
 |-------|---------|
@@ -595,7 +600,7 @@ config. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
-| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC5's `measurement_query.dataset_filter`. |
+| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. Each of the three list dimensions is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC5's `measurement_query.dataset_filter`. |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
 UC3 inputs are sourced entirely from DataHub-resident metadata (the proofread
@@ -667,6 +672,10 @@ Producer's inference loop is specified in
 
 Concurrent inference runs return `409 ONTOGEN_RUNNING`; `?dry_run=true` evaluates
 steps 2–8 without persisting.
+
+**Trigger surface**. Inference is triggered by `POST /spoke/common/ontogen/method/run`
+(synchronous, in-process) or one of the three periodic tier DAGs. Concurrency across all
+triggers is enforced by the Redis `ontogen:running:singleton` SET NX guard.
 
 **Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
 raises `409 ONTOGEN_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
@@ -845,12 +854,10 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `metagen-hourly` | `metagen_hourly.py` | Airflow schedule | `@hourly` |
 | `metagen-daily` | `metagen_daily.py` | Airflow schedule | `@daily` |
 | `metagen-weekly` | `metagen_weekly.py` | Airflow schedule | `@weekly` |
-| `metagen` | `metagen.py` | API | On-demand |
 | `metrics` | `metrics.py` | API | On-demand |
 | `ontogen-hourly` | `ontogen_hourly.py` | Airflow schedule | `@hourly` |
 | `ontogen-daily` | `ontogen_daily.py` | Airflow schedule | `@daily` |
 | `ontogen-weekly` | `ontogen_weekly.py` | Airflow schedule | `@weekly` |
-| `ontogen` | `ontogen.py` | API | On-demand |
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
 
 > **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
@@ -892,14 +899,14 @@ smoke check by `dataspoke-test-mode.sh` and by the test fixture
 | Flow | Redis Key | TTL |
 |------|-----------|-----|
 | `ingestion` | `ingestion:running:{dataset_urn}` | 1 hour |
+| `ontogen` | `ontogen:running:singleton` | 1 hour |
+| `metagen` | `metagen:running:singleton` | 1 hour |
 
 **Airflow DAG run conf-based dedup** (for Airflow-orchestrated DAGs):
 
 | DAG | Conf Key |
 |-----|----------|
-| `metagen` | `metagen-singleton` |
 | `metrics` | `metrics-{metric_id}` |
-| `ontogen` | `ontogen-singleton` |
 
 If a duplicate is detected, the API returns `409 Conflict` with the appropriate `*_RUNNING`
 error code (`METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …).

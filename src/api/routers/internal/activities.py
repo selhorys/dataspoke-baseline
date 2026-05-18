@@ -137,7 +137,13 @@ class MetagenRunRequest(BaseModel):
 async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
     """Execute the metagen pipeline (singleton).
 
-    Called by the metagen tier DAGs and the on-demand metagen DAG.
+    Called by the three metagen tier DAGs. Each tier DAG supplies ``tier``;
+    the activity short-circuits when ``tier`` does not match
+    ``metagen_config.schedule_tier`` so only the one DAG matching the conf
+    actually runs. Manual API calls (``POST /spoke/common/metagen/method/run``)
+    call MetagenService.run() directly in-process.
+
+    Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
     """
     datahub = make_datahub()
     cache = make_cache()
@@ -148,8 +154,19 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
             from src.backend.metagen.service import MetagenService
 
             service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
+
+            if body.tier is not None:
+                conf = await service.get_global_conf()
+                conf_tier = conf.schedule_tier if conf is not None else None
+                if body.tier != conf_tier:
+                    return {
+                        "status": "skipped",
+                        "reason": "tier_mismatch",
+                        "dag_tier": body.tier,
+                        "conf_tier": conf_tier,
+                    }
+
             result = await service.run(
-                tier=body.tier,
                 dataset_urns=body.dataset_urns,
                 dry_run=body.dry_run,
             )
@@ -209,14 +226,20 @@ async def metrics_run(body: MetricsRunRequest) -> dict[str, object]:
 class OntogenRunRequest(BaseModel):
     dry_run: bool = False
     prompt_md: str | None = None
+    tier: str | None = None  # set by periodic tier DAGs; None for on-demand DAG
 
 
 @router.post("/ontogen/run")
 async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
     """Execute the ontogen inference pipeline.
 
-    Called by the ontogen tier DAGs and the on-demand ontogen DAG.
-    Tier-based DAGs supply no prompt_md (falls back to conf.default_run_prompt).
+    Called by the three ontogen tier DAGs. Each tier DAG supplies ``tier``;
+    the activity short-circuits when ``tier`` does not match
+    ``ontogen_config.schedule_tier`` so only the one DAG matching the conf
+    actually runs. Manual API calls (``POST /spoke/common/ontogen/method/run``)
+    call OntogenService.run() directly in-process.
+
+    Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
     """
     datahub = make_datahub()
     cache = make_cache()
@@ -233,6 +256,17 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
                 llm=llm,
                 vector=vector,
             )
+
+            if body.tier is not None:
+                conf = await service.get_conf()
+                if body.tier != conf.schedule_tier:
+                    return {
+                        "status": "skipped",
+                        "reason": "tier_mismatch",
+                        "dag_tier": body.tier,
+                        "conf_tier": conf.schedule_tier,
+                    }
+
             summary = await service.run(prompt_md=body.prompt_md, dry_run=body.dry_run)
             return {
                 "status": summary.status,

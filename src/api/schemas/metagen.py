@@ -131,7 +131,7 @@ class MetagenRunRequest(BaseModel):
 
 class MetagenRunResponse(BaseModel):
     run_id: str
-    status: Literal["success", "skipped", "failure"]
+    status: Literal["success", "failure"]
     dry_run: bool
     unresolved_urns: list[str]
     counts: dict[str, int]

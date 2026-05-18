@@ -211,6 +211,7 @@ Regular aspects represent the current state of an entity. Read via `get_aspect()
 | `upstreamLineage` | `UpstreamLineageClass` | `upstreams[].dataset` (URN), `upstreams[].type` | `GET /aspects/{urn}?aspect=upstreamLineage` | `POST /openapi/v3/entity/dataset` |
 | `status` | `StatusClass` | `removed` (bool) | `GET /aspects/{urn}?aspect=status` | `POST /openapi/v3/entity/dataset` |
 | `container` | `ContainerClass` | `container` (container URN) | `GET /aspects/{urn}?aspect=container` | `POST /openapi/v3/entity/dataset` |
+| `browsePathsV2` | `BrowsePathsV2Class` | `path[].id`, `path[].urn` (container URNs) | `GET /aspects/{urn}?aspect=browsePathsV2` | `POST /openapi/v3/entity/dataset` |
 | `deprecation` | `DeprecationClass` | `deprecated` (bool), `note`, `replacement` (URN), `decommissionTime` | `GET /aspects/{urn}?aspect=deprecation` | `POST /openapi/v3/entity/dataset` |
 
 #### Editable vs Non-Editable Description Aspects
@@ -352,7 +353,9 @@ in the DataHub source for the authoritative list. DataSpoke populates
 
 Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
 `mode: active-custom` configs only (Status, DatasetProperties, SchemaMetadata, plus
-per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-ingestor-guide));
+per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-ingestor-guide);
+postgres datasets additionally receive `Container` and `BrowsePathsV2` aspects so they
+nest under the same database → schema hierarchy as DataHub's managed-PG source);
 `passive` mode reads `DataProcessInstance` run history out-of-band via the
 `ingestion-passive-hourly` DAG and writes no aspects.*
 

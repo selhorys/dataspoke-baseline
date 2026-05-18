@@ -412,7 +412,7 @@ endpoint.
 **Sync triggers**:
 - Scheduled: refreshed by the matching `ontogen-{hourly,daily,weekly}` tier DAG when it
   re-runs UC3 inference on the configured `schedule_tier`
-- On-demand: rebuilt as part of an `ontogen` manual run
+- On-demand: rebuilt by a manual `POST /spoke/common/ontogen/method/run` (synchronous, in-process)
 - Optional event-driven extension (not enabled in baseline): Kafka MCL events for
   `datasetProperties` / `schemaMetadata` / `globalTags` changes — see
   [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)
@@ -448,8 +448,8 @@ endpoint.
 **Sync triggers**:
 - Refreshed by the matching `ontogen-{hourly,daily,weekly}` tier DAG: every approved node whose
   `node_embeddings.updated_at` precedes `ontogen_nodes.updated_at` is re-embedded
-- On-demand: rebuilt as part of an `ontogen` manual run when name or description
-  changed for an approved node
+- On-demand: rebuilt by a manual `POST /spoke/common/ontogen/method/run` when name
+  or description changed for an approved node
 
 ### `edge_embeddings`
 
@@ -473,7 +473,7 @@ Adversarial Debate Reviewer to sample RAG anchors over approved edges (see
 the LLM embedding endpoint.
 
 **Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
-DAG / on-demand `ontogen` manual run that refreshes `node_embeddings`.
+DAG or manual `POST /spoke/common/ontogen/method/run` that refreshes `node_embeddings`.
 
 ### `triple_embeddings`
 
@@ -496,7 +496,7 @@ Debate Reviewer to sample RAG anchors over approved triples. Lives in the
 the LLM embedding endpoint.
 
 **Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
-DAG / on-demand `ontogen` manual run that refreshes `node_embeddings`.
+DAG or manual `POST /spoke/common/ontogen/method/run` that refreshes `node_embeddings`.
 
 ### `metagen_candidate_embeddings`
 

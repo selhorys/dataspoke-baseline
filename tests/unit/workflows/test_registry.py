@@ -3,12 +3,12 @@
 Pins the exact set of DAG IDs per spec/feature/BACKEND.md §DAG Catalogue.
 Also verifies tier structure for tier-based DAG groups.
 
-spec: feature/BACKEND.md §DAG Catalogue — 17 DAGs total:
+spec: feature/BACKEND.md §DAG Catalogue — 15 DAGs total:
   4 ingestion (3 active tier + 1 passive hourly)
   3 metrics tier (hourly/daily/weekly)
   3 metagen tier (hourly/daily/weekly)
   3 ontogen tier (hourly/daily/weekly)
-  3 on-demand (metagen, metrics, ontogen)
+  1 on-demand (metrics)
   1 sync (datahub-sync-daily)
 """
 
@@ -45,10 +45,8 @@ _SPEC_ALL_DAG_IDS: frozenset[str] = frozenset({
     "ontogen-hourly",
     "ontogen-daily",
     "ontogen-weekly",
-    # On-demand (API-triggered)
-    "metagen",
+    # On-demand (API-triggered Airflow DAGs)
     "metrics",
-    "ontogen",
     # Sync
     "datahub-sync-daily",
 })
@@ -84,13 +82,13 @@ def test_all_dag_ids_is_frozenset() -> None:
     assert isinstance(ALL_DAG_IDS, frozenset)
 
 
-def test_all_dag_ids_has_exactly_17_entries() -> None:
-    """ALL_DAG_IDS must have exactly 17 entries per spec.
+def test_all_dag_ids_has_exactly_15_entries() -> None:
+    """ALL_DAG_IDS must have exactly 15 entries per spec.
 
-    spec: feature/BACKEND.md §DAG Catalogue — 17 total.
+    spec: feature/BACKEND.md §DAG Catalogue.
     """
-    assert len(ALL_DAG_IDS) == 17, (
-        f"Expected 17 DAG IDs, got {len(ALL_DAG_IDS)}. "
+    assert len(ALL_DAG_IDS) == 15, (
+        f"Expected 15 DAG IDs, got {len(ALL_DAG_IDS)}. "
         f"ALL_DAG_IDS: {sorted(ALL_DAG_IDS)}"
     )
 
@@ -176,15 +174,12 @@ def test_ontogen_tier_dag_ids_cover_all_tiers() -> None:
 # ── ON_DEMAND_DAG_IDS ─────────────────────────────────────────────────────────
 
 
-def test_on_demand_dag_ids_contains_metagen_metrics_ontogen() -> None:
-    """ON_DEMAND_DAG_IDS must contain 'metagen', 'metrics', 'ontogen'.
+def test_on_demand_dag_ids_is_exactly_metrics() -> None:
+    """ON_DEMAND_DAG_IDS pins the API-triggered Airflow DAGs.
 
     spec: feature/BACKEND.md §DAG Catalogue — on-demand (API-triggered) DAGs.
     """
-    for dag_id in ("metagen", "metrics", "ontogen"):
-        assert dag_id in ON_DEMAND_DAG_IDS, (
-            f"'{dag_id}' missing from ON_DEMAND_DAG_IDS."
-        )
+    assert set(ON_DEMAND_DAG_IDS) == {"metrics"}
 
 
 # ── SYNC_DAG_IDS ──────────────────────────────────────────────────────────────

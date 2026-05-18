@@ -113,7 +113,7 @@ async def delete_data_metagen_conf(
 async def get_data_metagen_items(
     dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=20, ge=1, le=100),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenItemListResponse:
     dtos, total = await service.list_items_for_dataset(dataset_urn, offset=offset, limit=limit)
@@ -191,7 +191,7 @@ async def post_data_metagen_item_candidate_review(
 async def get_data_metagen_events(
     dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=20, ge=1, le=100),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     db: AsyncSession = Depends(get_db),

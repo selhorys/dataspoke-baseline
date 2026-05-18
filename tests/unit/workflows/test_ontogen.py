@@ -56,11 +56,6 @@ def test_params_rejects_wrong_type_for_dry_run() -> None:
 # ── DAG registry ──────────────────────────────────────────────────────────────
 
 
-def test_ontogen_on_demand_dag_in_registry() -> None:
-    """The on-demand 'ontogen' DAG ID must be in ALL_DAG_IDS."""
-    assert "ontogen" in ALL_DAG_IDS
-
-
 def test_ontogen_tier_dags_in_registry() -> None:
     """ontogen-hourly, ontogen-daily, ontogen-weekly must all be in ALL_DAG_IDS."""
     for tier in ("hourly", "daily", "weekly"):
@@ -77,11 +72,3 @@ def test_ontogen_tier_dag_has_correct_dag_id(tier: str) -> None:
     assert dag_file.exists(), f"Missing dag file: {dag_file}"
     content = dag_file.read_text()
     assert f'"ontogen-{tier}"' in content or f"'ontogen-{tier}'" in content
-
-
-def test_ontogen_on_demand_dag_references_singleton_conf_key() -> None:
-    """On-demand ontogen DAG doc mentions 'ontogen-singleton' for dedup."""
-    dag_file = _DAGS_DIR / "ontogen.py"
-    assert dag_file.exists()
-    content = dag_file.read_text()
-    assert "ontogen-singleton" in content

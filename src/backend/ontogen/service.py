@@ -121,23 +121,6 @@ def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
         _validate_dataset_urn(str(urn))
 
 
-_VALID_SCHEDULE_TIERS: frozenset[str] = frozenset({"hourly", "daily", "weekly"})
-
-
-def _validate_schedule_tier(tier: str | None) -> None:
-    """Raise PreconditionFailedError if *tier* is not a valid schedule tier.
-
-    ``None`` is allowed (disables scheduling).
-    """
-    if tier is not None and tier not in _VALID_SCHEDULE_TIERS:
-        from src.shared.exceptions import PreconditionFailedError
-
-        raise PreconditionFailedError(
-            "INVALID_PARAMETER",
-            f"schedule_tier must be one of {sorted(_VALID_SCHEDULE_TIERS)} or null, got {tier!r}",
-        )
-
-
 def _status_for_outcome(score: float, debate_outcome: str) -> str:
     """Return the LLM-gated status for a newly persisted ontogen row.
 
@@ -224,14 +207,12 @@ class OntogenService:
         """Full replacement of the singleton conf.
 
         Validates dataset_filter.dataset_urns format — raises
-        InvalidDatasetUrnError for malformed entries.
-        Validates schedule_tier value — raises PreconditionFailedError for
-        unknown tiers.
+        InvalidDatasetUrnError for malformed entries. `schedule_tier` values
+        are constrained at the API schema layer (`OntogenConfPutRequest`).
         Emits ONTOGEN.CONFIG_CREATE or ONTOGEN.CONFIG_UPDATE.
         """
         dataset_filter = conf.get("dataset_filter", {}) or {}
         _validate_dataset_filter(dataset_filter)
-        _validate_schedule_tier(conf.get("schedule_tier"))
 
         result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
         existing = result.scalar_one_or_none()
@@ -262,14 +243,12 @@ class OntogenService:
     async def patch_conf(self, partial: dict[str, Any]) -> OntogenConfig:
         """Partial update of the singleton conf.
 
-        Validates dataset_filter.dataset_urns format if provided.
-        Validates schedule_tier value if provided.
+        Validates dataset_filter.dataset_urns format if provided. `schedule_tier`
+        values are constrained at the API schema layer (`OntogenConfPatchRequest`).
         Emits ONTOGEN.CONFIG_UPDATE.
         """
         if "dataset_filter" in partial and partial["dataset_filter"] is not None:
             _validate_dataset_filter(partial["dataset_filter"])
-        if "schedule_tier" in partial:
-            _validate_schedule_tier(partial["schedule_tier"])
 
         row = await self.get_conf()
 

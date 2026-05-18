@@ -1,10 +1,11 @@
 """Metagen workflow — Pydantic parameter models.
 
 Orchestration is handled by the Airflow DAG definitions in:
-  - dags/metagen.py (on-demand)
   - dags/metagen_hourly.py / metagen_daily.py / metagen_weekly.py (tier)
 
-Business logic lives in src/backend/metagen/service.py.
+Manual API runs go through `POST /spoke/common/metagen/method/run`, which calls
+MetagenService.run() synchronously in-process. Business logic lives in
+src/backend/metagen/service.py.
 Activity endpoint: POST /internal/activities/metagen/run
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue, §Concurrency Guards

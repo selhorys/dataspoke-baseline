@@ -178,9 +178,17 @@ class ValidationService:
         dataset_urn: str,
         patch: dict[str, Any],
     ) -> ValidationConfigRecord:
-        """Partially update the validation configuration."""
+        """Partially update the validation configuration.
+
+        A soft-deleted slot is invisible to PATCH — the select filters
+        `is_removed=False` so a tombstoned row mirrors the GET resource view
+        and the call raises EntityNotFoundError. Use PUT to resurrect.
+        """
         result = await self._db.execute(
-            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
+            select(ValidationConfig).where(
+                ValidationConfig.dataset_urn == dataset_urn,
+                ValidationConfig.is_removed.is_(False),
+            )
         )
         row = result.scalar_one_or_none()
         if row is None:

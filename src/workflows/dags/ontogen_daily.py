@@ -1,9 +1,9 @@
 """Airflow DAG: ontogen-daily
 
 Daily ontogen tier. Calls the ontogen run activity with tier="daily".
-OntogenService.run() checks ontogen_config.schedule_tier; if the singleton
-conf is not set to "daily", the run short-circuits and returns immediately
-without performing inference.
+The /internal/activities/ontogen/run activity compares the requested tier
+against ontogen_config.schedule_tier; if they do not match, the activity
+short-circuits with status="skipped" and inference is not invoked.
 
 Single task — ontogen is always a singleton run (no fan-out).
 

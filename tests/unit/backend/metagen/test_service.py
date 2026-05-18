@@ -196,17 +196,6 @@ async def test_put_global_conf_validates_malformed_urn(svc) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_global_conf_validates_invalid_schedule_tier(svc) -> None:
-    """put_global_conf raises PreconditionFailedError for unknown schedule_tier.
-
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — schedule_tier ∈ {hourly, daily, weekly, null}.
-    """
-    with pytest.raises(PreconditionFailedError) as exc_info:
-        await svc.put_global_conf({"is_enabled": False, "schedule_tier": "minutely"})
-    assert exc_info.value.error_code == "INVALID_PARAMETER"
-
-
-@pytest.mark.asyncio
 async def test_put_global_conf_creates_singleton_row_when_absent(svc, db) -> None:
     """put_global_conf creates a new row when none exists, returns DTO.
 
@@ -544,7 +533,7 @@ async def test_run_raises_conflict_when_lock_held(svc, cache) -> None:
     cache.set_nx = AsyncMock(return_value=False)
 
     with pytest.raises(ConflictError) as exc_info:
-        await svc.run(tier=None, dataset_urns=None, dry_run=False)
+        await svc.run(dataset_urns=None, dry_run=False)
 
     assert exc_info.value.error_code == "METAGEN_RUNNING", (
         "ConflictError must carry code METAGEN_RUNNING when lock is held. "
@@ -566,7 +555,7 @@ async def test_run_raises_conflict_when_disabled_and_not_dry_run(svc, cache, db)
     db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
 
     with pytest.raises(ConflictError) as exc_info:
-        await svc.run(tier=None, dataset_urns=None, dry_run=False)
+        await svc.run(dataset_urns=None, dry_run=False)
 
     assert exc_info.value.error_code == "METAGEN_DISABLED", (
         "ConflictError must carry code METAGEN_DISABLED when is_enabled=false. "
@@ -586,7 +575,7 @@ async def test_run_allows_dry_run_when_disabled(svc, cache, db) -> None:
     conf_row = _make_conf_row(is_enabled=False, schedule_tier=None, dataset_filter={"dataset_urns": []})
     db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
 
-    result = await svc.run(tier=None, dataset_urns=[], dry_run=True)
+    result = await svc.run(dataset_urns=[], dry_run=True)
 
     assert isinstance(result, RunResultDTO), (
         "run(dry_run=True) must return a RunResultDTO even when disabled. "
@@ -595,32 +584,12 @@ async def test_run_allows_dry_run_when_disabled(svc, cache, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_returns_skipped_when_tier_mismatches(svc, cache, db) -> None:
-    """run(tier='weekly') returns status='skipped' when conf.schedule_tier='daily'.
+async def test_run_proceeds_when_tier_param_absent(svc, cache, db) -> None:
+    """svc.run() (no tier arg) proceeds to inference when conf.is_enabled=True.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — tier short-circuit.
-    """
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    conf_row = _make_conf_row(is_enabled=True, schedule_tier="daily")
-    db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
-
-    result = await svc.run(tier="weekly", dataset_urns=None, dry_run=False)
-
-    assert result.status == "skipped", (
-        "run must return status='skipped' when the requested tier does not match conf.schedule_tier. "
-        "spec: BACKEND.md §Metadata Generation Service §Tier short-circuit"
-    )
-
-
-@pytest.mark.asyncio
-async def test_run_proceeds_when_tier_matches_conf(svc, cache, db) -> None:
-    """run(tier='daily') returns status='success' (not 'skipped') when conf.schedule_tier='daily'.
-
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — tier match: status='success'.
-    The tier short-circuit (status='skipped') fires only when tier != conf.schedule_tier;
-    when tier matches, in-scope enumeration runs and the result is 'success'.
+    Tier dispatch is the activity's responsibility, not the service's — the
+    service runs unconditionally once invoked. Spec: feature/BACKEND.md
+    §DAG Catalogue tier-DAG selection.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
@@ -633,12 +602,9 @@ async def test_run_proceeds_when_tier_matches_conf(svc, cache, db) -> None:
         overwrite_pending=True,
         updated_at=datetime.now(tz=UTC),
     ))), patch.object(svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([], []))):
-        result = await svc.run(tier="daily", dataset_urns=[], dry_run=False)
+        result = await svc.run(dataset_urns=[], dry_run=False)
 
-    assert result.status == "success", (
-        "When tier matches conf.schedule_tier, run must return status='success', not 'skipped'. "
-        "spec: BACKEND.md §Metadata Generation Service §Tier short-circuit"
-    )
+    assert result.status == "success"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -863,7 +829,7 @@ async def test_run_clears_rejected_candidates_before_processing(svc, cache, db) 
         # boundary check inside the loop — no boundary means this URN is skipped cleanly
         patch.object(db, "execute", new=AsyncMock(return_value=_make_result(scalar=None))),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=False)
+        result = await svc.run(dataset_urns=None, dry_run=False)
 
     assert result.status == "success", (
         "run() must return status='success' after clearing rejected candidates. "
@@ -902,7 +868,7 @@ async def test_run_does_not_clear_rejected_on_dry_run(svc, cache, db) -> None:
         patch.object(svc, "_fetch_evidence", new=AsyncMock(return_value={})),
         patch.object(db, "execute", new=AsyncMock(return_value=_make_result(scalar=None))),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=True)
+        result = await svc.run(dataset_urns=None, dry_run=True)
 
     assert result.dry_run is True
     assert "rejected_cleared" not in result.counts, (
@@ -973,7 +939,7 @@ async def test_run_dry_run_reports_candidates_proposed_not_added(svc, cache, db)
             scalar=_make_boundary_row(is_enabled=True)
         ))),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=True)
+        result = await svc.run(dataset_urns=None, dry_run=True)
 
     assert result.dry_run is True
     assert "candidates_proposed" in result.counts, (
@@ -1043,7 +1009,7 @@ async def test_run_complete_event_detail_keys_for_real_run(svc, cache, db) -> No
         ))),
         patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=False)
+        result = await svc.run(dataset_urns=None, dry_run=False)
 
     assert result.status == "success"
     assert recorded_detail is not None, (
@@ -1100,7 +1066,7 @@ async def test_run_complete_event_detail_keys_for_dry_run(svc, cache, db) -> Non
         ))),
         patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=True)
+        result = await svc.run(dataset_urns=None, dry_run=True)
 
     assert result.dry_run is True
     assert recorded_detail is not None, (
@@ -1133,8 +1099,7 @@ async def test_run_complete_emitted_when_empty_in_scope(svc, cache) -> None:
 
     Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every
     completed run, including runs where no datasets are in scope.
-    counts.items_considered == 0 and status == 'success' (not 'skipped').
-    'skipped' is reserved for tier mismatch.
+    counts.items_considered == 0 and status == 'success'.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
@@ -1164,11 +1129,11 @@ async def test_run_complete_emitted_when_empty_in_scope(svc, cache) -> None:
         patch.object(svc, "_clear_rejected_candidates", new=AsyncMock(return_value=0)),
         patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=False)
+        result = await svc.run(dataset_urns=None, dry_run=False)
 
     assert result.status == "success", (
-        "Empty in-scope run must yield status='success', not 'skipped'. "
-        "spec: BACKEND.md §Metadata Generation Service — 'skipped' reserved for tier mismatch"
+        "Empty in-scope run must yield status='success'. "
+        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every completed run"
     )
     assert recorded_args, (
         "_record_metagen_event must be called even when in_scope_urns is empty. "
@@ -1223,7 +1188,7 @@ async def test_run_complete_emitted_when_empty_in_scope_dry_run(svc, cache) -> N
         ),
         patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
     ):
-        result = await svc.run(tier=None, dataset_urns=None, dry_run=True)
+        result = await svc.run(dataset_urns=None, dry_run=True)
 
     assert result.dry_run is True
     assert recorded_args, (

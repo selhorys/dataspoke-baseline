@@ -1,14 +1,14 @@
 """Metric definition, result, and attribute models (DG)."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import MetricTheme
 
-_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
+_ScheduleTier = Literal["hourly", "daily", "weekly"]
 
 
 class UpsertMetricConfigRequest(BaseModel):
@@ -29,20 +29,13 @@ class UpsertMetricConfigRequest(BaseModel):
             "Unsupported aggregation values return 422 INVALID_PARAMETER."
         )
     )
-    schedule_tier: str | None = Field(
+    schedule_tier: _ScheduleTier | None = Field(
         default=None,
         description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'",
     )
     is_enabled: bool = Field(
         default=True, description="Whether the metric is active and scheduled for measurement"
     )
-
-    @field_validator("schedule_tier")
-    @classmethod
-    def validate_schedule_tier(cls, v: str | None) -> str | None:
-        if v is not None and v not in _VALID_TIERS:
-            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
-        return v
 
     model_config = {
         "json_schema_extra": {
@@ -76,19 +69,12 @@ class PatchMetricConfigRequest(BaseModel):
             "Required key: 'aggregation' — registered measurer key, e.g. 'pct_fresh' or 'pct_rules_passing'."
         ),
     )
-    schedule_tier: str | None = Field(
+    schedule_tier: _ScheduleTier | None = Field(
         default=None, description="Updated schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'."
     )
     is_enabled: bool | None = Field(
         default=None, description="Set to true to enable the metric, false to pause"
     )
-
-    @field_validator("schedule_tier")
-    @classmethod
-    def validate_schedule_tier(cls, v: str | None) -> str | None:
-        if v is not None and v not in _VALID_TIERS:
-            raise ValueError(f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got '{v}'")
-        return v
 
 
 class RunMetricRequest(BaseModel):
@@ -106,7 +92,7 @@ class MetricDefinitionResponse(SingleResponse):
     measurement_query: dict[str, Any] = Field(
         description="Query configuration used to measure this metric"
     )
-    schedule_tier: str | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
+    schedule_tier: _ScheduleTier | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
     is_enabled: bool = Field(description="Whether the metric is actively being measured")
     created_at: datetime = Field(description="UTC timestamp when the metric was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
@@ -125,7 +111,7 @@ class MetricAttrResponse(SingleResponse):
     title: str = Field(description="Human-readable metric title")
     theme: MetricTheme = Field(description="Metric theme: 'quality', 'governance', or 'freshness'")
     is_enabled: bool = Field(description="Whether the metric is actively being measured")
-    schedule_tier: str | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
+    schedule_tier: _ScheduleTier | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
     latest_value: float | None = Field(
         default=None, description="Most recent measured value for this metric"
     )
@@ -154,10 +140,19 @@ class MetricResultListResponse(PaginatedResponse):
 
 
 class MetricRunResultResponse(SingleResponse):
-    run_id: str = Field(description="Airflow DAG run ID for this metric run")
+    run_id: str = Field(
+        description=(
+            "Run identifier — the metric measurer's run_id when emitted via "
+            "the DAG run conf, otherwise the Airflow DAG run identifier"
+        )
+    )
     status: str = Field(
-        description="Execution status returned by Airflow, e.g. 'running' or 'success'"
+        description=(
+            "Terminal execution status: 'success' or 'failed' from Airflow, "
+            "or 'success' / 'error' when overridden by the metric measurer"
+        )
     )
     detail: dict[str, Any] = Field(
-        default={}, description="Additional execution metadata returned by Airflow"
+        default={},
+        description="Metric measurer execution metadata (empty when the measurer emitted none)",
     )

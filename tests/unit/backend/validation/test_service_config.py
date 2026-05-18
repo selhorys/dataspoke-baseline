@@ -14,7 +14,7 @@ import pytest
 
 from src.backend.validation.service import ValidationService
 from src.shared.events import VALIDATION_PREFIX, VALIDATION_RESULT_RECORDED
-from src.shared.exceptions import PreconditionFailedError
+from src.shared.exceptions import EntityNotFoundError, PreconditionFailedError
 from tests.unit.backend.conftest import mock_db_refresh
 from tests.unit.backend.validation.conftest import (
     _DATASET_URN,
@@ -182,6 +182,39 @@ async def test_patch_config_only_updates_supplied_fields(
     assert existing.description == "new description"
     assert existing.variables == ["row_cnt", "col1_mean"]
     mock_register.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_patch_config_on_soft_deleted_returns_not_found(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """PATCH on a soft-deleted slot is invisible and raises EntityNotFoundError.
+
+    spec: VALIDATION.md §Rule Configuration — "After DELETE, `GET conf` returns 404 —
+    the resource view treats a soft-deleted rule as absent." PATCH targets the same
+    resource view as GET, so a tombstoned row must not be silently mutated.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    db.execute = AsyncMock(return_value=_scalar_result(None))
+
+    with pytest.raises(EntityNotFoundError):
+        await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"description": "should not apply to a tombstoned slot"},
+        )
+
+    select_stmt = db.execute.call_args_list[0].args[0]
+    rendered = str(
+        select_stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "is_removed" in rendered, (
+        f"Expected is_removed filter in patch_config SELECT to honor the "
+        f"resource view of GET; got:\n{rendered}"
+    )
 
 
 # ── delete_config ─────────────────────────────────────────────────────────────

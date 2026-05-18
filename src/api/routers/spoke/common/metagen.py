@@ -102,7 +102,7 @@ async def delete_metagen_conf(
 
 
 _DebateOutcome = Literal["accept", "turns_exhausted", "cycle_detected"]
-_RunStatus = Literal["success", "skipped", "failure"]
+_RunStatus = Literal["success", "failure"]
 
 
 @router.post("/method/run", response_model=MetagenRunResponse)
@@ -116,7 +116,6 @@ async def post_metagen_run(
     Rejected with 409 METAGEN_DISABLED when conf is disabled and dry_run is not true.
     """
     result = await service.run(
-        tier=None,
         dataset_urns=body.dataset_urns,
         dry_run=body.dry_run,
     )
@@ -138,7 +137,7 @@ async def post_metagen_run(
 async def get_metagen_events(
     event_type: str | None = Query(default=None),
     after: datetime | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -189,7 +188,7 @@ async def get_metagen_items(
         default=None, alias="status"
     ),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=20, ge=1, le=100),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenItemListResponse:
     dtos, total = await service.list_items(

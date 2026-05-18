@@ -3,11 +3,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
-
-_VALID_TIERS = frozenset({"hourly", "daily", "weekly"})
 
 _DATASET_FILTER_LIST_CAP = 1000
 
@@ -28,7 +26,7 @@ def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
 
 class OntogenConfResponse(SingleResponse):
     is_enabled: bool = Field(description="Master switch for the inference DAG")
-    schedule_tier: str | None = Field(
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None = Field(
         default=None, description="Periodic re-inference cadence: 'hourly', 'daily', or 'weekly'"
     )
     dataset_filter: dict[str, Any] = Field(
@@ -49,7 +47,7 @@ class OntogenConfResponse(SingleResponse):
 
 class OntogenConfPutRequest(BaseModel):
     is_enabled: bool = Field(default=False)
-    schedule_tier: str | None = Field(
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None = Field(
         default=None,
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
     )
@@ -60,15 +58,6 @@ class OntogenConfPutRequest(BaseModel):
         description="Default one-shot prompt for periodic runs (max 16 KB).",
     )
 
-    @field_validator("schedule_tier")
-    @classmethod
-    def validate_schedule_tier(cls, v: str | None) -> str | None:
-        if v is not None and v not in _VALID_TIERS:
-            raise ValueError(
-                f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got {v!r}"
-            )
-        return v
-
     @model_validator(mode="after")
     def validate_dataset_filter_bounds(self) -> "OntogenConfPutRequest":
         _check_dataset_filter_bounds(self.dataset_filter)
@@ -77,7 +66,7 @@ class OntogenConfPutRequest(BaseModel):
 
 class OntogenConfPatchRequest(BaseModel):
     is_enabled: bool | None = Field(default=None)
-    schedule_tier: str | None = Field(
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None = Field(
         default=None,
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
     )
@@ -87,15 +76,6 @@ class OntogenConfPatchRequest(BaseModel):
         max_length=16_000,
         description="Default one-shot prompt for periodic runs (max 16 KB).",
     )
-
-    @field_validator("schedule_tier")
-    @classmethod
-    def validate_schedule_tier(cls, v: str | None) -> str | None:
-        if v is not None and v not in _VALID_TIERS:
-            raise ValueError(
-                f"schedule_tier must be one of {sorted(_VALID_TIERS)}, got {v!r}"
-            )
-        return v
 
     @model_validator(mode="after")
     def validate_dataset_filter_bounds(self) -> "OntogenConfPatchRequest":

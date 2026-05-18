@@ -92,7 +92,7 @@ The configuration is a small, fixed-shape document.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `description` | `string` | yes | Free-form. Surfaced in the DataHub assertion detail UI. ≤ 2,000 chars. |
+| `description` | `string` | yes | Free-form. Surfaced in the DataHub assertion detail UI. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
 | `variables` | `list[string]` | yes | Variable names this rule will report. Each name MUST match `\A[a-z][a-z0-9_]{0,99}\Z`, MUST be unique within the rule, and there MUST be ≥ 1 entry. Hard cap **200** entries. |
 
 Notes:
@@ -172,6 +172,11 @@ GET .../attr/validation/result?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:
 Rows are ordered by `data_time` **descending** (newest first) so the most recent
 partition appears at the head of the response — the common case for baseline
 queries that always want the latest sample at index 0.
+
+`total_count` in the response envelope is **pre-collapse** — it counts the raw
+rows in `[from, until)` before last-write-wins de-duplication on `data_time`. The
+`results` array may therefore be shorter than `total_count` when the window
+contains duplicate POSTs for the same `data_time`.
 
 ### Cache use case
 

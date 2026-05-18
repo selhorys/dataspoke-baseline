@@ -67,7 +67,6 @@ _LOCK_KEY = "metagen:running:singleton"
 _LOCK_TTL_SECONDS = 3600
 
 _DATASET_URN_RE = re.compile(r"^urn:li:dataset:\(.+\)$")
-_VALID_SCHEDULE_TIERS: frozenset[str] = frozenset({"hourly", "daily", "weekly"})
 _VALID_KINDS: frozenset[str] = frozenset({"dataset.description", "column.description"})
 
 
@@ -148,14 +147,6 @@ def _validate_dataset_urn(urn: str) -> None:
 def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
     for urn in dataset_filter.get("dataset_urns", []) or []:
         _validate_dataset_urn(str(urn))
-
-
-def _validate_schedule_tier(tier: str | None) -> None:
-    if tier is not None and tier not in _VALID_SCHEDULE_TIERS:
-        raise PreconditionFailedError(
-            "INVALID_PARAMETER",
-            f"schedule_tier must be one of {sorted(_VALID_SCHEDULE_TIERS)} or null, got {tier!r}",
-        )
 
 
 def _conf_to_dto(row: MetagenConfig) -> MetagenGlobalConfDTO:
@@ -251,10 +242,13 @@ class MetagenService:
         return _conf_to_dto(row) if row else None
 
     async def put_global_conf(self, conf: dict[str, Any]) -> MetagenGlobalConfDTO:
-        """Full replacement of the singleton conf. Emits METAGEN.CONFIG_CREATE or UPDATE."""
+        """Full replacement of the singleton conf. Emits METAGEN.CONFIG_CREATE or UPDATE.
+
+        `schedule_tier` values are constrained at the API schema layer
+        (`MetagenGlobalConfPutRequest`).
+        """
         dataset_filter = conf.get("dataset_filter", {}) or {}
         _validate_dataset_filter(dataset_filter)
-        _validate_schedule_tier(conf.get("schedule_tier"))
 
         result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         existing = result.scalar_one_or_none()
@@ -284,11 +278,13 @@ class MetagenService:
         return _conf_to_dto(existing)
 
     async def patch_global_conf(self, partial: dict[str, Any]) -> MetagenGlobalConfDTO:
-        """Partial update of the singleton conf. Emits METAGEN.CONFIG_UPDATE."""
+        """Partial update of the singleton conf. Emits METAGEN.CONFIG_UPDATE.
+
+        `schedule_tier` values are constrained at the API schema layer
+        (`MetagenGlobalConfPatchRequest`).
+        """
         if "dataset_filter" in partial and partial["dataset_filter"] is not None:
             _validate_dataset_filter(partial["dataset_filter"])
-        if "schedule_tier" in partial:
-            _validate_schedule_tier(partial["schedule_tier"])
 
         result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         row = result.scalar_one_or_none()
@@ -462,7 +458,6 @@ class MetagenService:
     async def run(
         self,
         *,
-        tier: str | None = None,
         dataset_urns: list[str] | None = None,
         dry_run: bool = False,
     ) -> RunResultDTO:
@@ -470,7 +465,6 @@ class MetagenService:
 
         - Raises ConflictError(METAGEN_RUNNING) if already running.
         - Raises ConflictError(METAGEN_DISABLED) if conf.is_enabled=false and not dry_run.
-        - Returns early (no-op success) when tier is provided but conf.schedule_tier != tier.
         """
         run_id = str(uuid.uuid4())
         lock_token = secrets.token_urlsafe(16)
@@ -480,7 +474,7 @@ class MetagenService:
 
         try:
             return await self._run_inner(
-                tier=tier, dataset_urns=dataset_urns, dry_run=dry_run, run_id=run_id
+                dataset_urns=dataset_urns, dry_run=dry_run, run_id=run_id
             )
         except ConflictError:
             raise
@@ -502,23 +496,11 @@ class MetagenService:
     async def _run_inner(
         self,
         *,
-        tier: str | None,
         dataset_urns: list[str] | None,
         dry_run: bool,
         run_id: str,
     ) -> RunResultDTO:
         conf = await self._load_conf_or_default()
-
-        # Tier short-circuit: DAG-triggered runs check schedule_tier before doing work.
-        # This runs before the enabled check so disabled+wrong-tier runs silently no-op.
-        if tier is not None and conf.schedule_tier != tier:
-            return RunResultDTO(
-                run_id=run_id,
-                status="skipped",
-                dry_run=dry_run,
-                unresolved_urns=[],
-                counts={"items_considered": 0},
-            )
 
         if not conf.is_enabled and not dry_run:
             raise ConflictError("METAGEN_DISABLED", "Metagen is disabled; only dry-run is permitted")

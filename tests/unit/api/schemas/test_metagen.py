@@ -10,7 +10,7 @@ Constraints tested:
   - verdict ∈ {approve, reject} (MetagenReviewRequest)
   - MetagenBoundaryPutRequest.allowed ∈ {dataset.description, column.description}
   - MetagenItemListResponse envelope shape uses 'total_count' (not 'total')
-  - MetagenRunResponse carries status: Literal["success","skipped","failure"]
+  - MetagenRunResponse carries status: Literal["success","failure"]
 """
 
 import pytest
@@ -280,7 +280,9 @@ class TestMetagenRunResponse:
     def test_status_accepts_success(self) -> None:
         """MetagenRunResponse accepts status='success'.
 
-        Spec: API.md §Metadata Generation — status ∈ {success, skipped, failure}.
+        Spec: feature/BACKEND.md §Metadata Generation Service — public run
+        outcomes are 'success' or 'failure'; tier short-circuit ('skipped')
+        is owned by /internal/activities/metagen/run, not the public route.
         """
         from datetime import UTC, datetime
         resp = MetagenRunResponse(
@@ -294,21 +296,24 @@ class TestMetagenRunResponse:
         )
         assert resp.status == "success"
 
-    def test_status_accepts_skipped(self) -> None:
-        """MetagenRunResponse accepts status='skipped'.
+    def test_status_rejects_skipped(self) -> None:
+        """MetagenRunResponse rejects status='skipped' — the tier-mismatch
+        short-circuit is the activity's responsibility and is not surfaced
+        on the public run schema.
 
-        Spec: API.md §Metadata Generation — 'skipped' when tier mismatches.
+        Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — only the
+        internal activity returns the {status: 'skipped', reason: ...} shape.
         """
-        resp = MetagenRunResponse(
-            run_id="run-2",
-            status="skipped",
-            dry_run=False,
-            unresolved_urns=[],
-            counts={},
-            producer_iterations=None,
-            debate_outcome=None,
-        )
-        assert resp.status == "skipped"
+        with pytest.raises(ValidationError):
+            MetagenRunResponse(
+                run_id="run-2",
+                status="skipped",
+                dry_run=False,
+                unresolved_urns=[],
+                counts={},
+                producer_iterations=None,
+                debate_outcome=None,
+            )
 
     def test_status_accepts_failure(self) -> None:
         """MetagenRunResponse accepts status='failure'.

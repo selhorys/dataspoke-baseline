@@ -1,6 +1,6 @@
 """Unit tests for metagen workflow params and DAG registry.
 
-spec: feature/BACKEND.md §DAG Catalogue — metagen on-demand + tier DAGs.
+spec: feature/BACKEND.md §DAG Catalogue — metagen tier DAGs.
 spec: feature/BACKEND.md §Concurrency Guards — singleton lock per run.
 spec: API.md §Trigger — MetagenRunParams accepts optional dataset_urns and dry_run.
 """
@@ -81,14 +81,6 @@ def test_params_has_no_singular_dataset_urn_field() -> None:
 # ── DAG registry ──────────────────────────────────────────────────────────────
 
 
-def test_metagen_on_demand_dag_in_registry() -> None:
-    """The on-demand 'metagen' DAG ID must be in ALL_DAG_IDS.
-
-    spec: feature/BACKEND.md §DAG Catalogue — on-demand metagen DAG.
-    """
-    assert "metagen" in ALL_DAG_IDS
-
-
 def test_metagen_tier_dags_in_registry() -> None:
     """metagen-hourly, metagen-daily, metagen-weekly must be in ALL_DAG_IDS.
 
@@ -111,20 +103,3 @@ def test_metagen_tier_dag_has_correct_dag_id(tier: str) -> None:
     assert dag_file.exists(), f"Missing dag file: {dag_file}"
     content = dag_file.read_text()
     assert f'"metagen-{tier}"' in content or f"'metagen-{tier}'" in content
-
-
-def test_metagen_on_demand_dag_uses_singleton_conf_key() -> None:
-    """On-demand metagen DAG uses the literal conf_key 'metagen-singleton'.
-
-    spec: feature/BACKEND.md §Concurrency Guards — conf-based dedup table:
-    metagen on-demand DAG conf key is 'metagen-singleton' (not per-dataset).
-    The singleton conf_key deduplicates concurrent triggers of the global
-    singleton pipeline.
-    """
-    dag_file = _DAGS_DIR / "metagen.py"
-    assert dag_file.exists()
-    content = dag_file.read_text()
-    assert "metagen-singleton" in content, (
-        "On-demand metagen DAG must reference the literal conf_key 'metagen-singleton'. "
-        "spec: BACKEND.md §Concurrency Guards — DAG conf key table"
-    )

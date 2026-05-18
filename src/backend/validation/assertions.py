@@ -104,8 +104,9 @@ async def register_assertion(
 ) -> None:
     """Emit assertionInfo and status(removed=False) to DataHub.
 
-    Both are versioned aspects.  Errors propagate — DataHub availability is
-    required at config-save time per spec (DataHub-first ordering).
+    Both are versioned aspects. Errors propagate; the service layer commits
+    the validation_configs row before invoking this, so a DataHub failure
+    surfaces as 502/503 to the caller while the local row persists.
     """
     await datahub.emit_assertion(assertion_urn, info)
     await datahub.emit_aspect(assertion_urn, StatusClass(removed=False))

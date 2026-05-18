@@ -80,17 +80,6 @@ async def test_put_conf_validates_malformed_urn(svc: OntogenService, db: AsyncMo
 
 
 @pytest.mark.asyncio
-async def test_put_conf_validates_invalid_schedule_tier(svc: OntogenService, db: AsyncMock) -> None:
-    """put_conf raises PreconditionFailedError for unknown schedule_tier."""
-    with pytest.raises(PreconditionFailedError) as exc_info:
-        await svc.put_conf({
-            "is_enabled": True,
-            "schedule_tier": "minutely",
-        })
-    assert exc_info.value.error_code == "INVALID_PARAMETER"
-
-
-@pytest.mark.asyncio
 async def test_put_conf_accepts_valid_tiers(svc: OntogenService, db: AsyncMock) -> None:
     """put_conf accepts hourly/daily/weekly/None without raising."""
     # None should not raise
@@ -101,14 +90,6 @@ async def test_put_conf_accepts_valid_tiers(svc: OntogenService, db: AsyncMock) 
 
     row = await svc.put_conf({"is_enabled": False, "schedule_tier": None})
     assert row is not None
-
-
-@pytest.mark.asyncio
-async def test_patch_conf_validates_schedule_tier(svc: OntogenService, db: AsyncMock) -> None:
-    """patch_conf rejects invalid schedule_tier."""
-    with pytest.raises(PreconditionFailedError) as exc_info:
-        await svc.patch_conf({"schedule_tier": "yearly"})
-    assert exc_info.value.error_code == "INVALID_PARAMETER"
 
 
 # ── Seed CRUD ─────────────────────────────────────────────────────────────────

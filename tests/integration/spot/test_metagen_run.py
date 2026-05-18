@@ -103,7 +103,7 @@ async def test_metagen_run_disabled_conf_non_dry_run_returns_409_METAGEN_DISABLE
         # No RUN_COMPLETE event must have been emitted for this rejected call.
         # Assert by time: no METAGEN.RUN_COMPLETE event has occurred_at >= time_before_post.
         # spec: BACKEND.md §UC4 — METAGEN.RUN_COMPLETE only emitted on completed runs
-        ev_resp = await api_client.get(f"{event_url}?limit=200", headers=admin_headers)
+        ev_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
         assert ev_resp.status_code == 200
         events_after = ev_resp.json().get("events", [])
         stale_run_complete = [
@@ -433,7 +433,7 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
         )
 
         # GET all (no time filter) — verify envelope shape
-        all_resp = await api_client.get(f"{event_url}?limit=200", headers=admin_headers)
+        all_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
         assert all_resp.status_code == 200, (
             f"GET /metagen/event failed: {all_resp.status_code}"
         )
@@ -461,7 +461,7 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
         # (older_time + 30min < cutoff < newer_time)
         cutoff = (older_time + timedelta(minutes=30)).isoformat()
         filtered_resp = await api_client.get(
-            f"{event_url}?after={urllib.parse.quote(cutoff, safe='')}&limit=200",
+            f"{event_url}?after={urllib.parse.quote(cutoff, safe='')}&limit=100",
             headers=admin_headers,
         )
         assert filtered_resp.status_code == 200, (

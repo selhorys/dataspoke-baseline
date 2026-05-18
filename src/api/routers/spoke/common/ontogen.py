@@ -303,7 +303,7 @@ async def post_ontogen_run(
     """
     content_type = request.headers.get("content-type", "")
     prompt_md: str | None = None
-    if "text/markdown" in content_type or "text/plain" in content_type:
+    if "text/markdown" in content_type:
         body_bytes = await _read_markdown_body(request)
         if body_bytes:
             prompt_md = body_bytes.decode("utf-8", errors="replace")

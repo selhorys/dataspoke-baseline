@@ -180,6 +180,195 @@ async def test_ingestion_list_active_missing_tier_returns_422(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(client) -> None:
+    """POST /internal/activities/metagen/run with tier!=conf.schedule_tier short-circuits.
+
+    spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — "For singleton-conf
+    features (ontogen, metagen), only the tier listed on the singleton conf runs at
+    that tier (the other two tier DAGs short-circuit when triggered)."
+
+    The activity must NOT invoke service.run when the requested tier does not match
+    the singleton conf's schedule_tier — otherwise periodic DAGs over-run.
+    """
+    import src.backend.metagen.service as _mg_svc
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_conf = MagicMock()
+    fake_conf.schedule_tier = "daily"
+
+    run_mock = AsyncMock()
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(_mg_svc.MetagenService, "run", new=run_mock),
+    ):
+        resp = await client.post(
+            _METAGEN_RUN,
+            json={"tier": "hourly", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["status"] == "skipped"
+    assert body["reason"] == "tier_mismatch"
+    assert body["dag_tier"] == "hourly"
+    assert body["conf_tier"] == "daily"
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_metagen_run_tier_match_invokes_run(client) -> None:
+    """POST /internal/activities/metagen/run with tier==conf.schedule_tier invokes service.run.
+
+    spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — the DAG whose tier
+    matches the singleton conf is the one that actually performs inference.
+    """
+    import src.backend.metagen.service as _mg_svc
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_conf = MagicMock()
+    fake_conf.schedule_tier = "daily"
+
+    _ds_error = DataSpokeError("stubbed metagen failure")
+    run_mock = AsyncMock(side_effect=_ds_error)
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(_mg_svc.MetagenService, "run", new=run_mock),
+    ):
+        resp = await client.post(
+            _METAGEN_RUN,
+            json={"tier": "daily", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    run_mock.assert_called_once()
+    assert resp.status_code != 422, f"unexpected 422: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(client) -> None:
+    """POST /internal/activities/ontogen/run with tier!=conf.schedule_tier short-circuits.
+
+    spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — "For singleton-conf
+    features (ontogen, metagen), only the tier listed on the singleton conf runs at
+    that tier (the other two tier DAGs short-circuit when triggered)."
+
+    The activity must NOT invoke service.run when the requested tier does not match
+    the singleton conf's schedule_tier — otherwise periodic DAGs over-run.
+    """
+    import src.backend.ontogen.service as _onto_svc
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_conf = MagicMock()
+    fake_conf.schedule_tier = "daily"
+
+    run_mock = AsyncMock()
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch.object(_onto_svc.OntogenService, "get_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(_onto_svc.OntogenService, "run", new=run_mock),
+    ):
+        resp = await client.post(
+            _ONTOGEN_RUN,
+            json={"tier": "hourly", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["status"] == "skipped"
+    assert body["reason"] == "tier_mismatch"
+    assert body["dag_tier"] == "hourly"
+    assert body["conf_tier"] == "daily"
+    # The whole point: service.run was NOT called — no Redis lock, no inference.
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ontogen_run_tier_match_invokes_run(client) -> None:
+    """POST /internal/activities/ontogen/run with tier==conf.schedule_tier invokes service.run.
+
+    spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — the DAG whose tier
+    matches the singleton conf is the one that actually performs inference.
+    """
+    import src.backend.ontogen.service as _onto_svc
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_conf = MagicMock()
+    fake_conf.schedule_tier = "daily"
+
+    _ds_error = DataSpokeError("stubbed ontogen failure")
+    run_mock = AsyncMock(side_effect=_ds_error)
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch.object(_onto_svc.OntogenService, "get_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(_onto_svc.OntogenService, "run", new=run_mock),
+    ):
+        resp = await client.post(
+            _ONTOGEN_RUN,
+            json={"tier": "daily", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    # Service was invoked (even though it errored out via the stub) — proves the
+    # tier check did NOT short-circuit when the tiers matched.
+    run_mock.assert_called_once()
+    # The DataSpokeError is mapped to a structured error response (200/400/500 envelope),
+    # not 422 — schema is valid.
+    assert resp.status_code != 422, f"unexpected 422: {resp.text}"
+
+
+@pytest.mark.asyncio
 async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
     """POST /internal/activities/ontogen/run accepts optional prompt_md field.
 
