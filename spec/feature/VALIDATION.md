@@ -104,11 +104,12 @@ Notes:
   the keys silently fall outside the current schema. Pipelines should treat a
   `variables` edit as a versioning event.
 - `DELETE` performs a soft delete by emitting `status.removed = true` on the assertion
-  URN. After `DELETE`, `GET conf` returns `404` — the resource view treats a
-  soft-deleted rule as absent. The cross-dataset list at `/spoke/common/validation`
-  continues to surface deleted rows under `?removed=true`. A subsequent `PUT`
-  resurrects the assertion (clears `removed`) and overwrites `assertionInfo`. This
-  follows the existing soft-delete resurrection pattern.
+  URN. After `DELETE`, `GET conf` returns `404` and `PATCH conf` against the tombstoned
+  slot also returns `404` — the resource view treats a soft-deleted rule as absent.
+  The cross-dataset list at `/spoke/common/validation` continues to surface deleted
+  rows under `?removed=true`. A subsequent `PUT` resurrects the assertion (clears
+  `removed`) and overwrites `assertionInfo`. This follows the existing soft-delete
+  resurrection pattern.
 
 ## Validation Result
 
@@ -172,11 +173,6 @@ GET .../attr/validation/result?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:
 Rows are ordered by `data_time` **descending** (newest first) so the most recent
 partition appears at the head of the response — the common case for baseline
 queries that always want the latest sample at index 0.
-
-`total_count` in the response envelope is **pre-collapse** — it counts the raw
-rows in `[from, until)` before last-write-wins de-duplication on `data_time`. The
-`results` array may therefore be shorter than `total_count` when the window
-contains duplicate POSTs for the same `data_time`.
 
 ### Cache use case
 

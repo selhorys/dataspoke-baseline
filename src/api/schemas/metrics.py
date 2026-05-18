@@ -3,12 +3,35 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import MetricTheme
 
 _ScheduleTier = Literal["hourly", "daily", "weekly"]
+_DATASET_FILTER_LIST_CAP = 1000
+
+
+def _check_measurement_query_dataset_filter_bounds(
+    measurement_query: dict[str, Any],
+) -> None:
+    """Raise ValueError if any list dimension in measurement_query.dataset_filter
+    exceeds the cap.
+
+    Spec: API.md §UC5 Governance Payload caps —
+    measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
+    ≤ 1,000 entries per dimension.
+    """
+    df = measurement_query.get("dataset_filter")
+    if not isinstance(df, dict):
+        return
+    for key in ("dataset_urns", "tags", "glossary_terms"):
+        val = df.get(key)
+        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
+            raise ValueError(
+                f"measurement_query.dataset_filter.{key} may not exceed "
+                f"{_DATASET_FILTER_LIST_CAP} entries"
+            )
 
 
 class UpsertMetricConfigRequest(BaseModel):
@@ -36,6 +59,11 @@ class UpsertMetricConfigRequest(BaseModel):
     is_enabled: bool = Field(
         default=True, description="Whether the metric is active and scheduled for measurement"
     )
+
+    @model_validator(mode="after")
+    def validate_dataset_filter_bounds(self) -> "UpsertMetricConfigRequest":
+        _check_measurement_query_dataset_filter_bounds(self.measurement_query)
+        return self
 
     model_config = {
         "json_schema_extra": {
@@ -75,6 +103,12 @@ class PatchMetricConfigRequest(BaseModel):
     is_enabled: bool | None = Field(
         default=None, description="Set to true to enable the metric, false to pause"
     )
+
+    @model_validator(mode="after")
+    def validate_dataset_filter_bounds(self) -> "PatchMetricConfigRequest":
+        if self.measurement_query is not None:
+            _check_measurement_query_dataset_filter_bounds(self.measurement_query)
+        return self
 
 
 class RunMetricRequest(BaseModel):

@@ -5,7 +5,7 @@ Spec: spec/API.md §Metadata Generation
 
 Constraints tested:
   - result_limit ∈ [1, 20] (MetagenGlobalConfPutRequest and PatchRequest)
-  - dataset_filter.dataset_urns ≤ 1000 (both PUT and PATCH)
+  - dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1000 per dimension (PUT and PATCH)
   - reason max_length=2000 (MetagenReviewRequest)
   - verdict ∈ {approve, reject} (MetagenReviewRequest)
   - MetagenBoundaryPutRequest.allowed ∈ {dataset.description, column.description}
@@ -105,6 +105,21 @@ class TestMetagenGlobalConfPutRequest:
                 dataset_filter={"dataset_urns": too_many},
             )
 
+    @pytest.mark.parametrize("dimension", ["tags", "glossary_terms"])
+    def test_dataset_filter_non_urn_dimensions_exceed_cap_raises(self, dimension: str) -> None:
+        """dataset_filter.{tags,glossary_terms} with 1001 entries raises ValidationError.
+
+        Spec: API.md §Payload caps —
+        dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000 per dimension.
+        """
+        too_many = [f"urn:li:tag:t{i}" if dimension == "tags" else f"urn:li:glossaryTerm:t{i}"
+                    for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPutRequest(
+                is_enabled=False,
+                dataset_filter={dimension: too_many},
+            )
+
     def test_schedule_tier_accepts_valid_values(self) -> None:
         """schedule_tier accepts hourly, daily, weekly, and None.
 
@@ -160,6 +175,18 @@ class TestMetagenGlobalConfPatchRequest:
         too_many = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
         with pytest.raises(ValidationError):
             MetagenGlobalConfPatchRequest(dataset_filter={"dataset_urns": too_many})
+
+    @pytest.mark.parametrize("dimension", ["tags", "glossary_terms"])
+    def test_dataset_filter_non_urn_dimensions_exceed_cap_raises(self, dimension: str) -> None:
+        """PATCH with dataset_filter.{tags,glossary_terms} > 1000 raises ValidationError.
+
+        Spec: API.md §Payload caps —
+        dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000 per dimension.
+        """
+        too_many = [f"urn:li:tag:t{i}" if dimension == "tags" else f"urn:li:glossaryTerm:t{i}"
+                    for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        with pytest.raises(ValidationError):
+            MetagenGlobalConfPatchRequest(dataset_filter={dimension: too_many})
 
 
 # ── MetagenBoundaryPutRequest ──────────────────────────────────────────────────

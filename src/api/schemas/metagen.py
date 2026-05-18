@@ -11,15 +11,18 @@ _DATASET_FILTER_LIST_CAP = 1000
 
 
 def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
-    """Raise ValueError if dataset_filter.dataset_urns exceeds the cap.
+    """Raise ValueError if any list field in *dataset_filter* exceeds the cap.
 
-    Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
+    Spec: API.md §Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
+    ≤ 1,000 entries per dimension.
     """
-    val = dataset_filter.get("dataset_urns")
-    if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
-        raise ValueError(
-            f"dataset_filter.dataset_urns may not exceed {_DATASET_FILTER_LIST_CAP} entries"
-        )
+    for key in ("dataset_urns", "tags", "glossary_terms"):
+        val = dataset_filter.get(key)
+        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
+            raise ValueError(
+                f"dataset_filter.{key} may not exceed "
+                f"{_DATASET_FILTER_LIST_CAP} entries"
+            )
 
 
 # ── Global conf ───────────────────────────────────────────────────────────────

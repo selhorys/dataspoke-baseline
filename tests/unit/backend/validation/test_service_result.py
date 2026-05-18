@@ -350,15 +350,14 @@ async def test_get_results_limit_20000_clamped_to_10000(
 async def test_get_results_returns_rows_and_total_count(
     svc: ValidationService, db: AsyncMock
 ) -> None:
-    """get_results returns (rows, total_count); total_count >= len(rows).
+    """get_results returns (rows, total_count) with total_count == len(rows) when
+    every returned row is a distinct data_time partition.
 
-    spec: VALIDATION.md §GET result — returns rows and a count for the queried window.
-    Spec is silent on whether total_count is pre-collapse (all raw rows) or post-collapse
-    (distinct data_time slots).  The weakest valid contract is:
-      len(rows) <= total_count <= upper_bound_raw_rows
-    Both pre-collapse and post-collapse semantics satisfy this.
+    spec: VALIDATION.md §GET result — total_count counts distinct data_time
+    partitions in the window (post-collapse); equals len(rows) whenever the
+    collapsed window fits under `limit`.
     """
-    count_mock = _scalar_count(5)
+    count_mock = _scalar_count(3)
     rows_mock = MagicMock()
     rows_mock.all.return_value = [
         MagicMock(
@@ -381,11 +380,38 @@ async def test_get_results_returns_rows_and_total_count(
 
     rows, total_count = await svc.get_results(dataset_urn=_DATASET_URN)
 
-    assert len(rows) <= total_count <= 5, (
-        f"total_count={total_count} must be >= len(rows)={len(rows)} "
-        "and <= the raw row count returned by the mock (5)"
+    assert total_count == len(rows) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_results_total_count_uses_count_distinct_data_time(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """The count query is `COUNT(DISTINCT data_time)`, not `COUNT(*)`.
+
+    spec: VALIDATION.md §GET result — total_count is the number of distinct
+    data_time partitions in the window. With Postgres-side de-duplication on
+    data_time, a window containing N raw rows across K distinct partitions
+    (K ≤ N) yields total_count == K. Asserting the SQL shape here pins the
+    invariant at the unit-test layer; api-wired UC2 exercises it end-to-end.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_mock = _scalar_count(0)
+    rows_mock = MagicMock()
+    rows_mock.all.return_value = []
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    await svc.get_results(dataset_urn=_DATASET_URN)
+
+    count_stmt = db.execute.call_args_list[0].args[0]
+    rendered = str(count_stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    ))
+    assert re.search(r"count\(\s*distinct[\s(]+\S*data_time\b", rendered, re.IGNORECASE), (
+        f"Expected COUNT(DISTINCT ...data_time) in count query SQL; got:\n{rendered}"
     )
-    assert len(rows) == 3
 
 
 @pytest.mark.asyncio

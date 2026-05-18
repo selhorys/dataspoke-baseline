@@ -931,7 +931,7 @@ daily, weekly). Each DAG fetches the dataset list for its tier at execution time
 > tiers* — operators move heavy datasets to `daily`/`weekly` and reserve `hourly` for
 > genuinely time-sensitive pipelines. Holds for tens to low-hundreds of datasets with a
 > small hourly hot set; "hundreds of datasets all on hourly" needs a follow-up
-> (CeleryExecutor / KubernetesExecutor, dispatching via DAG run-conf like metagen, or
+> (CeleryExecutor / KubernetesExecutor, dispatching via DAG run-conf like metrics, or
 > per-source-DB concurrency caps) — none in baseline.
 
 ---

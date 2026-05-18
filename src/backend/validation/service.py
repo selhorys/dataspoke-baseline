@@ -338,13 +338,12 @@ class ValidationService:
         """Return collapsed (last-write-wins per data_time) historical results.
 
         Returns a tuple of (collapsed_rows, total_count) where total_count is
-        the number of underlying rows in the window BEFORE de-duplication/collapse.
-        limit is clamped to [1, 10000] server-side.
+        the number of distinct data_time partitions in the window (matches the
+        collapsed-row count). limit is clamped to [1, 10000] server-side.
         """
         effective_limit = max(1, min(limit, _RESULT_LIMIT_CAP))
 
-        # Pre-collapse count: total raw rows in the window (no de-dup)
-        count_q = select(func.count()).where(
+        count_q = select(func.count(func.distinct(ValidationResult.data_time))).where(
             ValidationResult.dataset_urn == dataset_urn
         )
         if from_dt is not None:

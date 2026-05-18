@@ -218,7 +218,7 @@ proceeds nodes → edges → triples.
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.default_run_prompt` ≤ 16,000 chars
-- `attr/conf.dataset_filter.dataset_urns` ≤ 1,000 entries
+- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
 - `attr/seed` Markdown body ≤ 128 KiB
 - `method/run` one-shot Markdown body ≤ 128 KiB
 - node / edge / triple `method/review.reason` ≤ 2,000 chars
@@ -257,7 +257,7 @@ ontogen): [BACKEND_LLM §Metagen Adversarial Debate](feature/BACKEND_LLM.md#meta
 | `GET` | `/spoke/common/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}` — includes all candidates with their statuses | Metadata Generation | UC4 |
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
-- `attr/conf.dataset_filter.dataset_urns` ≤ 1,000 entries
+- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
 - `attr/conf.result_limit` ∈ `[1, 20]`
 - candidate `value` Markdown body ≤ 16 KiB
 - candidate `method/review.reason` ≤ 2,000 chars
@@ -412,6 +412,9 @@ apply to UC3's `ontogen/attr/conf.dataset_filter` (reported via `ONTOGEN.RUN_COM
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Governance | UC5 |
 | `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
+
+**Payload caps** (validated at the schema layer; cap violations return `422`):
+- `attr/conf.measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
 
 #### Overview (`/spoke/dg/overview`)
 
@@ -647,7 +650,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 
 | `error_code` | HTTP | Description |
 |-------------|------|-------------|
-| `INVALID_PARAMETER` | 400 | Query param or body field fails validation |
+| `INVALID_PARAMETER` | 400 | Query param or body field fails validation (e.g., `PUT/PATCH /spoke/common/data/{urn}/attr/validation/conf` body where `description` carries ASCII control characters other than `\t` (0x09) and `\n` (0x0a) — see [VALIDATION.md §Rule Configuration](feature/VALIDATION.md#rule-configuration)) |
 | `MISSING_REQUIRED_FIELD` | 400 | Required body field not provided |
 | `UNAUTHORIZED` | 401 | Token missing, expired, or malformed |
 | `FORBIDDEN` | 403 | Valid token; groups claim does not satisfy route requirement |
