@@ -231,14 +231,14 @@ async def test_metrics_list_active_hourly(
     conf_daily = f"/api/v1/spoke/dg/metric/{metric_id_daily}/attr/conf"
 
     _common_conf = {
+        "mode": "active",
+        "is_enabled": True,
+        "metric_type": "ingestion-freshness",
         "title": "Spot List Freshness",
         "description": "Spot test metric for tier-selection.",
-        "theme": "freshness",
-        "measurement_query": {
-            "aggregation": "pct_fresh",
-            "dataset_filter": {"dataset_urns": [_TEST_URN]},
-        },
-        "is_enabled": True,
+        "metrics": ["total", "ingested_in_time"],
+        "metric_conf": {"time_window_sec": 86400},
+        "dataset_filter": {"dataset_urns": [_TEST_URN]},
     }
 
     # Seed an enabled metric in the target tier (hourly)
@@ -297,15 +297,15 @@ async def test_metrics_run_activity(
         conf_url,
         headers=admin_headers,
         json={
+            "mode": "active",
+            "is_enabled": True,
+            "metric_type": "ingestion-freshness",
             "title": "Spot Activity Freshness",
             "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {
-                "aggregation": "pct_fresh",
-                "dataset_filter": {"dataset_urns": [_TEST_URN]},
-            },
+            "metrics": ["total", "ingested_in_time"],
+            "metric_conf": {"time_window_sec": 86400},
             "schedule_tier": "hourly",
-            "is_enabled": True,
+            "dataset_filter": {"dataset_urns": [_TEST_URN]},
         },
     )
 

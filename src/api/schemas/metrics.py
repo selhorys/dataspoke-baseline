@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
+from src.shared.exceptions import InvalidDatasetUrnError
 
 _ScheduleTier = Literal["hourly", "daily", "weekly"]
 _DATASET_FILTER_LIST_CAP = 1000
@@ -34,10 +35,15 @@ def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
 
 
 def _check_dataset_urn_format(dataset_filter: dict[str, Any]) -> None:
-    """Raise ValueError for malformed dataset URNs inside dataset_filter."""
+    """Raise InvalidDatasetUrnError for malformed dataset URNs inside dataset_filter.
+
+    Pydantic v2 re-raises non-ValueError exceptions, so this propagates to the
+    FastAPI handler registered for InvalidDatasetUrnError, yielding a 422 with
+    error_code='INVALID_DATASET_URN' (spec/API.md §Error Catalogue).
+    """
     for urn in dataset_filter.get("dataset_urns", []) or []:
         if not _DATASET_URN_RE.match(str(urn)):
-            raise ValueError(f"Invalid dataset URN in dataset_filter.dataset_urns: {urn!r}")
+            raise InvalidDatasetUrnError(str(urn))
 
 
 def _check_metric_conf_for_type(metric_type: str, metric_conf: dict[str, Any]) -> None:

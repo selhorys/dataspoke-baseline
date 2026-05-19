@@ -8,6 +8,7 @@ Spec: API.md §Metric (/spoke/dg/metric).
 from datetime import datetime
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from src.api.auth.dependencies import require_dg
@@ -228,15 +229,25 @@ async def post_metric_run(
 
     workflow_id = f"metrics-{metric_id}"
     await airflow.check_no_duplicate("metrics", "workflow_id", workflow_id, "METRIC_RUNNING")
-    dag_run = await airflow.trigger_and_wait(
-        "metrics",
-        conf={
-            "callback_base_url": settings.airflow_callback_base_url,
-            "metric_id": metric_id,
-            "dry_run": str(body.dry_run).lower(),
-            "workflow_id": workflow_id,
-        },
-    )
+    try:
+        dag_run = await airflow.trigger_and_wait(
+            "metrics",
+            conf={
+                "callback_base_url": settings.airflow_callback_base_url,
+                "metric_id": metric_id,
+                "dry_run": str(body.dry_run).lower(),
+                "workflow_id": workflow_id,
+            },
+        )
+    except httpx.HTTPStatusError as exc:
+        # check_no_duplicate is non-atomic; concurrent callers race past it and
+        # Airflow rejects all but one with 409 "DAG run already exists".
+        if exc.response.status_code == 409:
+            raise ConflictError(
+                "METRIC_RUNNING",
+                f"Metric measurement is already running for {metric_id}",
+            ) from exc
+        raise
     xcom_value = await airflow.fetch_task_xcom(
         dag_id="metrics",
         dag_run_id=dag_run.dag_run_id,

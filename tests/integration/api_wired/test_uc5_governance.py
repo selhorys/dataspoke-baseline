@@ -100,8 +100,8 @@ async def test_uc5_governance_imazon_example(
         from_ts = (now - timedelta(days=7)).isoformat()
         to_ts = (now + timedelta(days=1)).isoformat()  # +1 day padding to include the run just triggered
         results_resp = await api_client.get(
-            f"/api/v1/spoke/dg/metric/doc-health-prod/attr/result"
-            f"?from={from_ts}&to={to_ts}",
+            "/api/v1/spoke/dg/metric/doc-health-prod/attr/result",
+            params={"from": from_ts, "to": to_ts},
             headers=admin_headers,
         )
         assert results_resp.status_code == 200

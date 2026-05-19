@@ -22,10 +22,12 @@ so future schema additions are auto-included.
 
 from __future__ import annotations
 
+import json
 import os
 
 import asyncpg
 
+from src.backend.metrics.bootstrap import _FACTORY_DEFAULTS
 from tests.integration.util.postgres import _load_dotenv
 
 _load_dotenv()
@@ -49,7 +51,13 @@ async def _get_connection() -> asyncpg.Connection:
 
 
 async def reset_all() -> None:
-    """TRUNCATE every table in the `dataspoke` schema."""
+    """TRUNCATE every table in the `dataspoke` schema, then re-seed factory metrics.
+
+    Factory-default metric_definitions are spec-mandated initial state
+    (USE_CASE_en.md §UC5 §Factory defaults) — the API seeds them at startup
+    via src.backend.metrics.bootstrap.seed_factory_defaults. After TRUNCATE
+    the API isn't restarted, so we re-seed inline from the same SSOT.
+    """
     conn = await _get_connection()
     try:
         rows = await conn.fetch(
@@ -61,6 +69,24 @@ async def reset_all() -> None:
             return
         tables = ", ".join(f'{_SCHEMA}.{r["table_name"]}' for r in rows)
         await conn.execute(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")
+
+        for d in _FACTORY_DEFAULTS:
+            await conn.execute(
+                f"INSERT INTO {_SCHEMA}.metric_definitions "
+                "(id, mode, metric_type, title, description, metrics, "
+                " metric_conf, dataset_filter, schedule_tier, is_enabled) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)",
+                d["id"],
+                d["mode"],
+                d["metric_type"],
+                d["title"],
+                d["description"],
+                json.dumps(d["metrics"]),
+                json.dumps(d["metric_conf"]),
+                json.dumps(d["dataset_filter"]),
+                d["schedule_tier"],
+                d["is_enabled"],
+            )
     finally:
         await conn.close()
 
