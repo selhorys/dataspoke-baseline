@@ -35,7 +35,6 @@ from src.api.routers.spoke.common import (
     validation as common_validation,
 )
 from src.api.routers.spoke.dg import metrics as dg_metrics
-from src.api.routers.spoke.dg import overview as dg_overview
 from src.shared.exceptions import (
     AuthenticationError,
     ConflictError,
@@ -43,6 +42,7 @@ from src.shared.exceptions import (
     DataSpokeError,
     EntityNotFoundError,
     InvalidDatasetUrnError,
+    NotImplementedAPIError,
     PreconditionFailedError,
     StorageUnavailableError,
 )
@@ -94,6 +94,16 @@ async def lifespan(app: FastAPI):
         "lifespan_startup_complete",
         extra={"clients": ["airflow", "datahub", "redis", "vector", "llm"]},
     )
+
+    # Seed factory-default metric definitions (idempotent)
+    try:
+        from src.backend.metrics.bootstrap import seed_factory_defaults
+
+        async with SessionLocal() as seed_session:
+            await seed_factory_defaults(seed_session)
+    except Exception:
+        logger.warning("metrics_bootstrap_seed_failed", exc_info=True)
+
     try:
         yield
     finally:
@@ -205,6 +215,10 @@ async def _handle_storage(request: Request, exc: StorageUnavailableError) -> JSO
     return _error_json(request, 503, exc.error_code, str(exc))
 
 
+async def _handle_not_implemented(request: Request, exc: NotImplementedAPIError) -> JSONResponse:
+    return _error_json(request, 501, exc.error_code, str(exc))
+
+
 async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JSONResponse:
     return _error_json(request, 500, exc.error_code, str(exc))
 
@@ -271,15 +285,10 @@ def create_app() -> FastAPI:
             "name": "dg/metric",
             "description": (
                 "Governance metric definitions, measurement results, and scheduling. "
-                "Requires DG auth (dg/admin groups). See spec/feature/BACKEND.md §Metrics Service "
-                "for aggregation semantics, measurement_query shape (aggregation key), "
-                "dataset_filter, and breakdown format."
-            ),
-        },
-        {
-            "name": "dg/overview",
-            "description": (
-                "Data governance overview dashboard and lineage graph. Requires DG auth."
+                "Requires DG auth (dg/admin groups). Built-in metric types: "
+                "ingestion-freshness, validation-score, doc-health. "
+                "See spec/feature/BACKEND.md §Metrics Service for measurer semantics, "
+                "dataset_filter shape, and breakdown format."
             ),
         },
         {
@@ -311,6 +320,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RateLimitExceeded, _handle_rate_limit)  # type: ignore[arg-type]
 
     # ── Exception handlers (specific → generic) ───────────────────────────────
+    app.add_exception_handler(NotImplementedAPIError, _handle_not_implemented)  # type: ignore[arg-type]
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
@@ -360,7 +370,6 @@ def create_app() -> FastAPI:
 
     # ── Spoke/dg routes ────────────────────────────────────────────────────────
     app.include_router(dg_metrics.router, prefix=SPOKE_DG)
-    app.include_router(dg_overview.router, prefix=SPOKE_DG)
 
     # ── Hub pass-through routes ────────────────────────────────────────────────
     app.include_router(hub_router.router, prefix=API_PREFIX)

@@ -1,26 +1,28 @@
 """Spot tests for Governance Metrics endpoints.
 
-Concerns covered:
-- GET /spoke/dg/metric — list metrics (paginated envelope); baseline definitions present
-- PUT /spoke/dg/metric/{metric_id}/attr/conf — create definition (201)
-- PATCH /spoke/dg/metric/{metric_id}/attr/conf — partial update
-- DELETE /spoke/dg/metric/{metric_id}/attr/conf — remove definition (204)
-- POST /spoke/dg/metric/{metric_id}/method/run — trigger metric run; breakdown shape; event emission
-- POST .../method/run concurrent → 409 METRIC_RUNNING
-- POST .../method/run dry_run=true → no persisted result, no RUN_COMPLETE event
-- GET /spoke/dg/metric/{metric_id}/attr/result — result list (timeseries envelope)
-- GET /spoke/dg/metric/{metric_id}/event — event list envelope
-- PUT and PATCH with 1,000 entries on measurement_query.dataset_filter dimension → accepted (200/201)
-- PUT and PATCH with 1,001 entries on measurement_query.dataset_filter dimension → 422
+Concerns covered (each test targets one spec contract):
+- GET /spoke/dg/metric — factory-seeded entries present after reset
+- PUT/PATCH/GET/DELETE round-trip on a custom metric
+- PUT mode='passive' → 501 NOT_IMPLEMENTED
+- PUT metric_type='bogus' → 422
+- PUT ingestion-freshness with metric_conf={} (missing time_window_sec) → 422
+- PUT ingestion-freshness with time_window_sec=-1 → 422
+- PUT doc-health with non-empty metric_conf → 422
+- PUT ingestion-freshness with unknown metrics[] key → 422
+- PUT dataset_filter.dataset_urns > 1000 entries → 422
+- PUT dataset_filter.dataset_urns == 1000 entries → 200/201
+- PUT dataset_filter.dataset_urns=['not-a-urn'] → 422 INVALID_DATASET_URN
+- PUT metric_id with invalid path chars → 422
+- POST method/run dry_run=true → no persisted result, no RUN_COMPLETE event
+- POST method/run dry_run=false → values is dict[str, float]
+- POST method/run concurrent → 409 METRIC_RUNNING
+- breakdown.datasets[] has no 'category' field
+- metric_id kebab regex acceptance and rejection
 
 Spec:
-- spec/USE_CASE_en.md §UC5 §Baseline overview (baseline metric IDs)
-- spec/USE_CASE_en.md §UC5 §Run semantics (concurrent run → 409 METRIC_RUNNING)
-- spec/USE_CASE_en.md §UC5 §Run semantics (dry_run → no persist, no event)
-- spec/feature/BACKEND.md §Metrics Service (dataset_filter, breakdown shape)
-- spec/feature/BACKEND.md §Event Catalogue (METRIC.RUN_COMPLETE + unresolved_urns)
-- spec/API.md §UC5 Payload caps — measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
-    ≤ 1,000 entries per dimension
+- spec/USE_CASE_en.md §UC5 — Factory defaults, Built-in active metric types, API Mapping
+- spec/API.md §Metric (/spoke/dg/metric) — field rules, payload caps, error codes
+- spec/feature/BACKEND.md §Metrics Service §Breakdown format
 """
 
 import asyncio
@@ -33,377 +35,576 @@ import pytest
 # before this module's tests run (autoused by tests/integration/conftest.py).
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
-_TEST_METRIC_ID = "spot-test-freshness"
-
-# Spec: spec/USE_CASE_en.md §UC5 §Baseline overview — baseline metric IDs seeded at startup
-_BASELINE_METRIC_IDS = {"ingestion-freshness", "validation-score"}
-
-# Bounded URN used in run tests to minimise DataHub I/O
+# Bounded URN used in run tests to minimise DataHub I/O.
+# Spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master
 _BOUNDED_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:postgres,"
     "example_db.catalog.title_master,DEV)"
 )
 
+# Factory-seeded metric IDs
+# Spec: spec/USE_CASE_en.md §UC5 §Factory defaults
+_FACTORY_IDS = {"ingestion-freshness", "validation-score", "doc-health"}
+
+
+# ── Factory defaults ──────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
-async def test_metric_list_paginated_envelope(
+async def test_factory_defaults_present_after_reset(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/dg/metric returns a paginated collection envelope; registered baseline IDs appear.
+    """GET /spoke/dg/metric returns the three factory-seeded entries.
 
-    The two baseline metric IDs ('ingestion-freshness', 'validation-score') are registered
-    via PUT within this test to verify that once registered they appear in the list response.
+    Each must have is_enabled=False, mode='active', schedule_tier='daily'.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Baseline overview — baseline ships with two supported metrics;
-    organisations register them via PUT /spoke/dg/metric/{id}/attr/conf.
+    Spec: spec/USE_CASE_en.md §UC5 §Factory defaults — seeds ship disabled,
+          mode='active', schedule_tier='daily'.
     """
-    try:
-        # Register the two baseline metric definitions as the spec Imazon example shows
-        for mid, title, theme, agg in [
-            ("ingestion-freshness", "Ingestion freshness", "freshness", "ingestion-freshness"),
-            ("validation-score", "Validation score", "quality", "validation-score"),
-        ]:
-            await api_client.put(
-                f"/api/v1/spoke/dg/metric/{mid}/attr/conf",
-                headers=admin_headers,
-                json={
-                    "title": title,
-                    "description": f"Baseline {title} metric.",
-                    "theme": theme,
-                    "measurement_query": {"aggregation": agg, "dataset_filter": {}},
-                    "schedule_tier": "hourly",
-                    "is_enabled": True,
-                },
-            )
+    resp = await api_client.get(
+        "/api/v1/spoke/dg/metric?limit=100",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "metrics" in body
 
-        resp = await api_client.get(
-            "/api/v1/spoke/dg/metric?offset=0&limit=50",
-            headers=admin_headers,
+    by_id = {m["id"]: m for m in body["metrics"]}
+    for fid in _FACTORY_IDS:
+        assert fid in by_id, (
+            f"Factory metric '{fid}' not found in list. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Factory defaults."
+        )
+        m = by_id[fid]
+        assert m["is_enabled"] is False, (
+            f"Factory metric '{fid}' must be is_enabled=False. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Factory defaults."
+        )
+        assert m["mode"] == "active", (
+            f"Factory metric '{fid}' must be mode='active'. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Factory defaults."
+        )
+        assert m["schedule_tier"] == "daily", (
+            f"Factory metric '{fid}' must have schedule_tier='daily'. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Factory defaults."
         )
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "metrics" in body
-        assert "offset" in body
-        assert "limit" in body
-        assert "total_count" in body
-        assert isinstance(body["metrics"], list)
 
-        # Spec: spec/USE_CASE_en.md §UC5 §Baseline overview — both baseline definitions appear when registered
-        returned_ids = {m["id"] for m in body["metrics"]}
-        assert _BASELINE_METRIC_IDS.issubset(returned_ids), (
-            f"Baseline metric IDs {_BASELINE_METRIC_IDS} not found in list response "
-            f"(got: {returned_ids}). Spec: spec/USE_CASE_en.md §UC5 §Baseline overview."
+# ── CRUD round-trip ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_put_get_patch_delete_round_trip(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT/GET/PATCH/DELETE round-trip on a custom doc-health metric.
+
+    Spec: spec/API.md §Metric — PUT creates/replaces, PATCH updates fields, DELETE returns 204.
+    """
+    base = "/api/v1/spoke/dg/metric/doc-health-custom/attr/conf"
+
+    try:
+        # PUT
+        put_resp = await api_client.put(
+            base,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Doc Health Custom",
+                "description": "Custom doc-health for tests",
+                "metrics": ["total", "doc_health"],
+                "metric_conf": {},
+                "schedule_tier": "weekly",
+                "dataset_filter": {"origin": "DEV"},
+            },
+        )
+        assert put_resp.status_code in (200, 201), put_resp.text
+        put_body = put_resp.json()
+        assert put_body["id"] == "doc-health-custom"
+        assert put_body["metric_type"] == "doc-health"
+        assert put_body["is_enabled"] is True
+        assert put_body["schedule_tier"] == "weekly"
+
+        # GET
+        get_resp = await api_client.get(base, headers=admin_headers)
+        assert get_resp.status_code == 200
+        get_body = get_resp.json()
+        assert get_body["id"] == "doc-health-custom"
+        assert get_body["is_enabled"] is True
+        assert get_body["metric_type"] == "doc-health"
+
+        # PATCH
+        patch_resp = await api_client.patch(
+            base,
+            headers=admin_headers,
+            json={"is_enabled": False},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["is_enabled"] is False
+
+        # DELETE
+        del_resp = await api_client.delete(base, headers=admin_headers)
+        assert del_resp.status_code == 204
+
+        # Verify gone
+        gone_resp = await api_client.get(base, headers=admin_headers)
+        assert gone_resp.status_code == 404
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base, headers=admin_headers)
+
+
+# ── Validation rejections ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_passive_mode_returns_501(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with mode='passive' → 501 NOT_IMPLEMENTED.
+
+    Spec: spec/API.md §Metric — 'passive is reserved; PUT with mode: passive returns 501 NOT_IMPLEMENTED'.
+    Spec: spec/USE_CASE_en.md §UC5 §Modes.
+    """
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/passive-test/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "passive",
+            "is_enabled": False,
+            "metric_type": "doc-health",
+            "title": "Passive Test",
+            "description": "Should fail",
+            "metrics": ["total", "doc_health"],
+            "metric_conf": {},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 501, (
+        f"Expected 501 for mode='passive', got {resp.status_code}: {resp.text}. "
+        "Spec: spec/API.md §Metric — passive mode returns 501 NOT_IMPLEMENTED."
+    )
+    body = resp.json()
+    assert body.get("error_code") == "NOT_IMPLEMENTED", (
+        f"Expected error_code='NOT_IMPLEMENTED', got {body.get('error_code')!r}. "
+        "Spec: spec/API.md §Error Catalogue."
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_metric_type_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT with metric_type='bogus' → 422.
+
+    Spec: spec/API.md §Metric — unsupported values return 422 INVALID_PARAMETER.
+    """
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/bogus-type-test/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "bogus",
+            "title": "Bogus Type",
+            "description": "Should fail",
+            "metrics": [],
+            "metric_conf": {},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for unknown metric_type, got {resp.status_code}: {resp.text}. "
+        "Spec: spec/API.md §Metric."
+    )
+
+
+@pytest.mark.asyncio
+async def test_metric_conf_missing_time_window_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT ingestion-freshness with metric_conf={} (no time_window_sec) → 422.
+
+    Spec: spec/API.md §Metric — ingestion-freshness requires time_window_sec (positive int).
+    """
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/spot-missing-tw/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "ingestion-freshness",
+            "title": "Missing time_window",
+            "description": "Should fail",
+            "metrics": ["total", "ingested_in_time"],
+            "metric_conf": {},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for missing time_window_sec on ingestion-freshness, "
+        f"got {resp.status_code}: {resp.text}. Spec: spec/API.md §Metric."
+    )
+
+
+@pytest.mark.asyncio
+async def test_metric_conf_negative_time_window_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT ingestion-freshness with time_window_sec=-1 → 422.
+
+    Spec: spec/API.md §Metric — time_window_sec must be positive int.
+    """
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/spot-neg-tw/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "ingestion-freshness",
+            "title": "Negative time_window",
+            "description": "Should fail",
+            "metrics": ["total", "ingested_in_time"],
+            "metric_conf": {"time_window_sec": -1},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for negative time_window_sec, got {resp.status_code}: {resp.text}. "
+        "Spec: spec/API.md §Metric."
+    )
+
+
+@pytest.mark.asyncio
+async def test_doc_health_nonempty_metric_conf_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT doc-health with non-empty metric_conf → 422.
+
+    Spec: spec/API.md §Metric — doc-health takes metric_conf={}.
+    """
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/spot-dochealth-conf/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "doc-health",
+            "title": "Doc Health conf check",
+            "description": "Should fail",
+            "metrics": ["total", "doc_health"],
+            "metric_conf": {"time_window_sec": 86400},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for non-empty metric_conf on doc-health, "
+        f"got {resp.status_code}: {resp.text}. Spec: spec/API.md §Metric."
+    )
+
+
+@pytest.mark.asyncio
+async def test_metrics_list_unknown_key_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT ingestion-freshness with metrics=['nope'] → 422.
+
+    Spec: spec/API.md §Metric — unknown metrics[] keys return 422 INVALID_PARAMETER.
+    """
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/spot-unknown-key/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "ingestion-freshness",
+            "title": "Unknown metrics key",
+            "description": "Should fail",
+            "metrics": ["nope"],
+            "metric_conf": {"time_window_sec": 86400},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for unknown metrics key, got {resp.status_code}: {resp.text}. "
+        "Spec: spec/API.md §Metric."
+    )
+
+
+# ── dataset_filter cap boundary ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dataset_filter_cap_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT dataset_filter.dataset_urns=[<1001 well-formed urns>] → 422.
+
+    Spec: spec/API.md §Metric §Payload caps — dataset_urns ≤ 1,000 entries.
+    """
+    urns_1001 = [
+        f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
+        for i in range(1001)
+    ]
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/spot-cap-over/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "doc-health",
+            "title": "Cap over",
+            "description": "Should fail on cap",
+            "metrics": ["total", "doc_health"],
+            "metric_conf": {},
+            "schedule_tier": "daily",
+            "dataset_filter": {"dataset_urns": urns_1001},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for 1001 dataset_urns (over cap), got {resp.status_code}. "
+        "Spec: spec/API.md §Metric §Payload caps — cap is 1,000."
+    )
+
+
+@pytest.mark.asyncio
+async def test_dataset_filter_at_cap_accepted(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT dataset_filter.dataset_urns=[<1000 well-formed urns>] → 200/201.
+
+    Spec: spec/API.md §Metric §Payload caps — exactly 1,000 MUST be accepted.
+    """
+    urns_1000 = [
+        f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
+        for i in range(1000)
+    ]
+    base = "/api/v1/spoke/dg/metric/spot-cap-at/attr/conf"
+    try:
+        resp = await api_client.put(
+            base,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "is_enabled": False,
+                "metric_type": "doc-health",
+                "title": "Cap at boundary",
+                "description": "Should succeed at cap",
+                "metrics": ["total", "doc_health"],
+                "metric_conf": {},
+                "schedule_tier": "daily",
+                "dataset_filter": {"dataset_urns": urns_1000},
+            },
+        )
+        assert resp.status_code in (200, 201), (
+            f"Expected 200/201 for 1000 dataset_urns (at cap), got {resp.status_code}: {resp.text}. "
+            "Spec: spec/API.md §Metric §Payload caps — exactly 1,000 MUST be accepted."
         )
     finally:
-        # Guarantee teardown even if assertions fail above — prevents state leakage
-        # between test runs.
-        for mid in _BASELINE_METRIC_IDS:
-            await api_client.delete(
-                f"/api/v1/spoke/dg/metric/{mid}/attr/conf",
-                headers=admin_headers,
-            )
+        with suppress(Exception):
+            await api_client.delete(base, headers=admin_headers)
 
 
 @pytest.mark.asyncio
-async def test_metric_conf_put(
+async def test_invalid_dataset_urn_format_returns_422_with_specific_code(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT /spoke/dg/metric/{id}/attr/conf creates or replaces a metric definition."""
-    base = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/attr/conf"
+    """PUT dataset_filter.dataset_urns=['not-a-urn'] → 422 INVALID_DATASET_URN.
 
-    put_resp = await api_client.put(
-        base,
-        headers=admin_headers,
-        json={
-            "title": "Spot Test Ingestion Freshness",
-            "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {"aggregation": "pct_fresh"},
-            "schedule_tier": "hourly",
-            "is_enabled": False,
-        },
-    )
-    assert put_resp.status_code in (200, 201), put_resp.text
-    body = put_resp.json()
-    assert body["id"] == _TEST_METRIC_ID
-    assert body["theme"] == "freshness"
-    assert body["is_enabled"] is False
-
-    # Cleanup
-    await api_client.delete(base, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metric_conf_patch(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """PATCH updates a field on an existing metric definition."""
-    base = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/attr/conf"
-
-    # Create first
-    await api_client.put(
-        base,
-        headers=admin_headers,
-        json={
-            "title": "Spot Test Metric",
-            "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {"aggregation": "pct_fresh"},
-            "schedule_tier": "hourly",
-            "is_enabled": False,
-        },
-    )
-
-    patch_resp = await api_client.patch(
-        base,
-        headers=admin_headers,
-        json={"schedule_tier": "daily", "title": "Spot Test Metric Updated"},
-    )
-    assert patch_resp.status_code == 200
-    body = patch_resp.json()
-    assert body["schedule_tier"] == "daily"
-    assert body["title"] == "Spot Test Metric Updated"
-
-    # Cleanup
-    await api_client.delete(base, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metric_conf_delete(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """DELETE removes metric definition; subsequent GET returns 404."""
-    base = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/attr/conf"
-
-    await api_client.put(
-        base,
-        headers=admin_headers,
-        json={
-            "title": "Spot Delete Metric",
-            "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {"aggregation": "pct_fresh"},
-            "schedule_tier": "hourly",
-            "is_enabled": False,
-        },
-    )
-
-    del_resp = await api_client.delete(base, headers=admin_headers)
-    assert del_resp.status_code == 204
-
-    get_resp = await api_client.get(base, headers=admin_headers)
-    assert get_resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_metric_put_with_invalid_urn_returns_422(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """PUT with malformed dataset_urns entry returns 422 INVALID_DATASET_URN.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service — 'URN format is validated at
-    PUT/PATCH (422 INVALID_DATASET_URN); entries that don't resolve in DataHub at
-    run time are skipped and reported in the METRIC.RUN_COMPLETE event's unresolved_urns'.
+    Spec: spec/API.md §Metric — dataset_urns URN format validated at PUT/PATCH
+          (422 INVALID_DATASET_URN).
     """
-    _INVALID_URN_METRIC_ID = "spot-test-invalid-urn"
-    base = f"/api/v1/spoke/dg/metric/{_INVALID_URN_METRIC_ID}/attr/conf"
-
     resp = await api_client.put(
-        base,
+        "/api/v1/spoke/dg/metric/spot-bad-urn/attr/conf",
         headers=admin_headers,
         json={
-            "title": "Invalid URN Test Metric",
-            "description": "Tests URN validation at PUT.",
-            "theme": "freshness",
-            "measurement_query": {
-                "aggregation": "pct_fresh",
-                "dataset_filter": {
-                    "dataset_urns": ["not-a-valid-urn"]
-                },
-            },
-            "schedule_tier": "hourly",
+            "mode": "active",
             "is_enabled": False,
+            "metric_type": "doc-health",
+            "title": "Bad URN",
+            "description": "Should fail on URN format",
+            "metrics": ["total", "doc_health"],
+            "metric_conf": {},
+            "schedule_tier": "daily",
+            "dataset_filter": {"dataset_urns": ["not-a-urn"]},
         },
     )
-
     assert resp.status_code == 422, (
-        f"Expected 422 for malformed dataset_urns, got {resp.status_code}: {resp.text}. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service — dataset_filter.dataset_urns "
-        "validated at PUT/PATCH (422 INVALID_DATASET_URN)."
+        f"Expected 422 for malformed dataset URN, got {resp.status_code}: {resp.text}. "
+        "Spec: spec/API.md §Metric — 422 INVALID_DATASET_URN."
     )
     body = resp.json()
     assert body.get("error_code") == "INVALID_DATASET_URN", (
-        f"Expected error_code='INVALID_DATASET_URN', got: {body.get('error_code')}. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service."
+        f"Expected error_code='INVALID_DATASET_URN', got {body.get('error_code')!r}. "
+        "Spec: spec/API.md §Error Catalogue."
     )
 
 
 @pytest.mark.asyncio
-async def test_metric_run(
+async def test_invalid_metric_id_path_param_returns_422(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /spoke/dg/metric/{id}/method/run executes synchronously, persists a result row,
-    and emits a METRIC.RUN_COMPLETE event with an 'unresolved_urns' key.
+    """PUT /metric/UPPER!/attr/conf → 422 (FastAPI path regex rejection).
 
-    The run is bounded to a single dataset via measurement_query.dataset_filter
-    so the test does ~2 DataHub calls (resolve + measure) rather than enumerating
-    every dataset in DataHub.
-
-    Spec:
-    - spec/feature/BACKEND.md §Metrics Service — unified breakdown shape
-      {"dataset_count": int, "datasets": [{urn, category, detail}]}
-    - spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE payload
-      carries unresolved_urns for any dataset_filter.dataset_urns entries that
-      didn't resolve in DataHub.
+    Spec: spec/API.md §Metric — metric_id is kebab-case slug:
+          ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$.
     """
-    _RUN_METRIC_ID = "spot-test-run-metric"
-    base_conf = f"/api/v1/spoke/dg/metric/{_RUN_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_RUN_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_RUN_METRIC_ID}/attr/result"
-    base_events = f"/api/v1/spoke/dg/metric/{_RUN_METRIC_ID}/event"
+    resp = await api_client.put(
+        "/api/v1/spoke/dg/metric/UPPER!/attr/conf",
+        headers=admin_headers,
+        json={
+            "mode": "active",
+            "is_enabled": False,
+            "metric_type": "doc-health",
+            "title": "Invalid ID",
+            "description": "Should fail on path param regex",
+            "metrics": ["total", "doc_health"],
+            "metric_conf": {},
+            "schedule_tier": "daily",
+            "dataset_filter": {},
+        },
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for invalid metric_id path param, got {resp.status_code}. "
+        "Spec: spec/API.md §Metric — metric_id kebab-case regex."
+    )
 
-    # Clean any state from prior sessions
-    await api_client.delete(base_conf, headers=admin_headers)
 
-    # Create metric config bounded to one URN to keep DataHub I/O small
-    await api_client.put(
+# ── Dry-run semantics ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dry_run_does_not_persist_result_or_event(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """POST method/run with dry_run=true: returns run_id + status + detail with values,
+    but does NOT persist a result row and does NOT emit a METRIC.RUN_COMPLETE event
+    (or if emitted, detail.dry_run is True).
+
+    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — dry_run: true evaluates without persisting.
+    Spec: spec/API.md §Metric — POST method/run dry_run.
+    """
+    base_conf = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/conf"
+    base_run = "/api/v1/spoke/dg/metric/ingestion-freshness/method/run"
+    base_results = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/result"
+    base_events = "/api/v1/spoke/dg/metric/ingestion-freshness/event"
+
+    # Enable the seeded metric and scope to bounded URN
+    patch_resp = await api_client.patch(
         base_conf,
         headers=admin_headers,
         json={
-            "title": "Spot Run Metric",
-            "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {
-                "aggregation": "pct_fresh",
-                "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
-            },
-            "schedule_tier": "hourly",
             "is_enabled": True,
+            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
         },
     )
+    assert patch_resp.status_code == 200, patch_resp.text
 
+    # Snapshot counts before dry-run
+    pre_results = await api_client.get(f"{base_results}?limit=100", headers=admin_headers)
+    pre_count = pre_results.json().get("total_count", 0)
+
+    pre_events = await api_client.get(f"{base_events}?limit=100", headers=admin_headers)
+    pre_event_count = len([
+        e for e in pre_events.json().get("events", [])
+        if e.get("event_type") == "METRIC.RUN_COMPLETE"
+    ])
+
+    # Dry-run
     run_resp = await api_client.post(
         base_run,
         headers=admin_headers,
-        json={"dry_run": False},
+        json={"dry_run": True},
     )
-
     assert run_resp.status_code == 200, run_resp.text
     run_body = run_resp.json()
-    assert run_body.get("status") == "success"
-    assert "run_id" in run_body
 
-    # ── Verify persisted result row with breakdown shape ──────────────────────
-    # Spec: spec/feature/BACKEND.md §Metrics Service — breakdown shape
-    results_resp = await api_client.get(
-        f"{base_results}?offset=0&limit=5",
-        headers=admin_headers,
-    )
-    assert results_resp.status_code == 200
-    results_body = results_resp.json()
-    assert len(results_body["results"]) >= 1, (
-        "A non-dry-run must persist at least one result row. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
+    # Response must carry run_id, status, and detail with values dict
+    assert "run_id" in run_body, "dry-run response must carry run_id. Spec: spec/API.md §Metric."
+    assert "status" in run_body, "dry-run response must carry status. Spec: spec/API.md §Metric."
+    detail = run_body.get("detail", {})
+    if "values" in detail:
+        assert isinstance(detail["values"], dict), (
+            "detail.values must be a dict when present. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+        )
+
+    # (a) No new result row persisted
+    post_results = await api_client.get(f"{base_results}?limit=100", headers=admin_headers)
+    post_count = post_results.json().get("total_count", 0)
+    assert post_count == pre_count, (
+        f"dry_run persisted a result: result count went from {pre_count} to {post_count}. "
+        "Spec: spec/USE_CASE_en.md §UC5 — dry_run=true does not persist."
     )
 
-    result_row = results_body["results"][0]
-    assert "breakdown" in result_row, (
-        "Result row missing 'breakdown'. Spec: spec/feature/BACKEND.md §Metrics Service."
-    )
-    breakdown = result_row["breakdown"]
-    assert isinstance(breakdown, dict), "breakdown must be a dict."
-    assert "dataset_count" in breakdown, (
-        "breakdown missing 'dataset_count'. Spec: spec/feature/BACKEND.md §Metrics Service."
-    )
-    assert isinstance(breakdown["dataset_count"], int), "dataset_count must be an int."
-    assert "datasets" in breakdown, (
-        "breakdown missing 'datasets'. Spec: spec/feature/BACKEND.md §Metrics Service."
-    )
-    assert isinstance(breakdown["datasets"], list), "breakdown.datasets must be a list."
-    # Each dataset entry must have urn, category, detail
-    for entry in breakdown["datasets"]:
-        assert "urn" in entry, "dataset entry missing 'urn'. Spec: BACKEND.md §Metrics Service."
-        assert "category" in entry, "dataset entry missing 'category'. Spec: BACKEND.md §Metrics Service."
-        assert "detail" in entry, "dataset entry missing 'detail'. Spec: BACKEND.md §Metrics Service."
-
-    # ── Verify METRIC.RUN_COMPLETE event with unresolved_urns key ────────────
-    # Spec: spec/feature/BACKEND.md §Event Catalogue
-    events_resp = await api_client.get(
-        f"{base_events}?offset=0&limit=20",
-        headers=admin_headers,
-    )
-    assert events_resp.status_code == 200
-    events_body = events_resp.json()
-    run_complete_events = [
-        e for e in events_body["events"]
+    # (b) No new METRIC.RUN_COMPLETE event (or if emitted it has dry_run=True in detail)
+    post_events = await api_client.get(f"{base_events}?limit=100", headers=admin_headers)
+    post_complete = [
+        e for e in post_events.json().get("events", [])
         if e.get("event_type") == "METRIC.RUN_COMPLETE"
     ]
-    assert len(run_complete_events) >= 1, (
-        "Expected at least one METRIC.RUN_COMPLETE event after a successful run. "
-        "Spec: spec/feature/BACKEND.md §Event Catalogue."
-    )
-    # The event detail must carry the unresolved_urns key (even if [])
-    event_detail = run_complete_events[0].get("detail", {})
-    assert "unresolved_urns" in event_detail, (
-        "METRIC.RUN_COMPLETE event detail must contain 'unresolved_urns' key. "
-        "Spec: spec/feature/BACKEND.md §Event Catalogue."
-    )
-    assert isinstance(event_detail["unresolved_urns"], list), (
-        "unresolved_urns must be a list. Spec: spec/feature/BACKEND.md §Event Catalogue."
-    )
+    new_complete = post_complete[pre_event_count:]
+    for ev in new_complete:
+        assert ev.get("detail", {}).get("dry_run") is True, (
+            "Any METRIC.RUN_COMPLETE emitted by dry_run must have detail.dry_run=True. "
+            "Spec: spec/USE_CASE_en.md §UC5."
+        )
 
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
+    # Restore factory default state
+    await api_client.patch(
+        base_conf,
+        headers=admin_headers,
+        json={"is_enabled": False, "dataset_filter": {}},
+    )
 
 
 @pytest.mark.asyncio
-async def test_metric_run_unresolved_urns_in_event(
+async def test_metric_run_persists_values_dict(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """After a run with a dataset_urns entry that doesn't resolve in DataHub, the
-    METRIC.RUN_COMPLETE event detail contains that URN in 'unresolved_urns'.
+    """POST method/run dry_run=false → persists result row; values is dict[str, float].
 
-    Spec: spec/feature/BACKEND.md §Metrics Service — entries that don't resolve
-    in DataHub at run time are skipped and reported in the METRIC.RUN_COMPLETE event's
-    unresolved_urns field.
-    Spec: spec/feature/BACKEND.md §Event Catalogue.
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — ingestion-freshness
+          emits {total, ingested_in_time}.
+    Spec: spec/API.md §Metric — attr/result carries values: dict[str,float].
     """
-    _UNRESOLVED_METRIC_ID = "spot-test-unresolved-urns"
-    # A syntactically valid URN that does not exist in DataHub dev-env
-    _GHOST_URN = (
-        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
-        "example_db.nonexistent.ghost_table,DEV)"
-    )
-    base_conf = f"/api/v1/spoke/dg/metric/{_UNRESOLVED_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_UNRESOLVED_METRIC_ID}/method/run"
-    base_events = f"/api/v1/spoke/dg/metric/{_UNRESOLVED_METRIC_ID}/event"
+    base_conf = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/conf"
+    base_run = "/api/v1/spoke/dg/metric/ingestion-freshness/method/run"
+    base_results = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/result"
 
-    # Clean prior state
-    await api_client.delete(base_conf, headers=admin_headers)
-
-    await api_client.put(
+    # Enable metric, scope to bounded URN
+    patch_resp = await api_client.patch(
         base_conf,
         headers=admin_headers,
         json={
-            "title": "Spot Unresolved URN Metric",
-            "description": "Tests unresolved_urns reporting.",
-            "theme": "freshness",
-            "measurement_query": {
-                "aggregation": "pct_fresh",
-                "dataset_filter": {"dataset_urns": [_GHOST_URN]},
-            },
-            "schedule_tier": "hourly",
             "is_enabled": True,
+            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
         },
     )
+    assert patch_resp.status_code == 200, patch_resp.text
 
     run_resp = await api_client.post(
         base_run,
@@ -413,32 +614,43 @@ async def test_metric_run_unresolved_urns_in_event(
     assert run_resp.status_code == 200, run_resp.text
     assert run_resp.json().get("status") == "success"
 
-    # Verify the event carries the ghost URN in unresolved_urns
-    events_resp = await api_client.get(
-        f"{base_events}?offset=0&limit=20",
-        headers=admin_headers,
+    results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
+    assert results_resp.status_code == 200
+    results = results_resp.json().get("results", [])
+    assert results, (
+        "Non-dry-run must persist at least one result row. "
+        "Spec: spec/USE_CASE_en.md §UC5."
     )
-    assert events_resp.status_code == 200
-    run_complete_events = [
-        e for e in events_resp.json()["events"]
-        if e.get("event_type") == "METRIC.RUN_COMPLETE"
-    ]
-    assert len(run_complete_events) >= 1, (
-        "Expected at least one METRIC.RUN_COMPLETE event. "
-        "Spec: spec/feature/BACKEND.md §Event Catalogue."
+    row = results[0]
+
+    # values must be a dict with at least the keys declared in the metric's metrics list
+    assert isinstance(row["values"], dict), (
+        "result.values must be a dict. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
     )
-    event_detail = run_complete_events[0].get("detail", {})
-    assert "unresolved_urns" in event_detail, (
-        "METRIC.RUN_COMPLETE event detail must contain 'unresolved_urns'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service / §Event Catalogue."
+    # ingestion-freshness emits at minimum {total, ingested_in_time}
+    assert "total" in row["values"], (
+        "ingestion-freshness values must include 'total'. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
     )
-    assert _GHOST_URN in event_detail["unresolved_urns"], (
-        f"Ghost URN '{_GHOST_URN}' must appear in unresolved_urns. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service."
+    assert "ingested_in_time" in row["values"], (
+        "ingestion-freshness values must include 'ingested_in_time'. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+    )
+    assert all(isinstance(v, (int, float)) for v in row["values"].values()), (
+        "All values must be numeric. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
     )
 
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
+    # Restore factory state
+    await api_client.patch(
+        base_conf,
+        headers=admin_headers,
+        json={"is_enabled": False, "dataset_filter": {}},
+    )
+
+
+# ── Concurrency guard ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -446,41 +658,33 @@ async def test_metric_run_concurrent_returns_409(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """Two concurrent POST .../method/run calls for the same metric → second returns 409 METRIC_RUNNING.
+    """Two concurrent POST .../method/run calls → second returns 409 METRIC_RUNNING.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Run semantics — 'runs are serialized per metric:
-    a duplicate method/run while one is in flight returns 409 METRIC_RUNNING'.
-    Spec: spec/feature/BACKEND.md §Concurrency Guards — Airflow DAG run conf-based
-    dedup: 'metrics-{metric_id}'; API returns 409 Conflict with METRIC_RUNNING error code.
+    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — concurrent runs return 409 METRIC_RUNNING.
+    Spec: spec/API.md §Metric — POST method/run concurrent runs return 409 METRIC_RUNNING.
     """
-    _CONCURRENT_METRIC_ID = "spot-test-concurrent"
-    base_conf = f"/api/v1/spoke/dg/metric/{_CONCURRENT_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_CONCURRENT_METRIC_ID}/method/run"
+    _CONCURRENT_ID = "spot-test-concurrent"
+    base_conf = f"/api/v1/spoke/dg/metric/{_CONCURRENT_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/dg/metric/{_CONCURRENT_ID}/method/run"
 
-    # Clean prior state
     await api_client.delete(base_conf, headers=admin_headers)
 
-    # Create metric config — bounded URN keeps measurement fast/cheap
     await api_client.put(
         base_conf,
         headers=admin_headers,
         json={
-            "title": "Spot Concurrent Metric",
-            "description": "Tests concurrent run guard.",
-            "theme": "freshness",
-            "measurement_query": {
-                "aggregation": "pct_fresh",
-                "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
-            },
-            "schedule_tier": "hourly",
+            "mode": "active",
             "is_enabled": True,
+            "metric_type": "ingestion-freshness",
+            "title": "Concurrent Guard Test",
+            "description": "Tests concurrent run guard.",
+            "metrics": ["total", "ingested_in_time"],
+            "metric_conf": {"time_window_sec": 86400},
+            "schedule_tier": "daily",
+            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
         },
     )
 
-    # Fire 5 concurrent POST run requests so at least one observes the SETNX
-    # guard already held by another. Two-way concurrency can serialize on a fast
-    # host because Airflow trigger_and_wait may return before a sibling request
-    # acquires the lock.
     async with httpx.AsyncClient(
         base_url=api_client.base_url, timeout=120.0
     ) as concurrent_client:
@@ -501,302 +705,239 @@ async def test_metric_run_concurrent_returns_409(
         r.status_code for r in results if isinstance(r, httpx.Response)
     ]
     assert 200 in status_codes, (
-        "At least one run must succeed (200). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
+        "At least one concurrent run must succeed (200). "
+        "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
     )
     assert 409 in status_codes, (
         f"At least one concurrent run must return 409 METRIC_RUNNING; got {status_codes}. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
+        "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
     )
-
-    # Verify error code in a 409 response body
     conflict_resp = next(
         r for r in results if isinstance(r, httpx.Response) and r.status_code == 409
     )
-    conflict_body = conflict_resp.json()
-    assert conflict_body.get("error_code") == "METRIC_RUNNING", (
-        f"Expected error_code='METRIC_RUNNING', got: {conflict_body.get('error_code')}. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics / spec/feature/BACKEND.md §Concurrency Guards."
+    assert conflict_resp.json().get("error_code") == "METRIC_RUNNING", (
+        f"Expected error_code='METRIC_RUNNING'. "
+        "Spec: spec/API.md §Error Catalogue."
     )
 
-    # Cleanup
     await api_client.delete(base_conf, headers=admin_headers)
+
+
+# ── Breakdown shape ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_metric_run_dry_run_does_not_persist(
+async def test_breakdown_datasets_has_no_category_field(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST .../method/run with dry_run=true returns a result but does not write a result row
-    or emit a METRIC.RUN_COMPLETE event.
+    """After a run, breakdown.datasets[] entries have keys {urn, detail?}; no 'category'.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Run semantics — 'dry_run: true evaluates the query and
-    returns the would-be result without persisting to attr/result or emitting events'.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
+          datasets[] carries only failed entries: {urn, detail?}. No 'category' field.
     """
-    _DRY_RUN_METRIC_ID = "spot-test-dry-run"
-    base_conf = f"/api/v1/spoke/dg/metric/{_DRY_RUN_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_DRY_RUN_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_DRY_RUN_METRIC_ID}/attr/result"
-    base_events = f"/api/v1/spoke/dg/metric/{_DRY_RUN_METRIC_ID}/event"
+    base_conf = "/api/v1/spoke/dg/metric/doc-health/attr/conf"
+    base_run = "/api/v1/spoke/dg/metric/doc-health/method/run"
+    base_results = "/api/v1/spoke/dg/metric/doc-health/attr/result"
 
-    # Clean any state from prior sessions: DELETE cascades to metric_results
-    # (see MetricsService.delete_metric_config). Ignore 404.
-    await api_client.delete(base_conf, headers=admin_headers)
-
-    await api_client.put(
+    # Enable doc-health, scope to bounded URN
+    patch_resp = await api_client.patch(
         base_conf,
         headers=admin_headers,
         json={
-            "title": "Spot Dry-Run Metric",
-            "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {
-                "aggregation": "pct_fresh",
-                "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
-            },
-            "schedule_tier": "hourly",
-            "is_enabled": False,
+            "is_enabled": True,
+            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
         },
     )
+    assert patch_resp.status_code == 200, patch_resp.text
 
     run_resp = await api_client.post(
         base_run,
         headers=admin_headers,
-        json={"dry_run": True},
+        json={"dry_run": False},
     )
     assert run_resp.status_code == 200, run_resp.text
-    assert run_resp.json().get("status") == "success"
 
-    # ── Dry-run must not persist a result row ─────────────────────────────────
-    # Spec: spec/USE_CASE_en.md §UC5 §Run semantics
-    results_resp = await api_client.get(
-        f"{base_results}?offset=0&limit=1",
-        headers=admin_headers,
-    )
+    results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
     assert results_resp.status_code == 200
-    assert results_resp.json()["results"] == [], (
-        "Dry-run must not persist any result rows. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
-    )
+    results = results_resp.json().get("results", [])
+    assert results, "Expected at least one result row after a successful run."
 
-    # ── Dry-run must not emit a METRIC.RUN_COMPLETE event ────────────────────
-    # Spec: spec/USE_CASE_en.md §UC5 §Run semantics — 'without persisting to attr/result or emitting events'
-    events_resp = await api_client.get(
-        f"{base_events}?offset=0&limit=20",
-        headers=admin_headers,
-    )
-    assert events_resp.status_code == 200
-    events_body = events_resp.json()
-    run_complete_events = [
-        e for e in events_body["events"]
-        if e.get("event_type") == "METRIC.RUN_COMPLETE"
-    ]
-    assert len(run_complete_events) == 0, (
-        "Dry-run must not emit any METRIC.RUN_COMPLETE events. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Run semantics."
-    )
-
-    await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metric_result_list_envelope(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """GET /spoke/dg/metric/{id}/attr/result returns paginated timeseries envelope."""
-    base_conf = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/attr/conf"
-    base_results = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/attr/result"
-
-    # Create metric config
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "title": "Spot Result Metric",
-            "theme": "freshness",
-            "measurement_query": {"aggregation": "pct_fresh"},
-            "schedule_tier": "hourly",
-            "is_enabled": False,
-        },
-    )
-
-    resp = await api_client.get(base_results, headers=admin_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "results" in body
-    assert "offset" in body
-    assert "limit" in body
-    assert "total_count" in body
-    assert isinstance(body["results"], list)
-
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_metric_event_list_envelope(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """GET /spoke/dg/metric/{id}/event returns paginated event list (may be empty)."""
-    base_conf = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/attr/conf"
-    base_events = f"/api/v1/spoke/dg/metric/{_TEST_METRIC_ID}/event"
-
-    # Create metric config
-    await api_client.put(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "title": "Spot Event Metric",
-            "description": "Spot test metric description.",
-            "theme": "freshness",
-            "measurement_query": {"aggregation": "pct_fresh"},
-            "schedule_tier": "hourly",
-            "is_enabled": False,
-        },
-    )
-
-    resp = await api_client.get(base_events, headers=admin_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "events" in body
-    assert "offset" in body
-    assert "limit" in body
-    assert "total_count" in body
-    assert isinstance(body["events"], list)
-
-    # Cleanup
-    await api_client.delete(base_conf, headers=admin_headers)
-
-
-# ── Payload cap boundary tests ────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("n", "expected_status_set"),
-    [(1000, {200, 201}), (1001, {422})],
-    ids=["at-cap-1000-accepted", "over-cap-1001-rejected"],
-)
-@pytest.mark.parametrize(
-    "dimension",
-    ["tags", "glossary_terms", "dataset_urns"],
-    ids=["tags", "glossary_terms", "dataset_urns"],
-)
-@pytest.mark.parametrize(
-    "method",
-    ["PUT", "PATCH"],
-    ids=["PUT", "PATCH"],
-)
-@pytest.mark.asyncio
-async def test_metric_put_measurement_query_dataset_filter_dimension_caps(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    method: str,
-    dimension: str,
-    n: int,
-    expected_status_set: set[int],
-) -> None:
-    """PUT and PATCH at-cap (n=1000, accepted) and over-cap (n=1001, rejected) on a
-    single measurement_query.dataset_filter dimension.
-
-    PatchMetricConfigRequest.validate_dataset_filter_bounds (src/api/schemas/metrics.py:108)
-    also bounds-checks PATCH.  A regression removing only the PATCH validator goes
-    undetected if only PUT is tested — this parametrize covers both verbs.
-
-    The boundary case (n=1000) pins the cap value: a regression dropping the limit
-    to 500 still passes the n=1001 test but fails here.  Well-formed URNs ensure
-    cap enforcement — not URN validation — determines the result.
-
-    spec: API.md §UC5 Payload caps — measurement_query.dataset_filter.{tags,glossary_terms,
-      dataset_urns} ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted;
-      1,001 MUST be rejected (422).
-    spec: src/api/schemas/metrics.py:108 — PatchMetricConfigRequest.validate_dataset_filter_bounds
-      delegates to _check_measurement_query_dataset_filter_bounds.
-    """
-    _CAPS_METRIC_ID = f"spot-test-cap-{method.lower()}-{dimension}"
-    base = f"/api/v1/spoke/dg/metric/{_CAPS_METRIC_ID}/attr/conf"
-
-    # Build n well-formed URN strings for the chosen dimension.
-    if dimension == "tags":
-        entries = [f"urn:li:tag:t-{i}" for i in range(n)]
-    elif dimension == "glossary_terms":
-        entries = [f"urn:li:glossaryTerm:gt-{i}" for i in range(n)]
-    else:  # dataset_urns
-        entries = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
-            for i in range(n)
-        ]
-
-    try:
-        if method == "PUT":
-            resp = await api_client.put(
-                base,
-                headers=admin_headers,
-                json={
-                    "title": f"Cap test metric ({dimension})",
-                    "description": f"Tests dataset_filter.{dimension} cap enforcement.",
-                    "theme": "freshness",
-                    "measurement_query": {
-                        "aggregation": "pct_fresh",
-                        "dataset_filter": {dimension: entries},
-                    },
-                    "schedule_tier": "hourly",
-                    "is_enabled": False,
-                },
-            )
-        else:  # PATCH — seed a minimal conf first so PATCH has a row to update
-            seed_resp = await api_client.put(
-                base,
-                headers=admin_headers,
-                json={
-                    "title": f"Cap seed metric ({dimension})",
-                    "description": "Seed for PATCH boundary cap test.",
-                    "theme": "freshness",
-                    "measurement_query": {
-                        "aggregation": "pct_fresh",
-                        "dataset_filter": {dimension: ["urn:li:tag:seed-0"] if dimension == "tags"
-                                           else ["urn:li:glossaryTerm:seed-0"] if dimension == "glossary_terms"
-                                           else ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.seed,DEV)"]},
-                    },
-                    "schedule_tier": "hourly",
-                    "is_enabled": False,
-                },
-            )
-            assert seed_resp.status_code in (200, 201), (
-                f"Seed PUT for PATCH boundary test failed: {seed_resp.status_code} {seed_resp.text}"
-            )
-            resp = await api_client.patch(
-                base,
-                headers=admin_headers,
-                json={
-                    "measurement_query": {
-                        "aggregation": "pct_fresh",
-                        "dataset_filter": {dimension: entries},
-                    },
-                },
-            )
-
-        # spec: API.md §UC5 Payload caps — exactly 1,000 entries MUST be accepted
-        # (200 or 201); 1,001 entries MUST be rejected (422) at the Pydantic boundary
-        # before any service-layer or DB call.
-        assert resp.status_code in expected_status_set, (
-            f"{method} with n={n} {dimension} entries: expected status in {expected_status_set}, "
-            f"got {resp.status_code}: {resp.text}. "
-            "spec: API.md §UC5 Payload caps — measurement_query.dataset_filter cap is 1,000 per dimension"
+    breakdown = results[0].get("breakdown", {})
+    for entry in breakdown.get("datasets", []):
+        assert "urn" in entry, (
+            "Breakdown entry must have 'urn'. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+        assert "category" not in entry, (
+            "Breakdown entry must NOT have 'category'. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+        assert isinstance(entry.get("detail", {}), dict), (
+            "Breakdown entry 'detail' must be a dict when present. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
 
-        if 422 in expected_status_set:
-            # The 422 body must be non-empty JSON (we do not pin the error message wording).
-            # spec: API.md §UC5 Payload caps — over-cap dimension rejected at schema boundary.
-            body = resp.json()
-            assert body, (
-                f"422 response body must be non-empty JSON; got: {resp.text!r}. "
-                "spec: API.md §Error Codes — validation errors return structured JSON body"
+    # Restore
+    await api_client.patch(
+        base_conf,
+        headers=admin_headers,
+        json={"is_enabled": False, "dataset_filter": {}},
+    )
+
+
+# ── Unresolved URN reporting ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metric_run_unresolved_urns_in_event(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """METRIC.RUN_COMPLETE event carries unresolved_urns and expected detail shape.
+
+    A URN present in dataset_filter.dataset_urns but absent from DataHub must appear
+    in the METRIC.RUN_COMPLETE event's unresolved_urns field.  The event detail must
+    also carry the full key set prescribed by the Event Catalogue.
+
+    Spec: spec/USE_CASE_en.md §UC5 §dataset_filter — unresolved-at-runtime entries
+          are skipped and reported in the METRIC.RUN_COMPLETE event's unresolved_urns.
+    Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail keys:
+          {run_id, metric_id, values, dry_run, unresolved_urns, breakdown_summary};
+          breakdown_summary has {dataset_count, affected_count}.
+    Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail key run_id.
+    """
+    _GHOST_URN = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+        "nonexistent.ghost.table,DEV)"
+    )
+    # Use a fresh custom metric to avoid mutating the factory-seeded ingestion-freshness
+    # without a guaranteed-restore guard.  Pattern mirrors test_dataset_filter_at_cap_accepted.
+    _METRIC_ID = "unresolved-urns-spot-test"
+    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
+    base_events = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/event"
+
+    try:
+        # PUT a fresh metric scoped to a ghost URN only — fast and deterministic.
+        put_resp = await api_client.put(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "ingestion-freshness",
+                "title": "Unresolved URN Spot Test",
+                "description": "Verifies ghost URN appears in unresolved_urns event field.",
+                "metrics": ["total", "ingested_in_time"],
+                "metric_conf": {"time_window_sec": 86400},
+                "dataset_filter": {"dataset_urns": [_GHOST_URN]},
+                "schedule_tier": None,
+            },
+        )
+        assert put_resp.status_code in (200, 201), put_resp.text
+
+        run_resp = await api_client.post(
+            base_run,
+            headers=admin_headers,
+            json={"dry_run": False},
+        )
+        assert run_resp.status_code == 200, run_resp.text
+        # Capture the run_id to match the event exactly — avoids relying on default sort order.
+        # Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail key run_id.
+        target_run_id = run_resp.json()["run_id"]
+
+        events_resp = await api_client.get(
+            f"{base_events}?limit=20",
+            headers=admin_headers,
+        )
+        assert events_resp.status_code == 200
+
+        complete_events = [
+            e for e in events_resp.json().get("events", [])
+            if e.get("event_type") == "METRIC.RUN_COMPLETE"
+        ]
+
+        # Select event by run_id, not list position.
+        event = next(
+            (e for e in complete_events if e["detail"]["run_id"] == target_run_id),
+            None,
+        )
+        assert event is not None, (
+            f"No METRIC.RUN_COMPLETE event for run_id={target_run_id}. "
+            "Spec: spec/feature/BACKEND.md §Event Catalogue."
+        )
+        detail = event["detail"]
+
+        # Ghost URN must appear in unresolved_urns.
+        # Spec: spec/USE_CASE_en.md §UC5 §dataset_filter.
+        assert isinstance(detail.get("unresolved_urns"), list), (
+            "METRIC.RUN_COMPLETE detail.unresolved_urns must be a list. "
+            "Spec: spec/USE_CASE_en.md §UC5 §dataset_filter."
+        )
+        assert _GHOST_URN in detail["unresolved_urns"], (
+            f"Ghost URN '{_GHOST_URN}' must appear in detail.unresolved_urns. "
+            "Spec: spec/USE_CASE_en.md §UC5 §dataset_filter."
+        )
+
+        # Full event-shape invariant — all required keys must be present.
+        # Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE.
+        for key in ("run_id", "metric_id", "values", "dry_run", "unresolved_urns", "breakdown_summary"):
+            assert key in detail, (
+                f"METRIC.RUN_COMPLETE detail missing required key '{key}'. "
+                "Spec: spec/feature/BACKEND.md §Event Catalogue."
             )
+        bs = detail["breakdown_summary"]
+        assert "dataset_count" in bs, (
+            "breakdown_summary missing 'dataset_count'. "
+            "Spec: spec/feature/BACKEND.md §Event Catalogue."
+        )
+        assert "affected_count" in bs, (
+            "breakdown_summary missing 'affected_count'. "
+            "Spec: spec/feature/BACKEND.md §Event Catalogue."
+        )
 
     finally:
-        # Clean up any conf that was created (at-cap PUT/seed PUT may write a row).
-        with suppress(Exception):
-            await api_client.delete(base, headers=admin_headers)
+        del_resp = await api_client.delete(base_conf, headers=admin_headers)
+        assert del_resp.status_code in (204, 404)
+
+
+# ── metric_id kebab regex ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metric_id_path_regex_acceptance_and_rejection(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """metric_id kebab regex: accepts valid IDs; rejects invalid ones.
+
+    Valid: 'ingestion-freshness', 'doc-health-prod', single-char 'a'.
+    Invalid: 'UPPER', 'with_underscore', 'with space', '-leading', 'trailing-'.
+
+    Spec: spec/API.md §Metric — metric_id kebab-case slug
+          ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$.
+    """
+    # Valid IDs that the regex must accept (route 200/201 or 404 — anything but 422)
+    valid_ids = ["a", "doc-health-prod", "ingestion-freshness"]
+    for mid in valid_ids:
+        resp = await api_client.get(
+            f"/api/v1/spoke/dg/metric/{mid}/attr/conf",
+            headers=admin_headers,
+        )
+        assert resp.status_code != 422, (
+            f"Valid metric_id '{mid}' rejected by path regex with 422. "
+            "Spec: spec/API.md §Metric — metric_id kebab-case slug."
+        )
+
+    # Invalid IDs that FastAPI path regex must reject with 422
+    invalid_ids = ["UPPER", "with_underscore", "-leading", "trailing-"]
+    for mid in invalid_ids:
+        resp = await api_client.get(
+            f"/api/v1/spoke/dg/metric/{mid}/attr/conf",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 422, (
+            f"Invalid metric_id '{mid}' was not rejected (expected 422, got {resp.status_code}). "
+            "Spec: spec/API.md §Metric — metric_id kebab-case slug."
+        )

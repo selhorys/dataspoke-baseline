@@ -1,113 +1,130 @@
-"""Metric definition, result, and attribute models (DG)."""
+"""Metric definition, result, and attribute models (DG).
 
+Spec: spec/API.md §Metric (/spoke/dg/metric), spec/USE_CASE_en.md §UC5.
+"""
+
+import re
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
-from src.shared.models.enums import MetricTheme
 
 _ScheduleTier = Literal["hourly", "daily", "weekly"]
 _DATASET_FILTER_LIST_CAP = 1000
+_DATASET_URN_RE = re.compile(r"^urn:li:dataset:\(.+\)$")
+
+# Keys emitted by each built-in metric type
+_EMITTED_KEYS: dict[str, set[str]] = {
+    "ingestion-freshness": {"total", "ingested_in_time"},
+    "validation-score": {"total", "validation_score_sum"},
+    "doc-health": {"total", "doc_health"},
+}
 
 
-def _check_measurement_query_dataset_filter_bounds(
-    measurement_query: dict[str, Any],
-) -> None:
-    """Raise ValueError if any list dimension in measurement_query.dataset_filter
-    exceeds the cap.
-
-    Spec: API.md §UC5 Governance Payload caps —
-    measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
-    ≤ 1,000 entries per dimension.
-    """
-    df = measurement_query.get("dataset_filter")
-    if not isinstance(df, dict):
-        return
-    for key in ("dataset_urns", "tags", "glossary_terms"):
-        val = df.get(key)
+def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
+    """Raise ValueError when any list dimension exceeds the cap."""
+    for key in ("tags", "glossary_terms", "dataset_urns"):
+        val = dataset_filter.get(key)
         if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
             raise ValueError(
-                f"measurement_query.dataset_filter.{key} may not exceed "
-                f"{_DATASET_FILTER_LIST_CAP} entries"
+                f"dataset_filter.{key} may not exceed {_DATASET_FILTER_LIST_CAP} entries"
             )
 
 
+def _check_dataset_urn_format(dataset_filter: dict[str, Any]) -> None:
+    """Raise ValueError for malformed dataset URNs inside dataset_filter."""
+    for urn in dataset_filter.get("dataset_urns", []) or []:
+        if not _DATASET_URN_RE.match(str(urn)):
+            raise ValueError(f"Invalid dataset URN in dataset_filter.dataset_urns: {urn!r}")
+
+
+def _check_metric_conf_for_type(metric_type: str, metric_conf: dict[str, Any]) -> None:
+    """Raise ValueError when metric_conf is missing or invalid for the given type."""
+    if metric_type in ("ingestion-freshness", "validation-score"):
+        tw = metric_conf.get("time_window_sec")
+        if tw is None or not isinstance(tw, int) or tw <= 0:
+            raise ValueError(
+                f"metric_conf.time_window_sec must be a positive int for metric_type '{metric_type}'"
+            )
+    elif metric_type == "doc-health":
+        if metric_conf != {}:
+            raise ValueError("metric_conf must be {} for metric_type 'doc-health'")
+
+
+def _check_metrics_subset(metric_type: str, metrics: list[str]) -> None:
+    """Raise ValueError when metrics[] contains keys not emitted by metric_type."""
+    allowed = _EMITTED_KEYS.get(metric_type, set())
+    unknown = set(metrics) - allowed
+    if unknown:
+        raise ValueError(
+            f"metrics[] contains keys not emitted by '{metric_type}': {sorted(unknown)}. "
+            f"Allowed: {sorted(allowed)}"
+        )
+
+
 class UpsertMetricConfigRequest(BaseModel):
-    title: str = Field(
-        description="Short human-readable title for the metric, e.g. 'Poorly documented datasets'"
+    mode: Literal["active", "passive"] = Field(
+        description="Measurement mode: 'active' (built-in measurer) or 'passive' (reserved)"
     )
-    description: str = Field(
-        description="Detailed description of what the metric measures and why it matters"
+    is_enabled: bool = Field(
+        description="Whether scheduled measurement is enabled"
     )
-    theme: MetricTheme = Field(
-        description="Metric theme grouping: 'quality', 'governance', or 'freshness'"
+    metric_type: Literal["ingestion-freshness", "validation-score", "doc-health"] = Field(
+        description="Built-in metric type"
     )
-    measurement_query: dict[str, Any] = Field(
+    title: str = Field(description="Short human-readable title for the metric")
+    description: str = Field(description="What this metric measures")
+    metrics: list[str] = Field(
+        description="Subset of the type's emitted keys to persist in results"
+    )
+    metric_conf: dict[str, Any] = Field(
         description=(
-            "Query configuration for metric measurement. "
-            "Required key: 'aggregation' — registered measurer key, e.g. 'pct_fresh' or 'pct_rules_passing'. "
-            "Optional key: 'dataset_filter' with 'tags', 'glossary_terms', and/or 'dataset_urns' lists for OR-filtering. "
-            "Unsupported aggregation values return 422 INVALID_PARAMETER."
+            "Type-specific config. 'ingestion-freshness' and 'validation-score' require "
+            "time_window_sec (positive int seconds); 'doc-health' takes {}"
         )
     )
     schedule_tier: _ScheduleTier | None = Field(
         default=None,
-        description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'",
+        description="Schedule tier: 'hourly', 'daily', or 'weekly' (null = on-demand only)",
     )
-    is_enabled: bool = Field(
-        default=True, description="Whether the metric is active and scheduled for measurement"
+    dataset_filter: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed), "
+            "tags (list[str], OR), glossary_terms (list[str], OR), "
+            "dataset_urns (list[str], OR). Each list capped at 1,000 entries."
+        ),
     )
 
     @model_validator(mode="after")
-    def validate_dataset_filter_bounds(self) -> "UpsertMetricConfigRequest":
-        _check_measurement_query_dataset_filter_bounds(self.measurement_query)
+    def validate_fields(self) -> "UpsertMetricConfigRequest":
+        _check_dataset_filter_bounds(self.dataset_filter)
+        _check_dataset_urn_format(self.dataset_filter)
+        _check_metric_conf_for_type(self.metric_type, self.metric_conf)
+        _check_metrics_subset(self.metric_type, self.metrics)
         return self
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "title": "Ingestion freshness coverage",
-                "description": "Measures the percentage of datasets with a recent successful ingestion run",
-                "theme": "freshness",
-                "measurement_query": {
-                    "aggregation": "pct_fresh",
-                    "dataset_filter": {
-                        "tags": ["urn:li:tag:PII"],
-                    },
-                },
-                "schedule_tier": "daily",
-                "is_enabled": True,
-            }
-        }
-    }
 
 
 class PatchMetricConfigRequest(BaseModel):
-    title: str | None = Field(default=None, description="Updated metric title")
-    description: str | None = Field(default=None, description="Updated metric description")
-    theme: MetricTheme | None = Field(
-        default=None, description="Updated metric theme: 'quality', 'governance', or 'freshness'"
+    mode: Literal["active", "passive"] | None = Field(default=None)
+    is_enabled: bool | None = Field(default=None)
+    metric_type: Literal["ingestion-freshness", "validation-score", "doc-health"] | None = Field(
+        default=None
     )
-    measurement_query: dict[str, Any] | None = Field(
-        default=None,
-        description=(
-            "Updated query configuration for metric measurement. "
-            "Required key: 'aggregation' — registered measurer key, e.g. 'pct_fresh' or 'pct_rules_passing'."
-        ),
-    )
-    schedule_tier: _ScheduleTier | None = Field(
-        default=None, description="Updated schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'."
-    )
-    is_enabled: bool | None = Field(
-        default=None, description="Set to true to enable the metric, false to pause"
-    )
+    title: str | None = Field(default=None)
+    description: str | None = Field(default=None)
+    metrics: list[str] | None = Field(default=None)
+    metric_conf: dict[str, Any] | None = Field(default=None)
+    schedule_tier: _ScheduleTier | None = Field(default=None)
+    dataset_filter: dict[str, Any] | None = Field(default=None)
 
     @model_validator(mode="after")
-    def validate_dataset_filter_bounds(self) -> "PatchMetricConfigRequest":
-        if self.measurement_query is not None:
-            _check_measurement_query_dataset_filter_bounds(self.measurement_query)
+    def validate_fields(self) -> "PatchMetricConfigRequest":
+        if self.dataset_filter is not None:
+            _check_dataset_filter_bounds(self.dataset_filter)
+            _check_dataset_urn_format(self.dataset_filter)
         return self
 
 
@@ -120,14 +137,17 @@ class RunMetricRequest(BaseModel):
 
 class MetricDefinitionResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the metric definition")
+    mode: str = Field(description="Measurement mode: 'active' or 'passive'")
+    is_enabled: bool = Field(description="Whether scheduled measurement is enabled")
+    metric_type: str = Field(description="Built-in metric type")
     title: str = Field(description="Human-readable metric title")
-    description: str = Field(description="Detailed metric description")
-    theme: MetricTheme = Field(description="Metric theme: 'quality', 'governance', or 'freshness'")
-    measurement_query: dict[str, Any] = Field(
-        description="Query configuration used to measure this metric"
+    description: str = Field(description="What this metric measures")
+    metrics: list[str] = Field(description="Subset of the type's emitted keys to persist")
+    metric_conf: dict[str, Any] = Field(description="Type-specific configuration")
+    schedule_tier: _ScheduleTier | None = Field(
+        description="Schedule tier: 'hourly', 'daily', or 'weekly'"
     )
-    schedule_tier: _ScheduleTier | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
-    is_enabled: bool = Field(description="Whether the metric is actively being measured")
+    dataset_filter: dict[str, Any] = Field(description="Scope filter for dataset resolution")
     created_at: datetime = Field(description="UTC timestamp when the metric was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
@@ -142,12 +162,15 @@ class MetricAttrResponse(SingleResponse):
     """Lightweight attributes view."""
 
     id: str = Field(description="Unique identifier of the metric")
+    mode: str = Field(description="Measurement mode: 'active' or 'passive'")
+    metric_type: str = Field(description="Built-in metric type")
     title: str = Field(description="Human-readable metric title")
-    theme: MetricTheme = Field(description="Metric theme: 'quality', 'governance', or 'freshness'")
-    is_enabled: bool = Field(description="Whether the metric is actively being measured")
-    schedule_tier: _ScheduleTier | None = Field(description="Schedule tier for periodic measurement runs: 'hourly', 'daily', or 'weekly'")
-    latest_value: float | None = Field(
-        default=None, description="Most recent measured value for this metric"
+    is_enabled: bool = Field(description="Whether scheduled measurement is enabled")
+    schedule_tier: _ScheduleTier | None = Field(
+        description="Schedule tier: 'hourly', 'daily', or 'weekly'"
+    )
+    latest_values: dict[str, float] | None = Field(
+        default=None, description="Most recent measured values for this metric"
     )
     latest_measured_at: datetime | None = Field(
         default=None, description="UTC timestamp of the most recent measurement"
@@ -159,10 +182,10 @@ class MetricResultResponse(SingleResponse):
     metric_id: str = Field(
         description="Identifier of the metric definition this result belongs to"
     )
-    value: float = Field(description="Measured metric value")
+    values: dict[str, float] = Field(description="Named float measurements")
     breakdown: dict[str, Any] | None = Field(
         default=None,
-        description="Optional breakdown of the metric value by dimension or sub-category",
+        description="Per-dataset breakdown (dataset_count + failed datasets list)",
     )
     measured_at: datetime = Field(description="UTC timestamp when the measurement was taken")
 

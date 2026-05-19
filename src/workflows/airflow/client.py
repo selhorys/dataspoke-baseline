@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 
 from src.workflows.airflow.errors import AirflowExecutionFailedError, AirflowTimeoutError
-from src.workflows.airflow.models import DagRunResponse, DagRunState
+from src.workflows.airflow.models import DagRunResponse, DagRunState, XcomEntry
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,32 @@ class AirflowClient:
         if resp.status_code == 404:
             return
         resp.raise_for_status()
+
+    async def fetch_task_xcom(
+        self,
+        dag_id: str,
+        dag_run_id: str,
+        task_id: str,
+        key: str = "return_value",
+    ) -> Any:
+        """Fetch a single XCom value produced by a task instance.
+
+        Returns the deserialized ``value`` field from the XCom entry, or
+        ``None`` when the entry does not exist (Airflow returns 404 before
+        the task pushes a value, or when the task never pushed).
+
+        Airflow REST: GET /api/v2/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances/{task_id}/xcomEntries/{key}
+        """
+        path = (
+            f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}"
+            f"/taskInstances/{task_id}/xcomEntries/{key}"
+        )
+        resp = await self._authed_call(lambda: self._client.get(path))
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        entry = XcomEntry(**resp.json())
+        return entry.parsed_value
 
     async def list_dags(self, prefix: str | None = None) -> list[dict]:
         """List DAGs, optionally filtered by ID pattern prefix.

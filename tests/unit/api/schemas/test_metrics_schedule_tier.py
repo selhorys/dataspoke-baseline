@@ -1,10 +1,16 @@
-"""Unit tests for src/api/schemas/metrics.py — schedule_tier + dataset_filter caps.
+"""Unit tests for src/api/schemas/metrics.py — schedule_tier, new field set,
+and dataset_filter caps.
 
-Pins:
-  - schedule_tier ∈ {hourly, daily, weekly, None} (Literal-typed)
-  - measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
-    ≤ 1,000 per dimension (Upsert and Patch)
-  - Pydantic rejects unknown / over-cap values with ValidationError → 422
+Spec sources:
+  spec/API.md §Metric (/spoke/dg/metric):
+    - mode: "active" | "passive"
+    - metric_type: "ingestion-freshness" | "validation-score" | "doc-health"
+    - metrics: list[str] subset of type's emitted keys
+    - metric_conf: type-specific (time_window_sec for windowed types; {} for doc-health)
+    - dataset_filter: {origin, tags, glossary_terms, dataset_urns} — each list capped at 1,000
+    - schedule_tier: "hourly" | "daily" | "weekly" | null
+  spec/feature/BACKEND_SCHEMA.md §metric_definitions — column shapes.
+  spec/USE_CASE_en.md §UC5 §Built-in active metric types — emitted keys per type.
 """
 
 import pytest
@@ -18,62 +24,253 @@ from src.api.schemas.metrics import (
 
 _DATASET_FILTER_LIST_CAP = 1000
 
-_VALID_BODY = {
-    "title": "Ingestion freshness coverage",
+_VALID_INGESTION_BODY = {
+    "mode": "active",
+    "is_enabled": False,
+    "metric_type": "ingestion-freshness",
+    "title": "Ingestion freshness",
     "description": "Pct of datasets with a recent successful ingestion run",
-    "theme": "freshness",
-    "measurement_query": {"aggregation": "pct_fresh"},
-    "is_enabled": True,
+    "metrics": ["total", "ingested_in_time"],
+    "metric_conf": {"time_window_sec": 86400},
+    "dataset_filter": {},
+}
+
+_VALID_VALIDATION_BODY = {
+    "mode": "active",
+    "is_enabled": False,
+    "metric_type": "validation-score",
+    "title": "Validation score",
+    "description": "Sum of validation scores",
+    "metrics": ["total", "validation_score_sum"],
+    "metric_conf": {"time_window_sec": 86400},
+    "dataset_filter": {},
+}
+
+_VALID_DOC_HEALTH_BODY = {
+    "mode": "active",
+    "is_enabled": False,
+    "metric_type": "doc-health",
+    "title": "Documentation health",
+    "description": "Counts fully documented datasets",
+    "metrics": ["total", "doc_health"],
+    "metric_conf": {},
+    "dataset_filter": {},
 }
 
 
 def _too_many(dimension: str) -> list[str]:
     if dimension == "dataset_urns":
-        return [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-                for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        return [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
+            for i in range(_DATASET_FILTER_LIST_CAP + 1)
+        ]
     prefix = "urn:li:tag:t" if dimension == "tags" else "urn:li:glossaryTerm:t"
     return [f"{prefix}{i}" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
 
 
 class TestUpsertMetricConfigRequest:
+    # ── schedule_tier ─────────────────────────────────────────────────────────
+
     def test_schedule_tier_accepts_valid_values(self) -> None:
         """schedule_tier accepts hourly, daily, weekly, and None.
 
-        Spec: feature/BACKEND_SCHEMA.md — schedule_tier ∈ {hourly, daily, weekly, null}.
+        Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions — schedule_tier
+              is 'hourly', 'daily', 'weekly', or null.
         """
         for tier in ("hourly", "daily", "weekly", None):
-            req = UpsertMetricConfigRequest(**_VALID_BODY, schedule_tier=tier)
+            req = UpsertMetricConfigRequest(**_VALID_INGESTION_BODY, schedule_tier=tier)
             assert req.schedule_tier == tier
 
     def test_schedule_tier_rejects_invalid_value(self) -> None:
         """schedule_tier='minutely' raises ValidationError.
 
-        Spec: API.md §Governance — metric schedule_tier is a Literal type.
+        Spec: spec/API.md §Metric — schedule_tier is a Literal type.
         """
         with pytest.raises(ValidationError):
-            UpsertMetricConfigRequest(**_VALID_BODY, schedule_tier="minutely")  # type: ignore[arg-type]
+            UpsertMetricConfigRequest(**_VALID_INGESTION_BODY, schedule_tier="minutely")  # type: ignore[arg-type]
+
+    # ── mode field ────────────────────────────────────────────────────────────
+
+    def test_mode_active_accepted(self) -> None:
+        """mode='active' is accepted.
+
+        Spec: spec/API.md §Metric — mode is 'active' or 'passive'.
+        """
+        req = UpsertMetricConfigRequest(**{**_VALID_INGESTION_BODY, "mode": "active"})
+        assert req.mode == "active"
+
+    def test_mode_passive_accepted_at_schema_layer(self) -> None:
+        """mode='passive' is accepted at the schema layer (501 is raised at the route).
+
+        Spec: spec/API.md §Metric — 'passive' is reserved; PUT with mode:'passive'
+              returns 501 NOT_IMPLEMENTED. This is enforced at the route handler,
+              not the Pydantic schema.
+        """
+        req = UpsertMetricConfigRequest(**{**_VALID_INGESTION_BODY, "mode": "passive"})
+        assert req.mode == "passive"
+
+    def test_mode_invalid_rejected(self) -> None:
+        """Unknown mode value raises ValidationError.
+
+        Spec: spec/API.md §Metric — mode is Literal["active", "passive"].
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{**_VALID_INGESTION_BODY, "mode": "unknown"})  # type: ignore[arg-type]
+
+    # ── metric_type field ─────────────────────────────────────────────────────
+
+    def test_metric_type_valid_values_accepted(self) -> None:
+        """Three valid metric_type values are accepted.
+
+        Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types.
+        """
+        for body in (_VALID_INGESTION_BODY, _VALID_VALIDATION_BODY, _VALID_DOC_HEALTH_BODY):
+            req = UpsertMetricConfigRequest(**body)
+            assert req.metric_type in ("ingestion-freshness", "validation-score", "doc-health")
+
+    def test_metric_type_invalid_rejected(self) -> None:
+        """Unknown metric_type raises ValidationError.
+
+        Spec: spec/API.md §Metric — metric_type is Literal; unsupported values return
+              422 INVALID_PARAMETER.
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{**_VALID_INGESTION_BODY, "metric_type": "unknown-type"})
+
+    # ── metric_conf validation ────────────────────────────────────────────────
+
+    def test_ingestion_freshness_requires_positive_time_window(self) -> None:
+        """ingestion-freshness with missing time_window_sec raises ValidationError.
+
+        Spec: spec/API.md §Metric — metric_conf must contain time_window_sec
+              (positive int) for ingestion-freshness.
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{**_VALID_INGESTION_BODY, "metric_conf": {}})
+
+    def test_ingestion_freshness_rejects_negative_time_window(self) -> None:
+        """ingestion-freshness with time_window_sec <= 0 raises ValidationError.
+
+        Spec: spec/API.md §Metric — time_window_sec must be positive int.
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metric_conf": {"time_window_sec": -1},
+            })
+
+    def test_validation_score_requires_positive_time_window(self) -> None:
+        """validation-score with missing time_window_sec raises ValidationError.
+
+        Spec: spec/API.md §Metric — time_window_sec required for validation-score.
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{**_VALID_VALIDATION_BODY, "metric_conf": {}})
+
+    def test_doc_health_rejects_nonempty_metric_conf(self) -> None:
+        """doc-health with non-empty metric_conf raises ValidationError.
+
+        Spec: spec/API.md §Metric — metric_conf must be {} for doc-health.
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{
+                **_VALID_DOC_HEALTH_BODY,
+                "metric_conf": {"time_window_sec": 86400},
+            })
+
+    def test_doc_health_empty_metric_conf_accepted(self) -> None:
+        """doc-health with metric_conf={} is accepted.
+
+        Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — doc-health
+              metric_conf is {}.
+        """
+        req = UpsertMetricConfigRequest(**_VALID_DOC_HEALTH_BODY)
+        assert req.metric_conf == {}
+
+    # ── metrics[] validation ──────────────────────────────────────────────────
+
+    def test_metrics_unknown_key_raises(self) -> None:
+        """metrics[] containing a key not emitted by the type raises ValidationError.
+
+        Spec: spec/API.md §Metric — unknown keys in metrics[] return
+              422 INVALID_PARAMETER.
+        """
+        with pytest.raises(ValidationError):
+            UpsertMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metrics": ["nonexistent_key"],
+            })
+
+    def test_metrics_valid_subset_accepted(self) -> None:
+        """metrics[] containing a valid subset of emitted keys is accepted.
+
+        Spec: spec/API.md §Metric — metrics[] must be a subset of the type's
+              emitted keys.
+        """
+        req = UpsertMetricConfigRequest(**{**_VALID_INGESTION_BODY, "metrics": ["total"]})
+        assert req.metrics == ["total"]
+
+    # ── dataset_filter caps ───────────────────────────────────────────────────
 
     @pytest.mark.parametrize("dimension", ["dataset_urns", "tags", "glossary_terms"])
     def test_dataset_filter_dimension_exceeds_cap_raises(self, dimension: str) -> None:
-        """measurement_query.dataset_filter.{dimension} > 1000 raises ValidationError.
+        """dataset_filter.{dimension} > 1000 raises ValidationError.
 
-        Spec: API.md §UC5 Governance Payload caps —
-        measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
-        ≤ 1,000 per dimension.
+        Spec: spec/API.md §Metric — dataset_filter list dimensions capped at 1,000.
         """
-        body = {**_VALID_BODY, "measurement_query": {
-            "aggregation": "pct_fresh",
+        body = {
+            **_VALID_INGESTION_BODY,
             "dataset_filter": {dimension: _too_many(dimension)},
-        }}
+        }
         with pytest.raises(ValidationError):
             UpsertMetricConfigRequest(**body)
 
+    def test_dataset_filter_at_cap_accepted(self) -> None:
+        """dataset_filter.dataset_urns with exactly 1,000 entries is accepted.
+
+        Spec: spec/API.md §Metric — list capped at 1,000; exactly 1,000 is allowed.
+        """
+        exactly_cap = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
+            for i in range(_DATASET_FILTER_LIST_CAP)
+        ]
+        req = UpsertMetricConfigRequest(**{
+            **_VALID_INGESTION_BODY,
+            "dataset_filter": {"dataset_urns": exactly_cap},
+        })
+        assert len(req.dataset_filter["dataset_urns"]) == _DATASET_FILTER_LIST_CAP
+
+    # ── Field set matches spec ────────────────────────────────────────────────
+
+    def test_field_set_matches_spec(self) -> None:
+        """UpsertMetricConfigRequest exposes exactly the spec'd field set.
+
+        Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions; spec/API.md
+              §Metric — PUT/PATCH .../attr/conf body.
+        """
+        UpsertMetricConfigRequest(**_VALID_INGESTION_BODY)  # smoke-validate
+        actual = set(UpsertMetricConfigRequest.model_fields.keys())
+        expected = {
+            "mode",
+            "is_enabled",
+            "metric_type",
+            "title",
+            "description",
+            "metrics",
+            "metric_conf",
+            "schedule_tier",
+            "dataset_filter",
+        }
+        assert actual == expected
+
 
 class TestPatchMetricConfigRequest:
+    # ── schedule_tier ─────────────────────────────────────────────────────────
+
     def test_schedule_tier_accepts_valid_values(self) -> None:
         """schedule_tier accepts hourly, daily, weekly, and None.
 
-        Spec: feature/BACKEND_SCHEMA.md — schedule_tier ∈ {hourly, daily, weekly, null}.
+        Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions.
         """
         for tier in ("hourly", "daily", "weekly", None):
             req = PatchMetricConfigRequest(schedule_tier=tier)
@@ -82,19 +279,39 @@ class TestPatchMetricConfigRequest:
     def test_schedule_tier_rejects_invalid_value(self) -> None:
         """schedule_tier='yearly' raises ValidationError.
 
-        Spec: API.md §Governance — metric schedule_tier is a Literal type.
+        Spec: spec/API.md §Metric — schedule_tier is a Literal type.
         """
         with pytest.raises(ValidationError):
             PatchMetricConfigRequest(schedule_tier="yearly")  # type: ignore[arg-type]
 
+    # ── dataset_filter caps ───────────────────────────────────────────────────
+
     @pytest.mark.parametrize("dimension", ["dataset_urns", "tags", "glossary_terms"])
     def test_dataset_filter_dimension_exceeds_cap_raises(self, dimension: str) -> None:
-        """PATCH with measurement_query.dataset_filter.{dimension} > 1000 raises.
+        """PATCH with dataset_filter.{dimension} > 1000 raises.
 
-        Spec: API.md §UC5 Governance Payload caps —
-        measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}
-        ≤ 1,000 per dimension.
+        Spec: spec/API.md §Metric — dataset_filter list dimensions capped at 1,000.
         """
-        mq = {"aggregation": "pct_fresh", "dataset_filter": {dimension: _too_many(dimension)}}
         with pytest.raises(ValidationError):
-            PatchMetricConfigRequest(measurement_query=mq)
+            PatchMetricConfigRequest(dataset_filter={dimension: _too_many(dimension)})
+
+    # ── Partial update — all fields optional ─────────────────────────────────
+
+    def test_is_enabled_only_patch_is_valid(self) -> None:
+        """PATCH with only is_enabled is valid.
+
+        Spec: spec/API.md §Metric — PATCH updates metric definition fields (partial).
+        """
+        req = PatchMetricConfigRequest(is_enabled=True)
+        assert req.is_enabled is True
+        assert req.mode is None
+        assert req.metric_type is None
+
+    def test_empty_patch_is_valid(self) -> None:
+        """Empty PATCH body is valid (all fields are optional).
+
+        Spec: spec/API.md §Metric — PATCH is partial update.
+        """
+        req = PatchMetricConfigRequest()
+        assert req.is_enabled is None
+        assert req.mode is None

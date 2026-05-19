@@ -22,11 +22,13 @@ _METRIC_RUN_URL = "/api/v1/spoke/dg/metric/{metric_id}/method/run"
 def _make_definition_record(metric_id: str = "ingestion-freshness", is_enabled: bool = True) -> MagicMock:
     rec = MagicMock()
     rec.id = metric_id
-    rec.metric_id = metric_id
+    rec.mode = "active"
+    rec.metric_type = "ingestion-freshness"
     rec.title = "Ingestion Freshness"
     rec.description = "Measures freshness of ingested data"
-    rec.theme = "ingestion"
-    rec.measurement_query = {"aggregation": "pct_fresh"}
+    rec.metrics = ["total", "ingested_in_time"]
+    rec.metric_conf = {"time_window_sec": 86400}
+    rec.dataset_filter = {}
     rec.schedule_tier = "daily"
     rec.is_enabled = is_enabled
     rec.created_at = datetime.now(tz=UTC)

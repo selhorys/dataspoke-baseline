@@ -17,14 +17,13 @@ from src.api.schemas.ingestion import (
 from src.api.schemas.metrics import (
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
-    UpsertMetricConfigRequest,
 )
+from src.api.schemas.metrics import UpsertMetricConfigRequest
 from src.api.schemas.ontogen import (
     NodeListResponse,
     OntogenConfPutRequest,
     SeedListResponse,
 )
-from src.api.schemas.overview import OverviewResponse
 from src.api.schemas.validation import (
     PutValidationConfRequest,
     ValidationConfResponse,
@@ -252,64 +251,56 @@ class TestDatasetSchemas:
 
 class TestMetricsSchemas:
     def test_upsert_request(self) -> None:
+        """UpsertMetricConfigRequest accepts new field set (mode, metric_type, etc).
+
+        Spec: spec/API.md §Metric — PUT /spoke/dg/metric/{id}/attr/conf fields.
+        """
         req = UpsertMetricConfigRequest(
-            title="Row Count",
-            description="Counts total rows",
-            theme="quality",
-            measurement_query={"aggregation": "pct_fresh"},
+            mode="active",
             is_enabled=False,
+            metric_type="ingestion-freshness",
+            title="Ingestion freshness",
+            description="Pct datasets ingested in time",
+            metrics=["total", "ingested_in_time"],
+            metric_conf={"time_window_sec": 86400},
+            dataset_filter={},
         )
         assert req.is_enabled is False
-
-    def test_upsert_request_enabled_with_schedule(self) -> None:
-        req = UpsertMetricConfigRequest(
-            title="Row Count",
-            description="Counts total rows",
-            theme="quality",
-            measurement_query={"aggregation": "pct_fresh"},
-            is_enabled=True,
-            schedule_tier="daily",
-        )
-        assert req.is_enabled is True
-        assert req.schedule_tier == "daily"
-
-    def test_upsert_request_enabled_without_schedule_ok(self) -> None:
-        req = UpsertMetricConfigRequest(
-            title="Row Count",
-            description="Counts total rows",
-            theme="quality",
-            measurement_query={"aggregation": "pct_fresh"},
-            is_enabled=True,
-        )
-        assert req.is_enabled is True
-        assert req.schedule_tier is None
+        assert req.mode == "active"
+        assert req.metric_type == "ingestion-freshness"
 
     def test_definition_response(self) -> None:
+        """MetricDefinitionResponse has the new field set.
+
+        Spec: spec/API.md §Metric — response carries mode, metric_type, metrics,
+              metric_conf, dataset_filter.
+        """
         now = datetime.now(tz=UTC)
         resp = MetricDefinitionResponse(
             id="m1",
-            title="Row Count",
-            description="Counts total rows",
-            theme="quality",
-            measurement_query={"aggregation": "pct_fresh"},
-            schedule_tier=None,
+            mode="active",
             is_enabled=True,
+            metric_type="doc-health",
+            title="Doc Health",
+            description="Documentation coverage",
+            metrics=["total", "doc_health"],
+            metric_conf={},
+            dataset_filter={},
+            schedule_tier=None,
             created_at=now,
             updated_at=now,
         )
         assert resp.resp_time is not None
+        assert resp.mode == "active"
+        assert resp.metric_type == "doc-health"
 
     def test_list_response(self) -> None:
+        """MetricDefinitionListResponse.metrics starts as empty list.
+
+        Spec: spec/API.md §Standard Response Envelope — paginated list defaults.
+        """
         resp = MetricDefinitionListResponse()
         assert resp.metrics == []
-
-
-class TestOverviewSchemas:
-    def test_overview_defaults(self) -> None:
-        resp = OverviewResponse()
-        assert resp.layout == "force"
-        assert resp.color_by == "quality_score"
-        assert resp.filters == {}
 
 
 class TestEventSchemas:

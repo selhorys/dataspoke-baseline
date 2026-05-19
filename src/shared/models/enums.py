@@ -8,12 +8,6 @@ class IngestionConfigStatus(StrEnum):
     ERROR = "ERROR"
 
 
-class MetricTheme(StrEnum):
-    QUALITY = "quality"
-    GOVERNANCE = "governance"
-    FRESHNESS = "freshness"
-
-
 class EventStatus(StrEnum):
     SUCCESS = "success"
     OK = "ok"

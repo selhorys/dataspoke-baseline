@@ -32,7 +32,6 @@ from src.shared.db.models import (
     OntogenNode,
     OntogenSeed,
     OntogenTriple,
-    OverviewConfig,
     TripleEmbedding,
     ValidationConfig,
     ValidationResult,
@@ -52,7 +51,6 @@ ALL_MODELS = [
     MetricResult,
     Event,
     DepartmentMapping,
-    OverviewConfig,
     OntogenConfig,
     OntogenSeed,
     OntogenNode,
@@ -78,7 +76,6 @@ EXPECTED_TABLES = {
     "metric_results",
     "events",
     "department_mapping",
-    "overview_config",
     "ontogen_config",
     "ontogen_seeds",
     "ontogen_nodes",
@@ -162,7 +159,7 @@ def test_validation_config_text_pk() -> None:
 
 
 def test_integer_primary_key_singleton_models() -> None:
-    for model in (OverviewConfig, OntogenConfig):
+    for model in (OntogenConfig,):
         mapper = inspect(model)
         pk_cols = mapper.primary_key
         assert len(pk_cols) == 1
@@ -194,10 +191,12 @@ def test_jsonb_columns() -> None:
         (ValidationResult, "variables"),  # measured variable values
         (MetagenConfig, "dataset_filter"),
         (MetagenCandidate, "evidence"),
-        (MetricDefinition, "measurement_query"),
+        (MetricDefinition, "metrics"),
+        (MetricDefinition, "metric_conf"),
+        (MetricDefinition, "dataset_filter"),
+        (MetricResult, "values"),
         (MetricResult, "breakdown"),
         (Event, "detail"),
-        (OverviewConfig, "filters"),
         (OntogenConfig, "dataset_filter"),
         (OntogenNode, "evidence"),
         (OntogenEdge, "evidence"),

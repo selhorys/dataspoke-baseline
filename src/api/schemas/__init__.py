@@ -65,7 +65,6 @@ from src.api.schemas.ontogen import (
     TripleListResponse,
     TripleResponse,
 )
-from src.api.schemas.overview import OverviewResponse, PatchOverviewRequest
 from src.api.schemas.validation import (
     PatchValidationConfRequest,
     PostValidationResultRequest,
@@ -139,9 +138,6 @@ __all__ = [
     "TripleAttrResponse",
     "TripleListResponse",
     "TripleResponse",
-    # overview
-    "OverviewResponse",
-    "PatchOverviewRequest",
     # validation
     "PatchValidationConfRequest",
     "PostValidationResultRequest",

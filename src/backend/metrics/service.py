@@ -1,14 +1,7 @@
 """Metrics service — metric CRUD, run pipeline, and event recording.
 
 Metrics are pure aggregation over pre-existing data (DataHub metadata and
-validation results). The supported ``measurement_query.aggregation`` values are:
-- ``pct_fresh``: datasets categorised as fresh/stale based on latest
-  INGESTION.COMPLETE event recency.
-- ``pct_rules_passing``: datasets categorised as rules_passing/rules_failing
-  based on latest validation results.
-
-Unsupported aggregation types raise ``INVALID_PARAMETER``.
-activate() and deactivate() methods are removed — use PUT/PATCH is_enabled field.
+validation results). The ``metric_type`` dispatches to a registered measurer.
 
 Spec: spec/feature/BACKEND.md §Metrics Service
 """
@@ -49,11 +42,29 @@ from src.shared.exceptions import (
 logger = logging.getLogger(__name__)
 
 _DATASET_URN_RE = _re.compile(r"^urn:li:dataset:\(.+\)$")
+_DATASET_FILTER_LIST_CAP = 1000
+
+# Keys emitted by each built-in metric type (mirrors the schema-layer constant).
+_EMITTED_KEYS: dict[str, set[str]] = {
+    "ingestion-freshness": {"total", "ingested_in_time"},
+    "validation-score": {"total", "validation_score_sum"},
+    "doc-health": {"total", "doc_health"},
+}
 
 
-def _validate_dataset_filter(measurement_query: dict[str, Any]) -> None:
-    """Validate dataset_urns inside measurement_query.dataset_filter."""
-    dataset_filter = (measurement_query or {}).get("dataset_filter") or {}
+def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
+    """Validate dataset_filter dimensions.
+
+    Raises PreconditionFailedError when any list dimension exceeds the cap.
+    Raises InvalidDatasetUrnError when a dataset URN is malformed.
+    """
+    for key in ("tags", "glossary_terms", "dataset_urns"):
+        val = dataset_filter.get(key)
+        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                f"dataset_filter.{key} may not exceed {_DATASET_FILTER_LIST_CAP} entries",
+            )
     for urn in dataset_filter.get("dataset_urns", []) or []:
         if not _DATASET_URN_RE.match(str(urn)):
             raise InvalidDatasetUrnError(str(urn))
@@ -63,10 +74,13 @@ class MetricDefinitionRecord(BaseModel):
     """Value object mirroring the ORM MetricDefinition."""
 
     id: str
+    mode: str
+    metric_type: str
     title: str
     description: str
-    theme: str
-    measurement_query: dict[str, Any]
+    metrics: list[str]
+    metric_conf: dict[str, Any]
+    dataset_filter: dict[str, Any]
     schedule_tier: str | None = None
     is_enabled: bool
     created_at: datetime
@@ -78,7 +92,7 @@ class MetricResultRecord(BaseModel):
 
     id: str
     metric_id: str
-    value: float
+    values: dict[str, float]
     breakdown: dict[str, Any] | None = None
     measured_at: datetime
 
@@ -94,10 +108,13 @@ class MetricRunResult(BaseModel):
 def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
     return MetricDefinitionRecord(
         id=row.id,
+        mode=row.mode,
+        metric_type=row.metric_type,
         title=row.title,
         description=row.description,
-        theme=row.theme,
-        measurement_query=row.measurement_query,
+        metrics=row.metrics or [],
+        metric_conf=row.metric_conf or {},
+        dataset_filter=row.dataset_filter or {},
         schedule_tier=row.schedule_tier,
         is_enabled=row.is_enabled,
         created_at=row.created_at,
@@ -109,7 +126,7 @@ def _result_from_row(row: MetricResult) -> MetricResultRecord:
     return MetricResultRecord(
         id=str(row.id),
         metric_id=row.metric_id,
-        value=row.value,
+        values=row.values or {},
         breakdown=row.breakdown,
         measured_at=row.measured_at,
     )
@@ -134,13 +151,16 @@ class MetricsService:
         self,
         offset: int = 0,
         limit: int = 20,
-        theme_filter: str | None = None,
+        metric_type_filter: str | None = None,
+        mode_filter: str | None = None,
         is_enabled_filter: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[MetricDefinitionRecord], int]:
         base = select(MetricDefinition)
-        if theme_filter is not None:
-            base = base.where(MetricDefinition.theme == theme_filter)
+        if metric_type_filter is not None:
+            base = base.where(MetricDefinition.metric_type == metric_type_filter)
+        if mode_filter is not None:
+            base = base.where(MetricDefinition.mode == mode_filter)
         if is_enabled_filter is not None:
             base = base.where(MetricDefinition.is_enabled == is_enabled_filter)
 
@@ -186,11 +206,12 @@ class MetricsService:
 
         return {
             "id": row.id,
+            "mode": row.mode,
+            "metric_type": row.metric_type,
             "title": row.title,
-            "theme": row.theme,
             "is_enabled": row.is_enabled,
             "schedule_tier": row.schedule_tier,
-            "latest_value": latest_row.value if latest_row else None,
+            "latest_values": latest_row.values if latest_row else None,
             "latest_measured_at": latest_row.measured_at if latest_row else None,
         }
 
@@ -200,14 +221,17 @@ class MetricsService:
     async def upsert_metric_config(
         self,
         metric_id: str,
+        mode: str,
+        metric_type: str,
         title: str,
         description: str,
-        theme: str,
-        measurement_query: dict[str, Any],
+        metrics: list[str],
+        metric_conf: dict[str, Any],
+        dataset_filter: dict[str, Any],
         schedule_tier: str | None = None,
-        is_enabled: bool = True,
+        is_enabled: bool = False,
     ) -> tuple[MetricDefinitionRecord, bool]:
-        _validate_dataset_filter(measurement_query)
+        _validate_dataset_filter(dataset_filter)
 
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
@@ -215,10 +239,13 @@ class MetricsService:
         existing = result.scalar_one_or_none()
 
         if existing:
+            existing.mode = mode
+            existing.metric_type = metric_type
             existing.title = title
             existing.description = description
-            existing.theme = theme
-            existing.measurement_query = measurement_query
+            existing.metrics = metrics
+            existing.metric_conf = metric_conf
+            existing.dataset_filter = dataset_filter
             existing.schedule_tier = schedule_tier
             existing.is_enabled = is_enabled
             existing.updated_at = datetime.now(tz=UTC)
@@ -227,10 +254,13 @@ class MetricsService:
         else:
             existing = MetricDefinition(
                 id=metric_id,
+                mode=mode,
+                metric_type=metric_type,
                 title=title,
                 description=description,
-                theme=theme,
-                measurement_query=measurement_query,
+                metrics=metrics,
+                metric_conf=metric_conf,
+                dataset_filter=dataset_filter,
                 schedule_tier=schedule_tier,
                 is_enabled=is_enabled,
             )
@@ -260,19 +290,52 @@ class MetricsService:
         if row is None:
             raise EntityNotFoundError("metric", metric_id)
 
-        if "measurement_query" in patch and patch["measurement_query"] is not None:
-            _validate_dataset_filter(patch["measurement_query"])
+        if "dataset_filter" in patch and patch["dataset_filter"] is not None:
+            _validate_dataset_filter(patch["dataset_filter"])
 
         for field_name in (
+            "mode",
+            "metric_type",
             "title",
             "description",
-            "theme",
-            "measurement_query",
+            "metrics",
+            "metric_conf",
+            "dataset_filter",
             "schedule_tier",
             "is_enabled",
         ):
             if field_name in patch and patch[field_name] is not None:
                 setattr(row, field_name, patch[field_name])
+
+        # Cross-field re-validation on merged state (mirrors PUT-side invariants).
+        merged_type: str = row.metric_type
+        merged_conf: dict[str, Any] = row.metric_conf or {}
+        merged_metrics: list[str] = row.metrics or []
+
+        if merged_type in ("ingestion-freshness", "validation-score"):
+            tw = merged_conf.get("time_window_sec")
+            if tw is None or not isinstance(tw, int) or tw <= 0:
+                raise PreconditionFailedError(
+                    "INVALID_PARAMETER",
+                    f"metric_conf.time_window_sec must be a positive int for metric_type '{merged_type}'",
+                )
+        elif merged_type == "doc-health":
+            if merged_conf != {}:
+                raise PreconditionFailedError(
+                    "INVALID_PARAMETER",
+                    "metric_conf must be {} for metric_type 'doc-health'",
+                )
+
+        allowed_keys = _EMITTED_KEYS.get(merged_type, set())
+        unknown_keys = set(merged_metrics) - allowed_keys
+        if unknown_keys:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                (
+                    f"metrics[] contains keys not emitted by '{merged_type}': "
+                    f"{sorted(unknown_keys)}. Allowed: {sorted(allowed_keys)}"
+                ),
+            )
 
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
@@ -394,15 +457,12 @@ class MetricsService:
 
         run_id = str(uuid.uuid4())
 
-        # Measure — includes unresolved_urns from dataset_filter
-        value, breakdown, unresolved_urns = await self._measure(
-            definition.measurement_query
-        )
+        values, breakdown, unresolved_urns = await self._measure(definition)
 
         detail: dict[str, Any] = {
             "run_id": run_id,
             "metric_id": metric_id,
-            "value": value,
+            "values": values,
             "dry_run": dry_run,
             "unresolved_urns": unresolved_urns,
             "breakdown_summary": {
@@ -416,7 +476,7 @@ class MetricsService:
 
         result_row = MetricResult(
             metric_id=metric_id,
-            value=value,
+            values=values,
             breakdown=breakdown,
             measured_at=datetime.now(tz=UTC),
         )
@@ -496,43 +556,46 @@ class MetricsService:
 
     async def _measure(
         self,
-        measurement_query: dict[str, Any],
-    ) -> tuple[float, dict[str, Any], list[str]]:
-        """Run measurement and return (value, breakdown, unresolved_urns).
+        definition: MetricDefinitionRecord,
+    ) -> tuple[dict[str, float], dict[str, Any], list[str]]:
+        """Run measurement and return (values, breakdown, unresolved_urns).
 
-        Resolves dataset_filter (tags, glossary_terms, dataset_urns).
-        Explicit dataset_urns that don't resolve in DataHub at runtime are
-        accumulated into unresolved_urns and reported in the event.
+        Resolves dataset_filter (origin, tags, glossary_terms, dataset_urns).
+        Explicit dataset_urns that don't resolve in DataHub at runtime, or whose
+        origin segment mismatches the requested origin, are accumulated into
+        unresolved_urns.
         """
-        aggregation: str = measurement_query.get("aggregation", "")
-        dataset_filter = (measurement_query or {}).get("dataset_filter") or {}
+        dataset_filter = definition.dataset_filter or {}
+        origin: str | None = dataset_filter.get("origin") or None
         tags: list[str] = dataset_filter.get("tags") or []
         glossary_terms: list[str] = dataset_filter.get("glossary_terms") or []
         explicit_urns: list[str] = dataset_filter.get("dataset_urns") or []
 
-        # Resolve datasets via DataHub
         resolved_urns: set[str] = set()
         unresolved_urns: list[str] = []
 
         if not tags and not glossary_terms and not explicit_urns:
-            # All datasets
-            try:
-                all_datasets = await self._datahub.enumerate_datasets()
-                resolved_urns.update(all_datasets)
-            except Exception:
-                logger.warning("metrics_enumerate_all_datasets_failed", exc_info=True)
+            all_datasets = await self._datahub.enumerate_datasets(origin=origin)
+            resolved_urns.update(all_datasets)
         else:
             if tags or glossary_terms:
-                try:
-                    matched = await self._datahub.enumerate_datasets(
-                        tags=tags if tags else None,
-                        glossary_terms=glossary_terms if glossary_terms else None,
-                    )
-                    resolved_urns.update(matched)
-                except Exception:
-                    logger.warning("metrics_enumerate_filtered_datasets_failed", exc_info=True)
+                matched = await self._datahub.enumerate_datasets(
+                    tags=tags if tags else None,
+                    glossary_terms=glossary_terms if glossary_terms else None,
+                    origin=origin,
+                )
+                resolved_urns.update(matched)
 
             for urn in explicit_urns:
+                if origin is not None:
+                    urn_origin = self._datahub.origin_from_dataset_urn(urn)
+                    if urn_origin != origin:
+                        logger.debug(
+                            "metrics_explicit_urn_origin_mismatch",
+                            extra={"urn": urn, "urn_origin": urn_origin, "requested_origin": origin},
+                        )
+                        unresolved_urns.append(urn)
+                        continue
                 try:
                     from datahub.metadata.schema_classes import DatasetPropertiesClass
 
@@ -551,15 +614,22 @@ class MetricsService:
 
         datasets = sorted(resolved_urns)
 
-        measurer = get_measurer(aggregation)
+        measurer = get_measurer(definition.metric_type)
         if measurer is None:
             supported = ", ".join(f"'{m}'" for m in list_measurers())
             raise PreconditionFailedError(
                 "INVALID_PARAMETER",
-                f"Unsupported aggregation: '{aggregation}'. Supported: {supported}.",
+                f"Unsupported metric_type: '{definition.metric_type}'. Supported: {supported}.",
             )
 
-        value, breakdown = await measurer(
-            datasets, datahub=self._datahub, db=self._db
+        all_values, breakdown = await measurer(
+            datasets, definition.metric_conf, datahub=self._datahub, db=self._db
         )
-        return value, breakdown, unresolved_urns
+
+        # Filter values to the subset declared in definition.metrics
+        if definition.metrics:
+            filtered_values = {k: v for k, v in all_values.items() if k in definition.metrics}
+        else:
+            filtered_values = all_values
+
+        return filtered_values, breakdown, unresolved_urns

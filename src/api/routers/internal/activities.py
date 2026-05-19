@@ -25,11 +25,11 @@ import logging
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.api.auth.internal import require_internal_token
 from src.api.schemas.admin import DatahubSyncRequest
-from src.shared.exceptions import DataSpokeError
+from src.shared.exceptions import ConflictError, DataSpokeError
 from src.workflows._common import (
     make_cache,
     make_datahub,
@@ -199,8 +199,14 @@ async def metrics_list_active(body: MetricsListActiveRequest) -> list[str]:
         return _error_response(exc)  # type: ignore[return-value]
 
 
+_METRIC_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+
+
 class MetricsRunRequest(BaseModel):
-    metric_id: str
+    metric_id: str = Field(
+        pattern=_METRIC_ID_PATTERN,
+        max_length=64,
+    )
     dry_run: bool = False
 
 
@@ -216,6 +222,16 @@ async def metrics_run(body: MetricsRunRequest) -> dict[str, object]:
             service = MetricsService(datahub=datahub, db=db, cache=cache)
             result = await service.run(body.metric_id, dry_run=body.dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+    except ConflictError as exc:
+        if exc.error_code == "METRIC_RUNNING":
+            # Return HTTP 200 with structured error payload so the DAG task stays
+            # green; the calling route inspects dag_run.conf to translate to 409.
+            return {
+                "run_id": "",
+                "status": "error",
+                "detail": {"error_code": "METRIC_RUNNING", "message": str(exc)},
+            }
+        return _error_response(exc)  # type: ignore[return-value]
     except DataSpokeError as exc:
         return _error_response(exc)  # type: ignore[return-value]
 

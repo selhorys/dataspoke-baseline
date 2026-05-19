@@ -3,23 +3,15 @@
 Handler naming: BACKEND.md §Route Handler Naming Convention.
 Auth: require_dg.
 Spec: API.md §Metric (/spoke/dg/metric).
-
-Changes vs legacy:
-- Dropped method/activate and method/deactivate POST routes (use is_enabled on PUT/PATCH).
-- is_active → is_enabled everywhere.
-- Handler names follow convention: get_metric_list, get_metric, get_metric_attr,
-  get_metric_conf, put_metric_conf, patch_metric_conf, delete_metric_conf,
-  get_metric_results, post_metric_run, get_metric_events.
 """
 
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
-
-import secrets
+from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from src.api.auth.dependencies import require_dg
-from src.api.dependencies import get_airflow_client, get_metrics_service, get_redis
+from src.api.dependencies import get_airflow_client, get_metrics_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
@@ -34,11 +26,13 @@ from src.api.schemas.metrics import (
     UpsertMetricConfigRequest,
 )
 from src.backend.metrics.service import MetricDefinitionRecord, MetricsService
-from src.shared.cache.client import RedisClient
 from src.shared.db.models import Event, MetricDefinition, MetricResult
-from src.shared.exceptions import ConflictError
+from src.shared.exceptions import ConflictError, NotImplementedAPIError
 from src.shared.settings import settings
 from src.workflows.airflow.client import AirflowClient
+
+_METRIC_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+MetricIdParam = Annotated[str, Path(pattern=_METRIC_ID_PATTERN)]
 
 router = APIRouter(
     prefix="/metric",
@@ -50,12 +44,15 @@ router = APIRouter(
 def _definition_response(m: "MetricDefinitionRecord") -> MetricDefinitionResponse:
     return MetricDefinitionResponse(
         id=m.id,
+        mode=m.mode,
+        is_enabled=m.is_enabled,
+        metric_type=m.metric_type,
         title=m.title,
         description=m.description,
-        theme=m.theme,
-        measurement_query=m.measurement_query,
+        metrics=m.metrics,
+        metric_conf=m.metric_conf,
         schedule_tier=m.schedule_tier,
-        is_enabled=m.is_enabled,
+        dataset_filter=m.dataset_filter,
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
@@ -66,17 +63,19 @@ async def get_metric_list(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
-    theme: str | None = Query(default=None),
-    is_enabled_filter: bool | None = Query(default=None, alias="status"),
+    metric_type: str | None = Query(default=None),
+    mode: str | None = Query(default=None),
+    is_enabled: bool | None = Query(default=None),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionListResponse:
-    """List metric definitions with optional theme and enabled filters."""
+    """List metric definitions with optional metric_type, mode, and is_enabled filters."""
     order_by = parse_sort(sort, {"created_at": MetricDefinition.created_at}, None)
     metrics, total_count = await service.list_metrics(
         offset=offset,
         limit=limit,
-        theme_filter=theme,
-        is_enabled_filter=is_enabled_filter,
+        metric_type_filter=metric_type,
+        mode_filter=mode,
+        is_enabled_filter=is_enabled,
         order_by=order_by,
     )
     return MetricDefinitionListResponse(
@@ -89,51 +88,57 @@ async def get_metric_list(
 
 @router.get("/{metric_id}", response_model=MetricDefinitionResponse)
 async def get_metric(
-    metric_id: str,
+    metric_id: MetricIdParam,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Get metric summary (identity, theme, enabled status)."""
+    """Get metric summary (identity, mode, metric_type, enabled status)."""
     metric = await service.get_metric(metric_id)
     return _definition_response(metric)
 
 
 @router.get("/{metric_id}/attr", response_model=MetricAttrResponse)
 async def get_metric_attr(
-    metric_id: str,
+    metric_id: MetricIdParam,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricAttrResponse:
-    """Get metric attributes overview (theme, schedule_tier, enabled status)."""
+    """Get metric attributes overview (mode, metric_type, schedule_tier, enabled, latest values)."""
     attr = await service.get_metric_attr(metric_id)
     return MetricAttrResponse(**attr)
 
 
 @router.get("/{metric_id}/attr/conf", response_model=MetricDefinitionResponse)
 async def get_metric_conf(
-    metric_id: str,
+    metric_id: MetricIdParam,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Get full metric definition (title, theme, measurement_query, schedule_tier, enabled)."""
+    """Get full metric definition."""
     metric = await service.get_metric_config(metric_id)
     return _definition_response(metric)
 
 
 @router.put("/{metric_id}/attr/conf", response_model=MetricDefinitionResponse)
 async def put_metric_conf(
-    metric_id: str,
+    metric_id: MetricIdParam,
     body: UpsertMetricConfigRequest,
     response: Response,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
     """Create or replace a metric definition (upsert).
 
-    Use is_enabled field to enable/disable the metric's scheduled measurement.
+    Returns 501 NOT_IMPLEMENTED when mode is 'passive'.
     """
+    if body.mode == "passive":
+        raise NotImplementedAPIError("Passive mode is reserved for a future release")
+
     metric, created = await service.upsert_metric_config(
         metric_id=metric_id,
+        mode=body.mode,
+        metric_type=body.metric_type,
         title=body.title,
         description=body.description,
-        theme=body.theme,
-        measurement_query=body.measurement_query,
+        metrics=body.metrics,
+        metric_conf=body.metric_conf,
+        dataset_filter=body.dataset_filter,
         schedule_tier=body.schedule_tier,
         is_enabled=body.is_enabled,
     )
@@ -144,14 +149,17 @@ async def put_metric_conf(
 
 @router.patch("/{metric_id}/attr/conf", response_model=MetricDefinitionResponse)
 async def patch_metric_conf(
-    metric_id: str,
+    metric_id: MetricIdParam,
     body: PatchMetricConfigRequest,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
     """Update metric definition fields.
 
-    Set is_enabled=true/false to enable or disable scheduled measurement.
+    Returns 501 NOT_IMPLEMENTED when the patch sets mode to 'passive'.
     """
+    if body.mode == "passive":
+        raise NotImplementedAPIError("Passive mode is reserved for a future release")
+
     patch = body.model_dump(exclude_unset=True)
     metric = await service.patch_metric_config(metric_id, patch)
     return _definition_response(metric)
@@ -159,7 +167,7 @@ async def patch_metric_conf(
 
 @router.delete("/{metric_id}/attr/conf", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_metric_conf(
-    metric_id: str,
+    metric_id: MetricIdParam,
     service: MetricsService = Depends(get_metrics_service),
 ) -> None:
     """Remove a metric definition and its configuration."""
@@ -168,7 +176,7 @@ async def delete_metric_conf(
 
 @router.get("/{metric_id}/attr/result", response_model=MetricResultListResponse)
 async def get_metric_results(
-    metric_id: str,
+    metric_id: MetricIdParam,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),
@@ -176,7 +184,7 @@ async def get_metric_results(
     to_time: datetime | None = Query(default=None, alias="to"),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricResultListResponse:
-    """Get measurement results (numeric timeseries; ?from/to for time range)."""
+    """Get measurement results (dict-valued timeseries; ?from/to for time range)."""
     order_by = parse_sort(sort, {"measured_at": MetricResult.measured_at}, None)
     results, total_count = await service.get_results(
         metric_id,
@@ -194,7 +202,7 @@ async def get_metric_results(
             MetricResultResponse(
                 id=r.id,
                 metric_id=r.metric_id,
-                value=r.value,
+                values=r.values,
                 breakdown=r.breakdown,
                 measured_at=r.measured_at,
             )
@@ -205,10 +213,9 @@ async def get_metric_results(
 
 @router.post("/{metric_id}/method/run", response_model=MetricRunResultResponse)
 async def post_metric_run(
-    metric_id: str,
+    metric_id: MetricIdParam,
     body: RunMetricRequest,
     airflow: AirflowClient = Depends(get_airflow_client),
-    cache: RedisClient = Depends(get_redis),
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricRunResultResponse:
     """Trigger a metric measurement run; concurrent runs return 409 METRIC_RUNNING."""
@@ -220,38 +227,47 @@ async def post_metric_run(
         )
 
     workflow_id = f"metrics-{metric_id}"
-    lock_key = f"metrics:running:{metric_id}"
-    lock_token = secrets.token_urlsafe(16)
-    acquired = await cache.set_nx(lock_key, lock_token, ttl_seconds=3600)
-    if not acquired:
-        raise ConflictError(
-            "METRIC_RUNNING",
-            f"A metrics DAG run is already running for {metric_id}",
+    await airflow.check_no_duplicate("metrics", "workflow_id", workflow_id, "METRIC_RUNNING")
+    dag_run = await airflow.trigger_and_wait(
+        "metrics",
+        conf={
+            "callback_base_url": settings.airflow_callback_base_url,
+            "metric_id": metric_id,
+            "dry_run": str(body.dry_run).lower(),
+            "workflow_id": workflow_id,
+        },
+    )
+    xcom_value = await airflow.fetch_task_xcom(
+        dag_id="metrics",
+        dag_run_id=dag_run.dag_run_id,
+        task_id="run_metric",
+    )
+    if (
+        isinstance(xcom_value, dict)
+        and xcom_value.get("status") == "error"
+        and xcom_value.get("detail", {}).get("error_code") == "METRIC_RUNNING"
+    ):
+        raw_msg = xcom_value["detail"].get(
+            "message", f"Metric measurement is already running for {metric_id}"
         )
-    try:
-        await airflow.check_no_duplicate("metrics", "workflow_id", workflow_id, "METRIC_RUNNING")
-        dag_run = await airflow.trigger_and_wait(
-            "metrics",
-            conf={
-                "callback_base_url": settings.airflow_callback_base_url,
-                "metric_id": metric_id,
-                "dry_run": str(body.dry_run).lower(),
-                "workflow_id": workflow_id,
-            },
-        )
-        conf_out = dag_run.conf or {}
+        msg = (raw_msg[:200] + "…") if len(raw_msg) > 200 else raw_msg
+        raise ConflictError("METRIC_RUNNING", msg)
+    if isinstance(xcom_value, dict):
         return MetricRunResultResponse(
-            run_id=conf_out.get("run_id", dag_run.dag_run_id),
-            status=conf_out.get("status", dag_run.state.value),
-            detail=conf_out.get("detail", {}),
+            run_id=xcom_value.get("run_id", dag_run.dag_run_id),
+            status=xcom_value.get("status", dag_run.state.value),
+            detail=xcom_value.get("detail", {}),
         )
-    finally:
-        await cache.delete_if_value(lock_key, lock_token)
+    return MetricRunResultResponse(
+        run_id=dag_run.dag_run_id,
+        status=dag_run.state.value,
+        detail={},
+    )
 
 
 @router.get("/{metric_id}/event", response_model=EventListResponse)
 async def get_metric_events(
-    metric_id: str,
+    metric_id: MetricIdParam,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     sort: str | None = Query(default=None),

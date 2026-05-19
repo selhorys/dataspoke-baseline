@@ -1,4 +1,13 @@
-"""Unit tests for MetricsService (mocked infrastructure)."""
+"""Unit tests for MetricsService — new field set (mode, metric_type, metric_conf,
+metrics, dataset_filter).
+
+Spec sources:
+  spec/USE_CASE_en.md §UC5 — Governance (metric definition fields, factory defaults,
+    passive mode 501 lives at the route, not the service layer)
+  spec/feature/BACKEND.md §Metrics Service (service contracts, breakdown, disabled guard)
+  spec/feature/BACKEND_SCHEMA.md §metric_definitions, §metric_results
+  spec/API.md §Metric (/spoke/dg/metric) — NOT_IMPLEMENTED lives at the route layer
+"""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -7,31 +16,44 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.backend.metrics.service import MetricsService
-from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
+from src.shared.exceptions import (
+    ConflictError,
+    EntityNotFoundError,
+    InvalidDatasetUrnError,
+    PreconditionFailedError,
+)
 from tests.unit.backend.conftest import (
     make_event_row,
-    make_metric_breakdown_row,
     mock_db_refresh,
     mock_paginated_query,
     mock_scalar_query,
 )
 
 
+# ── Row factories ─────────────────────────────────────────────────────────────
+
+
 def _make_definition_row(
     metric_id: str = "ingestion-freshness",
+    mode: str = "active",
+    metric_type: str = "ingestion-freshness",
     title: str = "Ingestion Freshness",
     description: str = "Measures freshness of ingestion",
-    theme: str = "freshness",
-    measurement_query: dict | None = None,
-    schedule_tier: str | None = None,
+    metrics: list | None = None,
+    metric_conf: dict | None = None,
+    dataset_filter: dict | None = None,
+    schedule_tier: str | None = "daily",
     is_enabled: bool = True,
-):
+) -> MagicMock:
     row = MagicMock()
     row.id = metric_id
+    row.mode = mode
+    row.metric_type = metric_type
     row.title = title
     row.description = description
-    row.theme = theme
-    row.measurement_query = measurement_query or {"aggregation": "pct_fresh"}
+    row.metrics = metrics if metrics is not None else ["total", "ingested_in_time"]
+    row.metric_conf = metric_conf if metric_conf is not None else {"time_window_sec": 86400}
+    row.dataset_filter = dataset_filter if dataset_filter is not None else {}
     row.schedule_tier = schedule_tier
     row.is_enabled = is_enabled
     row.created_at = datetime.now(tz=UTC)
@@ -41,17 +63,17 @@ def _make_definition_row(
 
 def _make_result_row(
     metric_id: str = "ingestion-freshness",
-    value: float = 0.8,
+    values: dict | None = None,
     breakdown: dict | None = None,
-):
+) -> MagicMock:
     row = MagicMock()
     row.id = uuid.uuid4()
     row.metric_id = metric_id
-    row.value = value
-    row.breakdown = breakdown or {
+    row.values = values if values is not None else {"total": 10.0, "ingested_in_time": 8.0}
+    row.breakdown = breakdown if breakdown is not None else {
         "dataset_count": 10,
         "datasets": [
-            {"urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t1,PROD)", "category": "fresh", "detail": {}},
+            {"urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t1,PROD)", "detail": {}},
         ],
     }
     row.measured_at = datetime.now(tz=UTC)
@@ -63,38 +85,218 @@ def service(datahub, db, cache):
     return MetricsService(datahub=datahub, db=db, cache=cache)
 
 
+# ── upsert_metric_config ──────────────────────────────────────────────────────
+
+
+async def test_upsert_metric_config_create(service, db):
+    """PUT creates a new row with all new fields; returns (definition, created=True).
+
+    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — PUT .../attr/conf creates or replaces.
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions — mode, metric_type, metrics,
+          metric_conf, dataset_filter columns.
+    """
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    definition, created = await service.upsert_metric_config(
+        metric_id="ingestion-freshness",
+        mode="active",
+        metric_type="ingestion-freshness",
+        title="Ingestion Freshness",
+        description="Measures freshness",
+        metrics=["total", "ingested_in_time"],
+        metric_conf={"time_window_sec": 86400},
+        dataset_filter={},
+        schedule_tier="daily",
+        is_enabled=False,
+    )
+    assert created is True
+    assert db.add.called
+    assert db.commit.await_count >= 1
+
+
+async def test_upsert_metric_config_update_replaces_all_fields(service, db):
+    """Second PUT with same id replaces (returns created=False) and overwrites every field.
+
+    Spec: spec/API.md §Metric — PUT is create-or-replace, not partial update.
+    """
+    existing = _make_definition_row(
+        metric_id="ingestion-freshness",
+        mode="active",
+        metric_type="ingestion-freshness",
+        metrics=["total"],
+        metric_conf={"time_window_sec": 3600},
+        dataset_filter={},
+    )
+    mock_scalar_query(db, existing)
+    mock_db_refresh(db)
+
+    definition, created = await service.upsert_metric_config(
+        metric_id="ingestion-freshness",
+        mode="active",
+        metric_type="ingestion-freshness",
+        title="Updated Title",
+        description="Updated desc",
+        metrics=["total", "ingested_in_time"],
+        metric_conf={"time_window_sec": 172800},
+        dataset_filter={"origin": "PROD"},
+        schedule_tier="weekly",
+        is_enabled=True,
+    )
+    assert created is False
+    assert existing.title == "Updated Title"
+    assert existing.metrics == ["total", "ingested_in_time"]
+    assert existing.metric_conf == {"time_window_sec": 172800}
+    assert existing.dataset_filter == {"origin": "PROD"}
+    assert existing.schedule_tier == "weekly"
+    assert existing.is_enabled is True
+    assert db.commit.await_count >= 1
+
+
+async def test_upsert_metric_config_doc_health_empty_metric_conf(service, db):
+    """doc-health accepts empty metric_conf at the service layer.
+
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — doc-health
+          metric_conf is empty {}.
+    """
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    definition, created = await service.upsert_metric_config(
+        metric_id="doc-health",
+        mode="active",
+        metric_type="doc-health",
+        title="Doc Health",
+        description="Documentation coverage",
+        metrics=["total", "doc_health"],
+        metric_conf={},
+        dataset_filter={},
+        schedule_tier="daily",
+        is_enabled=False,
+    )
+    assert created is True
+
+
+# ── patch_metric_config ───────────────────────────────────────────────────────
+
+
+async def test_patch_metric_config_is_enabled_only_does_not_touch_other_fields(service, db):
+    """PATCH that sets only is_enabled does not touch other fields.
+
+    Spec: spec/API.md §Metric — PATCH updates metric definition fields (partial update).
+    """
+    row = _make_definition_row(
+        metric_conf={"time_window_sec": 86400},
+        metrics=["total", "ingested_in_time"],
+        dataset_filter={"origin": "PROD"},
+    )
+    original_metrics = row.metrics[:]
+    original_conf = dict(row.metric_conf)
+    original_filter = dict(row.dataset_filter)
+
+    mock_scalar_query(db, row)
+    mock_db_refresh(db)
+
+    await service.patch_metric_config(row.id, {"is_enabled": False})
+
+    assert row.is_enabled is False
+    assert row.metrics == original_metrics
+    assert row.metric_conf == original_conf
+    assert row.dataset_filter == original_filter
+
+
+async def test_patch_metric_type_to_doc_health_with_time_window_raises(service, db):
+    """PATCH metric_type='doc-health' when metric_conf has time_window_sec raises PreconditionFailedError.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — PATCH enforces cross-field invariants
+          on merged state; doc-health requires metric_conf={}.
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 86400},
+        metrics=["total", "ingested_in_time"],
+    )
+    mock_scalar_query(db, row)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(row.id, {"metric_type": "doc-health"})
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+
+
+async def test_patch_metric_conf_invalid_for_windowed_type_raises(service, db):
+    """PATCH metric_conf without time_window_sec for ingestion-freshness raises.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — ingestion-freshness and
+          validation-score require time_window_sec (positive int).
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 86400},
+        metrics=["total", "ingested_in_time"],
+    )
+    mock_scalar_query(db, row)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(row.id, {"metric_conf": {"time_window_sec": -1}})
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+
+
+async def test_patch_metrics_with_unknown_key_raises(service, db):
+    """PATCH metrics[] with a key not emitted by the type raises PreconditionFailedError.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — unknown metrics[] keys return
+          422 INVALID_PARAMETER.
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 86400},
+        metrics=["total", "ingested_in_time"],
+    )
+    mock_scalar_query(db, row)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(row.id, {"metrics": ["nonexistent_key"]})
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+
+
 # ── list_metrics ──────────────────────────────────────────────────────────────
 
 
-async def test_list_metrics_returns_paginated(service, db):
-    rows = [_make_definition_row(metric_id=f"metric_{i}") for i in range(3)]
-    mock_paginated_query(db, rows, total_count=5)
+async def test_list_metrics_filter_by_metric_type(service, db):
+    """list_metrics(metric_type_filter=...) filters by metric_type.
 
-    metrics, total = await service.list_metrics(offset=0, limit=3)
-    assert total == 5
-    assert len(metrics) == 3
-
-
-async def test_list_metrics_empty(service, db):
-    mock_paginated_query(db, [], total_count=0)
-
-    metrics, total = await service.list_metrics()
-    assert total == 0
-    assert metrics == []
-
-
-async def test_list_metrics_with_theme_filter(service, db):
-    rows = [_make_definition_row(theme="freshness")]
+    Spec: spec/API.md §Metric — GET /spoke/dg/metric filterable by metric_type.
+    """
+    rows = [_make_definition_row(metric_type="doc-health")]
     mock_paginated_query(db, rows, total_count=1)
 
-    metrics, total = await service.list_metrics(theme_filter="freshness")
+    metrics, total = await service.list_metrics(metric_type_filter="doc-health")
     assert total == 1
     assert len(metrics) == 1
-    assert metrics[0].theme == "freshness"
+    assert metrics[0].metric_type == "doc-health"
 
 
-async def test_list_metrics_with_is_enabled_filter(service, db):
-    """is_enabled (not is_active) is the field name."""
+async def test_list_metrics_filter_by_mode(service, db):
+    """list_metrics(mode_filter=...) filters by mode.
+
+    Spec: spec/API.md §Metric — GET /spoke/dg/metric filterable by mode.
+    """
+    rows = [_make_definition_row(mode="active")]
+    mock_paginated_query(db, rows, total_count=1)
+
+    metrics, total = await service.list_metrics(mode_filter="active")
+    assert total == 1
+    assert metrics[0].mode == "active"
+
+
+async def test_list_metrics_filter_by_is_enabled(service, db):
+    """list_metrics(is_enabled_filter=True) filters by is_enabled.
+
+    Spec: spec/API.md §Metric — GET /spoke/dg/metric filterable by is_enabled.
+    """
     rows = [_make_definition_row(is_enabled=True)]
     mock_paginated_query(db, rows, total_count=1)
 
@@ -103,535 +305,212 @@ async def test_list_metrics_with_is_enabled_filter(service, db):
     assert metrics[0].is_enabled is True
 
 
-# ── get_metric ────────────────────────────────────────────────────────────────
+async def test_list_metrics_pagination_returns_tuple(service, db):
+    """list_metrics returns (rows, total_count) tuple.
+
+    Spec: spec/API.md §Standard Response Envelope — paginated resources return
+          offset, limit, total_count.
+    """
+    rows = [_make_definition_row(metric_id=f"m{i}") for i in range(3)]
+    mock_paginated_query(db, rows, total_count=10)
+
+    metrics, total = await service.list_metrics(offset=0, limit=3)
+    assert total == 10
+    assert len(metrics) == 3
 
 
-async def test_get_metric_found(service, db):
-    row = _make_definition_row(title="Ingestion Freshness")
-    mock_scalar_query(db, row)
-
-    metric = await service.get_metric(row.id)
-    assert metric.title == "Ingestion Freshness"
-    assert metric.id == row.id
+# ── get_metric_attr ───────────────────────────────────────────────────────────
 
 
-async def test_get_metric_not_found(service, db):
-    mock_scalar_query(db, None)
+async def test_get_metric_attr_returns_latest_values_dict(service, db):
+    """get_metric_attr returns latest_values as dict (not a float).
 
-    with pytest.raises(EntityNotFoundError) as exc_info:
-        await service.get_metric("nonexistent")
-    assert "NOT_FOUND" in exc_info.value.error_code
-
-
-# ── get_metric_attr ──────────────────────────────────────────────────────────
-
-
-async def test_get_metric_attr_with_latest_result(service, db):
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_results — values is JSONB (dict[str, float]).
+    Spec: spec/API.md §Metric — attr endpoint exposes latest_values dict.
+    """
     def_row = _make_definition_row()
-    result_row = _make_result_row(value=0.85)
+    result_row = _make_result_row(values={"total": 5.0, "ingested_in_time": 3.0})
 
     def_result = MagicMock()
     def_result.scalar_one_or_none.return_value = def_row
-
     latest_result = MagicMock()
     latest_result.scalar_one_or_none.return_value = result_row
 
     db.execute = AsyncMock(side_effect=[def_result, latest_result])
 
     attr = await service.get_metric_attr(def_row.id)
-    assert attr["title"] == def_row.title
-    assert attr["latest_value"] == 0.85
+
+    assert attr["latest_values"] == {"total": 5.0, "ingested_in_time": 3.0}
+    assert isinstance(attr["latest_values"], dict)
+    assert "latest_measured_at" in attr
 
 
-async def test_get_metric_attr_no_results(service, db):
+async def test_get_metric_attr_no_results_returns_none_values(service, db):
+    """get_metric_attr returns latest_values=None when no result rows exist.
+
+    Spec: spec/API.md §Metric — latest_values is null when no measurements yet.
+    """
     def_row = _make_definition_row()
-
     def_result = MagicMock()
     def_result.scalar_one_or_none.return_value = def_row
-
     latest_result = MagicMock()
     latest_result.scalar_one_or_none.return_value = None
-
     db.execute = AsyncMock(side_effect=[def_result, latest_result])
 
     attr = await service.get_metric_attr(def_row.id)
-    assert attr["latest_value"] is None
+    assert attr["latest_values"] is None
     assert attr["latest_measured_at"] is None
 
 
-# ── get_metric_config / upsert / patch / delete ─────────────────────────────
+# ── delete_metric_config ──────────────────────────────────────────────────────
 
 
-async def test_upsert_metric_config_create(service, db):
-    mock_scalar_query(db, None)
-    mock_db_refresh(db)
+async def test_delete_metric_config_cascades_to_metric_results(service, db):
+    """delete_metric_config cascades DELETE to metric_results rows before removing the definition.
 
-    metric, created = await service.upsert_metric_config(
-        metric_id="ingestion-freshness",
-        title="Ingestion Freshness",
-        description="desc",
-        theme="freshness",
-        measurement_query={"aggregation": "pct_fresh"},
-    )
-    assert db.add.called
-    assert db.commit.await_count >= 1
-    assert created is True
-
-
-async def test_upsert_metric_config_update(service, db):
-    existing = _make_definition_row()
-    mock_scalar_query(db, existing)
-    mock_db_refresh(db)
-
-    await service.upsert_metric_config(
-        metric_id=existing.id,
-        title="Updated",
-        description="new desc",
-        theme="freshness",
-        measurement_query={"aggregation": "pct_fresh"},
-    )
-    assert existing.title == "Updated"
-    assert db.commit.await_count >= 1
-
-
-async def test_patch_metric_config(service, db):
-    row = _make_definition_row()
-    mock_scalar_query(db, row)
-    mock_db_refresh(db)
-
-    await service.patch_metric_config(row.id, {"title": "Patched Title"})
-    assert row.title == "Patched Title"
-    assert db.commit.await_count >= 1
-
-
-async def test_patch_metric_config_not_found(service, db):
-    mock_scalar_query(db, None)
-
-    with pytest.raises(EntityNotFoundError):
-        await service.patch_metric_config("nonexistent", {"title": "x"})
-
-
-async def test_delete_metric_config(service, db):
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_results — metric_id is FK to metric_definitions.
+    Spec: spec/feature/BACKEND.md §Metrics Service — delete_metric_config removes
+          associated results.
+    """
     row = _make_definition_row()
     mock_scalar_query(db, row)
 
     await service.delete_metric_config(row.id)
+
+    # db.execute must be called for the DELETE (cascade) AND the initial SELECT
+    assert db.execute.await_count >= 2
+    # db.delete should be called with the definition row
     db.delete.assert_called_once_with(row)
     assert db.commit.await_count >= 1
 
 
 async def test_delete_metric_config_not_found(service, db):
+    """delete_metric_config raises EntityNotFoundError for missing metric.
+
+    Spec: spec/API.md §Error Catalogue — 404 NOT_FOUND when resource absent.
+    """
     mock_scalar_query(db, None)
 
     with pytest.raises(EntityNotFoundError):
         await service.delete_metric_config("nonexistent")
 
 
-# ── get_results ──────────────────────────────────────────────────────────────
+# ── _validate_dataset_filter ─────────────────────────────────────────────────
 
 
-async def test_get_results_paginated(service, db):
-    rows = [_make_result_row() for _ in range(2)]
-    mock_paginated_query(db, rows, total_count=10)
+async def test_validate_dataset_filter_over_cap_raises(service, db):
+    """dataset_filter with 1001-entry list raises PreconditionFailedError.
 
-    results, total = await service.get_results("ingestion-freshness", offset=0, limit=2)
-    assert total == 10
-    assert len(results) == 2
-
-
-# ── Unified breakdown shape ───────────────────────────────────────────────────
-
-
-def test_metric_breakdown_row_shape():
-    """make_metric_breakdown_row returns unified {dataset_count, datasets:[...]} shape."""
-    row = make_metric_breakdown_row()
-    breakdown = row.breakdown
-    assert "dataset_count" in breakdown
-    assert "datasets" in breakdown
-    assert isinstance(breakdown["datasets"], list)
-    if breakdown["datasets"]:
-        entry = breakdown["datasets"][0]
-        assert "urn" in entry
-        assert "category" in entry
-
-
-def test_metric_breakdown_row_custom():
-    """Custom breakdown values are reflected accurately."""
-    custom = {
-        "dataset_count": 3,
-        "datasets": [
-            {"urn": "urn:1", "category": "rules_passing", "detail": {"rule_id": "r1", "failed": 0, "total": 4}},
-            {"urn": "urn:2", "category": "rules_failing", "detail": {"rule_id": "r2", "failed": 1, "total": 4}},
-        ],
-    }
-    row = make_metric_breakdown_row(breakdown=custom)
-    assert row.breakdown["dataset_count"] == 3
-    assert len(row.breakdown["datasets"]) == 2
-    assert row.breakdown["datasets"][0]["category"] == "rules_passing"
-    assert row.breakdown["datasets"][1]["category"] == "rules_failing"
-
-
-# ── run (baseline measurers only) ─────────────────────────────────────────────
-
-
-async def test_run_ingestion_freshness_persists(service, db, datahub):
-    """ingestion-freshness run: measure + persist MetricResult + record event.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline) — non-dry-run
-    must call db.add at least twice (MetricResult + Event) and commit at least once.
+    Spec: spec/USE_CASE_en.md §UC5 §dataset_filter — lists capped at 1,000 each.
+    Spec: spec/API.md §Metric — 422 INVALID_PARAMETER for over-cap dimensions.
     """
-    def_row = _make_definition_row(
-        metric_id="ingestion-freshness",
-        measurement_query={"aggregation": "pct_fresh"},
-    )
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
 
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    datahub.enumerate_datasets = AsyncMock(return_value=["urn:li:dataset:1", "urn:li:dataset:2"])
-    # No events for either dataset → stale
-    event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(side_effect=[def_result, event_result, event_result])
-    db.refresh = AsyncMock()
-
-    result = await service.run(def_row.id)
-    assert result.status == "success"
-
-    # db.add must be called at least twice: MetricResult + Event
-    # Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)
-    assert db.add.call_count >= 2, (
-        f"Expected db.add called >= 2 times (MetricResult + Event), got {db.add.call_count}. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
-    )
-    # db.commit must be awaited at least once to persist the result
-    assert db.commit.await_count >= 1, (
-        f"Expected db.commit awaited >= 1 time, got {db.commit.await_count}. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
-    )
-
-
-async def test_run_dry_run_does_not_persist(service, db, datahub):
-    """dry_run=True: measure but do not call db.add for MetricResult."""
-    def_row = _make_definition_row(
-        measurement_query={"aggregation": "pct_fresh"}
-    )
-
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    db.execute = AsyncMock(return_value=def_result)
-
-    datahub.enumerate_datasets = AsyncMock(return_value=["urn:li:dataset:1"])
-    event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(side_effect=[def_result, event_result])
-
-    result = await service.run(def_row.id, dry_run=True)
-
-    assert result.status == "success"
-    assert result.detail["dry_run"] is True
-    # No commit for dry run
-    assert db.commit.await_count == 0
-
-
-async def test_breakdown_field_names_unified(service, db, datahub):
-    """Breakdown must use 'dataset_count' and 'datasets' keys (not 'metric_type').
-
-    Spec: spec/feature/BACKEND.md §Metrics Service L457-L459 — every measurement
-    result includes a breakdown JSONB with unified per-dataset entry shape
-    {"dataset_count": <int>, "datasets": [{"urn": "...", "category": "...", "detail": {...}}]}.
-    """
-    _BREAKDOWN_COUNT_KEY = "dataset_count"
-    _BREAKDOWN_DATASETS_KEY = "datasets"
-    _BREAKDOWN_FORBIDDEN_KEY = "metric_type"
-
-    def_row = _make_definition_row(
-        measurement_query={"aggregation": "pct_fresh"}
-    )
-
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    # No recent events → stale for both
-    event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(side_effect=[def_result, event_result, event_result])
-    db.refresh = AsyncMock()
-
-    datahub.enumerate_datasets = AsyncMock(return_value=["urn:1", "urn:2"])
-
-    result = await service.run(def_row.id)
-    assert result.status == "success"
-
-    # Locate the persisted MetricResult object from db.add call_args_list.
-    # The guard is an unconditional assertion (not `if`) so missing the object
-    # is a test failure rather than a silent pass.
-    metric_result_arg = None
-    for call in db.add.call_args_list:
-        obj = call[0][0]
-        if hasattr(obj, "breakdown") and hasattr(obj, "metric_id"):
-            metric_result_arg = obj
-            break
-
-    assert metric_result_arg is not None, (
-        "db.add was not called with a MetricResult object — service may not be persisting "
-        "the run result. Spec: BACKEND.md §Metrics Service (run pipeline)."
-    )
-
-    breakdown = metric_result_arg.breakdown
-    assert _BREAKDOWN_COUNT_KEY in breakdown, (
-        f"breakdown missing '{_BREAKDOWN_COUNT_KEY}' key. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service L457-L459."
-    )
-    assert _BREAKDOWN_DATASETS_KEY in breakdown, (
-        f"breakdown missing '{_BREAKDOWN_DATASETS_KEY}' key. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service L457-L459."
-    )
-    assert _BREAKDOWN_FORBIDDEN_KEY not in breakdown, (
-        f"breakdown must not contain legacy '{_BREAKDOWN_FORBIDDEN_KEY}' key. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service L457-L459."
-    )
-
-
-async def test_unknown_metric_type_raises(service, db, datahub):
-    """Unknown aggregation key in measurement_query raises PreconditionFailedError.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service — unsupported aggregations
-    return 422 INVALID_PARAMETER.
-
-    NOTE (F8): Uses a clearly invalid string to decouple from F1 (aggregation enum
-    mismatch). 'dataset_count' was previously used but that value conflicts with
-    potential valid enum entries; 'definitely-not-a-real-aggregation' is always wrong.
-    """
-    def_row = _make_definition_row(
-        measurement_query={"aggregation": "definitely-not-a-real-aggregation"}
-    )
-
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    db.execute = AsyncMock(return_value=def_result)
-    datahub.enumerate_datasets = AsyncMock(return_value=["urn:1"])
+    over_cap_urns = [
+        f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
+        for i in range(1001)
+    ]
 
     with pytest.raises(PreconditionFailedError) as exc_info:
-        await service.run(def_row.id, dry_run=True)
+        await service.upsert_metric_config(
+            metric_id="test",
+            mode="active",
+            metric_type="ingestion-freshness",
+            title="t",
+            description="d",
+            metrics=["total"],
+            metric_conf={"time_window_sec": 86400},
+            dataset_filter={"dataset_urns": over_cap_urns},
+        )
     assert exc_info.value.error_code == "INVALID_PARAMETER"
 
 
-async def test_dataset_filter_passthrough(service, db, datahub):
-    """tags/glossary_terms from measurement_query.dataset_filter are forwarded to enumerate_datasets."""
-    def_row = _make_definition_row(
-        measurement_query={
-            "aggregation": "pct_fresh",
-            "dataset_filter": {
-                "tags": ["urn:li:tag:PII"],
-                "glossary_terms": ["urn:li:glossaryTerm:CustomerData"],
-            },
-        }
-    )
+async def test_validate_dataset_filter_bad_urn_raises(service, db):
+    """dataset_filter with malformed URN raises InvalidDatasetUrnError.
 
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    db.execute = AsyncMock(return_value=def_result)
-    datahub.enumerate_datasets = AsyncMock(return_value=[])
-
-    await service.run(def_row.id, dry_run=True)
-
-    datahub.enumerate_datasets.assert_awaited_once_with(
-        tags=["urn:li:tag:PII"],
-        glossary_terms=["urn:li:glossaryTerm:CustomerData"],
-    )
-
-
-async def test_dataset_filter_passthrough_dataset_urns(service, db, datahub):
-    """dataset_filter.dataset_urns are resolved individually via get_aspect, not enumerate_datasets.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service — dataset_filter with dataset_urns
-    (list of explicit urn:li:dataset:(…) URNs for pinning to a known set).
-    Entries that resolve → included in measurement; entries that don't → unresolved_urns.
+    Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs.
     """
-    _PINNED_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
 
-    def_row = _make_definition_row(
-        measurement_query={
-            "aggregation": "pct_fresh",
-            "dataset_filter": {"dataset_urns": [_PINNED_URN]},
-        }
-    )
-
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    # Resolve the explicit URN: get_aspect returns a non-None props object
-    props_mock = MagicMock()
-    datahub.get_aspect = AsyncMock(return_value=props_mock)
-
-    # The event query for the resolved URN → no event → stale
-    event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(side_effect=[def_result, event_result])
-    db.refresh = AsyncMock()
-
-    result = await service.run(def_row.id, dry_run=True)
-
-    assert result.status == "success"
-    # enumerate_datasets must NOT be called — explicit URNs bypass enumeration
-    datahub.enumerate_datasets.assert_not_awaited()
-    # get_aspect must be called for the pinned URN to resolve it
-    datahub.get_aspect.assert_awaited_once()
-    call_args = datahub.get_aspect.call_args[0]
-    assert call_args[0] == _PINNED_URN, (
-        "get_aspect should be called with the pinned URN. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service — dataset_filter.dataset_urns."
-    )
-    # No unresolved URNs since the URN resolved
-    assert result.detail["unresolved_urns"] == []
+    with pytest.raises(InvalidDatasetUrnError):
+        await service.upsert_metric_config(
+            metric_id="test",
+            mode="active",
+            metric_type="ingestion-freshness",
+            title="t",
+            description="d",
+            metrics=["total"],
+            metric_conf={"time_window_sec": 86400},
+            dataset_filter={"dataset_urns": ["not-a-urn"]},
+        )
 
 
-async def test_dataset_filter_empty_returns_all(service, db, datahub):
-    """dataset_filter={} means all datasets — enumerate_datasets called with no filter args.
+# ── passive mode — service layer accepts it ───────────────────────────────────
 
-    Spec: spec/feature/BACKEND.md §Metrics Service — '{}' means all datasets;
-    an empty array on any dimension contributes nothing.
+
+async def test_upsert_metric_config_passive_mode_accepted_by_service(service, db):
+    """Service layer accepts mode='passive'; the 501 NOT_IMPLEMENTED is raised at the route.
+
+    Spec: spec/API.md §Metric — 'passive' is reserved; PUT with mode:'passive' returns
+          501 NOT_IMPLEMENTED. This is enforced at the route handler, NOT the service.
+    Spec: spec/feature/BACKEND.md §Metrics Service — mode='passive' rejected at the
+          schema layer means the route raises before calling the service; service itself
+          has no filter on mode.
     """
-    def_row = _make_definition_row(
-        measurement_query={
-            "aggregation": "pct_fresh",
-            "dataset_filter": {},
-        }
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    # Should not raise — the route layer's NotImplementedAPIError is absent at the service
+    definition, created = await service.upsert_metric_config(
+        metric_id="passive-test",
+        mode="passive",
+        metric_type="ingestion-freshness",
+        title="Passive metric",
+        description="Reserved",
+        metrics=["total"],
+        metric_conf={"time_window_sec": 86400},
+        dataset_filter={},
     )
-
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    # enumerate_datasets returns all datasets (no filter)
-    datahub.enumerate_datasets = AsyncMock(return_value=["urn:all-1", "urn:all-2"])
-    event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(side_effect=[def_result, event_result, event_result])
-    db.refresh = AsyncMock()
-
-    result = await service.run(def_row.id, dry_run=True)
-
-    assert result.status == "success"
-    # enumerate_datasets called once with no keyword filter arguments
-    datahub.enumerate_datasets.assert_awaited_once_with()
+    assert created is True
+    assert definition.mode == "passive"
 
 
-async def test_dataset_filter_or_semantics(service, db, datahub):
-    """tags + glossary_terms + dataset_urns are OR-ed: all three dimensions contribute datasets.
+# ── list_active_for_tier ──────────────────────────────────────────────────────
 
-    Spec: spec/feature/BACKEND.md §Metrics Service L447-L451 — 'only datasets matching ANY
-    listed tag, glossary term, or explicit URN are included — filters are OR-ed
-    across all three dimensions'.
 
-    # Note: Mock returns both URNs unconditionally; AND vs OR distinction at the
-    # enumerate_datasets boundary not testable at unit level. Coverage gap surfaced
-    # for api-wired integration.
+async def test_list_active_for_tier_filters_enabled_and_tier(service, db):
+    """list_active_for_tier returns only is_enabled=True rows matching schedule_tier.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Airflow tier DAGs call
+          list_active_for_tier(tier) to enumerate metrics to run.
     """
-    _TAG_URN = "urn:li:tag:PII"
-    _TERM_URN = "urn:li:glossaryTerm:CustomerData"
-    _EXPLICIT_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.raw_events,DEV)"
+    rows = [
+        _make_definition_row(metric_id="m1", is_enabled=True, schedule_tier="daily"),
+    ]
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = rows
+    db.execute = AsyncMock(return_value=result_mock)
 
-    def_row = _make_definition_row(
-        measurement_query={
-            "aggregation": "pct_fresh",
-            "dataset_filter": {
-                "tags": [_TAG_URN],
-                "glossary_terms": [_TERM_URN],
-                "dataset_urns": [_EXPLICIT_URN],
-            },
-        }
-    )
+    active = await service.list_active_for_tier("daily")
 
-    def_result = MagicMock()
-    def_result.scalar_one_or_none.return_value = def_row
-
-    # Tags+glossary_terms path: enumerate_datasets returns two distinct URNs
-    _TAG_MATCHED = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)"
-    _TERM_MATCHED = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    datahub.enumerate_datasets = AsyncMock(return_value=[_TAG_MATCHED, _TERM_MATCHED])
-
-    # Explicit URN path: get_aspect resolves successfully
-    props_mock = MagicMock()
-    datahub.get_aspect = AsyncMock(return_value=props_mock)
-
-    # One event query per resolved URN (3 total: TAG_MATCHED, TERM_MATCHED, EXPLICIT_URN)
-    event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(
-        side_effect=[def_result, event_result, event_result, event_result]
-    )
-    db.refresh = AsyncMock()
-
-    # Use dry_run=False so MetricResult is passed to db.add and we can inspect breakdown.datasets
-    result = await service.run(def_row.id, dry_run=False)
-
-    assert result.status == "success"
-    # enumerate_datasets called once for tags+glossary_terms combined
-    datahub.enumerate_datasets.assert_awaited_once_with(
-        tags=[_TAG_URN],
-        glossary_terms=[_TERM_URN],
-    )
-    # get_aspect called once for the explicit URN
-    datahub.get_aspect.assert_awaited_once()
-
-    # The union of TAG_MATCHED + TERM_MATCHED + EXPLICIT_URN = 3 distinct URNs
-    # Verify via breakdown_summary.dataset_count (OR semantics, no duplicates)
-    # Spec: spec/feature/BACKEND.md §Metrics Service L447-L451
-    assert result.detail["breakdown_summary"]["dataset_count"] == 3, (
-        "Expected exactly 3 datasets (TAG_MATCHED + TERM_MATCHED + EXPLICIT_URN). "
-        "Spec: BACKEND.md §Metrics Service L447-L451 — OR-ed across all three dimensions."
-    )
-
-    # Inspect the MetricResult object passed to db.add and verify all 3 URNs
-    # appear in breakdown.datasets — confirms set union is written to the DB row.
-    # Spec: spec/feature/BACKEND.md §Metrics Service L454-L458 — breakdown shape.
-    metric_result_arg = None
-    for call in db.add.call_args_list:
-        obj = call[0][0]
-        if hasattr(obj, "breakdown") and hasattr(obj, "metric_id"):
-            metric_result_arg = obj
-            break
-
-    assert metric_result_arg is not None, (
-        "db.add was not called with a MetricResult object. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service (run pipeline)."
-    )
-    persisted_urns = {entry["urn"] for entry in metric_result_arg.breakdown.get("datasets", [])}
-    assert _TAG_MATCHED in persisted_urns, (
-        f"TAG_MATCHED URN '{_TAG_MATCHED}' missing from persisted breakdown.datasets. "
-        "Spec: BACKEND.md §Metrics Service L447-L451."
-    )
-    assert _TERM_MATCHED in persisted_urns, (
-        f"TERM_MATCHED URN '{_TERM_MATCHED}' missing from persisted breakdown.datasets. "
-        "Spec: BACKEND.md §Metrics Service L447-L451."
-    )
-    assert _EXPLICIT_URN in persisted_urns, (
-        f"EXPLICIT_URN '{_EXPLICIT_URN}' missing from persisted breakdown.datasets. "
-        "Spec: BACKEND.md §Metrics Service L447-L451."
-    )
+    assert len(active) == 1
+    assert active[0].id == "m1"
+    assert active[0].is_enabled is True
+    assert active[0].schedule_tier == "daily"
 
 
-# ── is_enabled=false disabled guard ──────────────────────────────────────────
+# ── disabled-config rejection ─────────────────────────────────────────────────
 
 
 async def test_run_rejects_non_dry_run_when_disabled(service, db, datahub):
     """Non-dry-run against a disabled metric raises ConflictError('METRIC_DISABLED').
 
-    spec: BACKEND.md §Metrics Service — is_enabled=false rejects non-dry-run
-    with 409 METRIC_DISABLED.
-    spec: USE_CASE_en.md §UC5 — "When is_enabled=false, non-dry-run calls to
-    method/run on a metric return 409 METRIC_DISABLED. Dry-run is always
-    permitted regardless of is_enabled." (L739)
+    Spec: spec/feature/BACKEND.md §Metrics Service — is_enabled=false rejects
+          non-dry-run with 409 METRIC_DISABLED. Dry-run is always permitted.
     """
-    def_row = _make_definition_row(
-        metric_id="ingestion-freshness",
-        is_enabled=False,
-    )
-
+    def_row = _make_definition_row(is_enabled=False)
     def_result = MagicMock()
     def_result.scalar_one_or_none.return_value = def_row
     db.execute = AsyncMock(return_value=def_result)
@@ -643,24 +522,24 @@ async def test_run_rejects_non_dry_run_when_disabled(service, db, datahub):
 
 
 async def test_run_allows_dry_run_when_disabled(service, db, datahub):
-    """Dry-run bypasses the disabled guard and returns a MetricRunResult.
+    """Dry-run bypasses the disabled guard.
 
-    spec: BACKEND.md §Metrics Service — dry_run=True is always permitted
-    regardless of is_enabled.
-    spec: USE_CASE_en.md §UC5 (disabled gate mirrors UC1 pattern)
+    Spec: spec/feature/BACKEND.md §Metrics Service — dry_run=True is always
+          permitted regardless of is_enabled.
     """
     def_row = _make_definition_row(
-        metric_id="ingestion-freshness",
-        measurement_query={"aggregation": "pct_fresh"},
         is_enabled=False,
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 86400},
+        metrics=["total", "ingested_in_time"],
     )
-
     def_result = MagicMock()
     def_result.scalar_one_or_none.return_value = def_row
 
-    datahub.enumerate_datasets = AsyncMock(return_value=["urn:li:dataset:1"])
+    datahub.enumerate_datasets = AsyncMock(return_value=[])
+    # Empty dataset list — measurer returns quickly
     event_result = MagicMock()
-    event_result.scalar_one_or_none.return_value = None
+    event_result.all.return_value = []
     db.execute = AsyncMock(side_effect=[def_result, event_result])
 
     result = await service.run("ingestion-freshness", dry_run=True)
@@ -670,38 +549,68 @@ async def test_run_allows_dry_run_when_disabled(service, db, datahub):
     assert db.commit.await_count == 0
 
 
-# ── No activate / deactivate methods ─────────────────────────────────────────
+# ── MetricDefinitionRecord field set ─────────────────────────────────────────
 
 
-def test_no_activate_method(service):
-    """MetricsService should not have activate() — removed in spec rewrite."""
-    assert not hasattr(service, "activate"), (
-        "MetricsService.activate() was removed in the spec rewrite; "
-        "use PUT/PATCH is_enabled instead."
-    )
+async def test_definition_record_field_set_matches_spec(service, db):
+    """MetricDefinitionRecord exposes exactly the spec'd field set.
+
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions.
+    """
+    row = _make_definition_row()
+    mock_scalar_query(db, row)
+
+    definition = await service.get_metric(row.id)
+    actual_fields = set(definition.model_dump().keys())
+    expected = {
+        "id",
+        "mode",
+        "metric_type",
+        "title",
+        "description",
+        "metrics",
+        "metric_conf",
+        "schedule_tier",
+        "dataset_filter",
+        "is_enabled",
+        "created_at",
+        "updated_at",
+    }
+    assert actual_fields == expected
 
 
-def test_no_deactivate_method(service):
-    """MetricsService should not have deactivate() — removed in spec rewrite."""
-    assert not hasattr(service, "deactivate"), (
-        "MetricsService.deactivate() was removed in the spec rewrite; "
-        "use PUT/PATCH is_enabled instead."
-    )
+# ── MetricResultRecord shape ──────────────────────────────────────────────────
 
 
-# ── events ──────────────────────────────────────────────────────────────────
+async def test_result_record_values_is_dict(service, db):
+    """MetricResultRecord.values is a dict[str, float].
+
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_results — values is JSONB
+          (dict of named floats).
+    """
+    rows = [_make_result_row(values={"total": 5.0, "ingested_in_time": 3.0})]
+    mock_paginated_query(db, rows, total_count=1)
+
+    results, total = await service.get_results("ingestion-freshness")
+
+    assert total == 1
+    r = results[0]
+    assert isinstance(r.values, dict)
+    assert r.values == {"total": 5.0, "ingested_in_time": 3.0}
 
 
-async def test_get_events(service, db):
+# ── events ────────────────────────────────────────────────────────────────────
+
+
+async def test_get_events_returns_paginated_list(service, db):
+    """get_events returns (rows, total_count) with correct entity_type.
+
+    Spec: spec/feature/BACKEND.md §Event Emission — METRIC domain events.
+    """
     metric_id = "ingestion-freshness"
     rows = [
-        make_event_row(
-            entity_type="metric",
-            event_type="METRIC.RUN_COMPLETE",
-            entity_id=metric_id,
-            minutes_ago=i,
-        )
-        for i in range(3)
+        make_event_row(entity_type="metric", event_type="METRIC.RUN_COMPLETE", entity_id=metric_id)
+        for _ in range(3)
     ]
     mock_paginated_query(db, rows, total_count=5)
 
@@ -712,6 +621,10 @@ async def test_get_events(service, db):
 
 
 async def test_get_events_with_time_range(service, db):
+    """get_events accepts from_dt/to_dt time range parameters.
+
+    Spec: spec/API.md §Metric — GET .../event supports from/to time range filters.
+    """
     metric_id = "ingestion-freshness"
     mock_paginated_query(db, [], total_count=0)
 

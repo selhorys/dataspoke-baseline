@@ -147,3 +147,16 @@ class InvalidDatasetUrnError(DataSpokeError):
     def __init__(self, urn: str, message: str = "") -> None:
         _safe_urn = _CTRL_RE.sub("?", str(urn))
         super().__init__(message or f"Invalid dataset URN: {_safe_urn!r}")
+
+
+class NotImplementedAPIError(DataSpokeError):
+    """Raised when the requested mode or capability is reserved for future work.
+
+    Maps to HTTP 501 NOT_IMPLEMENTED. Used for features that are defined in the
+    API schema but not yet operational (e.g. passive metric mode).
+    """
+
+    error_code: str = "NOT_IMPLEMENTED"
+
+    def __init__(self, message: str = "Not implemented") -> None:
+        super().__init__(message)

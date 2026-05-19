@@ -39,6 +39,7 @@ class Base(DeclarativeBase):
 SCHEMA = "dataspoke"
 
 
+
 # ── ingestion_configs ────────────────────────────────────────────────────────
 
 
@@ -283,10 +284,13 @@ class MetricDefinition(Base):
     __table_args__ = {"schema": SCHEMA}
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_type: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    theme: Mapped[str] = mapped_column(Text, nullable=False)
-    measurement_query: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    metrics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    metric_conf: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -311,7 +315,7 @@ class MetricResult(Base):
     metric_id: Mapped[str] = mapped_column(
         Text, ForeignKey(f"{SCHEMA}.metric_definitions.id"), nullable=False
     )
-    value: Mapped[float] = mapped_column(Float, nullable=False)
+    values: Mapped[dict[str, float]] = mapped_column(JSONB, nullable=False, default=dict)
     breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     measured_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -348,25 +352,6 @@ class DepartmentMapping(Base):
 
     owner_urn: Mapped[str] = mapped_column(Text, primary_key=True)
     department: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
-# ── overview_config ──────────────────────────────────────────────────────────
-
-
-class OverviewConfig(Base):
-    __tablename__ = "overview_config"
-    __table_args__ = (
-        CheckConstraint("id = 1", name="ck_overview_config_singleton"),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    layout: Mapped[str] = mapped_column(Text, nullable=False, default="force")
-    color_by: Mapped[str] = mapped_column(Text, nullable=False, default="quality_score")
-    filters: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )

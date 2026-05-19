@@ -1,10 +1,10 @@
-"""Measurer: pct_fresh — datasets categorised as fresh or stale.
+"""Measurer: ingestion-freshness — counts datasets ingested within the time window.
 
-A dataset is *fresh* if its latest ``INGESTION.COMPLETE`` event occurred within
-the freshness window defined in the metric's ``measurement_query``
-(``freshness_days``; default 1 day).  Otherwise it is *stale*.
+A dataset is counted as *ingested in time* if its latest ``INGESTION.COMPLETE``
+event occurred within ``metric_conf["time_window_sec"]`` seconds of now.
+Datasets with no event in that window (or no event at all) are stale.
 
-Spec: spec/feature/BACKEND.md §Metrics Service — baseline measurers
+Spec: spec/feature/BACKEND.md §Metrics Service — built-in active metric types
 """
 
 from datetime import UTC, datetime, timedelta
@@ -18,47 +18,37 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event
 from src.shared.events import INGESTION_COMPLETE
 
-_DEFAULT_FRESHNESS_DAYS = 1
 
-
-@register_measurer("pct_fresh")
+@register_measurer("ingestion-freshness")
 async def measure(
     datasets: list[str],
+    metric_conf: dict[str, Any],
     *,
     datahub: DataHubClient,
     db: AsyncSession,
-    freshness_days: int = _DEFAULT_FRESHNESS_DAYS,
-    **_kwargs: Any,
-) -> tuple[float, dict[str, Any]]:
-    """Return stale-dataset count and per-dataset freshness breakdown.
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Return ingestion-freshness values and a stale-dataset breakdown.
 
     Parameters
     ----------
     datasets:
         Dataset URNs to measure.
+    metric_conf:
+        Must contain ``time_window_sec`` (positive int).
     datahub:
         DataHubClient — accepted for signature uniformity, not used here.
     db:
         Async SQLAlchemy session for querying the ``events`` table.
-    freshness_days:
-        Number of days within which a dataset must have a successful ingestion
-        to be considered *fresh*.  Taken from ``measurement_query`` extras by
-        the caller; defaults to 1.
 
     Returns
     -------
-    tuple[float, dict]
-        ``(stale_count, breakdown)`` where ``breakdown`` has keys
-        ``dataset_count``, ``fresh_count``, ``stale_count``, and ``datasets``
-        (list of per-dataset dicts with ``urn``, ``category``,
-        ``last_ingested_at``).
+    tuple[dict[str, float], dict]
+        ``(values, breakdown)`` where values has keys ``total`` and
+        ``ingested_in_time``; breakdown lists only stale datasets.
     """
-    cutoff: datetime = datetime.now(tz=UTC) - timedelta(days=freshness_days)
+    time_window_sec = int(metric_conf["time_window_sec"])
+    cutoff: datetime = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec)
 
-    # Fetch the latest INGESTION.COMPLETE event per dataset in one round-trip
-    # using a window function (ROW_NUMBER) to get the most recent row per entity_id.
-
-    # Build a subquery that picks the latest INGESTION.COMPLETE per entity_id.
     sub = (
         select(
             Event.entity_id,
@@ -80,33 +70,30 @@ async def measure(
     rows = (await db.execute(latest_q)).all()
     latest: dict[str, datetime] = {row.entity_id: row.occurred_at for row in rows}
 
-    per_dataset: list[dict[str, Any]] = []
-    stale_count = 0
+    total = len(datasets)
+    ingested_in_time = 0
+    stale_datasets: list[dict[str, Any]] = []
 
     for urn in datasets:
-        last_ingested_at = latest.get(urn)
-        if last_ingested_at is None or last_ingested_at < cutoff:
-            category = "stale"
-            stale_count += 1
+        last_event_at = latest.get(urn)
+        if last_event_at is not None and last_event_at > cutoff:
+            ingested_in_time += 1
         else:
-            category = "fresh"
+            stale_datasets.append(
+                {
+                    "urn": urn,
+                    "detail": {
+                        "last_event_at": last_event_at.isoformat() if last_event_at else None,
+                    },
+                }
+            )
 
-        # Fix #8: unified breakdown shape per spec BACKEND.md §Metrics Service
-        per_dataset.append(
-            {
-                "urn": urn,
-                "category": category,
-                "detail": {
-                    "last_event_at": last_ingested_at.isoformat()
-                    if last_ingested_at
-                    else None,
-                },
-            }
-        )
-
-    return float(stale_count), {
-        "dataset_count": len(datasets),
-        "fresh_count": len(datasets) - stale_count,
-        "stale_count": stale_count,
-        "datasets": per_dataset,
+    values: dict[str, float] = {
+        "total": float(total),
+        "ingested_in_time": float(ingested_in_time),
     }
+    breakdown: dict[str, Any] = {
+        "dataset_count": total,
+        "datasets": stale_datasets,
+    }
+    return values, breakdown

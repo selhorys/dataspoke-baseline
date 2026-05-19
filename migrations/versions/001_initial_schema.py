@@ -236,10 +236,13 @@ def upgrade() -> None:
     op.create_table(
         "metric_definitions",
         sa.Column("id", sa.Text(), primary_key=True),
+        sa.Column("mode", sa.Text(), nullable=False),
+        sa.Column("metric_type", sa.Text(), nullable=False),
         sa.Column("title", sa.Text(), nullable=False),
         sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("theme", sa.Text(), nullable=False),
-        sa.Column("measurement_query", JSONB, nullable=False),
+        sa.Column("metrics", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+        sa.Column("metric_conf", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -257,7 +260,7 @@ def upgrade() -> None:
             sa.ForeignKey(f"{SCHEMA}.metric_definitions.id"),
             nullable=False,
         ),
-        sa.Column("value", sa.Float(), nullable=False),
+        sa.Column("values", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("breakdown", JSONB, nullable=True),
         sa.Column("measured_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
@@ -294,18 +297,6 @@ def upgrade() -> None:
         sa.Column("owner_urn", sa.Text(), primary_key=True),
         sa.Column("department", sa.Text(), nullable=False),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        schema=SCHEMA,
-    )
-
-    # ── overview_config (singleton) ──────────────────────────────────────
-    op.create_table(
-        "overview_config",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("layout", sa.Text(), nullable=False, server_default="force"),
-        sa.Column("color_by", sa.Text(), nullable=False, server_default="quality_score"),
-        sa.Column("filters", JSONB, nullable=False),
-        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.CheckConstraint("id = 1", name="ck_overview_config_singleton"),
         schema=SCHEMA,
     )
 

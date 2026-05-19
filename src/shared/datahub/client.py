@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
@@ -21,6 +22,26 @@ T = TypeVar("T")
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _FAIL_FAST_STATUS_CODES = {401, 403}
+_DOC_HEALTH_BATCH_SIZE = 100
+
+
+@dataclass(frozen=True)
+class DocumentationAspects:
+    """Four documentation aspects for a single dataset, collapsed from DataHub.
+
+    table_description:           DatasetProperties.description (base)
+    editable_table_description:  EditableDatasetProperties.description (overlay)
+    field_descriptions:          All schemaMetadata fields — fieldPath → description (empty str when absent)
+    editable_field_descriptions: EditableSchemaMetadata fields that have a description set — fieldPath → description
+
+    When ``field_descriptions`` is empty the dataset has no schema metadata; the
+    measurer treats this as "no documentable columns → score 0.0".
+    """
+
+    table_description: str | None
+    editable_table_description: str | None
+    field_descriptions: dict[str, str] = field(default_factory=dict)
+    editable_field_descriptions: dict[str, str] = field(default_factory=dict)
 
 
 class DataHubClient:
@@ -146,6 +167,87 @@ class DataHubClient:
         search_results = (result or {}).get("searchAcrossLineage", {}).get("searchResults", [])
         return [r["entity"]["urn"] for r in search_results]
 
+    async def get_dataset_documentation_aspects(
+        self,
+        urns: list[str],
+    ) -> dict[str, "DocumentationAspects"]:
+        """Batch-fetch the four documentation aspects for a list of dataset URNs.
+
+        Issues one GraphQL call per page of up to 100 URNs, replacing the four
+        per-URN REST calls used by single-aspect reads. The returned dict always
+        contains an entry for every requested URN; URNs not found in DataHub
+        receive an all-empty DocumentationAspects so the caller is branch-free.
+
+        DataHub docs: https://docs.datahub.com/docs/graphql/queries#entities
+        """
+        _QUERY = """
+        query DocAspects($urns: [String!]!) {
+            entities(urns: $urns) {
+                urn
+                ... on Dataset {
+                    properties { description }
+                    editableProperties { description }
+                    schemaMetadata { fields { fieldPath description } }
+                    editableSchemaMetadata {
+                        editableSchemaFieldInfo { fieldPath description }
+                    }
+                }
+            }
+        }
+        """
+        _EMPTY = DocumentationAspects(
+            table_description=None,
+            editable_table_description=None,
+            field_descriptions={},
+            editable_field_descriptions={},
+        )
+
+        result: dict[str, DocumentationAspects] = {urn: _EMPTY for urn in urns}
+
+        for i in range(0, len(urns), _DOC_HEALTH_BATCH_SIZE):
+            page = urns[i : i + _DOC_HEALTH_BATCH_SIZE]
+            raw = await self._with_retry(
+                self._graph.execute_graphql, _QUERY, variables={"urns": page}
+            )
+
+            for entity in (raw or {}).get("entities", []) or []:
+                urn = entity.get("urn")
+                if not urn:
+                    continue
+
+                table_description: str | None = (
+                    (entity.get("properties") or {}).get("description") or None
+                )
+                editable_table_description: str | None = (
+                    (entity.get("editableProperties") or {}).get("description") or None
+                )
+
+                schema_metadata = entity.get("schemaMetadata")
+                # Include all schema fields (even undescribed) so the measurer can
+                # identify missing column descriptions.
+                field_descriptions: dict[str, str] = {
+                    f["fieldPath"]: f.get("description") or ""
+                    for f in (schema_metadata or {}).get("fields", []) or []
+                    if f.get("fieldPath")
+                }
+                # Editable overlay: only fields that actually have a description set.
+                editable_field_descriptions: dict[str, str] = {
+                    f["fieldPath"]: f["description"]
+                    for f in (entity.get("editableSchemaMetadata") or {}).get(
+                        "editableSchemaFieldInfo", []
+                    ) or []
+                    if f.get("description")
+                }
+
+                result[urn] = DocumentationAspects(
+                    table_description=table_description,
+                    editable_table_description=editable_table_description,
+                    field_descriptions=field_descriptions,
+                    editable_field_descriptions=editable_field_descriptions,
+                )
+
+        return result
+
     async def get_schema_version_list(self, urn: str) -> list[dict[str, Any]]:
         """Return schema version list via the Timeline GraphQL API.
 
@@ -176,22 +278,41 @@ class DataHubClient:
         platform: str | None = None,
         tags: list[str] | None = None,
         glossary_terms: list[str] | None = None,
+        origin: str | None = None,
     ) -> list[str]:
-        """Return all dataset URNs matching the given filters (OR-ed).
+        """Return all dataset URNs matching the given filters.
 
-        Each filter (platform, tag, glossary term) becomes its own AND-group so
-        DataHub OR-combines them. When no filters are provided, all datasets are
-        returned.
+        Tag / glossary-term / platform filters are OR-ed; ``origin`` is AND-ed
+        with each OR clause. When ``origin`` is provided and there are no other
+        OR-clause dimensions, a single AND clause with just origin is emitted.
         """
+        origin_clause: dict | None = (
+            {"field": "origin", "value": origin} if origin else None
+        )
+
         or_groups: list[dict] = []
         if platform:
-            or_groups.append(
-                {"and": [{"field": "platform", "value": f"urn:li:dataPlatform:{platform}"}]}
-            )
+            and_clauses: list[dict] = [
+                {"field": "platform", "value": f"urn:li:dataPlatform:{platform}"}
+            ]
+            if origin_clause:
+                and_clauses.append(origin_clause)
+            or_groups.append({"and": and_clauses})
         for tag in (tags or []):
-            or_groups.append({"and": [{"field": "tags", "value": tag}]})
+            and_clauses = [{"field": "tags", "value": tag}]
+            if origin_clause:
+                and_clauses.append(origin_clause)
+            or_groups.append({"and": and_clauses})
         for term in (glossary_terms or []):
-            or_groups.append({"and": [{"field": "glossaryTerms", "value": term}]})
+            and_clauses = [{"field": "glossaryTerms", "value": term}]
+            if origin_clause:
+                and_clauses.append(origin_clause)
+            or_groups.append({"and": and_clauses})
+
+        # When no OR-dimension filters are given but origin is set, emit a
+        # single AND group so DataHub scopes the enumeration to that origin.
+        if not or_groups and origin_clause:
+            or_groups.append({"and": [origin_clause]})
 
         def _fetch() -> list[str]:
             result = self._graph.get_urns_by_filter(
@@ -201,6 +322,28 @@ class DataHubClient:
             return list(result) if result else []
 
         return await self._with_retry(_fetch)
+
+    def origin_from_dataset_urn(self, urn: str) -> str | None:
+        """Parse the origin (third segment) from a dataset URN.
+
+        Dataset URN format: ``urn:li:dataset:(<platform>,<name>,<origin>)``.
+        The platform itself may be a nested URN containing commas, so we split
+        on the last two commas inside the outer parentheses.
+
+        Returns the origin string, or ``None`` when the URN is malformed.
+        """
+        if not urn.startswith("urn:li:dataset:(") or not urn.endswith(")"):
+            return None
+        inner = urn[len("urn:li:dataset:("):-1]
+        # Find the last two commas to extract the three segments
+        last_comma = inner.rfind(",")
+        if last_comma == -1:
+            return None
+        second_last_comma = inner.rfind(",", 0, last_comma)
+        if second_last_comma == -1:
+            return None
+        origin = inner[last_comma + 1:].strip()
+        return origin if origin else None
 
     async def emit_aspect(
         self,
