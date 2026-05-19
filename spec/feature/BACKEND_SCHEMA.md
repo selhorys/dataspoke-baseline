@@ -113,7 +113,7 @@ Singleton row holding the Metadata Generation conf (UC4).
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the metagen DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.measurement_query.dataset_filter` |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.dataset_filter` (the latter adds an AND-ed `origin` dimension) |
 | `result_limit` | `INTEGER` | Max non-rejected candidates per item (range `[1, 20]`, default `3`) |
 | `overwrite_pending` | `BOOLEAN` | When the per-item budget is full and the item has no `approved` candidate, true = evict oldest `llm_approved` candidate; false = skip the item (default true) |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -204,7 +204,7 @@ Singleton row holding the Ontology Generation conf (UC3).
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `metric_definitions.measurement_query.dataset_filter` |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `metric_definitions.dataset_filter` (the latter adds an AND-ed `origin` dimension) |
 | `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -291,13 +291,16 @@ Governance metric definitions.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `TEXT` PK | Metric identifier (slug, e.g. `ingestion-freshness`, `validation-score`) |
+| `id` | `TEXT` PK | Metric identifier (slug, e.g. `ingestion-freshness`, `validation-score`, `doc-health`) |
+| `mode` | `TEXT` | `active` (built-in measurer runs the computation) or `passive` (reserved — PUT rejected with `501 NOT_IMPLEMENTED` in this release) |
+| `metric_type` | `TEXT` | One of `ingestion-freshness`, `validation-score`, `doc-health` |
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
-| `theme` | `TEXT` | Category: `quality`, `governance`, `freshness` |
-| `measurement_query` | `JSONB` | `{"aggregation": "pct_fresh"\|"pct_datasets_passing"\|..., "dataset_filter": {"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}}`; `dataset_filter` dimensions OR-ed; `{}` = all datasets |
+| `metrics` | `JSONB` | List of `values` keys the metric persists — subset of the type's emitted keys (e.g. `["total", "ingested_in_time"]`) |
+| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score`; `{}` for `doc-health` |
+| `dataset_filter` | `JSONB` | `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`. `origin` is a DataHub `FabricType` value (`PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…) — passed through to DataHub; the other three dimensions OR-ed among themselves and AND-ed with `origin`; `{}` = all datasets |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (required when `is_enabled=true`) |
+| `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (null = on-demand only) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -309,8 +312,8 @@ Timeseries of metric measurements.
 |--------|------|-------------|
 | `id` | `UUID` PK | Result identifier |
 | `metric_id` | `TEXT` FK | Metric definition |
-| `value` | `REAL` | Measured numeric value |
-| `breakdown` | `JSONB` NULL | Measurement breakdown: dataset list and per-type details |
+| `values` | `JSONB` | Measured values — dict of named floats, e.g. `{"total": 142.0, "ingested_in_time": 87.0}` |
+| `breakdown` | `JSONB` NULL | Measurement breakdown: `{dataset_count, datasets: [{urn, detail?}]}`. `datasets[]` carries only failed entries (stale / validation `<1.0` / doc-health `<1.0` depending on `metric_type`); `dataset_count` is the total scanned |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
 #### `events`
@@ -351,18 +354,6 @@ aggregation when an HR API is unavailable).
 |--------|------|-------------|
 | `owner_urn` | `TEXT` PK | DataHub owner URN |
 | `department` | `TEXT` | Department name |
-| `updated_at` | `TIMESTAMPTZ` | |
-
-#### `overview_config`
-
-Singleton configuration for the multi-perspective overview visualization.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | `INTEGER` PK (=1) | Singleton row |
-| `layout` | `TEXT` | Graph layout algorithm (`force`, `hierarchical`, `radial`) |
-| `color_by` | `TEXT` | Node coloring dimension (`quality_score`, `freshness`, `platform`) |
-| `filters` | `JSONB` | Active filters (platforms, departments, tags) |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 ### Indexes

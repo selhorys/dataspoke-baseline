@@ -585,7 +585,7 @@ regardless of `is_enabled`.
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
 **Covers**: MANIFESTO §2.1 Ontology Generation (UC3). Consumed by Metadata Generation
-(UC4) and Governance (UC5 — blind-spot detection).
+(UC4).
 
 Singleton-config LLM pipeline that emits a **subject / predicate / object triple
 ontology** — nodes (subjects / objects), edges (predicates), and triples
@@ -600,7 +600,7 @@ config. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
-| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. Each of the three list dimensions is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC5's `measurement_query.dataset_filter`. |
+| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. Each of the three list dimensions is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. UC5's metric `dataset_filter` shares this shape and adds an `origin` dimension (AND-ed with the OR-group). |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
 UC3 inputs are sourced entirely from DataHub-resident metadata (the proofread
@@ -703,72 +703,92 @@ Each verdict emits a `NODE.APPROVE` / `NODE.REJECT` / `EDGE.APPROVE` / `EDGE.REJ
 
 ### Metrics Service (`src/backend/metrics/`)
 
-**Covers**: MANIFESTO §2.1 Governance (UC5) — metric definition and aggregation. Baseline
-metrics (`ingestion-freshness`, `validation-score`), `dataset_filter` semantics, and
-`unresolved_urns` reporting live in [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance);
-DataHub aspect reads in
+**Covers**: MANIFESTO §2.1 Governance (UC5) — metric definition and aggregation. Built-in
+metric types (`ingestion-freshness`, `validation-score`, `doc-health`), mode semantics,
+factory defaults, `dataset_filter`, and result shape live in
+[USE_CASE §UC5](../USE_CASE_en.md#uc5-governance); DataHub aspect reads in
 [DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
 **Pure aggregation**: metrics never probe source data — they aggregate pre-existing
-DataHub aspects and DataSpoke result tables. The metrics layer therefore has no source
-credentials and no SQL access to production databases. New metric types are added by
-implementing a measurement function on top of those existing surfaces; unsupported
-aggregations return `422 INVALID_PARAMETER`.
+DataHub aspects (`DatasetProperties`, `SchemaMetadata`, `GlobalTags`, `GlossaryTerms`,
+and the dataset URN's `origin` segment for the origin filter) and DataSpoke event /
+validation-result rows. The metrics layer therefore has no source credentials and no
+SQL access to production databases. Unsupported `metric_type` or unknown `metrics[]`
+keys return `422 INVALID_PARAMETER`.
 
 #### Implementation
 
-Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled or on-demand
-measurement execution. Activate/deactivate metric scheduling. No alarm evaluation, no issue
-tracking, no notification dispatch.
+Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled (Airflow
+`metrics-{hourly,daily,weekly}` DAGs scanning `is_enabled=true` rows of the matching
+`schedule_tier`) or on-demand (`POST .../method/run` → `metrics` on-demand DAG)
+measurement execution.
 
-**`dataset_filter`**: Optional filter in `measurement_query` with `tags` (list of DataHub
-tag URNs), `glossary_terms` (list of DataHub glossary term URNs), and `dataset_urns` (list
-of explicit `urn:li:dataset:(…)` URNs for pinning to a known set). When specified, only
-datasets matching ANY listed tag, glossary term, or explicit URN are included in the
-measurement — filters are OR-ed across all three dimensions; an empty array on any
-dimension contributes nothing; `{}` means all datasets. URN format is validated at
-PUT/PATCH (`422 INVALID_DATASET_URN`); entries that don't resolve in DataHub at run time
-are skipped and reported in the `METRIC.RUN_COMPLETE` event's `unresolved_urns` field.
+**Mode**: `active` runs the built-in measurer matching `metric_type`. `passive` is
+rejected at the schema layer with `501 NOT_IMPLEMENTED` — placeholder for ingesting
+results emitted by an external system, deferred to a future release.
 
-**Breakdown format**: Every measurement result includes a `breakdown` JSONB with a unified
-per-dataset entry shape:
+**Measurers** (`src/backend/metrics/measurers/`): one async function per built-in
+`metric_type`, registered via the measurer registry. Each measurer receives the resolved
+dataset URN list, `metric_conf`, a `DataHubClient`, and an `AsyncSession`, and returns
+`(values: dict[str, float], breakdown: dict)`. `values` keys are exactly those listed in
+[USE_CASE §UC5 — Built-in active metric types](../USE_CASE_en.md#built-in-active-metric-types);
+the service filters the dict to the subset declared by `attr/conf.metrics[]` before
+persisting.
+
+**`doc-health`** sources table description from `DatasetPropertiesClass.description` (or
+`EditableDatasetPropertiesClass.description` when present) and column descriptions from
+`SchemaMetadataClass.fields[*].description` (overlaid by `EditableSchemaMetadataClass`
+when present). A dataset scores `1.0` iff the resolved table description is non-empty
+and every column has a non-empty description; otherwise `0.0`.
+
+**Dataset resolution**: `MetricsService._measure` resolves `dataset_filter` through
+`DataHubClient.enumerate_datasets(origin=…, tags=…, glossary_terms=…)`. The client
+emits `origin` as its own AND-clause inside each `or` clause of
+`scrollAcrossEntities` so DataHub returns datasets that match the requested origin
+AND any one of the tag / glossary-term clauses — see
+[DATAHUB_INTEGRATION §Origin filter group](../DATAHUB_INTEGRATION.md#origin-filter-group)
+for the GraphQL shape and the `FabricType` enum it accepts. `origin` values are
+forwarded to DataHub verbatim; unknowns are rejected at DataHub query time.
+Explicit `dataset_urns` are AND-ed against `origin` by inspecting each URN's third
+segment before the per-URN aspect probe; mismatches and URNs that don't resolve in
+DataHub at run time are accumulated into the `METRIC.RUN_COMPLETE` event's
+`unresolved_urns`.
+
+**Breakdown format**: Every measurement result includes a `breakdown` JSONB with a
+unified shape:
 
 ```
-{"dataset_count": <total scanned>, "datasets": [{"urn": "...", "category": "<classification>", "detail": {...}}]}
+{"dataset_count": <total scanned>, "datasets": [{"urn": "...", "detail": {...}}]}
 ```
 
-`category` is a machine-readable classification (e.g. `fresh`, `stale`,
-`passing`, `failing`). `detail` is optional, type-specific metadata
-(e.g. `{"last_event_at": "..."}` for ingestion-freshness,
-`{"latest_data_time": "...", "score": 1.0}` for validation-score). Time-range queries on
-`attr/result` use the breakdown to answer per-dataset historical questions without
-re-running the metric.
+`datasets[]` lists **only failed datasets** — membership in the list is itself
+the classification. A dataset is failed when:
+
+- `ingestion-freshness`: latest `INGESTION.COMPLETE` is older than
+  `metric_conf.time_window_sec` (or absent)
+- `validation-score`: latest validation `score` in the window is `< 1.0` (or absent)
+- `doc-health`: documentation score is `< 1.0` (table description missing OR any
+  column description missing)
+
+`detail` is optional, type-specific metadata (e.g. `{"last_event_at": "..."}` for
+`ingestion-freshness`; `{"latest_data_time": "...", "score": 0.7}` for
+`validation-score`). `dataset_count` is the total scanned (matching `dataset_filter`),
+not the number of failed entries; `len(datasets) == failed count` is implied. The
+breakdown lets time-range queries on `attr/result` answer per-dataset historical
+questions without re-running the metric.
+
+**Factory defaults**: On API startup, an idempotent bootstrap inserts one
+`metric_definitions` row for each built-in `metric_type` if absent. Defaults are
+`mode="active"`, `is_enabled=false`, `schedule_tier="daily"`, `dataset_filter={}`,
+type-appropriate `metric_conf` (`{"time_window_sec": 86400}` for the first two, `{}`
+for `doc-health`). Seeds ship disabled so scheduled DAG runs are a no-op until the
+governance lead PATCHes `is_enabled=true`; the bootstrap never overwrites an
+existing row.
 
 **Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
 raises `409 METRIC_DISABLED`. This check is enforced both in `MetricsService._run_inner()`
 and at the route layer in `post_metric_run()` (which bypasses `MetricsService.run()` to
 call Airflow directly). Dry-run is permitted regardless of `is_enabled`.
-
-### Overview Service (`src/backend/overview/`)
-
-**Covers**: MANIFESTO §2.1 Governance (UC5) — single multi-perspective overview that
-returns the latest value of every enabled metric, a per-dataset breakdown, and **blind
-spots** (datasets present in DataHub that are not mapped to any UC3 ontology node).
-Read-only aggregation over DataHub aspects, validation results, and the ontology.
-
-`GET /spoke/dg/overview` composes:
-
-| Section | Source |
-|---------|--------|
-| Metric values | Latest `metric_results.value` per enabled metric |
-| Per-dataset breakdown | Aggregation of latest `metric_results.breakdown` rows |
-| Blind spots | Datasets in DataHub with no row in `dataset_node_map` (or `status != approved`) |
-| Ontology graph | `ontogen_nodes` + `ontogen_triples` (with `ontogen_edges` resolving the predicate label) |
-| Medallion layers | Bronze = 0 upstreams, Silver = 1–2, Gold = 3+, derived from `upstreamLineage` |
-| Ownership topology | DataHub `ownership` aspect grouped by owner / team |
-
-`GET / PATCH /spoke/dg/overview/attr` reads / updates the visualization config singleton
-(`overview_config`).
 
 ---
 
@@ -803,7 +823,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`) | `RUN_COMPLETE` / `RUN_FAILED` | global generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
-| `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds; payload carries `unresolved_urns` for any `dataset_filter.dataset_urns` entries that didn't resolve in DataHub |
+| `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds. Detail keys: `run_id`, `metric_id`, `values` (dict[str,float] — the persisted result), `dry_run`, `unresolved_urns` (list — `dataset_filter.dataset_urns` entries that didn't resolve in DataHub), `breakdown_summary` (`{dataset_count, affected_count}`) |
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
 | `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `nodes_added/edges_added/triples_added` on real-run, `nodes_proposed/edges_proposed/triples_proposed` on dry-run), `dry_run`, `producer_iterations` (inference-loop turns the Producer took), `producer_errors_dropped` (validator-rejected row count), `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `NODE` / `EDGE` / `TRIPLE` (`node` / `edge` / `triple`) | `APPROVE` / `REJECT` | `POST ontogen/result/{type}/{id}/method/review` |

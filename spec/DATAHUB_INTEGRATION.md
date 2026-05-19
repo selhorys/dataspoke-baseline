@@ -361,22 +361,22 @@ nest under the same database → schema hierarchy as DataHub's managed-PG source
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
-| `datasetProperties` | W | R | R | R | R |
-| `editableDatasetProperties` | — | — | R | R + W (W on approval) | R |
-| `schemaMetadata` | W | R | R | R | R |
-| `editableSchemaMetadata` | — | — | R | R + W (W on approval) | R |
-| `ownership` | W | — | — | — | R |
-| `globalTags` | W | — | — | — *(future scope)* | R |
-| `glossaryTerms` | — | — | R | R | R |
-| `upstreamLineage` | W | R | — | — | R |
+| `datasetProperties` | W | R | R | R | R *(doc-health table description)* |
+| `editableDatasetProperties` | — | — | R | R + W (W on approval) | R *(doc-health table description overlay)* |
+| `schemaMetadata` | W | R | R | R | R *(doc-health column descriptions)* |
+| `editableSchemaMetadata` | — | — | R | R + W (W on approval) | R *(doc-health column descriptions overlay)* |
+| `ownership` | W | — | — | — | — |
+| `globalTags` | W | — | — | — *(future scope)* | R *(dataset_filter.tags)* |
+| `glossaryTerms` | — | — | R | R | R *(dataset_filter.glossary_terms)* |
+| `upstreamLineage` | W | R | — | — | — |
 | `status` | W | W (assertion entity, on DELETE / resurrect) | — | — | — |
 | `deprecation` | — | — | — | — | — |
-| `datasetProfile` | — | — | — | — | R |
-| `operation` | — | — | — | — | R |
-| `datasetUsageStatistics` | — | — | — | — | R |
+| `datasetProfile` | — | — | — | — | — |
+| `operation` | — | — | — | — | — |
+| `datasetUsageStatistics` | — | — | — | — | — |
 | `assertionInfo` | — | W | — | — | — |
-| `assertionRunEvent` | — | W | — | — | R |
-| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | R (read as generation context only) | R |
+| `assertionRunEvent` | — | W | — | — | — |
+| `documentInfo` | — | — | R (documents whose `relatedAssets` overlap in-scope datasets) | R (read as generation context only) | — |
 
 ## Custom Ingestor Guide
 
@@ -491,7 +491,7 @@ SDK imports resolve from three packages: `datahub.ingestion.graph.client` (for `
 | C. Write regular aspect | `emitter.emit_mcp(MetadataChangeProposalWrapper(entityUrn=urn, aspect=AspectClass(...)))` | `POST /openapi/v3/entity/dataset` | Upsert semantics — creates or overwrites. |
 | D. Write lineage | Same as C with `UpstreamLineageClass(upstreams=[UpstreamClass(dataset=upstream_urn, type=...)])` | `POST /openapi/v3/entity/dataset` (aspect `upstreamLineage`) | Use `make_dataset_urn()` for upstream URN. |
 | E. Write deprecation | Same as C with `DeprecationClass(deprecated=True, note=..., replacement=...)` | `POST /openapi/v3/entity/dataset` (aspect `deprecation`) | Replacement is a dataset URN. |
-| F. Enumerate datasets | `list(graph.get_urns_by_filter(entity_types=["dataset"], ...))` | GraphQL `scrollAcrossEntities` | Supports `platform`, `env`, `query` filters; used by Governance bulk scan. |
+| F. Enumerate datasets | `list(graph.get_urns_by_filter(entity_types=["dataset"], ...))` | GraphQL `scrollAcrossEntities` | Supports `platform`, `origin` (DataHub `FabricType` — `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…), `tags`, `glossaryTerms`, and `query` filters; used by Governance `dataset_filter` resolution and Ontology Generation. |
 
 For live examples see `src/shared/datahub/client.py` (DataSpoke's wrapper) and per-feature
 service files under `src/backend/`.
@@ -507,14 +507,48 @@ The REST API only exposes `upstreamLineage` (what this dataset reads from). To f
 **downstream consumers** (what depends on this dataset), call `graph.execute_graphql(...)` with
 a `searchAcrossLineage` query (`direction: DOWNSTREAM`, `types: [DATASET]`) and read
 `searchResults[].entity.urn` + `degree`. Used by Validation (downstream impact of failing
-rules), Metadata Generation (shared consumers informing descriptions), Ontology Generation
-(node and triple inference), Governance (ownership topology).
+rules), Metadata Generation (shared consumers informing descriptions), and Ontology
+Generation (node and triple inference).
 
 ### Entity Enumeration by Domain
 
-For cross-entity enumeration (e.g., listing all datasets for health scoring), call
-`graph.execute_graphql(...)` with `scrollAcrossEntities` (`types: [DATASET]`) and paginate via
-`nextScrollId`. Used by Governance (department-level enumeration).
+For cross-entity enumeration, call `graph.execute_graphql(...)` with
+`scrollAcrossEntities` (`types: [DATASET]`) and paginate via `nextScrollId`. Used by
+Governance to resolve `dataset_filter` (origin / tags / glossary_terms / explicit URNs)
+into the dataset URN list scanned by each measurer.
+
+#### Origin filter group
+
+`origin` in DataSpoke is the same `origin` field DataHub carries on every dataset —
+defined on the `DatasetUrn` key (`li-utils/.../common/DatasetUrn.pdl`) with type
+`com.linkedin.common.FabricType`, encoded into the dataset URN itself as
+`urn:li:dataset:(<platform>,<name>,<origin>)`. Example:
+`urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)`
+has `origin="DEV"`.
+
+DataSpoke accepts any value DataHub's `FabricType` enum accepts and forwards it
+verbatim — no DataSpoke-side allow-list. The DataHub enum currently includes
+`DEV`, `TEST`, `QA`, `UAT`, `EI`, `PRE`, `STG`, `NON_PROD`, `PROD`, `CORP`, `RVW`,
+`PRD`, `TST`, `SIT`, `SBX`, `SANDBOX` (see `FabricType.pdl`). Unknown values are
+rejected by DataHub at query time rather than by DataSpoke at PUT/PATCH time.
+
+The resolver in `DataHubClient.enumerate_datasets` emits `origin` as its own
+AND-clause within each `scrollAcrossEntities` `or` group so that DataHub combines
+`origin` with the OR-ed `tags` / `glossaryTerms` / explicit-URN groups:
+
+```
+or: [
+  { and: [{ field: "origin", value: "PROD" }, { field: "tags", value: "urn:li:tag:PII" }] },
+  { and: [{ field: "origin", value: "PROD" }, { field: "glossaryTerms", value: "urn:li:glossaryTerm:..." }] },
+  ...
+]
+```
+
+When `origin` is absent the clause is omitted. When the OR-group dimensions are all
+empty, `origin` becomes the single AND-clause and the enumeration returns every
+dataset with that origin. Explicit `dataset_urns` are validated separately via
+`get_aspect` and AND-ed against `origin` by checking the URN's third segment before
+resolving the aspect.
 
 ### When to Use GraphQL vs REST
 

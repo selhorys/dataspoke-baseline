@@ -46,7 +46,7 @@ pipelines that Imazon already operates. DataSpoke covers both modes.
 | UC2 | Validation | [Single-rule Slot, Pipeline-Posted Results, Historical Baseline](#uc2-validation) |
 | UC3 | Ontology Generation | [Node, Edge, and Triple Inference Across Imazon Datasets](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [Per-Item Description Proposals](#uc4-metadata-generation) |
-| UC5 | Governance | [Ingestion Freshness and Validation Score](#uc5-governance) |
+| UC5 | Governance | [Active Metrics — Freshness, Validation, Doc Health](#uc5-governance) |
 
 ---
 
@@ -634,97 +634,110 @@ metrics such as documentation coverage and data freshness.*
 ### User Story
 
 > *As a* governance lead or CDO,
-> *I want* a small set of always-on signals — ingestion freshness and validation score —
-> and one overview that shows them at a glance,
-> *so that* I can monitor health without curating dashboards by hand.
+> *I want* a small set of always-on metrics — ingestion freshness, validation score, and
+> documentation health — that I can schedule, scope, and trend over time,
+> *so that* I can monitor estate health without curating dashboards by hand.
 
-**Baseline metrics**
+### Concept
 
-The baseline ships with two metrics; organisations register additional metrics by
-defining new `measurement_query` types via the same `attr/conf` endpoint.
+A governance **metric** is a named, scheduled aggregation over the data estate. Every
+measurement run persists a result row whose `values` are a dict of named floats and
+whose `breakdown` is a per-dataset list, so time-range queries can answer "which
+datasets failed last Tuesday" without re-running the metric.
 
-| Metric ID | Definition |
-|---|---|
-| `ingestion-freshness` | Percentage of enabled ingestion configs whose latest successful `event/ingestion` falls within the configured freshness window (per `schedule_tier` for active-custom mode; per a fixed window for passive). |
-| `validation-score` | Percentage of datasets whose latest `attr/validation/result` row has `score == 1.0`, among datasets that have a validation conf. |
+**Modes.** A metric's `mode` is either `active` or `passive`.
 
-Every measurement run persists one `attr/result` row carrying both an aggregate
-`value` and a per-dataset `breakdown`, so time-range queries can answer "which
-datasets failed last Tuesday" without re-running the metric. Run semantics
-(serialization, dry-run, disabled-conf rejection) and breakdown shape are
-specified in [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics).
+- **`active`** — DataSpoke computes the measurement itself from the metric's
+  `metric_type` and `metric_conf`.
+- **`passive`** — DataSpoke ingests measurement results emitted by an external system
+  (no built-in computation). **Reserved for future work; PUT with `mode: "passive"`
+  returns `501 NOT_IMPLEMENTED` in this release.**
 
-**Baseline overview (one)**
+### Built-in active metric types
 
-A single dashboard returns the latest value of every enabled metric, a per-dataset
-breakdown (which datasets are stale, which have failing rules), and **blind spots** —
-datasets present in DataHub but not mapped to any UC3 ontology node. Blind spots
-are governance signals in their own right: they surface coverage gaps where the
-ontology has not yet caught up with the data estate.
+Three `metric_type` values ship in the baseline. All emit floating-point values; ratios
+are NOT pre-computed by the server — clients derive them from the named fields.
+
+| `metric_type` | Emitted `values` keys | Meaning of each key |
+|---|---|---|
+| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = count of datasets matched by `dataset_filter`; `ingested_in_time` = count whose latest `INGESTION.COMPLETE` was less than `metric_conf.time_window_sec` ago |
+| `validation-score` | `total`, `validation_score_sum` | `total` = count of datasets matched by `dataset_filter`; `validation_score_sum` = sum of each dataset's latest validation `score` in the time range from `metric_conf.time_window_sec` ago to now (0.0 when the dataset has no validation result inside that window) |
+| `doc-health` | `total`, `doc_health` | `total` = count of datasets matched by `dataset_filter`; `doc_health` = sum of per-dataset documentation scores, where a dataset scores `1.0` iff it has a non-empty table description AND every column carries a non-empty description, else `0.0` |
+
+`metric_conf` carries type-specific parameters: `time_window_sec` for
+`ingestion-freshness` and `validation-score`; empty `{}` for `doc-health`.
+
+`dataset_filter` carries four optional dimensions: `origin` (the DataHub `FabricType`
+value carried as the third URN segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` /
+`NON_PROD` / `QA` / `TEST` / `PRE` / `RVW` / `SIT` / `SANDBOX` / …; passed through to
+DataHub verbatim), `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term
+URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URNs). The tag / term / URN
+dimensions form an OR-group; `origin` is AND-ed with that group. `{}` means all
+datasets. URN format is validated at PUT/PATCH (`422 INVALID_DATASET_URN`);
+unresolved-at-runtime entries are skipped and reported in the `METRIC.RUN_COMPLETE`
+event's `unresolved_urns` field. The GraphQL shape of the resolver is documented in
+[`DATAHUB_INTEGRATION.md §Origin filter group`](DATAHUB_INTEGRATION.md#origin-filter-group);
+breakdown shape and DAG semantics are in
+[`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics).
+
+### Factory defaults
+
+On first start, DataSpoke seeds one metric of each built-in type (idempotent — only
+inserted when the `metric_definitions` row is absent). Defaults are
+`mode: "active"`, `is_enabled: false`, `schedule_tier: "daily"`, `dataset_filter: {}`,
+type-appropriate `metric_conf`. The seeds ship disabled so the governance lead opts
+in explicitly via PATCH `is_enabled: true` (or runs a one-off `method/run` with
+`dry_run: true`) before scheduled measurement begins. The user can edit, disable, or
+delete any default, and add more metrics of the same three types.
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | Define / update / read a metric (title, theme, query, schedule_tier, enabled flag) |
+| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | Define / update / read a metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`) |
 | `POST /spoke/dg/metric/{metric_id}/method/run` | Trigger a measurement run; `dry_run: true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
-| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries both aggregate `value` and per-dataset `breakdown`) |
+| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries `values` and per-dataset `breakdown`) |
 | `GET /spoke/dg/metric/{metric_id}/event` | Run completion / definition change events |
 | `GET /spoke/dg/metric` | List all metrics |
-| `GET /spoke/dg/overview` | Snapshot — every enabled metric value + per-dataset breakdown + blind spots (datasets unmapped to any ontology node) |
-| `GET/PATCH /spoke/dg/overview/attr` | Read or update visualization config |
+
+Available `schedule_tier` values: `hourly`, `daily`, `weekly`. When enabled, the
+metric is invoked on its tier; on-demand runs always go through
+`POST .../method/run`.
 
 ### Imazon Example
 
-The CDO registers both metrics:
+The CDO replaces the daily doc-health default with a PROD-scoped weekly run:
 
 ```http
-PUT /api/v1/spoke/dg/metric/ingestion-freshness/attr/conf
+PUT /api/v1/spoke/dg/metric/doc-health-prod/attr/conf
 ```
 ```json
 {
-  "title": "Ingestion freshness",
-  "theme": "freshness",
-  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_fresh"},
-  "schedule_tier": "hourly",
-  "is_enabled": true
-}
-```
-
-```http
-PUT /api/v1/spoke/dg/metric/validation-score/attr/conf
-```
-```json
-{
-  "title": "Validation score",
-  "theme": "quality",
-  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_datasets_passing"},
-  "schedule_tier": "hourly",
-  "is_enabled": true
+  "mode": "active",
+  "is_enabled": true,
+  "metric_type": "doc-health",
+  "title": "Doc Health (PROD)",
+  "description": "Weekly documentation-completeness check across PROD datasets",
+  "metrics": ["total", "doc_health"],
+  "metric_conf": {},
+  "schedule_tier": "weekly",
+  "dataset_filter": {"origin": "PROD"}
 }
 ```
 
 The CDO triggers an immediate first run rather than waiting for the schedule:
 
 ```http
-POST /api/v1/spoke/dg/metric/ingestion-freshness/method/run
-POST /api/v1/spoke/dg/metric/validation-score/method/run
+POST /api/v1/spoke/dg/metric/doc-health-prod/method/run
 ```
 
 A week later, trends are pulled for a board update:
 
 ```http
-GET /api/v1/spoke/dg/metric/ingestion-freshness/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
-GET /api/v1/spoke/dg/metric/validation-score/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/dg/metric/doc-health-prod/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
-The dashboard view consumes the overview endpoint:
-
-```http
-GET /api/v1/spoke/dg/overview
-```
-
-…and returns both metric values plus a per-dataset breakdown grouping `catalog.books`,
-`orders.line_items`, `customers.profiles`, `orders.shipments`, and `orders.events` by
-their freshness and validation status, alongside any blind spots — datasets visible in
-DataHub that have not yet been mapped to a UC3 node.
+Each result row carries `values: {"total": 142.0, "doc_health": 119.0}` plus a
+per-dataset breakdown listing only the **undocumented** datasets (those that
+contributed `0.0`) — e.g. `orders.shipments`, `customers.profiles` — so the board
+review focuses on the work still outstanding.

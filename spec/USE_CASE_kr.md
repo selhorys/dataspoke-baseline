@@ -54,7 +54,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 | UC2 | Validation | [단일 슬롯, 파이프라인이 POST하는 결과, 과거 베이스라인](#uc2-validation) |
 | UC3 | Ontology Generation | [Imazon 데이터셋 전반의 노드·엣지·트리플 추론](#uc3-ontology-generation) |
 | UC4 | Metadata Generation | [아이템별 설명 제안](#uc4-metadata-generation) |
-| UC5 | Governance | [인제스천 신선도와 검증 점수](#uc5-governance) |
+| UC5 | Governance | [액티브 메트릭 — 신선도, 검증 점수, 문서 상태](#uc5-governance) |
 
 ---
 
@@ -642,102 +642,112 @@ GET .../event/metagen
 ### User Story
 
 > *거버넌스 리드 또는 CDO로서*,
-> *항상 켜져 있는 작은 시그널 세트 —
-> 인제스천 신선도와 검증 점수 — 를 갖고,
-> 한눈에 보여주는 단일 오버뷰를 원한다*,
+> *상시 운영되는 작은 메트릭 세트 —
+> 인제스천 신선도, 검증 점수, 문서 상태 — 를 스케줄로 돌리고
+> 범위를 지정하며 시계열로 추적하길 원한다*,
 > *그래서* 대시보드를 직접 큐레이션하지 않고도
-> 건강도를 모니터링할 수 있도록 한다.
+> 데이터 자산 건강도를 모니터링할 수 있도록 한다.
 
-**베이스라인 메트릭**
+### 개념
 
-베이스라인은 두 메트릭으로 출발하며, 조직은 같은 `attr/conf` 엔드포인트로
-새로운 `measurement_query` 타입을 정의해 메트릭을 추가할 수 있다.
+거버넌스 **메트릭**은 데이터 자산 위에서 이름·스케줄·범위를 가지고 동작하는 집계다.
+실행 결과는 `values`(이름 있는 float dict)와 `breakdown`(데이터셋별 리스트)을
+담은 한 행으로 저장되어, 시간 범위 조회만으로 "지난주 화요일 어떤
+데이터셋이 실패했는가"에 답할 수 있다 — 메트릭을 다시 실행할 필요 없다.
 
-| 메트릭 ID | 정의 |
-|---|---|
-| `ingestion-freshness` | 활성화된 인제스천 설정 중 마지막 성공 `event/ingestion`이 신선도 윈도우 안에 들어오는 비율 (active는 `schedule_tier` 기준; passive는 고정 윈도우 기준). |
-| `validation-score` | 최신 `attr/validation/result` 행의 `score == 1.0`인 데이터셋 비율. 검증 conf가 있는 데이터셋만 분모에 포함. |
+**모드.** 메트릭의 `mode`는 `active` 또는 `passive`다.
 
-모든 측정 실행은 `attr/result`에 한 행을 남기며, 각 행은 집계 `value`와 함께
-데이터셋별 `breakdown`을 담는다. 덕분에 시간 범위 조회만으로 "지난주 화요일 어떤
-데이터셋이 실패했는가"에 답할 수 있다 — 메트릭을 다시 실행할 필요 없다. 실행
-시맨틱(직렬화·dry-run·비활성 conf 거부)과 breakdown 형태는
+- **`active`** — DataSpoke가 `metric_type`과 `metric_conf`로부터 직접 측정한다.
+- **`passive`** — 외부 시스템이 산출한 측정 결과를 DataSpoke가 적재한다(내장 계산
+  없음). **이번 릴리스에서는 미구현; `mode: "passive"`로 PUT 시
+  `501 NOT_IMPLEMENTED`를 반환한다.**
+
+### 내장 액티브 메트릭 타입
+
+베이스라인은 세 가지 `metric_type`을 제공한다. 모든 출력은 부동소수이며, 비율은
+서버에서 미리 계산하지 않는다 — 클라이언트가 이름 있는 필드로부터 직접 도출한다.
+
+| `metric_type` | 출력 `values` 키 | 의미 |
+|---|---|---|
+| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = `dataset_filter`에 매칭된 데이터셋 수; `ingested_in_time` = 마지막 `INGESTION.COMPLETE`가 `metric_conf.time_window_sec` 안에 있는 데이터셋 수 |
+| `validation-score` | `total`, `validation_score_sum` | `total` = 매칭된 데이터셋 수; `validation_score_sum` = 각 데이터셋의 최신 검증 `score` 합 — `metric_conf.time_window_sec` 이전부터 현재까지의 시간 범위에서 (해당 범위 안에 결과가 없으면 0.0) |
+| `doc-health` | `total`, `doc_health` | `total` = 매칭된 데이터셋 수; `doc_health` = 데이터셋별 문서 점수의 합. 테이블 설명과 모든 컬럼 설명이 비어 있지 않으면 `1.0`, 아니면 `0.0` |
+
+`metric_conf`는 타입별 파라미터를 담는다: `ingestion-freshness`와
+`validation-score`는 `time_window_sec`을, `doc-health`는 빈 `{}`를 사용한다.
+
+`dataset_filter`는 네 가지 선택적 차원을 갖는다: `origin`(DataHub 데이터셋 URN의
+세 번째 세그먼트로 들어가는 `FabricType` 값 — `PROD` / `DEV` / `CORP` / `EI` /
+`STG` / `NON_PROD` / `QA` / `TEST` / `PRE` / `RVW` / `SIT` / `SANDBOX` / … — 값은
+DataHub로 그대로 전달된다), `tags`(DataHub 태그 URN), `glossary_terms`(DataHub
+용어 URN), `dataset_urns`(명시적 `urn:li:dataset:(…)` URN). 태그·용어·URN
+차원은 하나의 OR-그룹을 이루며, `origin`은 그 OR-그룹과 AND로 결합된다. `{}`는
+모든 데이터셋을 뜻한다. URN 포맷은 PUT/PATCH 시점에 검증되며
+(`422 INVALID_DATASET_URN`), 실행 시점에 해석되지 않는 URN은 건너뛰고
+`METRIC.RUN_COMPLETE` 이벤트의 `unresolved_urns`에 보고된다. 리졸버의 GraphQL
+형태는
+[`DATAHUB_INTEGRATION.md §Origin filter group`](DATAHUB_INTEGRATION.md#origin-filter-group)에,
+breakdown 형태와 DAG 시맨틱은
 [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics)에
 정의되어 있다.
 
-**베이스라인 오버뷰(한 개)**
+### 팩토리 디폴트
 
-단일 대시보드가 모든 활성화된 메트릭의 최신 값과 데이터셋별 분해(어느
-데이터셋이 신선하지 않은지, 어느 데이터셋의 규칙이 실패하는지), 그리고
-**블라인드 스팟(blind spots)** — DataHub에는 존재하지만 어떤 UC3 온톨로지
-컨셉에도 매핑되지 않은 데이터셋 — 을 반환한다. 블라인드 스팟 자체가 거버넌스
-시그널이다: 온톨로지가 데이터 자산을 아직 따라잡지 못한 커버리지 갭을 드러낸다.
+최초 기동 시, DataSpoke는 내장 타입별로 한 개씩 메트릭을 시드한다(`metric_definitions`
+행이 부재할 때만 삽입; 멱등). 기본값은 `mode: "active"`, `is_enabled: false`,
+`schedule_tier: "daily"`, `dataset_filter: {}`, 타입에 맞는 `metric_conf`다.
+시드는 비활성 상태로 들어가므로, 거버넌스 리드가 PATCH `is_enabled: true`로
+명시적으로 켜거나 `dry_run: true` 1회 실행을 거친 뒤 스케줄 측정이 시작된다.
+사용자는 어떤 디폴트라도 수정·비활성화·삭제할 수 있고, 같은 세 타입으로 메트릭을
+더 추가할 수 있다.
 
 ### API Mapping
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | 메트릭 정의·갱신·읽기 (제목, 테마, 쿼리, schedule_tier, 활성화 플래그) |
+| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | 메트릭 정의·갱신·읽기 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`) |
 | `POST /spoke/dg/metric/{metric_id}/method/run` | 측정 실행 트리거; `dry_run: true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
-| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 집계 `value`와 데이터셋별 `breakdown`을 함께 담음) |
+| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 `values`와 데이터셋별 `breakdown`을 담음) |
 | `GET /spoke/dg/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
 | `GET /spoke/dg/metric` | 모든 메트릭 리스트 |
-| `GET /spoke/dg/overview` | 모든 활성화된 메트릭 값 + 데이터셋별 분해 + 블라인드 스팟(어떤 온톨로지 노드에도 매핑되지 않은 데이터셋) |
-| `GET/PATCH /spoke/dg/overview/attr` | 시각화 설정 읽기·갱신 |
+
+사용 가능한 `schedule_tier`: `hourly`, `daily`, `weekly`. 활성화되면 해당
+주기로 자동 실행되며, 온디맨드 실행은 항상 `POST .../method/run`을 통해 일어난다.
 
 ### Imazon 예시
 
-CDO가 두 메트릭을 등록한다:
+CDO가 PROD 범위의 주간 문서 상태 메트릭으로 데일리 디폴트를 교체한다:
 
 ```http
-PUT /api/v1/spoke/dg/metric/ingestion-freshness/attr/conf
+PUT /api/v1/spoke/dg/metric/doc-health-prod/attr/conf
 ```
 ```json
 {
-  "title": "인제스천 신선도",
-  "theme": "freshness",
-  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_fresh"},
-  "schedule_tier": "hourly",
-  "is_enabled": true
-}
-```
-
-```http
-PUT /api/v1/spoke/dg/metric/validation-score/attr/conf
-```
-```json
-{
-  "title": "검증 점수",
-  "theme": "quality",
-  "measurement_query": {"dataset_filter": {}, "aggregation": "pct_datasets_passing"},
-  "schedule_tier": "hourly",
-  "is_enabled": true
+  "mode": "active",
+  "is_enabled": true,
+  "metric_type": "doc-health",
+  "title": "Doc Health (PROD)",
+  "description": "PROD 데이터셋의 주간 문서 완전성 점검",
+  "metrics": ["total", "doc_health"],
+  "metric_conf": {},
+  "schedule_tier": "weekly",
+  "dataset_filter": {"origin": "PROD"}
 }
 ```
 
 스케줄을 기다리지 않고 CDO가 즉시 첫 실행을 트리거한다:
 
 ```http
-POST /api/v1/spoke/dg/metric/ingestion-freshness/method/run
-POST /api/v1/spoke/dg/metric/validation-score/method/run
+POST /api/v1/spoke/dg/metric/doc-health-prod/method/run
 ```
 
 1주일 후, 보드 보고용으로 추세를 가져온다:
 
 ```http
-GET /api/v1/spoke/dg/metric/ingestion-freshness/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
-GET /api/v1/spoke/dg/metric/validation-score/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/dg/metric/doc-health-prod/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
-대시보드 뷰는 오버뷰 엔드포인트를 소비한다:
-
-```http
-GET /api/v1/spoke/dg/overview
-```
-
-…그리고 두 메트릭 값과 함께,
-`catalog.books`, `orders.line_items`, `customers.profiles`,
-`orders.shipments`, `orders.events`를
-신선도와 검증 상태로 묶은 데이터셋별 분해를 반환한다.
-또한 DataHub에는 보이지만 UC3 노드에 아직 매핑되지 않은 데이터셋이 있다면
-블라인드 스팟으로 함께 반환한다.
+각 행은 `values: {"total": 142.0, "doc_health": 119.0}`와, **미문서화**
+데이터셋(`0.0`을 기여한 데이터셋, 예: `orders.shipments`, `customers.profiles`)만
+나열하는 데이터셋별 breakdown을 담는다 — 보드 리뷰는 아직 남은 작업에만
+집중할 수 있다.

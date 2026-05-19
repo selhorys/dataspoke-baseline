@@ -3,8 +3,8 @@
 > Conforms to [MANIFESTO](../MANIFESTO_en.md). Shared layer in
 > [FRONTEND_BASIC](FRONTEND_BASIC.md). API in [API.md](../API.md).
 
-DG is the only workspace that hosts baseline routes (`/spoke/dg/metric` and
-`/spoke/dg/overview`) and the only one that exposes ontogen approval actions
+DG is the only workspace that hosts the baseline `/spoke/dg/metric` route, and the
+only one that exposes ontogen approval actions
 (`POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`).
 
 ---
@@ -13,10 +13,9 @@ DG is the only workspace that hosts baseline routes (`/spoke/dg/metric` and
 
 | UI route | Title | API base |
 |---|---|---|
-| `/dg/metrics` | Metrics dashboard | `/spoke/dg/metric`, `/spoke/dg/overview` |
+| `/dg/metrics` | Metrics dashboard | `/spoke/dg/metric` |
 | `/dg/metrics/list` | Metric list | `/spoke/dg/metric` |
 | `/dg/metrics/[id]` | Metric detail | `/spoke/dg/metric/{id}` |
-| `/dg/overview` | Multi-perspective overview | `/spoke/dg/overview` |
 | `/dg/ontogen` | Ontogen review | `/spoke/common/ontogen/...` |
 | `/dg/ontogen/conf` | Ontogen conf editor | `/spoke/common/ontogen/attr/conf` |
 | `/dg/ontogen/seed` | Ontogen seeds editor | `/spoke/common/ontogen/attr/seed/...` |
@@ -29,116 +28,78 @@ DG is the only workspace that hosts baseline routes (`/spoke/dg/metric` and
 
 | Page | Read | Write |
 |---|---|---|
-| `/dg/metrics` (dashboard) | `GET /spoke/dg/metric`, `GET /spoke/dg/overview` (per-dataset breakdown + blind spots from the same call) | — |
-| `/dg/metrics/list` | `GET /spoke/dg/metric` (paginated, filter by `theme`, `status`) | — |
-| `/dg/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `title`, `theme`, `measurement_query`, `schedule_tier`, `is_enabled`); `POST .../method/run` (`{dry_run?}`) |
+| `/dg/metrics` (dashboard) | `GET /spoke/dg/metric`, latest `GET .../{id}/attr/result?limit=1` per metric | — |
+| `/dg/metrics/list` | `GET /spoke/dg/metric` (paginated; filter by `metric_type`, `mode`, `is_enabled`) | — |
+| `/dg/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`{dry_run?}`) |
 
-`measurement_query.dataset_filter` carries three OR-ed dimensions:
-`tags[]` (DataHub tag URNs), `glossary_terms[]` (glossary term URNs), and
-`dataset_urns[]` (explicit dataset URNs for pinning). The metric config form
-exposes all three. URN format is validated at `PUT/PATCH` time
-(`422 INVALID_DATASET_URN`); URNs that fail to resolve at run time are listed
-in the `METRIC.RUN_COMPLETE` event's `unresolved_urns` field.
+`dataset_filter` carries four optional dimensions: `origin` (the DataHub
+`FabricType` value carried as the third URN segment — `PROD`/`DEV`/`CORP`/`EI`/
+`STG`/`NON_PROD`/… — passed through verbatim to DataHub), `tags[]` (DataHub tag
+URNs), `glossary_terms[]` (glossary term URNs), and `dataset_urns[]` (explicit
+dataset URNs). Tag/term/URN dimensions are OR-ed among themselves and AND-ed with
+`origin`. URN format is validated at `PUT/PATCH` time (`422 INVALID_DATASET_URN`);
+URNs that fail to resolve at run time are listed in the `METRIC.RUN_COMPLETE`
+event's `unresolved_urns` field.
 
-Baseline metrics: `ingestion-freshness`, `validation-score`. Aggregations
-ship with `pct_fresh` and `pct_datasets_passing` (% of datasets whose latest
-`attr/validation/result.score == 1.0`); unsupported aggregations return
-`422 INVALID_PARAMETER`.
+Built-in metric types: `ingestion-freshness`, `validation-score`, `doc-health`
+(see [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance) for the `values` keys each
+emits and the `metric_conf` they consume). `mode: "passive"` is reserved — the
+form's mode toggle disables the Save button with the hint *passive mode not
+yet supported*; PUT against the API returns `501 NOT_IMPLEMENTED`. Unsupported
+`metric_type` or unknown `metrics[]` keys return `422 INVALID_PARAMETER`.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Metrics                                             │
-├──────────────────────────────────────────────────────┤
-│  ingestion-freshness:  92%  ↑     validation: 87% ↑  │
-│                                                      │
-│  Per-dataset breakdown (overview.metrics[*].breakdown)│
-│    catalog.books         fresh ✓   score 1.00 ✓      │
-│    orders.line_items     fresh ✓   score 0.75 ✗      │
-│    customers.profiles    fresh ✓   score 1.00 ✓      │
-│    orders.shipments      fresh ✗   score   —         │
-│                                                      │
-│  Blind spots (overview.blind_spots[])                │
-│    publishers.feed_raw                               │
-│    shipping.carrier_raw_v1                           │
-└──────────────────────────────────────────────────────┘
-      Dashboard (`/dg/metrics`) ← `/spoke/dg/{metric,overview}`
+┌────────────────────────────────────────────────────────┐
+│  Metrics                                               │
+├────────────────────────────────────────────────────────┤
+│  Ingestion Freshness   total 142   in-time 131  ↑      │
+│  Validation Score      total 142   sum 118.5    ↑      │
+│  Doc Health (PROD)     total  87   sum  61.0    ↓      │
+└────────────────────────────────────────────────────────┘
+      Dashboard (`/dg/metrics`) ← `/spoke/dg/metric` + latest result
 ```
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ← ingestion-freshness    [Edit] [Run] [Disable]     │
+│  ← doc-health-prod        [Edit] [Run] [Disable]     │
 ├──────────────────────────────────────────────────────┤
 │  attr/conf                                           │
-│    theme: freshness  schedule_tier: hourly  ✓ enabled│
+│    mode: active   metric_type: doc-health            │
+│    schedule_tier: weekly   ✓ enabled                 │
+│    dataset_filter: origin=PROD                       │
 │                                                      │
 │  attr/result?from&to                                 │
-│    [Recharts area chart of measurement value]        │
+│    [Recharts area chart — one line per `values` key] │
 │                                                      │
 │  event  (METRIC.RUN_COMPLETE …)                      │
-│    2026-04-25 measured: 92                           │
-│    2026-04-24 measured: 88                           │
+│    2026-04-25 values: total 142, doc_health 119      │
+│    2026-04-18 values: total 140, doc_health 112      │
 └──────────────────────────────────────────────────────┘
         Detail (`/dg/metrics/[id]`)
 ```
 
 ```
-┌────────────────────────────────────────────────┐
-│  Metric definition                             │
-├────────────────────────────────────────────────┤
-│  title:          [ingestion-freshness       ]  │
-│  theme:          [freshness               v]   │
-│  measurement_query.aggregation:                │
-│                  [pct_fresh               v]   │
-│  schedule_tier:  [ hourly | daily | weekly v]  │
-│  is_enabled:     [x]                           │
-│                                                │
-│  measurement_query.dataset_filter (OR-ed)      │
-│    tags[]:           [urn:li:tag:env:PROD,]    │
-│    glossary_terms[]: [urn:li:glossaryTerm:…,]  │
-│    dataset_urns[]:   [urn:li:dataset:(…),]     │
-│                                                │
-│  [Cancel]                            [Save]    │
-└────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Metric definition                                  │
+├─────────────────────────────────────────────────────┤
+│  mode:         ( • active )  ( passive — disabled ) │
+│  metric_type:  [ doc-health                     v ] │
+│  title:        [ Doc Health (PROD)                ] │
+│  description:  [ Weekly documentation-completeness] │
+│  metrics:      [x] total   [x] doc_health           │
+│  metric_conf:  (none for doc-health)                │
+│  schedule_tier:[ hourly | daily | weekly         v] │
+│  is_enabled:   [x]                                  │
+│                                                     │
+│  dataset_filter                                     │
+│    origin:           [ PROD                      v] │
+│    tags[]:           [urn:li:tag:env:PROD,    ]     │
+│    glossary_terms[]: [urn:li:glossaryTerm:…,  ]     │
+│    dataset_urns[]:   [urn:li:dataset:(…),     ]     │
+│                                                     │
+│  [Cancel]                                  [Save]   │
+└─────────────────────────────────────────────────────┘
         Config form (PUT/PATCH .../attr/conf)
-```
-
-### Multi-Perspective Overview (UC5)
-
-Single page consuming `GET /spoke/dg/overview`. Five views render the
-response sub-fields verbatim — no derived analysis on top:
-
-| View | Source field | Display |
-|---|---|---|
-| Metric Values | `overview.metrics[]` | Per-metric latest value + 90-day trend |
-| Blind Spots | `overview.blind_spots[]` | Datasets present in DataHub but not mapped to any approved UC3 ontology node |
-| Ontology Graph | `overview.ontology` | UC3 nodes + approved triples — labelled directed graph (nodes are subjects/objects, edges are predicates) |
-| Medallion | `overview.medallion` | Bronze / Silver / Gold / Unknown layer counts |
-| Ownership | `overview.ownership` | Owner / team coverage from DataHub `ownership` aspect |
-
-Visualization config persists via `GET/PATCH /spoke/dg/overview/attr`.
-Settings are limited to the `layout`, `color_by`, and `filters` fields
-catalogued in [BACKEND_SCHEMA §`overview_config`](BACKEND_SCHEMA.md#overview_config) —
-no fields beyond what `overview.attr` returns.
-
-```
-┌──────────────────────────────────────────────────────┐
-│  Data Estate Overview                                │
-│  [Metrics] [Blind Spots] [Ontology] [Medallion] […]  │
-├──────────────────────────────────────────────────────┤
-│  Ontology view (overview.ontology)                   │
-│                                                      │
-│      ┌──────┐  references   ┌───────────┐            │
-│      │ BOOK │ ◀──────────── │ ORDER_LINE│            │
-│      └──────┘               └─────┬─────┘            │
-│                                   │ placed_by        │
-│                                   ▼                  │
-│                             ┌──────────┐             │
-│                             │ CUSTOMER │             │
-│                             └──────────┘             │
-│                                                      │
-│  ● = ontology node   →  = approved triple (predicate)│
-└──────────────────────────────────────────────────────┘
-        Overview (`/dg/overview`) — five views, switched by tab
 ```
 
 ### Ontogen Review (UC3)

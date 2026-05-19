@@ -35,7 +35,7 @@ organization-specific routes.
 /api/v1/spoke/common/…     — Baseline features: ingestion, validation, ontology generation, metadata generation
 /api/v1/spoke/de/…         — Reserved for Data Engineering extensions (no baseline routes)
 /api/v1/spoke/da/…         — Reserved for Data Analysis extensions (no baseline routes)
-/api/v1/spoke/dg/…         — Governance (metric, overview)
+/api/v1/spoke/dg/…         — Governance (metric)
 /api/v1/hub/…              — DataHub pass-through (optional ingress for clients)
 ```
 
@@ -151,7 +151,7 @@ All routes are prefixed with `/api/v1`.
 
 > **Routing principle**: Baseline features live under `/spoke/common/` (ingestion,
 > validation, ontology generation, metadata generation) and `/spoke/dg/`
-> (governance metrics and overviews). The `/spoke/de/` and `/spoke/da/` tiers
+> (governance metrics). The `/spoke/de/` and `/spoke/da/` tiers
 > exist as extensibility surfaces for organization-specific routes and contain
 > no baseline endpoints. Per-dataset operations use the canonical
 > `/spoke/common/data/{dataset_urn}/…` surface for state (`attr/<feat>/`),
@@ -370,8 +370,7 @@ Per-dataset detail and result writes live on the canonical `data/{dataset_urn}` 
 
 #### Metric (`/spoke/dg/metric`)
 
-Governance metrics are named, configurable measurements tracked over time — for example,
-the count of poorly documented datasets or the count of stale datasets. Each metric
+Governance metrics are named, scheduled aggregations over the data estate. Each metric
 carries a definition (`attr/conf`) that controls how it is computed and scheduled, and a
 timeseries of measurement results (`attr/result`). Metrics represent enterprise-wide or
 department-wide signals rather than per-dataset observations.
@@ -380,55 +379,50 @@ department-wide signals rather than per-dataset observations.
 > aggregates results that already exist in DataHub metadata or DataSpoke validation results.
 
 Metrics are read-only consumers of DataHub metadata — they never write aspects or connect
-to source databases. Design framework (observatory pattern, governance
-dimensions), built-in metric types, and extensibility model: see
-[BACKEND §Metrics Service](feature/BACKEND.md#metrics-service-srcbackendmetrics) and
+to source databases. Built-in metric types, mode semantics, and result shape: see
+[USE_CASE §UC5](USE_CASE_en.md#uc5-governance) and
+[BACKEND §Metrics Service](feature/BACKEND.md#metrics-service-srcbackendmetrics).
+DataHub aspects consumed by `doc-health` are listed in
 [DATAHUB_INTEGRATION §Aspect Usage by Feature](DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
 **`metric_id`**: Kebab-case slug, system-generated or user-supplied (e.g.
-`ingestion-freshness`, `validation-score`). Used in route paths and as the DAG-name
-suffix `metrics-{metric_id}`.
+`ingestion-freshness`, `validation-score`, `doc-health`). Used in route paths and as the
+DAG-name suffix `metrics-{metric_id}`.
 
-**`measurement_query.dataset_filter`**: Optional filter object in the metric definition.
-Fields: `tags` (list of DataHub tag URNs), `glossary_terms` (list of DataHub glossary term
-URNs), and `dataset_urns` (list of explicit `urn:li:dataset:(…)` URNs for pinning to a
-known set). When specified, only datasets matching ANY listed tag, glossary term, or
-explicit URN are included in the measurement. Filters are OR-ed across all three
-dimensions; an empty array on any dimension contributes nothing; `{}` means all datasets.
-URN format is validated at PUT/PATCH time (`422 INVALID_DATASET_URN`); `dataset_urns`
-entries that don't resolve in DataHub at run time are skipped and reported in the
-`METRIC.RUN_COMPLETE` event's `unresolved_urns` field. The same shape and validation
-apply to UC3's `ontogen/attr/conf.dataset_filter` (reported via `ONTOGEN.RUN_COMPLETE`).
+**Definition body** (PUT/PATCH `.../attr/conf`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `mode` | `"active"` \| `"passive"` | `passive` is reserved; PUT with `mode: "passive"` returns `501 NOT_IMPLEMENTED` |
+| `is_enabled` | bool | Required; controls scheduled execution |
+| `metric_type` | `"ingestion-freshness"` \| `"validation-score"` \| `"doc-health"` | Unsupported values return `422 INVALID_PARAMETER` |
+| `title` | string | Display title |
+| `description` | string | What the metric measures |
+| `metrics` | string[] | Subset of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER` |
+| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds); `doc-health` takes `{}` |
+| `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
+| `dataset_filter` | object | Optional `{origin?, tags?[], glossary_terms?[], dataset_urns?[]}`. `origin` is the DataHub `FabricType` value carried as the third URN segment (e.g. `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…); DataSpoke forwards it verbatim and lets DataHub reject unknowns. The other three dimensions are OR-ed among themselves and AND-ed with `origin`. `{}` = all datasets. See [DATAHUB_INTEGRATION §Origin filter group](DATAHUB_INTEGRATION.md#origin-filter-group) for the resolver shape |
+
+`dataset_urns` URN format is validated at PUT/PATCH (`422 INVALID_DATASET_URN`);
+unresolved-at-runtime entries are skipped and reported in the `METRIC.RUN_COMPLETE`
+event's `unresolved_urns` field. UC3's `ontogen/attr/conf.dataset_filter` shares the
+same shape and validation (sans `origin`).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by theme, status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, theme, enabled status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (theme, schedule_tier, enabled status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition (title, theme, measurement_query, schedule_tier, enabled status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by `metric_type`, `mode`, `is_enabled`) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (mode, metric_type, schedule_tier, enabled status, latest `values`) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition | Governance | UC5 |
 | `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Governance | UC5 |
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (numeric timeseries; `?from=…&to=…` for time range) | Governance | UC5 |
+| `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; `?from=…&to=…` for time range) | Governance | UC5 |
 | `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
-- `attr/conf.measurement_query.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
-
-#### Overview (`/spoke/dg/overview`)
-
-Governance views of the data estate that cannot be expressed as per-metric timeseries:
-ontology-based topology views (consuming the UC3 node / triple graph), medallion layer
-coverage maps, and ownership topology. Use these paths only when the `/spoke/dg/metric`
-routes are insufficient. All views are read-only aggregations over DataHub aspects,
-DataSpoke validation results, and the ontology.
-
-| Method | Path | Purpose | Feature | UC |
-|--------|------|---------|---------|-----|
-| `GET` | `/spoke/dg/overview` | Get multi-perspective overview snapshot (ontology graph + medallion coverage + ownership topology) | Governance | UC5 |
-| `GET` | `/spoke/dg/overview/attr` | Get visualization config (layout, coloring, filters) | Governance | UC5 |
-| `PATCH` | `/spoke/dg/overview/attr` | Update visualization config | Governance | UC5 |
+- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
 
 ### DataHub Pass-Through (`/hub`)
 
@@ -678,6 +672,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/common/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/common/ontogen/method/run`) bodies are capped at 128 KiB |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for `ontogen/attr/conf`, `metagen/attr/conf`, and `metric/{id}/attr/conf` |
+| `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `PUT /spoke/dg/metric/{id}/attr/conf` when `mode: "passive"` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
