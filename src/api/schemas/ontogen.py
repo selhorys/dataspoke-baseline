@@ -5,20 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse, SingleResponse
-
-_DATASET_FILTER_LIST_CAP = 1000
-
-
-def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
-    """Raise ValueError if any list field in *dataset_filter* exceeds the cap."""
-    for key in ("dataset_urns", "tags", "glossary_terms"):
-        val = dataset_filter.get(key)
-        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
-            raise ValueError(
-                f"dataset_filter.{key} may not exceed "
-                f"{_DATASET_FILTER_LIST_CAP} entries"
-            )
 
 
 # ── Conf ──────────────────────────────────────────────────────────────────────
@@ -32,8 +20,9 @@ class OntogenConfResponse(SingleResponse):
     dataset_filter: dict[str, Any] = Field(
         default={},
         description=(
-            "Scope filter: tags (DataHub tag URNs), glossary_terms, and/or dataset_urns. "
-            "OR-ed across dimensions; {} means all datasets."
+            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
+            "tags (list[str], OR), glossary_terms (list[str], OR), "
+            "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
         ),
     )
     default_run_prompt: str | None = Field(
@@ -59,8 +48,8 @@ class OntogenConfPutRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_dataset_filter_bounds(self) -> "OntogenConfPutRequest":
-        _check_dataset_filter_bounds(self.dataset_filter)
+    def validate_dataset_filter_fields(self) -> "OntogenConfPutRequest":
+        validate_dataset_filter(self.dataset_filter)
         return self
 
 
@@ -78,9 +67,9 @@ class OntogenConfPatchRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_dataset_filter_bounds(self) -> "OntogenConfPatchRequest":
+    def validate_dataset_filter_fields(self) -> "OntogenConfPatchRequest":
         if self.dataset_filter is not None:
-            _check_dataset_filter_bounds(self.dataset_filter)
+            validate_dataset_filter(self.dataset_filter)
         return self
 
 

@@ -69,7 +69,7 @@ async def test_uc3_ontology_generation_under_stub(
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]},
+                "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]},
             },
         )
         assert put_conf_resp.status_code in (200, 201), (
@@ -85,7 +85,7 @@ async def test_uc3_ontology_generation_under_stub(
             f"PUT conf response must round-trip schedule_tier='daily'; "
             f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Conf"
         )
-        assert conf_body["dataset_filter"] == {"tags": ["urn:li:tag:area:catalog"]}, (
+        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]}, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC3 §Conf"
         )
@@ -359,7 +359,7 @@ async def test_uc3_ontology_generation_with_real_llm(
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]},
+                "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]},
             },
         )
         assert put_conf_resp.status_code in (200, 201), (
@@ -375,7 +375,7 @@ async def test_uc3_ontology_generation_with_real_llm(
             f"PUT conf response must round-trip schedule_tier='daily'; "
             f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Conf"
         )
-        assert conf_body["dataset_filter"] == {"tags": ["urn:li:tag:area:catalog"]}, (
+        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]}, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC3 §Conf"
         )

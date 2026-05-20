@@ -608,3 +608,59 @@ async def test_metagen_dataset_event_list_envelope(
                         {"id": eid},
                     )
                     await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_metagen_dry_run_with_origin_filter_does_not_raise(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Dry-run with dataset_filter={"origin": "DEV"} completes without error.
+
+    When no DataHub datasets match origin+boundary intersection, the resolver
+    returns an empty scope cleanly (swallow_enumerate_errors=True for UC4).
+    The run must succeed with empty scope, not raise a 500.
+
+    spec: spec/feature/BACKEND.md §UC4 dataset_filter — resolver returns empty scope
+          cleanly when no datasets match the origin filter.
+    spec: USE_CASE_en.md §UC4 §Run semantics — dry_run=true with empty scope completes.
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    run_url = "/api/v1/spoke/common/metagen/method/run"
+
+    try:
+        put_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"origin": "DEV"},
+                "result_limit": 3,
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT metagen conf with origin filter failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        run_resp = await api_client.post(
+            run_url,
+            headers=admin_headers,
+            json={"dry_run": True},
+        )
+        assert run_resp.status_code == 200, (
+            f"Dry-run with origin=DEV filter must return 200; "
+            f"got {run_resp.status_code}: {run_resp.text}. "
+            "spec: BACKEND.md §UC4 dataset_filter — empty scope must not raise"
+        )
+        body = run_resp.json()
+        assert body.get("dry_run") is True, (
+            "Run response dry_run must be True. spec: USE_CASE_en.md §UC4"
+        )
+        assert isinstance(body.get("unresolved_urns"), list), (
+            "Run response must have unresolved_urns list. spec: USE_CASE_en.md §UC4"
+        )
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)

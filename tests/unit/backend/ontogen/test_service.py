@@ -92,6 +92,61 @@ async def test_put_conf_accepts_valid_tiers(svc: OntogenService, db: AsyncMock) 
     assert row is not None
 
 
+# ── _enumerate_datasets — delegate to resolve_dataset_scope ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_enumerate_datasets_calls_datahub_with_origin(
+    svc: OntogenService, datahub: AsyncMock
+) -> None:
+    """_enumerate_datasets passes origin from dataset_filter to datahub.enumerate_datasets.
+
+    Spec: spec/feature/BACKEND.md §UC3 Ontology Generation §dataset_filter —
+          origin is AND-ed with tag/glossary OR-group when resolving scope.
+    Spec: spec/DATAHUB_INTEGRATION.md §Dataset Resolution — origin forwarded as-is to DataHub.
+    """
+    datahub.enumerate_datasets = AsyncMock(return_value=[
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    ])
+
+    dataset_filter = {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]}
+    resolved, unresolved = await svc._enumerate_datasets(dataset_filter)
+
+    assert datahub.enumerate_datasets.called, "enumerate_datasets must be called"
+    for call in datahub.enumerate_datasets.call_args_list:
+        assert call.kwargs.get("origin") == "DEV", (
+            f"every enumerate_datasets call must carry origin='DEV'; got {call.kwargs}"
+        )
+    assert "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)" in resolved
+
+
+@pytest.mark.asyncio
+async def test_enumerate_datasets_mismatched_origin_goes_to_unresolved(
+    svc: OntogenService, datahub: AsyncMock
+) -> None:
+    """Explicit URN whose origin segment does not match dataset_filter.origin is unresolved.
+
+    resolve_dataset_scope checks origin_from_dataset_urn(urn) against dataset_filter.origin
+    and appends mismatched URNs to unresolved_urns without probing DataHub.
+
+    Spec: spec/feature/BACKEND.md §UC3 dataset_filter — explicit URN with mismatching
+          origin segment is unresolved at resolution time.
+    """
+    datahub.origin_from_dataset_urn = MagicMock(return_value="PROD")
+
+    # PROD URN but origin filter is DEV — should be unresolved
+    mismatched_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+    dataset_filter = {"origin": "DEV", "dataset_urns": [mismatched_urn]}
+
+    resolved, unresolved = await svc._enumerate_datasets(dataset_filter)
+
+    assert mismatched_urn in unresolved, (
+        "URN with PROD origin must appear in unresolved_urns when origin filter is DEV. "
+        "spec: spec/feature/BACKEND.md §UC3 dataset_filter — origin mismatch → unresolved"
+    )
+    assert mismatched_urn not in resolved
+
+
 # ── Seed CRUD ─────────────────────────────────────────────────────────────────
 
 

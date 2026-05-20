@@ -610,3 +610,39 @@ async def test_get_events_returns_200_with_events_envelope(
     body = resp.json()
     assert "events" in body
     assert "total_count" in body
+
+
+# ── dataset_filter origin — HTTP-level (router + schema layer) ────────────────
+
+
+@pytest.mark.asyncio
+async def test_put_conf_with_origin_and_tags_returns_200(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PUT /metagen/attr/conf with dataset_filter={"origin": "DEV", "tags": [...]} returns 200.
+
+    The schema layer accepts the four-dimension filter; the service layer is called
+    with the validated dict. This exercises the unified dataset_filter shape at the
+    HTTP layer for UC4.
+
+    Spec: spec/API.md §UC4 Metadata Generation — dataset_filter unified four-dimension shape.
+    """
+    mock_svc.put_global_conf = AsyncMock(
+        return_value=_make_conf_dto(
+            dataset_filter={"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]}
+        )
+    )
+
+    resp = await client.put(
+        f"{_BASE}/attr/conf",
+        json={
+            "is_enabled": False,
+            "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
+        },
+        headers=auth_headers(["de"]),
+    )
+    assert resp.status_code == 200, (
+        f"PUT with origin+tags dataset_filter must return 200; "
+        f"got {resp.status_code}: {resp.text}. "
+        "spec: API.md §UC4 — dataset_filter unified four-dimension shape"
+    )

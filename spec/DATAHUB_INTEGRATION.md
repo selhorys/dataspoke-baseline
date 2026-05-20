@@ -514,8 +514,9 @@ Generation (node and triple inference).
 
 For cross-entity enumeration, call `graph.execute_graphql(...)` with
 `scrollAcrossEntities` (`types: [DATASET]`) and paginate via `nextScrollId`. Used by
-Governance to resolve `dataset_filter` (origin / tags / glossary_terms / explicit URNs)
-into the dataset URN list scanned by each measurer.
+Ontology Generation, Metadata Generation, and Governance to resolve `dataset_filter`
+(origin / tags / glossary_terms / explicit URNs) into the dataset URN list scanned
+by each pipeline.
 
 #### Origin filter group
 

@@ -5,24 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse
-
-_DATASET_FILTER_LIST_CAP = 1000
-
-
-def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
-    """Raise ValueError if any list field in *dataset_filter* exceeds the cap.
-
-    Spec: API.md §Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
-    ≤ 1,000 entries per dimension.
-    """
-    for key in ("dataset_urns", "tags", "glossary_terms"):
-        val = dataset_filter.get(key)
-        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
-            raise ValueError(
-                f"dataset_filter.{key} may not exceed "
-                f"{_DATASET_FILTER_LIST_CAP} entries"
-            )
 
 
 # ── Global conf ───────────────────────────────────────────────────────────────
@@ -40,13 +24,20 @@ class MetagenGlobalConfResponse(BaseModel):
 class MetagenGlobalConfPutRequest(BaseModel):
     is_enabled: bool
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
-    dataset_filter: dict[str, Any] = Field(default_factory=dict)
+    dataset_filter: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
+            "tags (list[str], OR), glossary_terms (list[str], OR), "
+            "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
+        ),
+    )
     result_limit: int = Field(default=3, ge=1, le=20)
     overwrite_pending: bool = True
 
     @model_validator(mode="after")
-    def validate_dataset_filter_bounds(self) -> "MetagenGlobalConfPutRequest":
-        _check_dataset_filter_bounds(self.dataset_filter)
+    def validate_dataset_filter_fields(self) -> "MetagenGlobalConfPutRequest":
+        validate_dataset_filter(self.dataset_filter)
         return self
 
 
@@ -58,9 +49,9 @@ class MetagenGlobalConfPatchRequest(BaseModel):
     overwrite_pending: bool | None = None
 
     @model_validator(mode="after")
-    def validate_dataset_filter_bounds(self) -> "MetagenGlobalConfPatchRequest":
+    def validate_dataset_filter_fields(self) -> "MetagenGlobalConfPatchRequest":
         if self.dataset_filter is not None:
-            _check_dataset_filter_bounds(self.dataset_filter)
+            validate_dataset_filter(self.dataset_filter)
         return self
 
 

@@ -393,3 +393,61 @@ async def test_ontogen_list_triples_envelope(
     assert "limit" in body
     assert "total_count" in body
     assert isinstance(body["triples"], list)
+
+
+@pytest.mark.asyncio
+async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Dry-run with dataset_filter={"origin": "DEV"} completes without error.
+
+    When no DataHub datasets match the origin, the resolver returns an empty scope
+    cleanly (swallow_enumerate_errors=True for UC3). The run must succeed with
+    empty scope, not raise a 500.
+
+    spec: spec/feature/BACKEND.md §UC3 dataset_filter — resolver returns empty scope
+          cleanly when no datasets match the origin filter.
+    spec: USE_CASE_en.md §UC3 §Run semantics — dry_run=true with empty scope completes.
+    """
+    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+
+    try:
+        put_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"origin": "DEV"},
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT conf with origin filter failed: {put_resp.status_code} {put_resp.text}"
+        )
+
+        run_resp = await api_client.post(
+            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            headers=admin_headers,
+        )
+        assert run_resp.status_code == 200, (
+            f"Dry-run with origin=DEV filter must return 200; "
+            f"got {run_resp.status_code}: {run_resp.text}. "
+            "spec: BACKEND.md §UC3 dataset_filter — empty scope must not raise"
+        )
+        body = run_resp.json()
+        assert "status" in body and isinstance(body["status"], str), (
+            "Run response must have status field. spec: USE_CASE_en.md §UC3"
+        )
+        assert "unresolved_urns" in body and isinstance(body["unresolved_urns"], list), (
+            "Run response must have unresolved_urns list. spec: USE_CASE_en.md §UC3"
+        )
+
+    finally:
+        from contextlib import suppress
+        with suppress(Exception):
+            await api_client.patch(
+                conf_url,
+                headers=admin_headers,
+                json={"is_enabled": False, "dataset_filter": {}},
+            )

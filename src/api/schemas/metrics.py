@@ -3,18 +3,15 @@
 Spec: spec/API.md §Metric (/spoke/dg/metric), spec/USE_CASE_en.md §UC5.
 """
 
-import re
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse, SingleResponse
-from src.shared.exceptions import InvalidDatasetUrnError
 
 _ScheduleTier = Literal["hourly", "daily", "weekly"]
-_DATASET_FILTER_LIST_CAP = 1000
-_DATASET_URN_RE = re.compile(r"^urn:li:dataset:\(.+\)$")
 
 # Keys emitted by each built-in metric type
 _EMITTED_KEYS: dict[str, set[str]] = {
@@ -22,28 +19,6 @@ _EMITTED_KEYS: dict[str, set[str]] = {
     "validation-score": {"total", "validation_score_sum"},
     "doc-health": {"total", "doc_health"},
 }
-
-
-def _check_dataset_filter_bounds(dataset_filter: dict[str, Any]) -> None:
-    """Raise ValueError when any list dimension exceeds the cap."""
-    for key in ("tags", "glossary_terms", "dataset_urns"):
-        val = dataset_filter.get(key)
-        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
-            raise ValueError(
-                f"dataset_filter.{key} may not exceed {_DATASET_FILTER_LIST_CAP} entries"
-            )
-
-
-def _check_dataset_urn_format(dataset_filter: dict[str, Any]) -> None:
-    """Raise InvalidDatasetUrnError for malformed dataset URNs inside dataset_filter.
-
-    Pydantic v2 re-raises non-ValueError exceptions, so this propagates to the
-    FastAPI handler registered for InvalidDatasetUrnError, yielding a 422 with
-    error_code='INVALID_DATASET_URN' (spec/API.md §Error Catalogue).
-    """
-    for urn in dataset_filter.get("dataset_urns", []) or []:
-        if not _DATASET_URN_RE.match(str(urn)):
-            raise InvalidDatasetUrnError(str(urn))
 
 
 def _check_metric_conf_for_type(metric_type: str, metric_conf: dict[str, Any]) -> None:
@@ -98,16 +73,15 @@ class UpsertMetricConfigRequest(BaseModel):
     dataset_filter: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed), "
+            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
             "tags (list[str], OR), glossary_terms (list[str], OR), "
-            "dataset_urns (list[str], OR). Each list capped at 1,000 entries."
+            "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
         ),
     )
 
     @model_validator(mode="after")
     def validate_fields(self) -> "UpsertMetricConfigRequest":
-        _check_dataset_filter_bounds(self.dataset_filter)
-        _check_dataset_urn_format(self.dataset_filter)
+        validate_dataset_filter(self.dataset_filter)
         _check_metric_conf_for_type(self.metric_type, self.metric_conf)
         _check_metrics_subset(self.metric_type, self.metrics)
         return self
@@ -129,8 +103,7 @@ class PatchMetricConfigRequest(BaseModel):
     @model_validator(mode="after")
     def validate_fields(self) -> "PatchMetricConfigRequest":
         if self.dataset_filter is not None:
-            _check_dataset_filter_bounds(self.dataset_filter)
-            _check_dataset_urn_format(self.dataset_filter)
+            validate_dataset_filter(self.dataset_filter)
         return self
 
 

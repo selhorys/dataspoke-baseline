@@ -230,12 +230,13 @@ async def test_metagen_global_conf_put_invalid_dataset_urn_422(
 ) -> None:
     """PUT with malformed URN in dataset_filter.dataset_urns rejected with 422.
 
-    The service validates each URN via _validate_dataset_filter -> _validate_dataset_urn
-    which raises InvalidDatasetUrnError, mapped to 422 INVALID_DATASET_URN.
+    URN format is validated by check_dataset_urn_format in
+    src/api/schemas/_dataset_filter.py, which raises InvalidDatasetUrnError.
+    The service-layer wrapper validate_dataset_filter_service (same module as
+    resolve_dataset_scope in src/backend/_dataset_filter.py) propagates
+    InvalidDatasetUrnError unchanged so it maps to 422 INVALID_DATASET_URN.
 
-    spec: src/backend/metagen/service.py L135-142 — _validate_dataset_urn raises
-      InvalidDatasetUrnError for URNs not matching ^urn:li:dataset:\\(.+\\)$
-    spec: USE_CASE_en.md §UC4 L604 — dataset_filter.dataset_urns must be valid URNs
+    spec: USE_CASE_en.md §UC4 — dataset_filter.dataset_urns must be valid URNs
     """
     conf_url = "/api/v1/spoke/common/metagen/attr/conf"
 
@@ -521,6 +522,102 @@ async def test_metagen_global_conf_put_dataset_filter_dimension_caps(
 
     finally:
         # The at-cap PUT/PATCH may have written a row; clean up idempotently.
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_conf_put_origin_filter_round_trips(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT dataset_filter with origin+tags, then GET verifies the filter is persisted.
+
+    Exercises the unified four-dimension dataset_filter shape for UC4.
+
+    spec: spec/API.md §UC4 — dataset_filter unified four-dimension shape; origin dimension.
+    spec: USE_CASE_en.md §UC4 §Conf — dataset_filter is optional scope filter.
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    expected_filter = {
+        "origin": "DEV",
+        "tags": ["urn:li:tag:area:fulfillment"],
+    }
+
+    try:
+        put_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "schedule_tier": "daily",
+                "dataset_filter": expected_filter,
+                "result_limit": 3,
+            },
+        )
+        assert put_resp.status_code in (200, 201), (
+            f"PUT with origin+tags dataset_filter failed: {put_resp.status_code} {put_resp.text}. "
+            "spec: API.md §UC4 — dataset_filter unified four-dimension shape"
+        )
+        put_body = put_resp.json()
+        assert put_body["dataset_filter"] == expected_filter, (
+            f"PUT response dataset_filter not preserved: {put_body.get('dataset_filter')!r}. "
+            "spec: USE_CASE_en.md §UC4 §Conf — dataset_filter round-trip"
+        )
+
+        get_resp = await api_client.get(conf_url, headers=admin_headers)
+        assert get_resp.status_code == 200
+        get_body = get_resp.json()
+        assert get_body["dataset_filter"] == expected_filter, (
+            f"GET round-trip dataset_filter mismatch: {get_body.get('dataset_filter')!r}. "
+            "spec: USE_CASE_en.md §UC4 §Conf — dataset_filter must be persisted"
+        )
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_metagen_global_conf_patch_adds_origin_to_existing_conf(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH adding origin='DEV' to an existing conf persists the updated filter.
+
+    spec: spec/API.md §UC4 — dataset_filter unified four-dimension shape; PATCH is partial.
+    spec: USE_CASE_en.md §UC4 §Conf — PATCH must update only the provided fields.
+    """
+    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+
+    try:
+        await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "schedule_tier": "daily",
+                "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
+                "result_limit": 3,
+            },
+        )
+
+        patch_resp = await api_client.patch(
+            conf_url,
+            headers=admin_headers,
+            json={"dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]}},
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH with origin failed: {patch_resp.status_code} {patch_resp.text}. "
+            "spec: API.md §UC4 — dataset_filter unified four-dimension shape"
+        )
+        patch_body = patch_resp.json()
+        assert patch_body["dataset_filter"].get("origin") == "DEV", (
+            f"PATCH did not persist origin='DEV': {patch_body.get('dataset_filter')!r}. "
+            "spec: USE_CASE_en.md §UC4 §Conf — PATCH updates dataset_filter"
+        )
+
+    finally:
         with suppress(Exception):
             await api_client.delete(conf_url, headers=admin_headers)
 

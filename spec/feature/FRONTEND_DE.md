@@ -156,6 +156,11 @@ consumes `GET .../event/validation` (one entry per accepted result POST).
 | `/de/metagen` | `GET /spoke/common/metagen/attr/conf`, `GET /spoke/common/metagen/item`, `GET /spoke/common/metagen/event` | `PUT/PATCH/DELETE /spoke/common/metagen/attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`); `POST /spoke/common/metagen/method/run` (optional body `{dataset_urns?, dry_run?}`) |
 | `/de/metagen/[urn]` | `GET .../attr/metagen/conf`, `GET .../attr/metagen/item`, `GET .../attr/metagen/item/{item_id}` (per-item candidates), `GET .../event/metagen` | `PUT/PATCH/DELETE .../attr/metagen/conf` (fields: `is_enabled`, `allowed[]`); `POST .../attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
+`dataset_filter` carries four optional dimensions: `origin` (DataHub `FabricType`
+value — AND-ed with the OR-group, passed through to DataHub verbatim), `tags[]`,
+`glossary_terms[]`, and `dataset_urns[]` (three list dimensions OR-ed among
+themselves). URN format is validated at `PUT/PATCH` (`422 INVALID_DATASET_URN`).
+
 The global page (`/de/metagen`) is the singleton conf editor plus a
 cross-dataset queue of pending items (filterable by `dataset_urn`, `kind`,
 `status`). The per-dataset page (`/de/metagen/[urn]`) shows boundary
@@ -203,6 +208,9 @@ candidates shown as read-only history.
 | `/de/ontogen/conf` | `GET /spoke/common/ontogen/attr/conf` | `PUT/PATCH/DELETE .../attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) |
 | `/de/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}` |
 | `/de/ontogen` | `GET .../result/{node\|edge\|triple}` (+ `/{id}`, `/attr`, `/event`) | `POST .../method/run` (optional Markdown body — one-shot prompt; `?dry_run=true`) |
+
+`dataset_filter` carries the same four optional dimensions as the metagen filter
+above (`origin`, `tags[]`, `glossary_terms[]`, `dataset_urns[]`).
 
 `POST .../result/{node\|edge\|triple}/{id}/method/review` is **not** exposed
 in the DE workspace — see [FRONTEND_DG §Ontogen Review](FRONTEND_DG.md#ontogen-review-uc3).

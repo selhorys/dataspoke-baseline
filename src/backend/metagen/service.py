@@ -5,7 +5,6 @@ Spec: spec/feature/BACKEND.md §Metadata Generation Service
 """
 
 import logging
-import re
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -22,6 +21,7 @@ from src.backend.metagen.debate_models import MetagenLLMOutput
 from src.backend.metagen.prompts import build_run_prompt
 from src.backend.metagen.reviewer import build_metagen_review_tool
 from src.backend.metagen.validator import build_metagen_validate_tool
+from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.ontogen.embedding_search import (
     search_edge_embeddings,
     search_node_embeddings,
@@ -54,7 +54,6 @@ from src.shared.events import (
 from src.shared.exceptions import (
     ConflictError,
     EntityNotFoundError,
-    InvalidDatasetUrnError,
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
@@ -66,7 +65,6 @@ logger = logging.getLogger(__name__)
 _LOCK_KEY = "metagen:running:singleton"
 _LOCK_TTL_SECONDS = 3600
 
-_DATASET_URN_RE = re.compile(r"^urn:li:dataset:\(.+\)$")
 _VALID_KINDS: frozenset[str] = frozenset({"dataset.description", "column.description"})
 
 
@@ -137,16 +135,6 @@ class RunResultDTO(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _validate_dataset_urn(urn: str) -> None:
-    if not _DATASET_URN_RE.match(urn):
-        raise InvalidDatasetUrnError(urn)
-
-
-def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
-    for urn in dataset_filter.get("dataset_urns", []) or []:
-        _validate_dataset_urn(str(urn))
 
 
 def _conf_to_dto(row: MetagenConfig) -> MetagenGlobalConfDTO:
@@ -248,7 +236,7 @@ class MetagenService:
         (`MetagenGlobalConfPutRequest`).
         """
         dataset_filter = conf.get("dataset_filter", {}) or {}
-        _validate_dataset_filter(dataset_filter)
+        validate_dataset_filter_service(dataset_filter)
 
         result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         existing = result.scalar_one_or_none()
@@ -284,7 +272,7 @@ class MetagenService:
         (`MetagenGlobalConfPatchRequest`).
         """
         if "dataset_filter" in partial and partial["dataset_filter"] is not None:
-            _validate_dataset_filter(partial["dataset_filter"])
+            validate_dataset_filter_service(partial["dataset_filter"])
 
         result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
         row = result.scalar_one_or_none()
@@ -830,46 +818,14 @@ class MetagenService:
 
         Returns (in_scope_urns, unresolved_urns).
         """
-        dataset_filter = conf.dataset_filter or {}
-        tags: list[str] = dataset_filter.get("tags") or []
-        glossary_terms: list[str] = dataset_filter.get("glossary_terms") or []
-        explicit_urns: list[str] = override_urns or dataset_filter.get("dataset_urns") or []
-
-        # Resolve from DataHub
-        if not tags and not glossary_terms and not explicit_urns:
-            try:
-                all_urns = await self._datahub.enumerate_datasets()
-                datahub_urn_set: set[str] = set(all_urns)
-            except Exception:
-                logger.warning("metagen_enumerate_all_datasets_failed", exc_info=True)
-                datahub_urn_set = set()
-        else:
-            datahub_urn_set = set()
-            try:
-                if tags or glossary_terms:
-                    matched = await self._datahub.enumerate_datasets(
-                        tags=tags if tags else None,
-                        glossary_terms=glossary_terms if glossary_terms else None,
-                    )
-                    datahub_urn_set.update(matched)
-            except Exception:
-                logger.warning("metagen_enumerate_filtered_datasets_failed", exc_info=True)
-
-        unresolved: list[str] = []
-        for urn in explicit_urns:
-            try:
-                from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-                props = await self._datahub.get_aspect(urn, DatasetPropertiesClass)
-                if props is not None:
-                    datahub_urn_set.add(urn)
-                else:
-                    unresolved.append(urn)
-            except Exception:
-                logger.warning(
-                    "metagen_explicit_urn_check_failed", extra={"urn": urn}, exc_info=True
-                )
-                unresolved.append(urn)
+        scope = await resolve_dataset_scope(
+            self._datahub,
+            conf.dataset_filter or {},
+            explicit_urns_override=override_urns if override_urns else None,
+            swallow_enumerate_errors=True,
+        )
+        datahub_urn_set: set[str] = set(scope.resolved_urns)
+        unresolved: list[str] = scope.unresolved_urns
 
         if not datahub_urn_set:
             return [], unresolved

@@ -75,6 +75,19 @@ async def test_uc5_governance_imazon_example(
             f"PUT doc-health-prod failed: {put_resp.status_code} {put_resp.text}"
         )
 
+        # ── Step 2b: CDO retargets the metric origin to match the dev-env ────
+        # The PUT above carries the spec narrative (PROD). Dev-env fixtures are
+        # seeded with FabricType DEV, so PATCH origin=DEV before the run so the
+        # measurement actually matches the seeded datasets.
+        patch_resp = await api_client.patch(
+            "/api/v1/spoke/dg/metric/doc-health-prod/attr/conf",
+            headers=admin_headers,
+            json={"dataset_filter": {"origin": "DEV"}},
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH doc-health-prod origin failed: {patch_resp.status_code} {patch_resp.text}"
+        )
+
         # ── Step 3: CDO triggers an immediate first run ───────────────────────
         # UC5 Imazon Example: "The CDO triggers an immediate first run rather
         # than waiting for the schedule."

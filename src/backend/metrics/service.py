@@ -7,7 +7,6 @@ Spec: spec/feature/BACKEND.md §Metrics Service
 """
 
 import logging
-import re as _re
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.metrics.measurers import get_measurer, list_measurers
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
@@ -35,14 +35,10 @@ from src.shared.events import (
 from src.shared.exceptions import (
     ConflictError,
     EntityNotFoundError,
-    InvalidDatasetUrnError,
     PreconditionFailedError,
 )
 
 logger = logging.getLogger(__name__)
-
-_DATASET_URN_RE = _re.compile(r"^urn:li:dataset:\(.+\)$")
-_DATASET_FILTER_LIST_CAP = 1000
 
 # Keys emitted by each built-in metric type (mirrors the schema-layer constant).
 _EMITTED_KEYS: dict[str, set[str]] = {
@@ -50,24 +46,6 @@ _EMITTED_KEYS: dict[str, set[str]] = {
     "validation-score": {"total", "validation_score_sum"},
     "doc-health": {"total", "doc_health"},
 }
-
-
-def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
-    """Validate dataset_filter dimensions.
-
-    Raises PreconditionFailedError when any list dimension exceeds the cap.
-    Raises InvalidDatasetUrnError when a dataset URN is malformed.
-    """
-    for key in ("tags", "glossary_terms", "dataset_urns"):
-        val = dataset_filter.get(key)
-        if val is not None and len(val) > _DATASET_FILTER_LIST_CAP:
-            raise PreconditionFailedError(
-                "INVALID_PARAMETER",
-                f"dataset_filter.{key} may not exceed {_DATASET_FILTER_LIST_CAP} entries",
-            )
-    for urn in dataset_filter.get("dataset_urns", []) or []:
-        if not _DATASET_URN_RE.match(str(urn)):
-            raise InvalidDatasetUrnError(str(urn))
 
 
 class MetricDefinitionRecord(BaseModel):
@@ -231,7 +209,7 @@ class MetricsService:
         schedule_tier: str | None = None,
         is_enabled: bool = False,
     ) -> tuple[MetricDefinitionRecord, bool]:
-        _validate_dataset_filter(dataset_filter)
+        validate_dataset_filter_service(dataset_filter)
 
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
@@ -291,7 +269,7 @@ class MetricsService:
             raise EntityNotFoundError("metric", metric_id)
 
         if "dataset_filter" in patch and patch["dataset_filter"] is not None:
-            _validate_dataset_filter(patch["dataset_filter"])
+            validate_dataset_filter_service(patch["dataset_filter"])
 
         for field_name in (
             "mode",
@@ -565,54 +543,11 @@ class MetricsService:
         origin segment mismatches the requested origin, are accumulated into
         unresolved_urns.
         """
-        dataset_filter = definition.dataset_filter or {}
-        origin: str | None = dataset_filter.get("origin") or None
-        tags: list[str] = dataset_filter.get("tags") or []
-        glossary_terms: list[str] = dataset_filter.get("glossary_terms") or []
-        explicit_urns: list[str] = dataset_filter.get("dataset_urns") or []
-
-        resolved_urns: set[str] = set()
-        unresolved_urns: list[str] = []
-
-        if not tags and not glossary_terms and not explicit_urns:
-            all_datasets = await self._datahub.enumerate_datasets(origin=origin)
-            resolved_urns.update(all_datasets)
-        else:
-            if tags or glossary_terms:
-                matched = await self._datahub.enumerate_datasets(
-                    tags=tags if tags else None,
-                    glossary_terms=glossary_terms if glossary_terms else None,
-                    origin=origin,
-                )
-                resolved_urns.update(matched)
-
-            for urn in explicit_urns:
-                if origin is not None:
-                    urn_origin = self._datahub.origin_from_dataset_urn(urn)
-                    if urn_origin != origin:
-                        logger.debug(
-                            "metrics_explicit_urn_origin_mismatch",
-                            extra={"urn": urn, "urn_origin": urn_origin, "requested_origin": origin},
-                        )
-                        unresolved_urns.append(urn)
-                        continue
-                try:
-                    from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-                    props = await self._datahub.get_aspect(urn, DatasetPropertiesClass)
-                    if props is not None:
-                        resolved_urns.add(urn)
-                    else:
-                        unresolved_urns.append(urn)
-                except Exception:
-                    logger.warning(
-                        "metrics_explicit_urn_check_failed",
-                        extra={"urn": urn},
-                        exc_info=True,
-                    )
-                    unresolved_urns.append(urn)
-
-        datasets = sorted(resolved_urns)
+        scope = await resolve_dataset_scope(
+            self._datahub, definition.dataset_filter or {}
+        )
+        datasets = scope.resolved_urns
+        unresolved_urns = scope.unresolved_urns
 
         measurer = get_measurer(definition.metric_type)
         if measurer is None:

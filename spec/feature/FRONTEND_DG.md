@@ -113,6 +113,10 @@ for the triple ontology — DE and DA browse but cannot approve.
 | `/dg/ontogen/seed` | `GET .../attr/seed`, `GET .../{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../{seed_id}` |
 | `/dg/ontogen` | `GET .../result/{node\|edge\|triple}` (+ `/{id}`, `/attr`, `/event`) | `POST .../method/run`; `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
+`dataset_filter` carries the same four optional dimensions as the metrics filter
+above (`origin`, `tags`, `glossary_terms`, `dataset_urns`), with the same OR-of-list
++ AND-with-origin semantics and the same `INVALID_DATASET_URN` PUT/PATCH validation.
+
 Review proceeds **nodes → edges → triples**. A triple cannot be human-approved
 unless its subject node, edge, and object node all carry `status='approved'`
 (an `llm_approved` dependency does NOT satisfy the gate — the human must

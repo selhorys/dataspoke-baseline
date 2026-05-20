@@ -272,17 +272,17 @@ def test_make_dataset_urn_empty_env_rejected() -> None:
     ],
 )
 def test_invalid_dataset_urn_rejected_by_ontogen_validator(bad_urn: str) -> None:
-    """Malformed URNs are rejected by the ontogen _validate_dataset_urn function.
+    """Malformed URNs are rejected by the shared check_dataset_urn_format function.
 
     Verifies spec/API.md L586: 'INVALID_DATASET_URN — A dataset_filter.dataset_urns
-    entry is not a well-formed urn:li:dataset:(…) URN.' The validator used by the
-    ontogen service (src/backend/ontogen/service.py) rejects strings that do not
-    match ^urn:li:dataset:\\(.+\\)$ and raises InvalidDatasetUrnError.
+    entry is not a well-formed urn:li:dataset:(…) URN.' The shared validator at
+    src/api/schemas/_dataset_filter.py rejects strings that do not match
+    ^urn:li:dataset:\\(.+\\)$ and raises InvalidDatasetUrnError.
     """
-    from src.backend.ontogen.service import _validate_dataset_urn
+    from src.api.schemas._dataset_filter import check_dataset_urn_format
 
     with pytest.raises(InvalidDatasetUrnError):
-        _validate_dataset_urn(bad_urn)
+        check_dataset_urn_format({"dataset_urns": [bad_urn]})
 
 
 def test_invalid_dataset_urn_error_code() -> None:

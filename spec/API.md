@@ -401,12 +401,13 @@ DAG-name suffix `metrics-{metric_id}`.
 | `metrics` | string[] | Subset of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER` |
 | `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds); `doc-health` takes `{}` |
 | `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
-| `dataset_filter` | object | Optional `{origin?, tags?[], glossary_terms?[], dataset_urns?[]}`. `origin` is the DataHub `FabricType` value carried as the third URN segment (e.g. `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…); DataSpoke forwards it verbatim and lets DataHub reject unknowns. The other three dimensions are OR-ed among themselves and AND-ed with `origin`. `{}` = all datasets. See [DATAHUB_INTEGRATION §Origin filter group](DATAHUB_INTEGRATION.md#origin-filter-group) for the resolver shape |
+| `dataset_filter` | object | Optional `{origin?, tags?[], glossary_terms?[], dataset_urns?[]}`. `origin` is the DataHub `FabricType` value carried as the third URN segment (e.g. `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…); DataSpoke forwards it verbatim and lets DataHub reject unknowns, but an empty-or-whitespace-only `origin` is rejected at PUT/PATCH with `422 INVALID_PARAMETER`. The other three dimensions are OR-ed among themselves and AND-ed with `origin`. `{}` = all datasets. See [DATAHUB_INTEGRATION §Origin filter group](DATAHUB_INTEGRATION.md#origin-filter-group) for the resolver shape |
 
 `dataset_urns` URN format is validated at PUT/PATCH (`422 INVALID_DATASET_URN`);
 unresolved-at-runtime entries are skipped and reported in the `METRIC.RUN_COMPLETE`
-event's `unresolved_urns` field. UC3's `ontogen/attr/conf.dataset_filter` shares the
-same shape and validation (sans `origin`).
+event's `unresolved_urns` field. UC3's `ontogen/attr/conf.dataset_filter` and UC4's
+`metagen/attr/conf.dataset_filter` use the same four-dimension shape and the same
+validation.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|

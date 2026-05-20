@@ -5,7 +5,6 @@ Spec: spec/feature/BACKEND.md §Ontology Generation Service
 """
 
 import logging
-import re
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -28,6 +27,7 @@ from src.backend.ontogen.models import (
 from src.backend.ontogen.prompts import build_run_prompt
 from src.backend.ontogen.reviewer import build_ontogen_review_tool
 from src.backend.ontogen.slug import assert_edge_id, assert_node_id, make_snake_id
+from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.ontogen.validator import (
     ValidationError,
     build_ontogen_validate_tool,
@@ -63,7 +63,6 @@ from src.shared.events import (
 from src.shared.exceptions import (
     ConflictError,
     EntityNotFoundError,
-    InvalidDatasetUrnError,
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
@@ -104,21 +103,6 @@ class OntogenRunSummary(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-_DATASET_URN_RE = re.compile(r"^urn:li:dataset:\(.+\)$")
-
-
-def _validate_dataset_urn(urn: str) -> None:
-    """Raise InvalidDatasetUrnError if *urn* does not look like a dataset URN."""
-    if not _DATASET_URN_RE.match(urn):
-        raise InvalidDatasetUrnError(urn)
-
-
-def _validate_dataset_filter(dataset_filter: dict[str, Any]) -> None:
-    """Validate all explicit URNs in dataset_filter; raise for malformed ones."""
-    for urn in dataset_filter.get("dataset_urns", []) or []:
-        _validate_dataset_urn(str(urn))
 
 
 def _status_for_outcome(score: float, debate_outcome: str) -> str:
@@ -212,7 +196,7 @@ class OntogenService:
         Emits ONTOGEN.CONFIG_CREATE or ONTOGEN.CONFIG_UPDATE.
         """
         dataset_filter = conf.get("dataset_filter", {}) or {}
-        _validate_dataset_filter(dataset_filter)
+        validate_dataset_filter_service(dataset_filter)
 
         result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
         existing = result.scalar_one_or_none()
@@ -248,7 +232,7 @@ class OntogenService:
         Emits ONTOGEN.CONFIG_UPDATE.
         """
         if "dataset_filter" in partial and partial["dataset_filter"] is not None:
-            _validate_dataset_filter(partial["dataset_filter"])
+            validate_dataset_filter_service(partial["dataset_filter"])
 
         row = await self.get_conf()
 
@@ -1392,51 +1376,10 @@ class OntogenService:
         Returns (resolved_urns, unresolved_urns).  Unresolved = explicit URNs
         that don't match any dataset in DataHub at runtime.
         """
-        tags: list[str] = dataset_filter.get("tags") or []
-        glossary_terms: list[str] = dataset_filter.get("glossary_terms") or []
-        explicit_urns: list[str] = dataset_filter.get("dataset_urns") or []
-
-        # If filter is empty, enumerate all datasets
-        if not tags and not glossary_terms and not explicit_urns:
-            try:
-                all_urns = await self._datahub.enumerate_datasets()
-                return all_urns, []
-            except Exception:
-                logger.warning("ontogen_enumerate_all_datasets_failed", exc_info=True)
-                return [], []
-
-        # OR-enumerate by tags and glossary_terms
-        urn_set: set[str] = set()
-        try:
-            if tags or glossary_terms:
-                matched = await self._datahub.enumerate_datasets(
-                    tags=tags if tags else None,
-                    glossary_terms=glossary_terms if glossary_terms else None,
-                )
-                urn_set.update(matched)
-        except Exception:
-            logger.warning("ontogen_enumerate_filtered_datasets_failed", exc_info=True)
-
-        # Validate explicit URNs by checking DataHub (best-effort)
-        unresolved: list[str] = []
-        for urn in explicit_urns:
-            try:
-                from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-                props = await self._datahub.get_aspect(urn, DatasetPropertiesClass)
-                if props is not None:
-                    urn_set.add(urn)
-                else:
-                    unresolved.append(urn)
-            except Exception:
-                logger.warning(
-                    "ontogen_explicit_urn_check_failed",
-                    extra={"urn": urn},
-                    exc_info=True,
-                )
-                unresolved.append(urn)
-
-        return sorted(urn_set), unresolved
+        scope = await resolve_dataset_scope(
+            self._datahub, dataset_filter, swallow_enumerate_errors=True
+        )
+        return scope.resolved_urns, scope.unresolved_urns
 
     async def _refresh_node_embeddings(self, nodes_to_upsert: list[dict[str, Any]]) -> None:
         """Embed and upsert node_embeddings for new/changed nodes (best-effort)."""

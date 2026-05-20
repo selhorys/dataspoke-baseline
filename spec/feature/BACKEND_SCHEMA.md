@@ -113,7 +113,7 @@ Singleton row holding the Metadata Generation conf (UC4).
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the metagen DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.dataset_filter` (the latter adds an AND-ed `origin` dimension) |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; `origin` AND-ed with the OR-group of the three list dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.dataset_filter` |
 | `result_limit` | `INTEGER` | Max non-rejected candidates per item (range `[1, 20]`, default `3`) |
 | `overwrite_pending` | `BOOLEAN` | When the per-item budget is full and the item has no `approved` candidate, true = evict oldest `llm_approved` candidate; false = skip the item (default true) |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -204,7 +204,7 @@ Singleton row holding the Ontology Generation conf (UC3).
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; OR-ed across dimensions; `{}` = all. Same shape as `metric_definitions.dataset_filter` (the latter adds an AND-ed `origin` dimension) |
+| `dataset_filter` | `JSONB` | Optional scope filter — `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; `origin` AND-ed with the OR-group of the three list dimensions; `{}` = all. Same shape as `metagen_config.dataset_filter` and `metric_definitions.dataset_filter` |
 | `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -298,7 +298,7 @@ Governance metric definitions.
 | `description` | `TEXT` | What this metric measures |
 | `metrics` | `JSONB` | List of `values` keys the metric persists — subset of the type's emitted keys (e.g. `["total", "ingested_in_time"]`) |
 | `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score`; `{}` for `doc-health` |
-| `dataset_filter` | `JSONB` | `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`. `origin` is a DataHub `FabricType` value (`PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…) — passed through to DataHub; the other three dimensions OR-ed among themselves and AND-ed with `origin`; `{}` = all datasets |
+| `dataset_filter` | `JSONB` | `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`. `origin` is a DataHub `FabricType` value (`PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…) — passed through to DataHub; the other three dimensions OR-ed among themselves and AND-ed with `origin`; `{}` = all datasets. Same shape as `ontogen_config.dataset_filter` and `metagen_config.dataset_filter` |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (null = on-demand only) |
 | `created_at` | `TIMESTAMPTZ` | |

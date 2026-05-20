@@ -222,7 +222,7 @@ async def test_uc4_metadata_generation_under_stub(
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"tags": [FULFILLMENT_TAG]},
+                "dataset_filter": {"origin": "DEV", "tags": [FULFILLMENT_TAG]},
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
@@ -249,7 +249,7 @@ async def test_uc4_metadata_generation_under_stub(
             f"overwrite_pending not preserved: {conf_body.get('overwrite_pending')!r}. "
             "spec: USE_CASE_en.md §UC4 L606"
         )
-        assert conf_body["dataset_filter"] == {"tags": [FULFILLMENT_TAG]}, (
+        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": [FULFILLMENT_TAG]}, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC4 L604"
         )
@@ -1069,7 +1069,7 @@ async def test_uc4_metadata_generation_with_real_llm(
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"tags": [FULFILLMENT_TAG]},
+                "dataset_filter": {"origin": "DEV", "tags": [FULFILLMENT_TAG]},
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
@@ -1096,7 +1096,7 @@ async def test_uc4_metadata_generation_with_real_llm(
             f"overwrite_pending not preserved: {conf_body.get('overwrite_pending')!r}. "
             "spec: USE_CASE_en.md §UC4 L606"
         )
-        assert conf_body["dataset_filter"] == {"tags": [FULFILLMENT_TAG]}, (
+        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": [FULFILLMENT_TAG]}, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC4 L604"
         )

@@ -440,7 +440,7 @@ by a `404`. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the metagen DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence. |
-| `dataset_filter` | Optional scope filter — `tags`, `glossary_terms`, `dataset_urns` (OR-ed across dimensions; `{}` means all). URN format validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter`. |
+| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags`, `glossary_terms`, `dataset_urns` (OR-ed across the three list dimensions; `{}` means all). Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URN format validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
 | `result_limit` | Integer ∈ `[1, 20]`, default `3`. Maximum candidate count per item at any time. |
 | `overwrite_pending` | Boolean, default `true`. When an item already holds `result_limit` non-rejected candidates and has no `approved` candidate, controls whether a new run evicts the oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
 
@@ -476,12 +476,12 @@ Status is not persisted; it is computed per request from `(has_approved, candida
 `metagen_config.schedule_tier`, or manual `POST /method/run`):
 
 1. Enumerate **in-scope datasets** — union of datasets matching the global
-   `dataset_filter` (`tags`, `glossary_terms`, `dataset_urns`) **intersected**
-   with the set of datasets that have a `metagen_boundary` row with
-   `is_enabled=true`. Boundary-less or boundary-disabled datasets are
-   excluded regardless of `dataset_filter`. Unresolved
-   `dataset_urns` entries are accumulated for the run-complete event's
-   `unresolved_urns`. If the in-scope set is empty, the run still
+   `dataset_filter` (`origin` AND-ed with the OR-group of `tags`,
+   `glossary_terms`, `dataset_urns`) **intersected** with the set of datasets
+   that have a `metagen_boundary` row with `is_enabled=true`. Boundary-less or
+   boundary-disabled datasets are excluded regardless of `dataset_filter`.
+   Unresolved `dataset_urns` entries are accumulated for the run-complete
+   event's `unresolved_urns`. If the in-scope set is empty, the run still
    completes successfully and emits `METAGEN.RUN_COMPLETE` with all
    counts at zero so reviewers and ops dashboards see every scheduled
    tick.
@@ -600,7 +600,7 @@ config. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
-| `dataset_filter` | Optional scope filter — `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). OR-ed across dimensions; `{}` means all. Each of the three list dimensions is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. UC5's metric `dataset_filter` shares this shape and adds an `origin` dimension (AND-ed with the OR-group). |
+| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). The three list dimensions are OR-ed among themselves; `{}` means all. Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC4 `metagen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
 UC3 inputs are sourced entirely from DataHub-resident metadata (the proofread
@@ -630,8 +630,9 @@ or manual `POST /method/run`):
    rows are not carried forward).
 2. Enumerate datasets matching `dataset_filter` from DataHub — union of datasets
    carrying any listed `tags`, any listed `glossary_terms`, and any of the explicit
-   `dataset_urns`. Listed URNs that don't resolve are skipped and accumulated for
-   the run-complete event's `unresolved_urns`. `{}` means all datasets.
+   `dataset_urns`, AND-ed with `origin` when set. Listed URNs that don't resolve
+   are skipped and accumulated for the run-complete event's `unresolved_urns`.
+   `{}` means all datasets.
 3. Fetch DataHub evidence per in-scope dataset (the proofread boundary shared
    with UC4): `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
    `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
@@ -741,9 +742,10 @@ persisting.
 when present). A dataset scores `1.0` iff the resolved table description is non-empty
 and every column has a non-empty description; otherwise `0.0`.
 
-**Dataset resolution**: `MetricsService._measure` resolves `dataset_filter` through
-`DataHubClient.enumerate_datasets(origin=…, tags=…, glossary_terms=…)`. The client
-emits `origin` as its own AND-clause inside each `or` clause of
+**Dataset resolution**: UC3 ontogen, UC4 metagen, and UC5 metrics services share
+the same `dataset_filter` resolver in `src/backend/_dataset_filter.py`. The resolver
+calls `DataHubClient.enumerate_datasets(origin=…, tags=…, glossary_terms=…)`. The
+client emits `origin` as its own AND-clause inside each `or` clause of
 `scrollAcrossEntities` so DataHub returns datasets that match the requested origin
 AND any one of the tag / glossary-term clauses — see
 [DATAHUB_INTEGRATION §Origin filter group](../DATAHUB_INTEGRATION.md#origin-filter-group)
@@ -751,7 +753,7 @@ for the GraphQL shape and the `FabricType` enum it accepts. `origin` values are
 forwarded to DataHub verbatim; unknowns are rejected at DataHub query time.
 Explicit `dataset_urns` are AND-ed against `origin` by inspecting each URN's third
 segment before the per-URN aspect probe; mismatches and URNs that don't resolve in
-DataHub at run time are accumulated into the `METRIC.RUN_COMPLETE` event's
+DataHub at run time are accumulated into the run-complete event's
 `unresolved_urns`.
 
 **Breakdown format**: Every measurement result includes a `breakdown` JSONB with a

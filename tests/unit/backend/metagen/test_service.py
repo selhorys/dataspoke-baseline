@@ -287,6 +287,116 @@ async def test_delete_global_conf_noop_when_absent(svc, db) -> None:
     db.commit.assert_called()
 
 
+# ── _enumerate_in_scope_datasets — delegate to resolve_dataset_scope ─────────
+
+
+@pytest.mark.asyncio
+async def test_enumerate_in_scope_calls_datahub_with_origin(svc, db, datahub) -> None:
+    """_enumerate_in_scope_datasets passes origin from conf.dataset_filter to datahub.enumerate_datasets.
+
+    Spec: spec/feature/BACKEND.md §UC4 Metadata Generation §dataset_filter —
+          origin is AND-ed with tag/glossary OR-group when resolving scope.
+    Spec: spec/DATAHUB_INTEGRATION.md §Dataset Resolution — origin forwarded as-is to DataHub.
+    """
+    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
+
+    # Boundary row for _VALID_URN must exist so it is included in scope
+    bnd_result = MagicMock()
+    bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_VALID_URN)]
+    db.execute = AsyncMock(return_value=bnd_result)
+
+    conf = MetagenGlobalConfDTO(
+        is_enabled=True,
+        schedule_tier="daily",
+        dataset_filter={"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
+        result_limit=3,
+        overwrite_pending=True,
+        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
+    in_scope, unresolved = await svc._enumerate_in_scope_datasets(conf, None)
+
+    assert datahub.enumerate_datasets.called, "enumerate_datasets must be called"
+    for call in datahub.enumerate_datasets.call_args_list:
+        assert call.kwargs.get("origin") == "DEV", (
+            f"every enumerate_datasets call must carry origin='DEV'; got {call.kwargs}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_enumerate_in_scope_mismatched_origin_goes_to_unresolved(svc, db, datahub) -> None:
+    """Explicit URN whose origin segment does not match conf.dataset_filter.origin is unresolved.
+
+    resolve_dataset_scope checks origin_from_dataset_urn(urn) against dataset_filter.origin
+    and appends mismatched URNs to unresolved_urns without probing DataHub.
+
+    Spec: spec/feature/BACKEND.md §UC4 dataset_filter — explicit URN with mismatching
+          origin segment is unresolved at resolution time.
+    """
+    datahub.origin_from_dataset_urn = MagicMock(return_value="PROD")
+
+    mismatched_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,PROD)"
+    conf = MetagenGlobalConfDTO(
+        is_enabled=True,
+        schedule_tier="daily",
+        dataset_filter={"origin": "DEV", "dataset_urns": [mismatched_urn]},
+        result_limit=3,
+        overwrite_pending=True,
+        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
+
+    bnd_result = MagicMock()
+    bnd_result.fetchall.return_value = []
+    db.execute = AsyncMock(return_value=bnd_result)
+
+    in_scope, unresolved = await svc._enumerate_in_scope_datasets(conf, None)
+
+    assert mismatched_urn in unresolved, (
+        "URN with PROD origin must appear in unresolved_urns when origin filter is DEV. "
+        "spec: spec/feature/BACKEND.md §UC4 dataset_filter — origin mismatch → unresolved"
+    )
+    assert mismatched_urn not in in_scope
+
+
+@pytest.mark.asyncio
+async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(svc, db, datahub) -> None:
+    """override_urns=[] falls through to conf.dataset_filter.dataset_urns.
+
+    MetagenService._enumerate_in_scope_datasets normalizes
+    `override_urns if override_urns else None` before calling resolve_dataset_scope,
+    so an empty list becomes None and the conf's dataset_urns are consulted instead.
+
+    Spec: spec/API.md §UC4 metagen method/run — body dataset_urns narrows scope.
+    Plan §Risk §E.2 — empty list must not suppress conf URNs.
+    """
+    _CONF_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t_conf,DEV)"
+
+    from datahub.metadata.schema_classes import DatasetPropertiesClass
+
+    datahub.get_aspect = AsyncMock(return_value=MagicMock(spec=DatasetPropertiesClass))
+
+    # Boundary row exists for the conf URN with is_enabled=True
+    bnd_result = MagicMock()
+    bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_CONF_URN)]
+    db.execute = AsyncMock(return_value=bnd_result)
+
+    conf = MetagenGlobalConfDTO(
+        is_enabled=True,
+        schedule_tier="daily",
+        dataset_filter={"dataset_urns": [_CONF_URN]},
+        result_limit=3,
+        overwrite_pending=True,
+        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
+
+    # Pass override_urns=[] — empty list must not suppress the conf's dataset_urns
+    resolved_urns, unresolved = await svc._enumerate_in_scope_datasets(conf, override_urns=[])
+
+    assert _CONF_URN in resolved_urns, (
+        "empty override_urns=[] must fall through to conf.dataset_filter.dataset_urns; "
+        "spec/API.md §UC4 metagen method/run — body dataset_urns narrows scope (Plan §Risk §E.2)"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Group B: Boundary CRUD
 # ═══════════════════════════════════════════════════════════════════════════════
