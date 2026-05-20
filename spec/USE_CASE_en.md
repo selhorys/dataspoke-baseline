@@ -27,13 +27,16 @@ governance.
 
 **Data sources used throughout this document**
 
-- **PostgreSQL OLTP**
-  - `catalog.books` — book catalog (one row per book)
-  - `orders.line_items` — order items (one row per book in an order)
-  - `customers.profiles` — registered customer profiles
-- **Kafka topics**
-  - `orders.shipments` — shipment events emitted by an external fulfillment service
-  - `orders.events` — order state-change events emitted by the order service
+- **PostgreSQL OLTP** (database `example_db`, fabric `DEV`)
+  - `catalog.title_master` — book master, one row per title (ISBN PK)
+  - `catalog.editions` — per-format edition rows that join to `title_master` on ISBN
+  - `customers.eu_profiles` — EU customer accounts (GDPR PII surface)
+  - `reviews.user_ratings` — ratings linking customers to editions
+  - `orders.daily_fulfillment_summary` — daily fulfillment quality aggregates
+  - `shipping.carrier_status` — carrier scan events keyed by `order_id`
+- **Kafka topics** (cluster `example_kafka`)
+  - `imazon.orders.events` — order state-change events emitted by the order service
+  - `imazon.shipping.updates` — shipment events emitted by the fulfillment service
 
 Some datasets are ingested into DataHub by DataSpoke; others are ingested by external
 pipelines that Imazon already operates. DataSpoke covers both modes.
@@ -101,16 +104,16 @@ DataSpoke owns the extraction. An Airflow `ingestion-active-daily` DAG calls the
 in-house Postgres extractor every day; manual runs are also possible.
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.title_master,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "active-custom",
   "platform": "postgres",
   "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
-  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+  "identifier": {"database": "example_db", "schema_name": "catalog", "table": "title_master"},
   "auth": {"username": "spoke_reader", "secret_ref": {"name": "dataspoke-source-cred-title-master", "key": "password"}},
-  "is_enabled": true,
+  "is_enabled": false,
   "schedule_tier": "daily"
 }
 ```
@@ -121,7 +124,11 @@ A coding agent verifies connectivity before turning the schedule on:
 POST .../method/ingestion/run    { "dry_run": true }
 ```
 
-Dry-run is also the only way to exercise `method/ingestion/run` while `is_enabled=false`; non-dry-run calls return `409 INGESTION_DISABLED`.
+Dry-run is the only way to exercise `method/ingestion/run` while `is_enabled=false`; non-dry-run calls return `409 INGESTION_DISABLED`. Once the dry-run succeeds, the team flips the switch:
+
+```http
+PATCH .../attr/ingestion/conf    { "is_enabled": true }
+```
 
 After the daily Airflow tier DAG runs, the team reads the per-dataset event history:
 
@@ -132,25 +139,25 @@ GET .../event/ingestion?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 Each row is backed by a `DataProcessInstance` aspect that DataSpoke's extractor emitted
 to DataHub during the run, so the same record is also visible in DataHub's UI.
 
-#### Case 2 — Passive, Postgres `catalog.reviews` via DataHub Managed Ingestion
+#### Case 2 — Passive, Postgres `catalog.editions` via DataHub Managed Ingestion
 
 The team wants column-level lineage and profile statistics that DataSpoke's in-house
 extractor doesn't produce. They configure DataHub Managed Ingestion directly:
 **at `http://datahub.<domain>/ingestion`**, create a postgres recipe targeting
-`catalog.reviews` with a daily cron, and let DataHub's executor run it. DataSpoke does
+`catalog.editions` with a daily cron, and let DataHub's executor run it. DataSpoke does
 not touch this configuration.
 
 To make the dataset appear on DataSpoke's surface and pick up event history, register
 it as passive:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.reviews,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "passive",
   "platform": "postgres",
-  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "reviews"},
+  "identifier": {"database": "example_db", "schema_name": "catalog", "table": "editions"},
   "is_enabled": true
 }
 ```
@@ -184,13 +191,13 @@ and a `DataProcessInstance` per invocation. The script lives outside DataSpoke a
 not scheduled.
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.orders.events,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "passive",
   "platform": "kafka",
-  "identifier": {"topic": "orders.events", "cluster": "PROD"},
+  "identifier": {"topic": "imazon.orders.events", "cluster": "example_kafka"},
   "is_enabled": true
 }
 ```
@@ -251,34 +258,33 @@ lives in [`spec/feature/VALIDATION.md`](feature/VALIDATION.md).
 
 ### Imazon Example
 
-The orders team configures one validation slot on `orders.line_items` declaring the
-variables their daily quality task will report:
+The orders team configures one validation slot on `orders.daily_fulfillment_summary`
+declaring the variables their daily quality task will report:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)/attr/validation/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)/attr/validation/conf
 ```
 ```json
 {
-  "description": "Daily fitness check: row count, quantity sanity, key column nulls",
-  "variables": ["row_cnt", "qty_negative_cnt", "qty_total", "user_id_null_cnt"]
+  "description": "Daily order fulfillment quality: row count, fill rate, and anomaly score",
+  "variables": ["row_cnt", "fill_rate", "anomaly_score"]
 }
 ```
 
 **Pipeline-emitted result.** The same Airflow DAG that writes the daily partition runs
-the team's quality task immediately after, computes the four variables, and POSTs:
+the team's quality task immediately after, computes the three variables, and POSTs:
 
 ```http
 POST .../attr/validation/result
 ```
 ```json
 {
-  "data_time": "2026-05-08T00:00:00Z",
+  "data_time": "2026-05-01T00:00:00Z",
   "score": 1.0,
   "variables": {
-    "row_cnt": 12480.0,
-    "qty_negative_cnt": 0.0,
-    "qty_total": 38712.0,
-    "user_id_null_cnt": 0.0
+    "row_cnt": 1250.0,
+    "fill_rate": 0.98,
+    "anomaly_score": 0.02
   }
 }
 ```
@@ -288,16 +294,17 @@ The result appears in the DataHub Quality tab as an `assertionRunEvent` timestam
 DataHub's UI; the raw score is preserved in `actualAggValue` for partial-success
 semantics later.
 
-A second slot is configured on the Kafka topic `orders.events` (different platform,
-different variables), so the same surface covers both relational and streaming
-sources.
+A second slot is configured on the Kafka topic `imazon.orders.events` with
+`description: "Order events stream quality: message count and lag"` and
+`variables: ["msg_cnt", "lag_seconds"]`, so the same surface covers both relational
+and streaming sources.
 
 **Historical baseline cache.** Tomorrow's quality task computes today's row-count
-anomaly against a 14-day rolling baseline. Instead of re-aggregating
-`orders.line_items`, it issues:
+anomaly against a 30-day rolling baseline. Instead of re-aggregating
+`orders.daily_fulfillment_summary`, it issues:
 
 ```http
-GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:00Z
+GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:00Z
 ```
 
 and uses the prior `row_cnt` series directly. Results are returned newest first
@@ -306,7 +313,8 @@ and uses the prior `row_cnt` series directly. Results are returned newest first
 **Retire and resurrect.** `DELETE attr/validation/conf` soft-deletes the slot
 (returns `204`; subsequent `GET conf` returns `404`). Re-issuing `PUT` on the same
 URN reinstates it (returns `201`) and the resurrected slot may carry a new
-description and variable set.
+description and variable set — e.g.
+`variables: ["row_cnt", "fill_rate", "anomaly_score", "null_rate"]`.
 
 **Cross-dataset overview.** `GET /spoke/common/validation` lists each dataset's
 `description`, `variable_count`, `latest_data_time`, `latest_score`, and
@@ -334,15 +342,15 @@ The baseline ontology follows the **subject / predicate / object triple model**,
 three independently reviewable result types:
 
 - **Node** — a *subject* or *object*: a business concept rooted in one or more datasets
-  (e.g., `BOOK`, `CUSTOMER`).
-- **Edge** — a *predicate*: a relationship type (e.g., `references`, `placed_by`).
+  (e.g., `TITLE`, `CUSTOMER`).
+- **Edge** — a *predicate*: a relationship type (e.g., `rates`, `is_edition_of`).
 - **Triple** — a `(subject_node, edge, object_node)` fact. A triple may only be
   composed of pre-approved nodes and edges, so the conceptual vocabulary is approved
   once and reused across many specific facts.
 
-Node and edge IDs are slugs (`book`, `placed_by`); a triple ID is the composite
+Node and edge IDs are slugs (`title`, `rates`); a triple ID is the composite
 slug `subject_node_id__edge_id__object_node_id` (e.g.,
-`order_line__references__book`), so the ID itself encodes the fact.
+`edition__is_edition_of__title`), so the ID itself encodes the fact.
 
 The ontology is a global artifact. A singleton operational conf at
 `/spoke/common/ontogen/attr/conf` controls when the inference DAG runs and which
@@ -399,7 +407,7 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]}
+  "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]}
 }
 ```
 
@@ -412,39 +420,42 @@ Content-Type: text/markdown
 ```markdown
 # Imazon Bookstore Domain
 
-Imazon is an online bookstore. Treat *order* as a header concept and *order line* as
-the per-book row. Prefer business-friendly names over table names.
+Imazon is an online retailer specialising in books. Each title is identified by an
+ISBN-13 and is sold in multiple formats (Hardcover, Paperback, eBook, Audiobook) as
+distinct editions. Customers may submit ratings tied to a specific edition. Prefer
+business-domain language over warehouse schema names whenever both are available.
 ```
 
-**Inferred output.** Three nodes, two edges, two triples — each row's `status` is
+**Inferred output.** Four nodes, two edges, two triples — each row's `status` is
 either `llm_approved` (high confidence) or `llm_pending` (awaiting human review):
 
 ```
 Nodes (subjects / objects):
-  BOOK         confidence 0.96   member: catalog.books         (primary)
-  CUSTOMER     confidence 0.94   member: customers.profiles    (primary)
-  ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
+  TITLE      confidence 0.96   member: catalog.title_master   (primary)
+  EDITION    confidence 0.94   member: catalog.editions       (primary)
+  CUSTOMER   confidence 0.93   member: customers.eu_profiles  (primary)
+  RATING     confidence 0.72   member: reviews.user_ratings   (primary)
     evidence:
-      - foreign key book_id → catalog.books.book_id (schemaMetadata)
-      - column-level FK customer_id → customers.profiles.customer_id (schemaMetadata)
+      - foreign key edition_id → catalog.editions.edition_id (schemaMetadata)
+      - foreign key user_id → customers.eu_profiles.user_id (schemaMetadata)
 
 Edges (predicates):
-  references   confidence 0.95   semantics: foreign-key reference
-  placed_by    confidence 0.87   semantics: agent / actor
+  is_edition_of  confidence 0.95   semantics: format-of relationship
+  rates          confidence 0.87   semantics: customer-rates-edition
 
 Triples (subject — predicate — object):
-  ORDER_LINE  --references--> BOOK       confidence 0.95
-  ORDER_LINE  --placed_by --> CUSTOMER   confidence 0.87
+  EDITION  --is_edition_of--> TITLE      confidence 0.95
+  RATING   --rates         --> EDITION   confidence 0.87
 ```
 
-**Review flow — nodes first.** `ORDER_LINE` has the lowest node confidence (0.71, due
-to LLM ambiguity between "order" and "line item"), so the reviewer starts with nodes:
+**Review flow — nodes first.** `RATING` has the lowest node confidence (0.72, due to
+LLM ambiguity between "rating" and "review"), so the reviewer starts with nodes:
 
 ```http
 GET /api/v1/spoke/common/ontogen/result/node
-GET /api/v1/spoke/common/ontogen/result/node/order_line
-GET /api/v1/spoke/common/ontogen/result/node/order_line/event
-POST /api/v1/spoke/common/ontogen/result/node/order_line/method/review
+GET /api/v1/spoke/common/ontogen/result/node/rating
+GET /api/v1/spoke/common/ontogen/result/node/rating/event
+POST /api/v1/spoke/common/ontogen/result/node/rating/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "Confirmed FK structure; rename later if needed." }
@@ -454,8 +465,8 @@ POST /api/v1/spoke/common/ontogen/result/node/order_line/method/review
 
 ```http
 GET /api/v1/spoke/common/ontogen/result/edge
-POST /api/v1/spoke/common/ontogen/result/edge/references/method/review
-POST /api/v1/spoke/common/ontogen/result/edge/placed_by/method/review
+POST /api/v1/spoke/common/ontogen/result/edge/is_edition_of/method/review
+POST /api/v1/spoke/common/ontogen/result/edge/rates/method/review
 ```
 
 **Triples last.** Once both endpoint nodes and the edge of a triple are approved, the
@@ -552,16 +563,17 @@ PUT /api/v1/spoke/common/metagen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+  "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
   "result_limit": 3,
   "overwrite_pending": true
 }
 ```
 
-**Boundary.** The catalog team opts `catalog.books` in for both kinds:
+**Boundary.** The customer team opts `customers.eu_profiles` in for both kinds, and
+the orders team opts `imazon.orders.events` in for column descriptions only:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/conf
 ```
 ```json
 {
@@ -576,10 +588,10 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 POST /api/v1/spoke/common/metagen/method/run
 ```
 
-**Browse items.** After the run, the catalog dashboard lists the dataset's items:
+**Browse items.** After the run, the dashboard lists the dataset's items:
 
 ```http
-GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/item
+GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/item
 ```
 
 Returns one `dataset.description` item plus one `column.<fieldPath>.description` item
@@ -595,18 +607,18 @@ kind:    dataset.description
 status:  pending           # no approved candidate yet
 candidates (3 of result_limit=3):
   - candidate_id: c1   status: llm_approved   confidence 0.92
-      "# Books\n\nMaster catalog of every title Imazon offers..."
+      "# EU Customer Profiles\n\nGDPR-scoped customer accounts for the EU region..."
   - candidate_id: c2   status: llm_approved   confidence 0.88
-      "# Catalog: Books\n\nThe authoritative book catalog..."
+      "# Customers (EU)\n\nAuthoritative profile records for EU customers..."
   - candidate_id: c3   status: llm_approved   confidence 0.85
-      "Books table — Imazon's primary title catalog..."
+      "EU profiles table — registered customer accounts under EU jurisdiction..."
 ```
 
 **Review.** The reviewer approves `c1`, rejects `c3`, and leaves `c2` as-is:
 
 ```http
 POST .../attr/metagen/item/dataset.description/candidate/c1/method/review
-{ "verdict": "approve", "reason": "Best framing of the catalog role." }
+{ "verdict": "approve", "reason": "Best framing of the EU/GDPR scope." }
 
 POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 { "verdict": "reject", "reason": "Truncated and lacks the key fact." }
@@ -739,5 +751,5 @@ GET /api/v1/spoke/dg/metric/doc-health-prod/attr/result?from=2026-04-19T00:00:00
 
 Each result row carries `values: {"total": 142.0, "doc_health": 119.0}` plus a
 per-dataset breakdown listing only the **undocumented** datasets (those that
-contributed `0.0`) — e.g. `orders.shipments`, `customers.profiles` — so the board
-review focuses on the work still outstanding.
+contributed `0.0`) — e.g. `customers.eu_profiles`, `shipping.carrier_status` — so
+the board review focuses on the work still outstanding.

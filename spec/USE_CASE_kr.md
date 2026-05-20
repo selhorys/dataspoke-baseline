@@ -34,13 +34,16 @@ Imazon이 DataSpoke를 도입하는 이유는
 
 **이 문서 전체에서 사용하는 데이터 소스**
 
-- **PostgreSQL OLTP**
-  - `catalog.books` — 도서 카탈로그 (도서 한 행)
-  - `orders.line_items` — 주문 항목 (주문 내 도서 한 행)
-  - `customers.profiles` — 등록 고객 프로필
-- **Kafka 토픽**
-  - `orders.shipments` — 외부 배송 서비스가 발행하는 배송 이벤트
-  - `orders.events` — 주문 서비스가 발행하는 주문 상태 변경 이벤트
+- **PostgreSQL OLTP** (database `example_db`, fabric `DEV`)
+  - `catalog.title_master` — 도서 마스터, 타이틀 한 행 (ISBN PK)
+  - `catalog.editions` — 포맷별 에디션, ISBN으로 `title_master`와 조인
+  - `customers.eu_profiles` — EU 고객 계정 (GDPR PII)
+  - `reviews.user_ratings` — 고객과 에디션을 잇는 평점
+  - `orders.daily_fulfillment_summary` — 일간 주문 이행 품질 집계
+  - `shipping.carrier_status` — `order_id` 키의 배송사 스캔 이벤트
+- **Kafka 토픽** (cluster `example_kafka`)
+  - `imazon.orders.events` — 주문 서비스가 발행하는 주문 상태 변경 이벤트
+  - `imazon.shipping.updates` — 외부 배송 서비스가 발행하는 배송 이벤트
 
 일부는 DataSpoke가 DataHub로 인제스트하고,
 일부는 Imazon이 이미 운영하는 외부 파이프라인이 인제스트한다.
@@ -110,16 +113,16 @@ Airflow `ingestion-active-daily` DAG이 매일 in-house Postgres 추출기를 �
 수동 실행도 가능하다.
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.title_master,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "active-custom",
   "platform": "postgres",
   "locator": {"host": "pg-oltp.imazon.internal", "port": 5432},
-  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "title_master"},
+  "identifier": {"database": "example_db", "schema_name": "catalog", "table": "title_master"},
   "auth": {"username": "spoke_reader", "secret_ref": {"name": "dataspoke-source-cred-title-master", "key": "password"}},
-  "is_enabled": true,
+  "is_enabled": false,
   "schedule_tier": "daily"
 }
 ```
@@ -131,7 +134,11 @@ POST .../method/ingestion/run    { "dry_run": true }
 ```
 
 `is_enabled=false` 동안 `method/ingestion/run`을 호출할 수 있는 유일한 방법은 dry-run이다.
-non-dry-run은 `409 INGESTION_DISABLED`를 반환한다.
+non-dry-run은 `409 INGESTION_DISABLED`를 반환한다. dry-run이 성공하면 팀이 스위치를 켠다:
+
+```http
+PATCH .../attr/ingestion/conf    { "is_enabled": true }
+```
 
 일간 Airflow tier DAG 실행 후, 팀이 데이터셋별 이벤트 이력을 조회한다:
 
@@ -142,26 +149,26 @@ GET .../event/ingestion?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 각 행은 실행 중에 DataSpoke 추출기가 DataHub에 emit한 `DataProcessInstance` aspect에 기반한다.
 즉, 동일한 레코드가 DataHub UI에서도 보인다.
 
-#### Case 2 — Passive, Postgres `catalog.reviews` (DataHub Managed Ingestion 경유)
+#### Case 2 — Passive, Postgres `catalog.editions` (DataHub Managed Ingestion 경유)
 
 팀이 컬럼 단위 lineage와 프로파일 통계를 원한다.
 DataSpoke의 in-house 추출기는 이를 생성하지 않는다.
 DataHub Managed Ingestion을 직접 설정한다:
 **`http://datahub.<domain>/ingestion`**에서
-`catalog.reviews` 대상의 postgres 레시피를 daily cron으로 만들고,
+`catalog.editions` 대상의 postgres 레시피를 daily cron으로 만들고,
 DataHub의 executor가 실행하도록 둔다.
 DataSpoke는 이 설정에 손을 대지 않는다.
 
 데이터셋을 DataSpoke surface에 노출하고 이벤트 이력을 받기 위해 passive로 등록한다:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.reviews,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "passive",
   "platform": "postgres",
-  "identifier": {"database": "imazon", "schema_name": "catalog", "table": "reviews"},
+  "identifier": {"database": "example_db", "schema_name": "catalog", "table": "editions"},
   "is_enabled": true
 }
 ```
@@ -195,13 +202,13 @@ Imazon이 일회성 맥락에서 Kafka 토픽 메타데이터를 적재해야 �
 스크립트는 DataSpoke 외부에 있고 스케줄링되지 않는다.
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.orders.events,PROD)/attr/ingestion/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)/attr/ingestion/conf
 ```
 ```json
 {
   "mode": "passive",
   "platform": "kafka",
-  "identifier": {"topic": "orders.events", "cluster": "PROD"},
+  "identifier": {"topic": "imazon.orders.events", "cluster": "example_kafka"},
   "is_enabled": true
 }
 ```
@@ -261,34 +268,33 @@ aspect emission — 은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)에
 
 ### Imazon 예시
 
-주문 팀이 `orders.line_items`에 검증 슬롯을 한 개 구성하고, 일간 품질 태스크가
-보고할 변수 이름을 선언한다:
+주문 팀이 `orders.daily_fulfillment_summary`에 검증 슬롯을 한 개 구성하고,
+일간 품질 태스크가 보고할 변수 이름을 선언한다:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,orders.line_items,PROD)/attr/validation/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)/attr/validation/conf
 ```
 ```json
 {
-  "description": "일간 fitness check: 행 수, 수량 sanity, 핵심 컬럼 null 수",
-  "variables": ["row_cnt", "qty_negative_cnt", "qty_total", "user_id_null_cnt"]
+  "description": "일간 주문 이행 품질: 행 수, 충족률, anomaly score",
+  "variables": ["row_cnt", "fill_rate", "anomaly_score"]
 }
 ```
 
 **파이프라인이 emit하는 결과.** 일간 파티션을 작성하는 동일 Airflow DAG이 직후
-팀의 품질 태스크를 실행해 네 변수를 계산하고 POST한다:
+팀의 품질 태스크를 실행해 세 변수를 계산하고 POST한다:
 
 ```http
 POST .../attr/validation/result
 ```
 ```json
 {
-  "data_time": "2026-05-08T00:00:00Z",
+  "data_time": "2026-05-01T00:00:00Z",
   "score": 1.0,
   "variables": {
-    "row_cnt": 12480.0,
-    "qty_negative_cnt": 0.0,
-    "qty_total": 38712.0,
-    "user_id_null_cnt": 0.0
+    "row_cnt": 1250.0,
+    "fill_rate": 0.98,
+    "anomaly_score": 0.02
   }
 }
 ```
@@ -298,22 +304,24 @@ POST .../attr/validation/result
 `FAILURE`로 표시된다. 원본 score는 partial-success 시맨틱을 위해
 `actualAggValue`에 보존된다.
 
-Kafka 토픽 `orders.events`에도 두 번째 슬롯을 둔다 (플랫폼이 다르고 변수도
-다르다). 동일한 surface가 관계형과 스트리밍 소스를 모두 다룬다.
+Kafka 토픽 `imazon.orders.events`에도 두 번째 슬롯을 둔다 — `description: "주문
+이벤트 스트림 품질: 메시지 수와 lag"`, `variables: ["msg_cnt", "lag_seconds"]`.
+동일한 surface가 관계형과 스트리밍 소스를 모두 다룬다.
 
-**과거 데이터 베이스라인 캐시.** 다음 날의 품질 태스크는 14일 롤링 베이스라인 대비
-오늘의 행 수 anomaly를 계산한다. `orders.line_items`를 다시 집계하는 대신 다음을
-호출해 과거 `row_cnt` 시계열을 그대로 사용한다:
+**과거 데이터 베이스라인 캐시.** 다음 날의 품질 태스크는 30일 롤링 베이스라인 대비
+오늘의 행 수 anomaly를 계산한다. `orders.daily_fulfillment_summary`를 다시 집계하는
+대신 다음을 호출해 과거 `row_cnt` 시계열을 그대로 사용한다:
 
 ```http
-GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:00Z
+GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:00Z
 ```
 
 결과는 최신 행부터(즉 `data_time` 내림차순) 반환된다.
 
 **폐기와 부활.** `DELETE attr/validation/conf`는 슬롯을 soft-delete한다
 (`204` 반환; 이후 `GET conf`는 `404`). 같은 URN에 `PUT`을 다시 호출하면 슬롯이
-부활하며(`201` 반환), 부활된 슬롯은 새로운 설명과 변수 집합을 가질 수 있다.
+부활하며(`201` 반환), 부활된 슬롯은 새로운 설명과 변수 집합을 가질 수 있다 —
+예: `variables: ["row_cnt", "fill_rate", "anomaly_score", "null_rate"]`.
 
 **크로스 데이터셋 오버뷰.** `GET /spoke/common/validation`은 데이터셋별로
 `description`, `variable_count`, `latest_data_time`, `latest_score`, `is_removed`
@@ -342,15 +350,15 @@ GET .../attr/validation/result?from=2026-04-24T00:00:00Z&until=2026-05-08T00:00:
 서로 독립적으로 리뷰되는 세 결과 유형을 가진다.
 
 - **Node** — *주어* 또는 *목적어*: 한 개 이상의 데이터셋에 뿌리를 둔
-  비즈니스 개념(예: `BOOK`, `CUSTOMER`).
-- **Edge** — *술어*: 관계 유형(예: `references`, `placed_by`).
+  비즈니스 개념(예: `TITLE`, `CUSTOMER`).
+- **Edge** — *술어*: 관계 유형(예: `rates`, `is_edition_of`).
 - **Triple** — `(subject_node, edge, object_node)` 사실. 트리플은 사전에 승인된
   노드와 엣지로만 구성되므로, 개념 어휘를 한 번 승인해 여러 사실에서 재사용한다.
 
-노드와 엣지 ID는 slug(`book`, `placed_by`)이며, 노드·엣지 slug에는 `__`를 포함할
+노드와 엣지 ID는 slug(`title`, `rates`)이며, 노드·엣지 slug에는 `__`를 포함할
 수 없다(트리플 ID 구분자로 예약). 트리플 ID는
 `subject_node_id__edge_id__object_node_id` 형태의 결합 slug
-(예: `order_line__references__book`)로, ID 자체가 사실을 인코딩하므로 재추론 사이에
+(예: `edition__is_edition_of__title`)로, ID 자체가 사실을 인코딩하므로 재추론 사이에
 자연히 idempotent하다.
 
 온톨로지는 글로벌 아티팩트이다. `/spoke/common/ontogen/attr/conf`의 싱글톤 운영
@@ -407,7 +415,7 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]}
+  "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]}
 }
 ```
 
@@ -420,39 +428,42 @@ Content-Type: text/markdown
 ```markdown
 # Imazon 서점 도메인
 
-Imazon은 온라인 서점이다. *order*를 헤더 개념으로, *order line*을 권당 행으로 다룬다.
-테이블명보다 비즈니스 친화적인 명명을 선호한다.
+Imazon은 도서를 전문으로 하는 온라인 서점이다. 각 타이틀은 ISBN-13으로 식별되며,
+여러 포맷(Hardcover, Paperback, eBook, Audiobook)이 별도 에디션으로 판매된다.
+고객은 특정 에디션에 평점을 남길 수 있다. 가능한 한 웨어하우스 스키마명보다
+비즈니스 도메인 언어를 선호한다.
 ```
 
-**추론 출력.** 노드 셋, 엣지 둘, 트리플 둘 — 각 행의 `status`는 높은 신뢰도면
+**추론 출력.** 노드 넷, 엣지 둘, 트리플 둘 — 각 행의 `status`는 높은 신뢰도면
 `llm_approved`, 사람 리뷰가 필요하면 `llm_pending`이다:
 
 ```
 Nodes (subjects / objects):
-  BOOK         confidence 0.96   member: catalog.books         (primary)
-  CUSTOMER     confidence 0.94   member: customers.profiles    (primary)
-  ORDER_LINE   confidence 0.71   member: orders.line_items     (primary)
+  TITLE      confidence 0.96   member: catalog.title_master   (primary)
+  EDITION    confidence 0.94   member: catalog.editions       (primary)
+  CUSTOMER   confidence 0.93   member: customers.eu_profiles  (primary)
+  RATING     confidence 0.72   member: reviews.user_ratings   (primary)
     evidence:
-      - 외래 키 book_id → catalog.books.book_id (schemaMetadata)
-      - 컬럼 단위 외래 키 customer_id → customers.profiles.customer_id (schemaMetadata)
+      - 외래 키 edition_id → catalog.editions.edition_id (schemaMetadata)
+      - 외래 키 user_id → customers.eu_profiles.user_id (schemaMetadata)
 
 Edges (predicates):
-  references   confidence 0.95   semantics: foreign-key reference
-  placed_by    confidence 0.87   semantics: agent / actor
+  is_edition_of  confidence 0.95   semantics: format-of relationship
+  rates          confidence 0.87   semantics: customer-rates-edition
 
 Triples (subject — predicate — object):
-  ORDER_LINE  --references--> BOOK       confidence 0.95
-  ORDER_LINE  --placed_by --> CUSTOMER   confidence 0.87
+  EDITION  --is_edition_of--> TITLE      confidence 0.95
+  RATING   --rates         --> EDITION   confidence 0.87
 ```
 
-**리뷰 흐름 — 노드 먼저.** `ORDER_LINE`은 노드 confidence가 가장 낮아(0.71, LLM이
-"주문"과 "주문 항목"을 구분하는 데 모호함이 있음) 리뷰어가 노드부터 시작한다:
+**리뷰 흐름 — 노드 먼저.** `RATING`은 노드 confidence가 가장 낮아(0.72, LLM이
+"rating"과 "review"를 구분하는 데 모호함이 있음) 리뷰어가 노드부터 시작한다:
 
 ```http
 GET /api/v1/spoke/common/ontogen/result/node
-GET /api/v1/spoke/common/ontogen/result/node/order_line
-GET /api/v1/spoke/common/ontogen/result/node/order_line/event
-POST /api/v1/spoke/common/ontogen/result/node/order_line/method/review
+GET /api/v1/spoke/common/ontogen/result/node/rating
+GET /api/v1/spoke/common/ontogen/result/node/rating/event
+POST /api/v1/spoke/common/ontogen/result/node/rating/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "FK 구조 확인. 추후 이름 변경 가능." }
@@ -462,8 +473,8 @@ POST /api/v1/spoke/common/ontogen/result/node/order_line/method/review
 
 ```http
 GET /api/v1/spoke/common/ontogen/result/edge
-POST /api/v1/spoke/common/ontogen/result/edge/references/method/review
-POST /api/v1/spoke/common/ontogen/result/edge/placed_by/method/review
+POST /api/v1/spoke/common/ontogen/result/edge/is_edition_of/method/review
+POST /api/v1/spoke/common/ontogen/result/edge/rates/method/review
 ```
 
 **마지막으로 트리플.** 트리플의 양쪽 노드와 엣지가 모두 승인되면 해당 트리플이
@@ -558,16 +569,17 @@ PUT /api/v1/spoke/common/metagen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:env:PROD"]},
+  "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
   "result_limit": 3,
   "overwrite_pending": true
 }
 ```
 
-**경계.** 카탈로그 팀이 `catalog.books`를 두 종류 모두 옵트인한다:
+**경계.** 고객 팀이 `customers.eu_profiles`를 두 종류 모두 옵트인하고, 주문 팀은
+`imazon.orders.events`를 컬럼 설명에 한해 옵트인한다:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/conf
 ```
 ```json
 {
@@ -582,11 +594,10 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catal
 POST /api/v1/spoke/common/metagen/method/run
 ```
 
-**아이템 조회.** 실행 후, 카탈로그 대시보드가 해당 데이터셋의 아이템 목록을
-받는다:
+**아이템 조회.** 실행 후, 대시보드가 해당 데이터셋의 아이템 목록을 받는다:
 
 ```http
-GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)/attr/metagen/item
+GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/item
 ```
 
 `dataset.description` 아이템 하나와 컬럼당 `column.<fieldPath>.description`
@@ -602,18 +613,18 @@ kind:    dataset.description
 status:  pending           # 아직 승인된 후보 없음
 candidates (3 of result_limit=3):
   - candidate_id: c1   status: llm_approved   confidence 0.92
-      "# Books\n\nImazon이 제공하는 모든 타이틀의 마스터 카탈로그..."
+      "# EU 고객 프로필\n\nEU 지역의 GDPR 범위 고객 계정..."
   - candidate_id: c2   status: llm_approved   confidence 0.88
-      "# Catalog: Books\n\n공식 도서 카탈로그..."
+      "# Customers (EU)\n\nEU 고객의 권위 있는 프로필 레코드..."
   - candidate_id: c3   status: llm_approved   confidence 0.85
-      "Books 테이블 — Imazon의 주요 타이틀 카탈로그..."
+      "EU profiles 테이블 — EU 관할 등록 고객 계정..."
 ```
 
 **리뷰.** 리뷰어가 `c1`을 승인하고, `c3`을 거부하고, `c2`는 그대로 둔다:
 
 ```http
 POST .../attr/metagen/item/dataset.description/candidate/c1/method/review
-{ "verdict": "approve", "reason": "카탈로그의 역할을 가장 잘 표현했음." }
+{ "verdict": "approve", "reason": "EU/GDPR 범위를 가장 잘 표현했음." }
 
 POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 { "verdict": "reject", "reason": "내용이 부족하고 핵심 사실을 빠뜨림." }
@@ -748,6 +759,6 @@ GET /api/v1/spoke/dg/metric/doc-health-prod/attr/result?from=2026-04-19T00:00:00
 ```
 
 각 행은 `values: {"total": 142.0, "doc_health": 119.0}`와, **미문서화**
-데이터셋(`0.0`을 기여한 데이터셋, 예: `orders.shipments`, `customers.profiles`)만
-나열하는 데이터셋별 breakdown을 담는다 — 보드 리뷰는 아직 남은 작업에만
-집중할 수 있다.
+데이터셋(`0.0`을 기여한 데이터셋, 예: `customers.eu_profiles`,
+`shipping.carrier_status`)만 나열하는 데이터셋별 breakdown을 담는다 — 보드
+리뷰는 아직 남은 작업에만 집중할 수 있다.
