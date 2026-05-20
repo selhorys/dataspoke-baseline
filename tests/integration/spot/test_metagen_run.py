@@ -432,8 +432,15 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
             occurred_at=newer_time,
         )
 
-        # GET all (no time filter) — verify envelope shape
-        all_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        # GET with an `after` cutoff just before the older seed — verify envelope
+        # shape and that both seeded events appear. Scoping to a 2-day window
+        # keeps the result set bounded so the seeds don't paginate past `limit`
+        # when the dev-env has accumulated unrelated events.
+        scope_cutoff = (older_time - timedelta(minutes=1)).isoformat()
+        all_resp = await api_client.get(
+            f"{event_url}?after={urllib.parse.quote(scope_cutoff, safe='')}&limit=100",
+            headers=admin_headers,
+        )
         assert all_resp.status_code == 200, (
             f"GET /metagen/event failed: {all_resp.status_code}"
         )
@@ -448,13 +455,12 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
             "EventListResponse must have offset and limit. spec: API.md §Standard Envelope"
         )
 
-        # Both seeded events must appear in unfiltered list
         all_ids = {e["id"] for e in all_body["events"]}
         assert older_event_id in all_ids, (
-            f"Older seeded event {older_event_id!r} not found in unfiltered list."
+            f"Older seeded event {older_event_id!r} not found within scoped window."
         )
         assert newer_event_id in all_ids, (
-            f"Newer seeded event {newer_event_id!r} not found in unfiltered list."
+            f"Newer seeded event {newer_event_id!r} not found within scoped window."
         )
 
         # GET with 'after' set to a cutoff between the two events
