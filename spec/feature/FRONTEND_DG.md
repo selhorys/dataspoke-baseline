@@ -54,19 +54,19 @@ yet supported*; PUT against the API returns `501 NOT_IMPLEMENTED`. Unsupported
 ├────────────────────────────────────────────────────────┤
 │  Ingestion Freshness   total 142   in-time 131  ↑      │
 │  Validation Score      total 142   sum 118.5    ↑      │
-│  Doc Health (PROD)     total  87   sum  61.0    ↓      │
+│  Doc Health (DEV)      total  87   sum  61.0    ↓      │
 └────────────────────────────────────────────────────────┘
       Dashboard (`/dg/metrics`) ← `/spoke/dg/metric` + latest result
 ```
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ← doc-health-prod        [Edit] [Run] [Disable]     │
+│  ← doc-health-dev        [Edit] [Run] [Disable]     │
 ├──────────────────────────────────────────────────────┤
 │  attr/conf                                           │
 │    mode: active   metric_type: doc-health            │
-│    schedule_tier: weekly   ✓ enabled                 │
-│    dataset_filter: origin=PROD                       │
+│    schedule_tier: daily    ✓ enabled                 │
+│    dataset_filter: origin=DEV                        │
 │                                                      │
 │  attr/result?from&to                                 │
 │    [Recharts area chart — one line per `values` key] │
@@ -84,16 +84,16 @@ yet supported*; PUT against the API returns `501 NOT_IMPLEMENTED`. Unsupported
 ├─────────────────────────────────────────────────────┤
 │  mode:         ( • active )  ( passive — disabled ) │
 │  metric_type:  [ doc-health                     v ] │
-│  title:        [ Doc Health (PROD)                ] │
-│  description:  [ Weekly documentation-completeness] │
+│  title:        [ Doc Health (DEV)                 ] │
+│  description:  [ Daily documentation-completeness ] │
 │  metrics:      [x] total   [x] doc_health           │
 │  metric_conf:  (none for doc-health)                │
 │  schedule_tier:[ hourly | daily | weekly         v] │
 │  is_enabled:   [x]                                  │
 │                                                     │
 │  dataset_filter                                     │
-│    origin:           [ PROD                      v] │
-│    tags[]:           [urn:li:tag:env:PROD,    ]     │
+│    origin:           [ DEV                       v] │
+│    tags[]:           [urn:li:tag:env:DEV,     ]     │
 │    glossary_terms[]: [urn:li:glossaryTerm:…,  ]     │
 │    dataset_urns[]:   [urn:li:dataset:(…),     ]     │
 │                                                     │

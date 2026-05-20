@@ -912,14 +912,14 @@ async def test_metric_id_path_regex_acceptance_and_rejection(
 ) -> None:
     """metric_id kebab regex: accepts valid IDs; rejects invalid ones.
 
-    Valid: 'ingestion-freshness', 'doc-health-prod', single-char 'a'.
+    Valid: 'ingestion-freshness', 'doc-health-dev', single-char 'a'.
     Invalid: 'UPPER', 'with_underscore', 'with space', '-leading', 'trailing-'.
 
     Spec: spec/API.md §Metric — metric_id kebab-case slug
           ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$.
     """
     # Valid IDs that the regex must accept (route 200/201 or 404 — anything but 422)
-    valid_ids = ["a", "doc-health-prod", "ingestion-freshness"]
+    valid_ids = ["a", "doc-health-dev", "ingestion-freshness"]
     for mid in valid_ids:
         resp = await api_client.get(
             f"/api/v1/spoke/dg/metric/{mid}/attr/conf",

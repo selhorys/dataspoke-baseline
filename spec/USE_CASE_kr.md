@@ -727,35 +727,35 @@ breakdown 형태와 DAG 시맨틱은
 
 ### Imazon 예시
 
-CDO가 PROD 범위의 주간 문서 상태 메트릭으로 데일리 디폴트를 교체한다:
+CDO가 DEV 범위의 일간 doc-health 메트릭을 추가한다:
 
 ```http
-PUT /api/v1/spoke/dg/metric/doc-health-prod/attr/conf
+PUT /api/v1/spoke/dg/metric/doc-health-dev/attr/conf
 ```
 ```json
 {
   "mode": "active",
   "is_enabled": true,
   "metric_type": "doc-health",
-  "title": "Doc Health (PROD)",
-  "description": "PROD 데이터셋의 주간 문서 완전성 점검",
+  "title": "Doc Health (DEV)",
+  "description": "DEV 데이터셋의 일간 문서 완전성 점검",
   "metrics": ["total", "doc_health"],
   "metric_conf": {},
-  "schedule_tier": "weekly",
-  "dataset_filter": {"origin": "PROD"}
+  "schedule_tier": "daily",
+  "dataset_filter": {"origin": "DEV"}
 }
 ```
 
 스케줄을 기다리지 않고 CDO가 즉시 첫 실행을 트리거한다:
 
 ```http
-POST /api/v1/spoke/dg/metric/doc-health-prod/method/run
+POST /api/v1/spoke/dg/metric/doc-health-dev/method/run
 ```
 
 1주일 후, 보드 보고용으로 추세를 가져온다:
 
 ```http
-GET /api/v1/spoke/dg/metric/doc-health-prod/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/dg/metric/doc-health-dev/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
 각 행은 `values: {"total": 142.0, "doc_health": 119.0}`와, **미문서화**

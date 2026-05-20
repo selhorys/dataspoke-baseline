@@ -718,35 +718,35 @@ metric is invoked on its tier; on-demand runs always go through
 
 ### Imazon Example
 
-The CDO replaces the daily doc-health default with a PROD-scoped weekly run:
+The CDO add the doc-health metric with a DEV-scoped daily run:
 
 ```http
-PUT /api/v1/spoke/dg/metric/doc-health-prod/attr/conf
+PUT /api/v1/spoke/dg/metric/doc-health-dev/attr/conf
 ```
 ```json
 {
   "mode": "active",
   "is_enabled": true,
   "metric_type": "doc-health",
-  "title": "Doc Health (PROD)",
-  "description": "Weekly documentation-completeness check across PROD datasets",
+  "title": "Doc Health (DEV)",
+  "description": "Daily documentation-completeness check across DEV datasets",
   "metrics": ["total", "doc_health"],
   "metric_conf": {},
-  "schedule_tier": "weekly",
-  "dataset_filter": {"origin": "PROD"}
+  "schedule_tier": "daily",
+  "dataset_filter": {"origin": "DEV"}
 }
 ```
 
 The CDO triggers an immediate first run rather than waiting for the schedule:
 
 ```http
-POST /api/v1/spoke/dg/metric/doc-health-prod/method/run
+POST /api/v1/spoke/dg/metric/doc-health-dev/method/run
 ```
 
 A week later, trends are pulled for a board update:
 
 ```http
-GET /api/v1/spoke/dg/metric/doc-health-prod/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/dg/metric/doc-health-dev/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
 Each result row carries `values: {"total": 142.0, "doc_health": 119.0}` plus a
