@@ -724,9 +724,36 @@ Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled (Airflow
 `schedule_tier`) or on-demand (`POST .../method/run` → `metrics` on-demand DAG)
 measurement execution.
 
+**Create vs replace**: `POST /spoke/dg/metric` creates a metric — `metric_id` is supplied
+in the body and must not collide with an existing row (`MetricsService.create_metric_config`
+raises `409 METRIC_EXISTS`; the concurrent-create race is closed by catching the primary-key
+`IntegrityError` and re-raising the same conflict). `PUT .../attr/conf` replaces an existing
+definition only (`replace_metric_config` raises `404 METRIC_NOT_FOUND` when absent); it does
+not create. `PATCH` applies a partial update. The factory-default bootstrap inserts rows
+directly and is unaffected by the create route.
+
 **Mode**: `active` runs the built-in measurer matching `metric_type`. `passive` is
 rejected at the schema layer with `501 NOT_IMPLEMENTED` — placeholder for ingesting
 results emitted by an external system, deferred to a future release.
+
+**Time windows** (`ingestion-freshness`, `validation-score`): the measurement window is
+resolved **per dataset**, not from a single `metric_conf` value. `metric_conf.time_window_sec`
+is only the fallback used when no per-dataset window can be derived.
+
+- `ingestion-freshness`: the window is read from each dataset's `ingestion_configs` row
+  (joined by `dataset_urn`). active-custom → `SCHEDULE_TIER_SECONDS[schedule_tier] × 2`;
+  passive → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `ingestion-passive-hourly`
+  DAG); no row, or active-custom with a null `schedule_tier` → `metric_conf.time_window_sec`.
+  The `× 2` factor leaves room for transient late ingestion. Tier→seconds and the passive
+  period live in `src/shared/schedule.py`.
+- `validation-score`: for each dataset the measurer reads its most recent `N + 1` validation
+  results (`N` = `settings.validation_score_n_intervals`, env `DATASPOKE_VALIDATION_SCORE_N_INTERVALS`,
+  default 3) and sets the window to `mean(last N inter-arrival gaps) × 2`. A dataset with
+  fewer than `N + 1` results falls back to `metric_conf.time_window_sec`. The score counted
+  is the latest result whose `data_time` is inside the window.
+
+Both measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
+`validation_results`, and `ingestion_configs` only — no DataHub call.
 
 **Measurers** (`src/backend/metrics/measurers/`): one async function per built-in
 `metric_type`, registered via the measurer registry. Each measurer receives the resolved
@@ -766,15 +793,19 @@ unified shape:
 `datasets[]` lists **only failed datasets** — membership in the list is itself
 the classification. A dataset is failed when:
 
-- `ingestion-freshness`: latest `INGESTION.COMPLETE` is older than
-  `metric_conf.time_window_sec` (or absent)
-- `validation-score`: latest validation `score` in the window is `< 1.0` (or absent)
+- `ingestion-freshness`: latest `INGESTION.COMPLETE` is older than the dataset's
+  freshness window (see **Time windows** above) or absent
+- `validation-score`: latest validation `score` inside the dataset's window is `< 1.0`
+  (or no result inside the window)
 - `doc-health`: documentation score is `< 1.0` (table description missing OR any
   column description missing)
 
-`detail` is optional, type-specific metadata (e.g. `{"last_event_at": "..."}` for
-`ingestion-freshness`; `{"latest_data_time": "...", "score": 0.7}` for
-`validation-score`). `dataset_count` is the total scanned (matching `dataset_filter`),
+`detail` is optional, type-specific metadata. `ingestion-freshness` and `validation-score`
+report the applied window via `time_window_sec` (the resolved per-dataset value) and
+`window_source` (`"active-custom:<tier>"` / `"passive"` / `"default"` for freshness;
+`"intervals"` / `"default"` for validation-score), alongside `last_event_at` (freshness)
+or `latest_data_time` + `score` (validation-score). `dataset_count` is the total scanned
+(matching `dataset_filter`),
 not the number of failed entries; `len(datasets) == failed count` is implied. The
 breakdown lets time-range queries on `attr/result` answer per-dataset historical
 questions without re-running the metric.
@@ -782,7 +813,7 @@ questions without re-running the metric.
 **Factory defaults**: On API startup, an idempotent bootstrap inserts one
 `metric_definitions` row for each built-in `metric_type` if absent. Defaults are
 `mode="active"`, `is_enabled=false`, `schedule_tier="daily"`, `dataset_filter={}`,
-type-appropriate `metric_conf` (`{"time_window_sec": 86400}` for the first two, `{}`
+type-appropriate `metric_conf` (`{"time_window_sec": 172800}` for the first two, `{}`
 for `doc-health`). Seeds ship disabled so scheduled DAG runs are a no-op until the
 governance lead PATCHes `is_enabled=true`; the bootstrap never overwrites an
 existing row.

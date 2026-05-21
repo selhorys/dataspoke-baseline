@@ -31,5 +31,6 @@ data:
   DATASPOKE_METAGEN_ONTOLOGY_RAG_NODE_K: {{ .Values.config.metagen.ontologyRagNodeK | quote }}
   DATASPOKE_METAGEN_ONTOLOGY_RAG_EDGE_K: {{ .Values.config.metagen.ontologyRagEdgeK | quote }}
   DATASPOKE_METAGEN_ONTOLOGY_RAG_TRIPLE_K: {{ .Values.config.metagen.ontologyRagTripleK | quote }}
+  DATASPOKE_VALIDATION_SCORE_N_INTERVALS: {{ .Values.config.metrics.validationScoreNIntervals | quote }}
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
 {{- end }}

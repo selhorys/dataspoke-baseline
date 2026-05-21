@@ -8,7 +8,8 @@ Spec sources:
     - Seeds ship disabled so the governance lead opts in explicitly.
     - Bootstrap never overwrites an existing row.
   spec/feature/BACKEND.md §Metrics Service §Factory defaults:
-    - metric_conf={"time_window_sec": 86400} for ingestion-freshness and validation-score.
+    - metric_conf={"time_window_sec": 172800} for ingestion-freshness and validation-score
+      (172800 = 2 days; the fallback window when no per-dataset window can be derived).
     - metric_conf={} for doc-health.
 
 Bootstrap tests use a mock AsyncSession instead of a live DB. The mock is wired
@@ -166,16 +167,25 @@ async def test_seed_rows_metric_conf_matches_spec() -> None:
     """Seed row metric_conf matches spec defaults for each type.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults:
-          metric_conf={"time_window_sec": 86400} for ingestion-freshness and
-          validation-score; metric_conf={} for doc-health.
+          metric_conf={"time_window_sec": 172800} for ingestion-freshness and
+          validation-score (172800 = 2 × 86400 = 2-day fallback window);
+          metric_conf={} for doc-health.
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — metric_conf
+          time_window_sec factory default 172800.
     """
     db = _make_empty_db()
     await seed_factory_defaults(db)
 
     added = {call.args[0].id: call.args[0] for call in db.add.call_args_list}
 
-    assert added["ingestion-freshness"].metric_conf == {"time_window_sec": 86400}
-    assert added["validation-score"].metric_conf == {"time_window_sec": 86400}
+    assert added["ingestion-freshness"].metric_conf == {"time_window_sec": 172800}, (
+        "ingestion-freshness factory default time_window_sec must be 172800 (2 days). "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+    )
+    assert added["validation-score"].metric_conf == {"time_window_sec": 172800}, (
+        "validation-score factory default time_window_sec must be 172800 (2 days). "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+    )
     assert added["doc-health"].metric_conf == {}
 
 

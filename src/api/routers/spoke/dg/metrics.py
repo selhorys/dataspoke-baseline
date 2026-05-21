@@ -16,6 +16,7 @@ from src.api.dependencies import get_airflow_client, get_metrics_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
+    CreateMetricConfigRequest,
     MetricAttrResponse,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
@@ -23,8 +24,8 @@ from src.api.schemas.metrics import (
     MetricResultResponse,
     MetricRunResultResponse,
     PatchMetricConfigRequest,
+    ReplaceMetricConfigRequest,
     RunMetricRequest,
-    UpsertMetricConfigRequest,
 )
 from src.backend.metrics.service import MetricDefinitionRecord, MetricsService
 from src.shared.db.models import Event, MetricDefinition, MetricResult
@@ -57,6 +58,36 @@ def _definition_response(m: "MetricDefinitionRecord") -> MetricDefinitionRespons
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
+
+
+@router.post("", response_model=MetricDefinitionResponse, status_code=status.HTTP_201_CREATED)
+async def post_metric(
+    body: CreateMetricConfigRequest,
+    response: Response,
+    service: MetricsService = Depends(get_metrics_service),
+) -> MetricDefinitionResponse:
+    """Create a new metric definition; ``metric_id`` is supplied in the request body.
+
+    Returns 409 METRIC_EXISTS when the id already exists.
+    Returns 501 NOT_IMPLEMENTED when ``mode`` is 'passive'.
+    """
+    if body.mode == "passive":
+        raise NotImplementedAPIError("Passive mode is reserved for a future release")
+
+    metric = await service.create_metric_config(
+        metric_id=body.metric_id,
+        mode=body.mode,
+        metric_type=body.metric_type,
+        title=body.title,
+        description=body.description,
+        metrics=body.metrics,
+        metric_conf=body.metric_conf,
+        dataset_filter=body.dataset_filter,
+        schedule_tier=body.schedule_tier,
+        is_enabled=body.is_enabled,
+    )
+    response.status_code = status.HTTP_201_CREATED
+    return _definition_response(metric)
 
 
 @router.get("", response_model=MetricDefinitionListResponse)
@@ -120,18 +151,18 @@ async def get_metric_conf(
 @router.put("/{metric_id}/attr/conf", response_model=MetricDefinitionResponse)
 async def put_metric_conf(
     metric_id: MetricIdParam,
-    body: UpsertMetricConfigRequest,
-    response: Response,
+    body: ReplaceMetricConfigRequest,
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionResponse:
-    """Create or replace a metric definition (upsert).
+    """Replace an existing metric definition.
 
+    Returns 404 METRIC_NOT_FOUND when the id is absent (use POST /spoke/dg/metric to create).
     Returns 501 NOT_IMPLEMENTED when mode is 'passive'.
     """
     if body.mode == "passive":
         raise NotImplementedAPIError("Passive mode is reserved for a future release")
 
-    metric, created = await service.upsert_metric_config(
+    metric = await service.replace_metric_config(
         metric_id=metric_id,
         mode=body.mode,
         metric_type=body.metric_type,
@@ -143,8 +174,6 @@ async def put_metric_conf(
         schedule_tier=body.schedule_tier,
         is_enabled=body.is_enabled,
     )
-    if created:
-        response.status_code = status.HTTP_201_CREATED
     return _definition_response(metric)
 
 

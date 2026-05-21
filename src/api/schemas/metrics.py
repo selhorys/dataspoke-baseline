@@ -27,7 +27,8 @@ def _check_metric_conf_for_type(metric_type: str, metric_conf: dict[str, Any]) -
         tw = metric_conf.get("time_window_sec")
         if tw is None or not isinstance(tw, int) or tw <= 0:
             raise ValueError(
-                f"metric_conf.time_window_sec must be a positive int for metric_type '{metric_type}'"
+                "metric_conf.time_window_sec must be a positive int"
+                f" for metric_type '{metric_type}'"
             )
     elif metric_type == "doc-health":
         if metric_conf != {}:
@@ -45,7 +46,9 @@ def _check_metrics_subset(metric_type: str, metrics: list[str]) -> None:
         )
 
 
-class UpsertMetricConfigRequest(BaseModel):
+class ReplaceMetricConfigRequest(BaseModel):
+    """Request body for PUT (replace) of an existing metric definition."""
+
     mode: Literal["active", "passive"] = Field(
         description="Measurement mode: 'active' (built-in measurer) or 'passive' (reserved)"
     )
@@ -80,11 +83,29 @@ class UpsertMetricConfigRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_fields(self) -> "UpsertMetricConfigRequest":
+    def validate_fields(self) -> "ReplaceMetricConfigRequest":
         validate_dataset_filter(self.dataset_filter)
         _check_metric_conf_for_type(self.metric_type, self.metric_conf)
         _check_metrics_subset(self.metric_type, self.metrics)
         return self
+
+
+class CreateMetricConfigRequest(ReplaceMetricConfigRequest):
+    """Request body for POST (create) of a new metric definition.
+
+    Extends ``ReplaceMetricConfigRequest`` with a client-supplied ``metric_id``
+    that must be unique.  Bad format yields 422; collision yields 409 METRIC_EXISTS.
+
+    Spec: spec/API.md §Metric — metric_id note.
+    """
+
+    metric_id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$",
+        description=(
+            "Client-supplied kebab-case identifier, e.g. 'ingestion-freshness'. "
+            "Must be unique — 409 METRIC_EXISTS on collision."
+        ),
+    )
 
 
 class PatchMetricConfigRequest(BaseModel):

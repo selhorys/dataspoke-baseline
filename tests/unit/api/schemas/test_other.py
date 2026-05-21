@@ -17,8 +17,8 @@ from src.api.schemas.ingestion import (
 from src.api.schemas.metrics import (
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
+    ReplaceMetricConfigRequest,
 )
-from src.api.schemas.metrics import UpsertMetricConfigRequest
 from src.api.schemas.ontogen import (
     NodeListResponse,
     OntogenConfPutRequest,
@@ -250,12 +250,12 @@ class TestDatasetSchemas:
 
 
 class TestMetricsSchemas:
-    def test_upsert_request(self) -> None:
-        """UpsertMetricConfigRequest accepts new field set (mode, metric_type, etc).
+    def test_replace_request(self) -> None:
+        """ReplaceMetricConfigRequest accepts the full field set (mode, metric_type, etc).
 
         Spec: spec/API.md §Metric — PUT /spoke/dg/metric/{id}/attr/conf fields.
         """
-        req = UpsertMetricConfigRequest(
+        req = ReplaceMetricConfigRequest(
             mode="active",
             is_enabled=False,
             metric_type="ingestion-freshness",

@@ -37,6 +37,7 @@ from src.api.schemas.metagen import (
     MetagenRunResponse,
 )
 from src.api.schemas.metrics import (
+    CreateMetricConfigRequest,
     MetricAttrResponse,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
@@ -44,8 +45,8 @@ from src.api.schemas.metrics import (
     MetricResultResponse,
     MetricRunResultResponse,
     PatchMetricConfigRequest,
+    ReplaceMetricConfigRequest,
     RunMetricRequest,
-    UpsertMetricConfigRequest,
 )
 from src.api.schemas.ontogen import (
     EdgeAttrResponse,
@@ -114,13 +115,14 @@ __all__ = [
     # metrics
     "MetricAttrResponse",
     "MetricDefinitionListResponse",
+    "CreateMetricConfigRequest",
     "MetricDefinitionResponse",
     "MetricResultListResponse",
     "MetricResultResponse",
     "MetricRunResultResponse",
     "PatchMetricConfigRequest",
+    "ReplaceMetricConfigRequest",
     "RunMetricRequest",
-    "UpsertMetricConfigRequest",
     # ontogen
     "EdgeAttrResponse",
     "EdgeListResponse",

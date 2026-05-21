@@ -680,12 +680,13 @@ GET .../event/metagen
 
 | `metric_type` | 출력 `values` 키 | 의미 |
 |---|---|---|
-| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = `dataset_filter`에 매칭된 데이터셋 수; `ingested_in_time` = 마지막 `INGESTION.COMPLETE`가 `metric_conf.time_window_sec` 안에 있는 데이터셋 수 |
-| `validation-score` | `total`, `validation_score_sum` | `total` = 매칭된 데이터셋 수; `validation_score_sum` = 각 데이터셋의 최신 검증 `score` 합 — `metric_conf.time_window_sec` 이전부터 현재까지의 시간 범위에서 (해당 범위 안에 결과가 없으면 0.0) |
+| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = `dataset_filter`에 매칭된 데이터셋 수; `ingested_in_time` = 마지막 `INGESTION.COMPLETE`가 **데이터셋별 신선도 윈도** 안에 있는 데이터셋 수. 윈도는 각 데이터셋의 인제스천 설정에서 도출된다: active-custom → `schedule_tier` 주기의 2배(`hourly`→7200s, `daily`→172800s, `weekly`→1209600s); passive → DataHub 동기화 주기의 2배(hourly → 7200s); 설정이 없거나(또는 `schedule_tier`가 없는 active-custom) → `metric_conf.time_window_sec`로 폴백. 2배는 지연 인제스천을 위한 여유다 |
+| `validation-score` | `total`, `validation_score_sum` | `total` = 매칭된 데이터셋 수; `validation_score_sum` = 각 데이터셋의 최신 검증 `score` 합 — **데이터셋별 윈도** = 해당 데이터셋의 최근 N개 검증 간격 평균 × 2(N은 `DATASPOKE_VALIDATION_SCORE_N_INTERVALS`, 기본 3). 간격이 N개 미만이면 `metric_conf.time_window_sec`로 폴백; 윈도 안에 검증 결과가 없으면 기여는 0.0 |
 | `doc-health` | `total`, `doc_health` | `total` = 매칭된 데이터셋 수; `doc_health` = 데이터셋별 문서 점수의 합. 테이블 설명과 모든 컬럼 설명이 비어 있지 않으면 `1.0`, 아니면 `0.0` |
 
 `metric_conf`는 타입별 파라미터를 담는다: `ingestion-freshness`와
-`validation-score`는 `time_window_sec`을, `doc-health`는 빈 `{}`를 사용한다.
+`validation-score`의 `time_window_sec`은 데이터셋별 윈도를 도출할 수 없을 때 쓰는
+**폴백** 윈도이며(양의 정수 초, 팩토리 기본 `172800`), `doc-health`는 빈 `{}`를 사용한다.
 
 `dataset_filter`는 네 가지 선택적 차원을 갖는다: `origin`(DataHub 데이터셋 URN의
 세 번째 세그먼트로 들어가는 `FabricType` 값 — `PROD` / `DEV` / `CORP` / `EI` /
@@ -716,7 +717,8 @@ breakdown 형태와 DAG 시맨틱은
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | 메트릭 정의·갱신·읽기 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`) |
+| `POST /spoke/dg/metric` | 메트릭 생성 — `metric_id`를 정의 필드와 함께 요청 본문에 담는다. 중복 id는 `409 METRIC_EXISTS` |
+| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | 기존 메트릭 교체·갱신·읽기·삭제 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT`은 기존 정의를 교체하며 id가 없으면 `404 METRIC_NOT_FOUND` |
 | `POST /spoke/dg/metric/{metric_id}/method/run` | 측정 실행 트리거; `dry_run: true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
 | `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 `values`와 데이터셋별 `breakdown`을 담음) |
 | `GET /spoke/dg/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
@@ -727,13 +729,14 @@ breakdown 형태와 DAG 시맨틱은
 
 ### Imazon 예시
 
-CDO가 DEV 범위의 일간 doc-health 메트릭을 추가한다:
+CDO가 DEV 범위의 일간 doc-health 메트릭을, `metric_id`를 생성 본문에 담아 추가한다:
 
 ```http
-PUT /api/v1/spoke/dg/metric/doc-health-dev/attr/conf
+POST /api/v1/spoke/dg/metric
 ```
 ```json
 {
+  "metric_id": "doc-health-dev",
   "mode": "active",
   "is_enabled": true,
   "metric_type": "doc-health",

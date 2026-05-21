@@ -297,7 +297,7 @@ Governance metric definitions.
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
 | `metrics` | `JSONB` | List of `values` keys the metric persists — subset of the type's emitted keys (e.g. `["total", "ingested_in_time"]`) |
-| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score`; `{}` for `doc-health` |
+| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score` (the **fallback** window when no per-dataset window can be derived; factory default `172800`, see BACKEND §Metrics Service); `{}` for `doc-health` |
 | `dataset_filter` | `JSONB` | `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`. `origin` is a DataHub `FabricType` value (`PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…) — passed through to DataHub; the other three dimensions OR-ed among themselves and AND-ed with `origin`; `{}` = all datasets. Same shape as `ontogen_config.dataset_filter` and `metagen_config.dataset_filter` |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (null = on-demand only) |

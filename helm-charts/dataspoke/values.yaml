@@ -398,6 +398,8 @@ config:
     ontologyRagNodeK: 5
     ontologyRagEdgeK: 5
     ontologyRagTripleK: 5
+  metrics:
+    validationScoreNIntervals: 3
   corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------

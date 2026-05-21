@@ -385,21 +385,23 @@ to source databases. Built-in metric types, mode semantics, and result shape: se
 DataHub aspects consumed by `doc-health` are listed in
 [DATAHUB_INTEGRATION §Aspect Usage by Feature](DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
-**`metric_id`**: Kebab-case slug, system-generated or user-supplied (e.g.
-`ingestion-freshness`, `validation-score`, `doc-health`). Used in route paths and as the
-DAG-name suffix `metrics-{metric_id}`.
+**`metric_id`**: Kebab-case slug, **client-supplied** (e.g. `ingestion-freshness`,
+`validation-score`, `doc-health`). On create it is carried in the `POST /spoke/dg/metric`
+request body and must be unique — a colliding id returns `409 METRIC_EXISTS`. Used in
+route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_id}`.
 
-**Definition body** (PUT/PATCH `.../attr/conf`):
+**Definition body** (`POST /spoke/dg/metric`, PUT/PATCH `.../attr/conf`):
 
 | Field | Type | Notes |
 |---|---|---|
-| `mode` | `"active"` \| `"passive"` | `passive` is reserved; PUT with `mode: "passive"` returns `501 NOT_IMPLEMENTED` |
+| `metric_id` | string | **Create only** (`POST /spoke/dg/metric` body). Kebab-case slug matching `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$\|^[a-z0-9]$`; `422 INVALID_PARAMETER` on bad format, `409 METRIC_EXISTS` on collision. On PUT/PATCH the id comes from the path |
+| `mode` | `"active"` \| `"passive"` | `passive` is reserved; create/PUT with `mode: "passive"` returns `501 NOT_IMPLEMENTED` |
 | `is_enabled` | bool | Required; controls scheduled execution |
 | `metric_type` | `"ingestion-freshness"` \| `"validation-score"` \| `"doc-health"` | Unsupported values return `422 INVALID_PARAMETER` |
 | `title` | string | Display title |
 | `description` | string | What the metric measures |
 | `metrics` | string[] | Subset of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER` |
-| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds); `doc-health` takes `{}` |
+| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds) — the fallback window when no per-dataset window can be derived (see USE_CASE §UC5); `doc-health` takes `{}` |
 | `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
 | `dataset_filter` | object | Optional `{origin?, tags?[], glossary_terms?[], dataset_urns?[]}`. `origin` is the DataHub `FabricType` value carried as the third URN segment (e.g. `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…); DataSpoke forwards it verbatim and lets DataHub reject unknowns, but an empty-or-whitespace-only `origin` is rejected at PUT/PATCH with `422 INVALID_PARAMETER`. The other three dimensions are OR-ed among themselves and AND-ed with `origin`. `{}` = all datasets. See [DATAHUB_INTEGRATION §Origin filter group](DATAHUB_INTEGRATION.md#origin-filter-group) for the resolver shape |
 
@@ -412,10 +414,11 @@ validation.
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by `metric_type`, `mode`, `is_enabled`) | Governance | UC5 |
+| `POST` | `/spoke/dg/metric` | Create a metric; `metric_id` supplied in body. Returns `409 METRIC_EXISTS` on a colliding id, `501 NOT_IMPLEMENTED` when `mode: "passive"` | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (mode, metric_type, schedule_tier, enabled status, latest `values`) | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition | Governance | UC5 |
-| `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Create or replace metric definition | Governance | UC5 |
+| `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Replace an existing metric definition; `404 METRIC_NOT_FOUND` when the id is absent (use `POST /spoke/dg/metric` to create) | Governance | UC5 |
 | `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
 | `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; `?from=…&to=…` for time range) | Governance | UC5 |
@@ -668,12 +671,13 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `METAGEN_DATASET_NOT_IN_BOUNDARY` | 422 | Candidate review attempted on an item whose dataset has no `is_enabled=true` per-dataset metagen boundary |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `METRIC_DISABLED` | 409 | Metric definition has `is_enabled=false`; non-dry-run rejected |
+| `METRIC_EXISTS` | 409 | `POST /spoke/dg/metric` body carries a `metric_id` that already exists |
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
 | `ONTOGEN_DISABLED` | 409 | Ontogen conf has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/common/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/common/ontogen/method/run`) bodies are capped at 128 KiB |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for `ontogen/attr/conf`, `metagen/attr/conf`, and `metric/{id}/attr/conf` |
-| `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `PUT /spoke/dg/metric/{id}/attr/conf` when `mode: "passive"` |
+| `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `POST /spoke/dg/metric` and `PUT /spoke/dg/metric/{id}/attr/conf` when `mode: "passive"` |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |

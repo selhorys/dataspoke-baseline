@@ -8,6 +8,13 @@ User story:
   ingestion freshness, validation score, and documentation health — that I
   can schedule, scope, and trend over time, so that I can monitor estate
   health without curating dashboards by hand.'
+
+Contract exercised here:
+  - Metric creation uses POST /spoke/dg/metric with metric_id in the body (→ 201).
+  - PUT /{id}/attr/conf is replace-only (→ 200 on existing, 404 METRIC_NOT_FOUND when absent).
+  - metric_conf.time_window_sec is the fallback window (factory default 172800);
+    per-dataset windows are derived by the server — api-wired does not assert
+    exact window counts (real-pipeline timing is nondeterministic).
 """
 
 # spec: USE_CASE_en.md §UC5 §Imazon Example
@@ -31,28 +38,40 @@ async def test_uc5_governance_imazon_example(
 
     USE_CASE narrative shows doc-health; the test exercises all three built-in
     active metric types in parallel to cover the full loop.
+
+    Steps:
+      1   — CDO creates three DEV-scoped daily metrics via POST (metric_id in body) → 201
+      1b  — Re-POST same metric_id (collision) → 409 METRIC_EXISTS
+      1c  — PUT replace-only: existing id → 200 + change reflected; absent id → 404 METRIC_NOT_FOUND
+      2   — CDO triggers immediate first run for each metric → 200 + non-empty run_id
+      3   — Trends pulled over a one-week window → at least one result row per metric;
+            values is a dict whose keys match the metric's declared metrics list
+      4   — Cleanup: DELETE each created metric (204 or 404 both acceptable)
     """
     # The three built-in active metric types — created DEV-scoped, daily, enabled.
     # spec: USE_CASE_en.md §UC5 §Built-in active metric types
+    #
+    # metric_conf.time_window_sec=172800 is the fallback window (factory default).
+    # spec: USE_CASE_en.md §UC5 §Built-in active metric types — factory default 172800.
     metrics_to_create = [
         {
-            "id": "ingestion-freshness-dev",
+            "metric_id": "ingestion-freshness-dev",
             "type": "ingestion-freshness",
             "title": "Ingestion Freshness (DEV)",
             "description": "Daily count of datasets ingested within the configured time window across DEV",
             "metrics": ["total", "ingested_in_time"],
-            "metric_conf": {"time_window_sec": 86400},
+            "metric_conf": {"time_window_sec": 172800},
         },
         {
-            "id": "validation-score-dev",
+            "metric_id": "validation-score-dev",
             "type": "validation-score",
             "title": "Validation Score (DEV)",
             "description": "Daily sum of dataset validation scores within the configured time window across DEV",
             "metrics": ["total", "validation_score_sum"],
-            "metric_conf": {"time_window_sec": 86400},
+            "metric_conf": {"time_window_sec": 172800},
         },
         {
-            "id": "doc-health-dev",
+            "metric_id": "doc-health-dev",
             "type": "doc-health",
             "title": "Doc Health (DEV)",
             "description": "Daily documentation-completeness check across DEV datasets",
@@ -61,16 +80,24 @@ async def test_uc5_governance_imazon_example(
         },
     ]
 
+    # Throwaway id used in Step 1c(b) to test absent-id 404.
+    _THROWAWAY_ID = "uc5-put-absent-test"
+    _throwaway_conf_url = f"/api/v1/spoke/dg/metric/{_THROWAWAY_ID}/attr/conf"
+
     try:
         # ── Step 1: CDO creates three DEV-scoped daily metrics ────────────────
         # UC5 Imazon Example: "The CDO adds the doc-health metric with a
-        # DEV-scoped daily run." Mirrored across the three built-in active types.
-        # spec: USE_CASE_en.md §UC5 §Imazon Example
+        # DEV-scoped daily run, supplying the metric_id in the create body."
+        # Mirrored across all three built-in active types.
+        # spec: USE_CASE_en.md §UC5 §Imazon Example — POST /spoke/dg/metric,
+        #       metric_id supplied in body, returns 201.
+        # spec: API.md §Metric — POST /spoke/dg/metric creates; 409 METRIC_EXISTS on collision.
         for cfg in metrics_to_create:
-            put_resp = await api_client.put(
-                f"/api/v1/spoke/dg/metric/{cfg['id']}/attr/conf",
+            post_resp = await api_client.post(
+                "/api/v1/spoke/dg/metric",
                 headers=admin_headers,
                 json={
+                    "metric_id": cfg["metric_id"],
                     "mode": "active",
                     "is_enabled": True,
                     "metric_type": cfg["type"],
@@ -82,26 +109,125 @@ async def test_uc5_governance_imazon_example(
                     "dataset_filter": {"origin": "DEV"},
                 },
             )
-            assert put_resp.status_code in (200, 201), (
-                f"PUT {cfg['id']} failed: {put_resp.status_code} {put_resp.text}"
+            assert post_resp.status_code == 201, (
+                f"POST /spoke/dg/metric for '{cfg['metric_id']}' expected 201, "
+                f"got {post_resp.status_code}: {post_resp.text}. "
+                "spec: USE_CASE_en.md §UC5 §Imazon Example."
             )
+
+        # ── Step 1b: Collision rejection ──────────────────────────────────────
+        # Re-POSTing with the same metric_id must return 409 METRIC_EXISTS.
+        # spec: API.md §Metric — colliding id returns 409 METRIC_EXISTS.
+        # spec: API.md §Error Catalogue — error envelope: top-level error_code field.
+        collision_cfg = metrics_to_create[0]  # use ingestion-freshness-dev
+        collision_resp = await api_client.post(
+            "/api/v1/spoke/dg/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": collision_cfg["metric_id"],
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": collision_cfg["type"],
+                "title": collision_cfg["title"],
+                "description": collision_cfg["description"],
+                "metrics": collision_cfg["metrics"],
+                "metric_conf": collision_cfg["metric_conf"],
+                "schedule_tier": "daily",
+                "dataset_filter": {"origin": "DEV"},
+            },
+        )
+        assert collision_resp.status_code == 409, (
+            f"Re-POST of existing metric_id '{collision_cfg['metric_id']}' expected 409, "
+            f"got {collision_resp.status_code}: {collision_resp.text}. "
+            "spec: API.md §Metric — colliding id returns 409 METRIC_EXISTS."
+        )
+        assert collision_resp.json().get("error_code") == "METRIC_EXISTS", (
+            f"Expected error_code='METRIC_EXISTS' on collision; "
+            f"got {collision_resp.json().get('error_code')!r}. "
+            "spec: API.md §Error Catalogue."
+        )
+
+        # ── Step 1c: PUT replace-only semantics ───────────────────────────────
+        # (a) PUT on an existing id → 200, change is reflected on GET.
+        # spec: API.md §Metric — PUT .../attr/conf replaces existing definition, returns 200.
+        replace_cfg = metrics_to_create[2]  # use doc-health-dev
+        replace_url = f"/api/v1/spoke/dg/metric/{replace_cfg['metric_id']}/attr/conf"
+        replace_resp = await api_client.put(
+            replace_url,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": replace_cfg["type"],
+                "title": replace_cfg["title"],
+                "description": "Updated description for replace-only test",
+                "metrics": replace_cfg["metrics"],
+                "metric_conf": replace_cfg["metric_conf"],
+                "schedule_tier": "daily",
+                "dataset_filter": {"origin": "DEV"},
+            },
+        )
+        assert replace_resp.status_code == 200, (
+            f"PUT on existing '{replace_cfg['metric_id']}' expected 200, "
+            f"got {replace_resp.status_code}: {replace_resp.text}. "
+            "spec: API.md §Metric — PUT replaces existing definition, returns 200."
+        )
+        get_after_replace = await api_client.get(replace_url, headers=admin_headers)
+        assert get_after_replace.status_code == 200
+        assert get_after_replace.json()["description"] == "Updated description for replace-only test", (
+            "PUT change to 'description' must be reflected on GET. "
+            "spec: API.md §Metric."
+        )
+
+        # (b) PUT on an absent id (never created) → 404 METRIC_NOT_FOUND.
+        # spec: API.md §Metric — PUT returns 404 METRIC_NOT_FOUND when the id is absent
+        #       (use POST /spoke/dg/metric to create).
+        # Ensure throwaway does not exist before testing.
+        await api_client.delete(_throwaway_conf_url, headers=admin_headers)
+        absent_put_resp = await api_client.put(
+            _throwaway_conf_url,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "is_enabled": False,
+                "metric_type": "doc-health",
+                "title": "Should Fail",
+                "description": "PUT on absent id must return 404",
+                "metrics": ["total", "doc_health"],
+                "metric_conf": {},
+                "schedule_tier": "daily",
+                "dataset_filter": {},
+            },
+        )
+        assert absent_put_resp.status_code == 404, (
+            f"PUT on absent '{_THROWAWAY_ID}' expected 404 METRIC_NOT_FOUND, "
+            f"got {absent_put_resp.status_code}: {absent_put_resp.text}. "
+            "spec: API.md §Metric — PUT returns 404 METRIC_NOT_FOUND when id is absent."
+        )
+        assert absent_put_resp.json().get("error_code") == "METRIC_NOT_FOUND", (
+            f"Expected error_code='METRIC_NOT_FOUND'; "
+            f"got {absent_put_resp.json().get('error_code')!r}. "
+            "spec: API.md §Error Catalogue."
+        )
 
         # ── Step 2: CDO triggers an immediate first run for each metric ───────
         # UC5 Imazon Example: "The CDO triggers an immediate first run rather
         # than waiting for the schedule."
         # spec: USE_CASE_en.md §UC5 §Imazon Example
+        # spec: API.md §Metric — POST .../method/run returns 200 with run_id.
         for cfg in metrics_to_create:
             run_resp = await api_client.post(
-                f"/api/v1/spoke/dg/metric/{cfg['id']}/method/run",
+                f"/api/v1/spoke/dg/metric/{cfg['metric_id']}/method/run",
                 headers=admin_headers,
                 json={"dry_run": False},
             )
             assert run_resp.status_code == 200, (
-                f"POST method/run for {cfg['id']} failed: "
-                f"{run_resp.status_code} {run_resp.text}"
+                f"POST method/run for '{cfg['metric_id']}' expected 200, "
+                f"got {run_resp.status_code}: {run_resp.text}. "
+                "spec: USE_CASE_en.md §UC5 §API Mapping."
             )
             assert run_resp.json().get("run_id"), (
-                f"Run response for {cfg['id']} must carry a non-empty run_id. "
+                f"Run response for '{cfg['metric_id']}' must carry a non-empty run_id. "
                 "spec: USE_CASE_en.md §UC5 §API Mapping."
             )
 
@@ -109,19 +235,26 @@ async def test_uc5_governance_imazon_example(
         # UC5 Imazon Example: "A week later, trends are pulled for a board update"
         # with from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z (one week span).
         # spec: USE_CASE_en.md §UC5 §Imazon Example
+        #
+        # No exact window-count assertions — per-dataset window math is nondeterministic
+        # against real-pipeline timing and is fully covered by the spot suite.
+        # spec: TESTING.md §Spot vs Api-Wired Integration Tests.
         now = datetime.now(tz=UTC)
         from_ts = (now - timedelta(days=7)).isoformat()
         to_ts = (now + timedelta(days=1)).isoformat()  # +1 day padding to include the run just triggered
         for cfg in metrics_to_create:
             results_resp = await api_client.get(
-                f"/api/v1/spoke/dg/metric/{cfg['id']}/attr/result",
+                f"/api/v1/spoke/dg/metric/{cfg['metric_id']}/attr/result",
                 params={"from": from_ts, "to": to_ts},
                 headers=admin_headers,
             )
-            assert results_resp.status_code == 200
+            assert results_resp.status_code == 200, (
+                f"GET attr/result for '{cfg['metric_id']}' expected 200, "
+                f"got {results_resp.status_code}: {results_resp.text}."
+            )
             results = results_resp.json().get("results", [])
             assert results, (
-                f"Expected at least one result row for {cfg['id']} after a successful run. "
+                f"Expected at least one result row for '{cfg['metric_id']}' after a successful run. "
                 "spec: USE_CASE_en.md §UC5."
             )
             assert isinstance(results[0]["values"], dict), (
@@ -129,17 +262,23 @@ async def test_uc5_governance_imazon_example(
                 "spec: USE_CASE_en.md §UC5 §Built-in active metric types."
             )
             assert set(results[0]["values"].keys()) == set(cfg["metrics"]), (
-                f"{cfg['id']} values keys must equal the declared metrics "
+                f"'{cfg['metric_id']}' values keys must equal the declared metrics "
                 f"{set(cfg['metrics'])}. "
                 "spec: USE_CASE_en.md §UC5 §Built-in active metric types."
             )
 
     finally:
         # ── Step 4: Cleanup ───────────────────────────────────────────────────
-        # 204 = deleted; 404 = metric never created (PUT failed). Both are correct.
+        # 204 = deleted; 404 = metric was never created (POST failed) or already gone.
+        # Both are acceptable for idempotent teardown.
         for cfg in metrics_to_create:
             del_resp = await api_client.delete(
-                f"/api/v1/spoke/dg/metric/{cfg['id']}/attr/conf",
+                f"/api/v1/spoke/dg/metric/{cfg['metric_id']}/attr/conf",
                 headers=admin_headers,
             )
-            assert del_resp.status_code in (204, 404)
+            assert del_resp.status_code in (204, 404), (
+                f"DELETE '{cfg['metric_id']}' expected 204 or 404, "
+                f"got {del_resp.status_code}: {del_resp.text}."
+            )
+        # Also clean up throwaway id from Step 1c(b) pre-flight delete.
+        await api_client.delete(_throwaway_conf_url, headers=admin_headers)

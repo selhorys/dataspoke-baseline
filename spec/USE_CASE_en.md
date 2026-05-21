@@ -672,12 +672,14 @@ are NOT pre-computed by the server — clients derive them from the named fields
 
 | `metric_type` | Emitted `values` keys | Meaning of each key |
 |---|---|---|
-| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = count of datasets matched by `dataset_filter`; `ingested_in_time` = count whose latest `INGESTION.COMPLETE` was less than `metric_conf.time_window_sec` ago |
-| `validation-score` | `total`, `validation_score_sum` | `total` = count of datasets matched by `dataset_filter`; `validation_score_sum` = sum of each dataset's latest validation `score` in the time range from `metric_conf.time_window_sec` ago to now (0.0 when the dataset has no validation result inside that window) |
+| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = count of datasets matched by `dataset_filter`; `ingested_in_time` = count whose latest `INGESTION.COMPLETE` falls within a **per-dataset freshness window**. The window is derived from each dataset's ingestion config: active-custom → twice its `schedule_tier` period (`hourly`→7200s, `daily`→172800s, `weekly`→1209600s); passive → twice the DataHub-sync cadence (hourly → 7200s); a dataset with no config (or an active-custom config with no `schedule_tier`) falls back to `metric_conf.time_window_sec`. The doubling leaves room for transient late ingestion |
+| `validation-score` | `total`, `validation_score_sum` | `total` = count of datasets matched by `dataset_filter`; `validation_score_sum` = sum of each dataset's latest validation `score` within a **per-dataset window** = 2 × the mean gap between that dataset's last N validation records (N from `DATASPOKE_VALIDATION_SCORE_N_INTERVALS`, default 3). A dataset with fewer than N intervals falls back to `metric_conf.time_window_sec`; the contribution is 0.0 when there is no validation result inside the window |
 | `doc-health` | `total`, `doc_health` | `total` = count of datasets matched by `dataset_filter`; `doc_health` = sum of per-dataset documentation scores, where a dataset scores `1.0` iff it has a non-empty table description AND every column carries a non-empty description, else `0.0` |
 
 `metric_conf` carries type-specific parameters: `time_window_sec` for
-`ingestion-freshness` and `validation-score`; empty `{}` for `doc-health`.
+`ingestion-freshness` and `validation-score` — the **fallback** window (positive int
+seconds, factory default `172800`) used when no per-dataset window can be derived; empty
+`{}` for `doc-health`.
 
 `dataset_filter` carries four optional dimensions: `origin` (the DataHub `FabricType`
 value carried as the third URN segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` /
@@ -706,7 +708,8 @@ delete any default, and add more metrics of the same three types.
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | Define / update / read a metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`) |
+| `POST /spoke/dg/metric` | Create a metric — `metric_id` is supplied in the request body alongside the definition fields. A colliding id returns `409 METRIC_EXISTS` |
+| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | Replace / update / read / delete an existing metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT` replaces an existing definition and returns `404 METRIC_NOT_FOUND` when the id is absent |
 | `POST /spoke/dg/metric/{metric_id}/method/run` | Trigger a measurement run; `dry_run: true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
 | `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries `values` and per-dataset `breakdown`) |
 | `GET /spoke/dg/metric/{metric_id}/event` | Run completion / definition change events |
@@ -718,13 +721,15 @@ metric is invoked on its tier; on-demand runs always go through
 
 ### Imazon Example
 
-The CDO add the doc-health metric with a DEV-scoped daily run:
+The CDO add the doc-health metric with a DEV-scoped daily run, supplying the `metric_id`
+in the create body:
 
 ```http
-PUT /api/v1/spoke/dg/metric/doc-health-dev/attr/conf
+POST /api/v1/spoke/dg/metric
 ```
 ```json
 {
+  "metric_id": "doc-health-dev",
   "mode": "active",
   "is_enabled": true,
   "metric_type": "doc-health",

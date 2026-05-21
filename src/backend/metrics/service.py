@@ -12,6 +12,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import sqlalchemy.exc
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -196,7 +197,7 @@ class MetricsService:
     async def get_metric_config(self, metric_id: str) -> MetricDefinitionRecord:
         return await self.get_metric(metric_id)
 
-    async def upsert_metric_config(
+    async def create_metric_config(
         self,
         metric_id: str,
         mode: str,
@@ -208,55 +209,103 @@ class MetricsService:
         dataset_filter: dict[str, Any],
         schedule_tier: str | None = None,
         is_enabled: bool = False,
-    ) -> tuple[MetricDefinitionRecord, bool]:
+    ) -> MetricDefinitionRecord:
+        """Create a new metric definition.
+
+        Raises ``ConflictError("METRIC_EXISTS", ...)`` when a definition with
+        ``metric_id`` already exists.  The concurrent-create race (two callers
+        pass the SELECT check simultaneously) is closed by catching the
+        primary-key ``IntegrityError`` on commit.
+        """
+        validate_dataset_filter_service(dataset_filter)
+
+        result = await self._db.execute(
+            select(MetricDefinition).where(MetricDefinition.id == metric_id)
+        )
+        if result.scalar_one_or_none() is not None:
+            raise ConflictError("METRIC_EXISTS", f"Metric {metric_id} already exists")
+
+        row = MetricDefinition(
+            id=metric_id,
+            mode=mode,
+            metric_type=metric_type,
+            title=title,
+            description=description,
+            metrics=metrics,
+            metric_conf=metric_conf,
+            dataset_filter=dataset_filter,
+            schedule_tier=schedule_tier,
+            is_enabled=is_enabled,
+        )
+        self._db.add(row)
+
+        try:
+            await self._db.commit()
+        except sqlalchemy.exc.IntegrityError:
+            await self._db.rollback()
+            raise ConflictError("METRIC_EXISTS", f"Metric {metric_id} already exists")
+
+        await self._db.refresh(row)
+
+        await self._record_event(
+            metric_id,
+            METRIC_CONFIG_CREATE,
+            "success",
+            {"operation": "POST", "metric_id": metric_id},
+        )
+
+        return _definition_from_row(row)
+
+    async def replace_metric_config(
+        self,
+        metric_id: str,
+        mode: str,
+        metric_type: str,
+        title: str,
+        description: str,
+        metrics: list[str],
+        metric_conf: dict[str, Any],
+        dataset_filter: dict[str, Any],
+        schedule_tier: str | None = None,
+        is_enabled: bool = False,
+    ) -> MetricDefinitionRecord:
+        """Replace an existing metric definition.
+
+        Raises ``EntityNotFoundError("metric", metric_id)`` when the definition
+        does not exist.  Use ``create_metric_config`` to create new entries.
+        """
         validate_dataset_filter_service(dataset_filter)
 
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
         )
         existing = result.scalar_one_or_none()
+        if existing is None:
+            raise EntityNotFoundError("metric", metric_id)
 
-        if existing:
-            existing.mode = mode
-            existing.metric_type = metric_type
-            existing.title = title
-            existing.description = description
-            existing.metrics = metrics
-            existing.metric_conf = metric_conf
-            existing.dataset_filter = dataset_filter
-            existing.schedule_tier = schedule_tier
-            existing.is_enabled = is_enabled
-            existing.updated_at = datetime.now(tz=UTC)
-            self._db.add(existing)
-            created = False
-        else:
-            existing = MetricDefinition(
-                id=metric_id,
-                mode=mode,
-                metric_type=metric_type,
-                title=title,
-                description=description,
-                metrics=metrics,
-                metric_conf=metric_conf,
-                dataset_filter=dataset_filter,
-                schedule_tier=schedule_tier,
-                is_enabled=is_enabled,
-            )
-            self._db.add(existing)
-            created = True
+        existing.mode = mode
+        existing.metric_type = metric_type
+        existing.title = title
+        existing.description = description
+        existing.metrics = metrics
+        existing.metric_conf = metric_conf
+        existing.dataset_filter = dataset_filter
+        existing.schedule_tier = schedule_tier
+        existing.is_enabled = is_enabled
+        existing.updated_at = datetime.now(tz=UTC)
+        self._db.add(existing)
 
         await self._db.commit()
         await self._db.refresh(existing)
 
-        event_type = METRIC_CONFIG_CREATE if created else METRIC_CONFIG_UPDATE
         await self._record_event(
             metric_id,
-            event_type,
+            METRIC_CONFIG_UPDATE,
             "success",
             {"operation": "PUT", "metric_id": metric_id},
         )
 
-        return _definition_from_row(existing), created
+        return _definition_from_row(existing)
 
     async def patch_metric_config(
         self, metric_id: str, patch: dict[str, Any]
@@ -295,7 +344,8 @@ class MetricsService:
             if tw is None or not isinstance(tw, int) or tw <= 0:
                 raise PreconditionFailedError(
                     "INVALID_PARAMETER",
-                    f"metric_conf.time_window_sec must be a positive int for metric_type '{merged_type}'",
+                    "metric_conf.time_window_sec must be a positive int"
+                    f" for metric_type '{merged_type}'",
                 )
         elif merged_type == "doc-health":
             if merged_conf != {}:

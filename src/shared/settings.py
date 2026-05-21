@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     metagen_ontology_rag_edge_k: int = Field(default=5, ge=0, le=20)
     metagen_ontology_rag_triple_k: int = Field(default=5, ge=0, le=20)
 
+    # Governance metrics — validation-score per-dataset window
+    # Number of inter-arrival intervals used to estimate the per-dataset
+    # validation cadence (env: DATASPOKE_VALIDATION_SCORE_N_INTERVALS).
+    validation_score_n_intervals: int = Field(default=3, ge=1)
+
     # Langfuse observability (all optional — when unset no traces are emitted)
     langfuse_host: str | None = None
     langfuse_public_key: str | None = None
