@@ -53,7 +53,7 @@ Two enforcement layers stack:
 
 | Parameter | Value |
 |-----------|-------|
-| Max iterations | `3` per service, overridable via `DATASPOKE_ONTOGEN_LLM_MAX_ITERATIONS` / `DATASPOKE_METAGEN_LLM_MAX_ITERATIONS`. One iteration = one model invocation. |
+| Max iterations | `3` per service, set by the `ontogen_llm_max_iterations` / `metagen_llm_max_iterations` runtime config (`/api/v1/admin/conf`). One iteration = one model invocation. |
 | Exhaustion behavior | Soft. The last candidate is accepted; rows that fail individual rules are dropped before persistence. The run is **not** marked failed on validation exhaustion — UC3/UC4 gate persistence through a human reviewer. |
 | Observability | The run-complete event carries `producer_iterations` (1–`max`) and `producer_errors_dropped` (row count) reflecting the Producer-turn inference loop. Per-rule error samples are logged but not surfaced in the synchronous response. |
 
@@ -121,7 +121,7 @@ turn 1  Reviewer  → consumes candidate + RAG anchors, calls ontogen_review
         revise|reject → feed verdicts back to Producer
 turn 2  Producer  → revises (apply, drop, or rebut per item) + revalidate
 turn 3  Reviewer  → re-reviews
-...     bounded by DATASPOKE_ONTOGEN_DEBATE_MAX_TURNS (default 4)
+...     bounded by ontogen_debate_max_turns (default 4)
 exit    accept | turns_exhausted | cycle_detected
 ```
 
@@ -185,7 +185,7 @@ verdict. Adding a new code is a spec change.
 ### RAG anchors
 
 Reviewer-only context. For each proposed item, pgvector-sample top-K
-(`DATASPOKE_ONTOGEN_DEBATE_RAG_K`, default 5) anchor items by similarity. The
+(`ontogen_debate_rag_k`, default 5) anchor items by similarity. The
 anchor pool is `status IN ('approved', 'llm_approved')` — i.e. anything that
 passed at least one gate (human review or the Adversarial Debate's auto-approval
 path) qualifies, keeping cold-start ergonomics workable on fresh installs:
@@ -348,7 +348,7 @@ ontogen pgvector collections (`node_embeddings`, `edge_embeddings`,
 `triple_embeddings`). Hits surface in the Producer prompt as approved
 ontology fragments scoped to that dataset's semantics. Reviewer never sees
 them — they are evidence, not anchors. Tunable via
-`DATASPOKE_METAGEN_ONTOLOGY_RAG_{NODE,EDGE,TRIPLE}_K`; see
+`metagen_ontology_rag_{node,edge,triple}_k`; see
 [BACKEND §Metadata Generation Service §Generation Pipeline step 3](BACKEND.md#metadata-generation-service-srcbackendmetagen)
 for the evidence-assembly flow.
 
@@ -458,27 +458,77 @@ background; on permanent failure traces are dropped silently.
 
 ## Settings Reference
 
-All env vars are read once at process startup via the `Settings` Pydantic
-class (`src/shared/settings.py`).
+Configuration splits into two surfaces: **runtime configuration** (behavioral
+tunables stored in the DB and edited at runtime) and **process environment**
+(connection, secret, and test settings read once at startup via the `Settings`
+Pydantic class, `src/shared/settings.py`).
+
+### Runtime configuration
+
+The behavioral tunables live in the `runtime_config` singleton (see
+[`BACKEND_SCHEMA.md`](BACKEND_SCHEMA.md)) and are read and updated through
+`GET`/`PATCH /api/v1/admin/conf`. They are seeded with the factory defaults
+below on first read and cached process-side with a short TTL, so a `PATCH`
+propagates to in-flight workers within the cache window. The LLM API key is
+edited through the same `/admin/conf` surface but is stored in a Kubernetes
+Secret rather than the DB — see [LLM API key](#llm-api-key) below.
+
+| Field | Default | Bounds | Owner |
+|-------|---------|--------|-------|
+| `llm_provider` | `gemini` | — | shared LLM client |
+| `llm_model` | `gemini-3.5-flash` | — | shared LLM client |
+| `ontogen_llm_max_iterations` | `3` | [1, 20] | ontogen inference loop |
+| `ontogen_debate_max_turns` | `4` | [2, 10] | ontogen debate |
+| `ontogen_debate_rag_k` | `5` | [0, 20] | ontogen debate |
+| `ontogen_debate_reviewer_model` | null → reuse `llm_model` | — | ontogen debate |
+| `metagen_llm_max_iterations` | `3` | [1, 20] | metagen inference loop |
+| `metagen_debate_max_turns` | `4` | [2, 10] | metagen debate |
+| `metagen_debate_rag_k` | `5` | [0, 20] | metagen debate |
+| `metagen_debate_reviewer_model` | null → reuse `llm_model` | — | metagen debate |
+| `metagen_confidence_threshold` | `0.7` | [0.0, 1.0] | metagen persistence gate |
+| `metagen_ontology_rag_node_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
+| `metagen_ontology_rag_edge_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
+| `metagen_ontology_rag_triple_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
+| `validation_score_n_intervals` | `3` | ≥ 1 | governance validation-cadence window |
+
+The ontogen persistence gate uses the fixed `ONTOLOGY_CONFIDENCE_THRESHOLD`
+backend constant (see [`BACKEND.md`](BACKEND.md)), not a runtime tunable.
+
+### LLM API key
+
+The LLM provider API key is a DataSpoke-owned secret stored in a dedicated
+Kubernetes Secret **`dataspoke-llm-secret`** (key `api_key`, base64) in the API
+pod's own namespace. It is **not** an injected environment variable and **not**
+a `runtime_config` column.
+
+- **Read** — the backend resolves the key from the Secret via the in-cluster
+  Kubernetes API at LLM-call time, behind a short-TTL process cache (the same
+  in-cluster client + cache machinery as the source-credential resolver, see
+  [`SECRET_RESOLUTION.md`](SECRET_RESOLUTION.md)). `make_llm` consumes the
+  resolved value; the provider/model come from `runtime_config`.
+- **Write (online)** — `PATCH /api/v1/admin/conf` accepts `llm_api_key`; the
+  handler writes it to the Secret (create-or-patch) and invalidates the cache,
+  so a subsequent LLM call on that replica uses it immediately and other
+  replicas converge within the TTL. No pod restart or Helm upgrade is needed.
+- **Masked read** — `GET /api/v1/admin/conf` returns `llm_api_key` as `""`
+  (unset) or `"********"` (set); the plaintext is never returned.
+- **Distinct from source-credential resolution** — that subsystem governs
+  *user-supplied* source credentials and guards writes with the
+  `dataspoke-source-cred-` name prefix to keep callers away from DataSpoke's own
+  Secrets. The LLM key is a DataSpoke-owned Secret, so its accessor targets the
+  fixed `dataspoke-llm-secret` name and is gated by the `admin` group (or
+  `X-Internal-Token`) — the fixed target plus admin auth are the controls, so
+  the source-cred prefix guard does not apply.
+- **Host-mode fallback** — out of cluster (`uv run -m src.cli`, unit tests) the
+  in-cluster config is unavailable; the accessor then falls back to the
+  `DATASPOKE_LLM_API_KEY` environment variable. The deployed in-cluster app
+  never reads the key from an env var.
+
+### Process environment
 
 | Env var | Default | Owner |
 |---------|---------|-------|
-| `DATASPOKE_LLM_PROVIDER` | — | shared |
-| `DATASPOKE_LLM_MODEL` | — | shared |
-| `DATASPOKE_LLM_API_KEY` | — | shared |
-| `DATASPOKE_ONTOGEN_LLM_MAX_ITERATIONS` | `3` | ontogen inference loop |
-| `DATASPOKE_METAGEN_LLM_MAX_ITERATIONS` | `3` | metagen inference loop |
-| `DATASPOKE_ONTOGEN_DEBATE_MAX_TURNS` | `4` | ontogen debate |
-| `DATASPOKE_ONTOGEN_DEBATE_RAG_K` | `5` | ontogen debate |
-| `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | ontogen debate |
-| `DATASPOKE_ONTOLOGY_CONFIDENCE_THRESHOLD` | `0.7` | ontogen persistence gate |
-| `DATASPOKE_METAGEN_DEBATE_MAX_TURNS` | `4` | metagen debate |
-| `DATASPOKE_METAGEN_DEBATE_RAG_K` | `5` | metagen debate |
-| `DATASPOKE_METAGEN_DEBATE_REVIEWER_MODEL` | unset → reuse producer model | metagen debate |
-| `DATASPOKE_METAGEN_CONFIDENCE_THRESHOLD` | `0.7` | metagen persistence gate |
-| `DATASPOKE_METAGEN_ONTOLOGY_RAG_NODE_K` | `5` | metagen Producer-evidence ontology RAG (set `0` to disable) |
-| `DATASPOKE_METAGEN_ONTOLOGY_RAG_EDGE_K` | `5` | metagen Producer-evidence ontology RAG (set `0` to disable) |
-| `DATASPOKE_METAGEN_ONTOLOGY_RAG_TRIPLE_K` | `5` | metagen Producer-evidence ontology RAG (set `0` to disable) |
+| `DATASPOKE_LLM_API_KEY` | unset | shared LLM client — **host-mode fallback only** (in-cluster the key is read from `dataspoke-llm-secret`) |
 | `DATASPOKE_TEST_MODE` | unset | test infra |
 | `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
 | `DATASPOKE_LANGFUSE_HOST` | unset | observability |
@@ -487,5 +537,5 @@ class (`src/shared/settings.py`).
 
 ## Open Questions
 
-- [ ] Reviewer model separation: when `DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL` (or its metagen counterpart) differs from the Producer model, the debate has two API keys / two SDK clients in flight. Pricing telemetry and rate-limit accounting need a per-role split.
+- [ ] Reviewer model separation: when `ontogen_debate_reviewer_model` (or its metagen counterpart) differs from the Producer model, the debate has two API keys / two SDK clients in flight. Pricing telemetry and rate-limit accounting need a per-role split.
 - [ ] Per-item Reviewer verdicts emitted on turn N can contradict turn N-1 verdicts on the same item; spec currently relies on the Reviewer's own consistency. If this drifts in practice, fold prior-turn verdicts into the Reviewer prompt as a constraint.

@@ -192,6 +192,8 @@ async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(cli
     """
     import src.backend.metagen.service as _mg_svc
 
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
     class _FakeSession:
         async def __aenter__(self):
             return AsyncMock()
@@ -201,6 +203,7 @@ async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(cli
 
     fake_conf = MagicMock()
     fake_conf.schedule_tier = "daily"
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
 
     run_mock = AsyncMock()
 
@@ -211,6 +214,10 @@ async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(cli
         patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
         patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
         patch.object(_mg_svc.MetagenService, "run", new=run_mock),
     ):
@@ -238,6 +245,8 @@ async def test_metagen_run_tier_match_invokes_run(client) -> None:
     """
     import src.backend.metagen.service as _mg_svc
 
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
     class _FakeSession:
         async def __aenter__(self):
             return AsyncMock()
@@ -247,6 +256,7 @@ async def test_metagen_run_tier_match_invokes_run(client) -> None:
 
     fake_conf = MagicMock()
     fake_conf.schedule_tier = "daily"
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
 
     _ds_error = DataSpokeError("stubbed metagen failure")
     run_mock = AsyncMock(side_effect=_ds_error)
@@ -258,6 +268,10 @@ async def test_metagen_run_tier_match_invokes_run(client) -> None:
         patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
         patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
         patch.object(_mg_svc.MetagenService, "run", new=run_mock),
     ):
@@ -284,6 +298,8 @@ async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(cli
     """
     import src.backend.ontogen.service as _onto_svc
 
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
     class _FakeSession:
         async def __aenter__(self):
             return AsyncMock()
@@ -293,6 +309,7 @@ async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(cli
 
     fake_conf = MagicMock()
     fake_conf.schedule_tier = "daily"
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
 
     run_mock = AsyncMock()
 
@@ -303,6 +320,10 @@ async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(cli
         patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
         patch.object(_onto_svc.OntogenService, "get_conf", new=AsyncMock(return_value=fake_conf)),
         patch.object(_onto_svc.OntogenService, "run", new=run_mock),
     ):
@@ -331,6 +352,8 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
     """
     import src.backend.ontogen.service as _onto_svc
 
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
     class _FakeSession:
         async def __aenter__(self):
             return AsyncMock()
@@ -340,6 +363,7 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
 
     fake_conf = MagicMock()
     fake_conf.schedule_tier = "daily"
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
 
     _ds_error = DataSpokeError("stubbed ontogen failure")
     run_mock = AsyncMock(side_effect=_ds_error)
@@ -351,6 +375,10 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
         patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
         patch.object(_onto_svc.OntogenService, "get_conf", new=AsyncMock(return_value=fake_conf)),
         patch.object(_onto_svc.OntogenService, "run", new=run_mock),
     ):
@@ -378,6 +406,8 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
     """
     import src.backend.ontogen.service as _onto_svc
 
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
     class _FakeSession:
         async def __aenter__(self):
             return AsyncMock()
@@ -385,6 +415,7 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
         async def __aexit__(self, *a):
             pass
 
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
     _ds_error = DataSpokeError("stubbed ontogen failure")
 
     with (
@@ -394,6 +425,10 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
         patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
         patch.object(_onto_svc.OntogenService, "run", new=AsyncMock(side_effect=_ds_error)),
     ):
         resp = await client.post(

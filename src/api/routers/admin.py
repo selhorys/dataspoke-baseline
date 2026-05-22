@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.auth.dependencies import require_admin
 from src.api.auth.internal import require_internal_token
 from src.api.dependencies import get_airflow_client, get_datahub, get_db
-from src.api.schemas.admin import DatahubSyncRequest
+from src.api.schemas.admin import DatahubSyncRequest, RuntimeConfPatchRequest, RuntimeConfResponse
+from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
+from src.backend.admin.llm_secret import llm_api_key_is_set, set_llm_api_key
+from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.registry import sync_with_datahub
 from src.workflows.airflow.client import AirflowClient
@@ -93,3 +96,117 @@ async def internal_datahub_sync(
         result["not_found"],
     )
     return result
+
+
+# ── Runtime configuration ──────────────────────────────────────────────────────
+
+
+def _dto_to_response(dto: object, updated_at: object) -> RuntimeConfResponse:
+    """Convert a RuntimeConfigDTO to the API response schema.
+
+    ``llm_api_key`` is always masked: ``"********"`` when set, ``""`` when unset.
+    The plaintext key is never included in the response.
+    """
+    from src.backend.admin.config_service import RuntimeConfigDTO
+
+    assert isinstance(dto, RuntimeConfigDTO)
+    return RuntimeConfResponse(
+        llm_provider=dto.llm_provider,
+        llm_model=dto.llm_model,
+        llm_api_key="********" if llm_api_key_is_set() else "",
+        ontogen_llm_max_iterations=dto.ontogen_llm_max_iterations,
+        ontogen_debate_max_turns=dto.ontogen_debate_max_turns,
+        ontogen_debate_rag_k=dto.ontogen_debate_rag_k,
+        ontogen_debate_reviewer_model=dto.ontogen_debate_reviewer_model,
+        metagen_llm_max_iterations=dto.metagen_llm_max_iterations,
+        metagen_debate_max_turns=dto.metagen_debate_max_turns,
+        metagen_debate_rag_k=dto.metagen_debate_rag_k,
+        metagen_debate_reviewer_model=dto.metagen_debate_reviewer_model,
+        metagen_confidence_threshold=dto.metagen_confidence_threshold,
+        metagen_ontology_rag_node_k=dto.metagen_ontology_rag_node_k,
+        metagen_ontology_rag_edge_k=dto.metagen_ontology_rag_edge_k,
+        metagen_ontology_rag_triple_k=dto.metagen_ontology_rag_triple_k,
+        validation_score_n_intervals=dto.validation_score_n_intervals,
+        updated_at=updated_at,
+    )
+
+
+async def _get_conf_with_updated_at(db: AsyncSession) -> RuntimeConfResponse:
+    from sqlalchemy import select
+
+    from src.shared.db.models import RuntimeConfig
+
+    dto = await get_runtime_config(db)
+    result = await db.execute(select(RuntimeConfig).where(RuntimeConfig.id == 1))
+    row = result.scalar_one_or_none()
+    updated_at = row.updated_at if row else None
+    return _dto_to_response(dto, updated_at)
+
+
+@router.get("/conf")
+async def get_conf(
+    db: AsyncSession = Depends(get_db),
+) -> RuntimeConfResponse:
+    """Return the current singleton runtime configuration."""
+    return await _get_conf_with_updated_at(db)
+
+
+async def _apply_patch_and_respond(
+    body: RuntimeConfPatchRequest,
+    db: AsyncSession,
+) -> RuntimeConfResponse:
+    """Shared handler for admin and internal PATCH /conf endpoints.
+
+    ``llm_api_key`` is routed to the Kubernetes Secret, never to the DB.
+    The Secret write happens first; if it fails (SecretResolverUnavailable →
+    StorageUnavailableError → 503) the DB patch is skipped.  An explicit ``""``
+    clears the key; omitting the field entirely leaves it unchanged.
+    """
+    from sqlalchemy import select
+
+    from src.shared.db.models import RuntimeConfig
+    from src.shared.exceptions import StorageUnavailableError
+
+    # Use exclude_unset=True WITHOUT exclude_none so explicit "" is preserved.
+    all_updates = body.model_dump(exclude_unset=True)
+
+    # Route llm_api_key to the Secret, not the DB.
+    if "llm_api_key" in all_updates:
+        key_value: str | None = all_updates.pop("llm_api_key")
+        if key_value is None:
+            key_value = ""
+        try:
+            set_llm_api_key(key_value)
+        except SecretResolverUnavailable as exc:
+            raise StorageUnavailableError(
+                "Kubernetes Secret unavailable; LLM API key could not be stored"
+            ) from exc
+
+    # Build DB-targeted updates: exclude None values (those mean "leave unchanged").
+    db_updates = {k: v for k, v in all_updates.items() if v is not None}
+    dto = await patch_runtime_config(db, **db_updates)
+    result = await db.execute(select(RuntimeConfig).where(RuntimeConfig.id == 1))
+    row = result.scalar_one_or_none()
+    updated_at = row.updated_at if row else None
+    return _dto_to_response(dto, updated_at)
+
+
+@router.patch("/conf")
+async def patch_conf(
+    body: RuntimeConfPatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> RuntimeConfResponse:
+    """Apply a partial update to the singleton runtime configuration."""
+    return await _apply_patch_and_respond(body, db)
+
+
+@internal_router.patch("/conf")
+async def internal_patch_conf(
+    body: RuntimeConfPatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> RuntimeConfResponse:
+    """Apply a partial update to the runtime configuration (internal — requires X-Internal-Token).
+
+    Intended for install scripts and dev-env seeding.
+    """
+    return await _apply_patch_and_respond(body, db)

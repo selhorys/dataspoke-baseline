@@ -102,7 +102,7 @@ DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
 Flags: `--skip-build`, `--health-check`, `--stop`.
 
-Set `DATASPOKE_TEST_LLM_REAL=true` (on the pod via `--set api.testLlmReal=true` and in the pytest shell) to bypass `StubLLMClient` and hit the real LLM from `DATASPOKE_LLM_API_KEY`. Used by `/test-api-wired-manual` for live ontogen-debate inspection. CI keeps it `false` for determinism.
+Set `DATASPOKE_TEST_LLM_REAL=true` (on the pod via `--set api.testLlmReal=true` and in the pytest shell) to bypass `StubLLMClient` and hit the real LLM. The pod reads the key from `DATASPOKE_LLM_API_KEY` in the `dataspoke-secrets` K8s Secret, which is populated from `DATASPOKE_DEV_LLM_API_KEY` in `.env` by `dataspoke-infra/install.sh`. Used by `/test-api-wired-manual` for live ontogen-debate inspection. CI keeps it `false` for determinism.
 
 ### 8. Populate dummy data
 

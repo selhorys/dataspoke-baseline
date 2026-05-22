@@ -116,7 +116,7 @@ See `.env.example` for the complete listing with comments. Key categories:
 | Example data creds | `*_EXAMPLE_PG_HOST`, `*_EXAMPLE_PG_PORT`, `*_EXAMPLE_KAFKA_BROKERS` | Dev-only; host and port resolve via ingress IP |
 | DataHub connection | `DATASPOKE_DATAHUB_GMS_URL`, `*_TOKEN`, `*_KAFKA_BROKERS` | App runtime — ingress URL in dev |
 | Infrastructure | `DATASPOKE_POSTGRES_HOST/PORT`, `*_REDIS_*`, `*_AIRFLOW_URL` | App runtime — ingress IP (TCP) or URL (HTTP) in dev |
-| LLM | `DATASPOKE_LLM_PROVIDER`, `*_API_KEY`, `*_MODEL` | App runtime |
+| LLM | `DATASPOKE_DEV_LLM_PROVIDER`, `DATASPOKE_DEV_LLM_API_KEY`, `DATASPOKE_DEV_LLM_MODEL` | Dev-tier — install.sh writes the key to the `dataspoke-llm-secret` Secret and PATCHes provider/model into the DB runtime config; the app reads the key from the Secret at runtime and provider/model from the DB |
 
 ### Policies
 
@@ -214,9 +214,13 @@ unless `SKIP_POSTGRES_BUILD=1`.
 | `dataspoke-postgres-secret` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
 | `dataspoke-redis-secret` | `REDIS_PASSWORD` |
 | `dataspoke-internal-auth` | `token` — auto-generated shared secret for Airflow → API internal calls |
+| `dataspoke-llm-secret` | `api_key` — LLM provider API key, sourced from `DATASPOKE_DEV_LLM_API_KEY` in `.env` |
 
-> LLM secrets are not deployed into the cluster. The host-running app reads them directly from
-> `.env`.
+> The LLM API key is **not** env-injected. `install.sh` writes it to the `dataspoke-llm-secret`
+> Secret from `DATASPOKE_DEV_LLM_API_KEY`; the API reads it at runtime via the Kubernetes API and
+> it can be rotated online through `/api/v1/admin/conf` (see
+> [`BACKEND_LLM.md` §LLM API key](BACKEND_LLM.md)). LLM provider/model are stored in the DB runtime
+> config table and seeded post-install by `install.sh`.
 
 ---
 

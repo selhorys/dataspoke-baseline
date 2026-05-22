@@ -68,6 +68,19 @@ kubectl create secret generic dataspoke-internal-auth \
   --from-literal=token="${DATASPOKE_INTERNAL_TOKEN}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
+# LLM API key — provisioned out-of-band so helm upgrade cannot clobber online
+# rotations done via PATCH /admin/conf. The app reads the key at runtime from
+# the dataspoke-llm-secret Secret via the Kubernetes API (api-secret-reader RBAC).
+if [[ -n "${DATASPOKE_DEV_LLM_API_KEY:-}" ]]; then
+  info "Applying dataspoke-llm-secret (LLM API key)..."
+  kubectl create secret generic dataspoke-llm-secret \
+    --namespace "${NS}" \
+    --from-literal=api_key="${DATASPOKE_DEV_LLM_API_KEY}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+else
+  info "DATASPOKE_DEV_LLM_API_KEY is unset — dataspoke-llm-secret not created; app will read key as unset until set via /admin/conf."
+fi
+
 # ---------------------------------------------------------------------------
 # Register required Helm repositories (idempotent)
 # ---------------------------------------------------------------------------
@@ -138,7 +151,6 @@ if [[ -d "$CHART_DIR" ]]; then
     --set-string secrets.datahub.token="${DATASPOKE_DATAHUB_TOKEN:-}" \
     --set-string secrets.airflow.user="${DATASPOKE_AIRFLOW_USER:-admin}" \
     --set-string secrets.airflow.password="${DATASPOKE_AIRFLOW_PASSWORD:-admin}" \
-    --set-string secrets.llm.apiKey="${DATASPOKE_LLM_API_KEY:-}" \
     --set-string config.langfuse.host="${DATASPOKE_LANGFUSE_HOST:-}" \
     --set-string config.langfuse.publicKey="${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" \
     --set-string config.airflow.callbackBaseUrl="http://dataspoke-api:8002" \
@@ -186,6 +198,30 @@ info "Waiting for Airflow api-server to become ready..."
 kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=5m \
   && info "Airflow api-server is ready." \
   || error "Airflow api-server did not become ready in time — check pod logs."
+
+# ---------------------------------------------------------------------------
+# Wait for DataSpoke API deployment, then seed dev LLM provider/model into
+# the runtime config table. The app factory defaults apply on first start;
+# this PATCH overrides them to match the dev-tier vars without embedding
+# provider/model in the ConfigMap.
+# ---------------------------------------------------------------------------
+info "Waiting for DataSpoke API to become ready..."
+kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
+  && info "DataSpoke API is ready." \
+  || warn "DataSpoke API did not become ready in time — skipping runtime config PATCH."
+
+if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" ]]; then
+  info "Seeding dev LLM provider/model into runtime config via /api/v1/internal/admin/conf..."
+  curl -fsS -X PATCH \
+    "http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}/api/v1/internal/admin/conf" \
+    -H "X-Internal-Token: ${DATASPOKE_INTERNAL_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"llm_provider\": \"${DATASPOKE_DEV_LLM_PROVIDER}\", \"llm_model\": \"${DATASPOKE_DEV_LLM_MODEL}\"}" \
+    && info "Runtime config patched: provider=${DATASPOKE_DEV_LLM_PROVIDER} model=${DATASPOKE_DEV_LLM_MODEL}." \
+    || warn "Runtime config PATCH failed — app will use factory defaults. Run manually after API is reachable."
+else
+  info "DATASPOKE_DEV_LLM_PROVIDER or DATASPOKE_DEV_LLM_MODEL not set — skipping runtime config PATCH."
+fi
 
 # ---------------------------------------------------------------------------
 # Print access instructions

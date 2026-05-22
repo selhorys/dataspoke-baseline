@@ -55,6 +55,8 @@ async def run_debate(
     max_turns: int,
     rag_k: int,
     reviewer_model: str | None,
+    llm_provider: str,
+    llm_base_model: str,
     producer_schema: type[BaseModel],
     producer_max_iterations: int,
     run_id: str,
@@ -66,7 +68,11 @@ async def run_debate(
     """
     # Use make_llm so test-mode stubbing applies to the Reviewer regardless of
     # whether a model override is set (direct LLMClient construction bypasses stubs).
-    reviewer_llm: LLMClient = make_llm(model_override=reviewer_model) if reviewer_model else llm
+    reviewer_llm: LLMClient = (
+        make_llm(provider=llm_provider, model=llm_base_model, model_override=reviewer_model)
+        if reviewer_model
+        else llm
+    )
 
     producer_hashes: list[str] = []
     history: list[DebateHistoryEntry] = []

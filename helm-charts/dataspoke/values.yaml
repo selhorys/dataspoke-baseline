@@ -377,29 +377,10 @@ config:
   airflow:
     url: "http://dataspoke-airflow-api-server:8080"
     callbackBaseUrl: "http://dataspoke-api:8002"
-  llm:
-    provider: "gemini"
-    model: "gemini-3.1-flash-lite"
   langfuse:
     host: ""          # set via install.sh in dev; via operator values override in prod
     publicKey: ""     # non-secret; placed in ConfigMap
     secretKey: ""     # secret; placed in Secret (never in ConfigMap)
-  ontogen:
-    debateMaxTurns: 4
-    debateRagK: 5
-    debateReviewerModel: ""
-    llmMaxIterations: 3
-  metagen:
-    debateMaxTurns: 4
-    debateRagK: 5
-    debateReviewerModel: ""
-    llmMaxIterations: 3
-    confidenceThreshold: 0.7
-    ontologyRagNodeK: 5
-    ontologyRagEdgeK: 5
-    ontologyRagTripleK: 5
-  metrics:
-    validationScoreNIntervals: 3
   corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------
@@ -417,8 +398,6 @@ secrets:
   airflow:
     user: ""
     password: ""
-  llm:
-    apiKey: ""
   langfuse:
     secretKey: ""      # Langfuse API secret key — set inline in prod, or use existingSecret
     # Alternative to secretKey: read from a pre-existing K8s Secret to avoid

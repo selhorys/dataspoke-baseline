@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.internal import require_internal_token
-from src.api.dependencies import get_datahub, get_db, get_llm, get_redis, get_vector
+from src.api.dependencies import get_datahub, get_db, get_redis, get_vector
 
 
 def _fake_request(**state: object):
@@ -33,10 +33,6 @@ class TestInfraProviders:
     def test_get_vector_returns_manager(self) -> None:
         sentinel = object()
         assert get_vector(_fake_request(vector=sentinel)) is sentinel
-
-    def test_get_llm_returns_client(self) -> None:
-        sentinel = object()
-        assert get_llm(_fake_request(llm=sentinel)) is sentinel
 
     @patch("src.api.dependencies.SessionLocal")
     async def test_get_db_yields_session(self, mock_session_local: object) -> None:

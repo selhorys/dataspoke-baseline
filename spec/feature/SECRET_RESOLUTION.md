@@ -309,6 +309,13 @@ No new columns. No DB migration. The resolver and writer are stateless (cache as
 `src/backend/ingestion/secret_resolver.py` (initial home; relocate under
 `src/shared/secrets/` when a second subsystem becomes a consumer).
 
+The LLM API key accessor ([`BACKEND_LLM.md` §LLM API key](BACKEND_LLM.md)) is a
+second consumer of the in-cluster client + TTL-cache machinery. It reuses that
+machinery but targets the fixed Secret `dataspoke-llm-secret` and is gated by the
+`admin` group, so it bypasses the source-cred prefix guard (the fixed target name
+plus admin auth are its controls). When that lift happens, the shared client/cache
+primitives move to `src/shared/secrets/` and both consumers import them.
+
 ### Public surface
 
 ```python
@@ -396,7 +403,9 @@ supported.
 Cross-reference: secret-management for DataSpoke's own infra credentials lives in
 [HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management). That section governs
 DataSpoke's runtime config (DataHub token, internal Postgres password, etc.); this spec
-governs how DataSpoke vaults and resolves *user-supplied source* credentials.
+governs how DataSpoke vaults and resolves *user-supplied source* credentials. The LLM API
+key is a third case — a DataSpoke-owned secret that is read at runtime *and* rotated online
+through `/admin/conf`; see [BACKEND_LLM §LLM API key](BACKEND_LLM.md).
 
 ## Open Questions
 

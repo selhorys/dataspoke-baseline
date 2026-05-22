@@ -396,7 +396,10 @@ access to the DataHub namespace; configure NetworkPolicy in clusters with defaul
 
 ### Configuration
 
-All runtime configuration is driven by **environment variables** with two tiers:
+Configuration splits across two mechanisms. **Connection, secret, and test settings** are
+driven by environment variables in two tiers; **behavioral tunables** (LLM provider/model and
+the generation knobs) are runtime configuration stored in the DB and edited via
+`/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with factory defaults.
 
 | Prefix | Scope | Who reads it |
 |--------|-------|-------------|
@@ -404,16 +407,22 @@ All runtime configuration is driven by **environment variables** with two tiers:
 | `DATASPOKE_*` (no `DEV`) | Application runtime | DataSpoke app code (FastAPI, frontend) |
 
 Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, namespace names,
-chart versions, and the nginx-ingress IP. The application code never reads them.
+chart versions, the nginx-ingress IP, and the dev LLM provider/model/key seed (the install
+script populates the Secret with the key and `PATCH`es the runtime config with provider/model).
+The application code never reads them.
 
 Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the
 values differ. In dev, they point to the nginx-ingress external IP (TCP services) or ingress
 hostnames (HTTP services). In production, they are injected via Helm values → Kubernetes
 ConfigMap/Secret.
 
-Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Airflow, LLM API.
-Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain. For the
-full variable listing with defaults, see
+Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Airflow. The LLM
+provider/model are runtime config (`/api/v1/admin/conf`), and the LLM API key is read at runtime
+from the dedicated `dataspoke-llm-secret` Kubernetes Secret (rotated online through the same conf
+surface) — neither is an env var in the deployed app, though the API key falls back to a
+`DATASPOKE_LLM_API_KEY` env var in host-mode.
+Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain, dev LLM
+seed. For the full variable listing with defaults, see
 [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
 
 For production, secrets are stored as Kubernetes Secrets and injected via Helm values →

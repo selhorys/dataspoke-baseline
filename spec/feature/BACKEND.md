@@ -129,7 +129,7 @@ for current method signatures.
 | PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5 |
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
 | Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
-| LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Configured via `DATASPOKE_LLM_PROVIDER`, `DATASPOKE_LLM_MODEL` env vars. Loop semantics, validator rule tables, debate framework, and test-mode toggles defined in [BACKEND_LLM](BACKEND_LLM.md). |
+| LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Provider/model from the `llm_provider`/`llm_model` runtime config (`/api/v1/admin/conf`); the API key is read at runtime from the `dataspoke-llm-secret` Secret and rotated online via the same conf surface. Loop semantics, validator rule tables, debate framework, and test-mode toggles defined in [BACKEND_LLM](BACKEND_LLM.md). |
 | Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
 | Notifications | `notifications/service.py` | Outbound notifications (email, in-app alerts). Used by Validation (UC2) and Governance (UC5). | Master toggle `DATASPOKE_NOTIFICATION_ENABLED` (default `false` -- no-ops in dev) |
 | Domain Models | `models/` | Shared Pydantic models (`QualityScore`, `EventRecord`, etc.) -- internal domain objects, not API schemas | API schemas live in `src/api/schemas/` |
@@ -747,7 +747,7 @@ is only the fallback used when no per-dataset window can be derived.
   The `× 2` factor leaves room for transient late ingestion. Tier→seconds and the passive
   period live in `src/shared/schedule.py`.
 - `validation-score`: for each dataset the measurer reads its most recent `N + 1` validation
-  results (`N` = `settings.validation_score_n_intervals`, env `DATASPOKE_VALIDATION_SCORE_N_INTERVALS`,
+  results (`N` = the `validation_score_n_intervals` runtime config (`/api/v1/admin/conf`),
   default 3) and sets the window to `mean(last N inter-arrival gaps) × 2`. A dataset with
   fewer than `N + 1` results falls back to `metric_conf.time_window_sec`. The score counted
   is the latest result whose `data_time` is inside the window.

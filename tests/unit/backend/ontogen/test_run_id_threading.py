@@ -322,6 +322,8 @@ async def test_run_debate_passes_run_id_as_session_id_to_llm() -> None:
             max_turns=4,
             rag_k=2,
             reviewer_model=None,
+            llm_provider="openai",
+            llm_base_model="gpt-4o",
             producer_schema=MagicMock(),
             producer_max_iterations=3,
             run_id=the_run_id,

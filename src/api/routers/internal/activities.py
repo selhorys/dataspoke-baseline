@@ -147,12 +147,14 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
     """
     datahub = make_datahub()
     cache = make_cache()
-    llm = make_llm()
     vector = make_vector()
     try:
         async with make_db_session() as db:
+            from src.backend.admin.config_service import get_runtime_config
             from src.backend.metagen.service import MetagenService
 
+            rc = await get_runtime_config(db)
+            llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
             service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
             if body.tier is not None:
@@ -259,12 +261,14 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
     """
     datahub = make_datahub()
     cache = make_cache()
-    llm = make_llm()
     vector = make_vector()
     try:
         async with make_db_session() as db:
+            from src.backend.admin.config_service import get_runtime_config
             from src.backend.ontogen.service import OntogenService
 
+            rc = await get_runtime_config(db)
+            llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
             service = OntogenService(
                 datahub=datahub,
                 db=db,

@@ -174,6 +174,8 @@ async def _run(
             max_turns=max_turns,
             rag_k=2,
             reviewer_model=reviewer_model,
+            llm_provider="openai",
+            llm_base_model="gpt-4o",
             producer_schema=MagicMock(),
             producer_max_iterations=3,
             run_id="test-run-id",
@@ -677,13 +679,17 @@ async def test_run_debate_reviewer_model_override() -> None:
             max_turns=4,
             rag_k=2,
             reviewer_model="some-other-model",
+            llm_provider="openai",
+            llm_base_model="gpt-4o",
             producer_schema=MagicMock(),
             producer_max_iterations=3,
             run_id="test-run-id",
         )
 
     # spec: debate.py wiring — make_llm must be called when reviewer_model is set
-    mock_make_llm.assert_called_once_with(model_override="some-other-model")
+    assert mock_make_llm.called, "make_llm must be called when reviewer_model is set."
+    call_kwargs = mock_make_llm.call_args.kwargs
+    assert call_kwargs.get("model_override") == "some-other-model"
     assert result.outcome == "accept", (
         f"Debate with model override must still terminate on accept; got {result.outcome!r}."
     )

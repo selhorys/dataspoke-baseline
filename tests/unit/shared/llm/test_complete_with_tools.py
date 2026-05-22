@@ -1059,65 +1059,63 @@ async def test_h7_tool_returns_malformed_json_string_recovered(
 # ── Group I: Settings bounds (F3) ────────────────────────────────────────────
 
 
-def test_i1_settings_default_max_iterations() -> None:
+def test_i1_runtime_config_default_max_iterations() -> None:
     """Spec: BACKEND.md §LLM Inference Loop — 'Max iterations: 3 per service'.
-    Settings default is 3 and must be accepted without validation error.
-    Plan §PR1 F3: ontogen_llm_max_iterations field with ge=1, le=20.
+    Factory default for ontogen_llm_max_iterations is 3.
     """
-    from src.shared.settings import Settings
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS
 
-    s = Settings(ontogen_llm_max_iterations=3)
-    assert s.ontogen_llm_max_iterations == 3
+    assert RUNTIME_CONFIG_DEFAULTS["ontogen_llm_max_iterations"] == 3
 
 
-def test_i2_settings_accepts_min_boundary() -> None:
+def test_i2_patch_request_accepts_min_boundary() -> None:
     """Spec: BACKEND.md §LLM Inference Loop — min iterations is 1 (ge=1).
-    Plan §PR1 F3: ge=1 constraint on ontogen_llm_max_iterations.
+    RuntimeConfPatchRequest must accept value 1 without validation error.
     """
-    from src.shared.settings import Settings
+    from src.api.schemas.admin import RuntimeConfPatchRequest
 
-    s = Settings(ontogen_llm_max_iterations=1)
-    assert s.ontogen_llm_max_iterations == 1
+    req = RuntimeConfPatchRequest(ontogen_llm_max_iterations=1)
+    assert req.ontogen_llm_max_iterations == 1
 
 
-def test_i3_settings_accepts_max_boundary() -> None:
+def test_i3_patch_request_accepts_max_boundary() -> None:
     """Spec: BACKEND.md §LLM Inference Loop — max iterations is 20 (le=20).
-    Plan §PR1 F3: le=20 constraint on ontogen_llm_max_iterations.
+    RuntimeConfPatchRequest must accept value 20 without validation error.
     """
-    from src.shared.settings import Settings
+    from src.api.schemas.admin import RuntimeConfPatchRequest
 
-    s = Settings(ontogen_llm_max_iterations=20)
-    assert s.ontogen_llm_max_iterations == 20
+    req = RuntimeConfPatchRequest(ontogen_llm_max_iterations=20)
+    assert req.ontogen_llm_max_iterations == 20
 
 
-def test_i4_settings_rejects_zero() -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F3: zero iterations is invalid
-    (ge=1). Settings instantiation with 0 must raise pydantic.ValidationError.
+def test_i4_patch_request_rejects_zero() -> None:
+    """Spec: BACKEND.md §LLM Inference Loop — zero iterations is invalid (ge=1).
+    RuntimeConfPatchRequest must raise pydantic.ValidationError for value 0.
     """
-    from src.shared.settings import Settings
+    from src.api.schemas.admin import RuntimeConfPatchRequest
 
     with pytest.raises(pydantic.ValidationError):
-        Settings(ontogen_llm_max_iterations=0)
+        RuntimeConfPatchRequest(ontogen_llm_max_iterations=0)
 
 
-def test_i5_settings_rejects_negative() -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F3: negative iterations are
-    invalid (ge=1). Settings instantiation with -1 must raise pydantic.ValidationError.
+def test_i5_patch_request_rejects_negative() -> None:
+    """Spec: BACKEND.md §LLM Inference Loop — negative iterations are invalid (ge=1).
+    RuntimeConfPatchRequest must raise pydantic.ValidationError for value -1.
     """
-    from src.shared.settings import Settings
+    from src.api.schemas.admin import RuntimeConfPatchRequest
 
     with pytest.raises(pydantic.ValidationError):
-        Settings(ontogen_llm_max_iterations=-1)
+        RuntimeConfPatchRequest(ontogen_llm_max_iterations=-1)
 
 
-def test_i6_settings_rejects_above_max() -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F3: iterations above 20 are
-    invalid (le=20). Settings instantiation with 21 must raise pydantic.ValidationError.
+def test_i6_patch_request_rejects_above_max() -> None:
+    """Spec: BACKEND.md §LLM Inference Loop — iterations above 20 are invalid (le=20).
+    RuntimeConfPatchRequest must raise pydantic.ValidationError for value 21.
     """
-    from src.shared.settings import Settings
+    from src.api.schemas.admin import RuntimeConfPatchRequest
 
     with pytest.raises(pydantic.ValidationError):
-        Settings(ontogen_llm_max_iterations=21)
+        RuntimeConfPatchRequest(ontogen_llm_max_iterations=21)
 
 
 # ── Group J: Stub fidelity ────────────────────────────────────────────────────

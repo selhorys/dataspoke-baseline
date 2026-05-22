@@ -19,10 +19,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.backend.admin.config_service import get_runtime_config
 from src.backend.metrics.measurers.registry import register_measurer
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import ValidationResult
-from src.shared.settings import settings
 
 # Multiplier applied to the mean inter-arrival gap to form the freshness window.
 WINDOW_FACTOR = 2
@@ -63,7 +63,8 @@ async def measure(
             {"dataset_count": 0, "datasets": []},
         )
 
-    N: int = settings.validation_score_n_intervals
+    rc = await get_runtime_config(db)
+    N: int = rc.validation_score_n_intervals
     default_window_sec = int(metric_conf["time_window_sec"])
     now = datetime.now(tz=UTC)
 

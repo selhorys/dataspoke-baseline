@@ -117,16 +117,29 @@ Deployment envFrom → container env vars
 
 Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`,
 `DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_URL`,
-`DATASPOKE_LLM_PROVIDER/MODEL`.
+`DATASPOKE_LANGFUSE_HOST/PUBLIC_KEY`, `DATASPOKE_CORS_ORIGINS`.
+
+LLM provider/model and all debate/RAG/iteration tunables are stored in the DB runtime config
+table (`/api/v1/admin/conf`) seeded from code factory defaults — they are not injected as env vars.
 
 ### Secret keys
 
-Sensitive: `DATASPOKE_DATAHUB_TOKEN`, `DATASPOKE_POSTGRES_USER/PASSWORD`,
-`DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_LLM_API_KEY`.
+Sensitive (`dataspoke-secrets`, mounted via `envFrom`): `DATASPOKE_DATAHUB_TOKEN`,
+`DATASPOKE_POSTGRES_USER/PASSWORD`, `DATASPOKE_REDIS_PASSWORD`.
 
-All application subcharts mount both resources via `envFrom`. In dev, ConfigMap/Secret creation is
-disabled (`createConfigMap: false`, `createSecret: false`) — the host-running app reads env vars
-directly from `dev_env/.env`.
+The LLM API key is **not** in `dataspoke-secrets` and is **not** `envFrom`-mounted. It lives in a
+dedicated Secret **`dataspoke-llm-secret`** (key `api_key`) that the API reads at runtime via the
+Kubernetes API and rotates online through `/api/v1/admin/conf` (see
+[`BACKEND_LLM.md` §LLM API key](BACKEND_LLM.md)). This Secret is **not Helm-managed** — a
+Helm-reconciled Secret would be overwritten on every `helm upgrade`, clobbering online rotations.
+It is provisioned out-of-band: in dev, `dataspoke-infra/install.sh` creates it from
+`DATASPOKE_DEV_LLM_API_KEY`; in production, an operator provisions it (`kubectl`/ESO) or the app
+creates it on the first `PATCH /admin/conf`. The app tolerates its absence (reads as unset). The
+existing `api-secret-reader` Role (`get`/`create`/`patch` on namespace Secrets) grants the access.
+
+All application subcharts mount the ConfigMap and `dataspoke-secrets` via `envFrom`. In dev,
+ConfigMap/Secret creation is disabled (`createConfigMap: false`, `createSecret: false`) — the
+host-running app reads env vars directly from `dev_env/.env`.
 
 ---
 

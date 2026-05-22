@@ -316,6 +316,35 @@ Timeseries of metric measurements.
 | `breakdown` | `JSONB` NULL | Measurement breakdown: `{dataset_count, datasets: [{urn, detail?}]}`. `datasets[]` carries only failed entries (stale / validation `<1.0` / doc-health `<1.0` depending on `metric_type`); `dataset_count` is the total scanned |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
+#### `runtime_config`
+
+Singleton row holding the behavioral tunables that shape LLM inference and
+generation across features. Edited at runtime via `/api/v1/admin/conf` (see
+[`spec/API.md` §Admin](../API.md)); seeded with factory defaults on first read.
+The LLM API key is **not** a column here — it is rotated through the same
+`/admin/conf` surface but stored in the `dataspoke-llm-secret` Kubernetes Secret
+(see [`BACKEND_LLM.md` §LLM API key](BACKEND_LLM.md)).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `INTEGER` PK (=1) | Singleton row (`CHECK (id = 1)`) |
+| `llm_provider` | `TEXT` | LLM provider (`gemini`, `openai`, `anthropic`, …); factory default `gemini` |
+| `llm_model` | `TEXT` | Producer model identifier; factory default `gemini-3.5-flash` |
+| `ontogen_llm_max_iterations` | `INTEGER` | Ontogen inference-loop cap [1, 20]; default 3 |
+| `ontogen_debate_max_turns` | `INTEGER` | Ontogen debate turns [2, 10]; default 4 |
+| `ontogen_debate_rag_k` | `INTEGER` | Ontogen debate RAG top-K [0, 20]; default 5 |
+| `ontogen_debate_reviewer_model` | `TEXT` NULL | Reviewer model override; null reuses `llm_model` |
+| `metagen_llm_max_iterations` | `INTEGER` | Metagen inference-loop cap [1, 20]; default 3 |
+| `metagen_debate_max_turns` | `INTEGER` | Metagen debate turns [2, 10]; default 4 |
+| `metagen_debate_rag_k` | `INTEGER` | Metagen debate RAG top-K [0, 20]; default 5 |
+| `metagen_debate_reviewer_model` | `TEXT` NULL | Reviewer model override; null reuses `llm_model` |
+| `metagen_confidence_threshold` | `FLOAT` | Metagen persistence gate [0.0, 1.0]; default 0.7 |
+| `metagen_ontology_rag_node_k` | `INTEGER` | Metagen ontology-node RAG top-K [0, 20]; default 5 |
+| `metagen_ontology_rag_edge_k` | `INTEGER` | Metagen ontology-edge RAG top-K [0, 20]; default 5 |
+| `metagen_ontology_rag_triple_k` | `INTEGER` | Metagen RDF-triple RAG top-K [0, 20]; default 5 |
+| `validation_score_n_intervals` | `INTEGER` | Validation-cadence window (inter-arrival intervals), ≥ 1; default 3 |
+| `updated_at` | `TIMESTAMPTZ` | |
+
 #### `events`
 
 Unified event log for all feature domains. All events share the same top-level

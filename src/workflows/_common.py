@@ -54,6 +54,7 @@ from src.shared.settings import settings
 from src.shared.vector.client import PgVectorManager
 
 
+
 def urn_to_workflow_id(urn: str) -> str:
     """Create a short, stable identifier from a URN for workflow IDs."""
     return hashlib.md5(urn.encode()).hexdigest()[:12]  # noqa: S324
@@ -71,22 +72,31 @@ def make_cache() -> RedisClient:
     return RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
 
 
-def make_llm(model_override: str | None = None) -> LLMClient:
+def make_llm(
+    provider: str = "gemini",
+    model: str = "gemini-3.5-flash",
+    model_override: str | None = None,
+) -> LLMClient:
     """Return an LLMClient honouring test-mode stubbing.
 
-    ``model_override`` replaces ``settings.llm_model`` while keeping the
-    same provider / api_key.  Stubbing still applies when test_mode is active
-    — the override is silently ignored in stub mode because the stub is
-    model-agnostic.
+    ``provider`` and ``model`` come from the caller's ``RuntimeConfigDTO``.
+    Defaults match the factory defaults so test-mode callers that don't have
+    a DB session (e.g. unit tests running in stub mode) don't need to supply them.
+    ``model_override`` replaces ``model`` while keeping the same provider and
+    api_key — used by the Reviewer path when a separate reviewer model is
+    configured.  Stubbing still applies when test_mode is active; provider and
+    model are silently ignored because the stub is model-agnostic.
     """
     if settings.test_mode and not settings.test_llm_real:
         from src.workflows._stubs import StubLLMClient
 
         return StubLLMClient()  # type: ignore[return-value]
+    from src.backend.admin.llm_secret import get_llm_api_key
+
     return LLMClient(
-        provider=settings.llm_provider,
-        api_key=settings.llm_api_key,
-        model=model_override or settings.llm_model,
+        provider=provider,
+        api_key=get_llm_api_key(),
+        model=model_override or model,
         langfuse_host=settings.langfuse_host,
         langfuse_public_key=settings.langfuse_public_key,
         langfuse_secret_key=settings.langfuse_secret_key,
@@ -121,32 +131,36 @@ def make_notification() -> object:
 
 
 def make_ontogen() -> tuple:  # type: ignore[type-arg]
-    """Construct OntogenService with all required dependencies.
+    """Construct OntogenService dependencies (without LLM — caller loads RC from DB first).
 
     Spec: spec/feature/BACKEND.md §Feature Services — OntogenService requires
     datahub, db, cache, llm, vector.
+
+    LLM is excluded from this tuple; callers must load RuntimeConfigDTO via
+    ``get_runtime_config(db)`` and then call ``make_llm(provider=..., model=...)``.
     """
     from src.backend.ontogen.service import OntogenService
 
     datahub = make_datahub()
     cache = make_cache()
-    llm = make_llm()
     vector = make_vector()
-    # db session is provided by callers via async context manager
-    return OntogenService, datahub, cache, llm, vector
+    # db session and llm are provided by callers via async context manager
+    return OntogenService, datahub, cache, vector
 
 
 def make_metagen() -> tuple:  # type: ignore[type-arg]
-    """Construct MetagenService with all required dependencies.
+    """Construct MetagenService dependencies (without LLM — caller loads RC from DB first).
 
     Spec: spec/feature/BACKEND.md §Feature Services — MetagenService requires
     datahub, db, cache, llm, vector.
+
+    LLM is excluded from this tuple; callers must load RuntimeConfigDTO via
+    ``get_runtime_config(db)`` and then call ``make_llm(provider=..., model=...)``.
     """
     from src.backend.metagen.service import MetagenService
 
     datahub = make_datahub()
     cache = make_cache()
-    llm = make_llm()
     vector = make_vector()
-    # db session is provided by callers via async context manager
-    return MetagenService, datahub, cache, llm, vector
+    # db session and llm are provided by callers via async context manager
+    return MetagenService, datahub, cache, vector

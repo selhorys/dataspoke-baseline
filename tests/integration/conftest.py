@@ -528,7 +528,6 @@ async def override_app(
     datahub=None,
     db=None,
     redis=None,
-    llm=None,
     vector=None,
     airflow=None,
 ):
@@ -552,11 +551,6 @@ async def override_app(
         from src.api.dependencies import get_redis
 
         app.dependency_overrides[get_redis] = lambda: redis
-
-    if llm is not None:
-        from src.api.dependencies import get_llm
-
-        app.dependency_overrides[get_llm] = lambda: llm
 
     if vector is not None:
         from src.api.dependencies import get_vector

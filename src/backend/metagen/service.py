@@ -57,7 +57,7 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
-from src.shared.settings import settings
+from src.backend.admin.config_service import RuntimeConfigDTO, get_runtime_config
 from src.shared.vector.client import PgVectorManager
 
 logger = logging.getLogger(__name__)
@@ -488,6 +488,7 @@ class MetagenService:
         dry_run: bool,
         run_id: str,
     ) -> RunResultDTO:
+        rc = await get_runtime_config(self._db)
         conf = await self._load_conf_or_default()
 
         if not conf.is_enabled and not dry_run:
@@ -512,7 +513,7 @@ class MetagenService:
 
         for urn in in_scope_urns:
             # Step 3: Fetch evidence
-            evidence = await self._fetch_evidence(urn)
+            evidence = await self._fetch_evidence(urn, rc=rc)
 
             # Step 4: Enumerate target items for this dataset
             boundary_result = await self._db.execute(
@@ -574,11 +575,13 @@ class MetagenService:
                 validate_tool=validate_tool,
                 review_tool=review_tool,
                 in_scope_urns=frozenset([urn]),
-                max_turns=settings.metagen_debate_max_turns,
-                rag_k=settings.metagen_debate_rag_k,
-                reviewer_model=settings.metagen_debate_reviewer_model,
+                max_turns=rc.metagen_debate_max_turns,
+                rag_k=rc.metagen_debate_rag_k,
+                reviewer_model=rc.metagen_debate_reviewer_model,
+                llm_provider=rc.llm_provider,
+                llm_base_model=rc.llm_model,
                 producer_schema=MetagenLLMOutput,
-                producer_max_iterations=settings.metagen_llm_max_iterations,
+                producer_max_iterations=rc.metagen_llm_max_iterations,
                 run_id=run_id,
             )
             debate_outcome = debate_result.outcome
@@ -607,7 +610,7 @@ class MetagenService:
 
             accepted = [
                 c for c in candidate_output.candidates
-                if c.confidence_score >= settings.metagen_confidence_threshold
+                if c.confidence_score >= rc.metagen_confidence_threshold
             ]
 
             if dry_run:
@@ -867,7 +870,7 @@ class MetagenService:
         await self._db.commit()
         return (raw.rowcount or 0) if isinstance(raw, CursorResult) else 0
 
-    async def _fetch_evidence(self, urn: str) -> dict[str, Any]:
+    async def _fetch_evidence(self, urn: str, *, rc: RuntimeConfigDTO) -> dict[str, Any]:
         """Fetch DataHub aspects for a single dataset.
 
         Collects: datasetProperties, schemaMetadata, editableDatasetProperties,
@@ -979,9 +982,9 @@ class MetagenService:
             )
             query_vec = await self._llm.embed(query_text)
 
-            node_k = settings.metagen_ontology_rag_node_k
-            edge_k = settings.metagen_ontology_rag_edge_k
-            triple_k = settings.metagen_ontology_rag_triple_k
+            node_k = rc.metagen_ontology_rag_node_k
+            edge_k = rc.metagen_ontology_rag_edge_k
+            triple_k = rc.metagen_ontology_rag_triple_k
 
             node_hits = (
                 await search_node_embeddings(self._vector, query_vec, top_k=node_k, threshold=None)

@@ -1,9 +1,13 @@
 """Dependency injection provider functions for infrastructure clients.
 
-Long-lived clients (DataHub, Redis, pgvector, LLM, Airflow) are constructed
-once during application startup (via the lifespan in src/api/main.py) and
-stored on app.state. Per-request providers below simply retrieve the shared
-instance, which keeps constructors out of the hot path.
+Long-lived clients (DataHub, Redis, pgvector, Airflow) are constructed once
+during application startup (via the lifespan in src/api/main.py) and stored on
+app.state. Per-request providers below retrieve the shared instance.
+
+LLM clients are NOT long-lived on app.state — they are constructed per-request
+from the DB-backed RuntimeConfig so that provider/model changes via
+/admin/conf are honoured immediately and test-mode stubbing via make_llm()
+applies on all paths (including manual metagen/ontogen API runs).
 """
 
 from collections.abc import AsyncGenerator
@@ -16,9 +20,12 @@ from src.backend.ingestion.service import IngestionService
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.session import SessionLocal
-from src.shared.llm.client import LLMClient
 from src.shared.vector.client import PgVectorManager
 from src.workflows.airflow.client import AirflowClient
+
+# NOTE: LLMClient is NOT imported here. LLM instances are built per-request
+# inside get_metagen_service / get_ontogen_service via make_llm() so that
+# RuntimeConfig changes and test-mode stubbing are always honoured.
 
 # ── Infrastructure client providers ──────────────────────────────
 
@@ -38,10 +45,6 @@ def get_redis(request: Request) -> RedisClient:
 
 def get_vector(request: Request) -> PgVectorManager:
     return request.app.state.vector
-
-
-def get_llm(request: Request) -> LLMClient:
-    return request.app.state.llm
 
 
 def get_notification():
@@ -87,11 +90,14 @@ async def get_metagen_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
-    llm: LLMClient = Depends(get_llm),
     vector: PgVectorManager = Depends(get_vector),
 ) -> "MetagenService":
+    from src.backend.admin.config_service import get_runtime_config
     from src.backend.metagen.service import MetagenService
+    from src.workflows._common import make_llm
 
+    rc = await get_runtime_config(db)
+    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
     return MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
 
@@ -99,11 +105,14 @@ async def get_ontogen_service(
     datahub: DataHubClient = Depends(get_datahub),
     db: AsyncSession = Depends(get_db),
     cache: RedisClient = Depends(get_redis),
-    llm: LLMClient = Depends(get_llm),
     vector: PgVectorManager = Depends(get_vector),
 ) -> "OntogenService":
+    from src.backend.admin.config_service import get_runtime_config
     from src.backend.ontogen.service import OntogenService
+    from src.workflows._common import make_llm
 
+    rc = await get_runtime_config(db)
+    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
     return OntogenService(
         datahub=datahub,
         db=db,

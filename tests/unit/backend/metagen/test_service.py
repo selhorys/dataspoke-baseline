@@ -1879,7 +1879,9 @@ async def test_fetch_evidence_attaches_ontology_rag(svc, db) -> None:
 
             db.execute = AsyncMock(side_effect=_route_execute)
 
-            evidence = await svc._fetch_evidence(_VALID_URN)
+            from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+            fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
+            evidence = await svc._fetch_evidence(_VALID_URN, rc=fake_rc)
 
     assert "ontology_rag" in evidence, (
         "evidence must contain 'ontology_rag' key after _fetch_evidence. "
@@ -1929,11 +1931,16 @@ async def test_fetch_evidence_ontology_rag_k_zero_skips_search(svc, db) -> None:
 
     plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests — k=0 skips search
     """
-    from src.shared.settings import settings
-
     # DataHub aspects: return None (minimal evidence)
     svc._datahub.get_aspect = AsyncMock(return_value=None)
     svc._llm.embed = AsyncMock(return_value=[0.0] * 10)
+
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+    # All RAG k-values set to 0 — searches must be skipped
+    zero_k_rc = RuntimeConfigDTO(
+        **{**RUNTIME_CONFIG_DEFAULTS, "metagen_ontology_rag_node_k": 0,
+           "metagen_ontology_rag_edge_k": 0, "metagen_ontology_rag_triple_k": 0}
+    )
 
     with patch("src.backend.metagen.service.fetch_related_documents", new=AsyncMock(return_value=[])):
         with (
@@ -1949,15 +1956,12 @@ async def test_fetch_evidence_ontology_rag_k_zero_skips_search(svc, db) -> None:
                 "src.backend.metagen.service.search_triple_embeddings",
                 new=AsyncMock(return_value=[]),
             ) as mock_triple_search,
-            patch.object(settings, "metagen_ontology_rag_node_k", 0),
-            patch.object(settings, "metagen_ontology_rag_edge_k", 0),
-            patch.object(settings, "metagen_ontology_rag_triple_k", 0),
         ):
             no_map_rows = MagicMock()
             no_map_rows.scalars.return_value.all.return_value = []
             db.execute = AsyncMock(return_value=no_map_rows)
 
-            evidence = await svc._fetch_evidence(_VALID_URN)
+            evidence = await svc._fetch_evidence(_VALID_URN, rc=zero_k_rc)
 
     mock_node_search.assert_not_called()
     mock_edge_search.assert_not_called()
@@ -2009,7 +2013,9 @@ async def test_fetch_evidence_ontology_rag_failure_falls_back_to_empty(svc, db) 
         no_map_rows.scalars.return_value.all.return_value = []
         db.execute = AsyncMock(return_value=no_map_rows)
 
-        evidence = await svc._fetch_evidence(_VALID_URN)
+        from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+        fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
+        evidence = await svc._fetch_evidence(_VALID_URN, rc=fake_rc)
 
     # Ontology RAG fallback: empty lists, not an exception
     rag = evidence.get("ontology_rag")

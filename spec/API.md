@@ -449,6 +449,20 @@ shared-secret header instead of a JWT.
 | Method | Path | Body | Response | Auth |
 |--------|------|------|----------|------|
 | `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT (`admin` group) |
+| `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT (`admin` group) |
+| `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT (`admin` group) |
+
+`/admin/conf` reads and updates the singleton runtime configuration — the behavioral tunables
+that shape LLM inference and generation (`llm_provider`, `llm_model`, the ontogen/metagen debate,
+RAG, and iteration knobs, `metagen_confidence_threshold`, `validation_score_n_intervals`). It is
+seeded with factory defaults and persisted in the `runtime_config` table (see
+[`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md)). `PATCH` is partial; numeric fields
+are bound-validated (out-of-range → `422`).
+
+The conf surface also carries `llm_api_key` for **online** key rotation, but it is stored in the
+`dataspoke-llm-secret` Kubernetes Secret (not the DB): `PATCH` with `llm_api_key` writes the
+Secret and an empty string clears it; `GET` returns it masked (`""` unset / `"********"` set) and
+**never** returns the plaintext. See [`spec/feature/BACKEND_LLM.md` §LLM API key](feature/BACKEND_LLM.md).
 
 Additional admin routes (user management, identity store administration) are reserved for
 future feature specs and are not catalogued here.
@@ -462,6 +476,10 @@ Airflow DAGs, and automation.
 |--------|------|------|----------|------|
 | `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
+| `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
+
+`PATCH /internal/admin/conf` is the unattended mirror of `PATCH /admin/conf`; the dev-env install
+uses it to seed `llm_provider`/`llm_model` from `DATASPOKE_DEV_LLM_*` after the chart is installed.
 
 ### Internal Activities (`/internal/activities`)
 

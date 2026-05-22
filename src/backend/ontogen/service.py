@@ -66,7 +66,7 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
-from src.shared.settings import settings
+from src.backend.admin.config_service import get_runtime_config
 from src.shared.vector.client import PgVectorManager, VectorHit
 
 logger = logging.getLogger(__name__)
@@ -521,6 +521,8 @@ class OntogenService:
         validate_tool = build_ontogen_validate_tool(in_scope_urns)
         review_tool = build_ontogen_review_tool()
 
+        rc = await get_runtime_config(self._db)
+
         # Infra exceptions propagate to run()'s outer handler which emits RUN_FAILED.
         debate_result = await run_debate(
             llm=self._llm,
@@ -530,11 +532,13 @@ class OntogenService:
             validate_tool=validate_tool,
             review_tool=review_tool,
             in_scope_urns=in_scope_urns,
-            max_turns=settings.ontogen_debate_max_turns,
-            rag_k=settings.ontogen_debate_rag_k,
-            reviewer_model=settings.ontogen_debate_reviewer_model,
+            max_turns=rc.ontogen_debate_max_turns,
+            rag_k=rc.ontogen_debate_rag_k,
+            reviewer_model=rc.ontogen_debate_reviewer_model,
+            llm_provider=rc.llm_provider,
+            llm_base_model=rc.llm_model,
             producer_schema=OntogenLLMOutput,
-            producer_max_iterations=settings.ontogen_llm_max_iterations,
+            producer_max_iterations=rc.ontogen_llm_max_iterations,
             run_id=run_id,
         )
 

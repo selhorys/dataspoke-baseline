@@ -3,9 +3,13 @@
 All env-driven settings live here so that any layer (shared, workflows,
 backend, api) can import them without violating the layered architecture
 rule.
+
+Runtime behavioral tunables (LLM provider/model, debate parameters, RAG k
+values, confidence thresholds, validation window) are stored in the
+``runtime_config`` DB table managed by ``src/backend/admin/config_service.py``.
+Secrets and infra/auth/observability settings remain here.
 """
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,31 +72,8 @@ class Settings(BaseSettings):
     airflow_callback_base_url: str = "http://dataspoke-api:8002"
     airflow_ingestion_concurrent: int = 5
 
-    # LLM
-    llm_provider: str = "openai"
+    # LLM — secret stays here; provider/model/tunable params moved to runtime_config DB table
     llm_api_key: str = ""
-    llm_model: str = "gpt-4o"
-    ontogen_llm_max_iterations: int = Field(default=3, ge=1, le=20)
-
-    # Ontogen adversarial debate
-    ontogen_debate_max_turns: int = Field(default=4, ge=2, le=10)
-    ontogen_debate_rag_k: int = Field(default=5, ge=0, le=20)
-    ontogen_debate_reviewer_model: str | None = None
-
-    # Metagen inference loop + adversarial debate
-    metagen_llm_max_iterations: int = Field(default=3, ge=1, le=20)
-    metagen_debate_max_turns: int = Field(default=4, ge=2, le=10)
-    metagen_debate_rag_k: int = Field(default=5, ge=0, le=20)
-    metagen_debate_reviewer_model: str | None = None
-    metagen_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    metagen_ontology_rag_node_k: int = Field(default=5, ge=0, le=20)
-    metagen_ontology_rag_edge_k: int = Field(default=5, ge=0, le=20)
-    metagen_ontology_rag_triple_k: int = Field(default=5, ge=0, le=20)
-
-    # Governance metrics — validation-score per-dataset window
-    # Number of inter-arrival intervals used to estimate the per-dataset
-    # validation cadence (env: DATASPOKE_VALIDATION_SCORE_N_INTERVALS).
-    validation_score_n_intervals: int = Field(default=3, ge=1)
 
     # Langfuse observability (all optional — when unset no traces are emitted)
     langfuse_host: str | None = None

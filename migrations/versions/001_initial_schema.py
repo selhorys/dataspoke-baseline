@@ -318,6 +318,41 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
+    # ── runtime_config (singleton) ───────────────────────────────────────
+    op.create_table(
+        "runtime_config",
+        sa.Column(
+            "id",
+            sa.Integer(),
+            primary_key=True,
+            server_default="1",
+        ),
+        sa.Column("llm_provider", sa.Text(), nullable=False, server_default="gemini"),
+        sa.Column("llm_model", sa.Text(), nullable=False, server_default="gemini-3.5-flash"),
+        sa.Column("ontogen_llm_max_iterations", sa.Integer(), nullable=False, server_default="3"),
+        sa.Column("ontogen_debate_max_turns", sa.Integer(), nullable=False, server_default="4"),
+        sa.Column("ontogen_debate_rag_k", sa.Integer(), nullable=False, server_default="5"),
+        sa.Column("ontogen_debate_reviewer_model", sa.Text(), nullable=True),
+        sa.Column("metagen_llm_max_iterations", sa.Integer(), nullable=False, server_default="3"),
+        sa.Column("metagen_debate_max_turns", sa.Integer(), nullable=False, server_default="4"),
+        sa.Column("metagen_debate_rag_k", sa.Integer(), nullable=False, server_default="5"),
+        sa.Column("metagen_debate_reviewer_model", sa.Text(), nullable=True),
+        sa.Column(
+            "metagen_confidence_threshold", sa.Float(), nullable=False, server_default="0.7"
+        ),
+        sa.Column("metagen_ontology_rag_node_k", sa.Integer(), nullable=False, server_default="5"),
+        sa.Column("metagen_ontology_rag_edge_k", sa.Integer(), nullable=False, server_default="5"),
+        sa.Column(
+            "metagen_ontology_rag_triple_k", sa.Integer(), nullable=False, server_default="5"
+        ),
+        sa.Column(
+            "validation_score_n_intervals", sa.Integer(), nullable=False, server_default="3"
+        ),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint("id = 1", name="ck_runtime_config_singleton"),
+        schema=SCHEMA,
+    )
+
     # ── ontogen_seeds ────────────────────────────────────────────────────
     op.create_table(
         "ontogen_seeds",

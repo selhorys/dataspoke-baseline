@@ -377,6 +377,37 @@ class OntogenConfig(Base):
     )
 
 
+# ── runtime_config (singleton) ────────────────────────────────────────────────
+
+
+class RuntimeConfig(Base):
+    __tablename__ = "runtime_config"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_runtime_config_singleton"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    llm_provider: Mapped[str] = mapped_column(Text, nullable=False, default="gemini")
+    llm_model: Mapped[str] = mapped_column(Text, nullable=False, default="gemini-3.5-flash")
+    ontogen_llm_max_iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    ontogen_debate_max_turns: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    ontogen_debate_rag_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    ontogen_debate_reviewer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metagen_llm_max_iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    metagen_debate_max_turns: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    metagen_debate_rag_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    metagen_debate_reviewer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metagen_confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    metagen_ontology_rag_node_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    metagen_ontology_rag_edge_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    metagen_ontology_rag_triple_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    validation_score_n_intervals: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 # ── ontogen_seeds ─────────────────────────────────────────────────────────────
 
 

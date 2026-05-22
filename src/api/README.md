@@ -82,9 +82,7 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_AIRFLOW_URL` | `http://localhost:8080` | Airflow API base URL |
 | `DATASPOKE_AIRFLOW_USER` | _(empty)_ | Airflow basic auth username |
 | `DATASPOKE_AIRFLOW_PASSWORD` | _(empty)_ | Airflow basic auth password |
-| `DATASPOKE_LLM_PROVIDER` | `openai` | LLM provider name |
-| `DATASPOKE_LLM_API_KEY` | _(empty)_ | LLM provider API key |
-| `DATASPOKE_LLM_MODEL` | `gpt-4o` | LLM model identifier |
+| `DATASPOKE_LLM_API_KEY` | _(empty)_ | LLM provider API key (the provider/model are runtime config via `/api/v1/admin/conf`, not env vars) |
 
 ---
 
