@@ -15,6 +15,7 @@ only one that exposes ontogen approval actions
 |---|---|---|
 | `/dg/metrics` | Metrics dashboard | `/spoke/dg/metric` |
 | `/dg/metrics/list` | Metric list | `/spoke/dg/metric` |
+| `/dg/metrics/new` | Metric create | `/spoke/dg/metric` |
 | `/dg/metrics/[id]` | Metric detail | `/spoke/dg/metric/{id}` |
 | `/dg/ontogen` | Ontogen review | `/spoke/common/ontogen/...` |
 | `/dg/ontogen/conf` | Ontogen conf editor | `/spoke/common/ontogen/attr/conf` |
@@ -29,8 +30,16 @@ only one that exposes ontogen approval actions
 | Page | Read | Write |
 |---|---|---|
 | `/dg/metrics` (dashboard) | `GET /spoke/dg/metric`, latest `GET .../{id}/attr/result?limit=1` per metric | — |
-| `/dg/metrics/list` | `GET /spoke/dg/metric` (paginated; filter by `metric_type`, `mode`, `is_enabled`) | — |
+| `/dg/metrics/list` | `GET /spoke/dg/metric` (paginated; filter by `metric_type`, `mode`, `is_enabled`) | "New metric" action → `/dg/metrics/new` |
+| `/dg/metrics/new` | — | `POST /spoke/dg/metric` (definition fields **plus** a client-supplied `metric_id`) |
 | `/dg/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`{dry_run?}`) |
+
+The create form is the edit form (below) with one extra leading field: a `metric_id`
+text input. `metric_id` is **create-only** — kebab-case matching
+`^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$`; a colliding id returns
+`409 METRIC_EXISTS` (surfaced inline on the field) and a malformed id returns
+`422 INVALID_PARAMETER`. On `/dg/metrics/[id]` the id comes from the path and is shown
+read-only. On success the page redirects to `/dg/metrics/[id]` for the new metric.
 
 `dataset_filter` carries four optional dimensions: `origin` (the DataHub
 `FabricType` value carried as the third URN segment — `PROD`/`DEV`/`CORP`/`EI`/
@@ -82,6 +91,7 @@ yet supported*; PUT against the API returns `501 NOT_IMPLEMENTED`. Unsupported
 ┌─────────────────────────────────────────────────────┐
 │  Metric definition                                  │
 ├─────────────────────────────────────────────────────┤
+│  metric_id:    [ doc-health-dev          ] (create) │
 │  mode:         ( • active )  ( passive — disabled ) │
 │  metric_type:  [ doc-health                     v ] │
 │  title:        [ Doc Health (DEV)                 ] │
