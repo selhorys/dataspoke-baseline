@@ -27,6 +27,7 @@ import os
 
 import asyncpg
 
+from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS
 from src.backend.metrics.bootstrap import _FACTORY_DEFAULTS
 from tests.integration.util.postgres import _load_dotenv
 
@@ -51,12 +52,20 @@ async def _get_connection() -> asyncpg.Connection:
 
 
 async def reset_all() -> None:
-    """TRUNCATE every table in the `dataspoke` schema, then re-seed factory metrics.
+    """TRUNCATE every table in the `dataspoke` schema, then re-seed factory rows.
 
-    Factory-default metric_definitions are spec-mandated initial state
-    (USE_CASE_en.md §UC5 §Factory defaults) — the API seeds them at startup
-    via src.backend.metrics.bootstrap.seed_factory_defaults. After TRUNCATE
-    the API isn't restarted, so we re-seed inline from the same SSOT.
+    Two tables require inline re-seeding because the API is not restarted after
+    TRUNCATE, so startup seeding won't re-run:
+
+    - metric_definitions: factory defaults are spec-mandated initial state
+      (USE_CASE_en.md §UC5 §Factory defaults); seeded from the same SSOT as
+      src.backend.metrics.bootstrap.seed_factory_defaults.
+
+    - runtime_config: singleton row (id=1) must be restored to mirror the
+      post-install.sh dev state. Base values come from RUNTIME_CONFIG_DEFAULTS;
+      llm_provider and llm_model are overridden from the DATASPOKE_DEV_LLM_PROVIDER
+      / DATASPOKE_DEV_LLM_MODEL env vars (same variables install.sh PATCHes) so
+      the dev provider/model is preserved across resets.
     """
     conn = await _get_connection()
     try:
@@ -87,6 +96,27 @@ async def reset_all() -> None:
                 d["schedule_tier"],
                 d["is_enabled"],
             )
+
+        rc_seed = {
+            **RUNTIME_CONFIG_DEFAULTS,
+            "llm_provider": os.environ.get(
+                "DATASPOKE_DEV_LLM_PROVIDER",
+                RUNTIME_CONFIG_DEFAULTS["llm_provider"],
+            ),
+            "llm_model": os.environ.get(
+                "DATASPOKE_DEV_LLM_MODEL",
+                RUNTIME_CONFIG_DEFAULTS["llm_model"],
+            ),
+        }
+        cols = list(rc_seed.keys())
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(cols)))
+        col_list = ", ".join(cols)
+        await conn.execute(
+            f"INSERT INTO {_SCHEMA}.runtime_config (id, {col_list}) "
+            f"VALUES ($1, {placeholders})",
+            1,
+            *[rc_seed[c] for c in cols],
+        )
     finally:
         await conn.close()
 

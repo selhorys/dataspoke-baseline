@@ -163,24 +163,46 @@ async def test_get_conf_includes_resp_time_and_updated_at(
 
 
 @pytest.mark.asyncio
-async def test_get_conf_contains_no_secret_fields(
+async def test_get_conf_masks_llm_api_key_and_exposes_no_other_secret(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /admin/conf response contains NO secret keys.
+    """GET /admin/conf returns llm_api_key masked and exposes no other secret-named key.
 
-    spec: task brief §api-wired — 'contains NO llm_api_key / no secret key.'
-    spec: task brief §What's under test — 'NO secret' in the response schema.
+    spec: src/api/schemas/admin.py RuntimeConfResponse — 'llm_api_key is a masked
+      indicator only: "" when unset, "********" when set. The plaintext key is
+      never returned.'
+    spec: spec/API.md §/admin/conf — 'GET returns it masked ("" unset / "********"
+      set) and never returns the plaintext.'
+    spec: spec/feature/BACKEND_LLM.md §LLM API key — same masking contract.
     """
     resp = await api_client.get(_ADMIN_CONF, headers=admin_headers)
     assert resp.status_code == 200
     body = resp.json()
 
-    # Any key with 'api_key', 'secret', or 'password' substring indicates a leak.
-    secret_like = [k for k in body if any(kw in k for kw in ("api_key", "secret", "password"))]
-    assert not secret_like, (
-        f"Response must not expose secret fields; found: {secret_like}. "
-        "spec: task brief §api-wired — no secret in RuntimeConfResponse."
+    # llm_api_key must be present and masked — never plaintext.
+    assert "llm_api_key" in body, (
+        "llm_api_key must be present in the response (masked). "
+        "spec: src/api/schemas/admin.py RuntimeConfResponse."
+    )
+    assert body["llm_api_key"] in ("", "********"), (
+        f"llm_api_key must be masked (\"\" unset / \"********\" set); got "
+        f"{body['llm_api_key']!r}. "
+        "spec: spec/API.md §/admin/conf — never returns the plaintext."
+    )
+
+    # No OTHER secret-named key may appear — only the schema-mandated masked
+    # llm_api_key. 'password' / 'secret' substrings, or any other 'api_key'
+    # field, would indicate an unintended leak surface.
+    other_secret_like = [
+        k for k in body
+        if k != "llm_api_key" and any(kw in k for kw in ("api_key", "secret", "password"))
+    ]
+    assert not other_secret_like, (
+        f"Response must not expose secret-named fields beyond the masked "
+        f"llm_api_key; found: {other_secret_like}. "
+        "spec: src/api/schemas/admin.py RuntimeConfResponse — only llm_api_key "
+        "is masked-exposed; no other secret surface."
     )
 
 
