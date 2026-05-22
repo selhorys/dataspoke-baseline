@@ -31,6 +31,7 @@ from src.shared.db.models import MetricDefinition
 def _make_empty_db():
     """Return a mock AsyncSession where SELECT always returns 'row not found'."""
     db = AsyncMock()
+    db.add = MagicMock()  # AsyncSession.add is synchronous
     empty_result = MagicMock()
     empty_result.scalar_one_or_none.return_value = None
     db.execute = AsyncMock(return_value=empty_result)
@@ -48,6 +49,7 @@ def _make_db_with_existing_row(existing_id: str):
     from src.shared.db.models import MetricDefinition as _MD
 
     db = AsyncMock()
+    db.add = MagicMock()  # AsyncSession.add is synchronous
 
     existing_row = MagicMock()
     existing_row.id = existing_id
@@ -234,6 +236,7 @@ async def test_second_call_is_no_op() -> None:
           when the metric_definitions row is absent.
     """
     db = AsyncMock()
+    db.add = MagicMock()  # AsyncSession.add is synchronous
 
     # All three rows already exist
     existing = MagicMock()
