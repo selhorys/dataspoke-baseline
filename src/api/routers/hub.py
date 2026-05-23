@@ -6,10 +6,11 @@ receive DataHub's native JSON/GraphQL payloads.
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.dependencies import require_common
-from src.api.config import settings
-from src.shared.exceptions import DataHubUnavailableError
+from src.api.dependencies import get_db
+from src.shared.exceptions import DataHubUnavailableError, StorageUnavailableError
 
 router = APIRouter(
     prefix="/hub",
@@ -35,7 +36,24 @@ _HOP_BY_HOP = frozenset(
 )
 
 
-def _build_upstream_headers(request: Request) -> dict[str, str]:
+async def _get_datahub_connection(db: AsyncSession) -> tuple[str, str]:
+    """Return (gms_url, token) from peripheral_config.
+
+    Raises StorageUnavailableError (→ 503) when unconfigured.
+    """
+    from src.backend.admin.datahub_secret import get_datahub_token
+    from src.backend.admin.peripheral_service import get_peripheral_config
+
+    dto = await get_peripheral_config(db, "datahub")
+    token = get_datahub_token()
+    # Must match the predicate in src/api/dependencies.py get_datahub — both guards
+    # must stay in sync: dto present AND non-empty token required.
+    if dto is None or not token:
+        raise StorageUnavailableError("datahub peripheral not configured")
+    return dto.gms_url, token
+
+
+def _build_upstream_headers(request: Request, token: str) -> dict[str, str]:
     """Build headers for the upstream DataHub request.
 
     Strips hop-by-hop headers and the caller's Authorization (DataSpoke auth
@@ -46,8 +64,8 @@ def _build_upstream_headers(request: Request) -> dict[str, str]:
         for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() != "authorization"
     }
-    if settings.datahub_token:
-        headers["authorization"] = f"Bearer {settings.datahub_token}"
+    if token:
+        headers["authorization"] = f"Bearer {token}"
     return headers
 
 
@@ -85,15 +103,19 @@ async def _proxy(
 
 
 @router.post("/graphql")
-async def hub_graphql(request: Request) -> Response:
+async def hub_graphql(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
     """Proxy GraphQL queries to DataHub GMS."""
+    gms_url, token = await _get_datahub_connection(db)
     body = await request.body()
-    headers = _build_upstream_headers(request)
+    headers = _build_upstream_headers(request, token)
     headers["content-type"] = "application/json"
 
     return await _proxy(
         "POST",
-        f"{settings.datahub_gms_url}/api/graphql",
+        f"{gms_url}/api/graphql",
         headers=headers,
         content=body,
         params="",
@@ -104,14 +126,19 @@ async def hub_graphql(request: Request) -> Response:
     "/openapi/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
 )
-async def hub_openapi(request: Request, path: str) -> Response:
+async def hub_openapi(
+    request: Request,
+    path: str,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
     """Proxy REST requests to DataHub GMS OpenAPI surface."""
+    gms_url, token = await _get_datahub_connection(db)
     body = await request.body()
-    headers = _build_upstream_headers(request)
+    headers = _build_upstream_headers(request, token)
 
     return await _proxy(
         request.method,
-        f"{settings.datahub_gms_url}/openapi/{path}",
+        f"{gms_url}/openapi/{path}",
         headers=headers,
         content=body,
         params=request.url.query,

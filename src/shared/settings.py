@@ -48,10 +48,9 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
     rate_limit_burst: int = 20
 
-    # DataHub connection
-    datahub_gms_url: str = "http://localhost:8080"
+    # DataHub token — host-mode fallback for out-of-cluster test runs only.
+    # In-cluster reads come from the dataspoke-datahub-secret K8s Secret.
     datahub_token: str = ""
-    datahub_kafka_brokers: str = "localhost:9092"
 
     # PostgreSQL
     postgres_host: str = "localhost"
@@ -75,10 +74,9 @@ class Settings(BaseSettings):
     # LLM — secret stays here; provider/model/tunable params moved to runtime_config DB table
     llm_api_key: str = ""
 
-    # Langfuse observability (all optional — when unset no traces are emitted)
-    langfuse_host: str | None = None
-    langfuse_public_key: str | None = None
-    langfuse_secret_key: str | None = None
+    # Langfuse secret key — host-mode fallback for out-of-cluster test runs only.
+    # In-cluster reads come from the dataspoke-langfuse-secret K8s Secret.
+    langfuse_secret_key: str = ""
 
     # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
     # in ``src/workflows/_common.py`` return stub implementations instead of

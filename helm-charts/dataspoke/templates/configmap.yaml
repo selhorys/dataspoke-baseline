@@ -6,8 +6,6 @@ metadata:
   labels:
     {{- include "dataspoke.labels" . | nindent 4 }}
 data:
-  DATASPOKE_DATAHUB_GMS_URL: {{ .Values.config.datahub.gmsUrl | quote }}
-  DATASPOKE_DATAHUB_KAFKA_BROKERS: {{ .Values.config.datahub.kafkaBrokers | quote }}
   DATASPOKE_POSTGRES_HOST: {{ .Values.config.postgres.host | quote }}
   DATASPOKE_POSTGRES_PORT: {{ .Values.config.postgres.port | quote }}
   DATASPOKE_POSTGRES_DB: {{ .Values.config.postgres.db | quote }}
@@ -15,7 +13,5 @@ data:
   DATASPOKE_REDIS_PORT: {{ .Values.config.redis.port | quote }}
   DATASPOKE_AIRFLOW_URL: {{ .Values.config.airflow.url | quote }}
   DATASPOKE_AIRFLOW_CALLBACK_BASE_URL: {{ .Values.config.airflow.callbackBaseUrl | quote }}
-  DATASPOKE_LANGFUSE_HOST: {{ .Values.config.langfuse.host | quote }}
-  DATASPOKE_LANGFUSE_PUBLIC_KEY: {{ .Values.config.langfuse.publicKey | quote }}
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
 {{- end }}

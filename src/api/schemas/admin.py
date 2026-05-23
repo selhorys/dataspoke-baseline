@@ -62,6 +62,72 @@ class RuntimeConfResponse(SingleResponse):
     updated_at: datetime | None = None
 
 
+# ── Peripheral configuration ───────────────────────────────────────────────────
+
+
+class DatahubPeripheralResponse(SingleResponse):
+    """Response envelope for the DataHub peripheral configuration.
+
+    ``token`` is a masked indicator only: ``""`` when unset, ``"********"``
+    when set.  The plaintext token is never returned.
+    """
+
+    gms_url: str
+    kafka_brokers: str
+    token: str
+    is_configured: bool
+    updated_at: datetime | None = None
+
+
+class DatahubPeripheralPatchRequest(BaseModel):
+    """Partial update for the DataHub peripheral configuration.
+
+    All fields are optional — only supplied (non-null) fields are applied.
+    ``token`` is routed to the Kubernetes Secret rather than the DB.
+    An explicitly provided ``""`` clears the token; ``None`` (or omitting
+    the field) means "leave the token unchanged".
+    """
+
+    gms_url: Annotated[str | None, Field(default=None, max_length=512)] = None
+    kafka_brokers: Annotated[str | None, Field(default=None, max_length=512)] = None
+    token: Annotated[str | None, Field(default=None, max_length=8192)] = None
+
+
+class LangfusePeripheralResponse(SingleResponse):
+    """Response envelope for the Langfuse peripheral configuration.
+
+    ``secret_key`` is a masked indicator only: ``""`` when unset, ``"********"``
+    when set.  The plaintext secret key is never returned.
+    """
+
+    host: str
+    public_key: str
+    secret_key: str
+    is_configured: bool
+    updated_at: datetime | None = None
+
+
+class LangfusePeripheralPatchRequest(BaseModel):
+    """Partial update for the Langfuse peripheral configuration.
+
+    All fields are optional — only supplied (non-null) fields are applied.
+    ``secret_key`` is routed to the Kubernetes Secret rather than the DB.
+    An explicitly provided ``""`` clears the secret key; ``None`` (or omitting
+    the field) means "leave the secret key unchanged".
+    """
+
+    host: Annotated[str | None, Field(default=None, max_length=512)] = None
+    public_key: Annotated[str | None, Field(default=None, max_length=512)] = None
+    secret_key: Annotated[str | None, Field(default=None, max_length=8192)] = None
+
+
+class PeripheralsStatusResponse(SingleResponse):
+    """Summary response for GET /admin/peripherals."""
+
+    datahub: dict
+    langfuse: dict
+
+
 class RuntimeConfPatchRequest(BaseModel):
     """Partial update for the singleton runtime configuration.
 

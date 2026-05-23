@@ -81,6 +81,30 @@ else
   info "DATASPOKE_DEV_LLM_API_KEY is unset — dataspoke-llm-secret not created; app will read key as unset until set via /admin/conf."
 fi
 
+# DataHub token — provisioned out-of-band (same rationale as dataspoke-llm-secret).
+# DATASPOKE_DEV_DATAHUB_TOKEN is written by dev_env/datahub/install.sh.
+if [[ -n "${DATASPOKE_DEV_DATAHUB_TOKEN:-}" ]]; then
+  info "Applying dataspoke-datahub-secret (DataHub PAT)..."
+  kubectl create secret generic dataspoke-datahub-secret \
+    --namespace "${NS}" \
+    --from-literal=token="${DATASPOKE_DEV_DATAHUB_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+else
+  info "DATASPOKE_DEV_DATAHUB_TOKEN is unset — dataspoke-datahub-secret not created; app will treat DataHub as unconfigured until set via /api/v1/admin/peripherals/datahub."
+fi
+
+# Langfuse secret key — provisioned out-of-band (same rationale as dataspoke-llm-secret).
+# DATASPOKE_DEV_LANGFUSE_SECRET_KEY is written by dev_env/langfuse/install.sh.
+if [[ -n "${DATASPOKE_DEV_LANGFUSE_SECRET_KEY:-}" ]]; then
+  info "Applying dataspoke-langfuse-secret (Langfuse secret key)..."
+  kubectl create secret generic dataspoke-langfuse-secret \
+    --namespace "${NS}" \
+    --from-literal=secret_key="${DATASPOKE_DEV_LANGFUSE_SECRET_KEY}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+else
+  info "DATASPOKE_DEV_LANGFUSE_SECRET_KEY is unset — dataspoke-langfuse-secret not created; Langfuse tracing disabled until set via /api/v1/admin/peripherals/langfuse."
+fi
+
 # ---------------------------------------------------------------------------
 # Register required Helm repositories (idempotent)
 # ---------------------------------------------------------------------------
@@ -148,14 +172,9 @@ if [[ -d "$CHART_DIR" ]]; then
     --set-string secrets.postgres.user="${DATASPOKE_POSTGRES_USER}" \
     --set-string secrets.postgres.password="${DATASPOKE_POSTGRES_PASSWORD}" \
     --set-string secrets.redis.password="${DATASPOKE_REDIS_PASSWORD}" \
-    --set-string secrets.datahub.token="${DATASPOKE_DATAHUB_TOKEN:-}" \
     --set-string secrets.airflow.user="${DATASPOKE_AIRFLOW_USER:-admin}" \
     --set-string secrets.airflow.password="${DATASPOKE_AIRFLOW_PASSWORD:-admin}" \
-    --set-string config.langfuse.host="${DATASPOKE_LANGFUSE_HOST:-}" \
-    --set-string config.langfuse.publicKey="${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" \
     --set-string config.airflow.callbackBaseUrl="http://dataspoke-api:8002" \
-    --set-string config.datahub.gmsUrl="http://datahub-datahub-gms.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:8080" \
-    --set-string config.datahub.kafkaBrokers="datahub-prerequisites-kafka.${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}.svc.cluster.local:9092" \
     --set "api.ingress.hosts[0].host=app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
     --set "api.ingress.hosts[0].paths[0].path=/" \
     --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
@@ -211,9 +230,9 @@ kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
   || warn "DataSpoke API did not become ready in time — skipping runtime config PATCH."
 
 if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" ]]; then
-  info "Seeding dev LLM provider/model into runtime config via /api/v1/internal/admin/conf..."
+  info "Seeding dev LLM provider/model into runtime config via /internal/admin/conf..."
   curl -fsS -X PATCH \
-    "http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}/api/v1/internal/admin/conf" \
+    "http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}/internal/admin/conf" \
     -H "X-Internal-Token: ${DATASPOKE_INTERNAL_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"llm_provider\": \"${DATASPOKE_DEV_LLM_PROVIDER}\", \"llm_model\": \"${DATASPOKE_DEV_LLM_MODEL}\"}" \
@@ -221,6 +240,40 @@ if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" 
     || warn "Runtime config PATCH failed — app will use factory defaults. Run manually after API is reachable."
 else
   info "DATASPOKE_DEV_LLM_PROVIDER or DATASPOKE_DEV_LLM_MODEL not set — skipping runtime config PATCH."
+fi
+
+# Seed DataHub peripheral connection (non-secret fields) via internal API.
+# DATASPOKE_DEV_DATAHUB_GMS_URL and DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS are
+# written by dev_env/datahub/install.sh. The token was already placed in the
+# dataspoke-datahub-secret above.
+if [[ -n "${DATASPOKE_DEV_DATAHUB_GMS_URL:-}" && -n "${DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS:-}" ]]; then
+  info "Seeding DataHub connection into peripheral config via /internal/admin/peripherals/datahub..."
+  curl -fsS -X PATCH \
+    "http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}/internal/admin/peripherals/datahub" \
+    -H "X-Internal-Token: ${DATASPOKE_INTERNAL_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"gms_url\": \"${DATASPOKE_DEV_DATAHUB_GMS_URL}\", \"kafka_brokers\": \"${DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS}\"}" \
+    && info "DataHub peripheral config patched: gms_url=${DATASPOKE_DEV_DATAHUB_GMS_URL}." \
+    || warn "DataHub peripheral config PATCH failed — DataHub-touching routes will return 503 until set via /api/v1/admin/peripherals/datahub."
+else
+  info "DATASPOKE_DEV_DATAHUB_GMS_URL or DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS not set — skipping DataHub peripheral PATCH."
+fi
+
+# Seed Langfuse peripheral connection (non-secret fields) via internal API.
+# DATASPOKE_DEV_LANGFUSE_HOST and DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY are
+# written by dev_env/langfuse/install.sh. The secret key was already placed
+# in the dataspoke-langfuse-secret above.
+if [[ -n "${DATASPOKE_DEV_LANGFUSE_HOST:-}" && -n "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+  info "Seeding Langfuse connection into peripheral config via /internal/admin/peripherals/langfuse..."
+  curl -fsS -X PATCH \
+    "http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-dev.dataspoke.example.com}/internal/admin/peripherals/langfuse" \
+    -H "X-Internal-Token: ${DATASPOKE_INTERNAL_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"host\": \"${DATASPOKE_DEV_LANGFUSE_HOST}\", \"public_key\": \"${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}\"}" \
+    && info "Langfuse peripheral config patched: host=${DATASPOKE_DEV_LANGFUSE_HOST}." \
+    || warn "Langfuse peripheral config PATCH failed — Langfuse tracing will remain disabled until set via /api/v1/admin/peripherals/langfuse."
+else
+  info "DATASPOKE_DEV_LANGFUSE_HOST or DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY not set — skipping Langfuse peripheral PATCH."
 fi
 
 # ---------------------------------------------------------------------------

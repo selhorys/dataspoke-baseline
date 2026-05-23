@@ -364,9 +364,6 @@ airflow:
 # ---------------------------------------------------------------------------
 config:
   createConfigMap: true
-  datahub:
-    gmsUrl: "http://datahub-datahub-gms.datahub.svc.cluster.local:8080"
-    kafkaBrokers: "datahub-prerequisites-kafka.datahub.svc.cluster.local:9092"
   postgres:
     host: "dataspoke-postgresql"
     port: "5432"
@@ -377,10 +374,6 @@ config:
   airflow:
     url: "http://dataspoke-airflow-api-server:8080"
     callbackBaseUrl: "http://dataspoke-api:8002"
-  langfuse:
-    host: ""          # set via install.sh in dev; via operator values override in prod
-    publicKey: ""     # non-secret; placed in ConfigMap
-    secretKey: ""     # secret; placed in Secret (never in ConfigMap)
   corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------
@@ -388,8 +381,6 @@ config:
 # ---------------------------------------------------------------------------
 secrets:
   createSecret: true
-  datahub:
-    token: ""          # Personal access token (empty for local dev)
   postgres:
     user: ""
     password: ""
@@ -398,13 +389,6 @@ secrets:
   airflow:
     user: ""
     password: ""
-  langfuse:
-    secretKey: ""      # Langfuse API secret key — set inline in prod, or use existingSecret
-    # Alternative to secretKey: read from a pre-existing K8s Secret to avoid
-    # storing the value in the helm release record. When existingSecret is set,
-    # the Secret template reads from it via valueFrom.secretKeyRef.
-    existingSecret: ""
-    existingSecretKey: "LANGFUSE_SECRET_KEY"
   jwt:
     secretKey: ""      # Must be set in production
 

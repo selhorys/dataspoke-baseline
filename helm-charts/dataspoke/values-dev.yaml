@@ -273,15 +273,7 @@ airflow:
 # ---------------------------------------------------------------------------
 config:
   createConfigMap: true
-  langfuse:
-    host: ""          # populated via --set-string from install.sh
-    publicKey: ""     # populated via --set-string from install.sh after first Langfuse login
 secrets:
   createSecret: true
-  langfuse:
-    # secretKey is read from dataspoke-langfuse-secret via existingSecret reference.
-    # Do not pass it via --set-string (prevents exposure in helm release record).
-    existingSecret: "dataspoke-langfuse-secret"
-    existingSecretKey: "LANGFUSE_SECRET_KEY"
   jwt:
     secretKey: "changeme-dev-secret-do-not-use-in-prod"

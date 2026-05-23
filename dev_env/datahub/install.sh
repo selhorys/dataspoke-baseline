@@ -211,13 +211,24 @@ fi
 #   GraphQL requires authentication; the reset script and integration tests
 #   need a valid token in .env.  Generate one if missing or stale.
 # ---------------------------------------------------------------------------
+# Write the in-cluster service addresses to .env. These are deterministic
+# Service DNS names — stable regardless of ingress configuration.
+# dataspoke-infra/install.sh reads these to PATCH the DataHub peripheral config.
+upsert_env_var DATASPOKE_DEV_DATAHUB_GMS_URL \
+  "http://datahub-datahub-gms.${NS}.svc.cluster.local:8080" \
+  "$SCRIPT_DIR/../.env"
+upsert_env_var DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS \
+  "datahub-prerequisites-kafka.${NS}.svc.cluster.local:9092" \
+  "$SCRIPT_DIR/../.env"
+info "DATASPOKE_DEV_DATAHUB_GMS_URL and DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS written to .env."
+
 if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
   DATAHUB_FRONTEND="http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}"
   GMS_URL="${DATAHUB_FRONTEND}/gms"
 
   # Re-read .env to pick up any existing token
   source "$SCRIPT_DIR/../.env"
-  EXISTING_TOKEN="${DATASPOKE_DATAHUB_TOKEN:-}"
+  EXISTING_TOKEN="${DATASPOKE_DEV_DATAHUB_TOKEN:-}"
 
   NEED_TOKEN=true
   if [[ -n "$EXISTING_TOKEN" ]]; then
@@ -279,9 +290,8 @@ if [[ -n "${DATASPOKE_DEV_INGRESS_DOMAIN:-}" ]]; then
 
     NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
     if [[ -n "$NEW_TOKEN" ]]; then
-      # Fix #1: portable upsert — works on GNU and BSD sed; appends if missing.
-      upsert_env_var DATASPOKE_DATAHUB_TOKEN "${NEW_TOKEN}" "$SCRIPT_DIR/../.env"
-      info "DataHub PAT written to .env."
+      upsert_env_var DATASPOKE_DEV_DATAHUB_TOKEN "${NEW_TOKEN}" "$SCRIPT_DIR/../.env"
+      info "DataHub PAT written to .env as DATASPOKE_DEV_DATAHUB_TOKEN."
     else
       warn "Failed to generate DataHub PAT. You may need to create one manually."
       warn "Response: $PAT_RESPONSE"

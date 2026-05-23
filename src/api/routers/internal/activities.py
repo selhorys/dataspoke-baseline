@@ -77,7 +77,7 @@ async def ingestion_list_active(body: IngestionListActiveRequest) -> list[str]:
         async with make_db_session() as db:
             from src.backend.ingestion.service import IngestionService
 
-            datahub = make_datahub()
+            datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db)
             return await service.list_active_for_tier(body.tier)
     except DataSpokeError as exc:
@@ -92,12 +92,12 @@ class IngestionRunRequest(BaseModel):
 @router.post("/ingestion/run")
 async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
     """Execute ingestion pipeline for a single dataset."""
-    datahub = make_datahub()
     cache = make_cache()
     try:
         async with make_db_session() as db:
             from src.backend.ingestion.service import IngestionService
 
+            datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db, cache=cache)
             result = await service.run(body.dataset_urn, dry_run=body.dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
@@ -111,11 +111,11 @@ async def ingestion_passive_sync() -> dict[str, object]:
 
     Called hourly by the ingestion-passive-hourly DAG.
     """
-    datahub = make_datahub()
     try:
         async with make_db_session() as db:
             from src.backend.ingestion.service import IngestionService
 
+            datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db)
             await service.sync_passive_status()
             return {"status": "ok"}
@@ -145,7 +145,6 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
 
     Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
     """
-    datahub = make_datahub()
     cache = make_cache()
     vector = make_vector()
     try:
@@ -153,6 +152,7 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
             from src.backend.admin.config_service import get_runtime_config
             from src.backend.metagen.service import MetagenService
 
+            datahub = await make_datahub(db)
             rc = await get_runtime_config(db)
             llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
             service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
@@ -192,7 +192,7 @@ async def metrics_list_active(body: MetricsListActiveRequest) -> list[str]:
         async with make_db_session() as db:
             from src.backend.metrics.service import MetricsService
 
-            datahub = make_datahub()
+            datahub = await make_datahub(db)
             cache = make_cache()
             service = MetricsService(datahub=datahub, db=db, cache=cache)
             records = await service.list_active_for_tier(body.tier)
@@ -215,12 +215,12 @@ class MetricsRunRequest(BaseModel):
 @router.post("/metrics/run")
 async def metrics_run(body: MetricsRunRequest) -> dict[str, object]:
     """Execute metric measurement run for a single metric."""
-    datahub = make_datahub()
     cache = make_cache()
     try:
         async with make_db_session() as db:
             from src.backend.metrics.service import MetricsService
 
+            datahub = await make_datahub(db)
             service = MetricsService(datahub=datahub, db=db, cache=cache)
             result = await service.run(body.metric_id, dry_run=body.dry_run)
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
@@ -259,7 +259,6 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
 
     Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
     """
-    datahub = make_datahub()
     cache = make_cache()
     vector = make_vector()
     try:
@@ -267,6 +266,7 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
             from src.backend.admin.config_service import get_runtime_config
             from src.backend.ontogen.service import OntogenService
 
+            datahub = await make_datahub(db)
             rc = await get_runtime_config(db)
             llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
             service = OntogenService(
@@ -310,11 +310,11 @@ async def datahub_sync(body: DatahubSyncRequest) -> dict[str, object]:
     Called daily by the datahub-sync-daily DAG (unparameterized = full sweep).
     Accepts an optional dataset_urns list for a targeted sweep.
     """
-    datahub = make_datahub()
     try:
         async with make_db_session() as db:
             from src.shared.db.registry import sync_with_datahub
 
+            datahub = await make_datahub(db)
             result = await sync_with_datahub(
                 db=db,
                 datahub=datahub,

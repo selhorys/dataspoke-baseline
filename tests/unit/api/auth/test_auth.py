@@ -247,10 +247,17 @@ async def test_admin_group_can_access_dg_routes(client: AsyncClient) -> None:
 
 
 async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None:
-    """Any valid group member can access /spoke/common/* routes."""
+    """Any valid group member can access /spoke/common/* routes.
+
+    /spoke/common/ingestion depends on get_ingestion_service → get_datahub.
+    get_datahub now reads from DB-backed peripheral_config; we override it here
+    so the auth guard (not peripheral config) is the subject under test.
+
+    spec: API.md §Group-to-Route Access Control — any valid group may access /spoke/common/*.
+    """
     from unittest.mock import AsyncMock, MagicMock
 
-    from src.api.dependencies import get_db
+    from src.api.dependencies import get_datahub, get_db
     from src.api.main import app
 
     mock_session = AsyncMock()
@@ -263,6 +270,7 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
         yield mock_session
 
     app.dependency_overrides[get_db] = _mock_db
+    app.dependency_overrides[get_datahub] = lambda: AsyncMock()
     try:
         for group in ["de", "da", "dg"]:
             mock_session.execute = AsyncMock(side_effect=[count_result, rows_result])
@@ -273,6 +281,7 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
             )
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_datahub, None)
 
 
 # ── Redis-backed revocation tests ──────────────────────────────────────────────

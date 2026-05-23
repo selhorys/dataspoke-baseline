@@ -22,9 +22,39 @@ def _fake_request(**state: object):
 
 
 class TestInfraProviders:
-    def test_get_datahub_returns_client(self) -> None:
-        sentinel = object()
-        assert get_datahub(_fake_request(datahub=sentinel)) is sentinel
+    async def test_get_datahub_returns_client(self) -> None:
+        """get_datahub(db) constructs a DataHubClient from peripheral_config + secret.
+
+        The function is now async and reads from DB/K8s rather than app.state.
+        We patch get_peripheral_config and get_datahub_token at the source module
+        level because both are imported lazily inside get_datahub.
+
+        spec: plan/scalable-beaming-hamster.md — get_datahub is per-request factory.
+        spec: API.md §DataHub client — constructed from peripheral_config + K8s secret.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from src.backend.admin.peripheral_service import DatahubConfigDTO
+        from src.shared.datahub.client import DataHubClient
+
+        _fake_dto = DatahubConfigDTO(gms_url="http://gms-test:8080", kafka_brokers="k:9092")
+        mock_db = AsyncMock()
+
+        with (
+            patch(
+                "src.backend.admin.peripheral_service.get_peripheral_config",
+                AsyncMock(return_value=_fake_dto),
+            ),
+            patch(
+                "src.backend.admin.datahub_secret.get_datahub_token",
+                new=lambda: "test-token",
+            ),
+        ):
+            result = await get_datahub(db=mock_db)
+
+        assert isinstance(result, DataHubClient), (
+            "get_datahub must return a DataHubClient when peripheral is configured"
+        )
 
     def test_get_redis_returns_client(self) -> None:
         sentinel = object()

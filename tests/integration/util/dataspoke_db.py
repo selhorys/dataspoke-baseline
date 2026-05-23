@@ -117,6 +117,23 @@ async def reset_all() -> None:
             1,
             *[rc_seed[c] for c in cols],
         )
+
+        datahub_gms = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
+        datahub_kafka = os.environ.get("DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS", "")
+        if datahub_gms and datahub_kafka:
+            await conn.execute(
+                f"INSERT INTO {_SCHEMA}.peripheral_config (name, settings) VALUES ($1, $2::jsonb)",
+                "datahub",
+                json.dumps({"gms_url": datahub_gms, "kafka_brokers": datahub_kafka}),
+            )
+        langfuse_host = os.environ.get("DATASPOKE_DEV_LANGFUSE_HOST", "")
+        langfuse_pk = os.environ.get("DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY", "")
+        if langfuse_host and langfuse_pk:
+            await conn.execute(
+                f"INSERT INTO {_SCHEMA}.peripheral_config (name, settings) VALUES ($1, $2::jsonb)",
+                "langfuse",
+                json.dumps({"host": langfuse_host, "public_key": langfuse_pk}),
+            )
     finally:
         await conn.close()
 

@@ -19,7 +19,7 @@ spec:
         envFrom env vars are evaluated only at container start; a Secret or
         ConfigMap content change does not restart consumers. These checksum
         annotations force a rolling restart whenever rendered Secret/ConfigMap
-        content changes (e.g. DataHub token rotation in dev_env/datahub/install.sh).
+        content changes.
       */}}
       annotations:
         {{- if .Values.secrets.createSecret }}
@@ -81,13 +81,6 @@ spec:
                   key: token
             - name: DATASPOKE_ENABLE_STUB_AUTH
               value: {{ .Values.api.enableStubAuth | default false | quote }}
-            {{- if .Values.secrets.langfuse.existingSecret }}
-            - name: DATASPOKE_LANGFUSE_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.langfuse.existingSecret }}
-                  key: {{ .Values.secrets.langfuse.existingSecretKey }}
-            {{- end }}
           startupProbe:
             httpGet:
               path: /health

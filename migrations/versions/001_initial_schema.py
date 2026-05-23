@@ -353,6 +353,18 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
+    # ── peripheral_config ────────────────────────────────────────────────
+    op.create_table(
+        "peripheral_config",
+        sa.Column("name", sa.String(32), primary_key=True),
+        sa.Column("settings", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "name IN ('datahub', 'langfuse')", name="ck_peripheral_config_name"
+        ),
+        schema=SCHEMA,
+    )
+
     # ── ontogen_seeds ────────────────────────────────────────────────────
     op.create_table(
         "ontogen_seeds",

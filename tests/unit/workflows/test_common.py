@@ -14,6 +14,7 @@ spec: TESTING.md §Test-Mode Stubs — make_* factories in src/workflows/_common
 """
 
 import pytest
+import pytest_asyncio  # noqa: F401 — ensures asyncio mode is active
 
 from src.workflows._common import (
     make_cache,
@@ -172,27 +173,88 @@ def test_make_notification_returns_real_service_outside_test_mode(monkeypatch) -
 # ── make_datahub: always real ──────────────────────────────────────────────────
 
 
-def test_make_datahub_always_returns_datahub_client_in_test_mode(monkeypatch) -> None:
-    """make_datahub() always returns DataHubClient, even in test mode.
+@pytest.mark.asyncio
+async def test_make_datahub_always_returns_datahub_client_in_test_mode(monkeypatch) -> None:
+    """make_datahub(db) always returns DataHubClient, even in test mode.
+
+    make_datahub is now async and requires a db session.  It reads the DataHub
+    peripheral config from DB and calls get_datahub_token().  Both are patched
+    at the source module level (lazy imports inside make_datahub resolve from
+    the source module at call time).
 
     spec: TESTING.md §Test-Mode Stubs — DataHub is never stubbed.
     """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+
     monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
-    result = make_datahub()
+
+    _fake_dto = DatahubConfigDTO(gms_url="http://gms-stub:8080", kafka_brokers="kafka-stub:9092")
+    # Patch at source module level — make_datahub does a lazy import at call time
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=_fake_dto),
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.datahub_secret.get_datahub_token",
+        lambda: "stub-token",
+    )
+
+    mock_db = AsyncMock()
+    result = await make_datahub(mock_db)
     assert isinstance(result, DataHubClient), (
         f"make_datahub() must always return DataHubClient; got {type(result).__name__}. "
         "spec: TESTING.md §Test-Mode Stubs."
     )
 
+    # Verify the client was constructed from the peripheral config + token.
+    # DataHubClient stores its config inside DataHubGraph._graph_client_config
+    # (or similar internal attributes). The observable surface is that the
+    # emitter's server URL matches what was passed in.
+    # The cleanest assertion: the _emitter was built with the right gms_url.
+    assert result._emitter._gms_server == "http://gms-stub:8080", (
+        f"DataHubClient must be constructed with the gms_url from peripheral config. "
+        f"Expected 'http://gms-stub:8080', got {result._emitter._gms_server!r}. "
+        "spec: plan/scalable-beaming-hamster.md §Consumer migration — "
+        "make_datahub reads gms_url from peripheral config."
+    )
 
-def test_make_datahub_returns_datahub_client_outside_test_mode(monkeypatch) -> None:
-    """make_datahub() returns DataHubClient outside test mode.
+
+@pytest.mark.asyncio
+async def test_make_datahub_returns_datahub_client_outside_test_mode(monkeypatch) -> None:
+    """make_datahub(db) returns DataHubClient outside test mode, constructed with peripheral values.
 
     spec: TESTING.md §Test-Mode Stubs — DataHub is always real.
+    spec: plan/scalable-beaming-hamster.md §Consumer migration — make_datahub reads from DB.
     """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+
     monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
-    result = make_datahub()
+
+    _fake_dto = DatahubConfigDTO(gms_url="http://gms-stub:8080", kafka_brokers="kafka-stub:9092")
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=_fake_dto),
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.datahub_secret.get_datahub_token",
+        lambda: "stub-token",
+    )
+
+    mock_db = AsyncMock()
+    result = await make_datahub(mock_db)
     assert isinstance(result, DataHubClient)
+
+    # Verify the client was constructed with the correct gms_url from peripheral config.
+    assert result._emitter._gms_server == "http://gms-stub:8080", (
+        f"DataHubClient must be constructed with the gms_url from peripheral config. "
+        f"Expected 'http://gms-stub:8080', got {result._emitter._gms_server!r}. "
+        "spec: plan/scalable-beaming-hamster.md §Consumer migration — "
+        "make_datahub reads gms_url from peripheral config."
+    )
 
 
 # ── urn_to_workflow_id ────────────────────────────────────────────────────────

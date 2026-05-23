@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    String,
     Text,
     UniqueConstraint,
     desc,
@@ -403,6 +404,23 @@ class RuntimeConfig(Base):
     metagen_ontology_rag_edge_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     metagen_ontology_rag_triple_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     validation_score_n_intervals: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ── peripheral_config ─────────────────────────────────────────────────────────
+
+
+class PeripheralConfig(Base):
+    __tablename__ = "peripheral_config"
+    __table_args__ = (
+        CheckConstraint("name IN ('datahub', 'langfuse')", name="ck_peripheral_config_name"),
+        {"schema": SCHEMA},
+    )
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )

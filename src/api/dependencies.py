@@ -1,8 +1,12 @@
 """Dependency injection provider functions for infrastructure clients.
 
-Long-lived clients (DataHub, Redis, pgvector, Airflow) are constructed once
-during application startup (via the lifespan in src/api/main.py) and stored on
-app.state. Per-request providers below retrieve the shared instance.
+Long-lived clients (Redis, pgvector, Airflow) are constructed once during
+application startup (via the lifespan in src/api/main.py) and stored on
+app.state.  Per-request providers below retrieve the shared instance.
+
+DataHub clients are NOT long-lived on app.state — they are constructed
+per-request from the DB-backed peripheral_config so that connection changes
+via /admin/peripherals/datahub are honoured immediately.
 
 LLM clients are NOT long-lived on app.state — they are constructed per-request
 from the DB-backed RuntimeConfig so that provider/model changes via
@@ -30,13 +34,26 @@ from src.workflows.airflow.client import AirflowClient
 # ── Infrastructure client providers ──────────────────────────────
 
 
-def get_datahub(request: Request) -> DataHubClient:
-    return request.app.state.datahub
-
-
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as session:
         yield session
+
+
+async def get_datahub(db: AsyncSession = Depends(get_db)) -> DataHubClient:
+    """Construct a per-request DataHubClient from the peripheral_config DB row.
+
+    Raises StorageUnavailableError (→ 503) when the DataHub peripheral is not
+    configured or the token is absent.
+    """
+    from src.backend.admin.datahub_secret import get_datahub_token
+    from src.backend.admin.peripheral_service import get_peripheral_config
+    from src.shared.exceptions import StorageUnavailableError
+
+    dto = await get_peripheral_config(db, "datahub")
+    token = get_datahub_token()
+    if dto is None or not token:
+        raise StorageUnavailableError("datahub peripheral not configured")
+    return DataHubClient(dto.gms_url, token)
 
 
 def get_redis(request: Request) -> RedisClient:
@@ -94,10 +111,11 @@ async def get_metagen_service(
 ) -> "MetagenService":
     from src.backend.admin.config_service import get_runtime_config
     from src.backend.metagen.service import MetagenService
-    from src.workflows._common import make_llm
+    from src.workflows._common import make_llm, read_langfuse_config
 
     rc = await get_runtime_config(db)
-    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
+    lf_host, lf_pk = await read_langfuse_config(db)
+    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
     return MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
 
@@ -109,10 +127,11 @@ async def get_ontogen_service(
 ) -> "OntogenService":
     from src.backend.admin.config_service import get_runtime_config
     from src.backend.ontogen.service import OntogenService
-    from src.workflows._common import make_llm
+    from src.workflows._common import make_llm, read_langfuse_config
 
     rc = await get_runtime_config(db)
-    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
+    lf_host, lf_pk = await read_langfuse_config(db)
+    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
     return OntogenService(
         datahub=datahub,
         db=db,

@@ -61,7 +61,6 @@ HUB = f"{API_PREFIX}/hub"
 async def lifespan(app: FastAPI):
     """Application lifespan — construct and close shared infrastructure clients."""
     from src.shared.cache.client import RedisClient
-    from src.shared.datahub.client import DataHubClient
     from src.shared.db.session import SessionLocal
     from src.shared.vector.client import PgVectorManager
     from src.workflows.airflow.client import AirflowClient
@@ -77,13 +76,12 @@ async def lifespan(app: FastAPI):
         username=settings.airflow_user,
         password=settings.airflow_password,
     )
-    app.state.datahub = DataHubClient(settings.datahub_gms_url, settings.datahub_token)
     app.state.redis = RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
     app.state.vector = PgVectorManager(session_factory=SessionLocal)
 
     logger.info(
         "lifespan_startup_complete",
-        extra={"clients": ["airflow", "datahub", "redis", "vector"]},
+        extra={"clients": ["airflow", "redis", "vector"]},
     )
 
     # Seed factory-default metric definitions (idempotent)
@@ -110,7 +108,7 @@ async def lifespan(app: FastAPI):
                     extra={"client": name},
                     exc_info=True,
                 )
-        # DataHubClient and PgVectorManager have no close() — rely on GC.
+        # PgVectorManager has no close() — relies on GC.
         logger.info("lifespan_shutdown_complete")
 
 

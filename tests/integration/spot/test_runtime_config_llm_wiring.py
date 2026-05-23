@@ -100,7 +100,9 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
             vector=_STUB_VECTOR,
         )
 
-    mock_make_llm.assert_called_once_with(provider="openai", model="gpt-4o-test")
+    mock_make_llm.assert_called_once()
+    assert mock_make_llm.call_args.kwargs["provider"] == "openai"
+    assert mock_make_llm.call_args.kwargs["model"] == "gpt-4o-test"
     assert service._llm is sentinel_llm, (
         "MetagenService._llm must be the object returned by make_llm. "
         "spec: src/api/dependencies.py — llm = make_llm(...); MetagenService(..., llm=llm, ...)"
@@ -138,7 +140,9 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
             vector=_STUB_VECTOR,
         )
 
-    mock_make_llm.assert_called_once_with(provider="anthropic", model="claude-test")
+    mock_make_llm.assert_called_once()
+    assert mock_make_llm.call_args.kwargs["provider"] == "anthropic"
+    assert mock_make_llm.call_args.kwargs["model"] == "claude-test"
     assert service._llm is sentinel_llm, (
         "OntogenService._llm must be the object returned by make_llm. "
         "spec: src/api/dependencies.py — llm = make_llm(...); OntogenService(..., llm=llm, ...)"
@@ -180,7 +184,9 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
             vector=_STUB_VECTOR,
         )
 
-    mock_first.assert_called_once_with(provider="openai", model="gpt-4o-test")
+    mock_first.assert_called_once()
+    assert mock_first.call_args.kwargs["provider"] == "openai"
+    assert mock_first.call_args.kwargs["model"] == "gpt-4o-test"
     assert service_first._llm is first_sentinel
 
     # Simulate admin changing provider/model via /admin/conf
@@ -205,7 +211,9 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
     # provider/model on the next get_metagen_service invocation — proving
     # per-request construction honours immediate /admin/conf changes.
     # spec: src/api/dependencies.py — per-request LLM construction.
-    mock_second.assert_called_once_with(provider="anthropic", model="claude-test")
+    mock_second.assert_called_once()
+    assert mock_second.call_args.kwargs["provider"] == "anthropic"
+    assert mock_second.call_args.kwargs["model"] == "claude-test"
     assert service_second._llm is second_sentinel, (
         "Second MetagenService._llm must be the object make_llm returned for "
         "the updated provider/model, not the one from the first call."

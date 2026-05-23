@@ -25,7 +25,6 @@ echo "=== Installing Langfuse subsystem ==="
 echo ""
 
 LANGFUSE_NS="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
-DATASPOKE_NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
 
 # ---------------------------------------------------------------------------
 # Verify required env vars
@@ -33,7 +32,6 @@ DATASPOKE_NS="${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}"
 info "Checking required environment variables..."
 : "${DATASPOKE_DEV_KUBE_CLUSTER:?DATASPOKE_DEV_KUBE_CLUSTER must be set in .env}"
 : "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE:?DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE must be set in .env}"
-: "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE:?DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE must be set in .env}"
 : "${DATASPOKE_DEV_INGRESS_IP:?DATASPOKE_DEV_INGRESS_IP must be set in .env (run nginx-ingress/install.sh first)}"
 info "Required environment variables present."
 
@@ -82,19 +80,19 @@ DATASPOKE_LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_LANGFUSE_INIT_PROJECT_NAME:-da
 
 # Public key is human-readable, hardcoded; secret key is persisted random hex
 # so it stays stable across re-runs and matches what Langfuse provisioned.
-if [[ -z "${DATASPOKE_LANGFUSE_PUBLIC_KEY:-}" ]]; then
-  info "DATASPOKE_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
-  DATASPOKE_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
-  upsert_env_var DATASPOKE_LANGFUSE_PUBLIC_KEY "${DATASPOKE_LANGFUSE_PUBLIC_KEY}" "${ENV_FILE}"
-  export DATASPOKE_LANGFUSE_PUBLIC_KEY
-  info "  DATASPOKE_LANGFUSE_PUBLIC_KEY=${DATASPOKE_LANGFUSE_PUBLIC_KEY} persisted to .env."
+if [[ -z "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+  info "DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
+  DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
+  upsert_env_var DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}" "${ENV_FILE}"
+  export DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY
+  info "  DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY=${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY} persisted to .env."
 fi
-if [[ -z "${DATASPOKE_LANGFUSE_SECRET_KEY:-}" ]]; then
-  info "DATASPOKE_LANGFUSE_SECRET_KEY not set — generating sk-lf-dataspoke-dev-<hex>..."
+if [[ -z "${DATASPOKE_DEV_LANGFUSE_SECRET_KEY:-}" ]]; then
+  info "DATASPOKE_DEV_LANGFUSE_SECRET_KEY not set — generating sk-lf-dataspoke-dev-<hex>..."
   _generated_sk="sk-lf-dataspoke-dev-$(openssl rand -hex 24)"
-  upsert_env_var DATASPOKE_LANGFUSE_SECRET_KEY "${_generated_sk}" "${ENV_FILE}"
-  export DATASPOKE_LANGFUSE_SECRET_KEY="${_generated_sk}"
-  info "  DATASPOKE_LANGFUSE_SECRET_KEY generated and persisted to .env."
+  upsert_env_var DATASPOKE_DEV_LANGFUSE_SECRET_KEY "${_generated_sk}" "${ENV_FILE}"
+  export DATASPOKE_DEV_LANGFUSE_SECRET_KEY="${_generated_sk}"
+  info "  DATASPOKE_DEV_LANGFUSE_SECRET_KEY generated and persisted to .env."
 fi
 
 chmod 600 "$ENV_FILE"
@@ -136,8 +134,8 @@ fi
 info "Creating dataspoke-langfuse-secret in ${LANGFUSE_NS} (full key set)..."
 kubectl create secret generic dataspoke-langfuse-secret \
   --namespace "${LANGFUSE_NS}" \
-  --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
-  --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
+  --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}" \
+  --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_DEV_LANGFUSE_SECRET_KEY}" \
   --from-literal=LANGFUSE_NEXTAUTH_SECRET="${DATASPOKE_LANGFUSE_NEXTAUTH_SECRET}" \
   --from-literal=LANGFUSE_SALT="${DATASPOKE_LANGFUSE_SALT}" \
   --from-literal=LANGFUSE_ENCRYPTION_KEY="${DATASPOKE_LANGFUSE_ENCRYPTION_KEY}" \
@@ -155,26 +153,10 @@ kubectl create secret generic dataspoke-langfuse-secret \
   --from-literal=LANGFUSE_INIT_ORG_NAME="${DATASPOKE_LANGFUSE_INIT_ORG_NAME}" \
   --from-literal=LANGFUSE_INIT_PROJECT_ID="${DATASPOKE_LANGFUSE_INIT_PROJECT_ID}" \
   --from-literal=LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_LANGFUSE_INIT_PROJECT_NAME}" \
-  --from-literal=LANGFUSE_INIT_PROJECT_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
-  --from-literal=LANGFUSE_INIT_PROJECT_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_PUBLIC_KEY="${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_SECRET_KEY="${DATASPOKE_DEV_LANGFUSE_SECRET_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
 info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
-
-# ---------------------------------------------------------------------------
-# Create dataspoke-langfuse-secret in dataspoke-01 (consumer subset — idempotent)
-# The umbrella chart's existingSecretKeyRef for LANGFUSE_SECRET_KEY resolves
-# within the same namespace as the API/Airflow pods (dataspoke-01). Kubernetes
-# secrets are namespace-scoped — a cross-namespace secretKeyRef is not possible,
-# so we mirror only the two keys the umbrella chart needs.
-# ---------------------------------------------------------------------------
-info "Creating dataspoke-langfuse-secret in ${DATASPOKE_NS} (consumer subset: PUBLIC_KEY + SECRET_KEY)..."
-ensure_namespace "${DATASPOKE_NS}"
-kubectl create secret generic dataspoke-langfuse-secret \
-  --namespace "${DATASPOKE_NS}" \
-  --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_LANGFUSE_PUBLIC_KEY}" \
-  --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_LANGFUSE_SECRET_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
-info "dataspoke-langfuse-secret (consumer subset) applied in ${DATASPOKE_NS}."
 
 # ---------------------------------------------------------------------------
 # Helm install/upgrade
@@ -216,8 +198,8 @@ kubectl rollout status deployment/langfuse-worker \
 # dataspoke-infra/install.sh reads this on its initial helm upgrade --install,
 # so no post-hoc reupgrade of the umbrella chart is needed.
 # ---------------------------------------------------------------------------
-upsert_env_var DATASPOKE_LANGFUSE_HOST "${LANGFUSE_HOST}" "${ENV_FILE}"
-info "DATASPOKE_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
+upsert_env_var DATASPOKE_DEV_LANGFUSE_HOST "${LANGFUSE_HOST}" "${ENV_FILE}"
+info "DATASPOKE_DEV_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
 
 # ---------------------------------------------------------------------------
 # Access summary
@@ -227,8 +209,7 @@ info "Langfuse installation complete."
 echo ""
 echo "  Langfuse UI:    ${LANGFUSE_HOST}/"
 echo "  Namespace:      ${LANGFUSE_NS}"
-echo "  Secret (full):  dataspoke-langfuse-secret in ${LANGFUSE_NS}"
-echo "  Secret (keys):  dataspoke-langfuse-secret in ${DATASPOKE_NS} (PUBLIC_KEY + SECRET_KEY)"
+echo "  Secret:         dataspoke-langfuse-secret in ${LANGFUSE_NS}"
 echo ""
 echo "  Login: dataspoke@dataspoke.local / dataspoke"
 echo ""

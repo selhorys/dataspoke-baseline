@@ -61,6 +61,10 @@ async def run_debate(
     Unlike ontogen, metagen drops all candidates on turns_exhausted or
     cycle_detected — there is no llm_pending fallback.
     """
+    # Use make_llm so test-mode stubbing applies to the Reviewer regardless of
+    # whether a model override is set (direct LLMClient construction bypasses stubs).
+    # Langfuse tracing is not wired to the reviewer; it uses the same provider/key
+    # as the producer but with a different model.
     reviewer_llm: LLMClient = (
         make_llm(provider=llm_provider, model=llm_base_model, model_override=reviewer_model)
         if reviewer_model
