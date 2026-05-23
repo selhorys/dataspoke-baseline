@@ -225,6 +225,8 @@ async def test_metrics_list_active_hourly(
     spec: BACKEND.md §Tier-DAG selection — tier filter applies to metric_definitions
     """
     # spec: BACKEND.md §Tier-DAG selection
+    # spec: API.md §DG metric — POST /spoke/dg/metric is the explicit create
+    # (metric_id in body); PUT /metric/{id}/attr/conf replaces an existing one.
     metric_id_hourly = "spot-list-freshness-hourly"
     metric_id_daily = "spot-list-freshness-daily"
     conf_hourly = f"/api/v1/spoke/dg/metric/{metric_id_hourly}/attr/conf"
@@ -241,18 +243,18 @@ async def test_metrics_list_active_hourly(
         "dataset_filter": {"dataset_urns": [_TEST_URN]},
     }
 
-    # Seed an enabled metric in the target tier (hourly)
-    await api_client.put(
-        conf_hourly,
+    # Create an enabled metric in the target tier (hourly).
+    await api_client.post(
+        "/api/v1/spoke/dg/metric",
         headers=admin_headers,
-        json={**_common_conf, "schedule_tier": "hourly"},
+        json={"metric_id": metric_id_hourly, **_common_conf, "schedule_tier": "hourly"},
     )
 
-    # Seed an enabled metric in a DIFFERENT tier (daily) — must NOT appear in hourly results
-    await api_client.put(
-        conf_daily,
+    # Create an enabled metric in a DIFFERENT tier (daily) — must NOT appear in hourly results.
+    await api_client.post(
+        "/api/v1/spoke/dg/metric",
         headers=admin_headers,
-        json={**_common_conf, "schedule_tier": "daily"},
+        json={"metric_id": metric_id_daily, **_common_conf, "schedule_tier": "daily"},
     )
 
     resp = await api_client.post(
@@ -289,14 +291,17 @@ async def test_metrics_run_activity(
     spec: BACKEND.md §Metrics Service — response carries run_id + status.
     """
     # spec: BACKEND.md §Metrics Service
+    # spec: API.md §DG metric — POST /spoke/dg/metric is the explicit create
+    # (metric_id in body); PUT /metric/{id}/attr/conf replaces an existing one.
     metric_id = "spot-activity-freshness"
     conf_url = f"/api/v1/spoke/dg/metric/{metric_id}/attr/conf"
 
-    # Create metric config
-    await api_client.put(
-        conf_url,
+    # Create the metric config (explicit create via POST per UC5 flow).
+    await api_client.post(
+        "/api/v1/spoke/dg/metric",
         headers=admin_headers,
         json={
+            "metric_id": metric_id,
             "mode": "active",
             "is_enabled": True,
             "metric_type": "ingestion-freshness",
