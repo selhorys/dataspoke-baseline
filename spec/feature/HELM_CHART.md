@@ -117,7 +117,7 @@ Deployment envFrom → container env vars
 
 Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`,
 `DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_URL`,
-`DATASPOKE_LANGFUSE_HOST/PUBLIC_KEY`, `DATASPOKE_CORS_ORIGINS`.
+`DATASPOKE_DEV_LANGFUSE_HOST/PUBLIC_KEY`, `DATASPOKE_CORS_ORIGINS`.
 
 LLM provider/model and all debate/RAG/iteration tunables are stored in the DB runtime config
 table (`/api/v1/admin/conf`) seeded from code factory defaults — they are not injected as env vars.

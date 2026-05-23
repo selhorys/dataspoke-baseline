@@ -14,8 +14,8 @@ import urllib.parse
 import httpx
 import pytest
 
-_PG_USER = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
-_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "")
+_PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
+_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
 _VAULT_NAME = "dataspoke-source-cred-spot-pg"
 _VAULT_KEY = "password"
 
@@ -161,9 +161,9 @@ async def test_internal_admin_datahub_sync_targeted(
     encoded_urn = urllib.parse.quote(test_urn, safe="")
     conf_path = f"/api/v1/spoke/common/data/{encoded_urn}/attr/ingestion/conf"
 
-    pg_host = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "dataspoke-example-postgresql")
-    pg_port = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
-    pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
+    pg_host = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
+    pg_port = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+    pg_db = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 
     # Seed registry via ingestion conf upsert (calls ensure_dataset_registered).
     put_resp = await api_client.put(

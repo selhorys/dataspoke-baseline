@@ -57,8 +57,8 @@ ensure_namespace "${NS}"
 info "Creating mysql-secrets in namespace '${NS}'..."
 kubectl create secret generic mysql-secrets \
   --namespace "${NS}" \
-  --from-literal=mysql-root-password="${DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_ROOT_PASSWORD}" \
-  --from-literal=mysql-password="${DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_PASSWORD}" \
+  --from-literal=mysql-root-password="${DATASPOKE_DEV_DATAHUB_MYSQL_ROOT_PASSWORD}" \
+  --from-literal=mysql-password="${DATASPOKE_DEV_DATAHUB_MYSQL_PASSWORD}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # ---------------------------------------------------------------------------

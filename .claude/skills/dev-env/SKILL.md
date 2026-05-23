@@ -41,9 +41,9 @@ When the user specifies components, match against these names. If no components 
 2. If it already exists, verify all required variables are present:
    - Dev variables: `DATASPOKE_DEV_KUBE_CLUSTER`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`
    - Dev chart versions: `DATASPOKE_DEV_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`, `DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION`
-   - Dev credentials: `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_ROOT_PASSWORD`, `DATASPOKE_DEV_KUBE_DATAHUB_MYSQL_PASSWORD`
+   - Dev credentials: `DATASPOKE_DEV_DATAHUB_MYSQL_ROOT_PASSWORD`, `DATASPOKE_DEV_DATAHUB_MYSQL_PASSWORD`
    - Dev ingress: `DATASPOKE_DEV_INGRESS_IP`, `DATASPOKE_DEV_INGRESS_DOMAIN`
-   - Example service endpoints: `DATASPOKE_EXAMPLE_PG_HOST`, `DATASPOKE_EXAMPLE_PG_PORT`, `DATASPOKE_EXAMPLE_KAFKA_BROKERS`
+   - Example service endpoints: `DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST`, `DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT`, `DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS`
    - App runtime: `DATASPOKE_POSTGRES_HOST`, `DATASPOKE_POSTGRES_PORT`, `DATASPOKE_REDIS_HOST`, etc.
 3. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
 4. **Show the final `.env` content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if `.env` already has all required variables.)

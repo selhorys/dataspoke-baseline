@@ -44,7 +44,7 @@ from src.shared.datahub.client import DataHubClient
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset({"imazon.orders.events"})
 
-_KAFKA_INSTANCE = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
+_KAFKA_INSTANCE = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
 _TOPIC = "imazon.orders.events"
 _DATAHUB_GMS_URL = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
 _DATAHUB_TOKEN = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")

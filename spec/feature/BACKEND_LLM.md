@@ -398,9 +398,9 @@ Langfuse instance is an independent subsystem (`dev_env/langfuse/`, chart
 
 | Env var | Required | Notes |
 |---------|----------|-------|
-| `DATASPOKE_LANGFUSE_HOST` | No | Full URL, e.g. `http://langfuse.10.0.0.1.nip.io` |
-| `DATASPOKE_LANGFUSE_PUBLIC_KEY` | No | Langfuse project public key |
-| `DATASPOKE_LANGFUSE_SECRET_KEY` | No | Langfuse project secret key |
+| `DATASPOKE_DEV_LANGFUSE_HOST` | No | Full URL, e.g. `http://langfuse.10.0.0.1.nip.io` |
+| `DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY` | No | Langfuse project public key |
+| `DATASPOKE_DEV_LANGFUSE_SECRET_KEY` | No | Langfuse project secret key |
 
 All three must be set for tracing to activate. When any one is absent, `LLMClient` skips
 callback construction and emits no traces — zero overhead, no failures.
@@ -428,7 +428,7 @@ This is noted as future work.
 
 1. A completed run emits an `ONTOGEN_RUN_COMPLETE` event. The `detail` JSONB contains
    `run_id` (uuid4).
-2. Open the Langfuse UI at `${DATASPOKE_LANGFUSE_HOST}/sessions/<run_id>` to see all LLM
+2. Open the Langfuse UI at `${DATASPOKE_DEV_LANGFUSE_HOST}/sessions/<run_id>` to see all LLM
    turns for that run — prompts, completions, tool calls, and token counts in one view.
 
 No DataSpoke API endpoint exists for log retrieval. Langfuse UI is the sole operator surface
@@ -531,9 +531,9 @@ a `runtime_config` column.
 | `DATASPOKE_LLM_API_KEY` | unset | shared LLM client — **host-mode fallback only** (in-cluster the key is read from `dataspoke-llm-secret`) |
 | `DATASPOKE_TEST_MODE` | unset | test infra |
 | `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
-| `DATASPOKE_LANGFUSE_HOST` | unset | observability |
-| `DATASPOKE_LANGFUSE_PUBLIC_KEY` | unset | observability |
-| `DATASPOKE_LANGFUSE_SECRET_KEY` | unset | observability |
+| `DATASPOKE_DEV_LANGFUSE_HOST` | unset | observability |
+| `DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY` | unset | observability |
+| `DATASPOKE_DEV_LANGFUSE_SECRET_KEY` | unset | observability |
 
 ## Open Questions
 

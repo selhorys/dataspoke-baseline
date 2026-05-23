@@ -77,7 +77,7 @@ _redis_host = os.environ["DATASPOKE_REDIS_HOST"]
 _redis_port = int(os.environ["DATASPOKE_REDIS_PORT"])
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
-_kafka_brokers = os.environ["DATASPOKE_EXAMPLE_KAFKA_BROKERS"]
+_kafka_brokers = os.environ["DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS"]
 _datahub_kafka_brokers = os.environ["DATASPOKE_DATAHUB_KAFKA_BROKERS"]
 
 _airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")

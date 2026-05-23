@@ -22,9 +22,9 @@ echo "=== Installing dataspoke-example ==="
 echo ""
 
 NS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
-PG_USER="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER:-postgres}"
-PG_PASS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD:-ExampleDev2024!}"
-PG_DB="${DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB:-example_db}"
+PG_USER="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER:-postgres}"
+PG_PASS="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-ExampleDev2024!}"
+PG_DB="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB:-example_db}"
 
 # ---------------------------------------------------------------------------
 # Ensure namespace exists

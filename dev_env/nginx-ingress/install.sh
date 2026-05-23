@@ -114,8 +114,8 @@ upsert_env_var DATASPOKE_POSTGRES_HOST         "${EXTERNAL_IP}"                 
 upsert_env_var DATASPOKE_REDIS_HOST            "${EXTERNAL_IP}"                        "${ENV_FILE}"
 
 # Example data sources
-upsert_env_var DATASPOKE_EXAMPLE_PG_HOST       "${EXTERNAL_IP}"                        "${ENV_FILE}"
-upsert_env_var DATASPOKE_EXAMPLE_KAFKA_BROKERS "${EXTERNAL_IP}:9104"                   "${ENV_FILE}"
+upsert_env_var DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST       "${EXTERNAL_IP}"                        "${ENV_FILE}"
+upsert_env_var DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS "${EXTERNAL_IP}:9104"                   "${ENV_FILE}"
 
 info "Written to .env:"
 info "  DATASPOKE_DEV_INGRESS_IP=${EXTERNAL_IP}"

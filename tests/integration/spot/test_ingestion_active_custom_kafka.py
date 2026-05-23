@@ -27,9 +27,9 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset({"imazon.orders.events"})
 # Kafka auth: NoAuth — auth field must be omitted entirely
 # spec: src/shared/models/ingestion.py PLATFORM_REGISTRY — Platform.KAFKA uses NoAuth
 _KAFKA_BOOTSTRAP = os.environ.get(
-    "DATASPOKE_EXAMPLE_KAFKA_BROKERS", "localhost:9104"
+    "DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS", "localhost:9104"
 )
-_KAFKA_INSTANCE = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
+_KAFKA_INSTANCE = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
 _TOPIC = "imazon.orders.events"
 
 # spec: TESTING.md §Imazon Dummy-Data Reference — Kafka topic imazon.orders.events

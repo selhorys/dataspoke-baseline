@@ -387,7 +387,7 @@ when an organisation adds event-driven extensions; Kafka consumers scale by part
 
 Langfuse runs as a sibling subsystem in its own namespace (`langfuse-01` by default) — web,
 worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from
-`helm-charts/langfuse/`. DataSpoke pods consume Langfuse via the `DATASPOKE_LANGFUSE_*` env
+`helm-charts/langfuse/`. DataSpoke pods consume Langfuse via the `DATASPOKE_DEV_LANGFUSE_*` env
 vars; absence of those vars disables tracing without affecting LLM call success.
 
 For replica counts, resource requests/limits, PV sizes, component matrix, and network policy,

@@ -121,7 +121,7 @@ echo "  DataHub UI:    http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}
 echo "  DataHub GMS:   http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/gms/"
 echo "  DataSpoke API: http://app.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/api/v1/"
 echo "  Airflow UI:    http://airflow.${DATASPOKE_DEV_INGRESS_DOMAIN:-<not set>}/"
-echo "  Langfuse UI:   ${DATASPOKE_LANGFUSE_HOST:-http://langfuse.<not set>}/"
+echo "  Langfuse UI:   ${DATASPOKE_DEV_LANGFUSE_HOST:-http://langfuse.<not set>}/"
 echo ""
 echo "  PostgreSQL:    ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9201"
 echo "  Redis:         ${DATASPOKE_DEV_INGRESS_IP:-<not set>}:9202"

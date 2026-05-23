@@ -20,9 +20,9 @@ from tests.integration.util.postgres import _load_dotenv
 
 _load_dotenv()
 
-_LF_HOST = os.environ.get("DATASPOKE_LANGFUSE_HOST", "")
-_LF_PUBLIC_KEY = os.environ.get("DATASPOKE_LANGFUSE_PUBLIC_KEY", "")
-_LF_SECRET_KEY = os.environ.get("DATASPOKE_LANGFUSE_SECRET_KEY", "")
+_LF_HOST = os.environ.get("DATASPOKE_DEV_LANGFUSE_HOST", "")
+_LF_PUBLIC_KEY = os.environ.get("DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY", "")
+_LF_SECRET_KEY = os.environ.get("DATASPOKE_DEV_LANGFUSE_SECRET_KEY", "")
 
 # Langfuse caps bulk-delete payloads. 500 keeps us comfortably under any
 # reasonable server-side limit while still being efficient on large projects.
@@ -37,7 +37,7 @@ def _credentials_present() -> bool:
 async def reset_project() -> None:
     """Delete every trace in the configured Langfuse project.
 
-    No-op when ``DATASPOKE_LANGFUSE_*`` env vars are unset — the observability
+    No-op when ``DATASPOKE_DEV_LANGFUSE_*`` env vars are unset — the observability
     subsystem is optional in some dev environments.
     """
     if not _credentials_present():

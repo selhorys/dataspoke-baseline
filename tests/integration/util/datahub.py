@@ -12,12 +12,12 @@ Environment variables (loaded from dev_env/.env if present):
     DATASPOKE_DATAHUB_GMS_URL       (default: http://localhost:9004)
     DATASPOKE_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
     DATASPOKE_DATAHUB_FRONTEND_URL  (default: http://localhost:9002)
-    DATASPOKE_EXAMPLE_PG_HOST                        (default: localhost)
-    DATASPOKE_EXAMPLE_PG_PORT                        (default: 9102)
-    DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER     (default: postgres)
-    DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
-    DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB        (default: example_db)
-    DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE    (default: example_kafka)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER     (default: postgres)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB        (default: example_db)
+    DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE    (default: example_kafka)
 """
 
 from __future__ import annotations
@@ -203,13 +203,13 @@ _gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
 _frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
 _token_env = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
 
-_pg_host = os.environ.get("DATASPOKE_EXAMPLE_PG_HOST", "localhost")
-_pg_port = int(os.environ.get("DATASPOKE_EXAMPLE_PG_PORT", "9102"))
-_pg_user = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_USER", "postgres")
-_pg_password = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
-_pg_db = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_POSTGRES_DB", "example_db")
+_pg_host = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "localhost")
+_pg_port = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_pg_user = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
+_pg_password = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
+_pg_db = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 
-_kafka_instance = os.environ.get("DATASPOKE_DEV_KUBE_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
+_kafka_instance = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
 
 # ---------------------------------------------------------------------------
 # Lazy token resolution — never called at module import time
