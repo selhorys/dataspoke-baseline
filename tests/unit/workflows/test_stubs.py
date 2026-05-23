@@ -42,7 +42,7 @@ def _public_async_methods(cls: type) -> set[str]:
 def test_stub_llm_client_has_embed_method() -> None:
     """StubLLMClient must expose async embed(text) → list[float].
 
-    spec: TESTING.md §Test-Mode Stubs — StubLLMClient: embed() returns zero vector.
+    spec: TESTING.md §Test-Mode Stubs — StubLLMClient: embed() returns deterministic unit vector.
     """
     assert hasattr(StubLLMClient, "embed")
     assert inspect.iscoroutinefunction(StubLLMClient.embed)
@@ -70,7 +70,7 @@ def test_stub_llm_client_has_complete_json_method() -> None:
 async def test_stub_llm_embed_returns_list_of_floats() -> None:
     """StubLLMClient.embed must return a list[float].
 
-    spec: TESTING.md §Test-Mode Stubs — embed() returns zero vector.
+    spec: TESTING.md §Test-Mode Stubs — embed() returns deterministic unit vector.
     """
     stub = StubLLMClient()
     result = await stub.embed("some text")

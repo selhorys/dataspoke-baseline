@@ -4,6 +4,7 @@ Spec: spec/feature/BACKEND_LLM.md §Metagen Adversarial Debate §RAG anchors
 """
 
 import logging
+import math
 
 from src.shared.vector.client import PgVectorManager, VectorHit
 
@@ -86,7 +87,9 @@ async def search_candidate_embeddings(
         return [
             VectorHit(
                 dataset_urn=row.candidate_id,
-                score=float(row.score),
+                # pgvector <=> on a zero-norm vector yields NaN; clamp to 0.0
+                # (not similar) rather than propagating NaN into JSONB evidence.
+                score=0.0 if math.isnan(s := float(row.score)) else s,
                 payload={
                     "value": row.value or "",
                     "dataset_urn": row.dataset_urn,

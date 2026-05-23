@@ -198,7 +198,7 @@ When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-de
 
 | Factory | Stub | Behavior |
 |---------|------|----------|
-| `make_llm()` | `StubLLMClient` | Returns minimal dict matching Pydantic schema; `embed()` returns zero vector |
+| `make_llm()` | `StubLLMClient` | Returns minimal dict matching Pydantic schema; `embed()` returns deterministic unit vector (non-zero norm so pgvector cosine yields a finite score) |
 | `make_vector()` | `StubVectorManager` | `search()` returns `[]` |
 | `make_cache()` | `StubRedisClient` | All ops are no-ops |
 | `make_notification()` | `StubNotificationService` | `send_sla_alert()` is a no-op |

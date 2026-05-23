@@ -41,7 +41,7 @@ class StubLLMClient:
     """Drop-in replacement for ``LLMClient`` that returns canned responses."""
 
     async def embed(self, text: str) -> list[float]:
-        return [0.0] * EMBEDDING_DIMENSION
+        return [1.0] + [0.0] * (EMBEDDING_DIMENSION - 1)
 
     async def complete(
         self,
