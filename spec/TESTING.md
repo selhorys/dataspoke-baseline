@@ -4,8 +4,8 @@
 > Priority 3 in the spec hierarchy -- alongside [`ARCHITECTURE.md`](ARCHITECTURE.md).
 > For the technology decisions that motivate the toolchain choices here, see
 > [`ARCHITECTURE.md §Technology Stack`](ARCHITECTURE.md#technology-stack).
-> For the dev environment and lock service used in integration/E2E tests, see
-> [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md).
+> For the deployment subsystem and dev-lock service used in integration/E2E tests, see
+> [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 > For the Imazon use-case scenarios that define test data context, see
 > [`spec/USE_CASE_en.md`](USE_CASE_en.md).
 
@@ -112,12 +112,12 @@ The API runs **in-cluster** alongside Airflow so that Airflow DAGs can call back
 directly via `http://dataspoke-api:8002`. Developers access the in-cluster API via the
 nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for running tests and manual
 exploration. Code changes require `docker build` + `helm upgrade` (automated by
-`dataspoke-test-mode.sh`).
+`./helm-charts/bin/install.sh --profile dev --components api`).
 
 ### Workflow
 
 Follow these seven steps in order. `conftest.py` automates Steps 2/7 (lock) at session scope
-and Steps 3/6 (dummy-data reset) at module scope. It also loads `dev_env/.env` and runs
+and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.env` and runs
 `alembic upgrade head`. The manual commands below are for reference.
 
 1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place compact
@@ -158,19 +158,20 @@ Before running integration tests, ensure the dev environment is installed and th
 passes:
 
 ```bash
-./dev_env/health-check.sh
+./helm-charts/bin/health-check.sh
 ```
 
 The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis,
 Airflow, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the
-failing subsystem:
+failing subsystem with `./helm-charts/bin/install.sh --profile dev --components <name>`:
 
-| Failing service | Subsystem directory |
+| Failing service | Component |
 |---|---|
-| dataspoke-postgresql, redis, airflow | `dev_env/dataspoke-infra/` |
-| datahub-gms, datahub-kafka | `dev_env/datahub/` |
-| example-postgres, example-kafka | `dev_env/dataspoke-example/` |
-| lock-service | `dev_env/dataspoke-lock/` |
+| dataspoke-postgresql, redis, airflow, api | `dataspoke-infra` |
+| datahub-gms, datahub-kafka | `datahub` |
+| example-postgres, example-kafka | `dummy-data` |
+| lock-service | `dev-lock` |
+| Langfuse | `langfuse` |
 
 The util has two reset modes. `--reset-all` produces an empty baseline (no Imazon entities
 anywhere) — useful for testing UC1 ingestion against a blank slate. `--reset-seed` produces
@@ -180,7 +181,7 @@ and DataHub with descriptions and typed columns.
 ### Airflow Integration Test Pitfalls
 
 - **Connection**: Airflow is accessed via nginx-ingress at `http://airflow.<INGRESS_IP>.nip.io`
-  (`DATASPOKE_AIRFLOW_URL` in `dev_env/.env`). `conftest.py` loads this automatically; tests
+  (`DATASPOKE_AIRFLOW_URL` in `helm-charts/.env`). `conftest.py` loads this automatically; tests
   in worktrees must source it explicitly.
 - **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via
   `httpx.AsyncClient` (ASGI transport) without Airflow orchestration.
@@ -228,7 +229,7 @@ infrastructure.
   workflow stub) **or** call the API over HTTP. Either is valid -- pick whichever proves the
   concern most directly.
 - **Test-mode API server**: required only when the test calls REST. Pure-Python spot tests
-  may skip `dataspoke-test-mode.sh` and rely on dev-env infra alone.
+  may skip the API rebuild and rely on already-deployed dev-env infra alone.
 - **Reads like spec**: each test's docstring names the concern; assertions match the spec
   contract, not implementation internals.
 
@@ -256,17 +257,17 @@ and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
 
 ```bash
 # Spot -- some tests need the test-mode server, others do not. Run together for simplicity:
-./dev_env/dataspoke-test-mode.sh --skip-build      # safe to run; idempotent
+./helm-charts/bin/install.sh --profile dev --components api --skip-build   # safe to run; idempotent
 uv run python -m tests.integration.util --reset-seed
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/
 
 # Api-wired -- always run with the test-mode server up
-./dev_env/dataspoke-test-mode.sh --skip-build
+./helm-charts/bin/install.sh --profile dev --components api --skip-build
 uv run python -m tests.integration.util --reset-seed
 DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
 # Teardown (optional; leave running if you'll iterate)
-./dev_env/dataspoke-test-mode.sh --stop
+kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 ```
 
 The `require_server` fixture (in `conftest.py`) verifies (1) `DATASPOKE_TEST_MODE` is set,
@@ -300,15 +301,15 @@ testing and verifying features before writing automated tests.
 ### Setup
 
 ```bash
-./dev_env/health-check.sh                                        # Pre-flight
-./dev_env/dataspoke-test-mode.sh                                 # Build and deploy in-cluster API
-uv run python -m tests.integration.util --reset-seed             # Seed Imazon dummy data
+./helm-charts/bin/health-check.sh                                  # Pre-flight
+./helm-charts/bin/install.sh --profile dev --components api        # Build and deploy in-cluster API
+uv run python -m tests.integration.util --reset-seed               # Seed Imazon dummy data
 ```
 
 ### Authentication
 
 ```bash
-# Replace <INGRESS_IP> with DATASPOKE_DEV_INGRESS_IP from dev_env/.env
+# Replace <INGRESS_IP> with DATASPOKE_KUBE_INGRESS_IP from helm-charts/.env
 TOKEN=$(curl -s -X POST http://app.<INGRESS_IP>.nip.io/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
@@ -348,7 +349,7 @@ group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).
 ### Teardown
 
 ```bash
-./dev_env/dataspoke-test-mode.sh --stop
+kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 ```
 
 ---

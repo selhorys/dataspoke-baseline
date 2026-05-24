@@ -1,254 +1,610 @@
-# HELM_CHART — DataSpoke Umbrella Helm Chart
+# HELM_CHART — DataSpoke Deployment Subsystem
 
 ## Table of Contents
+
 1. [Overview](#overview)
-2. [Chart Structure](#chart-structure)
-3. [Component Matrix](#component-matrix)
-4. [Configuration Flow](#configuration-flow)
-5. [Value Profiles](#value-profiles)
-6. [Secrets Management](#secrets-management)
-7. [Resource Sizing](#resource-sizing)
-8. [Ingress & Network Policy](#ingress--network-policy)
-9. [Dev Environment Integration](#dev-environment-integration)
-10. [In-Cluster Testing](#in-cluster-testing)
-11. [References](#references)
+2. [Repository Layout](#repository-layout)
+3. [Profiles](#profiles)
+4. [Installation](#installation)
+5. [Uninstallation](#uninstallation)
+6. [Umbrella Chart Structure](#umbrella-chart-structure)
+7. [Configuration — Three-Tier Env Vars](#configuration--three-tier-env-vars)
+8. [The .env File](#the-env-file)
+9. [Configuration Flow](#configuration-flow)
+10. [Image Builds](#image-builds)
+11. [Dev-Only Peripherals](#dev-only-peripherals)
+12. [Post-Install Seeding](#post-install-seeding)
+13. [Resource Sizing](#resource-sizing)
+14. [Ingress & Network Policy](#ingress--network-policy)
+15. [Secrets Management](#secrets-management)
+16. [Health Check](#health-check)
+17. [Troubleshooting](#troubleshooting)
+18. [References](#references)
 
 ---
 
 ## Overview
 
-`helm-charts/dataspoke/` is an **umbrella Helm chart** that packages all DataSpoke components —
-application services and infrastructure dependencies — into a single installable unit. The same
-chart serves both production and development — only the values file differs.
-`helm-charts/langfuse/` is a sibling chart for the self-hosted Langfuse LLM observability
-subsystem, installed into its own `langfuse-01` namespace with bundled Postgres, Redis, ClickHouse,
-and MinIO subcharts. It follows the same `values.yaml` + `values-dev.yaml` overlay convention.
+`helm-charts/` is the single deployment subsystem for DataSpoke — both production
+and development. It comprises:
 
-- **Production** (`values.yaml`): All components enabled — frontend, API, plus infrastructure
-  (including Airflow). Deploy with `helm upgrade --install` and a customized values file for your
-  environment.
-- **Dev** (`values-dev.yaml`): Infrastructure + API server, reduced resources. Used by
-  `dev_env/dataspoke-infra/install.sh`. The API runs in-cluster so Airflow can reach it directly.
-  Frontend and event-consumer are disabled.
+- `helm-charts/dataspoke/` — umbrella Helm chart packaging frontend, API,
+  event-consumer, PostgreSQL, Redis, and Airflow.
+- `helm-charts/langfuse/` — sibling chart for the self-hosted Langfuse LLM
+  observability subsystem (own namespace, bundled Postgres/Redis/ClickHouse/MinIO).
+- `helm-charts/bin/` — install/uninstall/build/health scripts that orchestrate the
+  charts plus dev-only peripherals.
+- `helm-charts/peripherals/` — values files and plain-K8s manifests for the
+  dev-only peripheral components (nginx-ingress, DataHub, dummy data, dev-lock).
+
+The same umbrella chart serves both profiles. The **profile** (`dev` or `prod`)
+selects the values overlay and the surrounding component set; the chart itself
+is profile-agnostic.
 
 ```
-Production Deployment                    Dev Deployment (dev_env)
-┌────────────────────────┐              ┌────────────────────────┐
-│  dataspoke namespace   │              │  dataspoke namespace   │
-│                        │              │  (infra + api)         │
-│  frontend  ✓           │              │  frontend  ✗           │
-│  api       ✓           │              │  api       ✓           │
-│  event-consumer (opt)  │              │  event-consumer ✗      │
-│  airflow   ✓           │              │  airflow   ✓           │
-│  postgresql ✓          │              │  postgresql ✓          │
-│  redis     ✓           │              │  redis     ✓           │
-└────────────────────────┘              └────────────────────────┘
-                                           ▲
-                                           │ nginx-ingress
-                                        ┌──┴─────────────────┐
-                                        │ Host               │
-                                        │ frontend (npm dev) │
-                                        │ (api via ingress)  │
-                                        └────────────────────┘
+helm-charts/bin/install.sh --profile dev      # full dev stack incl. peripherals
+helm-charts/bin/install.sh --profile prod     # umbrella chart only; operator supplies values + peripherals
+```
+
+The CLI is the same for both profiles. There is no `dev_env/` directory and no
+separate test-mode entrypoint — the API image rebuild is a first-class step of
+the install script, not a side-channel.
+
+---
+
+## Repository Layout
+
+```
+helm-charts/
+├── README.md                           # operational guide for bin/ scripts
+├── .env.example                         # canonical env-var listing (3 sections)
+├── bin/
+│   ├── install.sh                       # main installer
+│   ├── uninstall.sh                     # main uninstaller
+│   ├── health-check.sh                  # service-by-service probe
+│   ├── build-image.sh                   # api | airflow | postgres (Cloud Build or local)
+│   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers
+│   ├── peripherals/                     # dev-only orchestrators
+│   │   ├── nginx-ingress.sh
+│   │   ├── datahub.sh
+│   │   ├── langfuse.sh
+│   │   ├── dummy-data.sh
+│   │   └── dev-lock.sh
+│   └── post-install/                    # dev-only admin-API seeding
+│       ├── seed-peripheral-config.sh
+│       └── seed-runtime-config.sh
+├── dataspoke/                           # umbrella Helm chart
+│   ├── Chart.yaml
+│   ├── values.yaml                      # prod defaults
+│   ├── values-dev.yaml                  # dev overlay
+│   ├── templates/                       # api-deployment/service/ingress, configmap, secrets, RBAC, networkpolicy
+│   ├── subcharts/{frontend,event-consumer}/
+│   └── charts/                          # bitnami pg/redis, apache-airflow (resolved deps)
+├── langfuse/                            # sibling chart for Langfuse subsystem
+└── peripherals/                         # dev-only values + manifests
+    ├── nginx-ingress/values-dev.yaml
+    ├── datahub/
+    │   ├── values.yaml
+    │   ├── prerequisites-values.yaml
+    │   ├── gms-ingress.yaml
+    │   └── kafka-external-svc.yaml
+    ├── dummy-data/manifests/            # plain K8s manifests (PG + Kafka KRaft)
+    └── dev-lock/manifests/              # plain K8s manifests (Python HTTP service)
 ```
 
 ---
 
-## Chart Structure
+## Profiles
 
-`helm-charts/dataspoke/` is a standard Helm umbrella chart with `Chart.yaml` (apiVersion v2),
-`values.yaml` (production), `values-dev.yaml` (dev overlay), `templates/` (configmap, secrets,
-networkpolicy, helpers, **plus the API Deployment / Service / Ingress** rendered directly from
-the umbrella), two application `subcharts/` (frontend, event-consumer), and `charts/` (fetched
-dependency archives).
+| Aspect | `dev` | `prod` |
+|---|---|---|
+| Umbrella chart | ✓ (`values-dev.yaml`) | ✓ (`values.yaml` + operator overlay) |
+| Image rebuild | ✓ (default) | ✓ or `--skip-build` (CI-built image) |
+| Frontend subchart | ✗ (host `npm run dev`) | ✓ |
+| Event-consumer subchart | ✗ | ✗ (opt-in by operator) |
+| In-cluster API `testMode: true` | ✓ | ✗ |
+| `enableStubAuth: true` | ✓ | ✗ (never in prod) |
+| nginx-ingress install | ✓ | ✗ (operator's controller) |
+| DataHub install | ✓ (in-cluster) | ✗ (external; operator-managed) |
+| Langfuse install | ✓ (in-cluster) | ✗ (external; operator-managed) |
+| Dummy data | ✓ | ✗ |
+| Dev-lock | ✓ | ✗ |
+| Post-install peripheral seeding | ✓ | ✗ (operator uses admin API / UI) |
+| Online LLM key rotation | ✓ | ✓ |
 
-The API server is *not* a separate subchart. Its Deployment, Service, and Ingress live in
-`templates/api-*.yaml` so the API can be wired into the same `dataspoke-api` cluster DNS name
-that Airflow callbacks expect, while still respecting the `api.*` values block.
+**Why prod skips peripherals**: production DataHub and Langfuse installations
+require sizing, HA, persistence, and security choices that are organization-
+specific and out of this project's scope. Operators bring their own; DataSpoke
+wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfuse}`).
+
+---
+
+## Installation
+
+`bin/install.sh` is the single installer entry point.
+
+### Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--profile {dev\|prod}` | required | Selects component set + values overlay. |
+| `--components <list>` | all-for-profile | Comma-separated subset (e.g. `api`, `dataspoke-infra`, `datahub`). |
+| `--from-component <name>` | — | Resume an interrupted full install at this component. |
+| `--skip-build` | false | Skip Docker image rebuild (api/airflow/postgres). |
+| `--skip-seed` | false (dev) | Skip post-install admin-API seeding. |
+| `--values <path>` | — | Extra values file passed to the umbrella chart (prod). |
+| `--image-tag <tag>` | `dev` | Override the image tag for api/airflow/postgres (prod CI). |
+| `--help`, `-h` | — | Print usage. |
+
+### Phases — dev profile
+
+| # | Phase | Components | Notes |
+|---|---|---|---|
+| 1 | Pre-flight | tool check, context switch, namespace ensure, nginx-ingress install | nginx-ingress must complete first to provide `INGRESS_IP` / `_DOMAIN` for downstream. |
+| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `peripherals/datahub.sh` ‖ `peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. |
+| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. |
+| 4 | **Parallel post-bootstrap** | `peripherals/dummy-data.sh` ‖ `peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
+| 5 | Post-install seeding | `seed-peripheral-config.sh` then `seed-runtime-config.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}` and `/internal/admin/conf`. Skipped by `--skip-seed`. |
+
+### Phases — prod profile
+
+| # | Phase | Components | Notes |
+|---|---|---|---|
+| 1 | Pre-flight | tool check, context switch, namespace ensure | No nginx-ingress install — operator's controller. |
+| 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. |
+| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. |
+
+Peripheral wiring (DataHub URL/token, Langfuse host/keys, LLM provider/model/key)
+is the operator's responsibility post-install, via `/api/v1/admin/peripherals/*`
+and `/api/v1/admin/conf`. An AI scaffold may automate this for an organization
+but is out of baseline scope.
+
+### Component names
+
+| Component | Profiles | Source |
+|---|---|---|
+| `nginx-ingress` | dev | `peripherals/nginx-ingress.sh` |
+| `datahub` | dev | `peripherals/datahub.sh` |
+| `langfuse` | dev | `peripherals/langfuse.sh` |
+| `dataspoke-infra` | dev, prod | `dataspoke/` umbrella chart (alias: `chart`, `umbrella`) |
+| `api` | dev, prod | umbrella chart, `api.*` block (rebuilds api image and `helm upgrade` of the API only) |
+| `dummy-data` | dev | `peripherals/dummy-data.sh` |
+| `dev-lock` | dev | `peripherals/dev-lock.sh` |
+| `seed` | dev | `post-install/*` |
+
+`--components api` replaces the previous standalone `dataspoke-test-mode.sh` —
+it rebuilds the API image, runs `helm upgrade` against the umbrella chart, and
+rolls the API deployment.
+
+---
+
+## Uninstallation
+
+`bin/uninstall.sh --profile {dev|prod} [--yes] [--delete-namespaces]`
+
+Reverse order of install. Both profiles tear down the umbrella Helm release.
+The dev profile additionally removes peripherals and dev-lock; prompts before
+namespace deletion unless `--delete-namespaces`.
+
+---
+
+## Umbrella Chart Structure
+
+Standard Helm umbrella with `Chart.yaml` (apiVersion v2), `values.yaml` (prod)
+and `values-dev.yaml` (dev overlay), `templates/` (configmap, secrets, RBAC,
+networkpolicy, plus the API Deployment/Service/Ingress rendered directly from
+the umbrella), two application `subcharts/` (frontend, event-consumer), and
+`charts/` (fetched dependency archives).
+
+The API server is **not** a separate subchart. Its Deployment, Service, and
+Ingress live in `templates/api-*.yaml` so the API binds to the
+`dataspoke-api` cluster DNS name that Airflow callbacks expect, while still
+respecting the `api.*` values block.
 
 ### Dependencies
 
 | Subchart | Source | Version | Condition |
-|----------|--------|---------|-----------|
+|---|---|---|---|
 | frontend | `file://subcharts/frontend` | 0.1.0 | `frontend.enabled` |
 | event-consumer | `file://subcharts/event-consumer` | 0.1.0 | `event-consumer.enabled` |
 | postgresql | `bitnami/postgresql` | ~18.5.0 | `postgresql.enabled` |
 | redis | `bitnami/redis` | ~25.3.0 | `redis.enabled` |
-| airflow | `apache-airflow/airflow` | ~1.20.0 (chart; ships Airflow 3.1.8 app) | `airflow.enabled` |
+| airflow | `apache-airflow/airflow` | ~1.20.0 (ships Airflow 3.1.8) | `airflow.enabled` |
 
-The API is configured under the `api.*` values block (not a subchart) and gated by
-`api.enabled` against the umbrella's own templates.
+The API is configured under the `api.*` values block (not a subchart) and gated
+by `api.enabled` against the umbrella's own templates.
 
-Tilde ranges allow patch-level updates. Exact resolved versions are locked in `Chart.lock`.
+### Component matrix
+
+| Component | Type | Prod | Dev | Stateful |
+|---|---|---|---|---|
+| frontend | Deployment | ✓ | ✗ (host) | no |
+| api | Deployment | ✓ | ✓ (in-cluster, `testMode: true`) | no |
+| event-consumer | Deployment | ✗ (opt-in) | ✗ | no |
+| postgresql | StatefulSet | ✓ | ✓ | yes (PV) |
+| redis | Deployment | ✓ | ✓ | no |
+| airflow (api-server + scheduler + triggerer + dag-processor) | Deployment + StatefulSets | ✓ | ✓ | no (metadata in PG) |
+
+Each component has a `<component>.enabled` toggle.
 
 ---
 
-## Component Matrix
+## Configuration — Three-Tier Env Vars
 
-| Component | Type | Prod | Dev | Stateful |
-|-----------|------|------|-----|----------|
-| frontend | Deployment | enabled | **disabled** | no |
-| api | Deployment | enabled | enabled (in-cluster, `testMode: true`) | no |
-| event-consumer | Deployment | **disabled** | **disabled** | no |
-| postgresql | StatefulSet | enabled | enabled | yes (PV) |
-| redis | Deployment | enabled | enabled | no |
-| airflow | Deployment | enabled | enabled | no (uses PG) |
+| Tier | Prefix | Scope | Read by |
+|---|---|---|---|
+| App runtime | `DATASPOKE_*` (no `KUBE` / `DEV`) | Both profiles | DataSpoke Python/Node code |
+| Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/*.sh` install / uninstall / build scripts |
+| Dev-only | `DATASPOKE_DEV_*` | Dev profile only | `bin/peripherals/*.sh`, `bin/post-install/*.sh` |
 
-Each component has a `<component>.enabled` toggle in values.
+### Tier 1 — App runtime (`DATASPOKE_*`)
+
+Same names in dev and prod, different values. Injected into pods via ConfigMap
+(non-sensitive) or Secret (sensitive) per §Configuration Flow.
+
+- `DATASPOKE_API_PORT`
+- `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`
+- `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
+- `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`
+- `DATASPOKE_INTERNAL_TOKEN` — shared secret for Airflow → API internal calls
+- `DATASPOKE_CORS_ORIGINS`
+
+> **Profile-only flags are not in `.env`**: `DATASPOKE_ENABLE_STUB_AUTH` and
+> `DATASPOKE_TEST_LLM_REAL` are rendered onto the API container directly from
+> the chart values (`api.enableStubAuth`, `api.testLlmReal`). `values.yaml`
+> pins both to `false`; `values-dev.yaml` enables stub auth (`true`) and
+> leaves `testLlmReal` at `false`. Operators flip `testLlmReal` for live-LLM
+> exploration via `helm upgrade --set api.testLlmReal=true`. Keeping these
+> out of `.env` removes the prod footgun of a stray line silently re-enabling
+> stub auth.
+
+> DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
+> vars. They live in the DB `peripheral_config` and `runtime_config` tables,
+> updated via `/api/v1/admin/peripherals/{datahub,langfuse}` and
+> `/api/v1/admin/conf`. The LLM API key is read at runtime from the
+> `dataspoke-llm-secret` K8s Secret via the API's RBAC. See §Secrets
+> Management and `BACKEND_LLM.md §LLM API key`.
+
+### Tier 2 — Kube deployment (`DATASPOKE_KUBE_*`)
+
+Same convention in both profiles; values differ.
+
+- `DATASPOKE_KUBE_CLUSTER` — kubectl context
+- `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` — namespace for the umbrella chart
+- `DATASPOKE_KUBE_IMAGE_REGISTRY` — registry prefix for built images
+- `DATASPOKE_KUBE_CLOUD_VENDOR` — `GCP` (Cloud Build), `AWS` (TODO), or empty (local Docker)
+- `DATASPOKE_KUBE_INGRESS_IP` — populated by nginx-ingress install in dev; operator-supplied in prod
+- `DATASPOKE_KUBE_INGRESS_DOMAIN` — derived (e.g. `<IP>.nip.io` in dev) or operator-supplied
+
+### Tier 3 — Dev-only (`DATASPOKE_DEV_*`)
+
+Read only by dev peripheral and seeding scripts. Application pods never read
+these.
+
+- Peripheral namespaces: `_KUBE_DATAHUB_NAMESPACE`,
+  `_KUBE_LANGFUSE_NAMESPACE`, `_KUBE_DUMMY_DATA_NAMESPACE`
+- DataHub chart versions: `_KUBE_DATAHUB_CHART_VERSION`,
+  `_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`
+- DataHub install: `_DATAHUB_MYSQL_ROOT_PASSWORD`, `_DATAHUB_MYSQL_PASSWORD`
+- DataHub seed outputs (written by `datahub.sh`, consumed by
+  `seed-peripheral-config.sh`): `_DATAHUB_GMS_URL`, `_DATAHUB_TOKEN`,
+  `_DATAHUB_KAFKA_BROKERS`
+- Langfuse install internals: `_LANGFUSE_NEXTAUTH_SECRET`, `_LANGFUSE_SALT`,
+  `_LANGFUSE_ENCRYPTION_KEY`, `_LANGFUSE_CLICKHOUSE_PASSWORD`,
+  `_LANGFUSE_MINIO_{ROOT_USER,ROOT_PASSWORD}`, `_LANGFUSE_POSTGRES_PASSWORD`,
+  `_LANGFUSE_REDIS_PASSWORD`
+- Langfuse seed outputs: `_LANGFUSE_HOST`, `_LANGFUSE_PUBLIC_KEY`,
+  `_LANGFUSE_SECRET_KEY`
+- Dummy data: `_DUMMY_DATA_KAFKA_INSTANCE`, `_DUMMY_DATA_POSTGRES_USER`,
+  `_DUMMY_DATA_POSTGRES_PASSWORD`, `_DUMMY_DATA_POSTGRES_DB`,
+  `_DUMMY_DATA_POSTGRES_HOST`, `_DUMMY_DATA_POSTGRES_PORT`,
+  `_DUMMY_DATA_KAFKA_BROKERS`
+- LLM seed: `_LLM_PROVIDER`, `_LLM_API_KEY`, `_LLM_MODEL` — written into the
+  `dataspoke-llm-secret` Secret and PATCHed into `/admin/conf`
+- Test harness: `_ENV_LOCK_PREACQUIRED` (set by outer wrappers that already
+  hold the dev-env lock)
+
+### Policies
+
+- Password policy: 16+ chars, mixed case, at least one special character.
+- API keys: never committed; `.env` is gitignored. CI/CD injects via K8s
+  Secrets or a secrets manager.
+
+---
+
+## The .env File
+
+| Path | Tracked | Purpose |
+|---|---|---|
+| `helm-charts/.env` | gitignored | Per-developer / per-cluster values |
+| `helm-charts/.env.example` | tracked | Canonical listing with comments |
+
+Layout: three top-level sections, one per tier (App runtime → Kube deployment
+→ Dev-only). `bin/*.sh` scripts source it; `tests/integration/conftest.py`
+loads it for integration tests.
+
+In dev, several values are **auto-populated by install scripts** rather than
+edited by hand: `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
+`peripherals/nginx-ingress.sh`), `DATASPOKE_DEV_DATAHUB_*` outputs (by
+`peripherals/datahub.sh`), `DATASPOKE_DEV_LANGFUSE_*` outputs (by
+`peripherals/langfuse.sh`), and `DATASPOKE_INTERNAL_TOKEN` (by
+`install.sh` on first run). The scripts append back to `helm-charts/.env`.
 
 ---
 
 ## Configuration Flow
 
-Application runtime configuration (`DATASPOKE_*` variables) flows through Helm values into
-containers:
-
 ```
-.Values.config / .Values.secrets
-    │
-    ▼
-ConfigMap (dataspoke-config)  +  Secret (dataspoke-secrets)
-    │
-    ▼
-Deployment envFrom → container env vars
+.env  →  bin/install.sh
+              │
+              ├─ kubectl create secret (postgres, redis, internal-auth, llm, datahub, langfuse)
+              ├─ helm upgrade --set / -f values{-dev}.yaml
+              │       │
+              │       ▼
+              │  ConfigMap (dataspoke-config) + Secret (dataspoke-secrets)
+              │       │
+              │       ▼
+              │  Deployment envFrom → container env vars
+              │
+              └─ post-install/seed-*.sh
+                       │
+                       ▼
+                  PATCH /internal/admin/{peripherals,conf} → DB tables
+                       │
+                       ▼
+                  App reads peripheral_config + runtime_config from DB
+                  App reads LLM key from dataspoke-llm-secret via K8s API
 ```
 
-### ConfigMap keys
+### ConfigMap keys (non-sensitive)
 
-Non-sensitive: `DATASPOKE_DATAHUB_GMS_URL`, `DATASPOKE_DATAHUB_KAFKA_BROKERS`,
-`DATASPOKE_POSTGRES_HOST/PORT/DB`, `DATASPOKE_REDIS_HOST/PORT`, `DATASPOKE_AIRFLOW_URL`,
-`DATASPOKE_DEV_LANGFUSE_HOST/PUBLIC_KEY`, `DATASPOKE_CORS_ORIGINS`.
+`DATASPOKE_API_PORT`, `DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
+`DATASPOKE_REDIS_{HOST,PORT}`, `DATASPOKE_AIRFLOW_{URL,CALLBACK_BASE_URL}`,
+`DATASPOKE_CORS_ORIGINS`.
 
-LLM provider/model and all debate/RAG/iteration tunables are stored in the DB runtime config
-table (`/api/v1/admin/conf`) seeded from code factory defaults — they are not injected as env vars.
+### Secret keys (`dataspoke-secrets`, mounted via `envFrom`)
 
-### Secret keys
+`DATASPOKE_POSTGRES_{USER,PASSWORD}`, `DATASPOKE_REDIS_PASSWORD`,
+`DATASPOKE_AIRFLOW_{USER,PASSWORD}`, `DATASPOKE_INTERNAL_TOKEN`.
 
-Sensitive (`dataspoke-secrets`, mounted via `envFrom`): `DATASPOKE_DATAHUB_TOKEN`,
-`DATASPOKE_POSTGRES_USER/PASSWORD`, `DATASPOKE_REDIS_PASSWORD`.
+### Container env rendered from chart values (not `.env`)
 
-The LLM API key is **not** in `dataspoke-secrets` and is **not** `envFrom`-mounted. It lives in a
-dedicated Secret **`dataspoke-llm-secret`** (key `api_key`) that the API reads at runtime via the
-Kubernetes API and rotates online through `/api/v1/admin/conf` (see
-[`BACKEND_LLM.md` §LLM API key](BACKEND_LLM.md)). This Secret is **not Helm-managed** — a
-Helm-reconciled Secret would be overwritten on every `helm upgrade`, clobbering online rotations.
-It is provisioned out-of-band: in dev, `dataspoke-infra/install.sh` creates it from
-`DATASPOKE_DEV_LLM_API_KEY`; in production, an operator provisions it (`kubectl`/ESO) or the app
-creates it on the first `PATCH /admin/conf`. The app tolerates its absence (reads as unset). The
-existing `api-secret-reader` Role (`get`/`create`/`patch` on namespace Secrets) grants the access.
+`DATASPOKE_ENABLE_STUB_AUTH` (from `api.enableStubAuth`),
+`DATASPOKE_TEST_LLM_REAL` (from `api.testLlmReal`). Operators override via
+`helm upgrade --set api.testLlmReal=true`; never via `.env`.
 
-All application subcharts mount the ConfigMap and `dataspoke-secrets` via `envFrom`. In dev,
-ConfigMap/Secret creation is disabled (`createConfigMap: false`, `createSecret: false`) — the
-host-running app reads env vars directly from `dev_env/.env`.
+### DB-backed (no env var)
+
+- `peripheral_config` table — DataHub URL/token, Langfuse host/keys —
+  updated via `/api/v1/admin/peripherals/{datahub,langfuse}`.
+- `runtime_config` table — LLM provider/model and debate/RAG/iteration
+  tunables — updated via `/api/v1/admin/conf`.
+
+### Out-of-band Secret
+
+`dataspoke-llm-secret` (key `api_key`) — LLM provider API key. Provisioned by
+`install.sh` from `DATASPOKE_DEV_LLM_API_KEY` in dev; by an operator
+(`kubectl` / External Secrets Operator) in prod. The API reads it at runtime
+via the K8s API (`api-secret-reader` RBAC) and rotates it online via
+`/api/v1/admin/conf`. Not Helm-managed — `helm upgrade` would clobber online
+rotations.
 
 ---
 
-## Value Profiles
+## Image Builds
 
-### Production (`values.yaml`)
+Dockerfiles live under `docker-images/{api,airflow,postgres}/Dockerfile`.
+The Airflow image bakes DAGs in via `COPY src/workflows/dags/`; the
+PostgreSQL image layers `pgvector` + Apache AGE on the Bitnami PG 17 runtime.
 
-- All components enabled with multiple replicas for frontend/API
-- PV persistence for PostgreSQL (50 Gi — hosts relational tables + pgvector embeddings + AGE
-  graph data)
-- Ingress enabled for frontend and API (nginx class, cert-manager TLS)
-- NetworkPolicy for DataHub cross-namespace egress (disabled by default)
-- Airflow uses parent chart's PostgreSQL for metadata DB
-- Airflow api-server UI enabled
+`bin/build-image.sh <name> [<tag>]` is the unified entrypoint. It dispatches
+on `DATASPOKE_KUBE_CLOUD_VENDOR`:
 
-### Dev (`values-dev.yaml`)
+- `GCP` → `gcloud builds submit` (no local Docker required)
+- `AWS` → CodeBuild (TODO)
+- empty → local `docker build` + `docker push`
 
-- API enabled in-cluster (1 replica, `testMode: true`); frontend/event-consumer disabled
-- Single replicas, reduced resource limits
-- Airflow 3.1.8 minimized for dev: reduced resources, LocalExecutor, single api-server instance,
-  DAGs baked into a custom image built from `docker-images/airflow/Dockerfile`
-  (`FROM apache/airflow:3.1.8-python3.13` + `COPY src/workflows/dags/`)
-- Redis replicas set to 0
-- ConfigMap/Secret created for in-cluster API env vars
+**Parallelism**: the install script's bootstrap phase runs all three image
+builds with bash `&`/`wait`, optionally alongside the DataHub and Langfuse
+installs (~10-minute concurrent path vs ~20-minute serial). Image build
+output is buffered per branch so the operator sees one stream finish at a
+time.
 
-### Key design decisions
-
-- **Airflow metadata DB**: Airflow reuses the parent chart's PostgreSQL instance for its metadata
-  database rather than deploying its own datastore.
-- **Profile switching**: Dev and production use the same chart — only the values file differs.
-  `dev_env/dataspoke-infra/install.sh` is a thin wrapper that creates K8s secrets from `.env` and
-  runs `helm upgrade --install` with `values-dev.yaml`.
-- **Event consumer is opt-in**: The Kafka event consumer is **disabled by default** in both
-  prod and dev — baseline UC1–UC5 are schedule-driven via Airflow tier DAGs and do not
-  subscribe to DataHub MCL events (see
-  [BACKEND.md §Kafka Consumers](BACKEND.md#kafka-consumers-optional-not-enabled-in-baseline)
-  and
-  [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)).
-  Set `event-consumer.enabled=true` only when extending DataSpoke with custom event-driven
-  reactions; the consumer then runs as the `dataspoke-event-consumer` Deployment.
+The umbrella chart pulls `${REGISTRY}/postgres:dev`, `${REGISTRY}/airflow:dev`,
+`${REGISTRY}/api:dev` (or the operator-supplied tag in prod). Updating a DAG
+or DataSpoke code requires a rebuild + `kubectl rollout restart` — both
+automated by `bin/install.sh --components api` (or `airflow`, `postgres`).
 
 ---
 
-## Secrets Management
+## Dev-Only Peripherals
 
-The chart manages two distinct Secret families, governed by different conventions:
+Each `bin/peripherals/*.sh` is an idempotent installer for one peripheral.
+Run independently or as part of a full `--profile dev` install.
 
-| Family | Owner | Purpose |
-|--------|-------|---------|
-| **Infra Secrets** (`dataspoke-postgres-secret`, `dataspoke-redis-secret`, `dataspoke-secrets`, `dataspoke-internal-auth`, …) | Operator (Helm install) | DataSpoke's own runtime credentials — DataHub token, internal Postgres/Redis passwords, JWT signing key, internal-auth shared secret. Documented in this section. |
-| **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Caller chooses `secret_ref.{name,key}`; the API writes (vault path) or only verifies (reference path). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the infra Secrets above. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). |
+### nginx-ingress
 
-### Dev
+| Aspect | Value |
+|---|---|
+| Namespace | `ingress-nginx` |
+| Source | `peripherals/nginx-ingress/values-dev.yaml` (helm release) |
+| Function | Single LoadBalancer for all dev namespaces — HTTP virtual hosts (port 80) + TCP passthrough (PG 9201, Redis 9202, DataHub Kafka 9005, example PG 9102, example Kafka 9104, lock 9221) |
+| Writes to .env | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN` |
 
-Secrets come from `dev_env/.env`. The install script creates K8s Secrets before the Helm install:
+### DataHub
 
-| Secret | Keys |
-|--------|------|
-| `dataspoke-postgres-secret` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
-| `dataspoke-redis-secret` | `REDIS_PASSWORD` |
+| Chart | Version | App Version |
+|---|---|---|
+| `datahub/datahub-prerequisites` | 0.3.0 | — |
+| `datahub/datahub` | 0.9.10 | v1.5.0.2 (pinned via `global.datahub.version` override) |
 
-Infrastructure subcharts reference these via `auth.existingSecret`.
+Dev decisions:
 
-### Production
+- **OpenSearch over Elasticsearch** — prerequisites chart 0.3.0 default; same
+  ES-client wire protocol.
+- **Kafka in KRaft mode** — single controller pod also serves as broker
+  (`controller.controllerOnly=false`, `broker.replicaCount=0`), no Zookeeper.
+- **No Neo4j** — OpenSearch provides graph backend including multi-hop
+  lineage; saves ~2 Gi RAM + 10 Gi PVC.
+- **No Schema Registry** — DataHub uses an internal schema registry
+  (`type: INTERNAL`).
+- **No `--wait` on Helm install** — `datahub-system-update` bootstrap takes
+  5–10 min; the script uses custom poll-based readiness instead.
+- **Relaxed liveness probes** on GMS and frontend to tolerate transient
+  OpenSearch restarts.
+- **Frontend ingress uses `className: "nginx"`** — the subchart (0.3.4) uses
+  `className`, not `ingressClassName`; the wrong key is silently dropped and
+  GKE falls back to provisioning a GCE LoadBalancer.
 
-Two approaches:
+Service name prefixes: `datahub-prerequisites-*` for the prerequisites
+release (MySQL, Kafka controller); `opensearch-cluster-master` for the
+OpenSearch subchart's own release.
 
-- **Option A**: Inject via `helm upgrade --set secrets.*` or a sealed values file.
-- **Option B** (recommended): Use [External Secrets Operator](https://external-secrets.io/) to
-  sync from AWS Secrets Manager, Vault, or GCP Secret Manager. Set `secrets.createSecret: false`
-  and reference the externally-managed secret.
+Writes to .env: `DATASPOKE_DEV_DATAHUB_GMS_URL`, `DATASPOKE_DEV_DATAHUB_TOKEN`
+(generated PAT), `DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS`.
 
-### API RBAC for source-credential Secrets
+### Langfuse
 
-When `api.secretReader.enabled` is `true` (default), the umbrella renders
-`templates/api-secret-reader-rbac.yaml`: a dedicated ServiceAccount on the API
-Deployment, plus a `Role` granting `get` / `create` / `patch` on `secrets` in the API
-release namespace, and a matching `RoleBinding`. `delete` is intentionally omitted —
-ingestion-config DELETE does not auto-clean source-credential Secrets (reference
-counting is out of scope; see SECRET_RESOLUTION.md §Open Questions). Single-namespace
-policy: no cross-namespace Roles or RoleBindings are rendered. Disable the value to
-opt out entirely; the Deployment then falls back to the default ServiceAccount and the
-resolver raises `SecretResolverUnavailable` on every PUT/PATCH that touches
-`secret_ref`.
+Sibling Helm chart `helm-charts/langfuse/` installed in `langfuse-01`
+(default) with bundled Postgres, Redis, ClickHouse, MinIO subcharts. The
+`langfuse.sh` script auto-generates the NextAuth/salt/encryption/ClickHouse/
+MinIO/Postgres/Redis secrets on first run, creates the `dataspoke` project +
+public/secret API keys, and writes them back to `.env`.
+
+Writes to .env: `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
+the internals on first install.
+
+### Dummy data
+
+Plain Kubernetes manifests under `peripherals/dummy-data/manifests/` in the
+`dataspoke-dummy-data-01` namespace.
+
+| Component | Image | Mem Limit | Storage | Service |
+|---|---|---|---|---|
+| PostgreSQL | `postgres:15` | 512 Mi | 5 Gi PVC | `example-postgres:5432` |
+| Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 4 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
+
+Separate from DataHub's prerequisites Kafka. Simulates an external data
+source for ingestion testing. EXTERNAL listener advertises `<INGRESS_IP>:9104`
+for host-side access via TCP passthrough on nginx-ingress.
+
+Imazon-themed seed data (5 schemas, 6 tables, 200 rows; 2 Kafka topics, 35
+messages; 8 DataHub dataset entities) is loaded by
+`uv run python -m tests.integration.util --reset-seed` — not by the install
+script. See `TESTING.md §Test Data Design`.
+
+### Dev-lock
+
+Advisory mutex for coordinating multi-tester access. Lightweight Python HTTP
+server (pure stdlib, no deps) in the DataSpoke namespace.
+
+| Resource | Details |
+|---|---|
+| Deployment | `dev-lock` — 1 replica, `python:3.13-slim`, 64 Mi / 100m CPU |
+| Service | `dev-lock` — ClusterIP, port 8080; ingress TCP passthrough on `9221` |
+
+Lock state is in-memory only — resets on pod restart. Full protocol in
+`TESTING.md §Integration Testing`; HTTP surface (GET/POST acquire/release +
+DELETE force-release) in `helm-charts/README.md`.
+
+---
+
+## Post-Install Seeding
+
+Dev only. Runs after the umbrella chart's API deployment is Ready.
+
+| Script | Effect |
+|---|---|
+| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. The token / secret_key fields are populated into K8s Secrets out-of-band by the install script (so the API reads them via RBAC); only non-secret fields go through the admin API. |
+| `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`. |
+
+Auth: both use the `DATASPOKE_INTERNAL_TOKEN` mounted on the API pod.
+
+Skip with `--skip-seed`; useful when a previous install already seeded
+peripheral config and the operator wants to preserve their PATCHes.
+
+In prod, an operator (or an organization-specific AI scaffold) performs the
+equivalent through `/api/v1/admin/peripherals/*` and `/api/v1/admin/conf` —
+out of project scope.
 
 ---
 
 ## Resource Sizing
 
-### Production Defaults
+### Production defaults
 
 | Component | Replicas | CPU Req / Limit | Mem Req / Limit | PV |
-|-----------|---------|-----------------|-----------------|-----|
-| frontend | 2 | 250m / 500m | 256Mi / 512Mi | — |
-| api | 2 | 500m / 1000m | 512Mi / 1024Mi | — |
-| event-consumer† | 1 | 250m / 500m | 512Mi / 1024Mi | — |
-| postgresql | 1 | 1000m / 2000m | 2048Mi / 6144Mi | 50Gi (custom image with `pgvector` + Apache AGE extensions) |
-| redis | 1+1 | 250m / 500m | 256Mi / 512Mi | — |
-| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | 250m / 500m | 512Mi / 1024Mi | DAGs baked into a custom image; `dag-processor` is an Airflow 3.x component |
-| **Total** | | **~5000m / ~10000m** | **~9.5Gi / ~22Gi** | **50Gi** |
+|---|---|---|---|---|
+| frontend | 2 | 250m / 500m | 256 Mi / 512 Mi | — |
+| api | 2 | 500m / 1000m | 512 Mi / 1024 Mi | — |
+| event-consumer† | 1 | 250m / 500m | 512 Mi / 1024 Mi | — |
+| postgresql | 1 | 1000m / 2000m | 2048 Mi / 6144 Mi | 50 Gi (custom image with `pgvector` + Apache AGE) |
+| redis | 1 + 1 | 250m / 500m | 256 Mi / 512 Mi | — |
+| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | 250m / 500m each | 512 Mi / 1024 Mi each | DAGs baked into custom image |
+| **Total** (excludes event-consumer) | | **~5000m / ~10000m** | **~9.5 Gi / ~22 Gi** | **50 Gi** |
 
-† event-consumer is disabled by default — totals above exclude it. When enabled, add ~250m/500m
-CPU and ~512Mi/1024Mi memory. Airflow uses LocalExecutor — no separate Celery worker needed.
+† event-consumer disabled by default — add ~250m / 500m CPU + ~512 Mi / 1024 Mi
+memory when enabled.
 
-### Dev Minimums
+### Dev minimums
 
-See [DEV_ENV.md §Resource Budget](DEV_ENV.md#resource-budget) for the canonical numbers.
-The DataSpoke namespace alone (api + airflow + postgres + redis) requires ~11 Gi of
-memory limits.
+Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory
+*limits* ≈ 25 GiB (above 24 GB); sum of *requests* ≈ 13 GiB. Pods rarely hit
+limits simultaneously, so limits are generous to absorb transient spikes
+(OpenSearch off-heap, `mysql_upgrade`, JVM GC).
+
+| Component | Namespace | Mem Limit | Notes |
+|---|---|---|---|
+| OpenSearch | datahub-01 | 3072 Mi | 1 Gi JVM heap + off-heap cache; `singleNode: true` skips bootstrap checks |
+| Kafka (KRaft controller) | datahub-01 | 2048 Mi | 1.5 Gi heap; single pod = controller + broker |
+| MySQL (bitnami) | datahub-01 | 1536 Mi | `mysql_upgrade` doubles memory on restart |
+| datahub-gms | datahub-01 | 3 Gi | |
+| datahub-frontend | datahub-01 | 1 Gi | |
+| datahub-mae-consumer | datahub-01 | 1 Gi | |
+| datahub-mce-consumer | datahub-01 | 1 Gi | |
+| datahub-actions | datahub-01 | 512 Mi | |
+| dataspoke-api | dataspoke-01 | 1 Gi | In-cluster API |
+| airflow (api-server + scheduler + triggerer + dag-processor) | dataspoke-01 | 4×1 Gi + 3×512 Mi sidecars ≈ 5.5 Gi | LocalExecutor; DAGs baked in |
+| postgresql (dataspoke) | dataspoke-01 | 4096 Mi | Custom image; pgvector + AGE |
+| redis | dataspoke-01 | 512 Mi | |
+| dev-lock | dataspoke-01 | 64 Mi | |
+| example-postgres | dataspoke-dummy-data-01 | 512 Mi | |
+| example-kafka | dataspoke-dummy-data-01 | 1024 Mi | 4 Gi PVC |
+| **Total (limits)** | | **~25 Gi** | |
+
+### Ephemeral storage budget (Autopilot)
+
+GKE Autopilot applies a **1 GiB ephemeral-storage request = 1 GiB limit** per
+container whenever the spec omits ephemeral-storage. The webhook **forces
+`requests == limits`** at admission — Helm values with a higher `limits.ephemeral-storage`
+than `requests.ephemeral-storage` are silently normalized to the request value.
+
+Chatty containers (sustained stdout, emptyDir writes including Airflow's
+default `/opt/airflow/logs` emptyDir, projected-volume mounts) exhaust the
+default within minutes and trigger eviction with `Pod ephemeral local storage
+usage exceeds the total limit of containers`. Explicit ephemeral-storage
+limits in the table below prevent that class of eviction. Low-log containers
+(dev-lock, redis, frontend, Airflow logGroomer sidecars) keep the Autopilot
+default.
+
+| Component | Namespace | Limit | Why |
+|---|---|---|---|
+| datahub-gms | datahub-01 | 8 Gi | High-log: continuous Kafka-listener traces |
+| datahub-frontend | datahub-01 | 8 Gi | High-log: Play framework access log per request |
+| datahub-mae-consumer | datahub-01 | 8 Gi | High-log: every metadata aspect change event |
+| datahub-mce-consumer | datahub-01 | 8 Gi | High-log: every metadata change proposal |
+| datahub-actions | datahub-01 | 4 Gi | Medium-log: event-driven actions |
+| Kafka KRaft controller | datahub-01 | 4 Gi | Medium-log: broker + controller segments |
+| OpenSearch | datahub-01 | 4 Gi | Medium-log: JVM GC + index recovery |
+| MySQL | datahub-01 | 4 Gi | Medium-log: slow-query and binlog refs |
+| airflow-api-server | dataspoke-01 | 8 Gi | High-log: uvicorn access log per request |
+| airflow-scheduler | dataspoke-01 | 8 Gi | High-log: heartbeat + task scheduling |
+| airflow-triggerer | dataspoke-01 | 8 Gi | High-log: event-loop |
+| airflow-dag-processor | dataspoke-01 | 8 Gi | High-log: parse cycle per DAG per interval |
+| dataspoke-api | dataspoke-01 | 4 Gi | Medium-log: uvicorn access log |
+| postgresql (dataspoke) | dataspoke-01 | 4 Gi | Medium-log: WAL + autovacuum |
+| example-kafka | dataspoke-dummy-data-01 | 4 Gi | Medium-log: KRaft broker |
+| example-postgres | dataspoke-dummy-data-01 | 4 Gi | Medium-log: WAL + checkpoints |
 
 ---
 
@@ -256,87 +612,159 @@ memory limits.
 
 ### Ingress
 
-Frontend, API, and Airflow each have an `ingress` section in their values supporting:
-- `className` (nginx, alb, traefik, etc.)
-- TLS via cert-manager annotations
-- Customizable host and path rules
-
-In dev, ingress is enabled via `values-dev.yaml` — the nginx-ingress controller (installed
-separately in `ingress-nginx` namespace) routes traffic to all services. Key ingress resources:
+Frontend, API, and Airflow each have an `ingress` block in their values
+supporting `className` (nginx, alb, traefik, etc.), TLS via cert-manager
+annotations, and customizable host/path rules.
 
 | Resource | Location | Routes |
-|----------|----------|--------|
+|---|---|---|
 | `templates/api-ingress.yaml` | umbrella chart | `app.<INGRESS_IP>.nip.io/api` → `dataspoke-api:8002` |
 | `subcharts/frontend/templates/ingress.yaml` | frontend subchart | `app.<INGRESS_IP>.nip.io/` → `dataspoke-frontend:3000` |
 | `airflow.ingress` values | airflow chart (native) | `airflow.<INGRESS_IP>.nip.io/` → `dataspoke-airflow-api-server:8080` |
-| `dev_env/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
+| `peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 
-TCP passthrough (PostgreSQL, Redis, Kafka, Lock) is handled by the nginx-ingress `tcp-services`
-ConfigMap — no Ingress resource needed for TCP. See [`DEV_ENV.md §Ingress`](DEV_ENV.md#ingress)
-for the full port map.
+TCP passthrough (PostgreSQL :9201, Redis :9202, DataHub Kafka :9005, example
+PG :9102, example Kafka :9104, lock :9221) is handled by the nginx-ingress
+`tcp-services` ConfigMap — no Ingress resource needed. Kafka services
+advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side
+producers/consumers reach them through the controller.
+
+In prod, the operator's ingress controller takes the same role; `values.yaml`
+ingress hosts and TLS secrets are operator-supplied.
 
 ### Network Policy
 
-A NetworkPolicy template allows egress from DataSpoke pods to the DataHub namespace (GMS :8080,
-Kafka :9092). Controlled by `networkPolicy.enabled` (default: `false`) and
-`networkPolicy.datahubNamespace`. Enable in production clusters with default-deny policies.
+A NetworkPolicy template allows egress from DataSpoke pods to the DataHub
+namespace (GMS :8080, Kafka :9092). Controlled by `networkPolicy.enabled`
+(default `false`) and `networkPolicy.datahubNamespace`. Enable in clusters
+with default-deny.
 
 ---
 
-## Dev Environment Integration
+## Secrets Management
 
-`dev_env/dataspoke-infra/install.sh` consumes this chart with the dev profile. The install flow:
+| Family | Owner | Purpose |
+|---|---|---|
+| **Infra Secrets** (`dataspoke-postgres-secret`, `dataspoke-redis-secret`, `dataspoke-secrets`, `dataspoke-internal-auth`) | Operator (Helm install) | DataSpoke's own runtime credentials — Postgres/Redis passwords, JWT signing key, internal-auth shared secret. |
+| **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). |
+| **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the Infra Secrets above. |
 
-1. Create K8s Secrets from `.env` variables (idempotent via `--dry-run=client`)
-2. Register Helm repos (`bitnami`, `apache-airflow`) and build chart dependencies
-3. `helm upgrade --install dataspoke` with `values-dev.yaml`, passing PostgreSQL image and auth
-   credentials via `--set`/`--set-string`
+### Dev — install-time provisioning
 
-The dev profile enables the API in-cluster (so Airflow callbacks work via cluster DNS) and
-enables ingress for the API and Airflow (so developers can access them via the nginx-ingress
-endpoints). Frontend and event-consumer remain disabled. Airflow runs in the cluster in both
-dev and production.
+`bin/install.sh` writes Infra Secrets and out-of-band Secrets from `.env`
+before the Helm install. Subcharts reference Infra Secrets via
+`auth.existingSecret`. The out-of-band Secrets are populated only if their
+seed value is present in `.env`; if absent, the dependent feature stays
+disabled until the operator sets it via the admin API.
 
-This means:
-1. The umbrella chart is the **single source of truth** for DataSpoke Kubernetes deployments —
-   both production and dev
-2. `dev_env/dataspoke-infra/` is a thin wrapper — no duplicate values files or templates
-3. Switching from dev to production is changing the values file, not the chart
+### Prod
+
+Two approaches:
+
+- **Option A**: `helm upgrade --set secrets.*` or a sealed values file.
+- **Option B** (recommended): [External Secrets Operator](https://external-secrets.io/)
+  syncing from AWS Secrets Manager / Vault / GCP Secret Manager. Set
+  `secrets.createSecret: false` and reference the externally-managed Secret.
+
+### API RBAC for source-credential Secrets
+
+When `api.secretReader.enabled` is `true` (default), the umbrella renders
+`templates/api-secret-reader-rbac.yaml`: a dedicated ServiceAccount on the
+API Deployment, plus a `Role` granting `get` / `create` / `patch` on
+`secrets` in the API release namespace, and a matching `RoleBinding`.
+`delete` is intentionally omitted — ingestion-config DELETE does not
+auto-clean source-credential Secrets (reference counting is out of scope;
+see SECRET_RESOLUTION.md §Open Questions). Single-namespace policy: no
+cross-namespace Roles or RoleBindings. Disable to opt out entirely; the
+Deployment then falls back to the default ServiceAccount and the resolver
+raises `SecretResolverUnavailable` on every PUT/PATCH that touches
+`secret_ref`.
 
 ---
 
-## In-Cluster Testing
+## Health Check
 
-For on-demand integration testing where all components run inside Kubernetes (e.g., verifying
-health probes, ingress routing, network policies, or resource behavior), enable application
-subcharts on top of the dev profile:
+`bin/health-check.sh` probes each service through nginx-ingress (HTTP
+endpoints) or cluster DNS (TCP services). Required before any integration
+test run per `TESTING.md §Prerequisites`. On failure, reinstall the
+affected subsystem via `bin/install.sh --profile dev --components <name>`.
 
-```bash
-helm upgrade --install dataspoke ./helm-charts/dataspoke \
-  --namespace "${DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE}" \
-  --values ./helm-charts/dataspoke/values-dev.yaml \
-  --set frontend.enabled=true \
-  --set api.enabled=true \
-  --set config.createConfigMap=true \
-  --set secrets.createSecret=true
-  # Optionally add: --set event-consumer.enabled=true
-```
+| Failing service | Component to reinstall |
+|---|---|
+| dataspoke-postgresql, redis, airflow, api | `dataspoke-infra` |
+| datahub-gms, datahub-kafka | `datahub` |
+| example-postgres, example-kafka | `dummy-data` |
+| dev-lock | `dev-lock` |
+| Langfuse | `langfuse` |
+| ingress controller | `nginx-ingress` |
 
-The API is already enabled in `values-dev.yaml`. Frontend and event-consumer can be enabled
-on-demand for full in-cluster testing. Every code change requires a container rebuild and
-`helm upgrade` — this is automated by `dev_env/dataspoke-test-mode.sh`. See
-[TESTING.md §Testing Modes](../TESTING.md#testing-modes).
+---
+
+## Troubleshooting
+
+### Pod evicted: ephemeral local storage usage exceeds limit
+
+GKE Autopilot's 1 GiB ephemeral-storage default per container is exhausted by
+chatty containers within minutes. Ensure the affected container has explicit
+`ephemeral-storage` entries per §Resource Sizing §Ephemeral storage. If the
+evicted container is not in the table, verify it is not writing unexpectedly
+large logs.
+
+### OpenSearch OOM-killed during startup
+
+Off-heap usage (Lucene cache, index recovery) spikes above the JVM heap.
+Already mitigated — `peripherals/datahub/prerequisites-values.yaml` sets the
+memory limit to 3 Gi.
+
+### MySQL OOM-killed on restart
+
+`mysql_upgrade` runs on every start, briefly doubling memory beyond the chart
+default. Already mitigated — memory limit set to 1536 Mi.
+
+### Pod stuck in Pending
+
+Insufficient cluster resources. Check `kubectl describe node`. Total memory
+*requests* sum ~13 GiB and *limits* ~25 GiB; 24 GB / 8+ CPU is the
+recommended headroom.
+
+### datahub-system-update takes 5–10 minutes
+
+Expected on first install — bootstraps all DataHub metadata schemas. The
+script polls every 10s with progress logging. Not an error.
+
+### MAE consumer stalled after restart
+
+The embedded MAE consumer in GMS crashes when processing stale MCL messages
+accumulated from previous runs. Spring Kafka's error handler shuts the
+consumer down permanently, leaving timeseries aspects unindexed in
+OpenSearch. Already automated in `datahub.sh` — detects the stalled consumer
+group, resets offsets to latest, restarts GMS. If it recurs outside install,
+manually reset offsets on `MetadataChangeLog_Timeseries_v1` and
+`MetadataChangeLog_Versioned_v1` for group `generic-mae-consumer-job-client`,
+then restart the GMS pod.
+
+### Service unreachable via ingress
+
+Target pod not yet Ready, or the nginx-ingress controller has not yet
+received an external IP. Verify the controller (`kubectl get pods -n ingress-nginx`)
+has an external IP (`kubectl get svc -n ingress-nginx`), then verify the
+target pod is `1/1 Running`. Re-run `bin/health-check.sh` once pods are ready.
 
 ---
 
 ## References
 
-- [Helm — Chart Dependencies](https://helm.sh/docs/helm/helm_dependency/) — umbrella chart
-  pattern
+- [DataHub — Deploying with Kubernetes](https://docs.datahub.com/docs/deploy/kubernetes)
+- [DataHub Helm chart defaults](https://github.com/acryldata/datahub-helm/blob/master/charts/datahub/values.yaml)
+- [DataHub prerequisites defaults](https://github.com/acryldata/datahub-helm/blob/master/charts/prerequisites/values.yaml)
+- [Migrating Graph Service Implementation](https://docs.datahub.com/docs/how/migrating-graph-service-implementation)
+- [Helm — Chart Dependencies](https://helm.sh/docs/helm/helm_dependency/)
 - [Bitnami PostgreSQL Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
 - [Bitnami Redis Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
 - [Apache Airflow Helm Chart](https://github.com/apache/airflow/tree/main/chart)
-- [External Secrets Operator](https://external-secrets.io/) — production secrets management
-- [DEV_ENV.md](DEV_ENV.md) — Development environment specification
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — System architecture and deployment topology
+- [External Secrets Operator](https://external-secrets.io/)
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — system architecture, env-var convention
+- [TESTING.md](../TESTING.md) — testing conventions, dev-env lock protocol
+- [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md) — source-credential Secret model
+- [BACKEND_LLM.md](BACKEND_LLM.md) — LLM observability + online key rotation

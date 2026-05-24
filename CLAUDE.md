@@ -10,20 +10,20 @@ DataSpoke is a sidecar extension to DataHub that ships a five-feature baseline (
 
 Run every command from the directory it expects (usually project root). Do not `cd` away mid-session — use relative paths instead.
 
-## Dev Environment
+## Deployment
 
 ```bash
-cd dev_env && ./install.sh    # Install infrastructure (DataHub, PostgreSQL, Redis, Airflow)
-cd dev_env && ./uninstall.sh  # Tear down everything
-# Component reinstall: run the component's uninstall.sh then install.sh
-cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
+./helm-charts/bin/install.sh --profile dev        # Full dev stack (peripherals + umbrella chart)
+./helm-charts/bin/uninstall.sh --profile dev      # Tear down everything
+./helm-charts/bin/install.sh --profile dev --components dataspoke-infra   # Single component reinstall
+./helm-charts/bin/install.sh --profile dev --components api               # Rebuild + redeploy the API
 ```
 
-Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.
+Settings in `helm-charts/.env`. See `helm-charts/README.md` for access details and ingress endpoints; `spec/feature/HELM_CHART.md` for the full deployment subsystem.
 
-The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`).
+The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes are picked up by `install.sh --profile dev --components api` (docker build + `helm upgrade` + rollout).
 
-The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). See `spec/TESTING.md §Testing Modes`.
+Prod uses the same umbrella chart with `values.yaml` plus an operator-supplied overlay: `./helm-charts/bin/install.sh --profile prod --values <overlay.yaml>`.
 
 ## Key Design Decisions
 
@@ -31,7 +31,7 @@ The dev environment uses the same umbrella Helm chart as production (`helm-chart
 - **API-first**: FastAPI implementation in `src/api/` is the SSOT for the API contract; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
 - **Three-tier API routing**: `/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`
 - **Airflow 3.1.8** for workflow orchestration (fixed schedule tiers + on-demand HTTP triggers, LocalExecutor); **PostgreSQL 17** (with `pgvector` for vector search and Apache `age` installed as reserved graph infrastructure) for operational DB
-- **Self-hosted Langfuse** for LLM observability — sibling subsystem in its own `langfuse-01` namespace; consumed via `DATASPOKE_DEV_LANGFUSE_*` env vars (absence disables tracing). See `spec/feature/BACKEND_LLM.md §Observability`.
+- **Self-hosted Langfuse** for LLM observability — sibling subsystem in its own `langfuse-01` namespace; connection (host + keys) stored in the DB `peripheral_config` table via `/api/v1/admin/peripherals/langfuse` (absence disables tracing). See `spec/feature/BACKEND_LLM.md §Observability`.
 - **Headless / API-first**: backend's primary task is to support `spec/API.md`; frontend is a thin reference UI that consumes API routes verbatim (no invented endpoints); per `spec/feature/FRONTEND_BASIC.md` no streaming surface exists in the baseline — clients poll `event/...` and `attr/.../result`
 - **No DataHub CLI**: The `datahub` CLI requires Python ≤ 3.11 and is incompatible with the project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead.
 - **DataHub debugging protocol**: For any DataHub integration or infrastructure issue, consult `ref/github/datahub/` source code and use the `/datahub-api` skill before guessing configs or iterating through Helm upgrades.
@@ -94,9 +94,9 @@ For testing conventions (unit/integration/api-wired integration/E2E, toolchain, 
 
 Follow `spec/TESTING.md §Integration Testing` for the full 7-step workflow, pre-flight + reinstall table, lock protocol, data reset, Imazon test-data rule, assertion rules, and manual API testing. Key reminders:
 
-- Run `./dev_env/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
+- Run `./helm-charts/bin/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
 - Run tests in three **separate** groups (unit → spot integration → api-wired integration). Mixing causes Airflow resource contention.
-- Spot/api-wired tests need `dev_env/.env` exported into the shell AND `DATASPOKE_TEST_MODE=true` set on the pytest invocation. `DATASPOKE_TEST_MODE` is not in `dev_env/.env`, so the conftest preflight will fail if it is omitted. Canonical command: `set -a && source dev_env/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `dev_env/.env` has no `export` prefixes).
+- Spot/api-wired tests need `helm-charts/.env` exported into the shell AND `DATASPOKE_TEST_MODE=true` set on the pytest invocation. `DATASPOKE_TEST_MODE` is not in `helm-charts/.env`, so the conftest preflight will fail if it is omitted. Canonical command: `set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `helm-charts/.env` has no `export` prefixes).
 - Never truncate integration test output (no `| tail`, `| head`, or piped filters) — always show complete pytest output.
 
 ## Testing prauto
@@ -109,7 +109,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 ## Claude Code Configuration
 
-**Skills**: `k8s-work`, `spec-write`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `dev-env`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-api-wired-manual`
+**Skills**: `k8s-work`, `spec-write`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `k8s-deploy`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-api-wired-manual`
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `reviewer` (evaluator, opus), `test-reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `workflow`, `test`, `frontend`, `k8s-helm`
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.

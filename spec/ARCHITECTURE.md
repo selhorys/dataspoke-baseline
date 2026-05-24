@@ -387,8 +387,9 @@ when an organisation adds event-driven extensions; Kafka consumers scale by part
 
 Langfuse runs as a sibling subsystem in its own namespace (`langfuse-01` by default) — web,
 worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from
-`helm-charts/langfuse/`. DataSpoke pods consume Langfuse via the `DATASPOKE_DEV_LANGFUSE_*` env
-vars; absence of those vars disables tracing without affecting LLM call success.
+`helm-charts/langfuse/`. DataSpoke reads the Langfuse connection (host + public/secret key)
+from the DB `peripheral_config` table, set via `/api/v1/admin/peripherals/langfuse`; absence
+of the configuration disables tracing without affecting LLM call success.
 
 For replica counts, resource requests/limits, PV sizes, component matrix, and network policy,
 see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md). DataSpoke's namespace requires egress
@@ -396,50 +397,51 @@ access to the DataHub namespace; configure NetworkPolicy in clusters with defaul
 
 ### Configuration
 
-Configuration splits across two mechanisms. **Connection, secret, and test settings** are
-driven by environment variables in two tiers; **behavioral tunables** (LLM provider/model and
-the generation knobs) are runtime configuration stored in the DB and edited via
-`/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with factory defaults.
+Configuration splits across two mechanisms. **App-runtime settings** flow as environment
+variables (three tiers below); **peripheral connections** (DataHub URL/token, Langfuse
+host/keys) and **behavioral tunables** (LLM provider/model, generation knobs) are runtime
+configuration stored in the DB and edited via `/api/v1/admin/peripherals/{datahub,langfuse}`
+and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with factory defaults.
 
 | Prefix | Scope | Who reads it |
 |--------|-------|-------------|
-| `DATASPOKE_DEV_*` | Dev environment only | `dev_env/*.sh` scripts |
-| `DATASPOKE_*` (no `DEV`) | Application runtime | DataSpoke app code (FastAPI, frontend) |
+| `DATASPOKE_*` (no `KUBE`/`DEV`) | App runtime, both profiles | DataSpoke app code (FastAPI, frontend) |
+| `DATASPOKE_KUBE_*` | Kube deployment, both profiles | `helm-charts/bin/*.sh` install/uninstall/build scripts |
+| `DATASPOKE_DEV_*` | Dev profile only | `helm-charts/bin/peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
 
-Dev-only variables (`DATASPOKE_DEV_*`) configure Kubernetes cluster settings, namespace names,
-chart versions, the nginx-ingress IP, and the dev LLM provider/model/key seed (the install
-script populates the Secret with the key and `PATCH`es the runtime config with provider/model).
-The application code never reads them.
+App-runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values
+differ. In dev they point to the nginx-ingress external IP (TCP services) or ingress hostnames
+(HTTP services); in prod they are injected via Helm values → ConfigMap/Secret. Groups:
+PostgreSQL, Redis, Airflow, internal-auth token, CORS, stub-auth toggle.
 
-Application runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the
-values differ. In dev, they point to the nginx-ingress external IP (TCP services) or ingress
-hostnames (HTTP services). In production, they are injected via Helm values → Kubernetes
-ConfigMap/Secret.
+Kube-deployment variables (`DATASPOKE_KUBE_*`) configure the cluster context, namespace, image
+registry, cloud vendor, and ingress IP/domain — all needed by install scripts in either profile.
 
-Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Airflow. The LLM
-provider/model are runtime config (`/api/v1/admin/conf`), and the LLM API key is read at runtime
-from the dedicated `dataspoke-llm-secret` Kubernetes Secret (rotated online through the same conf
-surface) — neither is an env var in the deployed app.
-Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain, dev LLM
-seed. For the full variable listing with defaults, see
-[`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).
+Dev-only variables (`DATASPOKE_DEV_*`) hold install-time credentials and seed values for the
+in-cluster peripherals (DataHub MySQL, Langfuse internals, dummy data, LLM provider/model/key).
+The peripheral scripts auto-populate the connection outputs back into `.env` and then PATCH
+them into the runtime DB. The application code never reads `DATASPOKE_DEV_*`.
 
-For production, secrets are stored as Kubernetes Secrets and injected via Helm values →
-ConfigMap/Secret → container environment.
-See [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md) for details.
+The LLM API key is read at runtime from the `dataspoke-llm-secret` Kubernetes Secret (rotated
+online through `/api/v1/admin/conf`) — not an env var on the deployed app.
+
+For full variable listings, the `.env.example` layout, and production Secret options, see
+[`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 
 ### Development Environment
 
-For dev/CI, DataHub and DataSpoke infrastructure dependencies are provisioned by `dev_env/`
-scripts (see [`spec/feature/DEV_ENV.md`](feature/DEV_ENV.md) for install/uninstall,
-configuration, and resource budget). The dev environment reuses the production umbrella Helm
-chart (`helm-charts/dataspoke/`) with a `values-dev.yaml` overlay that reduces resources and
-disables frontend/event-consumer; the API runs in-cluster so Airflow callbacks reach it via
+Dev and prod deployment share one entry point: `helm-charts/bin/install.sh --profile {dev|prod}`.
+The dev profile installs the umbrella chart with the `values-dev.yaml` overlay (reduced
+resources, frontend disabled, in-cluster API with `testMode: true`) plus the dev peripherals —
+nginx-ingress, DataHub, Langfuse, dummy data, dev-lock — and seeds peripheral and runtime
+config via the admin API. The prod profile installs the umbrella chart only; DataHub and
+Langfuse are operator-managed externally, and peripheral wiring goes through `/api/v1/admin/*`.
+The API runs in-cluster in both profiles so Airflow callbacks reach it via
 `http://dataspoke-api:8002`. Unit tests run locally without the cluster; see
 [`TESTING.md §Testing Modes`](TESTING.md#testing-modes).
 
-The bundled dev environment is **NOT** for production. For production Kubernetes deployment,
-see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
+For the full install/uninstall/build/seed workflow, env-var listings, profile differences,
+resource budget, and troubleshooting, see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 
 ---
 
@@ -452,9 +454,8 @@ The repository is organized by deployment concern and application layer. Key top
 | `src/` | Application source: `api/` (FastAPI), `backend/` (services), `shared/` (clients), `workflows/` (Airflow DAGs), `frontend/` (Next.js) |
 | `spec/` | Architecture and feature specifications (common feature specs and user-group-specific FRONTEND_DE/DA/DG specs in `feature/`) |
 | `tests/` | Unit, integration, and E2E test suites |
-| `dev_env/` | Kubernetes dev environment scripts |
-| `helm-charts/` | Umbrella Helm chart for deployment |
-| `docker-images/` | Dockerfiles per service |
+| `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals |
+| `docker-images/` | Dockerfiles per service (api, airflow, postgres) |
 | `migrations/` | Alembic database migrations |
 
 ---
