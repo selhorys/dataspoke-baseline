@@ -69,17 +69,17 @@ python3 -c "import datahub; print('acryl-datahub', datahub.__version__)" 2>/dev/
   || pip3 install acryl-datahub --quiet
 
 # 2. Derive GMS URL from .env (ingress-based)
-source dev_env/.env 2>/dev/null || true
-DATAHUB_GMS_URL="http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}/gms"
+source helm-charts/.env 2>/dev/null || true
+DATAHUB_GMS_URL="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
 
 # 3. Check GMS is reachable via ingress
 curl -s "${DATAHUB_GMS_URL}/config" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print('GMS ok, version:', d['versions']['acryldata/datahub']['version'])" \
-  || echo "ERROR: GMS not reachable at ${DATAHUB_GMS_URL}. Run: ./dev_env/health-check.sh"
+  || echo "ERROR: GMS not reachable at ${DATAHUB_GMS_URL}. Run: ./helm-charts/bin/health-check.sh"
 
 # 4. Check token
-if [ -z "${DATASPOKE_DATAHUB_TOKEN:-}" ]; then
-  echo "DATASPOKE_DATAHUB_TOKEN not set — generate via: http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN} → Settings → Access Tokens"
+if [ -z "${DATASPOKE_DEV_DATAHUB_TOKEN:-}" ]; then
+  echo "DATASPOKE_DEV_DATAHUB_TOKEN not set — generate via: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN} → Settings → Access Tokens"
 fi
 ```
 
@@ -91,14 +91,14 @@ If any prerequisite fails, stop and inform the user with the fix instructions.
 
 Only use this if the static `ref/` files don't answer the question.
 
-Derive the base URLs from `dev_env/.env`: `source dev_env/.env`, then:
-- GMS base: `http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}/gms`
-- DataHub UI: `http://datahub.${DATASPOKE_DEV_INGRESS_DOMAIN}`
+Derive the base URLs from `helm-charts/.env`: `source helm-charts/.env`, then:
+- GMS base: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms`
+- DataHub UI: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}`
 
 | Resource | URL pattern | Notes |
 |---|---|---|
 | Swagger UI (REST/OpenAPI) | `<GMS_BASE>/openapi/swagger-ui/index.html` | Set Bearer token in Authorize dialog |
-| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_DATAHUB_TOKEN" <GMS_BASE>/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
+| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_DEV_DATAHUB_TOKEN" <GMS_BASE>/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
 | GraphiQL | `http://datahub.<DOMAIN>/api/graphiql` | Browser only, uses session cookie |
 | Unauthenticated health | `<GMS_BASE>/config`, `<GMS_BASE>/health` | No token needed |
 
@@ -108,17 +108,17 @@ Derive the base URLs from `dev_env/.env`: `source dev_env/.env`, then:
 
 ### 5.1 SDK Setup Pattern
 
-Read the GMS URL from the environment (set by `source dev_env/.env`):
+Read the GMS URL from the environment (set by `source helm-charts/.env`):
 ```python
 from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
 import os
 
 # GMS is accessible via ingress: http://datahub.<INGRESS_DOMAIN>/gms
-gms_url = os.environ["DATASPOKE_DATAHUB_GMS_URL"]  # set in dev_env/.env
+gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]  # set in helm-charts/.env
 
 graph = DataHubGraph(DatahubClientConfig(
     server=gms_url,
-    token=os.environ.get("DATASPOKE_DATAHUB_TOKEN", ""),
+    token=os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", ""),
 ))
 ```
 
@@ -128,8 +128,8 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 import os
 
 emitter = DatahubRestEmitter(
-    os.environ["DATASPOKE_DATAHUB_GMS_URL"],
-    token=os.environ.get("DATASPOKE_DATAHUB_TOKEN", ""),
+    os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"],
+    token=os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", ""),
 )
 ```
 
@@ -178,7 +178,7 @@ from datahub.emitter.mce_builder import (
 ## Constraints
 
 1. **Never use `kubectl exec`** to interact with DataHub — it bypasses the API surface and doesn't reflect production behavior.
-2. **Never run ad-hoc `kubectl port-forward`** — DataHub GMS is accessible via ingress at `http://datahub.<INGRESS_DOMAIN>/gms`. If the ingress is unreachable, run `./dev_env/health-check.sh` to diagnose.
+2. **Never run ad-hoc `kubectl port-forward`** — DataHub GMS is accessible via ingress at `http://datahub.<INGRESS_DOMAIN>/gms`. If the ingress is unreachable, run `./helm-charts/bin/health-check.sh` to diagnose.
 3. **Always read the matching tutorial/example first** before writing API code.
 4. **Prefer static `ref/` lookup over live API exploration** for speed — only fall back to Swagger/GraphiQL when the static ref is ambiguous.
 

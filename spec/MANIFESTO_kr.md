@@ -128,8 +128,9 @@ DataSpoke는 네 가지 컴포넌트로 구성된다.
 
 #### Development Scaffold
 
-Kubernetes 기반으로 스크립트화된 개발 환경이다. `dev_env/`에 DataHub,
-PostgreSQL, Redis, Airflow, DataSpoke API 등 컴포넌트의
-설치·재설치·제거 스크립트가 있으며, 운영과 동일한 Helm
-차트(`helm-charts/dataspoke/`)에 개발 오버레이(`values-dev.yaml`)를
-얹어 구성된다. 상세 사양은 `spec/feature/DEV_ENV.md`를 참고한다.
+Kubernetes 기반으로 스크립트화된 배포 시스템이다. `helm-charts/bin/`의
+`install.sh --profile {dev|prod}`이 단일 진입점이며, dev 프로파일은
+nginx-ingress, DataHub, Langfuse, 더미 데이터 등 주변 컴포넌트와 umbrella
+Helm 차트(`helm-charts/dataspoke/`, dev 오버레이 `values-dev.yaml`)를 함께
+설치한다. prod 프로파일은 umbrella 차트만 설치한다. 상세 사양은
+`spec/feature/HELM_CHART.md`를 참고한다.

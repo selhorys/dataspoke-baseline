@@ -2,7 +2,7 @@
 name: spec-sync-with-impl
 description: >-
   Bidirectional sync between DataSpoke specs and implementation. Accepts a
-  preset scope (prauto, ai-scaffold, dev-env, helm-charts, api, ref, backend,
+  preset scope (prauto, ai-scaffold, k8s-deploy, helm-charts, api, ref, backend,
   frontend, all) or a free-form description of an area (e.g., "recently
   developed backend ingestion secret resolution"). Audits the scope, reports
   the gaps, asks the user which direction to resolve each gap (spec→impl,
@@ -30,8 +30,7 @@ Specification is any document that describes *what should exist and how it shoul
 Implementation is the actual code, scripts, and configs that *do things*:
 
 - `.prauto/` scripts, libraries, prompts, and config files
-- `dev_env/` scripts, manifests, and helpers
-- `helm-charts/` chart definitions, values, and templates
+- `helm-charts/` chart definitions, values, templates, `bin/` install/uninstall/build scripts, and `peripherals/` manifests
 - `src/api/` routers, schemas, middleware (FastAPI implementation as API SSOT)
 - `src/` application code (api, backend, frontend) and `tests/` directories
 - **Detailed logic** in SKILL.md files (the workflow instruction body — everything below the declarations)
@@ -66,8 +65,8 @@ Presets (numbers or keywords, comma-separated):
   1. all          — All preset scopes that have both spec and impl files
   2. prauto       — .prauto scripts, prauto-related specs and skills
   3. ai-scaffold  — CLAUDE.md, .claude/ settings, hooks, agents, all skills
-  4. dev-env      — dev_env/ scripts, DEV_ENV spec
-  5. helm-charts  — Helm chart definitions and specs
+  4. k8s-deploy   — helm-charts/bin scripts, k8s-deploy skill
+  5. helm-charts  — Helm chart definitions, helm-charts/peripherals/, HELM_CHART spec
   6. api          — API specs, src/api/ code
   7. ref          — ref/ setup scripts and reference materials
   8. backend      — Backend services, Airflow workflows (TBD presets)
@@ -89,8 +88,8 @@ Parse the user's reply: split on commas; each item is either a preset (number/ke
 |---------------|-----------|-----------|
 | `prauto` | `spec/AI_PRAUTO.md`, prauto-related skill declarations, `.prauto/README.md` | `.prauto/` scripts and libs, prauto-related skill logic bodies |
 | `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `CLAUDE.md`, all skill declarations across `.claude/skills/` | `.claude/` settings/hooks/agents, all skill logic bodies |
-| `dev-env` | `spec/feature/DEV_ENV.md`, dev-env skill declaration, `dev_env/README.md` | `dev_env/` scripts and helpers, dev-env skill logic body |
-| `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/` charts, values, and templates |
+| `k8s-deploy` | `spec/feature/HELM_CHART.md` (bin/ + workflow sections), k8s-deploy skill declaration, `helm-charts/README.md` | `helm-charts/bin/` scripts, k8s-deploy skill logic body |
+| `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/dataspoke/`, `helm-charts/langfuse/`, `helm-charts/peripherals/` charts/values/templates/manifests |
 | `api` | `spec/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
 | `ref` | `spec/AI_SCAFFOLD.md` (ref section), ref-setup skill declaration, `ref/README.md` | `ref/` setup scripts and reference materials, ref-setup skill logic body |
 | `backend` | TBD | TBD |
@@ -107,7 +106,7 @@ When the scope is free-form text:
 1. **Extract anchor terms** from the description — feature names, function/file/symbol names, route fragments, component names, time hints (e.g. "recently developed"). Combine with synonyms the user might be using loosely.
 2. **Discover candidate files** by searching both sides:
    - Spec side: `Glob` `spec/**/*.md`, `**/README.md`, `CLAUDE.md`, `.claude/skills/*/SKILL.md` (frontmatter only). `Grep` for anchor terms across these.
-   - Impl side: `Glob` likely directories (`src/**`, `.prauto/**`, `dev_env/**`, `helm-charts/**`, `ref/**`, SKILL.md logic bodies). `Grep` for anchor terms.
+   - Impl side: `Glob` likely directories (`src/**`, `.prauto/**`, `helm-charts/**`, `ref/**`, SKILL.md logic bodies). `Grep` for anchor terms.
    - For "recently developed" or similar time hints, also use `git log` / recently-touched files as a signal (read recent commits with `git log --since=<sensible-window> --name-only` via the user's tools if needed; otherwise rely on filename/Grep matches).
 3. **Show a candidate file list to the user before reading deeply**:
    ```
@@ -218,7 +217,7 @@ Present a structured report **before making any changes**:
 |---|------------------|-----------|---------|------------------|---------|
 | 1 | spec/AI_PRAUTO.md ↔ .prauto/lib/ | undocumented in spec | new module `quota.sh` not mentioned | impl→spec (document) | a) document  b) remove from impl  c) leave flagged |
 | 2 | .prauto/README.md ↔ .prauto/heartbeat.sh | stale reference | prerequisites list outdated | impl→spec (update spec) | a) update spec  b) update impl  c) leave flagged |
-| 3 | .claude/skills/dev-env/SKILL.md decl ↔ body | skill declaration drift | argument-hint missing `reset` action | impl→spec (decl update) | a) decl→match body  b) body→match decl  c) leave flagged |
+| 3 | .claude/skills/k8s-deploy/SKILL.md decl ↔ body | skill declaration drift | argument-hint missing `reset` action | impl→spec (decl update) | a) decl→match body  b) body→match decl  c) leave flagged |
 | 4 | spec/API.md ↔ src/api/routers/ | spec gap in impl (substantial) | endpoint X required, not implemented | leave flagged → implementation workflow | a) plan+generate  b) drop from spec  c) leave flagged |
 
 ### High-Level Spec Impact

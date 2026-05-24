@@ -36,12 +36,12 @@ For local dev, the defaults work when the dev environment is installed and servi
 
 ```bash
 # Verify the dev environment is healthy
-./dev_env/health-check.sh
+./helm-charts/bin/health-check.sh
 ```
 
 ### 3. Access the API
 
-The API runs **in-cluster** by default (deployed via `./dev_env/dataspoke-test-mode.sh`). Access via nginx-ingress:
+The API runs **in-cluster** by default (deployed via `./helm-charts/bin/install.sh --profile dev --components api`). Access via nginx-ingress:
 - API: `http://app.<INGRESS_DOMAIN>/api/v1/`
 - ReDoc: `http://app.<INGRESS_DOMAIN>/redoc`
 
@@ -50,6 +50,8 @@ The API runs **in-cluster** by default (deployed via `./dev_env/dataspoke-test-m
 ## Environment Variables
 
 All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pydantic-settings`).
+
+DataHub, Langfuse, and LLM provider/model/key are **not** env vars on the API pod — they live in the DB `peripheral_config` and `runtime_config` tables, updated via `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. See [spec/feature/HELM_CHART.md §Configuration](../../spec/feature/HELM_CHART.md#configuration--three-tier-env-vars).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -61,8 +63,6 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_ADMIN_PASSWORD` | `admin` | Stub admin password |
 | `DATASPOKE_CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins (JSON list) |
 | `DATASPOKE_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per minute per client |
-| `DATASPOKE_DATAHUB_GMS_URL` | `http://localhost:8080` | DataHub GMS endpoint |
-| `DATASPOKE_DATAHUB_KAFKA_BROKERS` | `localhost:9092` | Kafka broker addresses |
 | `DATASPOKE_POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `DATASPOKE_POSTGRES_PORT` | `5432` | PostgreSQL port |
 | `DATASPOKE_POSTGRES_USER` | `postgres` | PostgreSQL user |

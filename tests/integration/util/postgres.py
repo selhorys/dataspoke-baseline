@@ -44,14 +44,14 @@ _FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "sql"
 
 
 def _load_dotenv() -> None:
-    """Load dev_env/.env into os.environ without overwriting existing vars.
+    """Load helm-charts/.env into os.environ without overwriting existing vars.
 
     Walks up from the project root (three levels above this file) to handle
-    git worktrees where dev_env/.env may live in the main worktree.
+    git worktrees where helm-charts/.env may live in the main worktree.
     """
     start = Path(__file__).resolve().parents[3]
     for candidate in (start, *start.parents):
-        env_path = candidate / "dev_env" / ".env"
+        env_path = candidate / "helm-charts" / ".env"
         if env_path.is_file():
             break
     else:

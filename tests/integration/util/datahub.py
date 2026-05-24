@@ -8,10 +8,10 @@ Usage (as a module):
     uv run python -m tests.integration.util.datahub --reset  # delete + ingest
     uv run python -m tests.integration.util.datahub --reset-only  # delete only
 
-Environment variables (loaded from dev_env/.env if present):
-    DATASPOKE_DATAHUB_GMS_URL       (default: http://localhost:9004)
-    DATASPOKE_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
-    DATASPOKE_DATAHUB_FRONTEND_URL  (default: http://localhost:9002)
+Environment variables (loaded from helm-charts/.env if present):
+    DATASPOKE_DEV_DATAHUB_GMS_URL       (default: http://localhost:9004)
+    DATASPOKE_DEV_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
+    DATASPOKE_DEV_DATAHUB_FRONTEND_URL  (default: http://localhost:9002)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER     (default: postgres)
@@ -179,10 +179,10 @@ _PG_TO_DATAHUB_TYPE: dict[str, object] = {
 
 
 def _load_dotenv() -> None:
-    """Load dev_env/.env into os.environ without overwriting existing vars."""
+    """Load helm-charts/.env into os.environ without overwriting existing vars."""
     start = Path(__file__).resolve().parents[3]
     for candidate in (start, *start.parents):
-        env_path = candidate / "dev_env" / ".env"
+        env_path = candidate / "helm-charts" / ".env"
         if env_path.is_file():
             break
     else:
@@ -199,9 +199,9 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "http://localhost:9004")
-_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "http://localhost:9002")
-_token_env = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "http://localhost:9004")
+_frontend_url = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "http://localhost:9002")
+_token_env = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
 _pg_host = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "localhost")
 _pg_port = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
@@ -269,7 +269,7 @@ def get_datahub_token() -> str:
     if not tok:
         raise RuntimeError(
             "Cannot obtain a DataHub token. "
-            "Ensure DATASPOKE_DATAHUB_TOKEN is set or the DataHub frontend is reachable."
+            "Ensure DATASPOKE_DEV_DATAHUB_TOKEN is set or the DataHub frontend is reachable."
         )
     return tok
 

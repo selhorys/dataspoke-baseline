@@ -8,7 +8,6 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .claude/
-dev_env/
 helm-charts/
 spec/
 tests/

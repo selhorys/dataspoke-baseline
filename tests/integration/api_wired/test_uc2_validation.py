@@ -10,7 +10,7 @@ Test in this module:
     DE deletes the Postgres conf, resurrection cycle verified.
 
 Prerequisites (spec/TESTING.md §Integration Testing):
-  ./dev_env/dataspoke-test-mode.sh --skip-build
+  ./helm-charts/bin/install.sh --profile dev --components api --skip-build
   uv run python -m tests.integration.util --reset-seed
   DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/test_uc2_validation.py
 

@@ -17,7 +17,7 @@ Langfuse env vars intentionally absent so _langfuse_handler is None and the
 observability layer is exercised only at the run_id-threading level.
 
 Prerequisite for running:
-    ./dev_env/dataspoke-test-mode.sh --skip-build
+    ./helm-charts/bin/install.sh --profile dev --components api --skip-build
     uv run python -m tests.integration.util --reset-seed
     DATASPOKE_TEST_MODE=true uv run pytest \
         tests/integration/api_wired/test_ontogen_langfuse_run_id.py -v

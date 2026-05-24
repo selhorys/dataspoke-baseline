@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook: run dev-env health-check before integration tests.
+# PreToolUse hook: run helm-charts/bin/health-check.sh before integration tests.
 # Blocks (exit 2) if health-check fails so pytest does not waste minutes
 # against a broken dev-env. Rate-limited to one real check per 60 seconds.
 
@@ -29,7 +29,7 @@ if ! printf '%s' "$cmd" | grep -qE "$pytest_re"; then
 fi
 
 project_root=${CLAUDE_PROJECT_DIR:-$(pwd)}
-health_check="$project_root/dev_env/health-check.sh"
+health_check="$project_root/helm-charts/bin/health-check.sh"
 
 if [[ ! -x "$health_check" ]]; then
   # health-check missing — don't fight the user, let pytest proceed
@@ -59,10 +59,10 @@ health-check output:
 $output
 
 Reinstall the failing subsystem (per CLAUDE.md §Integration Test Protocol):
-  airflow / postgres / redis → cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.sh
-  datahub-gms / kafka        → cd dev_env && bash datahub/uninstall.sh && bash datahub/install.sh
-  example-postgres/kafka     → cd dev_env && bash dataspoke-example/uninstall.sh && bash dataspoke-example/install.sh
-  lock-service               → cd dev_env && bash dataspoke-lock/uninstall.sh && bash dataspoke-lock/install.sh
+  airflow / postgres / redis → ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra
+  datahub-gms / kafka        → ./helm-charts/bin/install.sh --profile dev --components datahub
+  example-postgres/kafka     → ./helm-charts/bin/install.sh --profile dev --components dummy-data
+  lock-service               → ./helm-charts/bin/install.sh --profile dev --components dev-lock
 
 Fix the failing component, then re-run the pytest command.
 EOF

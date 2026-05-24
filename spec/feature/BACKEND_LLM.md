@@ -390,9 +390,9 @@ The same env var is honored by `LLMClient` regardless of consumer service
 ## Observability
 
 DataSpoke ships self-hosted [Langfuse](https://langfuse.com/) as its LLM trace store. The
-Langfuse instance is an independent subsystem (`dev_env/langfuse/`, chart
-`helm-charts/langfuse/`) installed in its own `langfuse-01` namespace, following the same
-`values.yaml` + `values-dev.yaml` overlay convention as the umbrella chart.
+Langfuse instance is an independent subsystem (sibling chart `helm-charts/langfuse/`, installed
+by `helm-charts/bin/peripherals/langfuse.sh`) deployed in its own `langfuse-01` namespace,
+following the same `values.yaml` + `values-dev.yaml` overlay convention as the umbrella chart.
 
 ### Env contract
 

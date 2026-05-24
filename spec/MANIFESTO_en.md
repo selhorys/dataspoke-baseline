@@ -126,8 +126,8 @@ domain-specific skills, generator/evaluator subagents, and cron-based PR automat
 
 #### Development Scaffold
 
-A fully scripted Kubernetes-based development environment. The `dev_env/` directory holds
-install/reinstall/uninstall scripts for core components — DataHub, PostgreSQL, Redis, Airflow, the
-DataSpoke API, and more — and builds on the same Helm chart used in production
-(`helm-charts/dataspoke/`) with a development overlay (`values-dev.yaml`) applied on top. See
-`spec/feature/DEV_ENV.md` for the full specification.
+A fully scripted Kubernetes-based deployment subsystem. `helm-charts/bin/install.sh
+--profile {dev|prod}` is the single entry point: the dev profile installs the umbrella Helm chart
+(`helm-charts/dataspoke/`) with a development overlay (`values-dev.yaml`) plus peripheral
+components (nginx-ingress, DataHub, Langfuse, dummy data, dev-lock); the prod profile installs the
+umbrella chart only. See `spec/feature/HELM_CHART.md` for the full specification.

@@ -9,7 +9,7 @@ description: |
 disable-model-invocation: true
 user-invocable: true
 argument-hint: [scope, e.g. "UC1 Case 2"]
-allowed-tools: Bash(*), Read, Edit, Glob, Grep, AskUserQuestion, Skill(dev-env)
+allowed-tools: Bash(*), Read, Edit, Glob, Grep, AskUserQuestion, Skill(k8s-deploy)
 ---
 
 ## Purpose
@@ -48,13 +48,13 @@ If no scope arg → menu of all discovered scenarios. Cap at 4 options per
 
 ### 2. Pre-flight
 
-Run `./dev_env/health-check.sh`. On any FAIL:
+Run `./helm-charts/bin/health-check.sh`. On any FAIL:
 - Tell the user exactly which subsystem failed.
-- Offer to reinstall via `Skill(dev-env)` action `reinstall`.
+- Offer to reinstall via `Skill(k8s-deploy)` action `reinstall`.
 - Do not proceed until green.
 
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
-Yes → `set -a && source dev_env/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
+Yes → `set -a && source helm-charts/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
 
 For UC4 scenarios: after reset-seed, run `uv run python -m tests.integration.util --uc4-seed` to pre-stage the LLM context (fulfillment doc + ontogen nodes + DataHub masking); run `uv run python -m tests.integration.util --uc4-restore` to clean up when done.
 

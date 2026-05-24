@@ -10,10 +10,10 @@ allowed-tools: Bash(kubectl *), Bash(helm *), Bash(minikube *), Bash(sleep *), B
 
 ## Setup
 
-1. **Read cluster config**: Read `dev_env/.env` to get:
-   - `DATASPOKE_DEV_KUBE_CLUSTER` — kube context (e.g., `docker-desktop`)
+1. **Read cluster config**: Read `helm-charts/.env` to get:
+   - `DATASPOKE_KUBE_CLUSTER` — kube context (e.g., `docker-desktop`)
    - `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE` — DataHub namespace (e.g., `datahub-01`)
-   - `DATASPOKE_DEV_KUBE_DATASPOKE_NAMESPACE` — DataSpoke namespace (e.g., `dataspoke-01`)
+   - `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` — DataSpoke namespace (e.g., `dataspoke-01`)
    - `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE` — Example sources namespace (e.g., `dataspoke-dummy-data-01`)
 
    **Use these variable values in all kubectl/helm commands.** Do NOT hardcode namespace names.

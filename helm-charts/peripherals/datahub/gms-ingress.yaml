@@ -1,0 +1,33 @@
+# Custom Ingress for DataHub GMS.
+# The DataHub Helm chart does not provide a native GMS ingress resource,
+# so this manifest is applied separately by helm-charts/bin/peripherals/datahub.sh.
+#
+# The install script replaces __DATAHUB_INGRESS_HOST__ with the actual
+# nip.io hostname (e.g. datahub.<INGRESS_IP>.nip.io) before applying.
+#
+# Path rewrite: /gms/<path> → /<path>
+# GMS expects plain paths (/health, /api/graphql), not the /gms prefix.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: datahub-gms
+  labels:
+    app.kubernetes.io/name: datahub-gms
+    app.kubernetes.io/component: gms
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: "/$1"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "__DATAHUB_INGRESS_HOST__"
+      http:
+        paths:
+          - path: /gms/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: datahub-datahub-gms
+                port:
+                  number: 8080

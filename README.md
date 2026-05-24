@@ -48,35 +48,36 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 
 ### Dev Environment Setup
 
-The dev environment provisions infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, self-hosted Langfuse for LLM observability, example data sources) into a Kubernetes cluster. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
+The dev profile installs infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, self-hosted Langfuse for LLM observability, example data sources) into a Kubernetes cluster via the umbrella Helm chart plus dev peripherals. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
 
 ```bash
-cp dev_env/.env.example dev_env/.env   # Set your Kubernetes context
-cd dev_env && ./install.sh             # ~5-10 min first run
+cp helm-charts/.env.example helm-charts/.env       # Set your Kubernetes context
+./helm-charts/bin/install.sh --profile dev          # ~5-10 min first run
 ```
 
-> Using Claude Code? Run `/dev-env install` for guided setup.
+> Using Claude Code? Run `/k8s-deploy install` for guided setup.
 
 After install, verify all services are reachable:
 
 ```bash
-./dev_env/health-check.sh             # Verify all services respond via nginx-ingress
+./helm-charts/bin/health-check.sh                   # Verify all services respond via nginx-ingress
 ```
 
-Services are accessed via nginx-ingress endpoints — HTTP services use virtual-host routing (`http://<service>.<INGRESS_IP>.nip.io/`) and TCP services use dedicated ports on the ingress IP. See [`dev_env/README.md`](dev_env/README.md) for the full endpoint table, credentials, lock service, namespace architecture, resource budgets, and troubleshooting.
+Services are accessed via nginx-ingress endpoints — HTTP services use virtual-host routing (`http://<service>.<INGRESS_IP>.nip.io/`) and TCP services use dedicated ports on the ingress IP. See [`helm-charts/README.md`](helm-charts/README.md) for the full endpoint table, credentials, lock service, namespace architecture, resource budgets, and troubleshooting.
 
 #### Uninstall
 
 ```bash
-cd dev_env && ./uninstall.sh
+./helm-charts/bin/uninstall.sh --profile dev
 ```
 
 ### Running DataSpoke
 
 ```bash
-uv sync                                  # Install dependencies
-./dev_env/dataspoke-test-mode.sh         # Build image, deploy API in-cluster via Helm
-./dev_env/dataspoke-test-mode.sh --stop  # Scale down in-cluster API
+uv sync                                                                # Install dependencies
+./helm-charts/bin/install.sh --profile dev --components api            # Rebuild + redeploy the API
+kubectl scale deployment/dataspoke-api --replicas=0 \
+  -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"                           # Scale down in-cluster API
 ```
 
 The API is accessible via nginx-ingress at `http://app.<INGRESS_IP>.nip.io/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
@@ -124,7 +125,7 @@ Fork this repository and adapt:
 
 1. Revise `spec/MANIFESTO_*.md` -- redefine user groups, features, and product identity
 2. Run `/spec-write` -- update architecture and author feature specs
-3. Run `/dev-env install` -- bring up the local environment
+3. Run `/k8s-deploy install` -- bring up the local environment
 4. Use the implementation workflow above
 
 ### Key Specs
@@ -140,7 +141,7 @@ Fork this repository and adapt:
 | [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, hooks |
 | [spec/AI_PRAUTO.md](spec/AI_PRAUTO.md) | PRauto autonomous PR worker: lifecycle labels, heartbeat, phase state machine |
 | [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |
-| [spec/feature/](spec/feature/) | Feature specs (BACKEND, BACKEND_LLM, BACKEND_SCHEMA, VALIDATION, SECRET_RESOLUTION, FRONTEND_*, DEV_ENV, HELM_CHART) |
+| [spec/feature/](spec/feature/) | Feature specs (BACKEND, BACKEND_LLM, BACKEND_SCHEMA, VALIDATION, SECRET_RESOLUTION, FRONTEND_*, HELM_CHART) |
 
 ## License
 

@@ -53,11 +53,11 @@ async def test_uc1_passive_kafka_via_external_script(
       7. Cross-dataset overview includes passive Kafka URN
       8. Cleanup: delete DataSpoke conf (reset-seed handles DPI cleanup in subsequent runs)
     """
-    datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+    datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
     if not datahub_gms_url:
-        pytest.skip("DATASPOKE_DATAHUB_GMS_URL not set; skipping passive Kafka test")
+        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping passive Kafka test")
 
     passive_conf_url = f"/api/v1/spoke/common/data/{_PASSIVE_KAFKA_ENCODED}/attr/ingestion/conf"
     passive_run_url = f"/api/v1/spoke/common/data/{_PASSIVE_KAFKA_ENCODED}/method/ingestion/run"

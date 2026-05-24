@@ -58,11 +58,11 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
       8. Cross-dataset overview includes passive URN
       9. Cleanup: deleteIngestionSource + delete DataSpoke conf
     """
-    datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+    datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
     if not datahub_gms_url:
-        pytest.skip("DATASPOKE_DATAHUB_GMS_URL not set; skipping passive PG test")
+        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping passive PG test")
 
     passive_conf_url = f"/api/v1/spoke/common/data/{_PASSIVE_PG_ENCODED}/attr/ingestion/conf"
     passive_run_url = f"/api/v1/spoke/common/data/{_PASSIVE_PG_ENCODED}/method/ingestion/run"

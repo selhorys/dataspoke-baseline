@@ -478,8 +478,9 @@ Airflow DAGs, and automation.
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
 
-`PATCH /internal/admin/conf` is the unattended mirror of `PATCH /admin/conf`; the dev-env install
-uses it to seed `llm_provider`/`llm_model` from `DATASPOKE_DEV_LLM_*` after the chart is installed.
+`PATCH /internal/admin/conf` is the unattended mirror of `PATCH /admin/conf`; the dev-profile
+install (`./helm-charts/bin/install.sh --profile dev`) uses it to seed `llm_provider`/`llm_model`
+from `DATASPOKE_DEV_LLM_*` after the chart is installed.
 
 ### Internal Activities (`/internal/activities`)
 

@@ -46,9 +46,9 @@ helm-charts/bin/install.sh --profile dev      # full dev stack incl. peripherals
 helm-charts/bin/install.sh --profile prod     # umbrella chart only; operator supplies values + peripherals
 ```
 
-The CLI is the same for both profiles. There is no `dev_env/` directory and no
-separate test-mode entrypoint — the API image rebuild is a first-class step of
-the install script, not a side-channel.
+The CLI is the same for both profiles. The API image rebuild is a first-class
+step of `install.sh` (`--components api` runs only the rebuild + helm-upgrade
++ rollout cycle).
 
 ---
 

@@ -5,7 +5,8 @@ Service Factories & Test Mode
 Each ``make_*()`` function returns either the real client or a stub,
 depending on ``settings.test_mode`` (``DATASPOKE_TEST_MODE`` env var).
 
-When ``test_mode`` is **True** (set by ``./dev_env/dataspoke-test-mode.sh``):
+When ``test_mode`` is **True** (set by ``api.testMode`` in
+``helm-charts/dataspoke/values-dev.yaml``):
 
 - ``make_llm()``          → ``StubLLMClient``          (canned responses)
 - ``make_vector()``       → ``StubVectorManager``       (empty searches)

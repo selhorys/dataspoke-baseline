@@ -1,5 +1,5 @@
 # Langfuse Chart — Dev Overlay
-# Applied on top of values.yaml by dev_env/langfuse/install.sh.
+# Applied on top of values.yaml by helm-charts/bin/peripherals/langfuse.sh.
 # Langfuse runs in its own namespace (langfuse-01) with bundled single-replica
 # Postgres, Redis, ClickHouse, and MinIO subcharts. No dependency on dataspoke-01.
 # Ingress host overridden at install time via --set-string.

@@ -30,12 +30,12 @@ spec/
     │                     infrastructure and user-group-specific FRONTEND
     │                     specs. Timeless reference format.
     └── <FEATURE>.md      e.g. BACKEND.md, BACKEND_SCHEMA.md,
-                          FRONTEND_BASIC/DE/DA/DG.md, DEV_ENV.md, HELM_CHART.md
+                          FRONTEND_BASIC/DE/DA/DG.md, HELM_CHART.md
 ```
 
 **Routing rules:**
 - Top-level `spec/` — project-wide documents only. Do NOT create new top-level files unless the topic affects the whole system and warrants an architectural-level document.
-- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `DEV_ENV.md`, `BACKEND.md`, `HELM_CHART.md`) and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`). The user-group framing (DE / DA / DG) is a UI / API extensibility surface only — baseline governance routes under `/spoke/dg/` are still part of the baseline product and live here. Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH_DA.md`); no separate subdirectory is required.
+- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `BACKEND.md`, `HELM_CHART.md`) and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`). The user-group framing (DE / DA / DG) is a UI / API extensibility surface only — baseline governance routes under `/spoke/dg/` are still part of the baseline product and live here. Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH_DA.md`); no separate subdirectory is required.
 
 Implementation plans and decision records are tracked via GitHub Issues and PRs, not in the spec directory.
 

@@ -363,7 +363,7 @@ async def test_uc4_evidence_reaches_producer_prompt(
         assert _TEST_URN not in result.unresolved_urns, (
             "_TEST_URN was unresolved by DataHub — check that the Imazon dummy data "
             "(example_db.catalog.title_master) is loaded. Run "
-            "`./dev_env/dataspoke-test-mode.sh` or reset-seed via "
+            "`./helm-charts/bin/install.sh --profile dev --components api` or reset-seed via "
             "tests.integration.util --reset-seed before this test."
         )
         assert captured_prompt, (

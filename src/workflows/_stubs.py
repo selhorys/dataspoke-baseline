@@ -17,8 +17,7 @@ When a new external service is introduced:
    activity endpoints need to be stubbed).
 2. Add a ``make_<service>()`` factory in ``_common.py`` with the
    ``if settings.test_mode:`` guard that imports and returns the stub.
-3. Update the stub table in ``spec/TESTING.md §Test-mode stubs`` and in
-   ``dev_env/README.md §7. Run API-wired integration tests``.
+3. Update the stub table in ``spec/TESTING.md §Test-mode stubs``.
 """
 
 from __future__ import annotations

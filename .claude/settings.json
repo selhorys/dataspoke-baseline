@@ -1,8 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bash dev_env/install.sh*)",
-      "Bash(bash dev_env/uninstall.sh*)",
+      "Bash(./helm-charts/bin/install.sh*)",
+      "Bash(./helm-charts/bin/uninstall.sh*)",
+      "Bash(./helm-charts/bin/health-check.sh*)",
+      "Bash(./helm-charts/bin/build-image.sh*)",
       "Bash(date *)",
       "Bash(docker images*)",
       "Bash(docker inspect *)",
@@ -30,7 +32,7 @@
       "Bash(env -u CLAUDECODE bash*)",
       "Bash(tail */tmp/*)",
       "Skill(datahub-api)",
-      "Skill(dev-env)",
+      "Skill(k8s-deploy)",
       "Skill(k8s-work)",
       "Skill(spec-write)",
       "Skill(prauto-check-status)",

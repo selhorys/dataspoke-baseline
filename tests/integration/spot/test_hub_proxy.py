@@ -21,7 +21,7 @@ async def test_hub_graphql_proxy(
     datahub_token. In test-mode with a valid datahub_token the GraphQL 'me' query
     must return 200 with body['data']['me']['corpUser'] present.
     A 401/403 from DataHub indicates a token forwarding problem (misconfigured
-    DATASPOKE_DATAHUB_TOKEN), which is surfaced as a test failure.
+    DATASPOKE_DEV_DATAHUB_TOKEN), which is surfaced as a test failure.
     A 502 means DataHub GMS is unreachable — infra failure.
     """
     resp = await api_client.post(
@@ -32,7 +32,7 @@ async def test_hub_graphql_proxy(
 
     # 502 means DataHub GMS is unreachable — infra must be healthy per TESTING.md §Prerequisites
     assert resp.status_code != 502, (
-        f"DataHub GMS unreachable (502) — run ./dev_env/health-check.sh and reinstall "
+        f"DataHub GMS unreachable (502) — run ./helm-charts/bin/health-check.sh and reinstall "
         f"datahub subsystem if needed. Response: {resp.text}"
     )
 
@@ -40,7 +40,7 @@ async def test_hub_graphql_proxy(
     # In test-mode with a valid datahub_token, DataHub returns 200 with GraphQL body shape.
     assert resp.status_code == 200, (
         f"Expected 200 from DataHub GraphQL proxy. "
-        f"401/403 indicates a token forwarding problem (check DATASPOKE_DATAHUB_TOKEN). "
+        f"401/403 indicates a token forwarding problem (check DATASPOKE_DEV_DATAHUB_TOKEN). "
         f"Status: {resp.status_code}, Body: {resp.text}"
     )
 
@@ -67,7 +67,7 @@ async def test_hub_openapi_proxy(
     /openapi/v3/entity/dataset is a lightweight probe that returns 200 when DataHub is
     healthy and the datahub_token is configured correctly.
     A 502 means DataHub GMS is unreachable — infra failure.
-    A 401/403 indicates a token forwarding problem (misconfigured DATASPOKE_DATAHUB_TOKEN).
+    A 401/403 indicates a token forwarding problem (misconfigured DATASPOKE_DEV_DATAHUB_TOKEN).
     """
     # Use the DataHub v3 entity list endpoint — publicly accessible via the REST OpenAPI surface
     resp = await api_client.get(
@@ -78,7 +78,7 @@ async def test_hub_openapi_proxy(
 
     # 502 means DataHub GMS is unreachable — infra must be healthy per TESTING.md §Prerequisites
     assert resp.status_code != 502, (
-        f"DataHub GMS unreachable (502) — run ./dev_env/health-check.sh. "
+        f"DataHub GMS unreachable (502) — run ./helm-charts/bin/health-check.sh. "
         f"Response: {resp.text}"
     )
 
@@ -86,6 +86,6 @@ async def test_hub_openapi_proxy(
     # In test-mode with a valid datahub_token, this endpoint must return 200.
     assert resp.status_code == 200, (
         f"Expected 200 from DataHub REST OpenAPI proxy at /openapi/v3/entity/dataset. "
-        f"401/403 indicates a token forwarding problem (check DATASPOKE_DATAHUB_TOKEN). "
+        f"401/403 indicates a token forwarding problem (check DATASPOKE_DEV_DATAHUB_TOKEN). "
         f"Status: {resp.status_code}, Body: {resp.text[:200]}"
     )

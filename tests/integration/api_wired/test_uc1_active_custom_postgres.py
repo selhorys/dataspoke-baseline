@@ -250,11 +250,11 @@ async def test_uc1_active_custom_postgres(
         # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed union fix.
         # spec: BACKEND.md §Active run pipeline lines 246-257 — a non-dry-run completing
         # with INGESTION.COMPLETE must have emitted both aspects in full.
-        datahub_gms_url = os.environ.get("DATASPOKE_DATAHUB_GMS_URL", "")
-        datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+        datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
+        datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
         if not datahub_gms_url:
-            pytest.skip("DATASPOKE_DATAHUB_GMS_URL not set; skipping aspect verification")
+            pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping aspect verification")
 
         gms_headers: dict[str, str] = {}
         if datahub_token:

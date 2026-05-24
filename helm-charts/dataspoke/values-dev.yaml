@@ -1,6 +1,6 @@
 # DataSpoke Umbrella Chart — Dev Overlay
 # Infrastructure only. Application subcharts disabled (run on the host).
-# Used by: dev_env/dataspoke-infra/install.sh
+# Used by: helm-charts/bin/install.sh --profile dev
 
 # ---------------------------------------------------------------------------
 # Global — Bitnami subchart compatibility (see values.yaml for rationale)
@@ -20,7 +20,7 @@ api:
   enabled: true
   replicaCount: 1
   image:
-    # repository + tag passed via --set from .env (DATASPOKE_DEV_IMAGE_REGISTRY)
+    # repository + tag passed via --set from .env (DATASPOKE_KUBE_IMAGE_REGISTRY)
     pullPolicy: Always
   testMode: true
   testLlmReal: false
@@ -125,8 +125,8 @@ airflow:
 
   # Airflow 3.1.8 on Python 3.13. DAGs are baked into the image; the
   # repository + tag are overridden via --set at install time
-  # (dev_env/dataspoke-infra/install.sh) to point at the dev Artifact
-  # Registry image built by dev_env/dataspoke-airflow/build.sh.
+  # (helm-charts/bin/install.sh) to point at the dev Artifact
+  # Registry image built by helm-charts/bin/build-image.sh airflow.
   airflowVersion: "3.1.8"
   defaultAirflowTag: "3.1.8-python3.13"
   images:

@@ -67,7 +67,7 @@ wc -l <files> | sort -rn
 
 **Tier 4 — READMEs** (target: quick-start + reference, pointers to specs):
 - `README.md` (root)
-- `dev_env/README.md`
+- `helm-charts/README.md`
 - `.prauto/README.md`
 - `src/api/README.md`
 - Any other `README.md` files found via glob
@@ -143,8 +143,8 @@ When the same content appears in multiple places, use this priority to decide wh
 | Service responsibilities | `spec/feature/BACKEND.md` | Brief summary (1-2 lines) |
 | Directory trees | Nowhere (read the filesystem) | Remove entirely |
 | Test execution groups | `spec/TESTING.md` + `CLAUDE.md` summary | Pointer to TESTING.md |
-| Port-forward tables | `dev_env/README.md` | Brief list in root README |
-| Lock API reference | `dev_env/README.md` | Pointer |
+| Ingress endpoints table | `helm-charts/README.md` | Brief list in root README |
+| Lock API reference | `helm-charts/README.md` | Pointer |
 | Dummy data details | `spec/TESTING.md` §Test Data | Pointer |
 | Prauto directory structure | Nowhere (read `.prauto/`) | Brief prose description |
 | Helm chart config | `spec/feature/HELM_CHART.md` | Pointer |

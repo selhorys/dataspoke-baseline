@@ -11,27 +11,28 @@ Your job is to write Helm charts, Dockerfiles, and dev environment scripts.
 
 ## Before writing anything
 
-1. Read the **deployment specs**:
-   - `spec/feature/HELM_CHART.md` — umbrella chart structure, production vs dev profiles, resource budgets, secrets management
-   - `spec/feature/DEV_ENV.md` — dev environment architecture, component groups, ingress topology, configuration tiers
-2. Scan `helm-charts/` and `dev_env/` with Glob to match current structure.
+1. Read `spec/feature/HELM_CHART.md` — the binding contract for the deployment subsystem: profiles, repository layout, CLI contracts, env-var tiers, resource budgets, secrets management.
+2. Scan `helm-charts/` with Glob to match current structure.
 
 ## Directory layout
 
 ```
-helm-charts/dataspoke/         # Umbrella chart (values.yaml, values-dev.yaml)
-├── templates/                 # ConfigMap, Secrets, _helpers.tpl, api-ingress.yaml
-├── subcharts/                 # api/, frontend/, workers/
-└── charts/                    # Packaged deps (PostgreSQL, Redis, Airflow)
+helm-charts/
+├── README.md                  # Operational guide for bin/ scripts
+├── .env.example                # 3-section env file (app runtime / kube deployment / dev-only)
+├── bin/
+│   ├── install.sh              # --profile {dev|prod} [--components …] [--skip-build] …
+│   ├── uninstall.sh            # --profile {dev|prod} [--yes] [--delete-namespaces]
+│   ├── health-check.sh
+│   ├── build-image.sh          # api | airflow | postgres
+│   ├── lib/helpers.sh          # info/warn/error/step/upsert_env_var/wait_for_pod
+│   ├── peripherals/            # nginx-ingress, datahub, langfuse, dummy-data, dev-lock (dev only)
+│   └── post-install/           # seed-peripheral-config, seed-runtime-config (dev only)
+├── dataspoke/                  # Umbrella chart (values.yaml + values-dev.yaml + templates/)
+├── langfuse/                   # Sibling chart for the Langfuse observability subsystem
+└── peripherals/                # Dev-only values + manifests (datahub, nginx-ingress, dummy-data, dev-lock)
 
-docker-images/                 # One Dockerfile per service
-dev_env/                       # Install/uninstall scripts, .env
-├── nginx-ingress/             # nginx-ingress controller install/uninstall, values-dev.yaml
-├── datahub/                   # DataHub install/uninstall, gms-ingress.yaml
-├── dataspoke-infra/           # DataSpoke infra install/uninstall
-├── dataspoke-example/         # Example data install/uninstall
-├── dataspoke-lock/            # Lock service install/uninstall
-└── lib/                       # helpers.sh (info/warn/error utilities)
+docker-images/{api,airflow,postgres}/Dockerfile   # One per service
 ```
 
 ## Helm rules
@@ -51,7 +52,7 @@ dev_env/                       # Install/uninstall scripts, .env
 
 ## Dev script conventions
 
-Match `dev_env/datahub/install.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `lib/helpers.sh` and `.env`.
+Match `helm-charts/bin/peripherals/datahub.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `bin/lib/helpers.sh` and `helm-charts/.env`.
 
 ## Completion report
 

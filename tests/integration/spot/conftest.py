@@ -1,7 +1,7 @@
 """Spot integration test fixtures.
 
 All spot tests hit the in-cluster API via nginx-ingress.
-Prerequisites: `./dev_env/dataspoke-test-mode.sh --skip-build` must be running.
+Prerequisites: `./helm-charts/bin/install.sh --profile dev --components api --skip-build` must be running.
 """
 
 import os
@@ -14,7 +14,7 @@ import pytest_asyncio
 
 def _ingress_url() -> str:
     """Return the ingress base URL, resolved at fixture time."""
-    domain = os.environ["DATASPOKE_DEV_INGRESS_DOMAIN"]
+    domain = os.environ["DATASPOKE_KUBE_INGRESS_DOMAIN"]
     return f"http://app.{domain}"
 
 
@@ -33,11 +33,11 @@ def require_server() -> None:
     if test_mode.lower() != "true":
         pytest.fail(
             "DATASPOKE_TEST_MODE is not set to 'true'. "
-            "Run: set -a && source dev_env/.env && set +a && "
+            "Run: set -a && source helm-charts/.env && set +a && "
             "DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/ "
-            "(set -a is required — dev_env/.env has no `export` prefixes, so a bare "
+            "(set -a is required — helm-charts/.env has no `export` prefixes, so a bare "
             "`source` does not propagate vars to the pytest subprocess) "
-            "or start the server with: ./dev_env/dataspoke-test-mode.sh --skip-build"
+            "or start the server with: ./helm-charts/bin/install.sh --profile dev --components api --skip-build"
         )
 
     base_url = _ingress_url()
@@ -48,12 +48,12 @@ def require_server() -> None:
         if resp.status_code != 200:
             pytest.fail(
                 f"GET /health returned {resp.status_code}. "
-                "Server not running? Try: ./dev_env/dataspoke-test-mode.sh --skip-build"
+                "Server not running? Try: ./helm-charts/bin/install.sh --profile dev --components api --skip-build"
             )
     except httpx.ConnectError as exc:
         pytest.fail(
             f"Cannot connect to API at {base_url}: {exc}. "
-            "Try: ./dev_env/dataspoke-test-mode.sh --skip-build"
+            "Try: ./helm-charts/bin/install.sh --profile dev --components api --skip-build"
         )
 
     # Obtain admin token and verify DAGs
@@ -77,7 +77,7 @@ def require_server() -> None:
         if verify_resp.status_code != 200:
             pytest.fail(
                 f"POST /admin/dags/verify returned {verify_resp.status_code}: {verify_resp.text}. "
-                "DAGs may not be registered. Try: ./dev_env/dataspoke-test-mode.sh --skip-build"
+                "DAGs may not be registered. Try: ./helm-charts/bin/install.sh --profile dev --components api --skip-build"
             )
     except Exception as exc:
         pytest.fail(f"POST /admin/dags/verify failed: {exc}")

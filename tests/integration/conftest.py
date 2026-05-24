@@ -1,7 +1,7 @@
 """Shared fixtures for integration tests against the dev-env infrastructure.
 
 Services are accessed via nginx-ingress (HTTP) or TCP passthrough ports.
-All endpoint values are read from dev_env/.env, which is populated by the
+All endpoint values are read from helm-charts/.env, which is populated by the
 install scripts.  Tier B TCP defaults:
 - PostgreSQL (dataspoke)  : <INGRESS_IP>:9201
 - Redis                   : <INGRESS_IP>:9202
@@ -42,14 +42,14 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 def _load_dotenv() -> None:
-    """Load dev_env/.env into os.environ (without overwriting existing vars).
+    """Load helm-charts/.env into os.environ (without overwriting existing vars).
 
     Searches from the project root (two levels above this file) upward, which
-    handles git worktrees where dev_env/.env lives in the main worktree.
+    handles git worktrees where helm-charts/.env lives in the main worktree.
     """
     start = Path(__file__).resolve().parents[2]
     for candidate in (start, *start.parents):
-        env_path = candidate / "dev_env" / ".env"
+        env_path = candidate / "helm-charts" / ".env"
         if env_path.is_file():
             break
     else:
@@ -69,16 +69,16 @@ _load_dotenv()
 
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
-_datahub_gms_url = os.environ["DATASPOKE_DATAHUB_GMS_URL"]
-_datahub_frontend_url = os.environ.get("DATASPOKE_DATAHUB_FRONTEND_URL", "")
-_datahub_token = os.environ.get("DATASPOKE_DATAHUB_TOKEN", "")
+_datahub_gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]
+_datahub_frontend_url = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "")
+_datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
 _redis_host = os.environ["DATASPOKE_REDIS_HOST"]
 _redis_port = int(os.environ["DATASPOKE_REDIS_PORT"])
 _redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
 
 _kafka_brokers = os.environ["DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS"]
-_datahub_kafka_brokers = os.environ["DATASPOKE_DATAHUB_KAFKA_BROKERS"]
+_datahub_kafka_brokers = os.environ["DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS"]
 
 _airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")
 _airflow_user = os.environ.get("DATASPOKE_AIRFLOW_USER", "")
@@ -257,7 +257,7 @@ def acquire_lock() -> None:
         yield  # type: ignore[misc]
         return
 
-    _ingress_ip = os.environ["DATASPOKE_DEV_INGRESS_IP"]
+    _ingress_ip = os.environ["DATASPOKE_KUBE_INGRESS_IP"]
     lock_url = os.environ.get("DATASPOKE_LOCK_URL", f"http://{_ingress_ip}:9221")
     try:
         resp = httpx.post(

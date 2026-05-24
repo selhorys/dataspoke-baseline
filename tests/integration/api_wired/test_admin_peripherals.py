@@ -98,7 +98,7 @@ def _db_delete_peripheral_rows() -> None:
 
 def _k8s_delete_peripheral_secrets() -> None:
     """Delete the two K8s Secrets used by peripherals, ignoring errors if absent."""
-    namespace = os.environ.get("DATASPOKE_DEV_KUBE_NAMESPACE", "dataspoke-01")
+    namespace = os.environ.get("DATASPOKE_KUBE_DATASPOKE_NAMESPACE", "dataspoke-01")
     for secret_name in ("dataspoke-datahub-secret", "dataspoke-langfuse-secret"):
         subprocess.run(
             ["kubectl", "delete", "secret", secret_name, "-n", namespace, "--ignore-not-found"],
@@ -133,7 +133,7 @@ def _restore_dev_baseline_after_module() -> Iterator[None]:
     sees no configured DataHub peripheral.
     """
     yield
-    base = os.environ.get("DATASPOKE_DEV_INGRESS_DOMAIN")
+    base = os.environ.get("DATASPOKE_KUBE_INGRESS_DOMAIN")
     token = os.environ.get("DATASPOKE_INTERNAL_TOKEN", "")
     dh_gms = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
     dh_kafka = os.environ.get("DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS", "")

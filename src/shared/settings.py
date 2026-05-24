@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     # in ``src/workflows/_common.py`` return stub implementations instead of
     # real clients for LLM, pgvector, Redis (cache), and Notification.  DataHub
     # and PostgreSQL always use real connections regardless of this flag.
-    # Enable via ``./dev_env/dataspoke-test-mode.sh`` or by exporting
-    # ``DATASPOKE_TEST_MODE=true`` before starting the server.
+    # Set via the umbrella chart's ``api.testMode`` value (true in
+    # values-dev.yaml, false in values.yaml).
     # See ``src/workflows/_stubs.py`` for stub behavior details.
     test_mode: bool = False
     test_llm_real: bool = False

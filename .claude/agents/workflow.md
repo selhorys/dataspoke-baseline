@@ -28,7 +28,7 @@ src/workflows/
 
 ## Airflow conventions
 
-- **DAG files**: all DAGs live in `src/workflows/dags/` as self-contained Python files (no `src/` imports — baked into a custom Airflow 3.1.8 image built by `dev_env/dataspoke-airflow/build.sh`)
+- **DAG files**: all DAGs live in `src/workflows/dags/` as self-contained Python files (no `src/` imports — baked into a custom Airflow 3.1.8 image built by `helm-charts/bin/build-image.sh airflow`)
 - **Tasks**: use `HttpOperator` from `airflow.providers.http.operators.http` to call internal activity endpoints at `/internal/activities/{domain}/*`
 - **HTTP connection**: use `http_conn_id="dataspoke_api"` (pre-configured Airflow connection pointing to `http://dataspoke-api:8002`)
 - **DAG inputs**: passed via `dag_run.conf` (accessed as `{{ dag_run.conf.get('key', 'default') }}` in Jinja templates)

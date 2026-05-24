@@ -21,14 +21,14 @@ The DataSpoke project develops two core artifacts (from `spec/MANIFESTO_en.md` �
    features (Ingestion Control, Validation, Ontology Generation, Metadata Generation,
    Governance).
 2. **Productized Scaffold** — a framework for custom development, comprising specs, a
-   development environment (`dev_env/`, helm-charts/), and coding-agent utilities (`.claude/`).
+   deployment subsystem (`helm-charts/`), and coding-agent utilities (`.claude/`).
 
 This document covers the **AI Scaffold** subsection of the Productized Scaffold — the Claude
 Code configurations in `.claude/` that make AI-assisted development immediately productive from
 the first session. A well-structured scaffold removes the bootstrapping cost of AI coding: the
 agent knows the project layout, naming conventions, spec hierarchy, and operational environment
-before writing a single line of code. The Development Scaffold (Kubernetes-based dev environment
-and Helm charts) is specified separately in `spec/feature/DEV_ENV.md` and
+before writing a single line of code. The Development Scaffold (Kubernetes-based deployment
+subsystem covering both dev and prod profiles) is specified separately in
 `spec/feature/HELM_CHART.md`.
 
 ---
@@ -48,7 +48,7 @@ The scaffold works alongside these structural elements:
 |---------|------|
 | `CLAUDE.md` | Root-level agent instructions: project context, spec hierarchy, implementation workflow |
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
-| `dev_env/` | Kubernetes dev environment scripts. See `spec/feature/DEV_ENV.md` |
+| `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals. See `spec/feature/HELM_CHART.md` |
 | `ref/` | External source code for AI reference (DataHub v1.5.0.2, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
 | `helm-charts/` | DataSpoke umbrella Helm chart with subcharts. See `spec/feature/HELM_CHART.md` |
@@ -63,14 +63,14 @@ They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explic
 
 | Skill | Purpose |
 |-------|---------|
-| `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `dev_env/.env` |
+| `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `helm-charts/.env` |
 | `spec-write` | Author timeless specification documents in `spec/` (top-level or `spec/feature/<FEATURE>.md`) following the project hierarchy, naming conventions, and templates. Not for implementation plans |
 | `datahub-api` | Reference and coding guide for DataHub integration in backend development. Covers entities, aspects, lineage, URNs, ingestion/emission, GraphQL, REST, and the `acryl-datahub` SDK. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
 | `prauto-run-heartbeat` | Monitored test-run of `.prauto/heartbeat.sh`; watches state files, reads logs, diagnoses + fixes script errors across up to 3 retry cycles |
-| `dev-env` | Dev environment management: configure, install (full or partial), reinstall (selective component reset with PVC + DB cleanup), uninstall (full or partial), health-check, and run-dataspoke-test-mode (build + deploy in-cluster API via Helm). Services are accessed via nginx-ingress — no port-forwarding. Accepts action + optional component/options as arguments |
+| `k8s-deploy` | Deployment management for both dev and prod profiles: configure, install (full or partial), reinstall (selective component reset with PVC + DB cleanup), uninstall (full or partial), health-check, and run-api (rebuild + redeploy the in-cluster API via `--components api`). Drives `./helm-charts/bin/install.sh --profile {dev\|prod}` and the related scripts. Services are accessed via nginx-ingress — no port-forwarding. Accepts action + optional component/options as arguments |
 | `ref-setup` | Download AI reference materials (external source code for AI assistant reference) with interactive selection; monitor in background until complete |
-| `spec-sync-with-impl` | Bidirectional spec ↔ impl sync. Accepts preset scopes (prauto, ai-scaffold, dev-env, helm-charts, api, ref, backend, frontend) or a free-form description of any area; resolves a candidate file list with the user, audits gaps, asks how to resolve each gap (spec→impl, impl→spec, or leave-as-flagged), then applies the chosen edits |
+| `spec-sync-with-impl` | Bidirectional spec ↔ impl sync. Accepts preset scopes (prauto, ai-scaffold, k8s-deploy, helm-charts, api, ref, backend, frontend) or a free-form description of any area; resolves a candidate file list with the user, audits gaps, asks how to resolve each gap (spec→impl, impl→spec, or leave-as-flagged), then applies the chosen edits |
 | `spec-harmonize` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
 | `spec-reduce` | Audit and trim bloated specs, scaffold docs, and READMEs. Removes implementation details, eliminates cross-tier duplication, enforces abstraction-level discipline |
 | `spec-to-bulk-issue` | Analyze specs to find unimplemented components, write ordered issue tickets in `issues/`, revise existing issues, and optionally register them to GitHub with `prauto:ready` label |
@@ -162,7 +162,7 @@ confirmation, never destroy**.
 | Read-only | Auto-allowed | `kubectl get`, `helm list`, `git log`, `docker ps` |
 | Reference docs | Auto-allowed | `WebSearch`, `WebFetch` to framework/tool documentation domains |
 | Skills | Auto-allowed / prompt | Most skills auto-allowed; `prauto-run-heartbeat`, `ref-setup`, and `spec-to-bulk-issue` require user confirmation (side effects) |
-| Dev env scripts | Auto-allowed | `bash dev_env/install.sh`, `bash dev_env/uninstall.sh` |
+| Deployment scripts | Auto-allowed | `./helm-charts/bin/install.sh`, `./helm-charts/bin/uninstall.sh`, `./helm-charts/bin/health-check.sh`, `./helm-charts/bin/build-image.sh` |
 | Mutating | Prompt for confirmation | `kubectl apply`, `helm install`, `helm upgrade` |
 | Destructive | Always blocked | `kubectl delete namespace`, `rm -rf`, `sudo` |
 
@@ -195,7 +195,7 @@ requirements.
 | Tech stack, system components | `spec/ARCHITECTURE.md` |
 | Baseline feature specs | `spec/feature/` |
 | API routers and backend services | `src/api/`, `src/backend/` |
-| Cluster and namespace config | `dev_env/.env` |
+| Cluster and namespace config | `helm-charts/.env` |
 | Org-specific agent conventions | `.claude/agents/` |
 
 ### Recommended sequence
@@ -203,7 +203,7 @@ requirements.
 1. **Revise the manifesto** — adjust or add features; decide which user-group routes
    (`/spoke/de/`, `/spoke/da/`, `/spoke/dg/`) host organization-specific extensions
 2. **Run `/spec-write`** — update architectural specs, then baseline and spoke feature specs
-3. **Run `/dev-env install`** — bring up the DataHub environment
+3. **Run `/k8s-deploy install`** — bring up the DataHub environment
 4. **Implement features** using the plan → approve → generate → evaluate workflow:
    Plan mode → approve → `backend` → `reviewer` → `workflow` → `reviewer` → `test` →
    `test-reviewer` → `frontend` → `reviewer` → `k8s-helm`
