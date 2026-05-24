@@ -603,7 +603,7 @@ async def test_patch_conf_llm_api_key_out_of_cluster_returns_503(client) -> None
     """PATCH /admin/conf with llm_api_key when out-of-cluster returns 503.
 
     set_llm_api_key raises SecretResolverUnavailable when the Kubernetes API
-    is not available (host-mode / out-of-cluster).  The router maps this to
+    is not available (k8s client init failure).  The router maps this to
     StorageUnavailableError → HTTP 503.
 
     spec: BACKEND_LLM.md §LLM API key — SecretResolverUnavailable → 503.

@@ -206,9 +206,8 @@ auth.secret_ref ─▶ build "k8s-secret/<own-ns>/<name>/<key>"
                        cache + return data[key] (base64-decoded)
 ```
 
-The resolver loads in-cluster ServiceAccount config at first use. If that fails (host-mode
-dev — `KUBERNETES_SERVICE_HOST` unset), every subsequent call raises
-`SecretResolverUnavailable` — no silent fallback.
+The resolver loads in-cluster ServiceAccount config at first use. If that load fails,
+every subsequent call raises `SecretResolverUnavailable` — no silent fallback.
 
 ### Cache
 
@@ -226,7 +225,7 @@ many distinct refs cannot grow the cache without limit.
 | `SecretRefNameForbidden` | `secret_ref.name` does not start with `dataspoke-source-cred-` | 422 INVALID_PARAMETER at PUT/PATCH |
 | `SecretCollision` | Vault path: target `(name, key)` already exists and `force_overwrite=false` | 422 INVALID_PARAMETER at PUT/PATCH |
 | `SecretRefNotFound` | Reference-path verify failed; or run-time: Secret/key disappeared between PUT and run | 422 at PUT/PATCH; `IngestionResult(errors=[…])` → `status="error"` at run-time |
-| `SecretResolverUnavailable` | In-cluster k8s config not loadable (host-mode dev) | 503 at PUT/PATCH (cannot verify or vault); `IngestionResult(errors=[…])` at run-time |
+| `SecretResolverUnavailable` | In-cluster k8s config not loadable | 503 at PUT/PATCH (cannot verify or vault); `IngestionResult(errors=[…])` at run-time |
 | RBAC `Forbidden` (403) from k8s API | API ServiceAccount lacks the required verb | Wrapped to match the failing operation (`SecretRefNotFound` for read; 503 for write) |
 | K8s API transient errors (5xx, network) | Cluster instability | 503 at PUT/PATCH; `IngestionResult(errors=[…])` at run-time |
 
@@ -258,17 +257,6 @@ deployments that disable ingestion entirely.
 
 There is no `Values.api.secretReader.namespaces[]` — single-namespace policy is
 enforced.
-
-### Host-mode behavior
-
-`spec/feature/DEV_ENV.md` describes a host-mode developer flow (`uv run -m src.cli`) where
-the API runs outside the cluster. In that mode the in-cluster k8s config is not
-available, and any PUT/PATCH that touches `secret_ref` returns 503
-`SecretResolverUnavailable`. Tests that need to exercise ingestion must run against the
-in-cluster API via `dataspoke-test-mode.sh`.
-
-This is acceptable because host mode is documented as a reduced-feature surface for
-non-Airflow-callback iteration; secret resolution is intentionally out of scope there.
 
 ### Backwards compatibility
 

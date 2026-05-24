@@ -1,6 +1,6 @@
 """Unit tests for src/backend/admin/llm_secret.py.
 
-Covers the LLM API key accessor — get, set, cache, fallback, and security invariants.
+Covers the LLM API key accessor — get, set, cache, and security invariants.
 All Kubernetes API calls are mocked; no cluster is needed.
 
 Concerns covered:
@@ -12,21 +12,19 @@ Concerns covered:
 5.  get — 403 fail-safe: RBAC denied → returns "", does NOT cache, re-reads on next call.
 6.  get — other k8s error (500): raises SecretResolverUnavailable.
 7.  get — secret exists but key absent (empty data dict or data=None) → returns "".
-8.  get — out-of-cluster fallback: _require_client raises → returns settings.llm_api_key
-    without caching (subsequent in-cluster call still reads the secret).
-9.  set — create path: secret missing (404 on read) → create_namespaced_secret called
+8.  set — create path: secret missing (404 on read) → create_namespaced_secret called
     with base64-encoded value; cache invalidated.
-10. set — patch path: secret exists → patch_namespaced_secret called with correct body;
+9.  set — patch path: secret exists → patch_namespaced_secret called with correct body;
     other keys untouched; cache invalidated.
-11. set — clears with "": set_llm_api_key("") writes base64(""); subsequent get returns "".
-12. set — out-of-cluster raises SecretResolverUnavailable.
-13. set — invalidates cache: prime cache via get, then set, then next get re-reads.
-14. llm_api_key_is_set: True when non-empty, False when "".
-15. Plaintext never logged: 403 warning log record contains no key value.
+10. set — clears with "": set_llm_api_key("") writes base64(""); subsequent get returns "".
+11. set — k8s client init failure raises SecretResolverUnavailable.
+12. set — invalidates cache: prime cache via get, then set, then next get re-reads.
+13. llm_api_key_is_set: True when non-empty, False when "".
+14. Plaintext never logged: 403 warning log record contains no key value.
 
 Spec traceability:
 - spec/feature/BACKEND_LLM.md §LLM API key — base64 decode, TTL cache, 403 fail-safe,
-  404 as unset, out-of-cluster fallback, create-or-patch write, plaintext never logged.
+  404 as unset, create-or-patch write, plaintext never logged.
 """
 
 from __future__ import annotations
@@ -312,58 +310,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
     assert result == "", "Empty data dict must be treated as unset (returns '')"
 
 
-# ── 8. get — out-of-cluster fallback ─────────────────────────────────────────
-
-
-def test_get_falls_back_to_settings_when_out_of_cluster(monkeypatch) -> None:
-    """When _require_client raises SecretResolverUnavailable, returns settings.llm_api_key.
-
-    spec: BACKEND_LLM.md §LLM API key — out-of-cluster fallback to env var.
-    """
-    monkeypatch.setattr("src.backend.admin.llm_secret.settings.llm_api_key", "env-fallback-key")
-
-    with patch(
-        "src.backend.admin.llm_secret._require_client",
-        side_effect=SecretResolverUnavailable("out-of-cluster"),
-    ):
-        result = get_llm_api_key()
-
-    assert result == "env-fallback-key", (
-        "Out-of-cluster fallback must return settings.llm_api_key sentinel"
-    )
-
-
-def test_get_out_of_cluster_fallback_does_not_cache(monkeypatch) -> None:
-    """Out-of-cluster fallback is NOT cached — a subsequent in-cluster call re-reads.
-
-    spec: BACKEND_LLM.md §LLM API key — fallback does not cache (host-mode transient).
-    """
-    monkeypatch.setattr("src.backend.admin.llm_secret.settings.llm_api_key", "env-fallback-key")
-
-    call_count = 0
-
-    def _require_side_effect():
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise SecretResolverUnavailable("out-of-cluster")
-        # Second call: succeed with an in-cluster client.
-        secret = _fake_secret("sk-incluster")
-        core = _make_core(read_return=secret)
-        return core, _NAMESPACE
-
-    with patch("src.backend.admin.llm_secret._require_client", side_effect=_require_side_effect):
-        first = get_llm_api_key()   # fallback → "env-fallback-key", not cached
-        second = get_llm_api_key()  # now in-cluster → reads Secret
-
-    assert first == "env-fallback-key"
-    assert second == "sk-incluster", (
-        "After an out-of-cluster call the next in-cluster call must read the Secret "
-        "because the fallback result was not cached"
-    )
-
-
-# ── 9. set — create path (secret missing) ────────────────────────────────────
+# ── 8. set — create path (secret missing) ────────────────────────────────────
 
 
 def test_set_create_path_calls_create_with_base64_value() -> None:
@@ -425,7 +372,7 @@ def test_set_create_path_invalidates_cache() -> None:
     )
 
 
-# ── 10. set — patch path (secret exists) ─────────────────────────────────────
+# ── 9. set — patch path (secret exists) ──────────────────────────────────────
 
 
 def test_set_patch_path_calls_patch_with_correct_body() -> None:
@@ -477,7 +424,7 @@ def test_set_patch_path_does_not_touch_other_keys() -> None:
     )
 
 
-# ── 11. set — clears with "" ──────────────────────────────────────────────────
+# ── 10. set — clears with "" ─────────────────────────────────────────────────
 
 
 def test_set_empty_string_clears_key() -> None:
@@ -511,13 +458,13 @@ def test_set_empty_string_clears_key() -> None:
     assert result == "", "After clearing, get must return ''"
 
 
-# ── 12. set — out-of-cluster raises SecretResolverUnavailable ────────────────
+# ── 11. set — k8s client init failure raises SecretResolverUnavailable ───────
 
 
 def test_set_out_of_cluster_raises() -> None:
-    """set_llm_api_key propagates SecretResolverUnavailable when out-of-cluster.
+    """set_llm_api_key propagates SecretResolverUnavailable on k8s client init failure.
 
-    spec: BACKEND_LLM.md §LLM API key — PATCH cannot persist without the cluster.
+    spec: BACKEND_LLM.md §LLM API key — PATCH cannot persist when k8s client is unavailable.
     """
     with patch(
         "src.backend.admin.llm_secret._require_client",
@@ -527,7 +474,7 @@ def test_set_out_of_cluster_raises() -> None:
             set_llm_api_key("sk-any")
 
 
-# ── 13. set — invalidates cache ───────────────────────────────────────────────
+# ── 12. set — invalidates cache ───────────────────────────────────────────────
 
 
 def test_set_invalidates_cache_so_next_get_re_reads() -> None:
@@ -561,7 +508,7 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     assert result == "sk-v2"
 
 
-# ── 14. llm_api_key_is_set ────────────────────────────────────────────────────
+# ── 13. llm_api_key_is_set ───────────────────────────────────────────────────
 
 
 def test_llm_api_key_is_set_true_when_secret_has_key() -> None:
@@ -619,7 +566,7 @@ def test_llm_api_key_is_set_false_when_key_absent_from_data() -> None:
     )
 
 
-# ── 15. Plaintext never logged ────────────────────────────────────────────────
+# ── 14. Plaintext never logged ───────────────────────────────────────────────
 
 
 def test_403_warning_emitted_and_does_not_log_key_sentinel(caplog) -> None:

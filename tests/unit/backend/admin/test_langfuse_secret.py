@@ -1,6 +1,6 @@
 """Unit tests for src/backend/admin/langfuse_secret.py.
 
-Covers the Langfuse secret key accessor — get, set, cache, fallback, and security invariants.
+Covers the Langfuse secret key accessor — get, set, cache, and security invariants.
 All Kubernetes API calls are mocked; no cluster is needed.
 
 Concerns covered:
@@ -12,15 +12,13 @@ Concerns covered:
 5.  get — 403 fail-safe: RBAC denied → returns "", does NOT cache, re-reads on next call.
 6.  get — other k8s error (500): raises SecretResolverUnavailable.
 7.  get — secret exists but key absent (empty data dict or data=None) → returns "".
-8.  get — out-of-cluster fallback: _require_client raises → returns settings.langfuse_secret_key
-    without caching (host-mode only).
-9.  set — create path: secret missing (404 on read) → create_namespaced_secret called
+8.  set — create path: secret missing (404 on read) → create_namespaced_secret called
     with base64-encoded value; cache invalidated.
-10. set — patch path: secret exists → patch_namespaced_secret called with correct body.
-11. set — out-of-cluster raises SecretResolverUnavailable.
-12. set — invalidates cache: prime cache via get, then set, then next get re-reads.
-13. langfuse_secret_key_is_set: True when non-empty, False when "".
-14. Secret name and key constants: _SECRET_NAME="dataspoke-langfuse-secret", _SECRET_KEY="secret_key".
+9.  set — patch path: secret exists → patch_namespaced_secret called with correct body.
+10. set — k8s client init failure raises SecretResolverUnavailable.
+11. set — invalidates cache: prime cache via get, then set, then next get re-reads.
+12. langfuse_secret_key_is_set: True when non-empty, False when "".
+13. Secret name and key constants: _SECRET_NAME="dataspoke-langfuse-secret", _SECRET_KEY="secret_key".
 
 Spec traceability:
 - plan/scalable-beaming-hamster.md §Backend — langfuse_secret mirrors llm_secret pattern.
@@ -105,7 +103,7 @@ def flush_cache():
     invalidate_langfuse_secret_key_cache()
 
 
-# ── 14. Secret name/key constants ────────────────────────────────────────────
+# ── 13. Secret name/key constants ────────────────────────────────────────────
 
 
 def test_secret_name_constant() -> None:
@@ -317,56 +315,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
     assert result == ""
 
 
-# ── 8. get — out-of-cluster fallback ─────────────────────────────────────────
-
-
-def test_get_falls_back_to_settings_when_out_of_cluster(monkeypatch) -> None:
-    """When _require_client raises SecretResolverUnavailable, returns settings.langfuse_secret_key.
-
-    spec: plan/scalable-beaming-hamster.md §Backend — out-of-cluster fallback to env var (host-mode).
-    """
-    monkeypatch.setattr(
-        "src.backend.admin.langfuse_secret.settings.langfuse_secret_key", "env-lf-secret"
-    )
-
-    with patch(
-        "src.backend.admin.langfuse_secret._require_client",
-        side_effect=SecretResolverUnavailable("out-of-cluster"),
-    ):
-        result = get_langfuse_secret_key()
-
-    assert result == "env-lf-secret"
-
-
-def test_get_out_of_cluster_fallback_does_not_cache(monkeypatch) -> None:
-    """Out-of-cluster fallback is NOT cached.
-
-    spec: plan/scalable-beaming-hamster.md §Backend — fallback does not cache (host-mode transient).
-    """
-    monkeypatch.setattr(
-        "src.backend.admin.langfuse_secret.settings.langfuse_secret_key", "env-lf-secret"
-    )
-
-    call_count = 0
-
-    def _require_side_effect():
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise SecretResolverUnavailable("out-of-cluster")
-        secret = _fake_secret("incluster-lf-key")
-        core = _make_core(read_return=secret)
-        return core, _NAMESPACE
-
-    with patch("src.backend.admin.langfuse_secret._require_client", side_effect=_require_side_effect):
-        first = get_langfuse_secret_key()
-        second = get_langfuse_secret_key()
-
-    assert first == "env-lf-secret"
-    assert second == "incluster-lf-key"
-
-
-# ── 9. set — create path ─────────────────────────────────────────────────────
+# ── 8. set — create path ─────────────────────────────────────────────────────
 
 
 def test_set_create_path_calls_create_with_base64_value() -> None:
@@ -391,7 +340,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
     )
 
 
-# ── 10. set — patch path ─────────────────────────────────────────────────────
+# ── 9. set — patch path ──────────────────────────────────────────────────────
 
 
 def test_set_patch_path_calls_patch_with_correct_body() -> None:
@@ -417,13 +366,13 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
     )
 
 
-# ── 11. set — out-of-cluster raises SecretResolverUnavailable ────────────────
+# ── 10. set — k8s client init failure raises SecretResolverUnavailable ───────
 
 
 def test_set_out_of_cluster_raises() -> None:
-    """set_langfuse_secret_key propagates SecretResolverUnavailable when out-of-cluster.
+    """set_langfuse_secret_key propagates SecretResolverUnavailable on k8s client init failure.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist without the cluster.
+    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s client is unavailable.
     """
     with patch(
         "src.backend.admin.langfuse_secret._require_client",
@@ -433,7 +382,7 @@ def test_set_out_of_cluster_raises() -> None:
             set_langfuse_secret_key("any-key")
 
 
-# ── 12. set — invalidates cache ───────────────────────────────────────────────
+# ── 11. set — invalidates cache ───────────────────────────────────────────────
 
 
 def test_set_invalidates_cache_so_next_get_re_reads() -> None:
@@ -460,7 +409,7 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     assert result == "v2-key"
 
 
-# ── 13. langfuse_secret_key_is_set ────────────────────────────────────────────
+# ── 12. langfuse_secret_key_is_set ───────────────────────────────────────────
 
 
 def test_langfuse_secret_key_is_set_true_when_present() -> None:

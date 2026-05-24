@@ -79,7 +79,7 @@ uv sync                                  # Install dependencies
 ./dev_env/dataspoke-test-mode.sh --stop  # Scale down in-cluster API
 ```
 
-The API is accessible via nginx-ingress at `http://app.<INGRESS_IP>.nip.io/api/v1/`. For optional host-mode development (no Airflow callbacks): `uv run -m src.cli`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
+The API is accessible via nginx-ingress at `http://app.<INGRESS_IP>.nip.io/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
 
 ### Implementation Status
 

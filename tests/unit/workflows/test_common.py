@@ -62,7 +62,7 @@ def test_make_llm_returns_real_client_when_test_llm_real(monkeypatch) -> None:
     """
     monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
     monkeypatch.setattr("src.shared.settings.settings.test_llm_real", True)
-    # make_llm resolves the key via get_llm_api_key() (k8s Secret + host-mode fallback).
+    # make_llm resolves the key via get_llm_api_key() from the k8s Secret.
     # Patch at the source module to bypass k8s state and process-level _cache.
     monkeypatch.setattr("src.backend.admin.llm_secret.get_llm_api_key", lambda: "test-key-sentinel")
     result = make_llm()
@@ -78,7 +78,7 @@ def test_make_llm_returns_real_client_outside_test_mode(monkeypatch) -> None:
     """
     monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
     monkeypatch.setattr("src.shared.settings.settings.test_llm_real", False)
-    # make_llm resolves the key via get_llm_api_key() (k8s Secret + host-mode fallback).
+    # make_llm resolves the key via get_llm_api_key() from the k8s Secret.
     # Patch at the source module to bypass k8s state and process-level _cache.
     monkeypatch.setattr("src.backend.admin.llm_secret.get_llm_api_key", lambda: "test-key-sentinel")
     result = make_llm()

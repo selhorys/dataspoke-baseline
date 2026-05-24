@@ -68,7 +68,7 @@ Replace `<INGRESS_IP>` with the value of `DATASPOKE_DEV_INGRESS_IP` from `dev_en
 ./dataspoke-test-mode.sh --stop       # Scale down the API deployment
 ```
 
-The API is accessible at `http://app.<INGRESS_IP>.nip.io/api/v1/` via nginx-ingress. For optional host-mode development (no Airflow callbacks): `uv run -m src.cli` from the repo root.
+The API is accessible at `http://app.<INGRESS_IP>.nip.io/api/v1/` via nginx-ingress.
 
 ### 6. Lock service (multi-tester coordination)
 

@@ -1,9 +1,9 @@
 """Stub service implementations for test mode.
 
 When ``DATASPOKE_TEST_MODE=true``, the ``make_*`` factories in
-``_common.py`` return these stubs instead of real clients.  This lets a
-host-mode DataSpoke server handle Airflow activity callbacks without
-requiring real LLM / pgvector / cache / notification backends.
+``_common.py`` return these stubs instead of real clients.  This lets the
+API process run integration scenarios without requiring real LLM /
+pgvector / cache / notification backends.
 
 DataHub and PostgreSQL are **never** stubbed — they always use real
 dev-env connections, even in test mode.

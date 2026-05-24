@@ -419,8 +419,7 @@ ConfigMap/Secret.
 Application runtime variable groups: DataHub connection, PostgreSQL, Redis, Airflow. The LLM
 provider/model are runtime config (`/api/v1/admin/conf`), and the LLM API key is read at runtime
 from the dedicated `dataspoke-llm-secret` Kubernetes Secret (rotated online through the same conf
-surface) — neither is an env var in the deployed app, though the API key falls back to a
-`DATASPOKE_LLM_API_KEY` env var in host-mode.
+surface) — neither is an env var in the deployed app.
 Dev-only variable groups: cluster & namespaces, chart versions, ingress IP and domain, dev LLM
 seed. For the full variable listing with defaults, see
 [`spec/feature/DEV_ENV.md` §Configuration](feature/DEV_ENV.md#configuration).

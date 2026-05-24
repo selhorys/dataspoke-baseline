@@ -48,10 +48,6 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
     rate_limit_burst: int = 20
 
-    # DataHub token — host-mode fallback for out-of-cluster test runs only.
-    # In-cluster reads come from the dataspoke-datahub-secret K8s Secret.
-    datahub_token: str = ""
-
     # PostgreSQL
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -70,13 +66,6 @@ class Settings(BaseSettings):
     airflow_password: str = ""
     airflow_callback_base_url: str = "http://dataspoke-api:8002"
     airflow_ingestion_concurrent: int = 5
-
-    # LLM — secret stays here; provider/model/tunable params moved to runtime_config DB table
-    llm_api_key: str = ""
-
-    # Langfuse secret key — host-mode fallback for out-of-cluster test runs only.
-    # In-cluster reads come from the dataspoke-langfuse-secret K8s Secret.
-    langfuse_secret_key: str = ""
 
     # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
     # in ``src/workflows/_common.py`` return stub implementations instead of

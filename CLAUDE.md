@@ -21,7 +21,7 @@ cd dev_env && bash dataspoke-infra/uninstall.sh && bash dataspoke-infra/install.
 
 Settings in `dev_env/.env`. See `dev_env/README.md` for access details and ingress endpoints.
 
-The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`). For optional host-mode development (no Airflow callbacks): `uv run -m src.cli`.
+The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes require `docker build` + `helm upgrade` (automated by `dev_env/dataspoke-test-mode.sh`).
 
 The dev environment uses the same umbrella Helm chart as production (`helm-charts/dataspoke/`) with a dev overlay (`values-dev.yaml`). See `spec/TESTING.md §Testing Modes`.
 

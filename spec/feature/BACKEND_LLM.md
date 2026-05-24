@@ -519,16 +519,11 @@ a `runtime_config` column.
   fixed `dataspoke-llm-secret` name and is gated by the `admin` group (or
   `X-Internal-Token`) — the fixed target plus admin auth are the controls, so
   the source-cred prefix guard does not apply.
-- **Host-mode fallback** — out of cluster (`uv run -m src.cli`, unit tests) the
-  in-cluster config is unavailable; the accessor then falls back to the
-  `DATASPOKE_LLM_API_KEY` environment variable. The deployed in-cluster app
-  never reads the key from an env var.
 
 ### Process environment
 
 | Env var | Default | Owner |
 |---------|---------|-------|
-| `DATASPOKE_LLM_API_KEY` | unset | shared LLM client — **host-mode fallback only** (in-cluster the key is read from `dataspoke-llm-secret`) |
 | `DATASPOKE_TEST_MODE` | unset | test infra |
 | `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
 | `DATASPOKE_DEV_LANGFUSE_HOST` | unset | observability |

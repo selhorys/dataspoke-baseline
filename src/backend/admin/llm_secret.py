@@ -7,7 +7,7 @@ Public surface:
     invalidate_llm_api_key_cache() -> None
 
     Exceptions re-raised from the k8s layer:
-        SecretResolverUnavailable  (from secret_resolver) — out-of-cluster
+        SecretResolverUnavailable  (from secret_resolver) — k8s client init failure
 
 Design notes:
 - Reuses ``secret_resolver._require_client()`` to get the (CoreV1Api, namespace)
@@ -25,7 +25,6 @@ import time
 from typing import Any
 
 from src.backend.ingestion.secret_resolver import SecretResolverUnavailable, _require_client
-from src.shared.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +53,11 @@ def get_llm_api_key() -> str:
 
     Resolution order:
     1. Cache hit (within TTL) → return cached value.
-    2. In-cluster: read ``dataspoke-llm-secret`` ``data.api_key`` via k8s API.
+    2. Read ``dataspoke-llm-secret`` ``data.api_key`` via k8s API.
        - Secret/key absent → treat as unset; cache ``""`` for TTL.
        - RBAC 403 → log a warning, return ``""`` (fail-safe; LLM call will
          fail clearly on an empty key; do not cache).
        - Other k8s errors (wrapped as SecretResolverUnavailable) → propagate.
-    3. Out-of-cluster (SecretResolverUnavailable from _require_client) →
-       fall back to ``settings.llm_api_key`` WITHOUT caching (host-mode only).
 
     The plaintext key value is NEVER logged.
     """
@@ -74,14 +71,10 @@ def get_llm_api_key() -> str:
             return value
         _cache = None
 
-    # 2. Attempt in-cluster read
+    # 2. Read Secret via k8s API
     core: Any
     namespace: str
-    try:
-        core, namespace = _require_client()
-    except SecretResolverUnavailable:
-        # 3. Out-of-cluster fallback — do NOT cache (host-mode transient)
-        return settings.llm_api_key
+    core, namespace = _require_client()
 
     try:
         secret = core.read_namespaced_secret(name=_SECRET_NAME, namespace=namespace)

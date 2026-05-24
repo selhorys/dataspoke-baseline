@@ -111,20 +111,6 @@ def _get_datahub_session_token() -> str:
     return data.get("data", {}).get("token", "")
 
 
-def _resolve_datahub_token() -> str:
-    """Return a valid DataHub token, falling back to session login.
-
-    Mirrors the fallback logic used by the ``datahub_client`` fixture so that
-    hub-proxy tests can inject a working token into the mocked settings.
-    """
-    if _datahub_token:
-        return _datahub_token
-    try:
-        return _get_datahub_session_token()
-    except Exception:
-        return ""
-
-
 def _auth_headers() -> dict[str, str]:
     """Create JWT auth headers for integration test requests."""
     from src.api.auth.jwt import create_access_token
@@ -469,28 +455,6 @@ async def airflow_client():
     yield client
 
     await client.close()
-
-
-# ── Activity server fixture ─────────────────────────────────────────────────
-
-
-@pytest_asyncio.fixture(scope="module")
-async def activity_server():
-    """Start an ActivityServer for Airflow activity callback integration tests.
-
-    Uses a free port to avoid conflicts with the in-cluster API
-    that may be port-forwarded on DATASPOKE_API_PORT for api-wired tests.
-    """
-    import socket
-
-    from tests.integration.util.airflow import ActivityServer
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        free_port = s.getsockname()[1]
-
-    async with ActivityServer(port=free_port) as server:
-        yield server
 
 
 # ── pgvector fixture ─────────────────────────────────────────────────────────

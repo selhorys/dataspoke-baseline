@@ -45,13 +45,6 @@ The API runs **in-cluster** by default (deployed via `./dev_env/dataspoke-test-m
 - API: `http://app.<INGRESS_DOMAIN>/api/v1/`
 - ReDoc: `http://app.<INGRESS_DOMAIN>/redoc`
 
-For optional host-mode development (no Airflow callbacks):
-
-```bash
-# From repo root
-uv run uvicorn src.api.main:app --reload --port 8000
-```
-
 ---
 
 ## Environment Variables
@@ -69,7 +62,6 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins (JSON list) |
 | `DATASPOKE_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per minute per client |
 | `DATASPOKE_DATAHUB_GMS_URL` | `http://localhost:8080` | DataHub GMS endpoint |
-| `DATASPOKE_DATAHUB_TOKEN` | _(empty)_ | DataHub personal access token |
 | `DATASPOKE_DATAHUB_KAFKA_BROKERS` | `localhost:9092` | Kafka broker addresses |
 | `DATASPOKE_POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `DATASPOKE_POSTGRES_PORT` | `5432` | PostgreSQL port |
@@ -82,7 +74,6 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 | `DATASPOKE_AIRFLOW_URL` | `http://localhost:8080` | Airflow API base URL |
 | `DATASPOKE_AIRFLOW_USER` | _(empty)_ | Airflow basic auth username |
 | `DATASPOKE_AIRFLOW_PASSWORD` | _(empty)_ | Airflow basic auth password |
-| `DATASPOKE_LLM_API_KEY` | _(empty)_ | LLM provider API key (the provider/model are runtime config via `/api/v1/admin/conf`, not env vars) |
 
 ---
 

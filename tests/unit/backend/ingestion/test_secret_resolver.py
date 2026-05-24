@@ -1,6 +1,6 @@
 """Unit tests for src.backend.ingestion.secret_resolver.
 
-Covers: parser, cache, host-mode unavailability, resolver error mapping,
+Covers: parser, cache, _require_client unavailability, resolver error mapping,
 writer, and verifier — all with a mocked kubernetes client.
 
 spec: spec/feature/SECRET_RESOLUTION.md
@@ -257,15 +257,15 @@ class TestCache:
         )
 
 
-# ── Host-mode unavailability tests ────────────────────────────────────────────
-# spec: SECRET_RESOLUTION.md §Host-mode behavior — in-cluster k8s config not available
+# ── _require_client unavailability tests ──────────────────────────────────────
+# spec: SECRET_RESOLUTION.md §Design — in-cluster k8s init failure
 # → every subsequent call raises SecretResolverUnavailable.
 
 _INCLUSTER_TARGET = "kubernetes.config.load_incluster_config"
 _NO_KUBECONFIG = Exception("no kubeconfig")
 
 
-class TestHostMode:
+class TestRequireClientUnavailability:
     def setup_method(self) -> None:
         _reset_resolver_state()
 
@@ -273,14 +273,15 @@ class TestHostMode:
         _reset_resolver_state()
 
     def test_incluster_config_failure_sets_unavailable(self) -> None:
-        # spec: SECRET_RESOLUTION.md §Design — "If that fails (host-mode dev), every
+        # spec: SECRET_RESOLUTION.md §Design — "If in-cluster k8s init fails, every
         # subsequent call raises SecretResolverUnavailable — no silent fallback."
         with patch(_INCLUSTER_TARGET, side_effect=_NO_KUBECONFIG):
             with pytest.raises(SecretResolverUnavailable):
                 resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo/pw")
 
     def test_subsequent_calls_raise_unavailable_after_failed_init(self) -> None:
-        # spec: SECRET_RESOLUTION.md §Design — once available=False, no retry of _init.
+        # spec: SECRET_RESOLUTION.md §Design — once available=False, no retry of _init;
+        # subsequent calls continue to raise SecretResolverUnavailable.
         with patch(_INCLUSTER_TARGET, side_effect=_NO_KUBECONFIG):
             with pytest.raises(SecretResolverUnavailable):
                 resolve_secret_ref("k8s-secret/dataspoke-source-cred-foo/pw")

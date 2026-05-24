@@ -7,7 +7,6 @@ used in the Imazon test baseline.
 
 from tests.integration.util.airflow import (
     ALL_DAG_IDS,
-    ActivityServer,
     kill_running_dag_runs,
 )
 from tests.integration.util.datahub import (
@@ -38,7 +37,6 @@ __all__ = [
     "ingest_kafka_datasets",
     "reset_only",
     "seed",
-    "ActivityServer",
     "ALL_DAG_IDS",
     "kill_running_dag_runs",
 ]
