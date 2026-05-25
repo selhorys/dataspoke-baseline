@@ -51,7 +51,6 @@ The scaffold works alongside these structural elements:
 | `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals. See `spec/feature/HELM_CHART.md` |
 | `ref/` | External source code for AI reference (DataHub v1.5.0.2, downloaded via `/ref-setup`) |
 | `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
-| `helm-charts/` | DataSpoke umbrella Helm chart with subcharts. See `spec/feature/HELM_CHART.md` |
 
 ---
 
@@ -74,6 +73,7 @@ They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explic
 | `spec-harmonize` | Propagate spec changes to sibling/parent specs and harness docs. When a spec is created, modified, or deleted, updates all documents that reference or list it |
 | `spec-reduce` | Audit and trim bloated specs, scaffold docs, and READMEs. Removes implementation details, eliminates cross-tier duplication, enforces abstraction-level discipline |
 | `spec-to-bulk-issue` | Analyze specs to find unimplemented components, write ordered issue tickets in `issues/`, revise existing issues, and optionally register them to GitHub with `prauto:ready` label |
+| `test-api-wired-manual` | Guided manual harness for a single `tests/integration/api_wired/` UC scenario: reads the test file, prints each REST request, pauses for approval before mutations, fires the call, prints the response, and probes side effects (DB rows, DataHub aspects, K8s Secrets) |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and
 allowed tools.
