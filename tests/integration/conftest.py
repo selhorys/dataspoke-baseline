@@ -67,6 +67,20 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+
+def _promote_test_runtime_overrides() -> None:
+    """Promote DATASPOKE_TEST_* values into the runtime DATASPOKE_* names that
+    src/ Pydantic Settings reads. Required when test code imports src/ helpers
+    (e.g. src.api.auth.jwt.create_access_token) and must sign with the same
+    secret the API pod uses — the chart-generated secret is mirrored into .env
+    as DATASPOKE_TEST_JWT_SECRET_KEY by install.sh's _sync_env_from_secret.
+    """
+    if "DATASPOKE_TEST_JWT_SECRET_KEY" in os.environ:
+        os.environ["DATASPOKE_JWT_SECRET_KEY"] = os.environ["DATASPOKE_TEST_JWT_SECRET_KEY"]
+
+
+_promote_test_runtime_overrides()
+
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
 _datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
