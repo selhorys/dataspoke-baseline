@@ -240,18 +240,28 @@ async def test_metagen_run_concurrent_returns_409_METAGEN_RUNNING(
     """A run while another is in-progress returns 409 METAGEN_RUNNING.
 
     The MetagenService serialises runs via a Redis cache lock (set_nx on
-    'metagen:running:singleton'). We pre-set that Redis key directly via the
-    redis_client fixture to simulate an in-progress run before calling POST run.
-    The service's set_nx will then return False and raise
-    ConflictError('METAGEN_RUNNING').
+    'metagen:running:singleton'). We pre-set that key in real Redis from the
+    test process; for the API to see it, the API must also be hitting real
+    Redis — so we PATCH stub_redis_client=false for the duration of this test
+    and restore true in finally. The dependency-provider cache picks up the
+    new value on the next request via patch_runtime_config's cache refresh.
 
     spec: USE_CASE_en.md §UC4 L659-660 — concurrent run guard
     spec: BACKEND.md L949 — error-code table: METAGEN_RUNNING -> 409
     """
     conf_url = "/api/v1/spoke/common/metagen/attr/conf"
     run_url = "/api/v1/spoke/common/metagen/method/run"
+    admin_conf_url = "/api/v1/admin/conf"
     lock_key = "metagen:running:singleton"
     fake_token = f"spot-test-concurrent-{uuid.uuid4().hex[:8]}"
+
+    # Switch API to real Redis so it can see the lock we set from the test.
+    switch_resp = await api_client.patch(
+        admin_conf_url, headers=admin_headers, json={"stub_redis_client": False}
+    )
+    assert switch_resp.status_code == 200, (
+        f"PATCH stub_redis_client=false setup failed: {switch_resp.status_code} {switch_resp.text}"
+    )
 
     try:
         # Ensure conf exists with is_enabled=true so METAGEN_DISABLED is not raised first.
@@ -283,9 +293,13 @@ async def test_metagen_run_concurrent_returns_409_METAGEN_RUNNING(
         )
 
     finally:
-        # Release the Redis lock and clean up conf.
+        # Release the Redis lock, restore stub_redis_client=true, clean up conf.
         with suppress(Exception):
             await redis_client.delete(lock_key)
+        with suppress(Exception):
+            await api_client.patch(
+                admin_conf_url, headers=admin_headers, json={"stub_redis_client": True}
+            )
         with suppress(Exception):
             await api_client.delete(conf_url, headers=admin_headers)
 

@@ -212,7 +212,13 @@ class StubPgVectorManager:
 
 
 class StubRedisClient:
-    """Drop-in replacement for ``RedisClient`` — every op is a no-op."""
+    """Drop-in replacement for ``RedisClient`` — every op is a no-op.
+
+    ``set_nx`` always returns ``True`` (lock always acquired). Tests that need
+    to exercise distributed-lock contention must PATCH ``stub_redis_client``
+    to ``false`` on ``/admin/conf`` so the API uses real Redis, then set the
+    lock key from the test process via the real ``RedisClient`` fixture.
+    """
 
     async def get(self, key: str) -> Any:
         return None

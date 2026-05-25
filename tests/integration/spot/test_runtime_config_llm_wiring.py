@@ -43,7 +43,13 @@ from src.backend.admin.config_service import (
 
 @pytest_asyncio.fixture
 async def restored_runtime_config(async_session) -> AsyncGenerator[None, None]:
-    """Restore the runtime_config row to factory defaults after each test.
+    """Restore the runtime_config row to the dev-env baseline after each test.
+
+    Dev baseline = RUNTIME_CONFIG_DEFAULTS with all four stub_* overridden to True
+    (matching what install.sh's post-install/seed-runtime-config.sh and
+    tests.integration.util reset-seed both write). Restoring to the raw factory
+    defaults would leave stub_*=False, breaking the conftest infra-stub preflight
+    for any subsequent test in the session.
 
     Invalidates the process-level cache on entry (prevents a stale cached DTO
     from a concurrently-running test from leaking into this test) and on exit
@@ -53,7 +59,14 @@ async def restored_runtime_config(async_session) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        await patch_runtime_config(async_session, **RUNTIME_CONFIG_DEFAULTS)
+        dev_baseline = {
+            **RUNTIME_CONFIG_DEFAULTS,
+            "stub_redis_client": True,
+            "stub_llm_client": True,
+            "stub_pgvector_manager": True,
+            "stub_notification_service": True,
+        }
+        await patch_runtime_config(async_session, **dev_baseline)
         invalidate_runtime_config_cache()
 
 
