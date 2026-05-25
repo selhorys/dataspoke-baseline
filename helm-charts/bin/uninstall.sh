@@ -115,10 +115,7 @@ if [[ "$PROFILE" == "dev" ]]; then
                 dataspoke-airflow-metadata-db \
                 dataspoke-llm-secret \
                 dataspoke-datahub-secret \
-                dataspoke-langfuse-secret \
-                dataspoke-postgres-secret \
-                dataspoke-redis-secret \
-                dataspoke-internal-auth; do
+                dataspoke-langfuse-secret; do
     if kubectl get secret "${SECRET}" -n "${NS}" >/dev/null 2>&1; then
       kubectl delete secret "${SECRET}" -n "${NS}"
     fi

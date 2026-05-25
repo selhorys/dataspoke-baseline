@@ -59,7 +59,7 @@ are exposed on dedicated ports.
 | DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
 | DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
-| Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `dataspoke@dataspoke.local` / `dataspoke` |
+| Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env` (auto-generated on first install) |
 | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
 | Redis | `<INGRESS_IP>:9202` | per `.env` |
 | DataHub Kafka | `<INGRESS_IP>:9005` | -- |

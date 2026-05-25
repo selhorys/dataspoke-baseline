@@ -51,6 +51,8 @@ The API runs **in-cluster** by default (deployed via `./helm-charts/bin/install.
 
 All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pydantic-settings`).
 
+The defaults in the table below are the Pydantic Settings fallbacks used by unit tests and local Python entry points. In cluster deployments, `helm-charts/bin/install.sh` auto-generates unique values into the `dataspoke-secrets` K8s Secret (dev) or requires a pre-created Secret with the same keys (prod); the placeholder `changeme-…-do-not-use-in-prod` is never the runtime value of `DATASPOKE_JWT_SECRET_KEY` in a deployed cluster, and `install.sh` fails fast in prod if it is.
+
 DataHub, Langfuse, and LLM provider/model/key are **not** env vars on the API pod — they live in the DB `peripheral_config` and `runtime_config` tables, updated via `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. See [spec/feature/HELM_CHART.md §Configuration](../../spec/feature/HELM_CHART.md#configuration--four-tier-env-vars).
 
 > Runtime env vars on the API pod come from three sources: K8s Secret (`dataspoke-secrets` — credentials), ConfigMap (`dataspoke-app-config` — connection endpoints), and chart-rendered direct env (`api.enableStubAuth`, `config.corsOrigins`). See `spec/feature/HELM_CHART.md §Configuration Flow`. Stub-mode toggles live in the DB `runtime_config` row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`), flippable via `PATCH /api/v1/admin/conf`. Test-side equivalents are in `helm-charts/.env` under the `DATASPOKE_TEST_*` block.

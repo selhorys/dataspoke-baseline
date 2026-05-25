@@ -138,7 +138,6 @@ _wait_all() {
 # _ensure_dataspoke_secrets <namespace> <profile> [<secret_name>]
 # Idempotent: creates the consolidated credential Secret in dev with
 # auto-generated values (including Airflow webserver/jwt secrets).
-# Migrates legacy dataspoke-postgres-secret / dataspoke-redis-secret if found.
 # In prod: fails fast unless the Secret already exists.
 # <secret_name> defaults to "dataspoke-secrets".
 _ensure_dataspoke_secrets() {
@@ -168,36 +167,11 @@ _ensure_dataspoke_secrets() {
 or pass --values <overlay.yaml> with secrets.existingSecret: <name>"
   fi
 
-  # Dev: check for legacy Secrets to migrate (preserves existing PV data)
   local pg_user pg_password pg_db redis_password
-
-  if kubectl get secret dataspoke-postgres-secret -n "${ns}" >/dev/null 2>&1; then
-    info "Migrating credentials from legacy dataspoke-postgres-secret..."
-    pg_password="$(kubectl get secret dataspoke-postgres-secret -n "${ns}" \
-      -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 --decode)"
-    pg_user="$(kubectl get secret dataspoke-postgres-secret -n "${ns}" \
-      -o jsonpath='{.data.POSTGRES_USER}' 2>/dev/null | base64 --decode 2>/dev/null || echo "dataspoke")"
-    pg_db="$(kubectl get secret dataspoke-postgres-secret -n "${ns}" \
-      -o jsonpath='{.data.POSTGRES_DB}' 2>/dev/null | base64 --decode 2>/dev/null || echo "dataspoke")"
-
-    # Validate migrated password contains only safe characters
-    if [[ -n "${pg_password}" ]] && \
-       ! [[ "${pg_password}" =~ ^[A-Za-z0-9+/_=.,!@#$%^\*-]{8,256}$ ]]; then
-      error "Legacy Postgres password contains unsafe characters (whitespace, quotes, or backslash). Cannot migrate safely. Manually rotate the password or reset the PV: kubectl delete pvc -l app.kubernetes.io/instance=dataspoke -n ${ns}"
-    fi
-  else
-    pg_password="$(openssl rand -hex 32)"
-    pg_user="dataspoke"
-    pg_db="dataspoke"
-  fi
-
-  if kubectl get secret dataspoke-redis-secret -n "${ns}" >/dev/null 2>&1; then
-    info "Migrating password from legacy dataspoke-redis-secret..."
-    redis_password="$(kubectl get secret dataspoke-redis-secret -n "${ns}" \
-      -o jsonpath='{.data.REDIS_PASSWORD}' | base64 --decode)"
-  else
-    redis_password="$(openssl rand -hex 32)"
-  fi
+  pg_user="dataspoke"
+  pg_db="dataspoke"
+  pg_password="$(openssl rand -hex 32)"
+  redis_password="$(openssl rand -hex 32)"
 
   local airflow_password internal_token jwt_secret airflow_webserver_secret airflow_jwt_secret
   airflow_password="$(openssl rand -hex 32)"
@@ -226,19 +200,6 @@ data:
   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY: $(printf '%s' "${airflow_webserver_secret}" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_JWT_SECRET: $(printf '%s' "${airflow_jwt_secret}" | base64 | tr -d '\n')
 EOF
-}
-
-# _delete_legacy_secrets <namespace>
-# Removes legacy Secrets that have been consolidated into dataspoke-secrets.
-# Called after a successful helm upgrade.
-_delete_legacy_secrets() {
-  local ns="$1"
-  for secret in dataspoke-postgres-secret dataspoke-redis-secret dataspoke-internal-auth; do
-    if kubectl get secret "${secret}" -n "${ns}" >/dev/null 2>&1; then
-      info "Removing legacy Secret '${secret}'..."
-      kubectl delete secret "${secret}" -n "${ns}"
-    fi
-  done
 }
 
 # _derive_airflow_metadata_secret <namespace> [<secret_name>]
@@ -650,7 +611,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   if _has_component dataspoke-infra; then
     step 3 5 "dataspoke-infra (umbrella chart)"
 
-    # Consolidated credential Secret (idempotent; migrates legacy if present)
+    # Consolidated credential Secret (idempotent)
     _ensure_dataspoke_secrets "${NS}" "dev" "dataspoke-secrets"
 
     # Airflow metadata DB connection Secret
@@ -705,9 +666,6 @@ if [[ "$PROFILE" == "dev" ]]; then
     # Helm upgrade --install
     info "Installing DataSpoke umbrella chart..."
     _helm_upgrade_dataspoke_dev "${NS}"
-
-    # Remove legacy Secrets that have been consolidated into dataspoke-secrets
-    _delete_legacy_secrets "${NS}"
 
     # Ensure pgvector + AGE extensions
     info "Ensuring pgvector + age extensions in the dataspoke database..."
