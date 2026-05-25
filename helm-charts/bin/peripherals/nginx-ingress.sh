@@ -94,12 +94,8 @@ info "External IP assigned: ${EXTERNAL_IP}"
 INGRESS_DOMAIN="${EXTERNAL_IP}.nip.io"
 
 # Write ingress IP/domain
-if grep -q "^DATASPOKE_KUBE_INGRESS_IP=" "${ENV_FILE}"; then
-  upsert_env_var DATASPOKE_KUBE_INGRESS_IP "${EXTERNAL_IP}" "${ENV_FILE}"
-else
-  printf '\nDATASPOKE_KUBE_INGRESS_IP=%s\n' "${EXTERNAL_IP}" >> "${ENV_FILE}"
-fi
-upsert_env_var DATASPOKE_KUBE_INGRESS_DOMAIN "${INGRESS_DOMAIN}" "${ENV_FILE}"
+upsert_env_var DATASPOKE_KUBE_INGRESS_IP     "${EXTERNAL_IP}"     "${ENV_FILE}"
+upsert_env_var DATASPOKE_KUBE_INGRESS_DOMAIN "${INGRESS_DOMAIN}"  "${ENV_FILE}"
 
 # ---------------------------------------------------------------------------
 # Derive and write runtime variables that depend on the ingress IP/domain.

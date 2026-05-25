@@ -68,7 +68,10 @@ upsert_env_var() {
   if grep -q "^${key}=" "${file}" 2>/dev/null; then
     sed -i.bak "s|^${key}=.*|${key}=${value}|" "${file}" && rm -f "${file}.bak"
   else
-    printf '\n%s=%s\n' "${key}" "${value}" >> "${file}"
+    # Ensure file ends in a newline before appending so the new line isn't
+    # concatenated onto the last existing line, and no blank line is inserted.
+    [[ -s "${file}" && "$(tail -c1 "${file}" | wc -l)" -eq 0 ]] && printf '\n' >> "${file}"
+    printf '%s=%s\n' "${key}" "${value}" >> "${file}"
   fi
   # Harden permissions after every write — the file contains secrets (postgres
   # password, redis password, internal token, LLM API key, DataHub PAT).
