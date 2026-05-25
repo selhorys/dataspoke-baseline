@@ -18,13 +18,15 @@ spec:
       {{/*
         envFrom env vars are evaluated only at container start; a Secret or
         ConfigMap content change does not restart consumers. These checksum
-        annotations force a rolling restart whenever rendered Secret/ConfigMap
-        content changes.
+        annotations force a rolling restart whenever rendered content changes.
+        The secret checksum uses `lookup` against a live cluster; during
+        `helm template` / `helm diff` it returns empty (no cluster), which is
+        safe — dry-runs don't restart pods.
       */}}
+      {{- $secretName := .Values.secrets.existingSecret | default "dataspoke-secrets" }}
+      {{- $secretData := (lookup "v1" "Secret" .Release.Namespace $secretName).data | default dict }}
       annotations:
-        {{- if .Values.secrets.createSecret }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
-        {{- end }}
+        checksum/secret: {{ $secretData | toJson | sha256sum }}
         {{- if .Values.config.createConfigMap }}
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- end }}
@@ -47,10 +49,8 @@ spec:
             - configMapRef:
                 name: {{ include "dataspoke.fullname" . }}-app-config
             {{- end }}
-            {{- if .Values.secrets.createSecret }}
             - secretRef:
-                name: {{ include "dataspoke.fullname" . }}-secrets
-            {{- end }}
+                name: {{ .Values.secrets.existingSecret | default "dataspoke-secrets" }}
           resources: {{- toYaml .Values.api.migrate.resources | nindent 12 }}
       {{- end }}
       containers:
@@ -65,20 +65,13 @@ spec:
             - configMapRef:
                 name: {{ include "dataspoke.fullname" . }}-app-config
             {{- end }}
-            {{- if .Values.secrets.createSecret }}
             - secretRef:
-                name: {{ include "dataspoke.fullname" . }}-secrets
-            {{- end }}
+                name: {{ .Values.secrets.existingSecret | default "dataspoke-secrets" }}
           env:
             - name: DATASPOKE_TEST_MODE
               value: {{ .Values.api.testMode | default false | quote }}
             - name: DATASPOKE_TEST_LLM_REAL
               value: {{ .Values.api.testLlmReal | default false | quote }}
-            - name: DATASPOKE_INTERNAL_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: dataspoke-internal-auth
-                  key: token
             - name: DATASPOKE_ENABLE_STUB_AUTH
               value: {{ .Values.api.enableStubAuth | default false | quote }}
           startupProbe:

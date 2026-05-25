@@ -75,13 +75,13 @@ esac
 # ---------------------------------------------------------------------------
 # Seed Langfuse peripheral config (non-secret fields only)
 # ---------------------------------------------------------------------------
-if [[ -n "${DATASPOKE_DEV_LANGFUSE_HOST:-}" && -n "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+if [[ -n "${DATASPOKE_TEST_LANGFUSE_HOST:-}" && -n "${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY:-}" ]]; then
   info "Seeding Langfuse connection into peripheral config via ${BASE_URL}/langfuse..."
   HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
     "${BASE_URL}/langfuse" \
     -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"host\": \"${DATASPOKE_DEV_LANGFUSE_HOST}\", \"public_key\": \"${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}\"}" \
+    -d "{\"host\": \"${DATASPOKE_TEST_LANGFUSE_HOST}\", \"public_key\": \"${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY}\"}" \
     2>&1 || echo "000")
   case "$HTTP_CODE" in
     200|204)
@@ -92,5 +92,5 @@ if [[ -n "${DATASPOKE_DEV_LANGFUSE_HOST:-}" && -n "${DATASPOKE_DEV_LANGFUSE_PUBL
       ;;
   esac
 else
-  info "DATASPOKE_DEV_LANGFUSE_HOST or DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY not set — skipping Langfuse peripheral PATCH."
+  info "DATASPOKE_TEST_LANGFUSE_HOST or DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY not set — skipping Langfuse peripheral PATCH."
 fi

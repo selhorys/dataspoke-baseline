@@ -181,8 +181,8 @@ and DataHub with descriptions and typed columns.
 ### Airflow Integration Test Pitfalls
 
 - **Connection**: Airflow is accessed via nginx-ingress at `http://airflow.<INGRESS_IP>.nip.io`
-  (`DATASPOKE_AIRFLOW_URL` in `helm-charts/.env`). `conftest.py` loads this automatically; tests
-  in worktrees must source it explicitly.
+  (`DATASPOKE_TEST_AIRFLOW_URL` in `helm-charts/.env`). `conftest.py` loads this automatically;
+  tests in worktrees must source it explicitly.
 - **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via
   `httpx.AsyncClient` (ASGI transport) without Airflow orchestration.
 - **Full DAG testing**: Requires running Airflow + deployed DAG files. Use `AirflowClient` to
@@ -255,16 +255,18 @@ and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
 
 ### Running
 
+Export `helm-charts/.env` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains: `set -a && source helm-charts/.env && set +a`.
+
 ```bash
 # Spot -- some tests need the test-mode server, others do not. Run together for simplicity:
 ./helm-charts/bin/install.sh --profile dev --components api --skip-build   # safe to run; idempotent
 uv run python -m tests.integration.util --reset-seed
-DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/
+set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/
 
 # Api-wired -- always run with the test-mode server up
 ./helm-charts/bin/install.sh --profile dev --components api --skip-build
 uv run python -m tests.integration.util --reset-seed
-DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
+set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
 
 # Teardown (optional; leave running if you'll iterate)
 kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
@@ -337,7 +339,7 @@ group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).
 |---|---|
 | Event logged | `GET /api/v1/spoke/common/data/{urn}/event` |
 | Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v2/dags/{dag_id}` |
-| DB row | `psql -h <INGRESS_IP> -p 9201 -U dataspoke -d dataspoke` |
+| DB row | `psql -h $DATASPOKE_TEST_POSTGRES_HOST -p $DATASPOKE_TEST_POSTGRES_PORT -U $DATASPOKE_TEST_POSTGRES_USER -d $DATASPOKE_TEST_POSTGRES_DB` |
 | DataHub aspect | `curl http://datahub.<INGRESS_IP>.nip.io/gms/aspects?urn={urn}&aspect={aspect}` |
 
 ### References

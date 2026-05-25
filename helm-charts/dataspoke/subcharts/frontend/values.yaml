@@ -17,3 +17,9 @@ ingress:
   tls: []
 
 resources: {}
+
+# Name of the pre-created K8s Secret containing runtime credentials.
+# Set by the umbrella chart via the parent's secrets.existingSecret value.
+# Defaults to "<release-name>-secrets" when empty (install.sh passes the
+# resolved name via --set frontend.existingSecretName=<name>).
+existingSecretName: ""

@@ -80,11 +80,11 @@ def _db_delete_peripheral_rows() -> None:
 
     Runs synchronously; safe to call from fixtures and teardown blocks.
     """
-    host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-    port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
-    user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-    password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
-    db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+    host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+    port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
+    user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+    password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+    db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
 
     sql = "DELETE FROM dataspoke.peripheral_config WHERE name IN ('datahub', 'langfuse');"
     env = {**os.environ, "PGPASSWORD": password}
@@ -134,13 +134,13 @@ def _restore_dev_baseline_after_module() -> Iterator[None]:
     """
     yield
     base = os.environ.get("DATASPOKE_KUBE_INGRESS_DOMAIN")
-    token = os.environ.get("DATASPOKE_INTERNAL_TOKEN", "")
-    dh_gms = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-    dh_kafka = os.environ.get("DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS", "")
-    dh_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
-    lf_host = os.environ.get("DATASPOKE_DEV_LANGFUSE_HOST", "")
-    lf_pk = os.environ.get("DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY", "")
-    lf_sk = os.environ.get("DATASPOKE_DEV_LANGFUSE_SECRET_KEY", "")
+    token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
+    dh_gms = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+    dh_kafka = os.environ.get("DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS", "")
+    dh_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+    lf_host = os.environ.get("DATASPOKE_TEST_LANGFUSE_HOST", "")
+    lf_pk = os.environ.get("DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY", "")
+    lf_sk = os.environ.get("DATASPOKE_TEST_LANGFUSE_SECRET_KEY", "")
     if not (base and token and dh_gms and dh_token and lf_host and lf_sk):
         return
     headers = {"X-Internal-Token": token, "Content-Type": "application/json"}
@@ -492,11 +492,11 @@ async def test_patch_datahub_token_only_does_not_create_db_row(
         )
 
         # Query the DB directly: peripheral_config must have 0 rows for 'datahub'.
-        host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-        port = int(os.environ.get("DATASPOKE_POSTGRES_PORT", "9201"))
-        user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-        password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
-        db_name = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+        host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+        port = int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"))
+        user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+        password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+        db_name = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
 
         conn = await asyncpg.connect(
             host=host, port=port, user=user, password=password, database=db_name
@@ -550,7 +550,7 @@ async def test_internal_patch_datahub_valid_token_returns_200_and_get_reflects(
             body = patch_resp.json()
             assert body.get("detail", {}).get("error_code") == "INTERNAL_AUTH_NOT_CONFIGURED"
             pytest.skip(
-                "DATASPOKE_INTERNAL_TOKEN not configured in this environment — skipping"
+                "DATASPOKE_TEST_INTERNAL_TOKEN not configured in this environment — skipping"
             )
 
         assert patch_resp.status_code == 200, (
@@ -595,7 +595,7 @@ async def test_internal_patch_langfuse_valid_token_returns_200_and_get_reflects(
 
         if patch_resp.status_code == 503:
             pytest.skip(
-                "DATASPOKE_INTERNAL_TOKEN not configured in this environment — skipping"
+                "DATASPOKE_TEST_INTERNAL_TOKEN not configured in this environment — skipping"
             )
 
         assert patch_resp.status_code == 200
@@ -729,7 +729,7 @@ async def test_internal_patch_datahub_missing_token_returns_401_or_503(
 ) -> None:
     """PATCH /internal/admin/peripherals/datahub without X-Internal-Token → 401 or 503.
 
-    401 when server has DATASPOKE_INTERNAL_TOKEN set but client omitted the header;
+    401 when server has DATASPOKE_TEST_INTERNAL_TOKEN set but client omitted the header;
     503 (INTERNAL_AUTH_NOT_CONFIGURED) when token unset on the server side.
 
     spec: API.md §Internal routes — missing header → 401.

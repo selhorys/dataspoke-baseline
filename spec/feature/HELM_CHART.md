@@ -8,7 +8,7 @@
 4. [Installation](#installation)
 5. [Uninstallation](#uninstallation)
 6. [Umbrella Chart Structure](#umbrella-chart-structure)
-7. [Configuration — Three-Tier Env Vars](#configuration--three-tier-env-vars)
+7. [Configuration — Four-Tier Env Vars](#configuration--four-tier-env-vars)
 8. [The .env File](#the-env-file)
 9. [Configuration Flow](#configuration-flow)
 10. [Image Builds](#image-builds)
@@ -57,7 +57,8 @@ step of `install.sh` (`--components api` runs only the rebuild + helm-upgrade
 ```
 helm-charts/
 ├── README.md                           # operational guide for bin/ scripts
-├── .env.example                         # canonical env-var listing (3 sections)
+├── .env.example                         # dev canonical env-var listing (3 sections)
+├── .env.prod.example                    # prod operator template (deployment shape only)
 ├── bin/
 │   ├── install.sh                       # main installer
 │   ├── uninstall.sh                     # main uninstaller
@@ -229,18 +230,20 @@ Each component has a `<component>.enabled` toggle.
 
 ---
 
-## Configuration — Three-Tier Env Vars
+## Configuration — Four-Tier Env Vars
 
 | Tier | Prefix | Scope | Read by |
 |---|---|---|---|
-| App runtime | `DATASPOKE_*` (no `KUBE` / `DEV`) | Both profiles | DataSpoke Python/Node code |
+| App runtime | `DATASPOKE_*` (no `KUBE` / `DEV` / `TEST`) | Both profiles | DataSpoke Python/Node code via K8s ConfigMap/Secret (`envFrom`) |
 | Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/*.sh` install / uninstall / build scripts |
-| Dev-only | `DATASPOKE_DEV_*` | Dev profile only | `bin/peripherals/*.sh`, `bin/post-install/*.sh` |
+| Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only | `bin/peripherals/*.sh`, `bin/post-install/*.sh` |
+| Test access | `DATASPOKE_TEST_*` | Dev profile only | `tests/integration/{conftest.py,util/*}`; auto-populated by install.sh post-install; never read by app pods |
 
 ### Tier 1 — App runtime (`DATASPOKE_*`)
 
 Same names in dev and prod, different values. Injected into pods via ConfigMap
-(non-sensitive) or Secret (sensitive) per §Configuration Flow.
+(non-sensitive) or Secret (sensitive) from the `dataspoke-secrets` K8s Secret per
+§Configuration Flow. Not present in `helm-charts/.env`.
 
 - `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`
 - `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
@@ -275,19 +278,16 @@ Same convention in both profiles; values differ.
 - `DATASPOKE_KUBE_INGRESS_IP` — populated by nginx-ingress install in dev; operator-supplied in prod
 - `DATASPOKE_KUBE_INGRESS_DOMAIN` — derived (e.g. `<IP>.nip.io` in dev) or operator-supplied
 
-### Tier 3 — Dev-only (`DATASPOKE_DEV_*`)
+### Tier 3 — Dev-only inputs (`DATASPOKE_DEV_*`)
 
-Read only by dev peripheral and seeding scripts. Application pods never read
-these.
+Operator-supplied inputs for the dev peripheral install. Application pods never
+read these.
 
 - Peripheral namespaces: `_KUBE_DATAHUB_NAMESPACE`,
   `_KUBE_LANGFUSE_NAMESPACE`, `_KUBE_DUMMY_DATA_NAMESPACE`
 - DataHub chart versions: `_KUBE_DATAHUB_CHART_VERSION`,
   `_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`
-- DataHub install: `_DATAHUB_MYSQL_ROOT_PASSWORD`, `_DATAHUB_MYSQL_PASSWORD`
-- DataHub seed outputs (written by `datahub.sh`, consumed by
-  `seed-peripheral-config.sh`): `_DATAHUB_GMS_URL`, `_DATAHUB_TOKEN`,
-  `_DATAHUB_KAFKA_BROKERS`
+- DataHub install inputs: `_DATAHUB_MYSQL_ROOT_PASSWORD`, `_DATAHUB_MYSQL_PASSWORD`
 - Langfuse install internals: `_LANGFUSE_NEXTAUTH_SECRET`, `_LANGFUSE_SALT`,
   `_LANGFUSE_ENCRYPTION_KEY`, `_LANGFUSE_CLICKHOUSE_PASSWORD`,
   `_LANGFUSE_MINIO_{ROOT_USER,ROOT_PASSWORD}`, `_LANGFUSE_POSTGRES_PASSWORD`,
@@ -297,16 +297,26 @@ these.
   project identifiers (`INIT_USER_EMAIL`, `INIT_USER_NAME`, `INIT_ORG_ID`,
   `INIT_ORG_NAME`, `INIT_PROJECT_ID`, `INIT_PROJECT_NAME`) default inside
   `langfuse.sh` and only need explicit `.env` entries to override.
-- Langfuse seed outputs: `_LANGFUSE_HOST`, `_LANGFUSE_PUBLIC_KEY`,
-  `_LANGFUSE_SECRET_KEY`
-- Dummy data: `_DUMMY_DATA_KAFKA_INSTANCE`, `_DUMMY_DATA_POSTGRES_USER`,
-  `_DUMMY_DATA_POSTGRES_PASSWORD`, `_DUMMY_DATA_POSTGRES_DB`,
-  `_DUMMY_DATA_POSTGRES_HOST`, `_DUMMY_DATA_POSTGRES_PORT`,
-  `_DUMMY_DATA_KAFKA_BROKERS`
+- Dummy data inputs: `_DUMMY_DATA_KAFKA_INSTANCE`, `_DUMMY_DATA_POSTGRES_USER`,
+  `_DUMMY_DATA_POSTGRES_PASSWORD`, `_DUMMY_DATA_POSTGRES_DB`
 - LLM seed: `_LLM_PROVIDER`, `_LLM_API_KEY`, `_LLM_MODEL` — written into the
   `dataspoke-llm-secret` Secret and PATCHed into `/admin/conf`
 - Test harness: `_ENV_LOCK_PREACQUIRED` (set by outer wrappers that already
   hold the dev-env lock)
+
+### Tier 4 — Test access (`DATASPOKE_TEST_*`)
+
+Auto-populated by `install.sh` post-install via `_sync_env_from_secret`. Read by
+`tests/integration/{conftest.py,util/*}` for laptop-side access to in-cluster
+services via nginx-ingress. App pods never read these.
+
+- DataSpoke subsystem: `DATASPOKE_TEST_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`,
+  `DATASPOKE_TEST_REDIS_{HOST,PORT,PASSWORD}`,
+  `DATASPOKE_TEST_AIRFLOW_{URL,USER,PASSWORD}`,
+  `DATASPOKE_TEST_INTERNAL_TOKEN`
+- DataHub access: `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS}`
+- Langfuse access: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
+- Dummy data source access: `DATASPOKE_TEST_DUMMY_DATA_{POSTGRES_HOST,POSTGRES_PORT,KAFKA_BROKERS}`
 
 ### Policies
 
@@ -321,34 +331,52 @@ these.
 | Path | Tracked | Purpose |
 |---|---|---|
 | `helm-charts/.env` | gitignored | Per-developer / per-cluster values |
-| `helm-charts/.env.example` | tracked | Canonical listing with comments |
+| `helm-charts/.env.example` | tracked | Dev canonical listing (three sections) |
+| `helm-charts/.env.prod.example` | tracked | Prod operator template (deployment shape only) |
 
-Layout: three top-level sections, one per tier (App runtime → Kube deployment
-→ Dev-only). `bin/*.sh` scripts source it; `tests/integration/conftest.py`
-loads it for integration tests.
+Dev layout: three top-level sections — Kube deployment operator inputs, Dev
+profile operator inputs, Auto-populated block (ingress + `DATASPOKE_TEST_*`).
+`bin/*.sh` scripts source it; `tests/integration/conftest.py` loads it for
+integration tests.
 
-In dev, several values are **auto-populated by install scripts** rather than
-edited by hand: `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
-`peripherals/nginx-ingress.sh`), `DATASPOKE_DEV_DATAHUB_*` outputs (by
-`peripherals/datahub.sh`), `DATASPOKE_DEV_LANGFUSE_*` outputs (by
-`peripherals/langfuse.sh`), and `DATASPOKE_INTERNAL_TOKEN` (by
-`install.sh` on first run). The scripts append back to `helm-charts/.env`.
+Prod `.env` contains only the five `DATASPOKE_KUBE_*` deployment-shape vars.
+All credentials are managed via a pre-created K8s Secret (`secrets.existingSecret`
+in the values overlay) — no credentials in `.env` for prod operators.
+
+In dev, the **auto-populated** block is written by install scripts, not edited by
+hand: `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by `peripherals/nginx-ingress.sh`),
+`DATASPOKE_TEST_DATAHUB_*` (by `peripherals/datahub.sh`),
+`DATASPOKE_TEST_LANGFUSE_*` (by `peripherals/langfuse.sh`), and the full
+`DATASPOKE_TEST_*` subsystem block (by `install.sh _sync_env_from_secret`
+post-install, extracting credentials from the `dataspoke-secrets` K8s Secret).
 
 ---
 
 ## Configuration Flow
 
 ```
-.env  →  bin/install.sh
+.env  →  bin/install.sh (dev)
               │
-              ├─ kubectl create secret (postgres, redis, internal-auth, llm, datahub, langfuse)
-              ├─ helm upgrade --set / -f values{-dev}.yaml
+              ├─ _ensure_dataspoke_secrets
+              │    dev: auto-generate dataspoke-secrets (openssl rand) on first install;
+              │         skip if Secret already exists (idempotent)
+              │    prod: verify secrets.existingSecret Secret is present; fail fast if missing
+              │
+              ├─ helm upgrade -f values{-dev}.yaml
+              │    dataspoke-secrets referenced via secretRef.name in api-deployment.yaml
+              │    postgresql / redis subcharts reference dataspoke-secrets via auth.existingSecret
+              │    airflow metadata DB wired via dataspoke-airflow-metadata-db Secret
               │       │
               │       ▼
               │  ConfigMap (dataspoke-config) + Secret (dataspoke-secrets)
               │       │
               │       ▼
-              │  Deployment envFrom → container env vars
+              │  Deployment envFrom → container env vars (DATASPOKE_* names)
+              │
+              ├─ _sync_env_from_secret
+              │    Extract dataspoke-secrets values → append DATASPOKE_TEST_* block to .env
+              │    Also appends DATASPOKE_TEST_DATAHUB_*, DATASPOKE_TEST_LANGFUSE_*,
+              │    DATASPOKE_TEST_DUMMY_DATA_* from peripheral install outputs
               │
               └─ post-install/seed-*.sh
                        │
@@ -360,16 +388,35 @@ edited by hand: `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
                   App reads LLM key from dataspoke-llm-secret via K8s API
 ```
 
+### Prod operator workflow
+
+1. Pre-create the `dataspoke-secrets` K8s Secret with all required keys (see §Secret keys
+   below). Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or a
+   plain `kubectl create secret generic` works.
+2. Write a values overlay with `secrets.existingSecret: <name>` pointing at that Secret.
+3. Run `./helm-charts/bin/install.sh --profile prod --values <overlay.yaml>`. The install
+   fails fast with a clear message if the named Secret is missing from the cluster.
+
 ### ConfigMap keys (non-sensitive)
 
 `DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
 `DATASPOKE_REDIS_{HOST,PORT}`, `DATASPOKE_AIRFLOW_{URL,CALLBACK_BASE_URL}`,
 plus `DATASPOKE_CORS_ORIGINS` (sourced from chart values, not `.env`).
+`DATASPOKE_AIRFLOW_CALLBACK_BASE_URL` is hardcoded in the chart (`http://dataspoke-api:8002`);
+it is not derived from `.env`.
 
 ### Secret keys (`dataspoke-secrets`, mounted via `envFrom`)
 
-`DATASPOKE_POSTGRES_{USER,PASSWORD}`, `DATASPOKE_REDIS_PASSWORD`,
-`DATASPOKE_AIRFLOW_{USER,PASSWORD}`, `DATASPOKE_INTERNAL_TOKEN`.
+Ten keys consumed by app pods in both dev and prod:
+
+`DATASPOKE_POSTGRES_{USER,PASSWORD}`, `DATASPOKE_POSTGRES_DB`,
+`DATASPOKE_REDIS_PASSWORD`,
+`DATASPOKE_AIRFLOW_{USER,PASSWORD}`,
+`DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET`,
+`DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`.
+
+In dev, `install.sh` auto-generates this Secret. In prod, the operator pre-creates it
+and points the chart at it via `secrets.existingSecret: <name>`.
 
 ### Container env rendered from chart values (not `.env`)
 
@@ -465,8 +512,8 @@ Service name prefixes: `datahub-prerequisites-*` for the prerequisites
 release (MySQL, Kafka controller); `opensearch-cluster-master` for the
 OpenSearch subchart's own release.
 
-Writes to .env: `DATASPOKE_DEV_DATAHUB_GMS_URL`, `DATASPOKE_DEV_DATAHUB_TOKEN`
-(generated PAT), `DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS`.
+Writes to .env: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
+(generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`.
 
 ### Langfuse
 
@@ -476,8 +523,8 @@ Sibling Helm chart `helm-charts/langfuse/` installed in `langfuse-01`
 MinIO/Postgres/Redis secrets on first run, creates the `dataspoke` project +
 public/secret API keys, and writes them back to `.env`.
 
-Writes to .env: `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
-the internals on first install.
+Writes to .env: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
+the Langfuse internals (`DATASPOKE_DEV_LANGFUSE_*`) on first install.
 
 ### Dummy data
 
@@ -523,7 +570,8 @@ Dev only. Runs after the umbrella chart's API deployment is Ready.
 | `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. The token / secret_key fields are populated into K8s Secrets out-of-band by the install script (so the API reads them via RBAC); only non-secret fields go through the admin API. |
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`. |
 
-Auth: both use the `DATASPOKE_INTERNAL_TOKEN` mounted on the API pod.
+Auth: both use the `DATASPOKE_INTERNAL_TOKEN` read from the `dataspoke-secrets` Secret
+(mounted on the API pod via `envFrom`).
 
 Skip with `--skip-seed`; useful when a previous install already seeded
 peripheral config and the operator wants to preserve their PATCHes.
@@ -651,26 +699,27 @@ with default-deny.
 
 | Family | Owner | Purpose |
 |---|---|---|
-| **Infra Secrets** (`dataspoke-postgres-secret`, `dataspoke-redis-secret`, `dataspoke-secrets`, `dataspoke-internal-auth`) | Operator (Helm install) | DataSpoke's own runtime credentials — Postgres/Redis passwords, JWT signing key, internal-auth shared secret. |
+| **`dataspoke-secrets`** | `install.sh` (dev auto-generate) or operator (prod pre-create) | DataSpoke's own runtime credentials — Postgres user/password/db, Redis password, Airflow user/password/webserver-secret/jwt-secret, internal-auth token, JWT signing key. Ten keys; mounted `envFrom` on the API Deployment and alembic-migrate init container. |
+| **`dataspoke-airflow-metadata-db`** | `install.sh` `_derive_airflow_metadata_secret` (both profiles) | Single key `connection` = full PostgreSQL URI for Airflow's metadata DB. Wired via `airflow.data.metadataSecretName`. |
 | **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). |
-| **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the Infra Secrets above. |
+| **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the above Secrets. |
 
 ### Dev — install-time provisioning
 
-`bin/install.sh` writes Infra Secrets and out-of-band Secrets from `.env`
-before the Helm install. Subcharts reference Infra Secrets via
-`auth.existingSecret`. The out-of-band Secrets are populated only if their
-seed value is present in `.env`; if absent, the dependent feature stays
-disabled until the operator sets it via the admin API.
+`install.sh _ensure_dataspoke_secrets` auto-generates `dataspoke-secrets` with
+`openssl rand -hex 32` on first install. The step is idempotent — an existing Secret
+is not overwritten (Postgres PV data remains decryptable across reinstalls). Subcharts
+reference `dataspoke-secrets` via `auth.existingSecret`. Out-of-band Secrets are
+populated only if their seed value is present in `.env`; if absent, the dependent
+feature stays disabled until the operator sets it via the admin API.
 
 ### Prod
 
-Two approaches:
-
-- **Option A**: `helm upgrade --set secrets.*` or a sealed values file.
-- **Option B** (recommended): [External Secrets Operator](https://external-secrets.io/)
-  syncing from AWS Secrets Manager / Vault / GCP Secret Manager. Set
-  `secrets.createSecret: false` and reference the externally-managed Secret.
+The operator pre-creates `dataspoke-secrets` out-of-band (ExternalSecrets Operator,
+Vault Agent, SealedSecrets, or plain `kubectl create secret generic`), then sets
+`secrets.existingSecret: <name>` in the values overlay. `install.sh` refuses to
+auto-generate Secrets in the prod profile and fails fast with a clear message if the
+named Secret is absent.
 
 ### API RBAC for source-credential Secrets
 

@@ -27,7 +27,7 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset({"imazon.orders.events"})
 # Kafka auth: NoAuth — auth field must be omitted entirely
 # spec: src/shared/models/ingestion.py PLATFORM_REGISTRY — Platform.KAFKA uses NoAuth
 _KAFKA_BOOTSTRAP = os.environ.get(
-    "DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS", "localhost:9104"
+    "DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS", "localhost:9104"
 )
 _KAFKA_INSTANCE = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
 _TOPIC = "imazon.orders.events"
@@ -38,8 +38,8 @@ _KAFKA_URN = (
 )
 _KAFKA_ENCODED = urllib.parse.quote(_KAFKA_URN, safe="")
 
-_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-_DATAHUB_TOKEN = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+_DATAHUB_TOKEN = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
 
@@ -227,7 +227,7 @@ async def test_ingestion_kafka_real_run_emits_aspects(
     spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — runId
     """
     if not _DATAHUB_GMS_URL:
-        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping DataHub aspect assertions")
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DataHub aspect assertions")
 
     base_conf = f"/api/v1/spoke/common/data/{_KAFKA_ENCODED}/attr/ingestion/conf"
     base_run = f"/api/v1/spoke/common/data/{_KAFKA_ENCODED}/method/ingestion/run"

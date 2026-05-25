@@ -78,8 +78,8 @@ curl -s "${DATAHUB_GMS_URL}/config" \
   || echo "ERROR: GMS not reachable at ${DATAHUB_GMS_URL}. Run: ./helm-charts/bin/health-check.sh"
 
 # 4. Check token
-if [ -z "${DATASPOKE_DEV_DATAHUB_TOKEN:-}" ]; then
-  echo "DATASPOKE_DEV_DATAHUB_TOKEN not set — generate via: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN} → Settings → Access Tokens"
+if [ -z "${DATASPOKE_TEST_DATAHUB_TOKEN:-}" ]; then
+  echo "DATASPOKE_TEST_DATAHUB_TOKEN not set — generate via: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN} → Settings → Access Tokens"
 fi
 ```
 
@@ -98,7 +98,7 @@ Derive the base URLs from `helm-charts/.env`: `source helm-charts/.env`, then:
 | Resource | URL pattern | Notes |
 |---|---|---|
 | Swagger UI (REST/OpenAPI) | `<GMS_BASE>/openapi/swagger-ui/index.html` | Set Bearer token in Authorize dialog |
-| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_DEV_DATAHUB_TOKEN" <GMS_BASE>/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
+| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_TEST_DATAHUB_TOKEN" <GMS_BASE>/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
 | GraphiQL | `http://datahub.<DOMAIN>/api/graphiql` | Browser only, uses session cookie |
 | Unauthenticated health | `<GMS_BASE>/config`, `<GMS_BASE>/health` | No token needed |
 
@@ -114,11 +114,11 @@ from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
 import os
 
 # GMS is accessible via ingress: http://datahub.<INGRESS_DOMAIN>/gms
-gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]  # set in helm-charts/.env
+gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]  # set in helm-charts/.env
 
 graph = DataHubGraph(DatahubClientConfig(
     server=gms_url,
-    token=os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", ""),
+    token=os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", ""),
 ))
 ```
 
@@ -128,8 +128,8 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 import os
 
 emitter = DatahubRestEmitter(
-    os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"],
-    token=os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", ""),
+    os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"],
+    token=os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", ""),
 )
 ```
 

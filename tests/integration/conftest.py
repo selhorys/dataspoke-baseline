@@ -69,20 +69,20 @@ _load_dotenv()
 
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
-_datahub_gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]
+_datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
 _datahub_frontend_url = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "")
-_datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+_datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
-_redis_host = os.environ["DATASPOKE_REDIS_HOST"]
-_redis_port = int(os.environ["DATASPOKE_REDIS_PORT"])
-_redis_password = os.environ.get("DATASPOKE_REDIS_PASSWORD", "")
+_redis_host = os.environ["DATASPOKE_TEST_REDIS_HOST"]
+_redis_port = int(os.environ["DATASPOKE_TEST_REDIS_PORT"])
+_redis_password = os.environ.get("DATASPOKE_TEST_REDIS_PASSWORD", "")
 
-_kafka_brokers = os.environ["DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS"]
-_datahub_kafka_brokers = os.environ["DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS"]
+_kafka_brokers = os.environ["DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS"]
+_datahub_kafka_brokers = os.environ["DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS"]
 
-_airflow_url = os.environ.get("DATASPOKE_AIRFLOW_URL", "http://localhost:8080")
-_airflow_user = os.environ.get("DATASPOKE_AIRFLOW_USER", "")
-_airflow_password = os.environ.get("DATASPOKE_AIRFLOW_PASSWORD", "")
+_airflow_url = os.environ.get("DATASPOKE_TEST_AIRFLOW_URL", "http://localhost:8080")
+_airflow_user = os.environ.get("DATASPOKE_TEST_AIRFLOW_USER", "")
+_airflow_password = os.environ.get("DATASPOKE_TEST_AIRFLOW_PASSWORD", "")
 
 _lock_owner = os.environ.get(
     "DATASPOKE_LOCK_OWNER",
@@ -128,11 +128,11 @@ def _auth_headers() -> dict[str, str]:
 
 @pytest.fixture(scope="session")
 def integration_db_url() -> str:
-    host = os.environ["DATASPOKE_POSTGRES_HOST"]
-    port = os.environ["DATASPOKE_POSTGRES_PORT"]
-    user = os.environ["DATASPOKE_POSTGRES_USER"]
-    password = os.environ["DATASPOKE_POSTGRES_PASSWORD"]
-    db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+    host = os.environ["DATASPOKE_TEST_POSTGRES_HOST"]
+    port = os.environ["DATASPOKE_TEST_POSTGRES_PORT"]
+    user = os.environ["DATASPOKE_TEST_POSTGRES_USER"]
+    password = os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"]
+    db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
 
 

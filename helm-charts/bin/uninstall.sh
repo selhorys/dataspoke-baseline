@@ -111,9 +111,14 @@ if [[ "$PROFILE" == "dev" ]]; then
       && info "  Deleted PVC '${pvc}'." \
       || warn "  Could not delete PVC '${pvc}'."
   done
-  for SECRET in dataspoke-postgres-secret dataspoke-redis-secret \
-                dataspoke-internal-auth dataspoke-llm-secret \
-                dataspoke-datahub-secret dataspoke-langfuse-secret; do
+  for SECRET in dataspoke-secrets \
+                dataspoke-airflow-metadata-db \
+                dataspoke-llm-secret \
+                dataspoke-datahub-secret \
+                dataspoke-langfuse-secret \
+                dataspoke-postgres-secret \
+                dataspoke-redis-secret \
+                dataspoke-internal-auth; do
     if kubectl get secret "${SECRET}" -n "${NS}" >/dev/null 2>&1; then
       kubectl delete secret "${SECRET}" -n "${NS}"
     fi
@@ -204,6 +209,15 @@ elif [[ "$PROFILE" == "prod" ]]; then
   else
     warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
   fi
+
+  # Delete only the chart-derived Secret; operator-owned dataspoke-secrets is preserved.
+  for SECRET in dataspoke-airflow-metadata-db; do
+    if kubectl get secret "${SECRET}" -n "${NS}" >/dev/null 2>&1; then
+      info "Deleting chart-derived Secret '${SECRET}'..."
+      kubectl delete secret "${SECRET}" -n "${NS}"
+    fi
+  done
+  info "Operator-owned Secret 'dataspoke-secrets' (or secrets.existingSecret) retained."
 
   echo ""
   if [[ "${DELETE_NAMESPACES}" != true ]]; then

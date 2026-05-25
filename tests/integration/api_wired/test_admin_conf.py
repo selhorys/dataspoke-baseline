@@ -503,9 +503,9 @@ async def test_internal_patch_conf_valid_token_returns_200_and_get_reflects(
             body = patch_resp.json()
             assert body.get("detail", {}).get("error_code") == "INTERNAL_AUTH_NOT_CONFIGURED", (
                 "503 response must carry INTERNAL_AUTH_NOT_CONFIGURED error_code "
-                "when DATASPOKE_INTERNAL_TOKEN is unset."
+                "when DATASPOKE_TEST_INTERNAL_TOKEN is unset."
             )
-            pytest.skip("DATASPOKE_INTERNAL_TOKEN not configured in this environment — skipping")
+            pytest.skip("DATASPOKE_TEST_INTERNAL_TOKEN not configured in this environment — skipping")
 
         assert patch_resp.status_code == 200, (
             f"PATCH /internal/admin/conf returned {patch_resp.status_code}: {patch_resp.text}"

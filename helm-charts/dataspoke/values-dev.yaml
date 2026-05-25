@@ -58,10 +58,11 @@ postgresql:
     # pullPolicy: Always ensures the :dev tag is always pulled after rebuild.
     pullPolicy: Always
   auth:
-    # username/database: passed via --set from .env
+    existingSecret: "dataspoke-secrets"
     secretKeys:
-      adminPasswordKey: "POSTGRES_PASSWORD"
-      userPasswordKey: "POSTGRES_PASSWORD"
+      adminPasswordKey: "DATASPOKE_POSTGRES_PASSWORD"
+      userPasswordKey: "DATASPOKE_POSTGRES_PASSWORD"
+      replicationPasswordKey: "DATASPOKE_POSTGRES_PASSWORD"
   primary:
     resources:
       limits:
@@ -101,7 +102,8 @@ redis:
     repository: bitnamilegacy/redis
     tag: "8.2.1-debian-12-r0"
   auth:
-    existingSecretPasswordKey: "REDIS_PASSWORD"
+    existingSecret: "dataspoke-secrets"
+    existingSecretPasswordKey: "DATASPOKE_REDIS_PASSWORD"
   master:
     resources:
       limits:
@@ -118,10 +120,8 @@ airflow:
   useStandardNaming: true
   fullnameOverride: dataspoke-airflow
   executor: LocalExecutor
-  # Static secrets — avoids session invalidation on every helm upgrade.
-  # Dev-only; regenerate with `openssl rand -hex 16` if rotation is ever needed.
-  webserverSecretKey: "a968a7bb941f11dab42cfec47b7f7cc4"
-  jwtSecret: "164532da21ef6d23c44a9f82a3cacfa2"
+  # Airflow signing keys come from dataspoke-secrets projected by install.sh.
+  # apiSecretKeySecretName and jwtSecretName are passed via --set at deploy time.
 
   # Airflow 3.1.8 on Python 3.13. DAGs are baked into the image; the
   # repository + tag are overridden via --set at install time
@@ -145,16 +145,9 @@ airflow:
   statsd:
     enabled: false
 
-  # Metadata DB connection to existing dataspoke PostgreSQL
+  # Metadata DB connection — Secret pre-created by install.sh with key `connection`.
   data:
-    metadataConnection:
-      user: dataspoke
-      pass: ""
-      protocol: postgresql
-      host: dataspoke-postgresql
-      port: 5432
-      db: airflow
-      sslmode: disable
+    metadataSecretName: dataspoke-airflow-metadata-db
 
   # Airflow configuration overrides
   config:
@@ -184,15 +177,8 @@ airflow:
   createUserJob:
     enabled: false
 
-  # Pre-configure the dataspoke_api HTTP connection and internal auth token
-  extraEnv: |
-    - name: AIRFLOW_CONN_DATASPOKE_API
-      value: "http://dataspoke-api:8002"
-    - name: DATASPOKE_INTERNAL_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: dataspoke-internal-auth
-          key: token
+  # extraEnv is injected at install time via --set-file airflow.extraEnv=<path>
+  # (see install.sh _build_airflow_extra_env_file).
 
   # Component resources (dev minimums). Airflow 3.x api-server is FastAPI
   # (uvicorn, 1 worker) — the 500m-CPU Gunicorn-monitor-SIGTERM class of
@@ -269,11 +255,7 @@ airflow:
             enabled: false
 
 # ---------------------------------------------------------------------------
-# ConfigMap/Secret: created in dev for in-cluster API deployment
+# ConfigMap: created in dev for in-cluster API deployment
 # ---------------------------------------------------------------------------
 config:
   createConfigMap: true
-secrets:
-  createSecret: true
-  jwt:
-    secretKey: "changeme-dev-secret-do-not-use-in-prod"

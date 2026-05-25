@@ -46,8 +46,8 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset({"imazon.orders.events"})
 
 _KAFKA_INSTANCE = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
 _TOPIC = "imazon.orders.events"
-_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-_DATAHUB_TOKEN = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+_DATAHUB_TOKEN = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
 # spec: TESTING.md §Imazon Dummy-Data Reference — Kafka topic imazon.orders.events
 _PASSIVE_KAFKA_URN = (
@@ -153,7 +153,7 @@ async def test_ingestion_passive_kafka_external_script_sync_emits_event(
     spec: BACKEND.md §Custom Ingestor Authoring Contract — Required aspects per run
     """
     if not _DATAHUB_GMS_URL:
-        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping passive sync test")
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping passive sync test")
 
     base_conf = f"/api/v1/spoke/common/data/{_PASSIVE_KAFKA_ENCODED}/attr/ingestion/conf"
     base_events = f"/api/v1/spoke/common/data/{_PASSIVE_KAFKA_ENCODED}/event/ingestion"

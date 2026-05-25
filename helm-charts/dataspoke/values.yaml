@@ -139,10 +139,11 @@ postgresql:
   auth:
     username: "dataspoke"
     database: "dataspoke"
-    existingSecret: ""
+    existingSecret: "dataspoke-secrets"
     secretKeys:
-      adminPasswordKey: "POSTGRES_PASSWORD"
-      userPasswordKey: "POSTGRES_PASSWORD"
+      adminPasswordKey: "DATASPOKE_POSTGRES_PASSWORD"
+      userPasswordKey: "DATASPOKE_POSTGRES_PASSWORD"
+      replicationPasswordKey: "DATASPOKE_POSTGRES_PASSWORD"
   primary:
     resources:
       requests:
@@ -184,8 +185,8 @@ redis:
     tag: "8.2.1-debian-12-r0"
   auth:
     enabled: true
-    existingSecret: ""
-    existingSecretPasswordKey: "REDIS_PASSWORD"
+    existingSecret: "dataspoke-secrets"
+    existingSecretPasswordKey: "DATASPOKE_REDIS_PASSWORD"
   master:
     resources:
       requests:
@@ -215,10 +216,11 @@ airflow:
       tag: "3.1.8-python3.13"
       pullPolicy: IfNotPresent
 
-  # Static secrets — avoids churn on every helm upgrade.
-  # Regenerate with `openssl rand -hex 16` if rotation is needed.
-  webserverSecretKey: "13f26f24e6495a5c337dfb4d996f1978"
-  jwtSecret: "f6b29dfa74a5a724c788f2abd529fbc1"
+  # Airflow signing keys are stored in dataspoke-secrets and projected into
+  # chart-compatible Secrets by install.sh (_ensure_airflow_key_secrets).
+  # install.sh passes these names via --set at deploy time.
+  apiSecretKeySecretName: dataspoke-airflow-api-secret-key
+  jwtSecretName: dataspoke-airflow-jwt-secret
 
   # Use existing PostgreSQL — do not deploy Airflow's bundled instance
   postgresql:
@@ -229,16 +231,9 @@ airflow:
   statsd:
     enabled: true
 
-  # Metadata DB connection to existing dataspoke PostgreSQL
+  # Metadata DB connection — Secret pre-created by install.sh with key `connection`.
   data:
-    metadataConnection:
-      user: dataspoke
-      pass: ""
-      protocol: postgresql
-      host: dataspoke-postgresql
-      port: 5432
-      db: airflow
-      sslmode: disable
+    metadataSecretName: dataspoke-airflow-metadata-db
 
   # Airflow configuration overrides
   config:
@@ -275,15 +270,10 @@ airflow:
   createUserJob:
     enabled: false
 
-  # Pre-configure the dataspoke_api HTTP connection and internal auth token
-  extraEnv: |
-    - name: AIRFLOW_CONN_DATASPOKE_API
-      value: "http://dataspoke-api:8002"
-    - name: DATASPOKE_INTERNAL_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: dataspoke-internal-auth
-          key: token
+  # extraEnv is injected at install time via --set-file airflow.extraEnv=<path>
+  # (see install.sh _build_airflow_extra_env_file). This injects
+  # AIRFLOW_CONN_DATASPOKE_API and DATASPOKE_INTERNAL_TOKEN with the correct
+  # resolved secret name for both dev and prod BYO-Secret deployments.
 
   # Component resources. Airflow 3.x renamed the webserver component to
   # api-server; chart 1.20 reads these from `apiServer.*` when
@@ -377,20 +367,22 @@ config:
   corsOrigins: "http://localhost:3000"
 
 # ---------------------------------------------------------------------------
-# Shared secrets (injected into Secret)
+# Shared secrets — pre-created by install.sh (dev) or operator (prod)
 # ---------------------------------------------------------------------------
 secrets:
-  createSecret: true
-  postgres:
-    user: ""
-    password: ""
-  redis:
-    password: ""
-  airflow:
-    user: ""
-    password: ""
-  jwt:
-    secretKey: ""      # Must be set in production
+  # If set, the chart references this Secret instead of "dataspoke-secrets"
+  # everywhere. Used for prod BYO patterns (ExternalSecrets / Vault /
+  # SealedSecrets). The Secret must contain these 10 keys:
+  #   DATASPOKE_POSTGRES_USER, DATASPOKE_POSTGRES_PASSWORD, DATASPOKE_POSTGRES_DB,
+  #   DATASPOKE_REDIS_PASSWORD, DATASPOKE_AIRFLOW_USER, DATASPOKE_AIRFLOW_PASSWORD,
+  #   DATASPOKE_INTERNAL_TOKEN, DATASPOKE_JWT_SECRET_KEY,
+  #   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY, DATASPOKE_AIRFLOW_JWT_SECRET
+  # install.sh (_check_airflow_credentials_prod) validates all 10 keys in prod.
+  # Airflow signing keys are projected into chart-compatible Secrets by
+  # install.sh (_ensure_airflow_key_secrets).
+  existingSecret: ""
+  # install.sh pre-creates the Secret; Helm does not template it.
+  createSecret: false
 
 # ---------------------------------------------------------------------------
 # Network policy — cross-namespace access to DataHub

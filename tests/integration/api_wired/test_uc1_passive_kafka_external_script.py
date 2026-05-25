@@ -53,11 +53,11 @@ async def test_uc1_passive_kafka_via_external_script(
       7. Cross-dataset overview includes passive Kafka URN
       8. Cleanup: delete DataSpoke conf (reset-seed handles DPI cleanup in subsequent runs)
     """
-    datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
     if not datahub_gms_url:
-        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping passive Kafka test")
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping passive Kafka test")
 
     passive_conf_url = f"/api/v1/spoke/common/data/{_PASSIVE_KAFKA_ENCODED}/attr/ingestion/conf"
     passive_run_url = f"/api/v1/spoke/common/data/{_PASSIVE_KAFKA_ENCODED}/method/ingestion/run"
@@ -278,7 +278,7 @@ async def test_uc1_passive_kafka_via_external_script(
         # DataHub indexing of emitted DPI aspects may take a moment. Poll sync +
         # event check rather than sleeping a fixed duration.
         # spec: feedback_no_increase_timeout — bounded polls with explicit failure.
-        internal_token = os.environ.get("DATASPOKE_INTERNAL_TOKEN", "")
+        internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
         internal_headers_dict = {"X-Internal-Token": internal_token} if internal_token else {}
 
         # ── Step 6: GET event/ingestion — assert one INGESTION.COMPLETE row ───

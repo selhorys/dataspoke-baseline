@@ -9,15 +9,15 @@ Usage (as a module):
     uv run python -m tests.integration.util.datahub --reset-only  # delete only
 
 Environment variables (loaded from helm-charts/.env if present):
-    DATASPOKE_DEV_DATAHUB_GMS_URL       (default: http://localhost:9004)
-    DATASPOKE_DEV_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
-    DATASPOKE_DEV_DATAHUB_FRONTEND_URL  (default: http://localhost:9002)
-    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
-    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
-    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER     (default: postgres)
+    DATASPOKE_TEST_DATAHUB_GMS_URL       (default: http://localhost:9004)
+    DATASPOKE_TEST_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
+    DATASPOKE_DEV_DATAHUB_FRONTEND_URL   (default: http://localhost:9002)
+    DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
+    DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER      (default: postgres)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB        (default: example_db)
-    DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE    (default: example_kafka)
+    DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE     (default: example_kafka)
 """
 
 from __future__ import annotations
@@ -104,11 +104,11 @@ _KAFKA_TOPIC_AREA_TAGS: dict[str, str] = {
 
 # Dataspoke operational DB — used to reconcile dataset_registry rows whose
 # datahub_registered cache was frozen False before this ingest.
-_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_POSTGRES_PORT", "9201"))
-_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-_DATASPOKE_PG_PASSWORD = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
-_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"))
+_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+_DATASPOKE_PG_PASSWORD = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
 
 
 async def _mark_registry_registered(urns: list[str]) -> None:
@@ -199,12 +199,12 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "http://localhost:9004")
+_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "http://localhost:9004")
 _frontend_url = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "http://localhost:9002")
-_token_env = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+_token_env = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
-_pg_host = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "localhost")
-_pg_port = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_pg_host = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "localhost")
+_pg_port = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _pg_user = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _pg_password = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
 _pg_db = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
@@ -269,7 +269,7 @@ def get_datahub_token() -> str:
     if not tok:
         raise RuntimeError(
             "Cannot obtain a DataHub token. "
-            "Ensure DATASPOKE_DEV_DATAHUB_TOKEN is set or the DataHub frontend is reachable."
+            "Ensure DATASPOKE_TEST_DATAHUB_TOKEN is set or the DataHub frontend is reachable."
         )
     return tok
 

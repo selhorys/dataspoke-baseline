@@ -49,10 +49,11 @@ are specified, operate on **all-for-profile**.
 ## Action: configure
 
 1. Read `helm-charts/.env`. If it does not exist, create it from `helm-charts/.env.example`.
-2. If it already exists, verify the canonical variables are present per spec `spec/feature/HELM_CHART.md §Configuration — Three-Tier Env Vars`:
+2. If it already exists, verify the canonical variables are present per spec `spec/feature/HELM_CHART.md §Configuration — Four-Tier Env Vars`:
    - **Kube deployment** (both profiles): `DATASPOKE_KUBE_CLUSTER`, `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_KUBE_IMAGE_REGISTRY`, `DATASPOKE_KUBE_CLOUD_VENDOR`, `DATASPOKE_KUBE_INGRESS_IP` (auto-populated in dev), `DATASPOKE_KUBE_INGRESS_DOMAIN` (auto-populated in dev).
-   - **App runtime**: `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`, `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`, `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`, `DATASPOKE_INTERNAL_TOKEN`. The Airflow user/password must NOT be `admin/admin` (install.sh fails fast otherwise). `DATASPOKE_CORS_ORIGINS` is rendered from chart values (`config.corsOrigins`), not from `.env`.
-   - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_*`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and DataHub/Langfuse connection outputs are auto-populated by the peripheral install scripts.
+   - **App runtime** (`DATASPOKE_*`): not in `.env` — injected into pods from the `dataspoke-secrets` K8s Secret via `envFrom`. In dev, `install.sh` auto-generates the Secret; in prod, the operator pre-creates it. `DATASPOKE_CORS_ORIGINS` is rendered from chart values (`config.corsOrigins`).
+   - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_{KAFKA_INSTANCE,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB}`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and peripheral connection outputs are auto-populated by the peripheral install scripts.
+   - **Test access** (`DATASPOKE_TEST_*`): auto-populated by `install.sh` post-install via `_sync_env_from_secret`; never manually edited. Read by `tests/integration/` for laptop-side cluster access.
 3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` or `DATASPOKE_TEST_LLM_REAL` to `.env` — those are chart values only (`api.enableStubAuth`, `api.testLlmReal`).
 4. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
 5. **Show the final `.env` content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if `.env` already has all required variables.)

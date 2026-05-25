@@ -18,8 +18,8 @@ import pytest
 
 # ── Dataset URN constants ─────────────────────────────────────────────────────
 
-_PG_HOST = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
+_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
@@ -58,11 +58,11 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
       8. Cross-dataset overview includes passive URN
       9. Cleanup: deleteIngestionSource + delete DataSpoke conf
     """
-    datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
     if not datahub_gms_url:
-        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping passive PG test")
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping passive PG test")
 
     passive_conf_url = f"/api/v1/spoke/common/data/{_PASSIVE_PG_ENCODED}/attr/ingestion/conf"
     passive_run_url = f"/api/v1/spoke/common/data/{_PASSIVE_PG_ENCODED}/method/ingestion/run"
@@ -279,7 +279,7 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
         # spec: USE_CASE_en.md §UC1 Case 2 — events list shows INGESTION.COMPLETE
         #     with detail.source='passive'
         # spec: feedback_no_increase_timeout — use polls with clear failure mode.
-        internal_token = os.environ.get("DATASPOKE_INTERNAL_TOKEN", "")
+        internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
         internal_headers = {"X-Internal-Token": internal_token} if internal_token else {}
 
         events_body = None

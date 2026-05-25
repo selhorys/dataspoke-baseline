@@ -19,8 +19,8 @@ import pytest
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
 
 # Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
-_PG_HOST = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
+_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")

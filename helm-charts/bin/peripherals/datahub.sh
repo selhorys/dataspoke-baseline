@@ -201,13 +201,13 @@ fi
 # in-cluster URL by post-install/seed-peripheral-config.sh), not from .env.
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" && -n "${DATASPOKE_KUBE_INGRESS_IP:-}" ]]; then
-  upsert_env_var DATASPOKE_DEV_DATAHUB_GMS_URL \
+  upsert_env_var DATASPOKE_TEST_DATAHUB_GMS_URL \
     "http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms" \
     "$ENV_FILE"
-  upsert_env_var DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS \
+  upsert_env_var DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS \
     "${DATASPOKE_KUBE_INGRESS_IP}:9005" \
     "$ENV_FILE"
-  info "DATASPOKE_DEV_DATAHUB_GMS_URL and DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS written to .env."
+  info "DATASPOKE_TEST_DATAHUB_GMS_URL and DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS written to .env."
 else
   warn "DATASPOKE_KUBE_INGRESS_DOMAIN / _IP not set — skipping DataHub .env addresses."
 fi
@@ -221,7 +221,7 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
 
   # Re-read .env to pick up any existing token
   source "$ENV_FILE"
-  EXISTING_TOKEN="${DATASPOKE_DEV_DATAHUB_TOKEN:-}"
+  EXISTING_TOKEN="${DATASPOKE_TEST_DATAHUB_TOKEN:-}"
 
   NEED_TOKEN=true
   if [[ -n "$EXISTING_TOKEN" ]]; then
@@ -279,8 +279,8 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
 
     NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
     if [[ -n "$NEW_TOKEN" ]]; then
-      upsert_env_var DATASPOKE_DEV_DATAHUB_TOKEN "${NEW_TOKEN}" "$ENV_FILE"
-      info "DataHub PAT written to .env as DATASPOKE_DEV_DATAHUB_TOKEN."
+      upsert_env_var DATASPOKE_TEST_DATAHUB_TOKEN "${NEW_TOKEN}" "$ENV_FILE"
+      info "DataHub PAT written to .env as DATASPOKE_TEST_DATAHUB_TOKEN."
     else
       warn "Failed to generate DataHub PAT. You may need to create one manually."
       # Extract only the errors[] array — never log the raw response which may

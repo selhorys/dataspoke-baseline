@@ -106,20 +106,20 @@ upsert_env_var DATASPOKE_KUBE_INGRESS_DOMAIN "${INGRESS_DOMAIN}" "${ENV_FILE}"
 # ---------------------------------------------------------------------------
 
 # Tier A: HTTP endpoints (use domain-based URLs)
-upsert_env_var DATASPOKE_AIRFLOW_URL           "http://airflow.${INGRESS_DOMAIN}"      "${ENV_FILE}"
+upsert_env_var DATASPOKE_TEST_AIRFLOW_URL      "http://airflow.${INGRESS_DOMAIN}"      "${ENV_FILE}"
 
 # Tier B: TCP endpoints (use IP directly)
-upsert_env_var DATASPOKE_POSTGRES_HOST         "${EXTERNAL_IP}"                        "${ENV_FILE}"
-upsert_env_var DATASPOKE_REDIS_HOST            "${EXTERNAL_IP}"                        "${ENV_FILE}"
+upsert_env_var DATASPOKE_TEST_POSTGRES_HOST    "${EXTERNAL_IP}"                        "${ENV_FILE}"
+upsert_env_var DATASPOKE_TEST_REDIS_HOST       "${EXTERNAL_IP}"                        "${ENV_FILE}"
 
 # Example data sources
-upsert_env_var DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST "${EXTERNAL_IP}"                 "${ENV_FILE}"
-upsert_env_var DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS "${EXTERNAL_IP}:9104"            "${ENV_FILE}"
+upsert_env_var DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST "${EXTERNAL_IP}"                "${ENV_FILE}"
+upsert_env_var DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS "${EXTERNAL_IP}:9104"           "${ENV_FILE}"
 
 info "Written to .env:"
 info "  DATASPOKE_KUBE_INGRESS_IP=${EXTERNAL_IP}"
 info "  DATASPOKE_KUBE_INGRESS_DOMAIN=${INGRESS_DOMAIN}"
-info "  + 5 derived runtime variables (POSTGRES_HOST, REDIS_HOST, etc.)"
+info "  + 5 derived test variables (DATASPOKE_TEST_POSTGRES_HOST, DATASPOKE_TEST_REDIS_HOST, etc.)"
 
 # ---------------------------------------------------------------------------
 # Print access summary

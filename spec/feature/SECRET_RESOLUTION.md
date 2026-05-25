@@ -85,8 +85,7 @@ fixed prefix `dataspoke-source-cred-`. Names not matching the prefix are rejecte
 `SecretRefNameForbidden` at the API boundary.
 
 This is a security boundary, not a convention: DataSpoke's own runtime config Secrets
-(`dataspoke-secrets`, `dataspoke-internal-auth`, `dataspoke-postgres-secret`,
-`dataspoke-redis-secret`, etc., per [HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management))
+(`dataspoke-secrets`, `dataspoke-airflow-metadata-db`, `dataspoke-llm-secret`, per [HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management))
 live in the same namespace and are writable under the `Role`'s `create/patch` verbs.
 Without the prefix constraint, any caller authorised to PUT an ingestion conf could
 overwrite the JWT signing key, the DataHub token, or the internal-auth token via the

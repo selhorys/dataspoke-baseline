@@ -119,7 +119,7 @@ def admin_headers(admin_token: str) -> dict[str, str]:
 @pytest.fixture(scope="session")
 def internal_headers() -> dict[str, str]:
     """Session-scoped X-Internal-Token header dict for internal routes."""
-    token = os.environ["DATASPOKE_INTERNAL_TOKEN"]
+    token = os.environ["DATASPOKE_TEST_INTERNAL_TOKEN"]
     return {"X-Internal-Token": token}
 
 

@@ -79,11 +79,11 @@ _FACTORY_DEFAULT_TIME_WINDOW_SEC = 172800
 async def _get_ds_conn() -> asyncpg.Connection:
     """Open a direct asyncpg connection to the DataSpoke operational DB."""
     return await asyncpg.connect(
-        host=os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost"),
-        port=int(os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")),
-        user=os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke"),
-        password=os.environ.get("DATASPOKE_POSTGRES_PASSWORD", ""),
-        database=os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke"),
+        host=os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost"),
+        port=int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")),
+        user=os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke"),
+        password=os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", ""),
+        database=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
     )
 
 

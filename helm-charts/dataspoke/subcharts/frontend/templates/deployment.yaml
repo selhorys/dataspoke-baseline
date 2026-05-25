@@ -22,12 +22,13 @@ spec:
             - name: http
               containerPort: 3000
               protocol: TCP
+          {{- $secretName := .Values.existingSecretName | default (printf "%s-secrets" .Release.Name) }}
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-config
                 optional: true
             - secretRef:
-                name: {{ .Release.Name }}-secrets
+                name: {{ $secretName }}
                 optional: true
           livenessProbe:
             httpGet:

@@ -85,19 +85,19 @@ DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID="${DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID
 DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_NAME:-dataspoke}"
 
 # Public key is human-readable, hardcoded; secret key is persisted random hex.
-if [[ -z "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY:-}" ]]; then
-  info "DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
-  DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
-  upsert_env_var DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}" "${ENV_FILE}"
-  export DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY
-  info "  DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY=${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY} persisted to .env."
+if [[ -z "${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+  info "DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY not set — defaulting to pk-lf-dataspoke-dev..."
+  DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY="pk-lf-dataspoke-dev"
+  upsert_env_var DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY "${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY}" "${ENV_FILE}"
+  export DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY
+  info "  DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY=${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY} persisted to .env."
 fi
-if [[ -z "${DATASPOKE_DEV_LANGFUSE_SECRET_KEY:-}" ]]; then
-  info "DATASPOKE_DEV_LANGFUSE_SECRET_KEY not set — generating sk-lf-dataspoke-dev-<hex>..."
+if [[ -z "${DATASPOKE_TEST_LANGFUSE_SECRET_KEY:-}" ]]; then
+  info "DATASPOKE_TEST_LANGFUSE_SECRET_KEY not set — generating sk-lf-dataspoke-dev-<hex>..."
   _generated_sk="sk-lf-dataspoke-dev-$(openssl rand -hex 24)"
-  upsert_env_var DATASPOKE_DEV_LANGFUSE_SECRET_KEY "${_generated_sk}" "${ENV_FILE}"
-  export DATASPOKE_DEV_LANGFUSE_SECRET_KEY="${_generated_sk}"
-  info "  DATASPOKE_DEV_LANGFUSE_SECRET_KEY generated and persisted to .env."
+  upsert_env_var DATASPOKE_TEST_LANGFUSE_SECRET_KEY "${_generated_sk}" "${ENV_FILE}"
+  export DATASPOKE_TEST_LANGFUSE_SECRET_KEY="${_generated_sk}"
+  info "  DATASPOKE_TEST_LANGFUSE_SECRET_KEY generated and persisted to .env."
 fi
 
 # ---------------------------------------------------------------------------
@@ -135,8 +135,8 @@ fi
 info "Creating dataspoke-langfuse-secret in ${LANGFUSE_NS} (full key set)..."
 kubectl create secret generic dataspoke-langfuse-secret \
   --namespace "${LANGFUSE_NS}" \
-  --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}" \
-  --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_DEV_LANGFUSE_SECRET_KEY}" \
+  --from-literal=LANGFUSE_PUBLIC_KEY="${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY}" \
+  --from-literal=LANGFUSE_SECRET_KEY="${DATASPOKE_TEST_LANGFUSE_SECRET_KEY}" \
   --from-literal=LANGFUSE_NEXTAUTH_SECRET="${DATASPOKE_DEV_LANGFUSE_NEXTAUTH_SECRET}" \
   --from-literal=LANGFUSE_SALT="${DATASPOKE_DEV_LANGFUSE_SALT}" \
   --from-literal=LANGFUSE_ENCRYPTION_KEY="${DATASPOKE_DEV_LANGFUSE_ENCRYPTION_KEY}" \
@@ -154,8 +154,8 @@ kubectl create secret generic dataspoke-langfuse-secret \
   --from-literal=LANGFUSE_INIT_ORG_NAME="${DATASPOKE_DEV_LANGFUSE_INIT_ORG_NAME}" \
   --from-literal=LANGFUSE_INIT_PROJECT_ID="${DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID}" \
   --from-literal=LANGFUSE_INIT_PROJECT_NAME="${DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_NAME}" \
-  --from-literal=LANGFUSE_INIT_PROJECT_PUBLIC_KEY="${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}" \
-  --from-literal=LANGFUSE_INIT_PROJECT_SECRET_KEY="${DATASPOKE_DEV_LANGFUSE_SECRET_KEY}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_PUBLIC_KEY="${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY}" \
+  --from-literal=LANGFUSE_INIT_PROJECT_SECRET_KEY="${DATASPOKE_TEST_LANGFUSE_SECRET_KEY}" \
   --dry-run=client -o yaml | kubectl apply -f -
 info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
 
@@ -192,10 +192,10 @@ kubectl rollout status deployment/langfuse-worker \
   || warn "langfuse-worker did not become ready in time — check pod logs."
 
 # ---------------------------------------------------------------------------
-# Write DATASPOKE_DEV_LANGFUSE_HOST back into .env
+# Write DATASPOKE_TEST_LANGFUSE_HOST back into .env
 # ---------------------------------------------------------------------------
-upsert_env_var DATASPOKE_DEV_LANGFUSE_HOST "${LANGFUSE_HOST}" "${ENV_FILE}"
-info "DATASPOKE_DEV_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
+upsert_env_var DATASPOKE_TEST_LANGFUSE_HOST "${LANGFUSE_HOST}" "${ENV_FILE}"
+info "DATASPOKE_TEST_LANGFUSE_HOST=${LANGFUSE_HOST} written to .env."
 
 # ---------------------------------------------------------------------------
 # Access summary

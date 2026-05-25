@@ -30,8 +30,8 @@ import pytest_asyncio
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
-_PG_HOST = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
+_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
@@ -44,8 +44,8 @@ _VAULT_KEY = "password"
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 
-_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-_DATAHUB_TOKEN = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+_DATAHUB_GMS_URL = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+_DATAHUB_TOKEN = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
 
@@ -58,14 +58,14 @@ _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "e
 async def real_run_state() -> dict:
     """Perform ONE active-custom real run; yield {'run_id', 'gms_headers'} for assertion tests.
 
-    Skips automatically when DATASPOKE_DEV_DATAHUB_GMS_URL is not set.
+    Skips automatically when DATASPOKE_TEST_DATAHUB_GMS_URL is not set.
     Builds its own httpx client and JWT because api_client is function-scoped and cannot
     be injected into a module-scoped fixture.
 
     spec: USE_CASE_en.md §UC1 Case 1 — real run with DataHub emission
     """
     if not _DATAHUB_GMS_URL:
-        pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping DataHub aspect assertions")
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DataHub aspect assertions")
 
     base_url = f"http://app.{os.environ['DATASPOKE_KUBE_INGRESS_DOMAIN']}"
     async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:

@@ -57,30 +57,30 @@ DS_API_URL="http://app.${DOMAIN}"
 DH_GMS_URL="http://datahub.${DOMAIN}/gms"
 DH_UI_URL="http://datahub.${DOMAIN}"
 AIRFLOW_URL="http://airflow.${DOMAIN}"
-DS_AIRFLOW_USER="${DATASPOKE_AIRFLOW_USER:-admin}"
-DS_AIRFLOW_PASSWORD="${DATASPOKE_AIRFLOW_PASSWORD:-admin}"
+DS_AIRFLOW_USER="${DATASPOKE_TEST_AIRFLOW_USER:-admin}"
+DS_AIRFLOW_PASSWORD="${DATASPOKE_TEST_AIRFLOW_PASSWORD:-admin}"
 
 # ---------------------------------------------------------------------------
 # Tier B: TCP services via ingress IP + fixed ports
 # ---------------------------------------------------------------------------
 DS_PG_HOST="${INGRESS_IP}"
 DS_PG_PORT=9201
-DS_PG_USER="${DATASPOKE_POSTGRES_USER:-dataspoke}"
-DS_PG_DB="${DATASPOKE_POSTGRES_DB:-dataspoke}"
+DS_PG_USER="${DATASPOKE_TEST_POSTGRES_USER:-dataspoke}"
+DS_PG_DB="${DATASPOKE_TEST_POSTGRES_DB:-dataspoke}"
 
 DS_REDIS_HOST="${INGRESS_IP}"
 DS_REDIS_PORT=9202
-DS_REDIS_PASSWORD="${DATASPOKE_REDIS_PASSWORD:-}"
+DS_REDIS_PASSWORD="${DATASPOKE_TEST_REDIS_PASSWORD:-}"
 
 DH_KAFKA_HOST="${INGRESS_IP}"
 DH_KAFKA_PORT=9005
 
-DD_PG_HOST="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST:-${INGRESS_IP}}"
-DD_PG_PORT="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT:-9102}"
+DD_PG_HOST="${DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST:-${INGRESS_IP}}"
+DD_PG_PORT="${DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT:-9102}"
 DD_PG_USER="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER:-postgres}"
 DD_PG_DB="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB:-example_db}"
 
-_DD_KAFKA_BROKERS="${DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS:-${INGRESS_IP}:9104}"
+_DD_KAFKA_BROKERS="${DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS:-${INGRESS_IP}:9104}"
 DD_KAFKA_HOST="${_DD_KAFKA_BROKERS%%:*}"
 DD_KAFKA_PORT="${_DD_KAFKA_BROKERS##*:}"
 
@@ -148,7 +148,7 @@ async def check():
     try:
         conn = await asyncpg.connect(host='$DS_PG_HOST', port=$DS_PG_PORT,
                                      user='$DS_PG_USER', database='$DS_PG_DB',
-                                     password='${DATASPOKE_POSTGRES_PASSWORD:-}', timeout=3)
+                                     password='${DATASPOKE_TEST_POSTGRES_PASSWORD:-}', timeout=3)
         await conn.execute('SELECT 1')
         await conn.close()
     except Exception as e:

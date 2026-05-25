@@ -130,11 +130,11 @@ async def _uc4_seed() -> None:
 
     dh_token = get_datahub_token()
 
-    ds_host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-    ds_port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
-    ds_user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-    ds_password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
-    ds_db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+    ds_host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+    ds_port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
+    ds_user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+    ds_password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+    ds_db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
 
     engine = create_async_engine(
         f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
@@ -168,11 +168,11 @@ async def _uc4_restore() -> None:
 
     dh_token = get_datahub_token()
 
-    ds_host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
-    ds_port = os.environ.get("DATASPOKE_POSTGRES_PORT", "9201")
-    ds_user = os.environ.get("DATASPOKE_POSTGRES_USER", "dataspoke")
-    ds_password = os.environ.get("DATASPOKE_POSTGRES_PASSWORD", "")
-    ds_db = os.environ.get("DATASPOKE_POSTGRES_DB", "dataspoke")
+    ds_host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+    ds_port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
+    ds_user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+    ds_password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+    ds_db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
 
     engine = create_async_engine(
         f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"

@@ -17,8 +17,8 @@ import pytest
 
 # ── Dataset URN constants ─────────────────────────────────────────────────────
 
-_PG_HOST = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
+_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
@@ -250,11 +250,11 @@ async def test_uc1_active_custom_postgres(
         # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed union fix.
         # spec: BACKEND.md §Active run pipeline lines 246-257 — a non-dry-run completing
         # with INGESTION.COMPLETE must have emitted both aspects in full.
-        datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
-        datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
+        datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+        datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
         if not datahub_gms_url:
-            pytest.skip("DATASPOKE_DEV_DATAHUB_GMS_URL not set; skipping aspect verification")
+            pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping aspect verification")
 
         gms_headers: dict[str, str] = {}
         if datahub_token:

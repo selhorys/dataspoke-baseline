@@ -39,11 +39,11 @@ from src.shared.vector.client import PgVectorManager, VectorHit
 
 
 def _dsn() -> str:
-    host = os.environ["DATASPOKE_POSTGRES_HOST"]
-    port = os.environ["DATASPOKE_POSTGRES_PORT"]
-    user = os.environ["DATASPOKE_POSTGRES_USER"]
-    password = os.environ["DATASPOKE_POSTGRES_PASSWORD"]
-    db = os.environ["DATASPOKE_POSTGRES_DB"]
+    host = os.environ["DATASPOKE_TEST_POSTGRES_HOST"]
+    port = os.environ["DATASPOKE_TEST_POSTGRES_PORT"]
+    user = os.environ["DATASPOKE_TEST_POSTGRES_USER"]
+    password = os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"]
+    db = os.environ["DATASPOKE_TEST_POSTGRES_DB"]
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
 
 
