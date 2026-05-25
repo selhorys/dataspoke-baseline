@@ -1018,8 +1018,8 @@ uncommitted for redelivery.
 `src/api/dependencies.py`).
 
 **Internal activity endpoints** use factory functions from `src/workflows/_common.py`
-(`make_datahub`, `make_cache`, `make_db_session`, `make_llm`, `make_vector`) instead of
-FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories
+(`make_datahub`, `make_redis_client`, `make_db_session`, `make_llm_client`,
+`make_pgvector_manager`, `make_notification_service`) instead of FastAPI `Depends()`. This decouples them from the FastAPI DI graph -- the same factories
 work in any context (tests, CLI).
 
 Activity endpoints map `DataSpokeError` to `400` (non-retryable) or `500` (retryable) JSON

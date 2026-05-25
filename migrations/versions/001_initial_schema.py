@@ -348,6 +348,18 @@ def upgrade() -> None:
         sa.Column(
             "validation_score_n_intervals", sa.Integer(), nullable=False, server_default="3"
         ),
+        sa.Column(
+            "stub_redis_client", sa.Boolean(), nullable=False, server_default="false"
+        ),
+        sa.Column(
+            "stub_llm_client", sa.Boolean(), nullable=False, server_default="false"
+        ),
+        sa.Column(
+            "stub_pgvector_manager", sa.Boolean(), nullable=False, server_default="false"
+        ),
+        sa.Column(
+            "stub_notification_service", sa.Boolean(), nullable=False, server_default="false"
+        ),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("id = 1", name="ck_runtime_config_singleton"),
         schema=SCHEMA,

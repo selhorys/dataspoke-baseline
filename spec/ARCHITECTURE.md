@@ -434,9 +434,9 @@ For full variable listings, the `.env.example` layout, and production Secret opt
 
 Dev and prod deployment share one entry point: `helm-charts/bin/install.sh --profile {dev|prod}`.
 The dev profile installs the umbrella chart with the `values-dev.yaml` overlay (reduced
-resources, frontend disabled, in-cluster API with `testMode: true`) plus the dev peripherals —
-nginx-ingress, DataHub, Langfuse, dummy data, dev-lock — and seeds peripheral and runtime
-config via the admin API. The prod profile installs the umbrella chart only; DataHub and
+resources, frontend disabled, in-cluster API with stub-mode RuntimeConfig flags seeded `true` via
+the post-install seed step) plus the dev peripherals — nginx-ingress, DataHub, Langfuse, dummy
+data, dev-lock — and seeds peripheral and runtime config via the admin API. The prod profile installs the umbrella chart only; DataHub and
 Langfuse are operator-managed externally, and peripheral wiring goes through `/api/v1/admin/*`.
 The API runs in-cluster in both profiles so Airflow callbacks reach it via
 `http://dataspoke-api:8002`. Unit tests run locally without the cluster; see

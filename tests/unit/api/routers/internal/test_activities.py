@@ -140,13 +140,20 @@ async def test_ingestion_run_accepts_documented_payload(client) -> None:
         async def __aexit__(self, *a):
             pass
 
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
     _ds_error = DataSpokeError("stubbed ingestion failure")
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
 
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
         patch.object(_ing_svc.IngestionService, "run", new=AsyncMock(side_effect=_ds_error)),
     ):
         resp = await client.post(
@@ -210,9 +217,9 @@ async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(cli
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
-        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -264,9 +271,9 @@ async def test_metagen_run_tier_match_invokes_run(client) -> None:
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
-        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -316,9 +323,9 @@ async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(cli
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
-        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -371,9 +378,9 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
-        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -421,9 +428,9 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_cache", return_value=AsyncMock()),
-        patch("src.api.routers.internal.activities.make_llm", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_vector", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -440,4 +447,193 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
     # Not a 422 — payload shape is valid (schema validation runs before service call)
     assert resp.status_code != 422, (
         f"Valid payload with optional prompt_md triggered 422; got: {resp.text}"
+    )
+
+
+# ── Stub-flag threading assertions ────────────────────────────────────────────
+#
+# These tests verify that each activity endpoint passes the RuntimeConfigDTO stub_*
+# field through to the matching factory call.  A regression where the activity
+# calls make_redis_client() with no kwargs (using default stub=False) instead of
+# make_redis_client(stub=rc.stub_redis_client) would pass the existing tests but
+# fail these three.
+#
+# spec: src/workflows/_common.py — factories accept stub= kwarg; callers must
+#       thread the RuntimeConfigDTO value through.
+
+
+@pytest.mark.asyncio
+async def test_ingestion_run_threads_stub_redis_flag(client) -> None:
+    """ingestion/run calls make_redis_client(stub=rc.stub_redis_client).
+
+    Patches get_runtime_config to return stub_redis_client=True, then asserts
+    make_redis_client was called with stub=True — not with no kwargs or stub=False.
+
+    spec: src/workflows/_common.py — make_redis_client(stub=...) sourced from RuntimeConfigDTO.
+    spec: feature/BACKEND.md §Dependency Injection — activity endpoints thread stub flags.
+    """
+    import src.backend.ingestion.service as _ing_svc
+
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_rc = RuntimeConfigDTO(**{**RUNTIME_CONFIG_DEFAULTS, "stub_redis_client": True})
+    make_redis_mock = MagicMock(return_value=AsyncMock())
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", make_redis_mock),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
+        patch.object(
+            _ing_svc.IngestionService,
+            "run",
+            new=AsyncMock(side_effect=DataSpokeError("stub")),
+        ),
+    ):
+        await client.post(
+            _INGESTION_RUN,
+            json={"dataset_urn": _VALID_URN, "dry_run": True},
+            headers=_internal_headers(),
+        )
+
+    assert make_redis_mock.call_args is not None, (
+        "ingestion/run did not call make_redis_client at all."
+    )
+    assert make_redis_mock.call_args.kwargs.get("stub") is True, (
+        f"ingestion/run must call make_redis_client(stub=True) when rc.stub_redis_client=True; "
+        f"actual call: {make_redis_mock.call_args}. "
+        "spec: src/workflows/_common.py — stub= kwarg must be threaded from RuntimeConfigDTO."
+    )
+
+
+@pytest.mark.asyncio
+async def test_metagen_run_threads_stub_llm_flag(client) -> None:
+    """metagen/run calls make_llm_client(stub=rc.stub_llm_client, ...).
+
+    Patches get_runtime_config to return stub_llm_client=True, then asserts
+    make_llm_client was called with stub=True.
+
+    spec: src/workflows/_common.py — make_llm_client(stub=...) sourced from RuntimeConfigDTO.
+    spec: feature/BACKEND.md §Dependency Injection — activity endpoints thread stub flags.
+    """
+    import src.backend.metagen.service as _mg_svc
+
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_rc = RuntimeConfigDTO(**{**RUNTIME_CONFIG_DEFAULTS, "stub_llm_client": True})
+    make_llm_mock = MagicMock(return_value=MagicMock())
+
+    fake_conf = MagicMock()
+    fake_conf.schedule_tier = "daily"
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", make_llm_mock),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
+        patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(
+            _mg_svc.MetagenService,
+            "run",
+            new=AsyncMock(side_effect=DataSpokeError("stub")),
+        ),
+    ):
+        await client.post(
+            _METAGEN_RUN,
+            json={"tier": "daily", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    assert make_llm_mock.call_args is not None, (
+        "metagen/run did not call make_llm_client at all."
+    )
+    assert make_llm_mock.call_args.kwargs.get("stub") is True, (
+        f"metagen/run must call make_llm_client(stub=True) when rc.stub_llm_client=True; "
+        f"actual call: {make_llm_mock.call_args}. "
+        "spec: src/workflows/_common.py — stub= kwarg must be threaded from RuntimeConfigDTO."
+    )
+
+
+@pytest.mark.asyncio
+async def test_ontogen_run_threads_stub_pgvector_flag(client) -> None:
+    """ontogen/run calls make_pgvector_manager(stub=rc.stub_pgvector_manager).
+
+    Patches get_runtime_config to return stub_pgvector_manager=True, then asserts
+    make_pgvector_manager was called with stub=True.
+
+    spec: src/workflows/_common.py — make_pgvector_manager(stub=...) sourced from RuntimeConfigDTO.
+    spec: feature/BACKEND.md §Dependency Injection — activity endpoints thread stub flags.
+    """
+    import src.backend.ontogen.service as _onto_svc
+
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    fake_rc = RuntimeConfigDTO(**{**RUNTIME_CONFIG_DEFAULTS, "stub_pgvector_manager": True})
+    make_pgvector_mock = MagicMock(return_value=MagicMock())
+
+    fake_conf = MagicMock()
+    fake_conf.schedule_tier = "daily"
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_pgvector_manager", make_pgvector_mock),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
+        patch.object(_onto_svc.OntogenService, "get_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(
+            _onto_svc.OntogenService,
+            "run",
+            new=AsyncMock(side_effect=DataSpokeError("stub")),
+        ),
+    ):
+        await client.post(
+            _ONTOGEN_RUN,
+            json={"tier": "daily", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    assert make_pgvector_mock.call_args is not None, (
+        "ontogen/run did not call make_pgvector_manager at all."
+    )
+    assert make_pgvector_mock.call_args.kwargs.get("stub") is True, (
+        f"ontogen/run must call make_pgvector_manager(stub=True) when rc.stub_pgvector_manager=True; "
+        f"actual call: {make_pgvector_mock.call_args}. "
+        "spec: src/workflows/_common.py — stub= kwarg must be threaded from RuntimeConfigDTO."
     )

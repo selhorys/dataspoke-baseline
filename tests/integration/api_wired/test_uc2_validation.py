@@ -12,7 +12,7 @@ Test in this module:
 Prerequisites (spec/TESTING.md §Integration Testing):
   ./helm-charts/bin/install.sh --profile dev --components api --skip-build
   uv run python -m tests.integration.util --reset-seed
-  DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/test_uc2_validation.py
+  uv run pytest tests/integration/api_wired/test_uc2_validation.py
 
 spec: USE_CASE_en.md §UC2
 spec: VALIDATION.md §API Surface, §Rule Configuration, §Validation Result

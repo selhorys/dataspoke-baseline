@@ -2,7 +2,7 @@
 
 Concern: Since commit 09f81e4, ``get_metagen_service`` and ``get_ontogen_service``
 in ``src/api/dependencies.py`` build the LLM **per request** by calling
-``make_llm(provider=rc.llm_provider, model=rc.llm_model)`` where ``rc`` is
+``make_llm_client(provider=rc.llm_provider, model=rc.llm_model)`` where ``rc`` is
 freshly read from the DB-backed ``runtime_config`` singleton. The headline
 guarantee is: a change to ``/admin/conf`` is honoured on the very next API
 request — there is no process-startup caching of the LLM client.
@@ -10,7 +10,7 @@ request — there is no process-startup caching of the LLM client.
 Why spot and not api-wired:
   api-wired tests are black-box REST: they cannot observe which provider/model
   the stub LLM was constructed with (``StubLLMClient`` is model-agnostic).
-  Verifying the wiring requires patching ``make_llm`` inside the process and
+  Verifying the wiring requires patching ``make_llm_client`` inside the process and
   inspecting its call arguments — an inherently in-process concern.
 
 This file exercises only dev-env PostgreSQL (for runtime_config); DataHub,
@@ -72,12 +72,12 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
     async_session,
     restored_runtime_config,
 ) -> None:
-    """get_metagen_service passes runtime_config provider/model to make_llm.
+    """get_metagen_service passes runtime_config provider/model to make_llm_client.
 
     Sets a known provider/model pair in the DB, then calls the dependency
-    provider directly (bypassing HTTP) and asserts that make_llm was invoked
+    provider directly (bypassing HTTP) and asserts that make_llm_client was invoked
     with exactly those values and that the resulting service's ._llm attribute
-    is the object make_llm returned.
+    is the object make_llm_client returned.
 
     spec: src/api/dependencies.py — get_metagen_service per-request LLM wiring.
     spec: spec/feature/BACKEND.md §Admin Config — provider/model in runtime_config.
@@ -86,13 +86,14 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
         async_session,
         llm_provider="openai",
         llm_model="gpt-4o-test",
+        stub_llm_client=False,
     )
 
     sentinel_llm = object()
 
     from src.api.dependencies import get_metagen_service
 
-    with patch("src.workflows._common.make_llm", return_value=sentinel_llm) as mock_make_llm:
+    with patch("src.workflows._common.make_llm_client", return_value=sentinel_llm) as mock_make_llm_client:
         service = await get_metagen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,
@@ -100,12 +101,17 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
             vector=_STUB_VECTOR,
         )
 
-    mock_make_llm.assert_called_once()
-    assert mock_make_llm.call_args.kwargs["provider"] == "openai"
-    assert mock_make_llm.call_args.kwargs["model"] == "gpt-4o-test"
+    mock_make_llm_client.assert_called_once()
+    assert mock_make_llm_client.call_args.kwargs["provider"] == "openai"
+    assert mock_make_llm_client.call_args.kwargs["model"] == "gpt-4o-test"
+    assert mock_make_llm_client.call_args.kwargs.get("stub") is False, (
+        "DI provider must thread rc.stub_llm_client into make_llm_client(stub=...); "
+        "this test patched stub_llm_client=False so the kwarg must be False. "
+        "spec: src/api/dependencies.py — make_llm_client(stub=rc.stub_llm_client, ...)."
+    )
     assert service._llm is sentinel_llm, (
-        "MetagenService._llm must be the object returned by make_llm. "
-        "spec: src/api/dependencies.py — llm = make_llm(...); MetagenService(..., llm=llm, ...)"
+        "MetagenService._llm must be the object returned by make_llm_client. "
+        "spec: src/api/dependencies.py — llm = make_llm_client(...); MetagenService(..., llm=llm, ...)"
     )
 
 
@@ -114,7 +120,7 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
     async_session,
     restored_runtime_config,
 ) -> None:
-    """get_ontogen_service passes runtime_config provider/model to make_llm.
+    """get_ontogen_service passes runtime_config provider/model to make_llm_client.
 
     Analogous to the metagen test above; verifies OntogenService receives the
     correct LLM instance constructed from the current runtime_config row.
@@ -126,13 +132,14 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
         async_session,
         llm_provider="anthropic",
         llm_model="claude-test",
+        stub_llm_client=False,
     )
 
     sentinel_llm = object()
 
     from src.api.dependencies import get_ontogen_service
 
-    with patch("src.workflows._common.make_llm", return_value=sentinel_llm) as mock_make_llm:
+    with patch("src.workflows._common.make_llm_client", return_value=sentinel_llm) as mock_make_llm_client:
         service = await get_ontogen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,
@@ -140,12 +147,17 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
             vector=_STUB_VECTOR,
         )
 
-    mock_make_llm.assert_called_once()
-    assert mock_make_llm.call_args.kwargs["provider"] == "anthropic"
-    assert mock_make_llm.call_args.kwargs["model"] == "claude-test"
+    mock_make_llm_client.assert_called_once()
+    assert mock_make_llm_client.call_args.kwargs["provider"] == "anthropic"
+    assert mock_make_llm_client.call_args.kwargs["model"] == "claude-test"
+    assert mock_make_llm_client.call_args.kwargs.get("stub") is False, (
+        "DI provider must thread rc.stub_llm_client into make_llm_client(stub=...); "
+        "this test patched stub_llm_client=False so the kwarg must be False. "
+        "spec: src/api/dependencies.py — make_llm_client(stub=rc.stub_llm_client, ...)."
+    )
     assert service._llm is sentinel_llm, (
-        "OntogenService._llm must be the object returned by make_llm. "
-        "spec: src/api/dependencies.py — llm = make_llm(...); OntogenService(..., llm=llm, ...)"
+        "OntogenService._llm must be the object returned by make_llm_client. "
+        "spec: src/api/dependencies.py — llm = make_llm_client(...); OntogenService(..., llm=llm, ...)"
     )
 
 
@@ -176,7 +188,7 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
     )
 
     first_sentinel = object()
-    with patch("src.workflows._common.make_llm", return_value=first_sentinel) as mock_first:
+    with patch("src.workflows._common.make_llm_client", return_value=first_sentinel) as mock_first:
         service_first = await get_metagen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,
@@ -199,7 +211,7 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
     )
 
     second_sentinel = object()
-    with patch("src.workflows._common.make_llm", return_value=second_sentinel) as mock_second:
+    with patch("src.workflows._common.make_llm_client", return_value=second_sentinel) as mock_second:
         service_second = await get_metagen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,
@@ -207,7 +219,7 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
             vector=_STUB_VECTOR,
         )
 
-    # After patching runtime_config, make_llm must be called with the NEW
+    # After patching runtime_config, make_llm_client must be called with the NEW
     # provider/model on the next get_metagen_service invocation — proving
     # per-request construction honours immediate /admin/conf changes.
     # spec: src/api/dependencies.py — per-request LLM construction.
@@ -215,7 +227,7 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
     assert mock_second.call_args.kwargs["provider"] == "anthropic"
     assert mock_second.call_args.kwargs["model"] == "claude-test"
     assert service_second._llm is second_sentinel, (
-        "Second MetagenService._llm must be the object make_llm returned for "
+        "Second MetagenService._llm must be the object make_llm_client returned for "
         "the updated provider/model, not the one from the first call."
     )
     # The two services must hold distinct LLM instances — the first was not reused.

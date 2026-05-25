@@ -54,7 +54,7 @@ are specified, operate on **all-for-profile**.
    - **App runtime** (`DATASPOKE_*`): not in `.env` — injected into pods from the `dataspoke-secrets` K8s Secret via `envFrom`. In dev, `install.sh` auto-generates the Secret; in prod, the operator pre-creates it. `DATASPOKE_CORS_ORIGINS` is rendered from chart values (`config.corsOrigins`).
    - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_{KAFKA_INSTANCE,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB}`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and peripheral connection outputs are auto-populated by the peripheral install scripts.
    - **Test access** (`DATASPOKE_TEST_*`): auto-populated by `install.sh` post-install via `_sync_env_from_secret`; never manually edited. Read by `tests/integration/` for laptop-side cluster access.
-3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` or `DATASPOKE_TEST_LLM_REAL` to `.env` — those are chart values only (`api.enableStubAuth`, `api.testLlmReal`).
+3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` to `.env` — it's a chart value only (`api.enableStubAuth`). Stub-mode toggles for the four dependency factories live in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) — flippable via `PATCH /api/v1/admin/conf`, not in `.env`.
 4. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
 5. **Show the final `.env` content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if `.env` already has all required variables.)
 
@@ -173,7 +173,7 @@ There is no dedicated `reinstall.sh`, and `uninstall.sh` does not support `--com
 
 ## Action: run-api
 
-Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll the API deployment. This is the **code-iteration path** that replaces the previous `dataspoke-test-mode.sh` workflow. The API is accessible via nginx-ingress — no port-forward needed. `DATASPOKE_TEST_MODE=true` is rendered onto the pod from `api.testMode` in `values-dev.yaml`, so Airflow callbacks reach the API via cluster DNS (`http://dataspoke-api:8002`).
+Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll the API deployment. This is the **code-iteration path**. The API is accessible via nginx-ingress — no port-forward needed. Airflow callbacks reach it via cluster DNS (`http://dataspoke-api:8002`). Stub-mode toggles are in `runtime_config` (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`); the dev-profile install seeds them all to `true` post-install, flippable via `PATCH /api/v1/admin/conf`.
 
 ### Pre-flight
 
@@ -200,7 +200,7 @@ Parse `$ARGUMENTS` and the user's request for these options:
    - API URL: `http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/api/v1/`
    - ReDoc UI: `http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/redoc`
    - Health: `http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/health`
-   - How to run tests: `set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/` (spot) or `… tests/integration/api_wired/` (UC user stories) — run in separate invocations
+   - How to run tests: `set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/spot/` (spot) or `… tests/integration/api_wired/` (UC user stories) — run in separate invocations. The conftest `runtime_conf` fixture verifies the API has `stub_redis_client / stub_pgvector_manager / stub_notification_service` all `true` before the suite runs.
    - How to stop: `kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"`
 
 ### Stop

@@ -14,7 +14,7 @@ Groups:
   D – cycle_detected → dropped (NOT persisted)
   E – below-threshold candidates dropped on accept
   F – cold start (empty RAG anchors)
-  G – reviewer_model override wires make_llm
+  G – reviewer_model override wires make_llm_client
 """
 
 from typing import Any
@@ -157,7 +157,7 @@ async def _run(
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "src.backend.metagen.debate.make_llm",
+            "src.backend.metagen.debate.make_llm_client",
             return_value=(reviewer if reviewer_model and reviewer else producer),
         ),
     ):
@@ -439,16 +439,16 @@ async def test_run_debate_cold_start_no_crash() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Group G: reviewer_model override wires make_llm
+# Group G: reviewer_model override wires make_llm_client
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_run_debate_reviewer_model_override_calls_make_llm() -> None:
-    """When reviewer_model is set, make_llm(model_override=...) is called for the Reviewer.
+async def test_run_debate_reviewer_model_override_calls_make_llm_client() -> None:
+    """When reviewer_model is set, make_llm_client(model_override=...) is called for the Reviewer.
 
     Spec: BACKEND_LLM.md §Settings Reference — DATASPOKE_METAGEN_DEBATE_REVIEWER_MODEL.
-    Debate module must use make_llm() so test-mode stubbing applies to the Reviewer.
+    Debate module must use make_llm_client() so stub toggling applies to the Reviewer.
     """
     producer_llm = FakeLLM([_producer_result_1()])
     reviewer_fake_llm = FakeLLM([_accept_result()])
@@ -462,9 +462,9 @@ async def test_run_debate_reviewer_model_override_calls_make_llm() -> None:
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "src.backend.metagen.debate.make_llm",
+            "src.backend.metagen.debate.make_llm_client",
             return_value=reviewer_fake_llm,
-        ) as mock_make_llm,
+        ) as mock_make_llm_client,
     ):
         result = await run_debate(
             llm=producer_llm,  # type: ignore[arg-type]
@@ -484,15 +484,78 @@ async def test_run_debate_reviewer_model_override_calls_make_llm() -> None:
             run_id="test-run-id",
         )
 
-    # Assert make_llm was called with the reviewer model string (positional or keyword)
-    assert mock_make_llm.called, "make_llm must be called when reviewer_model is set."
-    call_args = mock_make_llm.call_args
+    # Assert make_llm_client was called with the reviewer model string (positional or keyword)
+    assert mock_make_llm_client.called, "make_llm_client must be called when reviewer_model is set."
+    call_args = mock_make_llm_client.call_args
     all_args = list(call_args.args) + list(call_args.kwargs.values())
     assert "some-other-model" in all_args, (
-        "make_llm must receive 'some-other-model' regardless of binding form. "
+        "make_llm_client must receive 'some-other-model' regardless of binding form. "
         "spec: BACKEND_LLM.md §Settings Reference — reviewer_model override"
     )
     assert result.outcome == "accept"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Group H: stub_llm_client threading into make_llm_client for the Reviewer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("stub_flag", [True, False])
+@pytest.mark.asyncio
+async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: bool) -> None:
+    """run_debate threads stub_llm_client=<flag> into make_llm_client(stub=<flag>) for the Reviewer.
+
+    A regression that drops the `stub=stub_llm_client` kwarg from the reviewer-model
+    construction path would not be caught by the model_override test alone, because that
+    test only asserts model_override presence.  This test asserts the stub kwarg is also
+    present — with both True and False values.
+
+    Spec: src/backend/metagen/debate.py — make_llm_client(stub=stub_llm_client, ...) when reviewer_model is set.
+    Spec: feature/BACKEND_LLM.md §Adversarial Debate Framework — Reviewer constructed via factory.
+    """
+    producer_llm = FakeLLM([_producer_result_1()])
+    reviewer_fake_llm = FakeLLM([_accept_result()])
+
+    db = MagicMock()
+    vector = MagicMock()
+
+    with (
+        patch(
+            "src.backend.metagen.debate.search_candidate_embeddings",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "src.backend.metagen.debate.make_llm_client",
+            return_value=reviewer_fake_llm,
+        ) as mock_make_llm_client,
+    ):
+        await run_debate(
+            llm=producer_llm,  # type: ignore[arg-type]
+            vector=vector,
+            db=db,
+            producer_prompt="generate metadata",
+            validate_tool=_fake_validate_tool(),
+            review_tool=_fake_review_tool(),
+            in_scope_urns=frozenset(["urn:x"]),
+            max_turns=4,
+            rag_k=2,
+            reviewer_model="some-other-model",
+            llm_provider="openai",
+            llm_base_model="gpt-4o",
+            producer_schema=MagicMock(),
+            producer_max_iterations=3,
+            run_id="test-run-id",
+            stub_llm_client=stub_flag,
+        )
+
+    assert mock_make_llm_client.called, (
+        "make_llm_client must be called when reviewer_model is set."
+    )
+    assert mock_make_llm_client.call_args.kwargs.get("stub") is stub_flag, (
+        f"run_debate must pass stub={stub_flag!r} to make_llm_client when stub_llm_client={stub_flag!r}; "
+        f"actual call kwargs: {mock_make_llm_client.call_args.kwargs!r}. "
+        "Spec: src/backend/metagen/debate.py — make_llm_client(stub=stub_llm_client, ...)."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ Concerns covered:
 Prerequisites (per spec/TESTING.md §Integration Testing):
   ./helm-charts/bin/install.sh --profile dev --components api --skip-build
   uv run python -m tests.integration.util --reset-seed
-  DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/test_validation_passive_store.py
+  uv run pytest tests/integration/spot/test_validation_passive_store.py
 
 Spec:
 - spec/VALIDATION.md §DataHub Aspect Mapping

@@ -1,12 +1,14 @@
-"""Stub service implementations for test mode.
+"""Stub service implementations used when a ``stub_*`` toggle is enabled.
 
-When ``DATASPOKE_TEST_MODE=true``, the ``make_*`` factories in
-``_common.py`` return these stubs instead of real clients.  This lets the
-API process run integration scenarios without requiring real LLM /
-pgvector / cache / notification backends.
+The ``make_redis_client``, ``make_llm_client``, ``make_pgvector_manager``,
+and ``make_notification_service`` factories in ``_common.py`` return these
+stubs instead of real clients when the corresponding ``stub_*`` field on
+the ``RuntimeConfig`` singleton is set to ``true``.  This lets the API
+process run integration scenarios without requiring real LLM / pgvector /
+cache / notification backends.
 
 DataHub and PostgreSQL are **never** stubbed — they always use real
-dev-env connections, even in test mode.
+dev-env connections.
 
 Adding a new stub
 -----------------
@@ -15,9 +17,11 @@ When a new external service is introduced:
 1. Create a ``Stub<Service>`` class in this module that implements the
    same async interface as the real client (only the methods called by
    activity endpoints need to be stubbed).
-2. Add a ``make_<service>()`` factory in ``_common.py`` with the
-   ``if settings.test_mode:`` guard that imports and returns the stub.
-3. Update the stub table in ``spec/TESTING.md §Test-mode stubs``.
+2. Add a ``make_<service>(*, stub: bool = False)`` factory in
+   ``_common.py`` that imports and returns the stub when ``stub=True``.
+3. Add a matching ``stub_<service>: bool`` field to ``RuntimeConfig``,
+   ``RuntimeConfigDTO``, ``RuntimeConfResponse``, and
+   ``RuntimeConfPatchRequest``.
 """
 
 from __future__ import annotations
@@ -185,7 +189,7 @@ def _default_for_annotation(annotation: Any) -> Any:  # noqa: PLR0911
 # ── pgvector stub ───────────────────────────────────────────────────────────
 
 
-class StubVectorManager:
+class StubPgVectorManager:
     """Drop-in replacement for ``PgVectorManager`` — searches return nothing."""
 
     async def ensure_collection(self, name: str = "", vector_size: int = EMBEDDING_DIMENSION) -> None:

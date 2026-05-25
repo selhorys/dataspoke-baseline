@@ -354,18 +354,13 @@ for the evidence-assembly flow.
 
 ## Test Mode
 
-Two orthogonal env vars govern LLM behaviour during integration tests.
+LLM stubbing is gated by the `stub_llm_client` boolean on the singleton `RuntimeConfig` row, flippable online via `PATCH /api/v1/admin/conf`. Changes propagate in ≤30s via the existing `RuntimeConfigDTO` TTL cache; no pod restart. Default is `false` (real LLM). The dev profile's `helm-charts/bin/post-install/seed-runtime-config.sh` seeds it to `true` so the dev API runs stubbed by default.
 
-| Env var | Default | Effect |
+| RuntimeConfig field | Default | Effect when `true` |
 |---------|---------|--------|
-| `DATASPOKE_TEST_MODE` | unset | When `true`, activates `StubLLMClient` so calls to `complete_with_tools` and `complete_json` return deterministic schema-valid payloads. Used by every integration tier to keep tests fast and reproducible. |
-| `DATASPOKE_TEST_LLM_REAL` | `false` | When `true` *and* `DATASPOKE_TEST_MODE=true`, the stub is bypassed and the real LLM in `.env` is used. Lets a single test file serve both deterministic CI runs (`false`) and live manual exploration via `/test-api-wired-manual` (`true`). |
+| `stub_llm_client` | `false` | `make_llm_client(stub=True, ...)` returns `StubLLMClient`. Calls to `complete_with_tools` and `complete_json` return deterministic schema-valid payloads; `embed()` returns a deterministic unit vector. The API key in `dataspoke-llm-secret` is not read. |
 
-`DATASPOKE_TEST_LLM_REAL` is read once at `LLMClient` construction. It has
-no effect outside test mode — production never falls back to stub
-behaviour.
-
-**Stub behaviour** under `DATASPOKE_TEST_MODE=true, DATASPOKE_TEST_LLM_REAL=false`:
+**Stub behaviour** when `stub_llm_client=true`:
 
 | Surface | Stub returns |
 |---------|--------------|
@@ -374,18 +369,13 @@ behaviour.
 | `complete_with_tools` (Reviewer side, when debate enabled) | `overall_verdict="accept"`, empty `item_verdicts`, summary `"stub-accept"`. The debate terminates after turn 1. |
 | `embed` | Deterministic unit vector `[1.0, 0.0, …]` of `EMBEDDING_DIMENSION` length — non-zero norm so pgvector cosine yields a finite score. |
 
-**Dual-mode test code.** A single api-wired test file may be written to
-pass under both `DATASPOKE_TEST_LLM_REAL` values:
+**Dual-mode test code.** A single api-wired test file may be written to pass under both `stub_llm_client` values:
 
-- Assertions on response *shape* (e.g. `OntogenRunSummary.counts` is a dict
-  of non-negative ints) hold under both.
-- Assertions on response *content* (specific node names, triple counts) are
-  guarded by `if not _llm_real()`.
-- The shared assertion set is what gets reviewed alongside fixtures during
-  `/test-api-wired-manual` runs.
+- Assertions on response *shape* (e.g. `OntogenRunSummary.counts` is a dict of non-negative ints) hold under both.
+- Assertions on response *content* (specific node names, triple counts) are guarded by `if runtime_conf.get("stub_llm_client"):` against the session-scoped `runtime_conf` fixture.
+- Real-LLM-only tests carry `@pytest.mark.skipif(runtime_conf.get("stub_llm_client"), ...)` (UC3 / UC4 `_with_real_llm` variants).
 
-The same env var is honored by `LLMClient` regardless of consumer service
-(ontogen, metagen, or future LLM-backed flows).
+The stub toggle is consulted by `make_llm_client()` regardless of consumer service (ontogen, metagen, or future LLM-backed flows). Companion stub toggles (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) follow the same pattern — see `spec/TESTING.md §Stub Toggles`.
 
 ## Observability
 
@@ -505,7 +495,7 @@ a `runtime_config` column.
 - **Read** — the backend resolves the key from the Secret via the in-cluster
   Kubernetes API at LLM-call time, behind a short-TTL process cache (the same
   in-cluster client + cache machinery as the source-credential resolver, see
-  [`SECRET_RESOLUTION.md`](SECRET_RESOLUTION.md)). `make_llm` consumes the
+  [`SECRET_RESOLUTION.md`](SECRET_RESOLUTION.md)). `make_llm_client` consumes the
   resolved value; the provider/model come from `runtime_config`.
 - **Write (online)** — `PATCH /api/v1/admin/conf` accepts `llm_api_key`; the
   handler writes it to the Secret (create-or-patch) and invalidates the cache,
@@ -525,11 +515,11 @@ a `runtime_config` column.
 
 | Env var | Default | Owner |
 |---------|---------|-------|
-| `DATASPOKE_TEST_MODE` | unset | test infra |
-| `DATASPOKE_TEST_LLM_REAL` | `false` | test infra |
 | `DATASPOKE_TEST_LANGFUSE_HOST` | unset | observability |
 | `DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY` | unset | observability |
 | `DATASPOKE_TEST_LANGFUSE_SECRET_KEY` | unset | observability |
+
+Stub-mode wiring is governed by RuntimeConfig (see `§Test Mode` above), not env vars.
 
 ## Open Questions
 

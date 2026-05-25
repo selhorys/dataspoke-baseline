@@ -588,7 +588,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     fi
     echo ""
     echo "  To run integration tests:"
-    echo "    DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/ -v"
+    echo "    set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/api_wired/ -v"
     echo ""
     echo "  To stop the API:"
     echo "    kubectl scale deployment/dataspoke-api --replicas=0 -n '${NS}'"

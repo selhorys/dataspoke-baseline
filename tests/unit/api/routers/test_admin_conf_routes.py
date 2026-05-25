@@ -18,7 +18,7 @@ Concerns covered:
 
 2. GET /admin/conf with admin group:
    - Returns 200.
-   - Response contains all 18 expected fields (16 config fields + updated_at + resp_time).
+   - Response contains all 22 expected fields (20 config fields + updated_at + resp_time).
    - Response contains resp_time (SingleResponse envelope).
    - Response contains updated_at.
    - llm_api_key is masked: "********" when set, "" when unset — never plaintext.
@@ -78,6 +78,10 @@ _EXPECTED_RESPONSE_KEYS = {
     "metagen_ontology_rag_edge_k",
     "metagen_ontology_rag_triple_k",
     "validation_score_n_intervals",
+    "stub_redis_client",
+    "stub_llm_client",
+    "stub_pgvector_manager",
+    "stub_notification_service",
     "updated_at",
     "resp_time",
 }
@@ -234,14 +238,15 @@ async def test_internal_patch_conf_wrong_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_conf_returns_200_with_all_18_fields(client) -> None:
-    """GET /admin/conf with admin group returns 200 with EXACTLY the 18 expected fields.
+async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
+    """GET /admin/conf with admin group returns 200 with EXACTLY the 22 expected fields.
 
-    The 18 fields are: 16 config fields (15 DB tunables + llm_api_key masked indicator)
-    + updated_at + resp_time.  Any extra or missing key fails the assertion.
+    The 22 fields are: 20 config fields (15 DB tunables + 4 stub booleans +
+    llm_api_key masked indicator) + updated_at + resp_time.
+    Any extra or missing key fails the assertion.
 
     spec: BACKEND_LLM.md §LLM API key — GET returns llm_api_key as masked indicator.
-    spec: task brief — response must contain EXACTLY 18 keys.
+    spec: plan §stub toggles — four stub_* fields added to RuntimeConfResponse.
     """
     row = _make_row_mock()
     db, db_gen = _fake_db_with_row(row)

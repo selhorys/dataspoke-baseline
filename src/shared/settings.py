@@ -64,14 +64,4 @@ class Settings(BaseSettings):
     airflow_callback_base_url: str = "http://dataspoke-api:8002"
     airflow_ingestion_concurrent: int = 5
 
-    # Test mode (DATASPOKE_TEST_MODE) — when true, the ``make_*()`` factories
-    # in ``src/workflows/_common.py`` return stub implementations instead of
-    # real clients for LLM, pgvector, Redis (cache), and Notification.  DataHub
-    # and PostgreSQL always use real connections regardless of this flag.
-    # Set via the umbrella chart's ``api.testMode`` value (true in
-    # values-dev.yaml, false in values.yaml).
-    # See ``src/workflows/_stubs.py`` for stub behavior details.
-    test_mode: bool = False
-    test_llm_real: bool = False
-
 settings = Settings()

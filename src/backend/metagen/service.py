@@ -583,6 +583,7 @@ class MetagenService:
                 producer_schema=MetagenLLMOutput,
                 producer_max_iterations=rc.metagen_llm_max_iterations,
                 run_id=run_id,
+                stub_llm_client=rc.stub_llm_client,
             )
             debate_outcome = debate_result.outcome
             producer_iterations = debate_result.transcript.get("producer_iterations", 1)

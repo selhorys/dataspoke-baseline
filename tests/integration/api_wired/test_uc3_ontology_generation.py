@@ -17,8 +17,6 @@ not duplicated here.
 import httpx
 import pytest
 
-from src.shared.settings import settings
-
 # Declare fixture dependencies so module_dummy_data seeds all schemas + topics for
 # cross-dataset ontology inference. spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(
@@ -37,7 +35,7 @@ async def test_uc3_ontology_generation_under_stub(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """UC3 user-story arc under stub mode (DATASPOKE_TEST_MODE=true).
+    """UC3 user-story arc under stub mode (stub_llm_client=true in runtime conf).
 
     Steps mirror USE_CASE_en.md §UC3 Imazon Example:
       1. PUT singleton ontogen conf (is_enabled, schedule_tier, dataset_filter)
@@ -317,12 +315,15 @@ async def test_uc3_ontology_generation_under_stub(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not settings.test_llm_real, reason="requires DATASPOKE_TEST_LLM_REAL=true")
 async def test_uc3_ontology_generation_with_real_llm(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
+    runtime_conf: dict,
 ) -> None:
-    """UC3 user-story arc with a real LLM (DATASPOKE_TEST_LLM_REAL=true).
+    """UC3 user-story arc with a real LLM (stub_llm_client=false in runtime conf).
+
+    Skipped when stub_llm_client is true — a stub LLM cannot satisfy the
+    real-LLM contract assertions (non-zero persisted rows).
 
     Structurally identical to test_uc3_ontology_generation_under_stub. Additional
     assertion after step 5/6: any_rows_found must be True — a real LLM run that
@@ -342,9 +343,10 @@ async def test_uc3_ontology_generation_with_real_llm(
 
     Spec: USE_CASE_en.md §UC3
     Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
-    Spec: BACKEND_LLM.md §Test Mode — DATASPOKE_TEST_LLM_REAL=true bypasses stub;
-    real LLM calls execute for Producer and Reviewer and must persist ≥1 row.
     """
+    if runtime_conf.get("stub_llm_client"):
+        pytest.skip("stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf to run real-LLM tests")
+
     conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
     seed_url = "/api/v1/spoke/common/ontogen/attr/seed"
     seed_id: str | None = None

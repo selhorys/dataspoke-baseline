@@ -33,7 +33,7 @@ from src.backend.ontogen.prompts_reviewer import (
 )
 from src.shared.llm.client import LLMClient
 from src.shared.vector.client import PgVectorManager
-from src.workflows._common import make_llm
+from src.workflows._common import make_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +60,19 @@ async def run_debate(
     producer_schema: type[BaseModel],
     producer_max_iterations: int,
     run_id: str,
+    stub_llm_client: bool = False,
 ) -> DebateResult:
     """Run the adversarial Producer/Reviewer debate loop.
 
     Terminates on: Reviewer accept, max_turns exhausted, or cycle detected
     (Producer's revised payload duplicates a prior turn's hash).
     """
-    # Use make_llm so test-mode stubbing applies to the Reviewer regardless of
+    # Use make_llm_client so stubbing applies to the Reviewer regardless of
     # whether a model override is set (direct LLMClient construction bypasses stubs).
     # Langfuse tracing is not wired to the reviewer; it uses the same provider/key
     # as the producer but with a different model.
     reviewer_llm: LLMClient = (
-        make_llm(provider=llm_provider, model=llm_base_model, model_override=reviewer_model)
+        make_llm_client(stub=stub_llm_client, provider=llm_provider, model=llm_base_model, model_override=reviewer_model)
         if reviewer_model
         else llm
     )

@@ -140,7 +140,7 @@ async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
          succeeded for that dataset, i.e. _fetch_documents_for_dataset did not raise).
       5. Cleanup: hard-delete both documents, restore conf to disabled.
 
-    The stub LLM (DATASPOKE_TEST_MODE=true) returns no nodes/edges/triples, so we cannot
+    The stub LLM (stub_llm_client=true) returns no nodes/edges/triples, so we cannot
     assert ontology output.  The absence of our dataset URN from unresolved_urns is the
     proxy proof that the evidence path reached the document-fetch step without error.
     """

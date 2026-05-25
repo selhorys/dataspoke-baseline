@@ -22,8 +22,6 @@ api:
   image:
     # repository + tag passed via --set from .env (DATASPOKE_KUBE_IMAGE_REGISTRY)
     pullPolicy: Always
-  testMode: true
-  testLlmReal: false
   enableStubAuth: true
   ingress:
     enabled: true

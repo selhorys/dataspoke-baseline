@@ -10,7 +10,7 @@ Groups:
   D – cycle_detected (Producer emits identical payload twice)
   E – canonical_hash is key-order-independent (SHA-256 with sort_keys)
   F – empty RAG anchors (cold-start — debate must not crash)
-  G – reviewer_model override wires make_llm(model_override=...)
+  G – reviewer_model override wires make_llm_client(model_override=...)
 """
 
 from typing import Any
@@ -159,7 +159,7 @@ async def _run(
         patch("src.backend.ontogen.debate._search_edge_embeddings", new=AM(return_value=[])),
         patch("src.backend.ontogen.debate._search_triple_embeddings", new=AM(return_value=[])),
         patch(
-            "src.backend.ontogen.debate.make_llm",
+            "src.backend.ontogen.debate.make_llm_client",
             return_value=(reviewer if reviewer_model and reviewer else producer),
         ),
     ):
@@ -619,23 +619,21 @@ async def test_run_debate_empty_rag_anchors_cold_start() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Group G: reviewer_model override wires make_llm
+# Group G: reviewer_model override wires make_llm_client
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_run_debate_reviewer_model_override() -> None:
-    """When reviewer_model is set, make_llm(model_override=...) is called for the Reviewer.
+    """When reviewer_model is set, make_llm_client(model_override=...) is called for the Reviewer.
 
     Spec: BACKEND_LLM.md §Settings Reference — DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL
     — 'When set, instantiate a second LLMClient with the override model for the Reviewer
     turns only.'
-    Spec: debate.py docstring — 'Use make_llm so test-mode stubbing applies to the
-    Reviewer regardless of whether a model override is set.'
 
-    The test patches make_llm at its import site in debate.py and asserts it was called
-    with model_override='some-other-model'.  A bare LLMClient() construction would bypass
-    stubbing; make_llm() is the spec-mandated factory.
+    The test patches make_llm_client at its import site in debate.py and asserts it was
+    called with model_override='some-other-model'. make_llm_client() is the spec-mandated
+    factory so stub toggling applies to the Reviewer regardless of model override.
     """
 
     producer_llm = FakeLLM([
@@ -664,9 +662,9 @@ async def test_run_debate_reviewer_model_override() -> None:
             new=AsyncMock(return_value=_empty),
         ),
         patch(
-            "src.backend.ontogen.debate.make_llm",
+            "src.backend.ontogen.debate.make_llm_client",
             return_value=reviewer_fake_llm,
-        ) as mock_make_llm,
+        ) as mock_make_llm_client,
     ):
         result = await run_debate(
             llm=producer_llm,  # type: ignore[arg-type]
@@ -686,10 +684,81 @@ async def test_run_debate_reviewer_model_override() -> None:
             run_id="test-run-id",
         )
 
-    # spec: debate.py wiring — make_llm must be called when reviewer_model is set
-    assert mock_make_llm.called, "make_llm must be called when reviewer_model is set."
-    call_kwargs = mock_make_llm.call_args.kwargs
+    # spec: debate.py wiring — make_llm_client must be called when reviewer_model is set
+    assert mock_make_llm_client.called, "make_llm_client must be called when reviewer_model is set."
+    call_kwargs = mock_make_llm_client.call_args.kwargs
     assert call_kwargs.get("model_override") == "some-other-model"
     assert result.outcome == "accept", (
         f"Debate with model override must still terminate on accept; got {result.outcome!r}."
+    )
+
+
+@pytest.mark.parametrize("stub_flag", [True, False])
+@pytest.mark.asyncio
+async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: bool) -> None:
+    """run_debate threads stub_llm_client=<flag> into make_llm_client(stub=<flag>) for the Reviewer.
+
+    A regression that drops the `stub=stub_llm_client` kwarg from the reviewer-model
+    construction path would not be caught by the model_override test alone, because that
+    test only asserts model_override presence.  This test asserts the stub kwarg is also
+    present — with both True and False values.
+
+    Spec: src/backend/ontogen/debate.py — make_llm_client(stub=stub_llm_client, ...) when reviewer_model is set.
+    Spec: feature/BACKEND_LLM.md §Adversarial Debate Framework — Reviewer constructed via factory.
+    """
+    producer_llm = FakeLLM([
+        _producer_result_1(),   # turn 0: Producer
+    ])
+    reviewer_fake_llm = FakeLLM([
+        _accept_result(),       # turn 1: Reviewer
+    ])
+
+    db = MagicMock()
+    vector = MagicMock()
+
+    _empty: list[Any] = []
+    with (
+        patch(
+            "src.backend.ontogen.debate._search_node_embeddings",
+            new=AsyncMock(return_value=_empty),
+        ),
+        patch(
+            "src.backend.ontogen.debate._search_edge_embeddings",
+            new=AsyncMock(return_value=_empty),
+        ),
+        patch(
+            "src.backend.ontogen.debate._search_triple_embeddings",
+            new=AsyncMock(return_value=_empty),
+        ),
+        patch(
+            "src.backend.ontogen.debate.make_llm_client",
+            return_value=reviewer_fake_llm,
+        ) as mock_make_llm_client,
+    ):
+        await run_debate(
+            llm=producer_llm,  # type: ignore[arg-type]
+            vector=vector,
+            db=db,
+            producer_prompt="produce ontology",
+            validate_tool=_fake_validate_tool(),
+            review_tool=_fake_review_tool(),
+            in_scope_urns=frozenset(["urn:x"]),
+            max_turns=4,
+            rag_k=2,
+            reviewer_model="some-other-model",
+            llm_provider="openai",
+            llm_base_model="gpt-4o",
+            producer_schema=MagicMock(),
+            producer_max_iterations=3,
+            run_id="test-run-id",
+            stub_llm_client=stub_flag,
+        )
+
+    assert mock_make_llm_client.called, (
+        "make_llm_client must be called when reviewer_model is set."
+    )
+    assert mock_make_llm_client.call_args.kwargs.get("stub") is stub_flag, (
+        f"run_debate must pass stub={stub_flag!r} to make_llm_client when stub_llm_client={stub_flag!r}; "
+        f"actual call kwargs: {mock_make_llm_client.call_args.kwargs!r}. "
+        "Spec: src/backend/ontogen/debate.py — make_llm_client(stub=stub_llm_client, ...)."
     )

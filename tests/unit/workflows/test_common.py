@@ -1,35 +1,34 @@
 """Unit tests for workflow factory functions (_common.py).
 
-Tests the spec-mandated test-mode stub behavior:
-- With DATASPOKE_TEST_MODE=true: make_llm() returns StubLLMClient,
-  make_vector() returns StubVectorManager, make_cache() returns StubRedisClient,
-  make_notification() returns StubNotificationService.
-- With DATASPOKE_TEST_MODE=false (or unset): factories return real clients.
-- make_datahub() always returns a real DataHubClient regardless of test_mode.
-- make_db_session() always returns a real session regardless of test_mode.
+Tests the factory stub behavior:
+- With stub=True: make_llm_client() returns StubLLMClient,
+  make_pgvector_manager() returns StubPgVectorManager, make_redis_client() returns StubRedisClient,
+  make_notification_service() returns StubNotificationService.
+- With stub=False (or default): factories return real clients.
+- make_datahub() always returns a real DataHubClient regardless of stub flag.
+- make_db_session() always returns a real session.
 - urn_to_workflow_id produces a stable 12-char hex string from the same URN.
 
-spec: TESTING.md §Test-Mode Stubs — make_* factories in src/workflows/_common.py
-      return stubs in test mode; DataHub and DB are always real.
+spec: src/workflows/_common.py — make_* factories accept stub= kwarg; DataHub and DB are always real.
 """
 
 import pytest
 import pytest_asyncio  # noqa: F401 — ensures asyncio mode is active
 
 from src.workflows._common import (
-    make_cache,
     make_datahub,
     make_db_session,
-    make_llm,
-    make_notification,
-    make_vector,
+    make_llm_client,
+    make_notification_service,
+    make_pgvector_manager,
+    make_redis_client,
     urn_to_workflow_id,
 )
 from src.workflows._stubs import (
     StubLLMClient,
     StubNotificationService,
+    StubPgVectorManager,
     StubRedisClient,
-    StubVectorManager,
 )
 from src.shared.datahub.client import DataHubClient
 from src.shared.cache.client import RedisClient
@@ -37,136 +36,185 @@ from src.shared.llm.client import LLMClient
 from src.shared.vector.client import PgVectorManager
 
 
-# ── make_llm in test mode ─────────────────────────────────────────────────────
+# ── make_llm_client with stub=True ────────────────────────────────────────────
 
 
-def test_make_llm_returns_stub_in_test_mode(monkeypatch) -> None:
-    """make_llm() returns StubLLMClient when test_mode=true and test_llm_real=false.
+def test_make_llm_client_returns_stub_when_stub_true() -> None:
+    """make_llm_client() returns StubLLMClient when stub=True.
 
-    spec: TESTING.md §Test-Mode Stubs — make_llm() → StubLLMClient in test mode.
-    spec: BACKEND_LLM.md §Test Mode — stub when test_mode and not test_llm_real.
+    spec: src/workflows/_common.py — make_llm_client(stub=True) → StubLLMClient.
     """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
-    monkeypatch.setattr("src.shared.settings.settings.test_llm_real", False)
-    result = make_llm()
+    result = make_llm_client(stub=True)
     assert isinstance(result, StubLLMClient), (
-        f"Expected StubLLMClient in test mode, got {type(result).__name__}. "
-        "spec: TESTING.md §Test-Mode Stubs."
+        f"Expected StubLLMClient when stub=True, got {type(result).__name__}. "
+        "spec: src/workflows/_common.py — make_llm_client(stub=True) → StubLLMClient."
     )
 
 
-def test_make_llm_returns_real_client_when_test_llm_real(monkeypatch) -> None:
-    """make_llm() returns LLMClient when test_mode=true but test_llm_real=true.
+def test_make_llm_client_returns_real_client_when_stub_false(monkeypatch) -> None:
+    """make_llm_client() returns LLMClient when stub=False.
 
-    spec: BACKEND_LLM.md §Test Mode — DATASPOKE_TEST_LLM_REAL=true bypasses stub.
+    spec: src/workflows/_common.py — make_llm_client(stub=False) → real LLMClient.
     """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
-    monkeypatch.setattr("src.shared.settings.settings.test_llm_real", True)
-    # make_llm resolves the key via get_llm_api_key() from the k8s Secret.
-    # Patch at the source module to bypass k8s state and process-level _cache.
     monkeypatch.setattr("src.backend.admin.llm_secret.get_llm_api_key", lambda: "test-key-sentinel")
-    result = make_llm()
+    monkeypatch.setattr("src.backend.admin.langfuse_secret.get_langfuse_secret_key", lambda: None)
+    result = make_llm_client(stub=False)
     assert isinstance(result, LLMClient), (
-        f"Expected real LLMClient when test_llm_real=true, got {type(result).__name__}."
+        f"Expected real LLMClient when stub=False, got {type(result).__name__}."
     )
 
 
-def test_make_llm_returns_real_client_outside_test_mode(monkeypatch) -> None:
-    """make_llm() returns LLMClient when DATASPOKE_TEST_MODE is false/unset.
+def test_make_llm_client_defaults_to_real_client(monkeypatch) -> None:
+    """make_llm_client() returns LLMClient when stub kwarg is omitted (default=False).
 
-    spec: TESTING.md §Test-Mode Stubs — real LLM outside test mode.
+    spec: src/workflows/_common.py — Default False preserves prod-safe behavior.
     """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
-    monkeypatch.setattr("src.shared.settings.settings.test_llm_real", False)
-    # make_llm resolves the key via get_llm_api_key() from the k8s Secret.
-    # Patch at the source module to bypass k8s state and process-level _cache.
     monkeypatch.setattr("src.backend.admin.llm_secret.get_llm_api_key", lambda: "test-key-sentinel")
-    result = make_llm()
+    monkeypatch.setattr("src.backend.admin.langfuse_secret.get_langfuse_secret_key", lambda: None)
+    result = make_llm_client()
     assert isinstance(result, LLMClient), (
-        f"Expected LLMClient outside test mode, got {type(result).__name__}."
+        f"Expected LLMClient by default, got {type(result).__name__}."
+    )
+    assert not isinstance(result, StubLLMClient), (
+        "Default make_llm_client() must NOT return StubLLMClient; "
+        "a StubLLMClient subclass refactor would silently break prod. "
+        "spec: src/workflows/_common.py — Default False preserves prod-safe behavior."
     )
 
 
-# ── make_vector in test mode ──────────────────────────────────────────────────
+def test_make_redis_client_defaults_to_real_client() -> None:
+    """make_redis_client() returns RedisClient when stub kwarg is omitted (default=False).
 
+    Guards against a regression flipping the default stub=False → True, which would
+    silently use StubRedisClient in production.
 
-def test_make_vector_returns_stub_in_test_mode(monkeypatch) -> None:
-    """make_vector() returns StubVectorManager when DATASPOKE_TEST_MODE=true.
-
-    spec: TESTING.md §Test-Mode Stubs — make_vector() → StubVectorManager in test mode.
+    spec: src/workflows/_common.py — Default False preserves prod-safe behavior.
     """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
-    result = make_vector()
-    assert isinstance(result, StubVectorManager), (
-        f"Expected StubVectorManager in test mode, got {type(result).__name__}."
-    )
-
-
-def test_make_vector_returns_real_client_outside_test_mode(monkeypatch) -> None:
-    """make_vector() returns PgVectorManager when DATASPOKE_TEST_MODE is false.
-
-    spec: TESTING.md §Test-Mode Stubs — real PgVectorManager outside test mode.
-    """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
-    result = make_vector()
-    assert isinstance(result, PgVectorManager), (
-        f"Expected PgVectorManager outside test mode, got {type(result).__name__}."
-    )
-
-
-# ── make_cache in test mode ───────────────────────────────────────────────────
-
-
-def test_make_cache_returns_stub_in_test_mode(monkeypatch) -> None:
-    """make_cache() returns StubRedisClient when DATASPOKE_TEST_MODE=true.
-
-    spec: TESTING.md §Test-Mode Stubs — make_cache() → StubRedisClient in test mode.
-    """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
-    result = make_cache()
-    assert isinstance(result, StubRedisClient), (
-        f"Expected StubRedisClient in test mode, got {type(result).__name__}."
-    )
-
-
-def test_make_cache_returns_real_client_outside_test_mode(monkeypatch) -> None:
-    """make_cache() returns RedisClient when DATASPOKE_TEST_MODE is false.
-
-    spec: TESTING.md §Test-Mode Stubs — real RedisClient outside test mode.
-    """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
-    result = make_cache()
+    result = make_redis_client()
     assert isinstance(result, RedisClient), (
-        f"Expected RedisClient outside test mode, got {type(result).__name__}."
+        f"Expected RedisClient by default (stub=False), got {type(result).__name__}."
+    )
+    assert not isinstance(result, StubRedisClient), (
+        "Default make_redis_client() must NOT return StubRedisClient; "
+        "a StubRedisClient subclass refactor would silently break prod. "
+        "spec: src/workflows/_common.py — Default False preserves prod-safe behavior."
     )
 
 
-# ── make_notification in test mode ───────────────────────────────────────────
+def test_make_pgvector_manager_defaults_to_real_client() -> None:
+    """make_pgvector_manager() returns PgVectorManager when stub kwarg is omitted (default=False).
 
+    Guards against a regression flipping the default stub=False → True, which would
+    silently use StubPgVectorManager in production.
 
-def test_make_notification_returns_stub_in_test_mode(monkeypatch) -> None:
-    """make_notification() returns StubNotificationService in test mode.
-
-    spec: TESTING.md §Test-Mode Stubs — make_notification() → StubNotificationService.
+    spec: src/workflows/_common.py — Default False preserves prod-safe behavior.
     """
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
-    result = make_notification()
-    assert isinstance(result, StubNotificationService), (
-        f"Expected StubNotificationService in test mode, got {type(result).__name__}."
+    result = make_pgvector_manager()
+    assert isinstance(result, PgVectorManager), (
+        f"Expected PgVectorManager by default (stub=False), got {type(result).__name__}."
+    )
+    assert not isinstance(result, StubPgVectorManager), (
+        "Default make_pgvector_manager() must NOT return StubPgVectorManager; "
+        "a StubPgVectorManager subclass refactor would silently break prod. "
+        "spec: src/workflows/_common.py — Default False preserves prod-safe behavior."
     )
 
 
-def test_make_notification_returns_real_service_outside_test_mode(monkeypatch) -> None:
-    """make_notification() returns NotificationService outside test mode.
+def test_make_notification_service_defaults_to_real_client() -> None:
+    """make_notification_service() returns NotificationService when stub kwarg is omitted (default=False).
 
-    spec: TESTING.md §Test-Mode Stubs — real NotificationService outside test mode.
+    Guards against a regression flipping the default stub=False → True, which would
+    silently use StubNotificationService in production.
+
+    spec: src/workflows/_common.py — Default False preserves prod-safe behavior.
     """
     from src.shared.notifications.service import NotificationService
 
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
-    result = make_notification()
+    result = make_notification_service()
     assert isinstance(result, NotificationService), (
-        f"Expected NotificationService outside test mode, got {type(result).__name__}."
+        f"Expected NotificationService by default (stub=False), got {type(result).__name__}."
+    )
+    assert not isinstance(result, StubNotificationService), (
+        "Default make_notification_service() must NOT return StubNotificationService; "
+        "a StubNotificationService subclass refactor would silently break prod. "
+        "spec: src/workflows/_common.py — Default False preserves prod-safe behavior."
+    )
+
+
+# ── make_pgvector_manager ─────────────────────────────────────────────────────
+
+
+def test_make_pgvector_manager_returns_stub_when_stub_true() -> None:
+    """make_pgvector_manager() returns StubPgVectorManager when stub=True.
+
+    spec: src/workflows/_common.py — make_pgvector_manager(stub=True) → StubPgVectorManager.
+    """
+    result = make_pgvector_manager(stub=True)
+    assert isinstance(result, StubPgVectorManager), (
+        f"Expected StubPgVectorManager when stub=True, got {type(result).__name__}."
+    )
+
+
+def test_make_pgvector_manager_returns_real_client_when_stub_false() -> None:
+    """make_pgvector_manager() returns PgVectorManager when stub=False.
+
+    spec: src/workflows/_common.py — make_pgvector_manager(stub=False) → real PgVectorManager.
+    """
+    result = make_pgvector_manager(stub=False)
+    assert isinstance(result, PgVectorManager), (
+        f"Expected PgVectorManager when stub=False, got {type(result).__name__}."
+    )
+
+
+# ── make_redis_client ─────────────────────────────────────────────────────────
+
+
+def test_make_redis_client_returns_stub_when_stub_true() -> None:
+    """make_redis_client() returns StubRedisClient when stub=True.
+
+    spec: src/workflows/_common.py — make_redis_client(stub=True) → StubRedisClient.
+    """
+    result = make_redis_client(stub=True)
+    assert isinstance(result, StubRedisClient), (
+        f"Expected StubRedisClient when stub=True, got {type(result).__name__}."
+    )
+
+
+def test_make_redis_client_returns_real_client_when_stub_false() -> None:
+    """make_redis_client() returns RedisClient when stub=False.
+
+    spec: src/workflows/_common.py — make_redis_client(stub=False) → real RedisClient.
+    """
+    result = make_redis_client(stub=False)
+    assert isinstance(result, RedisClient), (
+        f"Expected RedisClient when stub=False, got {type(result).__name__}."
+    )
+
+
+# ── make_notification_service ─────────────────────────────────────────────────
+
+
+def test_make_notification_service_returns_stub_when_stub_true() -> None:
+    """make_notification_service() returns StubNotificationService when stub=True.
+
+    spec: src/workflows/_common.py — make_notification_service(stub=True) → StubNotificationService.
+    """
+    result = make_notification_service(stub=True)
+    assert isinstance(result, StubNotificationService), (
+        f"Expected StubNotificationService when stub=True, got {type(result).__name__}."
+    )
+
+
+def test_make_notification_service_returns_real_service_when_stub_false() -> None:
+    """make_notification_service() returns NotificationService when stub=False.
+
+    spec: src/workflows/_common.py — make_notification_service(stub=False) → real NotificationService.
+    """
+    from src.shared.notifications.service import NotificationService
+
+    result = make_notification_service(stub=False)
+    assert isinstance(result, NotificationService), (
+        f"Expected NotificationService when stub=False, got {type(result).__name__}."
     )
 
 
@@ -174,21 +222,19 @@ def test_make_notification_returns_real_service_outside_test_mode(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_make_datahub_always_returns_datahub_client_in_test_mode(monkeypatch) -> None:
-    """make_datahub(db) always returns DataHubClient, even in test mode.
+async def test_make_datahub_always_returns_datahub_client(monkeypatch) -> None:
+    """make_datahub(db) always returns DataHubClient — DataHub is never stubbed.
 
-    make_datahub is now async and requires a db session.  It reads the DataHub
+    make_datahub is async and requires a db session.  It reads the DataHub
     peripheral config from DB and calls get_datahub_token().  Both are patched
     at the source module level (lazy imports inside make_datahub resolve from
     the source module at call time).
 
-    spec: TESTING.md §Test-Mode Stubs — DataHub is never stubbed.
+    spec: src/workflows/_common.py — DataHub is never stubbed; make_datahub always returns DataHubClient.
     """
     from unittest.mock import AsyncMock
 
     from src.backend.admin.peripheral_service import DatahubConfigDTO
-
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", True)
 
     _fake_dto = DatahubConfigDTO(gms_url="http://gms-stub:8080", kafka_brokers="kafka-stub:9092")
     # Patch at source module level — make_datahub does a lazy import at call time
@@ -205,55 +251,12 @@ async def test_make_datahub_always_returns_datahub_client_in_test_mode(monkeypat
     result = await make_datahub(mock_db)
     assert isinstance(result, DataHubClient), (
         f"make_datahub() must always return DataHubClient; got {type(result).__name__}. "
-        "spec: TESTING.md §Test-Mode Stubs."
+        "spec: src/workflows/_common.py — DataHub is never stubbed."
     )
 
-    # Verify the client was constructed from the peripheral config + token.
-    # DataHubClient stores its config inside DataHubGraph._graph_client_config
-    # (or similar internal attributes). The observable surface is that the
-    # emitter's server URL matches what was passed in.
-    # The cleanest assertion: the _emitter was built with the right gms_url.
     assert result._emitter._gms_server == "http://gms-stub:8080", (
         f"DataHubClient must be constructed with the gms_url from peripheral config. "
         f"Expected 'http://gms-stub:8080', got {result._emitter._gms_server!r}. "
-        "spec: plan/scalable-beaming-hamster.md §Consumer migration — "
-        "make_datahub reads gms_url from peripheral config."
-    )
-
-
-@pytest.mark.asyncio
-async def test_make_datahub_returns_datahub_client_outside_test_mode(monkeypatch) -> None:
-    """make_datahub(db) returns DataHubClient outside test mode, constructed with peripheral values.
-
-    spec: TESTING.md §Test-Mode Stubs — DataHub is always real.
-    spec: plan/scalable-beaming-hamster.md §Consumer migration — make_datahub reads from DB.
-    """
-    from unittest.mock import AsyncMock
-
-    from src.backend.admin.peripheral_service import DatahubConfigDTO
-
-    monkeypatch.setattr("src.shared.settings.settings.test_mode", False)
-
-    _fake_dto = DatahubConfigDTO(gms_url="http://gms-stub:8080", kafka_brokers="kafka-stub:9092")
-    monkeypatch.setattr(
-        "src.backend.admin.peripheral_service.get_peripheral_config",
-        AsyncMock(return_value=_fake_dto),
-    )
-    monkeypatch.setattr(
-        "src.backend.admin.datahub_secret.get_datahub_token",
-        lambda: "stub-token",
-    )
-
-    mock_db = AsyncMock()
-    result = await make_datahub(mock_db)
-    assert isinstance(result, DataHubClient)
-
-    # Verify the client was constructed with the correct gms_url from peripheral config.
-    assert result._emitter._gms_server == "http://gms-stub:8080", (
-        f"DataHubClient must be constructed with the gms_url from peripheral config. "
-        f"Expected 'http://gms-stub:8080', got {result._emitter._gms_server!r}. "
-        "spec: plan/scalable-beaming-hamster.md §Consumer migration — "
-        "make_datahub reads gms_url from peripheral config."
     )
 
 

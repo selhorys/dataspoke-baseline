@@ -151,6 +151,10 @@ def _dto_to_response(dto: object, updated_at: object) -> RuntimeConfResponse:
         metagen_ontology_rag_edge_k=dto.metagen_ontology_rag_edge_k,
         metagen_ontology_rag_triple_k=dto.metagen_ontology_rag_triple_k,
         validation_score_n_intervals=dto.validation_score_n_intervals,
+        stub_redis_client=dto.stub_redis_client,
+        stub_llm_client=dto.stub_llm_client,
+        stub_pgvector_manager=dto.stub_pgvector_manager,
+        stub_notification_service=dto.stub_notification_service,
         updated_at=updated_at,
     )
 

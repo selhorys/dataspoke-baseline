@@ -307,7 +307,7 @@ async def test_run_debate_passes_run_id_as_session_id_to_llm() -> None:
         patch("src.backend.ontogen.debate._search_edge_embeddings", new=AsyncMock(return_value=[])),
         patch("src.backend.ontogen.debate._search_triple_embeddings", new=AsyncMock(return_value=[])),
         patch(
-            "src.backend.ontogen.debate.make_llm",
+            "src.backend.ontogen.debate.make_llm_client",
             return_value=spy,
         ),
     ):
@@ -395,7 +395,7 @@ async def test_stub_llm_client_accepts_session_id_and_metadata_without_raising()
     did not declare session_id/metadata as keyword args and raised TypeError when the
     debate code passed them.
 
-    Spec: spec/TESTING.md §Test-Mode Stubs — StubLLMClient is the test-mode drop-in;
+    Spec: src/workflows/_stubs.py — StubLLMClient is the test-mode drop-in;
     it must accept all kwargs that the real LLMClient accepts.
     BACKEND_LLM.md §Observability — session_id/metadata are now part of the call signature.
     """
@@ -418,11 +418,11 @@ async def test_stub_llm_client_accepts_session_id_and_metadata_without_raising()
 
     assert loop_result is not None, (
         "StubLLMClient.complete_with_tools must return a LoopResult without raising. "
-        "Spec: TESTING.md §Test-Mode Stubs"
+        "Spec: src/workflows/_stubs.py — StubLLMClient is the test-mode drop-in."
     )
     # The ontogen_review branch returns overall_verdict='accept'
     assert loop_result.payload.get("overall_verdict") == "accept", (
         f"StubLLMClient ontogen_review canned result must have overall_verdict='accept'; "
         f"got {loop_result.payload!r}. "
-        "Spec: TESTING.md §Test-Mode Stubs"
+        "Spec: src/workflows/_stubs.py — StubLLMClient canned ontogen_review result."
     )

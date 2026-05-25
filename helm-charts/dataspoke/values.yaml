@@ -56,8 +56,6 @@ api:
     tag: latest
     pullPolicy: IfNotPresent
   imagePullSecrets: []
-  testMode: false
-  testLlmReal: false
   enableStubAuth: false  # Never set true in production
   service:
     type: ClusterIP

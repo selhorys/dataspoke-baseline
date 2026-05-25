@@ -17,7 +17,7 @@ Triple dep gate:
   test_triple_dep_gate_blocks_when_deps_not_human_approved (parametrized: llm_pending, llm_approved)
   test_triple_dep_gate_passes_when_deps_are_human_approved
 
-The stub LLM (DATASPOKE_TEST_MODE=true) returns no nodes/edges/triples, so review tests
+The stub LLM (stub_llm_client=true) returns no nodes/edges/triples, so review tests
 seed one pending row per test directly into PostgreSQL via the async_session fixture,
 then exercise the review endpoint over REST.  Each test uses a uuid-suffixed
 name/label so unique constraints don't clash with rows left behind by prior sessions.

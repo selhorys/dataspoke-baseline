@@ -12,15 +12,14 @@ Also checks that the existing producer_iterations / producer_errors_dropped
 fields are still present in the event detail — regression guard to confirm
 run_id addition did not displace prior telemetry fields.
 
-Operating mode: DATASPOKE_TEST_MODE=true (StubLLMClient, no real Langfuse).
+Operating mode: stub_llm_client=true (StubLLMClient, no real Langfuse).
 Langfuse env vars intentionally absent so _langfuse_handler is None and the
 observability layer is exercised only at the run_id-threading level.
 
 Prerequisite for running:
     ./helm-charts/bin/install.sh --profile dev --components api --skip-build
     uv run python -m tests.integration.util --reset-seed
-    DATASPOKE_TEST_MODE=true uv run pytest \
-        tests/integration/api_wired/test_ontogen_langfuse_run_id.py -v
+    uv run pytest tests/integration/api_wired/test_ontogen_langfuse_run_id.py -v
 """
 
 # spec: USE_CASE_en.md §UC3

@@ -10,7 +10,7 @@ via /admin/peripherals/datahub are honoured immediately.
 
 LLM clients are NOT long-lived on app.state — they are constructed per-request
 from the DB-backed RuntimeConfig so that provider/model changes via
-/admin/conf are honoured immediately and test-mode stubbing via make_llm()
+/admin/conf are honoured immediately and stub toggling via make_llm_client()
 applies on all paths (including manual metagen/ontogen API runs).
 """
 
@@ -28,8 +28,8 @@ from src.shared.vector.client import PgVectorManager
 from src.workflows.airflow.client import AirflowClient
 
 # NOTE: LLMClient is NOT imported here. LLM instances are built per-request
-# inside get_metagen_service / get_ontogen_service via make_llm() so that
-# RuntimeConfig changes and test-mode stubbing are always honoured.
+# inside get_metagen_service / get_ontogen_service via make_llm_client() so that
+# RuntimeConfig changes and stub toggling are always honoured.
 
 # ── Infrastructure client providers ──────────────────────────────
 
@@ -56,17 +56,45 @@ async def get_datahub(db: AsyncSession = Depends(get_db)) -> DataHubClient:
     return DataHubClient(dto.gms_url, token)
 
 
-def get_redis(request: Request) -> RedisClient:
+async def get_redis(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> RedisClient:
+    from src.backend.admin.config_service import get_runtime_config
+
+    rc = await get_runtime_config(db)
+    if rc.stub_redis_client:
+        from src.workflows._stubs import StubRedisClient
+
+        return StubRedisClient()  # type: ignore[return-value]
     return request.app.state.redis
 
 
-def get_vector(request: Request) -> PgVectorManager:
+async def get_vector(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> PgVectorManager:
+    from src.backend.admin.config_service import get_runtime_config
+
+    rc = await get_runtime_config(db)
+    if rc.stub_pgvector_manager:
+        from src.workflows._stubs import StubPgVectorManager
+
+        return StubPgVectorManager()  # type: ignore[return-value]
     return request.app.state.vector
 
 
-def get_notification():
+async def get_notification(
+    db: AsyncSession = Depends(get_db),
+) -> "NotificationService":
+    from src.backend.admin.config_service import get_runtime_config
     from src.shared.notifications.service import NotificationService
 
+    rc = await get_runtime_config(db)
+    if rc.stub_notification_service:
+        from src.workflows._stubs import StubNotificationService
+
+        return StubNotificationService()  # type: ignore[return-value]
     return NotificationService()
 
 
@@ -111,11 +139,11 @@ async def get_metagen_service(
 ) -> "MetagenService":
     from src.backend.admin.config_service import get_runtime_config
     from src.backend.metagen.service import MetagenService
-    from src.workflows._common import make_llm, read_langfuse_config
+    from src.workflows._common import make_llm_client, read_langfuse_config
 
     rc = await get_runtime_config(db)
     lf_host, lf_pk = await read_langfuse_config(db)
-    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
+    llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
     return MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
 
@@ -127,11 +155,11 @@ async def get_ontogen_service(
 ) -> "OntogenService":
     from src.backend.admin.config_service import get_runtime_config
     from src.backend.ontogen.service import OntogenService
-    from src.workflows._common import make_llm, read_langfuse_config
+    from src.workflows._common import make_llm_client, read_langfuse_config
 
     rc = await get_runtime_config(db)
     lf_host, lf_pk = await read_langfuse_config(db)
-    llm = make_llm(provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
+    llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
     return OntogenService(
         datahub=datahub,
         db=db,

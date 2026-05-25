@@ -540,6 +540,7 @@ class OntogenService:
             producer_schema=OntogenLLMOutput,
             producer_max_iterations=rc.ontogen_llm_max_iterations,
             run_id=run_id,
+            stub_llm_client=rc.stub_llm_client,
         )
 
         try:

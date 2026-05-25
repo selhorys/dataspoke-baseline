@@ -192,20 +192,18 @@ and DataHub with descriptions and typed columns.
 - **Airflow utilities** (`tests/integration/util/airflow.py`): kill/cleanup stale DAG runs,
   verify DAGs, poll until terminal state.
 
-### Test-Mode Stubs (`DATASPOKE_TEST_MODE`)
+### Stub Toggles (RuntimeConfig)
 
-When the in-cluster API runs with `DATASPOKE_TEST_MODE=true` (set via `values-dev.yaml`
-`api.testMode: true`), the `make_*` factories in `src/workflows/_common.py` return stubs:
+Four boolean fields on the singleton `RuntimeConfig` row gate real-vs-stub client wiring at request time. Each is flippable online via `PATCH /api/v1/admin/conf`; changes propagate in ≤30s via the existing TTL cache on `RuntimeConfigDTO`. The factories in `src/workflows/_common.py` each accept a `stub: bool = False` keyword arg; per-request dependency providers in `src/api/dependencies.py` read the matching RuntimeConfig field and pass it through.
 
-| Factory | Stub | Behavior |
-|---------|------|----------|
-| `make_llm()` | `StubLLMClient` | Returns minimal dict matching Pydantic schema; `embed()` returns deterministic unit vector (non-zero norm so pgvector cosine yields a finite score) |
-| `make_vector()` | `StubVectorManager` | `search()` returns `[]` |
-| `make_cache()` | `StubRedisClient` | All ops are no-ops |
-| `make_notification()` | `StubNotificationService` | `send_sla_alert()` is a no-op |
+| RuntimeConfig field | Factory | Real client | Stub class | Stub behavior |
+|---|---|---|---|---|
+| `stub_redis_client` | `make_redis_client(stub=)` | `RedisClient` | `StubRedisClient` | All ops are no-ops |
+| `stub_llm_client` | `make_llm_client(stub=, ...)` | `LLMClient` | `StubLLMClient` | Returns minimal dict matching Pydantic schema; `embed()` returns a deterministic unit vector |
+| `stub_pgvector_manager` | `make_pgvector_manager(stub=)` | `PgVectorManager` | `StubPgVectorManager` | `search()` returns `[]` |
+| `stub_notification_service` | `make_notification_service(stub=)` | `NotificationService` | `StubNotificationService` | `send_sla_alert()` is a no-op |
 
-`make_datahub()` and `make_db_session()` always return real clients. Stubs are defined in
-`src/workflows/_stubs.py`.
+Defaults are all `false` (real clients — prod-safe). The dev profile's `helm-charts/bin/post-install/seed-runtime-config.sh` PATCHes all four to `true` so the dev API runs fully stubbed by default; integration suites depend on this. `make_datahub()` always returns the real DataHub client (no stub toggle). Stub classes are defined in `src/workflows/_stubs.py`.
 
 ---
 
@@ -258,23 +256,21 @@ and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
 Export `helm-charts/.env` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains: `set -a && source helm-charts/.env && set +a`.
 
 ```bash
-# Spot -- some tests need the test-mode server, others do not. Run together for simplicity:
+# Spot
 ./helm-charts/bin/install.sh --profile dev --components api --skip-build   # safe to run; idempotent
 uv run python -m tests.integration.util --reset-seed
-set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/
+set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/spot/
 
-# Api-wired -- always run with the test-mode server up
+# Api-wired
 ./helm-charts/bin/install.sh --profile dev --components api --skip-build
 uv run python -m tests.integration.util --reset-seed
-set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/
+set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/api_wired/
 
 # Teardown (optional; leave running if you'll iterate)
 kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 ```
 
-The `require_server` fixture (in `conftest.py`) verifies (1) `DATASPOKE_TEST_MODE` is set,
-(2) `/health` returns 200, (3) Airflow DAGs are registered via `/admin/dags/verify`. Spot
-tests opt in by depending on the fixture; api-wired tests always depend on it.
+The session-scoped `runtime_conf` fixture (in `tests/integration/conftest.py`) GETs `/api/v1/admin/conf` once and asserts the three infra stubs (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) are true. `stub_llm_client` is intentionally unchecked so real-LLM tests (UC3/UC4 `_with_real_llm` variants) can run with it false; per-test skip decorators consult `runtime_conf.stub_llm_client` and skip when stubbed. The `require_server` fixture additionally verifies `/health` returns 200 and Airflow DAGs are registered via `/admin/dags/verify`. Spot tests opt in by depending on the fixture; api-wired tests always depend on it.
 
 ### Test Execution Groups
 
@@ -283,11 +279,12 @@ Tests must run in **three separate groups**:
 | Group | Command | Requires server? |
 |-------|---------|-----------------|
 | 1. Unit | `uv run pytest tests/unit/` | No |
-| 2. Spot integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/` | Recommended (some tests opt in) |
-| 3. Api-wired integration | `DATASPOKE_TEST_MODE=true uv run pytest tests/integration/api_wired/` | Yes |
+| 2. Spot integration | `uv run pytest tests/integration/spot/` | Recommended (some tests opt in) |
+| 3. Api-wired integration | `uv run pytest tests/integration/api_wired/` | Yes |
 
-**Why separate groups?** The test-mode server runs Airflow DAGs. Mixing spot and api-wired
-runs causes competing Airflow load and flaky timing.
+**Why separate groups?** The dev API runs Airflow DAGs. Mixing spot and api-wired runs causes competing Airflow load and flaky timing.
+
+To exercise real-LLM tests against the dev API, first `PATCH /api/v1/admin/conf {"stub_llm_client": false}` (≤30s propagation), then run pytest. Revert afterward with `PATCH ... {"stub_llm_client": true}`.
 
 ---
 

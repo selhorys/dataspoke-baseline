@@ -156,8 +156,19 @@ async def test_invalid_credentials_returns_401(client: AsyncClient) -> None:
 
 
 async def test_refresh_without_cookie_returns_401(client: AsyncClient) -> None:
-    response = await client.post(AUTH_REFRESH)
-    assert response.status_code == 401
+    # get_redis now calls get_runtime_config(db) — override it so no DB is needed.
+    # The subject under test is the missing-cookie guard, not Redis or runtime config.
+    from unittest.mock import AsyncMock
+
+    from src.api.dependencies import get_redis
+    from src.api.main import app
+
+    app.dependency_overrides[get_redis] = lambda: AsyncMock()
+    try:
+        response = await client.post(AUTH_REFRESH)
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_redis, None)
 
 
 async def test_refresh_with_valid_cookie_returns_new_token(client: AsyncClient) -> None:
@@ -257,7 +268,7 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from src.api.dependencies import get_datahub, get_db
+    from src.api.dependencies import get_datahub, get_db, get_redis
     from src.api.main import app
 
     mock_session = AsyncMock()
@@ -269,8 +280,11 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
     async def _mock_db():
         yield mock_session
 
+    # Override get_redis so its get_runtime_config(db) call does not consume
+    # execute results that belong to the ingestion service query.
     app.dependency_overrides[get_db] = _mock_db
     app.dependency_overrides[get_datahub] = lambda: AsyncMock()
+    app.dependency_overrides[get_redis] = lambda: AsyncMock()
     try:
         for group in ["de", "da", "dg"]:
             mock_session.execute = AsyncMock(side_effect=[count_result, rows_result])
@@ -282,6 +296,7 @@ async def test_valid_group_can_access_common_routes(client: AsyncClient) -> None
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_datahub, None)
+        app.dependency_overrides.pop(get_redis, None)
 
 
 # ── Redis-backed revocation tests ──────────────────────────────────────────────

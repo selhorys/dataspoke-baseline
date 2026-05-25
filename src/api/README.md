@@ -53,7 +53,7 @@ All variables use the `DATASPOKE_` prefix (read by `src/api/config.py` via `pyda
 
 DataHub, Langfuse, and LLM provider/model/key are **not** env vars on the API pod — they live in the DB `peripheral_config` and `runtime_config` tables, updated via `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. See [spec/feature/HELM_CHART.md §Configuration](../../spec/feature/HELM_CHART.md#configuration--four-tier-env-vars).
 
-> Runtime env vars on the API pod come from three sources: K8s Secret (`dataspoke-secrets` — credentials), ConfigMap (`dataspoke-app-config` — connection endpoints), and chart-rendered direct env (`api.testMode`, `api.testLlmReal`, `api.enableStubAuth`, `config.corsOrigins`). See `spec/feature/HELM_CHART.md §Configuration Flow`. Test-side equivalents are in `helm-charts/.env` under the `DATASPOKE_TEST_*` block.
+> Runtime env vars on the API pod come from three sources: K8s Secret (`dataspoke-secrets` — credentials), ConfigMap (`dataspoke-app-config` — connection endpoints), and chart-rendered direct env (`api.enableStubAuth`, `config.corsOrigins`). See `spec/feature/HELM_CHART.md §Configuration Flow`. Stub-mode toggles live in the DB `runtime_config` row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`), flippable via `PATCH /api/v1/admin/conf`. Test-side equivalents are in `helm-charts/.env` under the `DATASPOKE_TEST_*` block.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -107,6 +107,10 @@ async def reset_all() -> None:
                 "DATASPOKE_DEV_LLM_MODEL",
                 RUNTIME_CONFIG_DEFAULTS["llm_model"],
             ),
+            "stub_redis_client": True,
+            "stub_llm_client": True,
+            "stub_pgvector_manager": True,
+            "stub_notification_service": True,
         }
         cols = list(rc_seed.keys())
         placeholders = ", ".join(f"${i + 2}" for i in range(len(cols)))

@@ -35,6 +35,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import httpx
+
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 
@@ -80,6 +82,14 @@ def _promote_test_runtime_overrides() -> None:
 
 
 _promote_test_runtime_overrides()
+
+# ── Ingress URL helper ────────────────────────────────────────────────────────
+
+
+def _shared_ingress_url() -> str:
+    domain = os.environ["DATASPOKE_KUBE_INGRESS_DOMAIN"]
+    return f"http://app.{domain}"
+
 
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
@@ -555,6 +565,71 @@ async def override_app(
         yield client
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="session")
+def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
+    """Session-scoped fixture: fetch GET /api/v1/admin/conf and return the conf dict.
+
+    Asserts that the three infra stub fields are true (the required dev-env baseline):
+      - stub_redis_client
+      - stub_pgvector_manager
+      - stub_notification_service
+
+    stub_llm_client is intentionally NOT checked here — it is the per-test branch
+    knob.  Stub-mode tests require it true; real-LLM tests require it false.
+    The per-test ``pytest.skip`` decorators that read
+    ``runtime_conf["stub_llm_client"]`` are the correct gate.
+
+    spec: src/workflows/_common.py — factory stub= contract; infra stubs must be on.
+    spec: TESTING.md §Integration Testing — integration tests run with stubs for infra.
+    """
+    base_url = _shared_ingress_url()
+
+    # Obtain admin token
+    try:
+        token_resp = httpx.post(
+            f"{base_url}/api/v1/auth/token",
+            json={"email": "admin", "password": "admin"},
+            timeout=10.0,
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json()["access_token"]
+    except Exception as exc:
+        pytest.fail(f"Cannot obtain admin token for runtime_conf preflight: {exc}")
+
+    # Fetch the runtime conf
+    try:
+        conf_resp = httpx.get(
+            f"{base_url}/api/v1/admin/conf",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10.0,
+        )
+        conf_resp.raise_for_status()
+    except Exception as exc:
+        pytest.fail(f"GET /admin/conf failed during runtime_conf preflight: {exc}")
+
+    conf = conf_resp.json()
+
+    # These three infra stubs must always be true — every integration test relies on them.
+    # stub_llm_client is intentionally excluded: stub-mode tests (the default) need it true,
+    # but real-LLM tests (test_uc3/4_*_with_real_llm) need it false.  The per-test
+    # pytest.skip decorators that read runtime_conf["stub_llm_client"] are the right gate.
+    infra_stub_fields = ("stub_redis_client", "stub_pgvector_manager", "stub_notification_service")
+    not_stubbed = [f for f in infra_stub_fields if not conf.get(f)]
+    if not_stubbed:
+        patch_url = f"{base_url}/api/v1/admin/conf"
+        pytest.fail(
+            f"Required infra stub fields {not_stubbed} are not true. "
+            "Enable the three infra stubs before running integration tests:\n"
+            f"  curl -X PATCH {patch_url} "
+            "-H 'Authorization: Bearer <admin_token>' "
+            "-H 'Content-Type: application/json' "
+            "-d '{\"stub_redis_client\": true, "
+            "\"stub_pgvector_manager\": true, \"stub_notification_service\": true}'"
+        )
+
+    return conf
 
 
 def make_test_urn(service: str, suffix: str) -> str:

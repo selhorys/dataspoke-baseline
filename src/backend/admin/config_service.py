@@ -33,6 +33,10 @@ RUNTIME_CONFIG_DEFAULTS: dict[str, Any] = {
     "metagen_ontology_rag_edge_k": 5,
     "metagen_ontology_rag_triple_k": 5,
     "validation_score_n_intervals": 3,
+    "stub_redis_client": False,
+    "stub_llm_client": False,
+    "stub_pgvector_manager": False,
+    "stub_notification_service": False,
 }
 
 # ── DTO ───────────────────────────────────────────────────────────────────────
@@ -55,6 +59,10 @@ class RuntimeConfigDTO:
     metagen_ontology_rag_edge_k: int
     metagen_ontology_rag_triple_k: int
     validation_score_n_intervals: int
+    stub_redis_client: bool
+    stub_llm_client: bool
+    stub_pgvector_manager: bool
+    stub_notification_service: bool
 
     @classmethod
     def from_orm(cls, row: RuntimeConfig) -> "RuntimeConfigDTO":
@@ -74,6 +82,10 @@ class RuntimeConfigDTO:
             metagen_ontology_rag_edge_k=row.metagen_ontology_rag_edge_k,
             metagen_ontology_rag_triple_k=row.metagen_ontology_rag_triple_k,
             validation_score_n_intervals=row.validation_score_n_intervals,
+            stub_redis_client=row.stub_redis_client,
+            stub_llm_client=row.stub_llm_client,
+            stub_pgvector_manager=row.stub_pgvector_manager,
+            stub_notification_service=row.stub_notification_service,
         )
 
 

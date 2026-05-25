@@ -208,6 +208,18 @@ async def test_get_runtime_config_seeds_defaults_on_empty_db() -> None:
     assert inserted.validation_score_n_intervals == 3, (
         "inserted.validation_score_n_intervals must equal RUNTIME_CONFIG_DEFAULTS value"
     )
+    assert inserted.stub_redis_client is False, (
+        "inserted.stub_redis_client must be False (prod-safe default)"
+    )
+    assert inserted.stub_llm_client is False, (
+        "inserted.stub_llm_client must be False (prod-safe default)"
+    )
+    assert inserted.stub_pgvector_manager is False, (
+        "inserted.stub_pgvector_manager must be False (prod-safe default)"
+    )
+    assert inserted.stub_notification_service is False, (
+        "inserted.stub_notification_service must be False (prod-safe default)"
+    )
 
     # ── Secondary: the full pipeline returns the correct DTO ──────────────────
     # These assertions confirm RuntimeConfigDTO.from_orm reads back the values
@@ -231,6 +243,10 @@ async def test_get_runtime_config_seeds_defaults_on_empty_db() -> None:
     assert dto.metagen_ontology_rag_edge_k == 5
     assert dto.metagen_ontology_rag_triple_k == 5
     assert dto.validation_score_n_intervals == 3
+    assert dto.stub_redis_client is False
+    assert dto.stub_llm_client is False
+    assert dto.stub_pgvector_manager is False
+    assert dto.stub_notification_service is False
 
 
 @pytest.mark.asyncio
@@ -503,6 +519,10 @@ def test_runtime_config_defaults_match_documented_factory_defaults() -> None:
     assert RUNTIME_CONFIG_DEFAULTS["metagen_ontology_rag_edge_k"] == 5
     assert RUNTIME_CONFIG_DEFAULTS["metagen_ontology_rag_triple_k"] == 5
     assert RUNTIME_CONFIG_DEFAULTS["validation_score_n_intervals"] == 3
+    assert RUNTIME_CONFIG_DEFAULTS["stub_redis_client"] is False
+    assert RUNTIME_CONFIG_DEFAULTS["stub_llm_client"] is False
+    assert RUNTIME_CONFIG_DEFAULTS["stub_pgvector_manager"] is False
+    assert RUNTIME_CONFIG_DEFAULTS["stub_notification_service"] is False
 
 
 def test_runtime_config_defaults_match_orm_column_defaults() -> None:
@@ -531,6 +551,10 @@ def test_runtime_config_defaults_match_orm_column_defaults() -> None:
         "metagen_ontology_rag_edge_k": 5,
         "metagen_ontology_rag_triple_k": 5,
         "validation_score_n_intervals": 3,
+        "stub_redis_client": False,
+        "stub_llm_client": False,
+        "stub_pgvector_manager": False,
+        "stub_notification_service": False,
     }
 
     # Columns with non-None ORM defaults: verify they match RUNTIME_CONFIG_DEFAULTS.
@@ -577,10 +601,11 @@ def test_runtime_config_defaults_match_orm_column_defaults() -> None:
         )
 
 
-def test_runtime_config_defaults_covers_all_15_fields() -> None:
-    """RUNTIME_CONFIG_DEFAULTS contains exactly the 15 documented fields.
+def test_runtime_config_defaults_covers_all_19_fields() -> None:
+    """RUNTIME_CONFIG_DEFAULTS contains exactly the 19 documented fields.
 
-    Spec: task brief §What's under test — '15 behavioral tunables'.
+    Spec: plan §stub toggles — 15 behavioral tunables + 4 stub toggle booleans.
+    spec: src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
     """
     expected_fields = {
         "llm_provider",
@@ -598,9 +623,13 @@ def test_runtime_config_defaults_covers_all_15_fields() -> None:
         "metagen_ontology_rag_edge_k",
         "metagen_ontology_rag_triple_k",
         "validation_score_n_intervals",
+        "stub_redis_client",
+        "stub_llm_client",
+        "stub_pgvector_manager",
+        "stub_notification_service",
     }
     assert set(RUNTIME_CONFIG_DEFAULTS.keys()) == expected_fields, (
-        f"RUNTIME_CONFIG_DEFAULTS must contain exactly 15 fields. "
+        f"RUNTIME_CONFIG_DEFAULTS must contain exactly 19 fields. "
         f"Extra: {set(RUNTIME_CONFIG_DEFAULTS) - expected_fields}, "
         f"missing: {expected_fields - set(RUNTIME_CONFIG_DEFAULTS)}"
     )

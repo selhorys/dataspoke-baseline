@@ -31,11 +31,11 @@ from src.api.auth.internal import require_internal_token
 from src.api.schemas.admin import DatahubSyncRequest
 from src.shared.exceptions import ConflictError, DataSpokeError
 from src.workflows._common import (
-    make_cache,
     make_datahub,
     make_db_session,
-    make_llm,
-    make_vector,
+    make_llm_client,
+    make_pgvector_manager,
+    make_redis_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,11 +92,13 @@ class IngestionRunRequest(BaseModel):
 @router.post("/ingestion/run")
 async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
     """Execute ingestion pipeline for a single dataset."""
-    cache = make_cache()
     try:
         async with make_db_session() as db:
+            from src.backend.admin.config_service import get_runtime_config
             from src.backend.ingestion.service import IngestionService
 
+            rc = await get_runtime_config(db)
+            cache = make_redis_client(stub=rc.stub_redis_client)
             datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db, cache=cache)
             result = await service.run(body.dataset_urn, dry_run=body.dry_run)
@@ -145,8 +147,6 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
 
     Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
     """
-    cache = make_cache()
-    vector = make_vector()
     try:
         async with make_db_session() as db:
             from src.backend.admin.config_service import get_runtime_config
@@ -154,7 +154,9 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
 
             datahub = await make_datahub(db)
             rc = await get_runtime_config(db)
-            llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
+            cache = make_redis_client(stub=rc.stub_redis_client)
+            vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
+            llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model)
             service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
             if body.tier is not None:
@@ -190,10 +192,12 @@ async def metrics_list_active(body: MetricsListActiveRequest) -> list[str]:
     """Return metric IDs with is_enabled=True and schedule_tier matching the given tier."""
     try:
         async with make_db_session() as db:
+            from src.backend.admin.config_service import get_runtime_config
             from src.backend.metrics.service import MetricsService
 
+            rc = await get_runtime_config(db)
             datahub = await make_datahub(db)
-            cache = make_cache()
+            cache = make_redis_client(stub=rc.stub_redis_client)
             service = MetricsService(datahub=datahub, db=db, cache=cache)
             records = await service.list_active_for_tier(body.tier)
             return [r.id for r in records]
@@ -215,11 +219,13 @@ class MetricsRunRequest(BaseModel):
 @router.post("/metrics/run")
 async def metrics_run(body: MetricsRunRequest) -> dict[str, object]:
     """Execute metric measurement run for a single metric."""
-    cache = make_cache()
     try:
         async with make_db_session() as db:
+            from src.backend.admin.config_service import get_runtime_config
             from src.backend.metrics.service import MetricsService
 
+            rc = await get_runtime_config(db)
+            cache = make_redis_client(stub=rc.stub_redis_client)
             datahub = await make_datahub(db)
             service = MetricsService(datahub=datahub, db=db, cache=cache)
             result = await service.run(body.metric_id, dry_run=body.dry_run)
@@ -259,8 +265,6 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
 
     Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
     """
-    cache = make_cache()
-    vector = make_vector()
     try:
         async with make_db_session() as db:
             from src.backend.admin.config_service import get_runtime_config
@@ -268,7 +272,9 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
 
             datahub = await make_datahub(db)
             rc = await get_runtime_config(db)
-            llm = make_llm(provider=rc.llm_provider, model=rc.llm_model)
+            cache = make_redis_client(stub=rc.stub_redis_client)
+            vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
+            llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model)
             service = OntogenService(
                 datahub=datahub,
                 db=db,

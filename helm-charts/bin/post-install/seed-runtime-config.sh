@@ -63,5 +63,24 @@ if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" 
       ;;
   esac
 else
-  info "DATASPOKE_DEV_LLM_PROVIDER or DATASPOKE_DEV_LLM_MODEL not set — skipping runtime config PATCH."
+  info "DATASPOKE_DEV_LLM_PROVIDER or DATASPOKE_DEV_LLM_MODEL not set — skipping LLM provider/model PATCH."
 fi
+
+# ---------------------------------------------------------------------------
+# Seed stub service flags for dev
+# ---------------------------------------------------------------------------
+info "Seeding stub service flags into runtime config via /internal/admin/conf..."
+HTTP_CODE=$(curl -fsS -o /tmp/seed-stub-resp.json -w "%{http_code}" -X PATCH \
+  "http://app.${DOMAIN}/internal/admin/conf" \
+  -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"stub_redis_client": true, "stub_llm_client": true, "stub_pgvector_manager": true, "stub_notification_service": true}' \
+  2>&1 || echo "000")
+case "$HTTP_CODE" in
+  200|204)
+    info "OK (HTTP ${HTTP_CODE}): Stub service flags seeded."
+    ;;
+  *)
+    error "PATCH failed (HTTP ${HTTP_CODE}): http://app.${DOMAIN}/internal/admin/conf — see /tmp/seed-stub-resp.json"
+    ;;
+esac

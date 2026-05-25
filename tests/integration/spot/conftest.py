@@ -19,27 +19,16 @@ def _ingress_url() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def require_server() -> None:
-    """Assert that the test-mode API server is reachable and properly configured.
+def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf performs stub preflight
+    """Assert that the API server is reachable, three of four stub fields (LLM excluded) are true via runtime_conf preflight, and DAGs are registered.
 
     Checks:
-    1. DATASPOKE_TEST_MODE env var is set to 'true'.
+    1. GET /api/v1/admin/conf confirms stub_redis_client, stub_pgvector_manager, stub_notification_service are true (delegated to runtime_conf); stub_llm_client is intentionally excluded so real-LLM tests can run.
     2. GET /health returns 200.
     3. POST /admin/dags/verify returns 200 (using admin JWT auth).
 
     If any check fails, the test session is aborted with a clear message.
     """
-    test_mode = os.environ.get("DATASPOKE_TEST_MODE", "")
-    if test_mode.lower() != "true":
-        pytest.fail(
-            "DATASPOKE_TEST_MODE is not set to 'true'. "
-            "Run: set -a && source helm-charts/.env && set +a && "
-            "DATASPOKE_TEST_MODE=true uv run pytest tests/integration/spot/ "
-            "(set -a is required — helm-charts/.env has no `export` prefixes, so a bare "
-            "`source` does not propagate vars to the pytest subprocess) "
-            "or start the server with: ./helm-charts/bin/install.sh --profile dev --components api --skip-build"
-        )
-
     base_url = _ingress_url()
 
     # Check liveness — /health has no /api/v1 prefix (mounted at root)

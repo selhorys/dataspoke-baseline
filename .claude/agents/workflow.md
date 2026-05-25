@@ -20,7 +20,7 @@ Your job is to write Airflow DAG definitions in `src/workflows/dags/` and workfl
 
 ```
 src/workflows/
-├── _common.py              # Service factories (make_datahub, make_cache, etc.) and workflow ID helpers
+├── _common.py              # Service factories (make_datahub, make_redis_client, make_llm_client, make_pgvector_manager, make_notification_service) and workflow ID helpers
 ├── airflow/                # AirflowClient REST wrapper, models, errors
 ├── dags/                   # Airflow DAG Python files (self-contained, no src/ imports)
 └── {feature}.py            # FLOW_ID constant and tier query helpers per feature

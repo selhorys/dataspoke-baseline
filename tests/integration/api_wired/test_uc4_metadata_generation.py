@@ -33,7 +33,6 @@ from datahub.metadata.schema_classes import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.settings import settings
 from tests.integration.util.datahub import (
     _gms_url,
     get_datahub_token,
@@ -71,8 +70,9 @@ async def test_uc4_metadata_generation_under_stub(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     async_session: AsyncSession,
+    runtime_conf: dict,
 ) -> None:
-    """UC4 user-story arc under stub mode (DATASPOKE_TEST_MODE=true).
+    """UC4 user-story arc under stub mode (stub_llm_client=true in runtime conf).
 
     Steps mirror USE_CASE_en.md §UC4 Imazon Example:
       1.  Seed LLM context: fulfillment document + 5 approved ontogen nodes
@@ -376,7 +376,7 @@ async def test_uc4_metadata_generation_under_stub(
         # Under stub mode the stub branches ensure at least one candidate is generated.
         # spec: BACKEND_LLM.md §Test Mode — metagen Producer stub emits one candidate
         #   per target item; metagen Reviewer stub accepts.
-        if not settings.test_llm_real:
+        if runtime_conf.get("stub_llm_client"):
             assert first_counts.get("candidates_added", 0) >= 1, (
                 "Stub metagen_validate branch produced zero candidates; prompt-format drift "
                 "between src/backend/metagen/prompts.py and src/workflows/_stubs.py probably "
@@ -925,15 +925,16 @@ async def test_uc4_metadata_generation_under_stub(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    not settings.test_llm_real, reason="requires DATASPOKE_TEST_LLM_REAL=true"
-)
 async def test_uc4_metadata_generation_with_real_llm(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     async_session: AsyncSession,
+    runtime_conf: dict,
 ) -> None:
-    """UC4 user-story arc with a real LLM (DATASPOKE_TEST_LLM_REAL=true).
+    """UC4 user-story arc with a real LLM (stub_llm_client=false in runtime conf).
+
+    Skipped when stub_llm_client is true — a stub LLM cannot satisfy the
+    real-LLM contract assertions (candidates_added ≥ 1).
 
     Structurally identical to test_uc4_metadata_generation_under_stub. Additional
     assertion after step 5: candidates_added ≥ 1 — a real LLM run that persists
@@ -959,9 +960,11 @@ async def test_uc4_metadata_generation_with_real_llm(
 
     Spec: USE_CASE_en.md §UC4
     Spec: BACKEND.md §UC4 Metadata Generation
-    Spec: BACKEND_LLM.md §Test Mode — DATASPOKE_TEST_LLM_REAL=true bypasses stub;
-    real LLM calls execute and must persist ≥1 candidate.
+    Spec: USE_CASE_en.md §UC4 — real-LLM contract: candidates_added ≥ 1.
     """
+    if runtime_conf.get("stub_llm_client"):
+        pytest.skip("stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf to run real-LLM tests")
+
     conf_url = "/api/v1/spoke/common/metagen/attr/conf"
     eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/conf"
     oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/conf"

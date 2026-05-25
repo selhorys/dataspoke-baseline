@@ -103,8 +103,8 @@ helm-charts/
 | Image rebuild | ✓ (default) | ✓ or `--skip-build` (CI-built image) |
 | Frontend subchart | ✗ (host `npm run dev`) | ✓ |
 | Event-consumer subchart | ✗ | ✗ (opt-in by operator) |
-| In-cluster API `testMode: true` | ✓ | ✗ |
 | `enableStubAuth: true` | ✓ | ✗ (never in prod) |
+| RuntimeConfig stub fields (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) seeded `true` | ✓ | ✗ (defaults `false`) |
 | nginx-ingress install | ✓ | ✗ (operator's controller) |
 | DataHub install | ✓ (in-cluster) | ✗ (external; operator-managed) |
 | Langfuse install | ✓ (in-cluster) | ✗ (external; operator-managed) |
@@ -220,7 +220,7 @@ by `api.enabled` against the umbrella's own templates.
 | Component | Type | Prod | Dev | Stateful |
 |---|---|---|---|---|
 | frontend | Deployment | ✓ | ✗ (host) | no |
-| api | Deployment | ✓ | ✓ (in-cluster, `testMode: true`) | no |
+| api | Deployment | ✓ | ✓ (in-cluster; stub-mode flags seeded in RuntimeConfig) | no |
 | event-consumer | Deployment | ✗ (opt-in) | ✗ | no |
 | postgresql | StatefulSet | ✓ | ✓ | yes (PV) |
 | redis | Deployment | ✓ | ✓ | no |
@@ -250,15 +250,14 @@ Same names in dev and prod, different values. Injected into pods via ConfigMap
 - `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`
 - `DATASPOKE_INTERNAL_TOKEN` — shared secret for Airflow → API internal calls
 
-> **Chart-values-only env vars (not in `.env`)**: `DATASPOKE_CORS_ORIGINS`,
-> `DATASPOKE_ENABLE_STUB_AUTH`, and `DATASPOKE_TEST_LLM_REAL` are rendered
-> onto the API container directly from the chart values (`config.corsOrigins`,
-> `api.enableStubAuth`, `api.testLlmReal`). `values.yaml` pins the auth/LLM
-> toggles to `false`; `values-dev.yaml` enables stub auth (`true`) and leaves
-> `testLlmReal` at `false`. Operators flip `testLlmReal` for live-LLM
-> exploration via `helm upgrade --set api.testLlmReal=true`. Keeping these
-> out of `.env` removes the prod footgun of a stray line silently re-enabling
-> stub auth.
+> **Chart-values-only env vars (not in `.env`)**: `DATASPOKE_CORS_ORIGINS`
+> and `DATASPOKE_ENABLE_STUB_AUTH` are rendered onto the API container
+> directly from the chart values (`config.corsOrigins`, `api.enableStubAuth`).
+> `values.yaml` pins stub auth to `false`; `values-dev.yaml` enables it
+> (`true`). Keeping these out of `.env` removes the prod footgun of a stray
+> line silently re-enabling stub auth. Stub-mode wiring for the four
+> dependency factories lives in the `runtime_config` DB row, not in chart
+> values — see `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
 > DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
 > vars. They live in the DB `peripheral_config` and `runtime_config` tables,
@@ -420,10 +419,8 @@ and points the chart at it via `secrets.existingSecret: <name>`.
 
 ### Container env rendered from chart values (not `.env`)
 
-`DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`),
-`DATASPOKE_ENABLE_STUB_AUTH` (from `api.enableStubAuth`),
-`DATASPOKE_TEST_LLM_REAL` (from `api.testLlmReal`). Operators override via
-`helm upgrade --set api.testLlmReal=true`; never via `.env`.
+`DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`) and
+`DATASPOKE_ENABLE_STUB_AUTH` (from `api.enableStubAuth`).
 
 ### DB-backed (no env var)
 
