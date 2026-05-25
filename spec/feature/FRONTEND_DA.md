@@ -16,7 +16,8 @@ DA pages live under `/da/...` and consume baseline features at
 | UI route | Title | API base |
 |---|---|---|
 | `/da/ontogen` | Ontology browser | `/spoke/common/ontogen/result/...` |
-| `/da/validation` | Validation list (fitness framing) | `/spoke/common/validation`, `/spoke/common/data/{urn}/attr/validation/...` |
+| `/da/validation` | Validation list (fitness framing) | `/spoke/common/validation` |
+| `/da/validation/[urn]` | Per-dataset fitness check | `/spoke/common/data/{urn}/attr/validation/...` |
 | `/da/dataset/[urn]` | Dataset detail | `/spoke/common/data/{urn}` |
 
 ---
@@ -73,7 +74,7 @@ Tabs: `Overview / Fitness Check / Ontology`.
 |---|---|
 | Overview | `GET /spoke/common/data/{urn}`, `GET .../attr` |
 | Fitness Check | reuses `/da/validation/[urn]` page contract |
-| Ontology | `GET /spoke/common/ontogen/result/node` filtered client-side to nodes whose member-dataset list contains this URN, plus `GET .../result/triple` filtered to triples where the matched node is subject or object |
+| Ontology | Nodes that include this URN as a member dataset, and the triples involving those nodes. Reads `GET /spoke/common/ontogen/result/{node,triple}` with per-node `GET .../result/node/{id}` to resolve membership |
 
 ```
 ┌──────────────────────────────────────────────────────┐

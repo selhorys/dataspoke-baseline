@@ -14,9 +14,9 @@ features at `/spoke/common/...` with engineering-flavoured framing.
 | UI route | Title | API base |
 |---|---|---|
 | `/de/ingestion` | Ingestion list | `/spoke/common/ingestion`, `/spoke/common/data/{urn}/attr/ingestion/...` |
-| `/de/ingestion/[urn]` | Ingestion detail | per-dataset ingestion |
-| `/de/validation` | Validation list | `/spoke/common/validation`, `/spoke/common/data/{urn}/attr/validation/...` |
-| `/de/validation/[urn]` | Validation detail | per-dataset validation |
+| `/de/ingestion/[urn]` | Ingestion detail | `/spoke/common/data/{urn}/attr/ingestion/...` |
+| `/de/validation` | Validation list | `/spoke/common/validation` |
+| `/de/validation/[urn]` | Validation detail | `/spoke/common/data/{urn}/attr/validation/...` |
 | `/de/metagen` | Metagen workspace | singleton `/spoke/common/metagen/attr/conf` + global `/spoke/common/metagen/item` review queue |
 | `/de/metagen/[urn]` | Per-dataset metagen | `/spoke/common/data/{urn}/attr/metagen/{conf,item}/...` |
 | `/de/ontogen` | Ontogen browser | `/spoke/common/ontogen/...` |
@@ -33,7 +33,7 @@ features at `/spoke/common/...` with engineering-flavoured framing.
 | Page | Read | Write |
 |---|---|---|
 | `/de/ingestion` | `GET /spoke/common/ingestion` | — |
-| `/de/ingestion/[urn]` | `GET .../attr/ingestion/conf`, `GET .../event/ingestion` | `PUT/PATCH .../attr/ingestion/conf` (fields: `mode: 'active-custom' \| 'passive'`, `platform`, `identifier`, plus `locator`/`auth`/`schedule_tier` for `active-custom`); `POST .../method/ingestion/run` (`{dry_run?}`, `active-custom` only); `DELETE .../attr/ingestion/conf` |
+| `/de/ingestion/[urn]` | `GET .../attr/ingestion/conf`, `GET .../event/ingestion` | `PUT/PATCH .../attr/ingestion/conf` (fields: `mode: 'active-custom' \| 'passive'`, `platform`, `identifier`, `is_enabled`, plus `locator`/`auth`/`schedule_tier` for `active-custom`); `POST .../method/ingestion/run` (`{dry_run?}`, `active-custom` only); `DELETE .../attr/ingestion/conf` |
 
 The `mode` field gates form behaviour. `active-custom` shows all input fields and
 enables both Run and Dry-Run buttons. `passive` hides `locator`, `auth`, and
@@ -114,14 +114,13 @@ for the service surface.
 
 The list page shows one row per dataset with a validation slot — columns:
 dataset, description, declared variable count, latest `data_time`, latest
-`score`. The "Quality Score" header on the list/detail uses the server-provided
-`quality_score` field (see
-[BACKEND §Dataset Service](BACKEND.md#dataset-service-srcbackenddataset)); the UI
-renders "—" until the first result row arrives.
+`score` (UI header "Quality Score"; "—" until the first result row arrives).
 
-The detail page is a single editor for `description` (free-form, ≤ 2,000 chars)
-plus a variables list (add / remove / rename, each name matching
-`[a-z][a-z0-9_]{0,99}`, 1..200 entries). Saving issues `PUT/PATCH .../attr/validation/conf`.
+The detail page is a single editor for `description` plus a variables list
+(add / remove / rename); field constraints (description char cap, variable
+name regex, count cap) per
+[VALIDATION §Rule Configuration](VALIDATION.md#rule-configuration).
+Saving issues `PUT/PATCH .../attr/validation/conf`.
 The historical timeseries panel plots `score` and a per-variable chart over
 `data_time` from `GET .../attr/validation/result?from=&until=`. The event log
 consumes `GET .../event/validation` (one entry per accepted result POST).
@@ -156,23 +155,19 @@ consumes `GET .../event/validation` (one entry per accepted result POST).
 | `/de/metagen` | `GET /spoke/common/metagen/attr/conf`, `GET /spoke/common/metagen/item`, `GET /spoke/common/metagen/event` | `PUT/PATCH/DELETE /spoke/common/metagen/attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`); `POST /spoke/common/metagen/method/run` (optional body `{dataset_urns?, dry_run?}`) |
 | `/de/metagen/[urn]` | `GET .../attr/metagen/conf`, `GET .../attr/metagen/item`, `GET .../attr/metagen/item/{item_id}` (per-item candidates), `GET .../event/metagen` | `PUT/PATCH/DELETE .../attr/metagen/conf` (fields: `is_enabled`, `allowed[]`); `POST .../attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-`dataset_filter` carries four optional dimensions: `origin` (DataHub `FabricType`
-value — AND-ed with the OR-group, passed through to DataHub verbatim), `tags[]`,
-`glossary_terms[]`, and `dataset_urns[]` (three list dimensions OR-ed among
-themselves). URN format is validated at `PUT/PATCH` (`422 INVALID_DATASET_URN`).
+`dataset_filter` follows the standard four-dimension shape — see
+[API §Metric `dataset_filter`](../API.md#metric-spokedgmetric).
 
 The global page (`/de/metagen`) is the singleton conf editor plus a
 cross-dataset queue of pending items (filterable by `dataset_urn`, `kind`,
 `status`). The per-dataset page (`/de/metagen/[urn]`) shows boundary
 (`is_enabled`, `allowed`) and the dataset's items grouped by kind. Each item
-renders as a card with up to `result_limit` candidate sub-cards; each
-candidate sub-card carries Approve / Reject buttons. Approval writes to the
-editable description aspect (`editableDatasetProperties.description` for
-`dataset.description`, `editableSchemaMetadata.editableSchemaFieldInfo[].description`
-for `column.<fieldPath>.description`) and locks the item; the confirm
-dialog labels the destination aspect. Finalized items collapse to a single
-"✓ approved on {date} by {reviewer}" row with sibling `llm_approved`
-candidates shown as read-only history.
+renders as a card with up to `result_limit` candidate sub-cards carrying
+Approve / Reject buttons; the confirm dialog labels the destination DataHub
+aspect. Finalized items collapse to a single approved row with sibling
+`llm_approved` candidates shown as read-only history. Review semantics
+(approve-supersedes-sibling, reject-only-on-llm-approved) are in
+[API §Metadata Generation](../API.md#metadata-generation-spokecommonmetagen).
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -209,8 +204,8 @@ candidates shown as read-only history.
 | `/de/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}` |
 | `/de/ontogen` | `GET .../result/{node\|edge\|triple}` (+ `/{id}`, `/attr`, `/event`) | `POST .../method/run` (optional Markdown body — one-shot prompt; `?dry_run=true`) |
 
-`dataset_filter` carries the same four optional dimensions as the metagen filter
-above (`origin`, `tags[]`, `glossary_terms[]`, `dataset_urns[]`).
+`dataset_filter` follows the standard four-dimension shape — see
+[API §Metric `dataset_filter`](../API.md#metric-spokedgmetric).
 
 `POST .../result/{node\|edge\|triple}/{id}/method/review` is **not** exposed
 in the DE workspace — see [FRONTEND_DG §Ontogen Review](FRONTEND_DG.md#ontogen-review-uc3).

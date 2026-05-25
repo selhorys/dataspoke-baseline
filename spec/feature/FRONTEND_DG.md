@@ -35,27 +35,18 @@ only one that exposes ontogen approval actions
 | `/dg/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`{dry_run?}`) |
 
 The create form is the edit form (below) with one extra leading field: a `metric_id`
-text input. `metric_id` is **create-only** — kebab-case matching
-`^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$`; a colliding id returns
-`409 METRIC_EXISTS` (surfaced inline on the field) and a malformed id returns
-`422 INVALID_PARAMETER`. On `/dg/metrics/[id]` the id comes from the path and is shown
+text input — **create-only** (validated per
+[API §Metric](../API.md#metric-spokedgmetric); collision and malformed input
+surfaced inline). On `/dg/metrics/[id]` the id comes from the path and is shown
 read-only. On success the page redirects to `/dg/metrics/[id]` for the new metric.
 
-`dataset_filter` carries four optional dimensions: `origin` (the DataHub
-`FabricType` value carried as the third URN segment — `PROD`/`DEV`/`CORP`/`EI`/
-`STG`/`NON_PROD`/… — passed through verbatim to DataHub), `tags[]` (DataHub tag
-URNs), `glossary_terms[]` (glossary term URNs), and `dataset_urns[]` (explicit
-dataset URNs). Tag/term/URN dimensions are OR-ed among themselves and AND-ed with
-`origin`. URN format is validated at `PUT/PATCH` time (`422 INVALID_DATASET_URN`);
-URNs that fail to resolve at run time are listed in the `METRIC.RUN_COMPLETE`
-event's `unresolved_urns` field.
+`dataset_filter` follows the standard four-dimension shape — see
+[API §Metric `dataset_filter`](../API.md#metric-spokedgmetric).
 
-Built-in metric types: `ingestion-freshness`, `validation-score`, `doc-health`
-(see [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance) for the `values` keys each
-emits and the `metric_conf` they consume). `mode: "passive"` is reserved — the
-form's mode toggle disables the Save button with the hint *passive mode not
-yet supported*; PUT against the API returns `501 NOT_IMPLEMENTED`. Unsupported
-`metric_type` or unknown `metrics[]` keys return `422 INVALID_PARAMETER`.
+Built-in metric types and their `metric_conf` shapes are in
+[USE_CASE §UC5](../USE_CASE_en.md#uc5-governance). `mode: "passive"` is reserved —
+the form's mode toggle disables the Save button with the hint *passive mode not
+yet supported*.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -123,18 +114,14 @@ for the triple ontology — DE and DA browse but cannot approve.
 | `/dg/ontogen/seed` | `GET .../attr/seed`, `GET .../{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../{seed_id}` |
 | `/dg/ontogen` | `GET .../result/{node\|edge\|triple}` (+ `/{id}`, `/attr`, `/event`) | `POST .../method/run`; `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-`dataset_filter` carries the same four optional dimensions as the metrics filter
-above (`origin`, `tags`, `glossary_terms`, `dataset_urns`), with the same OR-of-list
-+ AND-with-origin semantics and the same `INVALID_DATASET_URN` PUT/PATCH validation.
+`dataset_filter` follows the standard four-dimension shape — see
+[API §Metric `dataset_filter`](../API.md#metric-spokedgmetric).
 
-Review proceeds **nodes → edges → triples**. A triple cannot be human-approved
-unless its subject node, edge, and object node all carry `status='approved'`
-(an `llm_approved` dependency does NOT satisfy the gate — the human must
-explicitly approve each component first); the API returns
-`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` and the UI disables the approve
-button with an inline hint naming the missing dependency.
-Approval flips the entry's status in DataSpoke storage; DataHub is not
-written to — the confirm dialog states this.
+Review proceeds **nodes → edges → triples** per
+[API §Ontology Generation](../API.md#ontology-generation). When a triple's
+dependencies are not yet approved the UI disables the approve button with an
+inline hint naming the missing dependency. The confirm dialog states that
+approval flips status in DataSpoke storage only and does not write to DataHub.
 
 ```
 ┌──────────────────────────────────────────────────────┐

@@ -92,17 +92,10 @@ blur). Frontend code MUST NOT introduce paths under `/spoke/.../stream/...`.
 ## Cross-Workspace Permission Gates
 
 The API enforces only the JWT `groups` claim (see [API §Authentication](../API.md#authentication--authorization)).
-Workspace boundaries hide actions that the API would technically accept but
-that violate the project's review model:
-
-| Action | Allowed in workspace | API call |
-|---|---|---|
-| Approve / reject ontogen node, edge, triple | DG only | `POST /spoke/common/ontogen/result/{node\|edge\|triple}/{id}/method/review` |
-| Trigger ontogen / ingestion / metagen / metric runs | DE, DA, DG | `POST /spoke/.../method/run` |
-| Edit `attr/conf` for any feature | DE, DA, DG | `PUT/PATCH/DELETE /spoke/.../attr/conf` |
-| Approve / reject metagen candidates | DE, DA, DG | `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` |
-
-DE and DA render ontogen review **status** but hide the action buttons; the
+DataSpoke applies one workspace-level UI override on top of that: DG is the
+only workspace that exposes ontogen approve/reject buttons
+(`POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`).
+DE and DA render approval **status** badges but hide the action buttons; the
 governance team holds approval per UC3.
 
 ---
