@@ -25,17 +25,6 @@ PROFILE=""
 YES=false
 DELETE_NAMESPACES=false
 
-for arg in "$@"; do
-  case "$arg" in
-    --profile) ;;
-    dev|prod) [[ -z "$PROFILE" ]] && PROFILE="$arg" ;;
-    --yes) YES=true ;;
-    --delete-namespaces) DELETE_NAMESPACES=true ;;
-  esac
-done
-
-# Proper parsing that handles "--profile dev"
-PROFILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) PROFILE="${2:-}"; shift 2 ;;

@@ -35,14 +35,14 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
      --values ./your-values.yaml
    ```
 
-**Resource sizing**: Production defaults total ~5.5 CPU / ~8.5 Gi requests, ~11 CPU / ~17 Gi limits. See [`spec/feature/HELM_CHART.md`](spec/feature/HELM_CHART.md) for the full chart reference.
+**Resource sizing**: Production defaults total ~5 CPU / ~10 CPU and ~9.5 Gi / ~22 Gi (requests / limits), excluding the opt-in event-consumer. See [`spec/feature/HELM_CHART.md`](spec/feature/HELM_CHART.md) for the full chart reference.
 
 ## Development Guide
 
 ### Prerequisites
 
 - **kubectl** + **Helm v3** installed and configured
-- A Kubernetes cluster (GKE Autopilot recommended; Docker Desktop, minikube, or kind also work) with **8+ CPUs / 16 GB RAM**
+- A Kubernetes cluster (GKE Autopilot recommended; Docker Desktop, minikube, or kind also work) with **8+ CPUs / 24 GB RAM / 150 GB storage**
 - **Python 3.13** and [`uv`](https://github.com/astral-sh/uv)
 - **Node.js 18+** (TBD — frontend not yet implemented)
 

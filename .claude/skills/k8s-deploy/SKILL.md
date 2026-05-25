@@ -51,7 +51,7 @@ are specified, operate on **all-for-profile**.
 1. Read `helm-charts/.env`. If it does not exist, create it from `helm-charts/.env.example`.
 2. If it already exists, verify the canonical variables are present per spec `spec/feature/HELM_CHART.md §Configuration — Three-Tier Env Vars`:
    - **Kube deployment** (both profiles): `DATASPOKE_KUBE_CLUSTER`, `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_KUBE_IMAGE_REGISTRY`, `DATASPOKE_KUBE_CLOUD_VENDOR`, `DATASPOKE_KUBE_INGRESS_IP` (auto-populated in dev), `DATASPOKE_KUBE_INGRESS_DOMAIN` (auto-populated in dev).
-   - **App runtime**: `DATASPOKE_API_PORT`, `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`, `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`, `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_CORS_ORIGINS`. The Airflow user/password must NOT be `admin/admin` (install.sh fails fast otherwise).
+   - **App runtime**: `DATASPOKE_API_PORT`, `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`, `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`, `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`, `DATASPOKE_INTERNAL_TOKEN`. The Airflow user/password must NOT be `admin/admin` (install.sh fails fast otherwise). `DATASPOKE_CORS_ORIGINS` is rendered from chart values (`config.corsOrigins`), not from `.env`.
    - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_*`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and DataHub/Langfuse connection outputs are auto-populated by the peripheral install scripts.
 3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` or `DATASPOKE_TEST_LLM_REAL` to `.env` — those are chart values only (`api.enableStubAuth`, `api.testLlmReal`).
 4. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
@@ -125,8 +125,11 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 
 ### Partial uninstall (specific components)
 
-1. `./helm-charts/bin/uninstall.sh --profile dev --components <csv>` honors reverse dependency order automatically.
-2. Do NOT delete namespaces during partial uninstall.
+`uninstall.sh` does not support `--components` — it always tears down the
+full profile. For a single-component teardown, delete the component's Helm
+release (or manifests) directly with `helm uninstall <release> -n <ns>` or
+`kubectl delete -f ...`, then reinstall via `install.sh --components <csv>`.
+Do NOT delete namespaces during partial uninstall.
 
 ### Post-uninstall
 
@@ -137,16 +140,18 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 
 ## Action: reinstall
 
-There is no dedicated `reinstall.sh`. Reinstall by running `uninstall.sh` for the target component, then `install.sh` — both are idempotent and handle PVC/Helm-release teardown within their scope.
+There is no dedicated `reinstall.sh`, and `uninstall.sh` does not support `--components`. Reinstall by deleting the target component's Helm release / manifests directly, then re-running `install.sh --components <name>` — `install.sh` is idempotent and `helm upgrade --install` handles re-creation.
 
 ### Steps
 
 1. Parse `$ARGUMENTS` to identify the target component (see the Component names table above). If no component is specified, ask the user which to reinstall.
-2. Run `uninstall.sh` and then `install.sh` for the chosen component:
+2. Delete the component's existing release (look up the release/manifest set first — e.g. `helm list -A` or check the peripheral script for the manifest source), then re-run install:
    ```bash
-   ./helm-charts/bin/uninstall.sh --profile dev --components dataspoke-infra --yes
+   # Example: reinstall the dataspoke umbrella chart
+   helm uninstall dataspoke -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
    ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra
    ```
+   For peripherals managed by plain manifests (dev-lock, dummy-data), `kubectl delete -f helm-charts/peripherals/<name>/manifests/` before reinstalling.
 3. Monitor output for errors. If teardown or rollout fails, report the error and suggest remediation.
 4. On success, confirm the component is running and report access URLs.
 

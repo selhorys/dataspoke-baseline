@@ -411,8 +411,10 @@ and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with fact
 
 App-runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values
 differ. In dev they point to the nginx-ingress external IP (TCP services) or ingress hostnames
-(HTTP services); in prod they are injected via Helm values → ConfigMap/Secret. Groups:
-PostgreSQL, Redis, Airflow, internal-auth token, CORS, stub-auth toggle.
+(HTTP services); in prod they are injected via Helm values → ConfigMap/Secret. Groups carried
+by `.env` and Secret: PostgreSQL, Redis, Airflow, internal-auth token. Chart-values-only
+toggles (rendered onto the API pod from `values{-dev}.yaml`, never via `.env`): CORS origins,
+stub-auth, test-mode LLM real-call.
 
 Kube-deployment variables (`DATASPOKE_KUBE_*`) configure the cluster context, namespace, image
 registry, cloud vendor, and ingress IP/domain — all needed by install scripts in either profile.

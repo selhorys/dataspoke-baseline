@@ -91,6 +91,88 @@ require_tools kubectl helm
 info "kubectl and helm are available."
 
 # ---------------------------------------------------------------------------
+# Shared helpers (used by both profile branches)
+# ---------------------------------------------------------------------------
+PIDS=()
+LABELS=()
+
+_run_bg() {
+  local label="$1"; shift
+  ( "$@" > /tmp/dataspoke-install-${label//\//-}.log 2>&1 ) &
+  PIDS+=($!)
+  LABELS+=("$label")
+  info "  Started background task: $label (pid $!)"
+}
+
+_wait_all() {
+  local failed=0
+  for i in "${!PIDS[@]}"; do
+    local pid="${PIDS[$i]}"
+    local label="${LABELS[$i]}"
+    if wait "$pid"; then
+      info "  [OK] $label"
+    else
+      warn "  [FAIL] $label (exit $?)"
+      cat "/tmp/dataspoke-install-${label//\//-}.log" >&2 || true
+      (( failed++ ))
+    fi
+  done
+  PIDS=()
+  LABELS=()
+  if (( failed > 0 )); then
+    error "${failed} background task(s) failed — see output above."
+  fi
+}
+
+# The Airflow UI is reachable via public nip.io ingress; default admin/admin
+# credentials are a public-ingress risk. Fail-fast before any helm upgrade
+# that would deploy the Airflow chart.
+_check_airflow_credentials() {
+  if [[ -z "${DATASPOKE_AIRFLOW_PASSWORD:-}" || "${DATASPOKE_AIRFLOW_PASSWORD:-}" == "admin" ]]; then
+    error "DATASPOKE_AIRFLOW_PASSWORD must be set to a non-default value (Airflow UI is reachable via public ingress). Edit helm-charts/.env."
+  fi
+  if [[ "${DATASPOKE_AIRFLOW_USER:-}" == "admin" ]]; then
+    error "DATASPOKE_AIRFLOW_USER is set to 'admin' — rename the account to reduce brute-force exposure. Edit helm-charts/.env."
+  fi
+}
+
+# helm upgrade --install for the dataspoke umbrella chart (dev overlay).
+# Used by both the full dev install (phase 3) and the --components api fast path.
+_helm_upgrade_dataspoke_dev() {
+  local ns="$1"
+  helm upgrade --install dataspoke "$CHART_DIR" \
+    -f "$CHART_DIR/values-dev.yaml" \
+    -n "${ns}" \
+    --set postgresql.auth.existingSecret=dataspoke-postgres-secret \
+    --set postgresql.auth.username="${DATASPOKE_POSTGRES_USER}" \
+    --set postgresql.auth.database="${DATASPOKE_POSTGRES_DB}" \
+    --set redis.auth.existingSecret=dataspoke-redis-secret \
+    --set airflow.data.metadataConnection.user="${DATASPOKE_POSTGRES_USER}" \
+    --set airflow.data.metadataConnection.pass="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set-string global.imageRegistry="" \
+    --set-string postgresql.image.registry="" \
+    --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
+    --set-string postgresql.image.tag="${IMAGE_TAG}" \
+    --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
+    --set "api.image.tag=${IMAGE_TAG}" \
+    --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
+    --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
+    --set airflow.images.airflow.pullPolicy=Always \
+    --set-string "secrets.postgres.user=${DATASPOKE_POSTGRES_USER}" \
+    --set-string "secrets.postgres.password=${DATASPOKE_POSTGRES_PASSWORD}" \
+    --set-string "secrets.redis.password=${DATASPOKE_REDIS_PASSWORD}" \
+    --set-string "secrets.airflow.user=${DATASPOKE_AIRFLOW_USER}" \
+    --set-string "secrets.airflow.password=${DATASPOKE_AIRFLOW_PASSWORD}" \
+    --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002" \
+    --set "api.ingress.hosts[0].host=app.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+    --set "api.ingress.hosts[0].paths[0].path=/" \
+    --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
+    --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+    --timeout 10m
+}
+
+# ---------------------------------------------------------------------------
 # DEV PROFILE
 # ---------------------------------------------------------------------------
 if [[ "$PROFILE" == "dev" ]]; then
@@ -138,15 +220,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
     info "==> Fast path: rebuild API image + helm upgrade + rollout restart"
 
-    # Fail-fast on default Airflow credentials — the Airflow UI is reachable
-    # via public nip.io ingress; default admin/admin credentials are a
-    # public-ingress risk.
-    if [[ -z "${DATASPOKE_AIRFLOW_PASSWORD:-}" || "${DATASPOKE_AIRFLOW_PASSWORD:-}" == "admin" ]]; then
-      error "DATASPOKE_AIRFLOW_PASSWORD must be set to a non-default value (Airflow UI is reachable via public ingress). Edit helm-charts/.env."
-    fi
-    if [[ "${DATASPOKE_AIRFLOW_USER:-}" == "admin" ]]; then
-      error "DATASPOKE_AIRFLOW_USER is set to 'admin' — rename the account to reduce brute-force exposure. Edit helm-charts/.env."
-    fi
+    _check_airflow_credentials
 
     if [[ "$SKIP_BUILD" == "false" ]]; then
       info "Building API image (tag: ${IMAGE_TAG})..."
@@ -157,36 +231,7 @@ if [[ "$PROFILE" == "dev" ]]; then
 
     info "Running helm upgrade for dataspoke umbrella chart..."
     use_context "${DATASPOKE_KUBE_CLUSTER}"
-    helm upgrade --install dataspoke "$CHART_DIR" \
-      -f "$CHART_DIR/values-dev.yaml" \
-      -n "${NS}" \
-      --set postgresql.auth.existingSecret=dataspoke-postgres-secret \
-      --set postgresql.auth.username="${DATASPOKE_POSTGRES_USER}" \
-      --set postgresql.auth.database="${DATASPOKE_POSTGRES_DB}" \
-      --set redis.auth.existingSecret=dataspoke-redis-secret \
-      --set airflow.data.metadataConnection.user="${DATASPOKE_POSTGRES_USER}" \
-      --set airflow.data.metadataConnection.pass="${DATASPOKE_POSTGRES_PASSWORD}" \
-      --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
-      --set-string global.imageRegistry="" \
-      --set-string postgresql.image.registry="" \
-      --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
-      --set-string postgresql.image.tag="${IMAGE_TAG}" \
-      --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
-      --set "api.image.tag=${IMAGE_TAG}" \
-      --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
-      --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
-      --set airflow.images.airflow.pullPolicy=Always \
-      --set-string "secrets.postgres.user=${DATASPOKE_POSTGRES_USER}" \
-      --set-string "secrets.postgres.password=${DATASPOKE_POSTGRES_PASSWORD}" \
-      --set-string "secrets.redis.password=${DATASPOKE_REDIS_PASSWORD}" \
-      --set-string "secrets.airflow.user=${DATASPOKE_AIRFLOW_USER}" \
-      --set-string "secrets.airflow.password=${DATASPOKE_AIRFLOW_PASSWORD}" \
-      --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002" \
-      --set "api.ingress.hosts[0].host=app.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-      --set "api.ingress.hosts[0].paths[0].path=/" \
-      --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
-      --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-      --timeout 10m
+    _helm_upgrade_dataspoke_dev "${NS}"
 
     info "Restarting dataspoke-api deployment to pick up new image..."
     kubectl rollout restart deployment/dataspoke-api -n "${NS}"
@@ -254,37 +299,6 @@ if [[ "$PROFILE" == "dev" ]]; then
   # Phase 2: Parallel bootstrap
   # Build images ‖ install DataHub ‖ install Langfuse
   # -----------------------------------------------------------------------
-  PIDS=()
-  LABELS=()
-
-  _run_bg() {
-    local label="$1"; shift
-    ( "$@" > /tmp/dataspoke-install-${label//\//-}.log 2>&1 ) &
-    PIDS+=($!)
-    LABELS+=("$label")
-    info "  Started background task: $label (pid $!)"
-  }
-
-  _wait_all() {
-    local failed=0
-    for i in "${!PIDS[@]}"; do
-      local pid="${PIDS[$i]}"
-      local label="${LABELS[$i]}"
-      if wait "$pid"; then
-        info "  [OK] $label"
-      else
-        warn "  [FAIL] $label (exit $?)"
-        cat "/tmp/dataspoke-install-${label//\//-}.log" >&2 || true
-        (( failed++ ))
-      fi
-    done
-    PIDS=()
-    LABELS=()
-    if (( failed > 0 )); then
-      error "${failed} background task(s) failed — see output above."
-    fi
-  }
-
   step 2 5 "parallel bootstrap (image builds + DataHub + Langfuse)"
 
   if [[ "$SKIP_BUILD" == "false" ]]; then
@@ -312,15 +326,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   if _has_component dataspoke-infra; then
     step 3 5 "dataspoke-infra (umbrella chart)"
 
-    # Fail-fast on default Airflow credentials — the Airflow UI is reachable
-    # via public nip.io ingress; default admin/admin credentials are a
-    # public-ingress risk.
-    if [[ -z "${DATASPOKE_AIRFLOW_PASSWORD:-}" || "${DATASPOKE_AIRFLOW_PASSWORD:-}" == "admin" ]]; then
-      error "DATASPOKE_AIRFLOW_PASSWORD must be set to a non-default value (Airflow UI is reachable via public ingress). Edit helm-charts/.env."
-    fi
-    if [[ "${DATASPOKE_AIRFLOW_USER:-}" == "admin" ]]; then
-      error "DATASPOKE_AIRFLOW_USER is set to 'admin' — rename the account to reduce brute-force exposure. Edit helm-charts/.env."
-    fi
+    _check_airflow_credentials
 
     # Create secrets from .env
     info "Creating dataspoke-postgres-secret..."
@@ -394,36 +400,7 @@ if [[ "$PROFILE" == "dev" ]]; then
 
     # Helm upgrade --install
     info "Installing DataSpoke umbrella chart..."
-    helm upgrade --install dataspoke "$CHART_DIR" \
-      -f "$CHART_DIR/values-dev.yaml" \
-      -n "${NS}" \
-      --set postgresql.auth.existingSecret=dataspoke-postgres-secret \
-      --set postgresql.auth.username="${DATASPOKE_POSTGRES_USER}" \
-      --set postgresql.auth.database="${DATASPOKE_POSTGRES_DB}" \
-      --set redis.auth.existingSecret=dataspoke-redis-secret \
-      --set airflow.data.metadataConnection.user="${DATASPOKE_POSTGRES_USER}" \
-      --set airflow.data.metadataConnection.pass="${DATASPOKE_POSTGRES_PASSWORD}" \
-      --set global.postgresql.auth.password="${DATASPOKE_POSTGRES_PASSWORD}" \
-      --set-string global.imageRegistry="" \
-      --set-string postgresql.image.registry="" \
-      --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
-      --set-string postgresql.image.tag="${IMAGE_TAG}" \
-      --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
-      --set "api.image.tag=${IMAGE_TAG}" \
-      --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
-      --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
-      --set airflow.images.airflow.pullPolicy=Always \
-      --set-string "secrets.postgres.user=${DATASPOKE_POSTGRES_USER}" \
-      --set-string "secrets.postgres.password=${DATASPOKE_POSTGRES_PASSWORD}" \
-      --set-string "secrets.redis.password=${DATASPOKE_REDIS_PASSWORD}" \
-      --set-string "secrets.airflow.user=${DATASPOKE_AIRFLOW_USER}" \
-      --set-string "secrets.airflow.password=${DATASPOKE_AIRFLOW_PASSWORD}" \
-      --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002" \
-      --set "api.ingress.hosts[0].host=app.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-      --set "api.ingress.hosts[0].paths[0].path=/" \
-      --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
-      --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-      --timeout 10m
+    _helm_upgrade_dataspoke_dev "${NS}"
 
     # Ensure pgvector + AGE extensions
     info "Ensuring pgvector + age extensions in the dataspoke database..."
@@ -468,8 +445,6 @@ if [[ "$PROFILE" == "dev" ]]; then
   # -----------------------------------------------------------------------
   # Phase 4: Parallel post-bootstrap
   # -----------------------------------------------------------------------
-  PIDS=()
-  LABELS=()
   step 4 5 "parallel post-bootstrap (dummy-data + dev-lock)"
 
   if _has_component dummy-data; then
@@ -558,36 +533,6 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # -----------------------------------------------------------------------
   if [[ "$SKIP_BUILD" == "false" ]]; then
     step 2 3 "image builds (parallel)"
-    PIDS=()
-    LABELS=()
-
-    _run_bg() {
-      local label="$1"; shift
-      ( "$@" > /tmp/dataspoke-install-${label//\//-}.log 2>&1 ) &
-      PIDS+=($!)
-      LABELS+=("$label")
-      info "  Started background task: $label (pid $!)"
-    }
-
-    _wait_all() {
-      local failed=0
-      for i in "${!PIDS[@]}"; do
-        local pid="${PIDS[$i]}"
-        local label="${LABELS[$i]}"
-        if wait "$pid"; then
-          info "  [OK] $label"
-        else
-          warn "  [FAIL] $label (exit $?)"
-          cat "/tmp/dataspoke-install-${label//\//-}.log" >&2 || true
-          (( failed++ ))
-        fi
-      done
-      PIDS=()
-      LABELS=()
-      if (( failed > 0 )); then
-        error "${failed} background task(s) failed — see output above."
-      fi
-    }
 
     _run_bg "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
     _run_bg "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
