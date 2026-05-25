@@ -26,11 +26,18 @@ fi
 source "$ENV_FILE"
 
 NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
+DATAHUB_NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE:-datahub-01}"
 DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 
 if [[ -z "$DOMAIN" ]]; then
   error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — cannot reach the admin API."
 fi
+
+# The API runs in-cluster, so its peripheral_config must hold the
+# in-cluster service DNS (not the ingress URL that .env now stores for
+# laptop consumers).
+DATAHUB_GMS_INCLUSTER="http://datahub-datahub-gms.${DATAHUB_NS}.svc.cluster.local:8080"
+DATAHUB_KAFKA_INCLUSTER="datahub-prerequisites-kafka.${DATAHUB_NS}.svc.cluster.local:9092"
 
 # ---------------------------------------------------------------------------
 # Retrieve internal token from the running API pod
@@ -49,25 +56,21 @@ BASE_URL="http://app.${DOMAIN}/internal/admin/peripherals"
 # ---------------------------------------------------------------------------
 # Seed DataHub peripheral config (non-secret fields only)
 # ---------------------------------------------------------------------------
-if [[ -n "${DATASPOKE_DEV_DATAHUB_GMS_URL:-}" && -n "${DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS:-}" ]]; then
-  info "Seeding DataHub connection into peripheral config via ${BASE_URL}/datahub..."
-  HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
-    "${BASE_URL}/datahub" \
-    -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{\"gms_url\": \"${DATASPOKE_DEV_DATAHUB_GMS_URL}\", \"kafka_brokers\": \"${DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS}\"}" \
-    2>&1 || echo "000")
-  case "$HTTP_CODE" in
-    200|204)
-      info "OK (HTTP ${HTTP_CODE}): DataHub peripheral config seeded."
-      ;;
-    *)
-      error "PATCH failed (HTTP ${HTTP_CODE}): ${BASE_URL}/datahub — see /tmp/seed-resp.json"
-      ;;
-  esac
-else
-  info "DATASPOKE_DEV_DATAHUB_GMS_URL or DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS not set — skipping DataHub peripheral PATCH."
-fi
+info "Seeding DataHub connection into peripheral config via ${BASE_URL}/datahub..."
+HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
+  "${BASE_URL}/datahub" \
+  -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"gms_url\": \"${DATAHUB_GMS_INCLUSTER}\", \"kafka_brokers\": \"${DATAHUB_KAFKA_INCLUSTER}\"}" \
+  2>&1 || echo "000")
+case "$HTTP_CODE" in
+  200|204)
+    info "OK (HTTP ${HTTP_CODE}): DataHub peripheral config seeded."
+    ;;
+  *)
+    error "PATCH failed (HTTP ${HTTP_CODE}): ${BASE_URL}/datahub — see /tmp/seed-resp.json"
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Seed Langfuse peripheral config (non-secret fields only)

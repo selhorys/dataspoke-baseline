@@ -192,15 +192,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Write in-cluster service addresses to .env
+# Write laptop-reachable (ingress) service addresses to .env
+#
+# Tests, CLI scripts, and SDK calls all run on the developer's laptop and
+# must reach DataHub via the nginx-ingress; the in-cluster service DNS is
+# not resolvable from outside the cluster. The API itself reads DataHub
+# connection details from the peripheral_config DB (seeded with the
+# in-cluster URL by post-install/seed-peripheral-config.sh), not from .env.
 # ---------------------------------------------------------------------------
-upsert_env_var DATASPOKE_DEV_DATAHUB_GMS_URL \
-  "http://datahub-datahub-gms.${NS}.svc.cluster.local:8080" \
-  "$ENV_FILE"
-upsert_env_var DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS \
-  "datahub-prerequisites-kafka.${NS}.svc.cluster.local:9092" \
-  "$ENV_FILE"
-info "DATASPOKE_DEV_DATAHUB_GMS_URL and DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS written to .env."
+if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" && -n "${DATASPOKE_KUBE_INGRESS_IP:-}" ]]; then
+  upsert_env_var DATASPOKE_DEV_DATAHUB_GMS_URL \
+    "http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms" \
+    "$ENV_FILE"
+  upsert_env_var DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS \
+    "${DATASPOKE_KUBE_INGRESS_IP}:9005" \
+    "$ENV_FILE"
+  info "DATASPOKE_DEV_DATAHUB_GMS_URL and DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS written to .env."
+else
+  warn "DATASPOKE_KUBE_INGRESS_DOMAIN / _IP not set — skipping DataHub .env addresses."
+fi
 
 # ---------------------------------------------------------------------------
 # Generate Personal Access Token (PAT) for SDK/CLI access
