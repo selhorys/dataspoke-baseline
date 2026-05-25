@@ -242,7 +242,6 @@ Each component has a `<component>.enabled` toggle.
 Same names in dev and prod, different values. Injected into pods via ConfigMap
 (non-sensitive) or Secret (sensitive) per §Configuration Flow.
 
-- `DATASPOKE_API_PORT`
 - `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`
 - `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
 - `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`
@@ -363,7 +362,7 @@ edited by hand: `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
 
 ### ConfigMap keys (non-sensitive)
 
-`DATASPOKE_API_PORT`, `DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
+`DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
 `DATASPOKE_REDIS_{HOST,PORT}`, `DATASPOKE_AIRFLOW_{URL,CALLBACK_BASE_URL}`,
 plus `DATASPOKE_CORS_ORIGINS` (sourced from chart values, not `.env`).
 

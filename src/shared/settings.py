@@ -34,9 +34,6 @@ class Settings(BaseSettings):
     # Internal auth — shared secret for Airflow-to-API calls (blank disables internal endpoints)
     internal_token: str = ""
 
-    # Application ports
-    api_port: int = 8002
-
     # CORS (comma-separated string from env)
     cors_origins: str = "http://localhost:3000"
 
