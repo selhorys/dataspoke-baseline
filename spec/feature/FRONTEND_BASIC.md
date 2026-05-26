@@ -24,17 +24,26 @@ on `401`.
 
 ## Routing
 
-| UI path | Purpose |
-|---|---|
-| `/` | Portal landing — links to DE, DA, DG cards |
-| `/login` | Login page (consumes `/auth/token`) |
-| `/de/...` | [Data Engineering workspace](FRONTEND_DE.md) |
-| `/da/...` | [Data Analysis workspace](FRONTEND_DA.md) |
-| `/dg/...` | [Data Governance workspace](FRONTEND_DG.md) |
-| `/settings` | Theme + locale toggle, persisted in `localStorage` only (no API) |
+| UI path | Purpose | API calls |
+|---|---|---|
+| `/` | Portal landing — links to DE, DA, DG cards | — |
+| `/login` | Login page (email+password and Google sign-in) | `POST /auth/token`, `GET /auth/google/login` |
+| `/register` | Self-service sign-up (email + name + password ≥ 10 chars) and Google sign-up | `POST /auth/register`, `GET /auth/google/login` |
+| `/forgot-password` | Request a password-reset email | `POST /auth/password/reset/request` |
+| `/reset-password` | Submit a new password using the token from the email link (`?token=…` query param) | `POST /auth/password/reset/confirm` |
+| `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
+| `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
+| `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
+| `/de/...` | [Data Engineering workspace](FRONTEND_DE.md) | per workspace |
+| `/da/...` | [Data Analysis workspace](FRONTEND_DA.md) | per workspace |
+| `/dg/...` | [Data Governance workspace](FRONTEND_DG.md) | per workspace |
+| `/settings` | Theme + locale toggle, persisted in `localStorage` only | — |
 
-The route guard reads the JWT `groups` claim and redirects to the portal when
-the user is missing the workspace's required group.
+Route guards layer three checks:
+
+- **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, and the OAuth callback URL are public; all other routes redirect to `/login` when no access token is available.
+- **JWT `groups` claim** — workspace routes (`/de/…`, `/da/…`, `/dg/…`) redirect to the portal landing when the corresponding group is missing.
+- **`users.role` (read from `GET /auth/me.role`)** — `/admin/users` is server-side gated by the API's role check (`role = 'Admin'`); the UI hides the admin-menu entry when the role is not `Admin`. Workspace pages additionally render write actions (approve/reject buttons, edit forms) only when `role ∈ {Editor, Admin}` — Reader users see read-only views. The API enforces the same gate via `403 READ_ONLY_ROLE` on write methods; the UI suppression is for UX hygiene, not security.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -58,13 +67,24 @@ the user is missing the workspace's required group.
 
 | User action | API call |
 |---|---|
-| Login | `POST /auth/token` with `{email, password}` |
+| Login (email + password) | `POST /auth/token` with `{email, password}` |
+| Login (Google) | `GET /auth/google/login` → browser redirect to Google → callback → tokens issued |
+| Register | `POST /auth/register` with `{email, name, password}` |
 | Token refresh on 401 | `POST /auth/token/refresh` (refresh token in HttpOnly cookie) |
 | Logout | `POST /auth/token/revoke` |
+| Request password reset | `POST /auth/password/reset/request` with `{email}` |
+| Confirm password reset | `POST /auth/password/reset/confirm` with `{token, new_password}` |
+| Read own profile | `GET /auth/me` |
+| Update name and/or password | `PATCH /auth/me` with `{name?, password?}` |
 
 Access token lives in memory (15 min lifetime). Refresh token is set as an
 HttpOnly cookie by the API; the frontend never reads it. Logout clears the
-in-memory access token and calls revoke.
+in-memory access token and calls revoke. The Google flow is a full-page
+browser navigation — the SPA reloads itself at the callback URL with tokens
+already attached.
+
+Full lifecycle (link rules, partial-failure semantics, OAuth state cookie
+contract) lives in [AUTH](AUTH.md).
 
 ```
 ┌─────────────────────────────────┐
@@ -74,9 +94,83 @@ in-memory access token and calls revoke.
 │  Password: [                  ] │
 │                                 │
 │  [        Sign in        ]      │
+│                                 │
+│  ──────  or  ──────             │
+│                                 │
+│  [  Sign in with Google  ]      │
+│                                 │
+│  Need an account?  Register →   │
+│  Forgot password?               │
 └─────────────────────────────────┘
               Login (`/login`)
 ```
+
+```
+┌─────────────────────────────────┐
+│  Profile                        │
+├─────────────────────────────────┤
+│  Email:  alice@imazon (locked)  │
+│  Name:   [ Alice               ]│
+│  Role:   Reader (DataHub)       │
+│  Google: linked / not linked    │
+│                                 │
+│  ─── Change password ───        │
+│  New password: [              ] │
+│                                 │
+│  [    Save changes    ]         │
+└─────────────────────────────────┘
+             Profile (`/profile`)
+```
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Admin · Users                       [ Search...           ] │
+├──────────────────────────────────────────────────────────────┤
+│  Email              Name    Role     Created     Actions     │
+│  alice@imazon       Alice   Admin ▾  2026-01-15  edit  ⋯     │
+│  bob@imazon         Bob     Editor ▾ 2026-01-20  edit  ⋯     │
+│  carol@imazon       Carol   Reader ▾ 2026-02-01  edit  ⋯     │
+└──────────────────────────────────────────────────────────────┘
+         Admin user list (`/admin/users`)
+```
+
+Inline role dropdown writes `PATCH /admin/users/{id}/role`. "edit" opens an
+inline name editor writing `PATCH /admin/users/{id}`. The `⋯` menu carries
+hard delete (writes `DELETE /admin/users/{id}` behind a `ConfirmDialog`),
+and "manage tokens" — a drawer listing the user's `api_tokens` rows with
+per-token revoke buttons (`GET /admin/users/{id}/api-tokens`,
+`DELETE /admin/users/{id}/api-tokens/{token_id}`).
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Profile · API tokens                  [ + New token ]       │
+├──────────────────────────────────────────────────────────────┤
+│  Name              Role    Created     Last used     Actions │
+│  ci-jenkins        Editor  2026-04-01  2026-05-25    Revoke  │
+│  laptop-cli        Editor  2026-05-10  —             Revoke  │
+└──────────────────────────────────────────────────────────────┘
+       Own API tokens (`/profile/tokens`)
+
+┌─────────────────────────────────────────────────┐
+│  New API token                                  │
+├─────────────────────────────────────────────────┤
+│  Name:    [ ci-jenkins                       ]  │
+│  Expiry:  [ never ▾ ] (or: 30 d / 90 d / 1 y) │
+│                                                 │
+│  [   Create   ]                                 │
+├─────────────────────────────────────────────────┤
+│  Your new token (copy it now — it won't be      │
+│  shown again):                                  │
+│                                                 │
+│  dsk_AbCdEf1234ZyXw...   [ Copy ]               │
+└─────────────────────────────────────────────────┘
+            Token mint dialog (one-shot display)
+```
+
+The raw token is displayed exactly once, inside the create dialog. The
+clipboard copy button is the primary action — the user must transfer the
+token to wherever it will be used before closing the dialog. Closing
+without copy means the user must revoke and re-mint.
 
 ---
 
@@ -91,9 +185,11 @@ blur). Frontend code MUST NOT introduce paths under `/spoke/.../stream/...`.
 
 ## Cross-Workspace Permission Gates
 
-The API enforces only the JWT `groups` claim (see [API §Authentication](../API.md#authentication--authorization)).
-DataSpoke applies one workspace-level UI override on top of that: DG is the
-only workspace that exposes ontogen approve/reject buttons
+The API gates workspace routes by the JWT `groups` claim and gates admin
+routes plus the method × role matrix on `/spoke/*` and `/hub/*` by reading
+`users.role` per request (see [API §Route-Tier Access Control](../API.md#route-tier-access-control)). DataSpoke applies one
+workspace-level UI override on top of that: DG is the only workspace that
+exposes ontogen approve/reject buttons
 (`POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`).
 DE and DA render approval **status** badges but hide the action buttons; the
 governance team holds approval per UC3.

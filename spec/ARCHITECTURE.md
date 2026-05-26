@@ -87,6 +87,16 @@ existing DataHub installations; loose coupling enables independent deployment an
 7. **Blended API/UI for Convenience** — DataSpoke may re-expose DataHub's basic functions through
    its own API and UI layer, combining DataHub-native and DataSpoke-specific metadata in a single
    call (see [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overview)).
+8. **DataSpoke owns user identity and role** — DataSpoke's `users` table is the SSOT for both
+   identity (email, password hash, Google `sub`) and role (`Admin` / `Editor` / `Reader`).
+   DataHub holds a propagated copy of role on the shadow `corpuser` record, used only for
+   DataHub-UI authorisation; role changes go DataSpoke→DataHub via `batchAssignRole`, and a
+   nightly `auth-role-sync-daily` DAG reconciles drift (DataSpoke wins). DataHub UI access uses
+   Google OIDC pointed at the same OAuth client as DataSpoke. JWT carries identity only;
+   per-request DB role lookup gates `/admin/*` and applies the method × role matrix on
+   `/spoke/*` and `/hub/*` (Reader = GET only). Long-lived API tokens are opaque, self-service
+   minted under `/auth/api-tokens`, with intersection privilege
+   (`effective = min(role_snapshot, current users.role)`). See [feature/AUTH.md](feature/AUTH.md).
 
 ---
 

@@ -27,9 +27,72 @@ metric definitions that DataHub does not natively model.
 ### Schema: `dataspoke`
 
 All tables are created in the `dataspoke` schema. Managed by Alembic migrations
-in `migrations/`.
+in `migrations/`. The squashed `001_initial_schema` migration enables three
+extensions: `vector` (pgvector embeddings), `age` (Apache AGE graph,
+preloaded), and `citext` (case-insensitive text — used by `users.email`).
 
 ### Tables
+
+#### `users`
+
+DataSpoke-managed user identities. Every row is mirrored as a DataHub corpuser
+at `urn:li:corpuser:<email>` — see [AUTH §DataHub Mirror Semantics](AUTH.md#datahub-mirror-semantics).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `UUID` PK | DataSpoke-internal user identifier |
+| `email` | `CITEXT` UNIQUE NOT NULL | Email address. `citext` for case-insensitive uniqueness. Drives the DataHub corpuser URN |
+| `name` | `TEXT` NOT NULL | Display name |
+| `password_hash` | `TEXT` NULL | bcrypt hash; null when the user authenticates exclusively via Google OAuth |
+| `google_sub` | `TEXT` UNIQUE NULL | Google account `sub` claim; null when the user has not linked a Google account |
+| `role` | `TEXT` NOT NULL DEFAULT `'Reader'` | Privilege level — one of `'Admin'`, `'Editor'`, `'Reader'`. DataSpoke is SSOT; propagated to DataHub via `batchAssignRole`. Gates routes per [AUTH §Privilege Model](AUTH.md#privilege-model). |
+| `created_at` | `TIMESTAMPTZ` | |
+| `updated_at` | `TIMESTAMPTZ` | |
+
+Constraints:
+- `CHECK (password_hash IS NOT NULL OR google_sub IS NOT NULL)` — at least one authentication method must always be set.
+- `CHECK (role IN ('Admin', 'Editor', 'Reader'))` — enum guard.
+
+Deletion is hard delete (no `deleted_at` column) — DataSpoke removes the row
+and hard-deletes the DataHub corpuser via `hard_delete_entity`.
+
+#### `api_tokens`
+
+Long-lived personal access tokens minted by users for non-interactive
+clients (CI jobs, AI agents). See [AUTH §API Tokens](AUTH.md#api-tokens).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `UUID` PK | Token identifier (returned to the user for revocation; not the token itself) |
+| `user_id` | `UUID` FK → `users(id)` ON DELETE CASCADE | Owner |
+| `name` | `TEXT` NOT NULL | User-supplied label (e.g., "ci-jenkins", "personal-laptop") |
+| `token_hash` | `CHAR(64)` UNIQUE NOT NULL | SHA-256 hex of the opaque token (`dsk_<...>`). The raw token is never stored. |
+| `role_snapshot` | `TEXT` NOT NULL | Owner's `users.role` at mint time. Effective privilege = `min(role_snapshot, users.role)`. `CHECK` same vocabulary as `users.role`. |
+| `created_at` | `TIMESTAMPTZ` | |
+| `last_used_at` | `TIMESTAMPTZ` NULL | Updated per use (throttled to per-minute granularity to avoid DB pressure). Null until first use. |
+| `expires_at` | `TIMESTAMPTZ` NULL | Optional expiry; null = no expiry |
+| `revoked_at` | `TIMESTAMPTZ` NULL | Set when the user or an admin revokes the token. Once non-null, the token authenticates no further requests. |
+
+A token is valid iff `revoked_at IS NULL AND (expires_at IS NULL OR
+expires_at > now())` and the raw token hashes to a matching row. Per-user
+cap of 10 active tokens (`revoked_at IS NULL`) — mint beyond cap returns
+`409 TOKEN_LIMIT_EXCEEDED`.
+
+#### `password_reset_tokens`
+
+Single-use tokens for the `/auth/password/reset/*` flow.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `token_hash` | `CHAR(64)` PK | SHA-256 hex of the raw token sent by email. The raw token is never stored |
+| `user_id` | `UUID` FK → `users(id)` ON DELETE CASCADE | The user the token resets |
+| `expires_at` | `TIMESTAMPTZ` NOT NULL | 15 minutes after issue |
+| `used_at` | `TIMESTAMPTZ` NULL | Set when the token is consumed; null on issue |
+| `created_at` | `TIMESTAMPTZ` | |
+
+A token is valid iff `used_at IS NULL AND expires_at > now()` and the raw
+token hashes to a matching row. Expired and consumed rows are cleaned up by a
+periodic Airflow housekeeping DAG (no synchronous-delete invariant).
 
 #### `ingestion_configs`
 
@@ -396,6 +459,8 @@ aggregation when an HR API is unavailable).
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
 | `dataset_node_map` | `(node_id)` | Node-to-datasets lookup |
 | `ontogen_triples` | `(subject_node_id)`, `(object_node_id)`, `(edge_id)` | Triple lookup by any participant |
+| `password_reset_tokens` | `(user_id, expires_at DESC)` | Cleanup of active / expired tokens per user |
+| `api_tokens` | `(user_id) WHERE revoked_at IS NULL` | Per-user active token list and cap enforcement |
 
 ---
 

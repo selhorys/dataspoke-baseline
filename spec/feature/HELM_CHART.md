@@ -249,13 +249,19 @@ Same names in dev and prod, different values. Injected into pods via ConfigMap
 - `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
 - `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`
 - `DATASPOKE_INTERNAL_TOKEN` — shared secret for Airflow → API internal calls
+- `DATASPOKE_JWT_SECRET_KEY` — JWT HS256 signing key
+- `DATASPOKE_OAUTH_STATE_SECRET` — HMAC key for the Google-OAuth state cookie
+- `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` — Google OAuth client secret (paired with the public client_id; see chart-values-only callout below)
 
-> **Chart-values-only env vars (not in `.env`)**: `DATASPOKE_CORS_ORIGINS`
-> and `DATASPOKE_ENABLE_STUB_AUTH` are rendered onto the API container
-> directly from the chart values (`config.corsOrigins`, `api.enableStubAuth`).
-> `values.yaml` pins stub auth to `false`; `values-dev.yaml` enables it
-> (`true`). Keeping these out of `.env` removes the prod footgun of a stray
-> line silently re-enabling stub auth. Stub-mode wiring for the four
+> **Chart-values-only env vars (not in `.env`)**: `DATASPOKE_CORS_ORIGINS`,
+> `DATASPOKE_ENABLE_STUB_AUTH`, `DATASPOKE_COOKIE_SECURE`, and
+> `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` are rendered onto the API container
+> directly from the chart values (`config.corsOrigins`, `api.enableStubAuth`,
+> `auth.cookieSecure`, `auth.googleClientId`). `values.yaml` pins stub auth
+> to `false` and cookie-secure to `true`; `values-dev.yaml` enables stub auth
+> and disables cookie-secure for laptop browsers. Keeping these out of
+> `.env` removes the prod footgun of a stray line silently re-enabling stub
+> auth or disabling cookie hardening. Stub-mode wiring for the four
 > dependency factories lives in the `runtime_config` DB row, not in chart
 > values — see `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
@@ -300,6 +306,12 @@ read these.
   `_DUMMY_DATA_POSTGRES_PASSWORD`, `_DUMMY_DATA_POSTGRES_DB`
 - LLM seed: `_LLM_PROVIDER`, `_LLM_API_KEY`, `_LLM_MODEL` — written into the
   `dataspoke-llm-secret` Secret and PATCHed into `/admin/conf`
+- Google OAuth credentials: `_GOOGLE_OAUTH_CLIENT_ID`,
+  `_GOOGLE_OAUTH_CLIENT_SECRET` — passed to the DataHub peripheral install
+  for DataHub-side OIDC (see §DataHub above) and seeded into
+  `dataspoke-secrets` (`DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`) and the API
+  chart values (`auth.googleClientId`). Absence leaves OAuth disabled on
+  both DataSpoke and DataHub.
 - Test harness: `_ENV_LOCK_PREACQUIRED` (set by outer wrappers that already
   hold the dev-env lock)
 
@@ -408,28 +420,42 @@ it is not derived from `.env`.
 
 ### Secret keys (`dataspoke-secrets`, mounted via `envFrom`)
 
-Ten keys consumed by app pods in both dev and prod:
+Twelve keys consumed by app pods in both dev and prod:
 
 `DATASPOKE_POSTGRES_{USER,PASSWORD}`, `DATASPOKE_POSTGRES_DB`,
 `DATASPOKE_REDIS_PASSWORD`,
 `DATASPOKE_AIRFLOW_{USER,PASSWORD}`,
 `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET`,
-`DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`.
+`DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`,
+`DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`.
 
-In dev, `install.sh` auto-generates this Secret. In prod, the operator pre-creates it
-and points the chart at it via `secrets.existingSecret: <name>`.
+In dev, `install.sh` auto-generates this Secret — the OAuth state secret and
+JWT signing key are random; the Google client secret is sourced from
+`DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET` in `.env` (placeholder if absent,
+which causes the OAuth callback to fail until the operator supplies a real
+value). In prod, the operator pre-creates the whole Secret and points the
+chart at it via `secrets.existingSecret: <name>`.
 
 ### Container env rendered from chart values (not `.env`)
 
-`DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`) and
-`DATASPOKE_ENABLE_STUB_AUTH` (from `api.enableStubAuth`).
+- `DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`)
+- `DATASPOKE_ENABLE_STUB_AUTH` (from `api.enableStubAuth`)
+- `DATASPOKE_COOKIE_SECURE` (from `auth.cookieSecure`)
+- `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` (from `auth.googleClientId`)
 
 ### DB-backed (no env var)
 
-- `peripheral_config` table — DataHub URL/token, Langfuse host/keys —
-  updated via `/api/v1/admin/peripherals/{datahub,langfuse}`.
-- `runtime_config` table — LLM provider/model and debate/RAG/iteration
-  tunables — updated via `/api/v1/admin/conf`.
+- `peripheral_config` table — non-secret connection fields for DataHub
+  (`gms_url`, `kafka_brokers`), Langfuse (`host`, `public_key`), and SMTP
+  (`host`, `port`, `username`, `from_address`, `use_tls`) — updated via
+  `/api/v1/admin/peripherals/{datahub,langfuse,smtp}`. Per-peripheral secret
+  fields (`datahub.token`, `langfuse.secret_key`, `smtp.password`) are
+  routed by the PATCH handler to dedicated K8s Secrets, never to the DB —
+  see Out-of-band Secrets below.
+- `runtime_config` table — LLM provider/model, debate/RAG/iteration tunables,
+  and `auth_datahub_corp_group` (string, default `dataspoke-users` — names
+  the DataHub corpGroup that marks DataSpoke-managed users) — updated via
+  `/api/v1/admin/conf`.
 
 ### Out-of-band Secret
 
@@ -513,6 +539,27 @@ OpenSearch subchart's own release.
 
 Writes to .env: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
 (generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`.
+
+**Google OIDC SSO**: `helm-charts/peripherals/datahub.sh` configures DataHub's
+frontend to authenticate users via the same Google OAuth client as DataSpoke,
+so a user logging into DataHub natively resolves to the same corpuser URN
+(`urn:li:corpuser:<email>`) that DataSpoke wrote. The peripheral install
+passes the following values into the `datahub/datahub` chart when both
+`DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID` and
+`DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET` are set:
+
+| Helm value | Value |
+|------------|-------|
+| `datahub.global.datahub.auth.oidc.enabled` | `true` |
+| `datahub.global.datahub.auth.oidc.clientId` | `$DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID` |
+| `datahub.global.datahub.auth.oidc.clientSecret` | `$DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET` |
+| `datahub.global.datahub.auth.oidc.discoveryUri` | `https://accounts.google.com/.well-known/openid-configuration` |
+| `datahub.global.datahub.auth.oidc.userIdClaim` | `email` |
+
+When either credential is absent, OIDC stays disabled and DataHub falls back
+to native login. In prod, DataHub is operator-managed; the same OIDC values
+are set in the operator's DataHub deployment outside the DataSpoke umbrella
+chart.
 
 ### Langfuse
 
@@ -700,7 +747,7 @@ with default-deny.
 |---|---|---|
 | **`dataspoke-secrets`** | `install.sh` (dev auto-generate) or operator (prod pre-create) | DataSpoke's own runtime credentials — Postgres user/password/db, Redis password, Airflow user/password/webserver-secret/jwt-secret, internal-auth token, JWT signing key. Ten keys; mounted `envFrom` on the API Deployment and alembic-migrate init container. |
 | **`dataspoke-airflow-metadata-db`** | `install.sh` `_derive_airflow_metadata_secret` (both profiles) | Single key `connection` = full PostgreSQL URI for Airflow's metadata DB. Wired via `airflow.data.metadataSecretName`. |
-| **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). Note: a Secret of the same name `dataspoke-langfuse-secret` also exists in the Langfuse namespace (`langfuse-01`) carrying the full set of Langfuse pod credentials (NextAuth, salt, ClickHouse, MinIO, Postgres, Redis, init-user); the DataSpoke-side copy holds only the project `secret_key` consumed by the API via RBAC. |
+| **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). `dataspoke-smtp-secret` (key `password`) backs `/auth/password/reset/request` (see [feature/AUTH.md](AUTH.md)). Note: a Secret of the same name `dataspoke-langfuse-secret` also exists in the Langfuse namespace (`langfuse-01`) carrying the full set of Langfuse pod credentials (NextAuth, salt, ClickHouse, MinIO, Postgres, Redis, init-user); the DataSpoke-side copy holds only the project `secret_key` consumed by the API via RBAC. |
 | **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the above Secrets. |
 
 ### Dev — install-time provisioning

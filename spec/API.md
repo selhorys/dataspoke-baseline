@@ -76,6 +76,40 @@ conform to it.
 
 ## Authentication & Authorization
 
+User identity, registration, OAuth, password reset, profile management, and the
+mirror semantics between DataSpoke users and DataHub corpusers are specified in
+[feature/AUTH.md](feature/AUTH.md). This section captures the JWT shape,
+token lifecycles, and route-tier gating that any client implementor needs.
+
+### Authentication Mechanisms
+
+Three distinct mechanisms cover different client types:
+
+| Mechanism | Carrier | Lifetime | Source | Scope |
+|-----------|---------|----------|--------|-------|
+| **User JWT** | `Authorization: Bearer <access_token>` header | 15 min access / 7 d refresh | `POST /auth/token` (email + password) or `GET /auth/google/login` (Google OAuth) | Effective role = caller's `users.role`. See [Route-Tier Access Control](#route-tier-access-control). |
+| **Long-lived API token** | `Authorization: Bearer dsk_<...>` header (same header, different format) | User-defined (default no expiry); revocable | `POST /auth/api-tokens` (self-service) | Effective role = `min(token.role_snapshot, owner.users.role)`. Same Route-Tier Access Control. |
+| **Internal shared-secret** | `X-Internal-Token: <secret>` header | Static — operator rotated | `DATASPOKE_INTERNAL_TOKEN` from `dataspoke-secrets` K8s Secret | `/internal/*` only |
+
+User JWTs are the default for browser clients. Long-lived API tokens are
+opaque (`dsk_` prefix, 32 random URL-safe bytes), minted by users for
+non-interactive clients (CI, AI agents, third-party integrations). The
+middleware accepts either form on the same `Authorization: Bearer` header
+— it tries JWT decode first, then falls back to API-token hash lookup. Both
+paths populate the same identity context and run the same role-based gate.
+
+API-token effective privilege is the **intersection** of the token's
+mint-time snapshot and the owner's current role: demoting a user
+immediately downgrades all their tokens; promoting does not auto-elevate
+existing tokens (mint a new one). See [feature/AUTH.md §API Tokens](feature/AUTH.md#api-tokens)
+for the full lifecycle, cap (10/user), and audit semantics.
+
+The `X-Internal-Token` is intended for cluster-local automation (Airflow
+HttpOperator tasks reaching the API via cluster DNS) and install/seed
+scripts (`helm-charts/bin/post-install/seed-*.sh`); its scope (`/internal/*`)
+is disjoint from `Authorization: Bearer`-gated paths and it is never accepted
+on `/spoke/*` or `/admin/*` routes.
+
 ### Token Strategy
 
 DataSpoke uses **JWT (JSON Web Tokens)** for stateless authentication.
@@ -85,63 +119,57 @@ DataSpoke uses **JWT (JSON Web Tokens)** for stateless authentication.
 | Access token | 15 minutes | Memory / `Authorization` header |
 | Refresh token | 7 days | HttpOnly cookie |
 
-Token issuance and refresh are handled at:
-- `POST /auth/token` — issue access + refresh tokens (credential exchange)
-- `POST /auth/token/refresh` — issue new access token from refresh token
-- `POST /auth/token/revoke` — revoke refresh token (logout)
-
 ### JWT Claims
 
-Access-token payload: `sub` (user uuid), `email`, `groups` (array of user-group identifiers
-— `de`, `da`, `dg`; a user may belong to multiple), `exp`, `iat`. The middleware enforces
-that a request targeting `/spoke/de/…` must have `"de"` in the `groups` claim.
+Access-token payload: `sub` (user uuid), `email`, `groups`, `exp`, `iat`.
 
-### Group-to-Route Access Control
+`groups` is a constant `["de", "da", "dg"]` for every authenticated user in
+the baseline — it gates workspace-tier routes (`/spoke/de`, `/spoke/da`,
+`/spoke/dg`) and exists as an extensibility affordance for organisations
+that partition workspaces. The JWT does **not** carry role; routes are
+gated by `users.role` read per-request from the DB — see
+[AUTH §Privilege Model](feature/AUTH.md#privilege-model).
 
-| URI tier | Required group claim | Accessible to |
-|----------|---------------------|---------------|
-| `/spoke/common/…` | any valid group | DE, DA, DG |
-| `/spoke/de/…` | `"de"` | DE (and admins) — reserved; no routes currently defined |
-| `/spoke/da/…` | `"da"` | DA (and admins) — reserved; no routes currently defined |
-| `/spoke/dg/…` | `"dg"` | DG (and admins) |
-| `/hub/…` | any valid group | DE, DA, DG |
-| `/auth/…` | none (public) | unauthenticated clients |
-| `/admin/…` | `"admin"` | admins only |
+### Route-Tier Access Control
 
-### Admin Role
+Routes are gated by **URI tier × HTTP method × role**. The role is `users.role`
+for JWT callers, or `min(token.role_snapshot, owner.users.role)` for API-token
+callers. The DB lookup is in the same request transaction as other route work
+— no additional round trip.
 
-Users with `"admin"` in `groups` bypass group-tier restrictions and can call any route.
-Admin routes (user management, system configuration) live under `/api/v1/admin/…` and
-require the `"admin"` claim exclusively.
+**Tier gate** (independent of method):
 
-### Known Limitations (Current Stub)
+| URI tier | Gate | Notes |
+|----------|------|-------|
+| `/auth/…` | none (public) | login, register, password reset, OAuth callback are public; `/auth/me`, `/auth/api-tokens`, `/auth/token/refresh`, `/auth/token/revoke` require an authenticated caller |
+| `/spoke/common/…`, `/hub/…` | authenticated; method × role gate applies (see below) | all authenticated users, with method-based restriction by role |
+| `/spoke/de/…` | `"de"` in JWT `groups` | reserved; no baseline routes |
+| `/spoke/da/…` | `"da"` in JWT `groups` | reserved; no baseline routes |
+| `/spoke/dg/…` | `"dg"` in JWT `groups`; method × role gate applies | all authenticated users (baseline) |
+| `/admin/…` | `users.role = 'Admin'` | Admin only |
 
-The current authentication implementation uses a stub identity store:
+**Method × role gate** (applies on `/spoke/*` and `/hub/*`):
 
-- **Single admin account**: Only one user
-  (configured via `DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`) can authenticate.
-  All other credentials are rejected.
-- **Redis-backed token revocation**: Revoked refresh tokens are stored in Redis under
-  `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime.
-  Refresh and revoke are fail-closed on the Redis path — if the store is unreachable,
-  `POST /auth/token/refresh` returns `503 STORAGE_UNAVAILABLE` (Redis is the storage subsystem).
-- **No group resolution**: The admin account receives all groups (`admin`, `de`, `da`, `dg`);
-  non-admin users receive an empty group list.
-- **HTTP-only cookies**: The refresh token cookie uses `secure=False`.
-  Production deployments must set `secure=True`.
+| Role | GET / HEAD / OPTIONS | POST / PUT / PATCH / DELETE |
+|------|---------------------|-----------------------------|
+| Reader | ✓ | ✗ `403 READ_ONLY_ROLE` |
+| Editor | ✓ | ✓ |
+| Admin | ✓ | ✓ |
 
-All stub code is marked with `TBD(user-accounts)` comments. See
-[BACKEND §User Account Management](feature/BACKEND.md#user-account-management-tbd)
-for the planned migration path.
+`/auth/*` routes are exempt from the method gate (self-scoped writes — any
+role can change own name/password, mint own API tokens, refresh own session).
 
-### Auth Flow
+Workspace-tier (`/spoke/de`, `/spoke/da`, `/spoke/dg`) gating is an
+extensibility affordance. Baseline assigns every authenticated user the full
+constant `["de", "da", "dg"]`; organisations that partition workspaces
+populate the claim selectively.
 
-Login: client `POST /auth/token` with `{email, password}` → API verifies credentials against
-the identity store, receives the user record + groups, and returns `{access_token}` in the
-body plus the refresh token as an HttpOnly cookie. Subsequent protected calls
-(e.g. `GET /spoke/common/data/{urn}/attr/ingestion/conf`) carry
-`Authorization: Bearer <access_token>`; the API validates the JWT signature/expiry and
-enforces the `groups` claim against the URI tier before dispatching.
+Role changes (`PATCH /admin/users/{id}/role`) write `users.role` first, then
+propagate to DataHub via `batchAssignRole`. Demotion takes effect on the
+caller's **next request** — both for JWT sessions and API tokens (which
+re-read `users.role` on every call via the intersection check). See
+[AUTH §Privilege Model](feature/AUTH.md#privilege-model) and
+[AUTH §Role Drift Reconciliation](feature/AUTH.md#role-drift-reconciliation).
 
 ---
 
@@ -166,11 +194,24 @@ All routes are prefixed with `/api/v1`.
 
 ### Auth
 
+All `/auth/*` routes are public (no JWT required). Full lifecycle semantics
+in [feature/AUTH.md](feature/AUTH.md).
+
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/auth/token` | Issue access + refresh tokens |
-| `POST` | `/auth/token/refresh` | Refresh access token |
+| `POST` | `/auth/register` | Create a new user account (open self-service; body `{email, name, password}`; password ≥ 10 chars). Mirrors the user into DataHub as a corpuser with Reader role. |
+| `POST` | `/auth/token` | Issue access + refresh tokens (body `{email, password}`) |
+| `POST` | `/auth/token/refresh` | Refresh access token from the HttpOnly refresh cookie |
 | `POST` | `/auth/token/revoke` | Revoke refresh token (logout) |
+| `GET` | `/auth/me` | Get the current user's profile — returns `{id, email, name, has_google, role, created_at, updated_at}` (all DataSpoke `users` columns; `password_hash` is never returned) |
+| `PATCH` | `/auth/me` | Update own display name and/or password (body `{name?, password?}`); returns the updated profile in the same shape as `GET /auth/me` |
+| `POST` | `/auth/password/reset/request` | Send password-reset email (body `{email}`). Silent for unknown emails (no account-enumeration leak). |
+| `POST` | `/auth/password/reset/confirm` | Confirm reset with token + new password (body `{token, new_password}`) |
+| `GET` | `/auth/google/login` | Begin Google OAuth: establish state cookie and 302 to Google consent screen |
+| `GET` | `/auth/google/callback` | Google OAuth callback; on success either logs in an existing user, links Google to an existing email, or creates a fresh user with Reader role |
+| `GET` | `/auth/api-tokens` | List own API tokens (returns `{tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at}], total}` — never the raw token). Authenticated. |
+| `POST` | `/auth/api-tokens` | Mint a new API token (body `{name, expires_at?}`). Response includes the raw token in `{token: "dsk_...", id, name, role_snapshot, created_at, expires_at}` — **only time the raw token is returned plain**. `409 TOKEN_LIMIT_EXCEEDED` if user already has 10 active tokens. Authenticated. |
+| `DELETE` | `/auth/api-tokens/{id}` | Revoke own API token (sets `revoked_at = now()`). Authenticated. |
 
 ### Common (`/spoke/common`)
 
@@ -441,21 +482,33 @@ after JWT validation.
 
 ### Admin (`/admin`)
 
-Operator and system routes accessible to users with the `"admin"` group claim. Mirrors of
-these endpoints are also available under `/internal/admin/…` for unattended automation
-(Airflow DAGs, scripts) — the internal mount is gated by the `X-Internal-Token`
-shared-secret header instead of a JWT.
+Operator and system routes accessible to users with the DataHub `Admin` role.
+Admin status is checked per request via a DataHub `IsMemberOfRole` lookup — the
+JWT does not carry an `admin` claim. Internal mirrors of selected routes live
+under `/internal/admin/…` for unattended automation (Airflow DAGs, scripts) —
+the internal mount is gated by the `X-Internal-Token` shared-secret header
+instead of a JWT.
 
 | Method | Path | Body | Response | Auth |
 |--------|------|------|----------|------|
-| `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT (`admin` group) |
-| `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT (`admin` group) |
-| `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT (`admin` group) |
+| `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT + Admin role |
+| `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT + Admin role |
+| `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT + Admin role |
+| `GET` | `/admin/users` | — | list of DataSpoke users (`{users: [{id, email, name, has_google, role, created_at, updated_at}], total}`) — `role` from the DB column | JWT + Admin role |
+| `PATCH` | `/admin/users/{id}` | `{name}` | updated user | JWT + Admin role |
+| `PATCH` | `/admin/users/{id}/role` | `{role: "Admin"\|"Editor"\|"Reader"}` | `{role}` | JWT + Admin role |
+| `DELETE` | `/admin/users/{id}` | — | `204` | JWT + Admin role |
+| `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token) | JWT + Admin role |
+| `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
+| `GET` | `/admin/peripherals/smtp` | — | current SMTP config: `{host, port, username, from_address, use_tls, password, is_configured, updated_at}`. `password` is masked (`""` unset, `"********"` set) | JWT + Admin role |
+| `PATCH` | `/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | JWT + Admin role |
 
 `/admin/conf` reads and updates the singleton runtime configuration — the behavioral tunables
 that shape LLM inference and generation (`llm_provider`, `llm_model`, the ontogen/metagen debate,
-RAG, and iteration knobs, `metagen_confidence_threshold`, `validation_score_n_intervals`). It is
-seeded with factory defaults and persisted in the `runtime_config` table (see
+RAG, and iteration knobs, `metagen_confidence_threshold`, `validation_score_n_intervals`) plus the
+auth-mirror knob `auth_datahub_corp_group` (string, default `dataspoke-users`) that names the
+DataHub corpGroup used as the DataSpoke-user provenance marker. It is seeded with factory
+defaults and persisted in the `runtime_config` table (see
 [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md)). `PATCH` is partial; numeric fields
 are bound-validated (out-of-range → `422`).
 
@@ -464,8 +517,35 @@ The conf surface also carries `llm_api_key` for **online** key rotation, but it 
 Secret and an empty string clears it; `GET` returns it masked (`""` unset / `"********"` set) and
 **never** returns the plaintext. See [`spec/feature/BACKEND_LLM.md` §LLM API key](feature/BACKEND_LLM.md).
 
-Additional admin routes (user management, identity store administration) are reserved for
-future feature specs and are not catalogued here.
+`/admin/users/{id}` accepts display-name changes only; email is immutable
+because the DataHub corpuser URN is immutable. `/admin/users/{id}/role`
+writes `users.role` first, then propagates to DataHub via the
+`batchAssignRole` GraphQL mutation — DataSpoke is the SSOT for role, and
+the DataHub-side assignment is a one-way mirror reconciled nightly by the
+`auth-role-sync-daily` DAG (see [AUTH §Role Drift Reconciliation](feature/AUTH.md#role-drift-reconciliation)).
+`DELETE /admin/users/{id}` hard-deletes the DataSpoke row and the DataHub
+corpuser (via `hard_delete_entity`), which also removes the corpuser's
+group memberships, role assignments, and ownership references in the
+DataHub graph; `ON DELETE CASCADE` on `api_tokens.user_id` removes the
+user's tokens at the DB level.
+
+`GET /admin/users/{id}/api-tokens` and `DELETE /admin/users/{id}/api-tokens/{token_id}`
+exist for incident response — admins can see and revoke any user's tokens,
+but they cannot mint tokens on behalf of other users (only the owner can
+mint). See [feature/AUTH.md §API Tokens](feature/AUTH.md#api-tokens).
+
+`/admin/peripherals/smtp` follows the same pattern as the existing
+`/admin/peripherals/datahub` and `/admin/peripherals/langfuse` routes
+(explicit per-peripheral path, typed response, `is_configured` flag).
+Non-secret fields (`host`, `port`, `username`, `from_address`, `use_tls`)
+are persisted in the `peripheral_config` DB table; the `password` field
+is routed to a dedicated K8s Secret `dataspoke-smtp-secret` (data key
+`password`) on `PATCH`, never to the DB — same pattern as
+`dataspoke-datahub-secret.token` and `dataspoke-langfuse-secret.secret_key`.
+`PATCH` is partial; `password=""` clears the secret. Missing SMTP config
+fails `POST /auth/password/reset/request` with
+`503 PERIPHERAL_NOT_CONFIGURED` (`detail.peripheral = "smtp"`); all other
+auth flows remain functional.
 
 ### Internal Admin (`/internal/admin`)
 
@@ -477,10 +557,15 @@ Airflow DAGs, and automation.
 | `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
+| `PATCH` | `/internal/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | `X-Internal-Token` |
 
 `PATCH /internal/admin/conf` is the unattended mirror of `PATCH /admin/conf`; the dev-profile
 install (`./helm-charts/bin/install.sh --profile dev`) uses it to seed `llm_provider`/`llm_model`
 from `DATASPOKE_DEV_LLM_*` after the chart is installed.
+`PATCH /internal/admin/peripherals/smtp` is the unattended mirror of
+`PATCH /admin/peripherals/smtp`, parallel to the existing
+`/internal/admin/peripherals/{datahub,langfuse}` mirrors used by
+`bin/post-install/seed-peripheral-config.sh`.
 
 ### Internal Activities (`/internal/activities`)
 
@@ -697,6 +782,17 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/common/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/common/ontogen/method/run`) bodies are capped at 128 KiB |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for `ontogen/attr/conf`, `metagen/attr/conf`, and `metric/{id}/attr/conf` |
 | `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `POST /spoke/dg/metric` and `PUT /spoke/dg/metric/{id}/attr/conf` when `mode: "passive"` |
+| `EMAIL_ALREADY_REGISTERED` | 409 | `POST /auth/register` body carries an email already mapped to an existing user |
+| `INVALID_RESET_TOKEN` | 400 | `POST /auth/password/reset/confirm` token does not match any row, is expired, or has already been used |
+| `OAUTH_STATE_MISMATCH` | 400 | `GET /auth/google/callback` state cookie missing or does not match the value embedded in the OAuth state JWT |
+| `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (write method on `/spoke/*` or `/hub/*`) |
+| `INVALID_API_TOKEN` | 401 | `Authorization: Bearer dsk_...` token does not match any `api_tokens` row, or the format is malformed |
+| `TOKEN_REVOKED` | 401 | API token row exists but `revoked_at` is set |
+| `TOKEN_EXPIRED` | 401 | API token row exists but `expires_at` is in the past |
+| `TOKEN_NOT_FOUND` | 404 | `DELETE /auth/api-tokens/{id}` or `DELETE /admin/users/{id}/api-tokens/{token_id}` references a non-existent token |
+| `TOKEN_LIMIT_EXCEEDED` | 409 | `POST /auth/api-tokens` attempted while user already has 10 active (non-revoked) tokens |
+| `DATAHUB_SYNC_FAILED` | 503 | DataHub-side user mirror operation failed (create / role change / role propagation). For user creation this triggers a compensating hard-delete of the partial DataSpoke `users` row; for role propagation the DataSpoke write is preserved and the nightly DAG reconciles |
+| `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral (e.g. SMTP for `/auth/password/reset/request`) is not configured. `detail.peripheral` identifies which one (`"smtp"`, …) |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |

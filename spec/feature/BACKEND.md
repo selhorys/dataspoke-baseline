@@ -912,6 +912,7 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ontogen-daily` | `ontogen_daily.py` | Airflow schedule | `@daily` |
 | `ontogen-weekly` | `ontogen_weekly.py` | Airflow schedule | `@weekly` |
 | `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
+| `auth-role-sync-daily` | `auth_role_sync_daily.py` | Airflow schedule | `@daily` |
 
 > **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
 > (`ingestion`, `metrics`), the periodic DAG that runs at a given tier fetches
@@ -1083,35 +1084,144 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 
 ## Authentication & User Account Management
 
-### Current (stub)
-
-DataSpoke uses JWT for stateless authentication; the route surface, claim
-shape, and group-to-route enforcement are defined in
+The identity, lifecycle, and DataHub-mirror doctrine live in
+[AUTH](AUTH.md). The route catalogue and JWT claim shape live in
 [API §Authentication & Authorization](../API.md#authentication--authorization).
+DataHub-side primitives (corpuser/corpGroup/role aspects, GraphQL mutations,
+`hard_delete_entity`) live in
+[DATAHUB_INTEGRATION §User & Role Management](../DATAHUB_INTEGRATION.md#user--role-management).
+This section captures the service-layer composition only.
 
-**Auth service** (`src/backend/auth/`):
+### Service Modules (`src/backend/auth/`)
 
-- `POST /auth/token` — verify credentials against the stub identity store and
-  issue an access token (15 min) plus a refresh token (7 d). The access token is
-  returned in the response body; the refresh token is set as an HttpOnly cookie.
-- `POST /auth/token/refresh` — verify the refresh-cookie JWT, check it is **not**
-  in the Redis revocation list, and issue a new access token. Fails closed with
-  `503 STORAGE_UNAVAILABLE` when Redis is unreachable.
-- `POST /auth/token/revoke` — record the refresh token in Redis under
-  `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime.
+| Module | Responsibility |
+|--------|---------------|
+| `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via `passlib.hash.bcrypt` at cost factor 12. Google `sub` linking onto existing rows. UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`. |
+| `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. The JWT `groups` claim is the constant `["de", "da", "dg"]`; role is **not** in the JWT (read from `users.role` per request). |
+| `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; updates `last_used_at` throttled to per-minute granularity. Revoke sets `revoked_at = now()`. |
+| `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve user by Google `sub`, then by email; create otherwise. |
+| `reset.py` | Password-reset token issuance (256-bit `secrets.token_urlsafe`, SHA-256 hashed into `password_reset_tokens`) and confirm. Email transport via `aiosmtplib` driven by the SMTP peripheral (below). |
+| `privilege.py` | The `require_role(...)` FastAPI dependency family. Reads caller's role from `users.role` (or `min(role_snapshot, users.role)` for API tokens). Method × tier matrix enforcement per [AUTH §Privilege Model](AUTH.md#privilege-model). |
 
-**Stub identity store**: a single admin account configured via
-`DATASPOKE_ADMIN_EMAIL` / `DATASPOKE_ADMIN_PASSWORD`. All other credentials are
-rejected. The admin record carries every group claim (`admin`, `de`, `da`, `dg`).
-Cookie `secure` flag is gated by `DATASPOKE_COOKIE_SECURE` (default `false` for
-dev; production deployments must set it to `true`).
+### DataHub Mirror (`src/backend/datahub/users.py`)
 
-All stub code is marked with `TBD(user-accounts)` comments.
+Single module wrapping the SDK + GraphQL primitives catalogued in
+[DATAHUB_INTEGRATION §User & Role Management](../DATAHUB_INTEGRATION.md#user--role-management):
 
-### Planned Components
+- `ensure_corpuser_exists(email, name)` — idempotent `emit_mcp(corpUserInfo)`.
+- `ensure_marker_group_exists()` — idempotent `emit_mcp(corpGroupInfo)` using the group name read from `runtime_config.auth_datahub_corp_group`.
+- `add_user_to_marker_group(corpuser_urn)` — GraphQL `addGroupMembers`.
+- `propagate_role(corpuser_urn, role)` — GraphQL `batchAssignRole`. Called after every DataSpoke-side role write (registration default `Reader`, admin role change). DataHub-side is a mirror; DataSpoke `users.role` is the SSOT.
+- `read_role(corpuser_urn)` — GraphQL relationship traversal on `IsMemberOfRole`. **Used only by the nightly reconciliation DAG**, not on the request hot path.
+- `hard_delete_corpuser(corpuser_urn)` — SDK `hard_delete_entity`.
 
-- **User identity store**: PostgreSQL `users` table or external IdP integration (LDAP, OIDC)
-- **Password hashing**: bcrypt via `passlib`
-- **Group membership management**: Admin routes under `/admin/...`
-- **Account information transfer**: Map DataSpoke users to DataHub owner URNs
-- **Cookie `secure` flag**: Tied to `DATASPOKE_COOKIE_SECURE` env setting
+The module never writes `corpUserCredentials`.
+
+### Registration Composition
+
+`POST /auth/register` orchestrates the mirror create sequence
+([AUTH §Mirror create sequence](AUTH.md#mirror-create-sequence)). Each step is
+idempotent in isolation, so re-running after a DataHub-side failure resumes
+correctly:
+
+1. `users.create()` (DataSpoke DB) with `role = 'Reader'`.
+2. `datahub.users.ensure_corpuser_exists()`.
+3. `datahub.users.ensure_marker_group_exists()` → `add_user_to_marker_group()`.
+4. `datahub.users.propagate_role(urn, "Reader")`.
+5. `tokens.issue()` → 200 with access JWT + refresh cookie.
+
+Any DataHub-side failure (steps 2–4) triggers compensating hard-delete of the
+DataSpoke `users` row and returns `503 DATAHUB_SYNC_FAILED`. Subsequent
+registration with the same email is fresh on the DataSpoke side and resumes the
+DataHub-side writes idempotently.
+
+The Google OAuth callback uses the same composition when the resolved user is
+new (no matching `google_sub`, no matching email).
+
+### Role-Change Composition
+
+`PATCH /admin/users/{id}/role` orchestrates a two-step write where DataSpoke
+is SSOT:
+
+1. `users.update_role(user_id, new_role)` — DataSpoke `users.role` updated.
+2. `datahub.users.propagate_role(corpuser_urn, new_role)` — DataHub mirror.
+
+If step 2 fails, the API returns `200` to the admin caller (DataSpoke-side
+state is correct), logs a warning, and relies on the nightly
+`auth-role-sync-daily` DAG to reassert the role on DataHub. No compensating
+action on the DataSpoke side — divergence is by definition DataSpoke-correct.
+
+### Privilege Enforcement
+
+The `require_role` dependency family in `src/backend/auth/privilege.py`
+implements the [Privilege Model](AUTH.md#privilege-model) matrix:
+
+- `require_authenticated` — JWT decode or API-token lookup; populates
+  `request.state.user` and `request.state.effective_role`.
+- `require_writer` — used on `/spoke/*` and `/hub/*` write methods (POST /
+  PUT / PATCH / DELETE). Rejects with `403 READ_ONLY_ROLE` if
+  `effective_role == "Reader"`.
+- `require_admin` — used on `/admin/*`. Rejects with `403 FORBIDDEN` if
+  `effective_role != "Admin"`.
+
+GET / HEAD / OPTIONS on `/spoke/*` and `/hub/*` use `require_authenticated`
+only. `/auth/*` writes use `require_authenticated` only (the method gate is
+exempt — self-scoped writes).
+
+The `effective_role` is computed once per request:
+
+- JWT-authenticated request: `SELECT role FROM users WHERE id = sub` (one DB
+  round trip, shares the request's DB session).
+- API-token-authenticated request: `SELECT t.role_snapshot, u.role FROM
+  api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`,
+  then `effective_role = min(t.role_snapshot, u.role)` with ordering
+  `Admin > Editor > Reader`. Returns `401 INVALID_API_TOKEN` /
+  `401 TOKEN_REVOKED` / `401 TOKEN_EXPIRED` on the token state checks.
+
+The same query updates `last_used_at` when `now - last_used_at > 60s` (or
+NULL) — the throttle keeps a high-frequency client from flooding the row
+with UPDATEs.
+
+### Deletion Composition
+
+`DELETE /admin/users/{id}` runs the mirror delete sequence:
+
+1. Hard-delete the DataSpoke `users` row (cascade deletes
+   `password_reset_tokens`).
+2. `datahub.users.hard_delete_corpuser(urn)`.
+
+If step 2 fails, the DataSpoke caller still sees `204`; the orphan corpuser is
+operator-cleanable. The order is chosen so the user is immediately unable to
+log into DataSpoke even if DataHub is unavailable.
+
+### SMTP Peripheral
+
+Password reset is the only baseline consumer of SMTP. Configuration follows
+the existing peripheral pattern (parallel to DataHub and Langfuse):
+
+- Non-secret fields (`host`, `port`, `username`, `from_address`, `use_tls`)
+  live in the `peripheral_config` DB table under key `smtp`.
+- The `password` field lives in a dedicated K8s Secret
+  `dataspoke-smtp-secret` (data key `password`), accessed at runtime via
+  RBAC — mirroring `dataspoke-datahub-secret.token` and
+  `dataspoke-langfuse-secret.secret_key`. The `PATCH` handler routes the
+  `password` field to the Secret, never to the DB.
+- Configured at runtime via `PATCH /api/v1/admin/peripherals/smtp` and the
+  unattended mirror `/internal/admin/peripherals/smtp`.
+- Absence ⇒ `POST /auth/password/reset/request` returns
+  `503 PERIPHERAL_NOT_CONFIGURED` with `detail.peripheral = "smtp"`. All
+  other auth flows remain functional.
+
+### Settings sourced from chart
+
+| Setting | Source | Purpose |
+|---------|--------|---------|
+| `DATASPOKE_JWT_SECRET_KEY` | `dataspoke-secrets` | JWT HS256 signing key |
+| `DATASPOKE_OAUTH_STATE_SECRET` | `dataspoke-secrets` | HMAC key for the OAuth state cookie |
+| `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | `dataspoke-secrets` | Google OAuth client secret |
+| `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` | chart values → configmap | Google OAuth client ID (public) |
+| `DATASPOKE_COOKIE_SECURE` | chart values → configmap | Refresh-token cookie `Secure` attribute (`false` dev, `true` prod) |
+
+`auth_datahub_corp_group` lives in `runtime_config` (DB-backed) per
+[BACKEND_SCHEMA §`runtime_config`](BACKEND_SCHEMA.md#runtime_config). SMTP
+credentials live in `peripheral_config` (DB-backed).
