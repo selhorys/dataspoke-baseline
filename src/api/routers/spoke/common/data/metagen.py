@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.auth.dependencies import require_auth
+from src.api.auth.dependencies import AuthContext, require_writer
 from src.api.dependencies import get_db, get_metagen_service
 from src.api.routers.spoke.common._metagen_mappers import (
     event_list,
@@ -74,6 +74,7 @@ async def put_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
     body: MetagenBoundaryPutRequest,
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetagenBoundaryResponse:
     dto = await service.put_boundary(dataset_urn, body.model_dump())
     return _boundary_response(dto)
@@ -87,6 +88,7 @@ async def patch_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
     body: MetagenBoundaryPatchRequest,
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetagenBoundaryResponse:
     dto = await service.patch_boundary(dataset_urn, body.model_dump(exclude_unset=True))
     return _boundary_response(dto)
@@ -99,6 +101,7 @@ async def patch_data_metagen_conf(
 async def delete_data_metagen_conf(
     dataset_urn: DatasetUrnPath,
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     await service.delete_boundary(dataset_urn)
 
@@ -151,14 +154,14 @@ async def post_data_metagen_item_candidate_review(
     candidate_id: str,
     body: MetagenReviewRequest,
     service: MetagenService = Depends(get_metagen_service),
-    user: dict[str, Any] = Depends(require_auth),
+    ctx: AuthContext = Depends(require_writer),
 ) -> MetagenCandidate:
     """Review a candidate — approve or reject.
 
     409 METAGEN_CANNOT_REJECT_APPROVED if rejecting an approved candidate.
     422 METAGEN_DATASET_NOT_IN_BOUNDARY if no is_enabled=true boundary.
     """
-    reviewer_id: str | None = user.get("sub") or user.get("username") or None
+    reviewer_id: str | None = str(ctx.user.id)
     dto = await service.review_candidate(
         dataset_urn=dataset_urn,
         item_id=item_id,

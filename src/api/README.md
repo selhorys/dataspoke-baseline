@@ -55,7 +55,7 @@ The defaults in the table below are the Pydantic Settings fallbacks used by unit
 
 DataHub, Langfuse, and LLM provider/model/key are **not** env vars on the API pod — they live in the DB `peripheral_config` and `runtime_config` tables, updated via `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. See [spec/feature/HELM_CHART.md §Configuration](../../spec/feature/HELM_CHART.md#configuration--four-tier-env-vars).
 
-> Runtime env vars on the API pod come from three sources: K8s Secret (`dataspoke-secrets` — credentials), ConfigMap (`dataspoke-app-config` — connection endpoints), and chart-rendered direct env (`api.enableStubAuth`, `config.corsOrigins`). See `spec/feature/HELM_CHART.md §Configuration Flow`. Stub-mode toggles live in the DB `runtime_config` row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`), flippable via `PATCH /api/v1/admin/conf`. Test-side equivalents are in `helm-charts/.env` under the `DATASPOKE_TEST_*` block.
+> Runtime env vars on the API pod come from three sources: K8s Secret (`dataspoke-secrets` — credentials), ConfigMap (`dataspoke-app-config` — connection endpoints), and chart-rendered direct env (`auth.cookieSecure`, `auth.googleClientId`, `config.corsOrigins`). See `spec/feature/HELM_CHART.md §Configuration Flow`. Stub-mode toggles live in the DB `runtime_config` row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`), flippable via `PATCH /api/v1/admin/conf`. Test-side equivalents are in `helm-charts/.env` under the `DATASPOKE_TEST_*` block.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -63,8 +63,10 @@ DataHub, Langfuse, and LLM provider/model/key are **not** env vars on the API po
 | `DATASPOKE_JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
 | `DATASPOKE_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token lifetime (minutes) |
 | `DATASPOKE_JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime (days) |
-| `DATASPOKE_ADMIN_EMAIL` | `admin` | Stub admin email |
-| `DATASPOKE_ADMIN_PASSWORD` | `admin` | Stub admin password |
+| `DATASPOKE_OAUTH_STATE_SECRET` | _(empty)_ | HMAC key for the Google OAuth state cookie |
+| `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` | _(empty)_ | Google OAuth client ID (public; chart values, not Secret) |
+| `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | _(empty)_ | Google OAuth client secret |
+| `DATASPOKE_COOKIE_SECURE` | `false` | Refresh-token cookie `Secure` attribute (`true` in prod chart values) |
 | `DATASPOKE_CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins (JSON list) |
 | `DATASPOKE_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per minute per client |
 | `DATASPOKE_POSTGRES_HOST` | `localhost` | PostgreSQL host |

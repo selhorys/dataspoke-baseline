@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from src.api.auth.dependencies import AuthContext, require_writer
 from src.api.dependencies import get_ingestion_service
 from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
@@ -125,6 +126,7 @@ async def put_data_ingestion_conf(
     body: CreateIngestionConfigRequest,
     response: Response,
     service: IngestionService = Depends(get_ingestion_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> IngestionConfigResponse:
     """Create or replace the ingestion config for a dataset (upsert).
 
@@ -168,6 +170,7 @@ async def patch_data_ingestion_conf(
     dataset_urn: DatasetUrnPath,
     body: PatchIngestionConfigRequest,
     service: IngestionService = Depends(get_ingestion_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> IngestionConfigResponse:
     """Partially update the ingestion config for a dataset.
 
@@ -197,6 +200,7 @@ async def patch_data_ingestion_conf(
 async def delete_data_ingestion_conf(
     dataset_urn: DatasetUrnPath,
     service: IngestionService = Depends(get_ingestion_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     """Delete the ingestion config for a dataset."""
     await service.delete_config(dataset_urn)
@@ -210,6 +214,7 @@ async def post_data_ingestion_run(
     dataset_urn: DatasetUrnPath,
     body: RunIngestionRequest,
     service: IngestionService = Depends(get_ingestion_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> RunResultResponse:
     """Execute the ingestion pipeline for a dataset.
 

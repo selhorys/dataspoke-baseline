@@ -11,6 +11,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
+    CHAR,
     Boolean,
     CheckConstraint,
     Float,
@@ -25,7 +26,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import CITEXT, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from src.shared.config import EMBEDDING_DIMENSION as _EMBEDDING_DIM
@@ -39,6 +40,116 @@ class Base(DeclarativeBase):
 
 SCHEMA = "dataspoke"
 
+
+# ── users ────────────────────────────────────────────────────────────────────
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_users_email"),
+        UniqueConstraint("google_sub", name="uq_users_google_sub"),
+        CheckConstraint(
+            "password_hash IS NOT NULL OR google_sub IS NOT NULL",
+            name="ck_users_auth_method",
+        ),
+        CheckConstraint(
+            "role IN ('Admin', 'Editor', 'Reader')",
+            name="ck_users_role",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email: Mapped[str] = mapped_column(CITEXT, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    google_sub: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="Reader")
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    api_tokens: Mapped[list["ApiToken"]] = relationship(
+        "ApiToken", back_populates="user", cascade="all, delete-orphan"
+    )
+    password_reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(
+        "PasswordResetToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+# ── api_tokens ────────────────────────────────────────────────────────────────
+
+
+class ApiToken(Base):
+    __tablename__ = "api_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_api_tokens_token_hash"),
+        CheckConstraint(
+            "role_snapshot IN ('Admin', 'Editor', 'Reader')",
+            name="ck_api_tokens_role_snapshot",
+        ),
+        Index(
+            "ix_api_tokens_user_active",
+            "user_id",
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    token_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    role_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="api_tokens")
+
+
+# ── password_reset_tokens ─────────────────────────────────────────────────────
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    __table_args__ = (
+        Index(
+            "ix_password_reset_tokens_user_expires",
+            "user_id",
+            desc("expires_at"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    token_hash: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="password_reset_tokens")
 
 
 # ── ingestion_configs ────────────────────────────────────────────────────────
@@ -408,6 +519,9 @@ class RuntimeConfig(Base):
     stub_llm_client: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stub_pgvector_manager: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stub_notification_service: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auth_datahub_corp_group: Mapped[str] = mapped_column(
+        Text, nullable=False, default="dataspoke-users"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )
@@ -419,7 +533,9 @@ class RuntimeConfig(Base):
 class PeripheralConfig(Base):
     __tablename__ = "peripheral_config"
     __table_args__ = (
-        CheckConstraint("name IN ('datahub', 'langfuse')", name="ck_peripheral_config_name"),
+        CheckConstraint(
+            "name IN ('datahub', 'langfuse', 'smtp')", name="ck_peripheral_config_name"
+        ),
         {"schema": SCHEMA},
     )
 

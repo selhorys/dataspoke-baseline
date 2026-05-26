@@ -58,23 +58,23 @@ async def test_admin_dags_verify_requires_admin_group(api_client: httpx.AsyncCli
     spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group exclusively.
     spec: API.md §Admin Role — admin routes require the 'admin' claim exclusively.
     """
-    from src.api.auth.jwt import create_access_token
+    import uuid
 
-    # Mint a real signed token with only 'dg' group — no 'admin' claim
-    dg_only_token, _ = create_access_token(
-        subject="dg-only-user",
-        groups=["dg"],
-        email="dg-user@example.com",
-    )
-    dg_only_headers = {"Authorization": f"Bearer {dg_only_token}"}
+    from src.backend.auth.tokens import issue_access_token
+
+    # Unknown UUID → user not found in DB → 403 FORBIDDEN on /admin/* routes.
+    # Wave F will replace this with a properly seeded non-Admin user.
+    fake_id = uuid.UUID("ffffffff-0000-0000-0000-000000000010")
+    non_admin_token, _ = issue_access_token(fake_id, "non-admin@example.com")
+    non_admin_headers = {"Authorization": f"Bearer {non_admin_token}"}
 
     resp = await api_client.post(
         "/api/v1/admin/dags/verify",
-        headers=dg_only_headers,
+        headers=non_admin_headers,
     )
     assert resp.status_code == 403, (
-        f"A 'dg'-only token must get 403 on /admin route per spec/API.md "
-        f"§Group-to-Route Access Control, got {resp.status_code}"
+        f"Non-admin token must get 403 on /admin route per spec/API.md "
+        f"§Role-to-Route Access Control, got {resp.status_code}"
     )
 
 

@@ -233,19 +233,19 @@ async def test_get_conf_non_admin_group_returns_403(
     spec: task brief §api-wired — 'without admin group (non-admin JWT) → 403'.
     spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group.
     """
-    from src.api.auth.jwt import create_access_token
+    import uuid
 
-    dg_token, _ = create_access_token(
-        subject="dg-only-user",
-        groups=["dg"],
-        email="dg@test.example.com",
-    )
+    from src.backend.auth.tokens import issue_access_token
+
+    # Unknown UUID → user not found in DB → 403 FORBIDDEN
+    fake_id = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+    non_admin_token, _ = issue_access_token(fake_id, "non-admin@test.example.com")
     resp = await api_client.get(
         _ADMIN_CONF,
-        headers={"Authorization": f"Bearer {dg_token}"},
+        headers={"Authorization": f"Bearer {non_admin_token}"},
     )
     assert resp.status_code == 403, (
-        f"GET /admin/conf with 'dg'-only JWT must return 403; got {resp.status_code}"
+        f"Non-admin JWT must return 403 on GET /admin/conf; got {resp.status_code}"
     )
 
 
@@ -272,17 +272,17 @@ async def test_patch_conf_non_admin_group_returns_403(
 
     spec: task brief §api-wired — 'without admin group (non-admin JWT) → 403'.
     """
-    from src.api.auth.jwt import create_access_token
+    import uuid
 
-    de_token, _ = create_access_token(
-        subject="de-only-user",
-        groups=["de"],
-        email="de@test.example.com",
-    )
+    from src.backend.auth.tokens import issue_access_token
+
+    # Unknown UUID → user not found in DB → 403 FORBIDDEN
+    fake_id = uuid.UUID("ffffffff-0000-0000-0000-000000000002")
+    non_admin_token, _ = issue_access_token(fake_id, "non-admin2@test.example.com")
     resp = await api_client.patch(
         _ADMIN_CONF,
         json={"llm_model": "gpt-4o-mini"},
-        headers={"Authorization": f"Bearer {de_token}"},
+        headers={"Authorization": f"Bearer {non_admin_token}"},
     )
     assert resp.status_code == 403
 

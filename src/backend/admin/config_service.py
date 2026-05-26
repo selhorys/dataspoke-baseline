@@ -37,6 +37,7 @@ RUNTIME_CONFIG_DEFAULTS: dict[str, Any] = {
     "stub_llm_client": False,
     "stub_pgvector_manager": False,
     "stub_notification_service": False,
+    "auth_datahub_corp_group": "dataspoke-users",
 }
 
 # ── DTO ───────────────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ class RuntimeConfigDTO:
     stub_llm_client: bool
     stub_pgvector_manager: bool
     stub_notification_service: bool
+    auth_datahub_corp_group: str
 
     @classmethod
     def from_orm(cls, row: RuntimeConfig) -> "RuntimeConfigDTO":
@@ -86,6 +88,7 @@ class RuntimeConfigDTO:
             stub_llm_client=row.stub_llm_client,
             stub_pgvector_manager=row.stub_pgvector_manager,
             stub_notification_service=row.stub_notification_service,
+            auth_datahub_corp_group=row.auth_datahub_corp_group,
         )
 
 

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from src.api.config import settings
 from src.api.middleware.logging import RequestLoggingMiddleware
@@ -37,12 +38,17 @@ from src.api.routers.spoke.common import (
 from src.api.routers.spoke.dg import metrics as dg_metrics
 from src.shared.exceptions import (
     AuthenticationError,
+    BadRequestError,
     ConflictError,
+    DataHubSyncError,
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
+    ForbiddenError,
     InvalidDatasetUrnError,
     NotImplementedAPIError,
+    OAuthNotConfiguredError,
+    PeripheralNotConfiguredError,
     PreconditionFailedError,
     StorageUnavailableError,
 )
@@ -64,12 +70,6 @@ async def lifespan(app: FastAPI):
     from src.shared.db.session import SessionLocal
     from src.shared.vector.client import PgVectorManager
     from src.workflows.airflow.client import AirflowClient
-
-    if settings.enable_stub_auth and settings.admin_password == "admin":
-        logger.warning(
-            "stub_auth_enabled_with_default_password",
-            extra={"risk": "Stub auth enabled with default admin password — not for production."},
-        )
 
     app.state.airflow = AirflowClient(
         base_url=settings.airflow_url,
@@ -161,6 +161,16 @@ async def _handle_rate_limit(request: Request, exc: RateLimitExceeded) -> JSONRe
     return response
 
 
+async def _handle_bad_request(request: Request, exc: BadRequestError) -> JSONResponse:
+    return _error_json(request, 400, exc.error_code, str(exc))
+
+
+async def _handle_oauth_not_configured(
+    request: Request, exc: OAuthNotConfiguredError
+) -> JSONResponse:
+    return _error_json(request, 503, exc.error_code, str(exc))
+
+
 async def _handle_not_found(request: Request, exc: EntityNotFoundError) -> JSONResponse:
     return _error_json(request, 404, exc.error_code, str(exc))
 
@@ -206,6 +216,26 @@ async def _handle_storage(request: Request, exc: StorageUnavailableError) -> JSO
 
 async def _handle_not_implemented(request: Request, exc: NotImplementedAPIError) -> JSONResponse:
     return _error_json(request, 501, exc.error_code, str(exc))
+
+
+async def _handle_forbidden(request: Request, exc: ForbiddenError) -> JSONResponse:
+    return _error_json(request, 403, exc.error_code, str(exc))
+
+
+async def _handle_peripheral_not_configured(
+    request: Request, exc: PeripheralNotConfiguredError
+) -> JSONResponse:
+    return _error_json(
+        request, 503, exc.error_code, str(exc), detail=exc.detail or None
+    )
+
+
+async def _handle_datahub_sync(request: Request, exc: DataHubSyncError) -> JSONResponse:
+    logger.warning(
+        "datahub_sync_failed",
+        extra={"detail": str(exc), "path": request.url.path},
+    )
+    return _error_json(request, 503, exc.error_code, str(exc))
 
 
 async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JSONResponse:
@@ -310,11 +340,16 @@ def create_app() -> FastAPI:
 
     # ── Exception handlers (specific → generic) ───────────────────────────────
     app.add_exception_handler(NotImplementedAPIError, _handle_not_implemented)  # type: ignore[arg-type]
+    app.add_exception_handler(BadRequestError, _handle_bad_request)  # type: ignore[arg-type]
+    app.add_exception_handler(OAuthNotConfiguredError, _handle_oauth_not_configured)  # type: ignore[arg-type]
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
     app.add_exception_handler(InvalidDatasetUrnError, _handle_invalid_dataset_urn)  # type: ignore[arg-type]
+    app.add_exception_handler(ForbiddenError, _handle_forbidden)  # type: ignore[arg-type]
     app.add_exception_handler(AuthenticationError, _handle_authentication)  # type: ignore[arg-type]
+    app.add_exception_handler(PeripheralNotConfiguredError, _handle_peripheral_not_configured)  # type: ignore[arg-type]
+    app.add_exception_handler(DataHubSyncError, _handle_datahub_sync)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
@@ -325,6 +360,13 @@ def create_app() -> FastAPI:
     app.add_middleware(SlowAPIMiddleware)
     # 2. Request logging (also adds trace ID header)
     app.add_middleware(RequestLoggingMiddleware)
+    # 1b. Session (required by authlib OAuth state/nonce storage)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.oauth_state_secret or settings.jwt_secret_key,
+        same_site="lax",
+        https_only=settings.cookie_secure,
+    )
     # 1. CORS
     app.add_middleware(
         CORSMiddleware,
@@ -334,11 +376,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # NOTE: Group enforcement and JWT validation are handled by FastAPI
-    # route-level Depends (require_common, require_dg, etc.) rather than
-    # blanket Starlette middleware, which keeps the auth logic testable and
-    # allows the public /health, /ready, and /auth/* routes to bypass it
-    # without a separate exclusion list.
+    # NOTE: Role enforcement and JWT validation are handled by FastAPI
+    # route-level Depends (require_authenticated, require_writer, require_admin)
+    # rather than blanket Starlette middleware, which keeps the auth logic
+    # testable and allows the public /health, /ready, and /auth/* routes to
+    # bypass it without a separate exclusion list.
 
     # ── System routes (no auth) ────────────────────────────────────────────────
     app.include_router(health.router)

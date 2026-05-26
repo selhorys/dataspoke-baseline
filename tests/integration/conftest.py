@@ -73,7 +73,7 @@ _load_dotenv()
 def _promote_test_runtime_overrides() -> None:
     """Promote DATASPOKE_TEST_* values into the runtime DATASPOKE_* names that
     src/ Pydantic Settings reads. Required when test code imports src/ helpers
-    (e.g. src.api.auth.jwt.create_access_token) and must sign with the same
+    (e.g. src.backend.auth.tokens.issue_access_token) and must sign with the same
     secret the API pod uses — the chart-generated secret is mirrored into .env
     as DATASPOKE_TEST_JWT_SECRET_KEY by install.sh's _sync_env_from_secret.
     """
@@ -136,14 +136,17 @@ def _get_datahub_session_token() -> str:
 
 
 def _auth_headers() -> dict[str, str]:
-    """Create JWT auth headers for integration test requests."""
-    from src.api.auth.jwt import create_access_token
+    """Create JWT auth headers for integration test requests.
 
-    token, _ = create_access_token(
-        subject="integration-test-user",
-        groups=["de", "da", "dg"],
-        email="test@example.com",
-    )
+    Signs a token using the backend token helper so the secret matches the
+    one the in-cluster API pod uses (synced via DATASPOKE_TEST_JWT_SECRET_KEY).
+    """
+    import uuid
+
+    from src.backend.auth.tokens import issue_access_token
+
+    fake_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    token, _ = issue_access_token(fake_user_id, "integration-test@example.com")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -586,11 +589,11 @@ def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
     """
     base_url = _shared_ingress_url()
 
-    # Obtain admin token
+    # Obtain admin token (bootstrap account: dataspoke / dataspoke)
     try:
         token_resp = httpx.post(
             f"{base_url}/api/v1/auth/token",
-            json={"email": "admin", "password": "admin"},
+            json={"email": "dataspoke", "password": "dataspoke"},
             timeout=10.0,
         )
         token_resp.raise_for_status()

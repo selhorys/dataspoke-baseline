@@ -1,0 +1,197 @@
+"""Spot integration test: /admin/users/* CRUD.
+
+Concerns covered:
+- GET /admin/users returns paginated list with role column
+- PATCH /admin/users/{id} updates the display name
+- PATCH /admin/users/{id}/role promotes Reader to Editor, new role reflected on next GET
+- DELETE /admin/users/{id} removes the row; subsequent GET /auth/me with their token returns 403
+
+spec: spec/feature/AUTH.md §Admin Surface
+spec: spec/API.md §Admin /admin/users
+"""
+
+import uuid
+
+import httpx
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _unique_email(prefix: str = "admin-users") -> str:
+    return f"{prefix}-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
+
+
+async def _seed_user(session: AsyncSession, email: str) -> dict:
+    """Seed a user directly in the DB and return {access_token, id}.
+
+    Uses DB seeding + issue_access_token to avoid the /auth/register rate limit
+    (5/min per IP) when multiple spot test files run together in the same minute.
+
+    Seeds via google_sub (password_hash=NULL) — these tests never call POST /auth/token,
+    so no password hash is needed. Satisfies the DB CHECK (password_hash IS NOT NULL
+    OR google_sub IS NOT NULL).
+    """
+    from src.backend.auth.tokens import issue_access_token
+
+    user_id = uuid.uuid4()
+    google_sub = f"test-sub-{uuid.uuid4()}"
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
+            " VALUES (:id, :email, :name, :google_sub, 'Reader')"
+        ),
+        {"id": str(user_id), "email": email, "name": "Test User", "google_sub": google_sub},
+    )
+    await session.commit()
+    token, _ = issue_access_token(user_id, email)
+    return {"access_token": token, "id": str(user_id)}
+
+
+@pytest.mark.asyncio
+async def test_list_users_returns_pagination_shape(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """GET /admin/users returns {users, total} with role per row.
+
+    spec: spec/feature/AUTH.md §Admin Surface — GET /admin/users: users.role returned per row.
+    spec: spec/API.md §Admin — paginated list; role from DB column (no GraphQL call).
+    """
+    resp = await api_client.get(
+        "/api/v1/admin/users",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, f"GET /admin/users must return 200, got {resp.status_code}: {resp.text}"
+
+    body = resp.json()
+    assert "users" in body, "Response must include 'users' list"
+    assert "total" in body, "Response must include 'total' count"
+
+    for user in body["users"]:
+        assert "role" in user, "Each user row must include 'role' per spec/feature/AUTH.md §Admin Surface"
+        assert "id" in user
+        assert "email" in user
+        assert "name" in user
+        assert "password_hash" not in user, "password_hash must not appear in admin list"
+
+
+@pytest.mark.asyncio
+async def test_patch_user_name(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """PATCH /admin/users/{id} updates the display name.
+
+    spec: spec/feature/AUTH.md §Admin Surface — PATCH /admin/users/{id}: update display name
+    (email is immutable post-creation because the DataHub corpuser URN is immutable).
+    """
+    email = _unique_email("patch-name")
+    user = await _seed_user(async_session, email)
+
+    patch_resp = await api_client.patch(
+        f"/api/v1/admin/users/{user['id']}",
+        json={"name": "Admin Updated Name"},
+        headers=admin_headers,
+    )
+    assert patch_resp.status_code == 200, f"PATCH /admin/users/{user['id']} must return 200: {patch_resp.text}"
+
+    updated = patch_resp.json()
+    assert updated["name"] == "Admin Updated Name", (
+        "Name must be updated per spec/feature/AUTH.md §Admin Surface"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_user_role_reader_to_editor(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """PATCH /admin/users/{id}/role promotes Reader to Editor.
+
+    spec: spec/feature/AUTH.md §Admin Surface — PATCH /admin/users/{id}/role writes DataSpoke first
+    then propagates to DataHub via batchAssignRole.
+    spec: spec/feature/AUTH.md §Privilege Model — role changes take effect on the next request.
+    """
+    email = _unique_email("role-promote")
+    user = await _seed_user(async_session, email)
+
+    # Initially Reader
+    me_before = await api_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {user['access_token']}"},
+    )
+    assert me_before.json()["role"] == "Reader"
+
+    # Promote to Editor
+    role_resp = await api_client.patch(
+        f"/api/v1/admin/users/{user['id']}/role",
+        json={"role": "Editor"},
+        headers=admin_headers,
+    )
+    assert role_resp.status_code == 200, (
+        f"PATCH /admin/users/{user['id']}/role must return 200: {role_resp.text}"
+    )
+    assert role_resp.json()["role"] == "Editor"
+
+    # Verify new role takes effect on next request
+    me_after = await api_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {user['access_token']}"},
+    )
+    assert me_after.json()["role"] == "Editor", (
+        "Role change must take effect on the next request per spec/feature/AUTH.md §Privilege Model"
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_removes_row(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """DELETE /admin/users/{id} removes the row; their token returns 403 on next use.
+
+    spec: spec/feature/AUTH.md §Lifecycle §Deletion — hard delete; user immediately unable
+    to log into DataSpoke.
+    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence.
+    """
+    email = _unique_email("delete-user")
+    user = await _seed_user(async_session, email)
+
+    # Verify user exists
+    me_before = await api_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {user['access_token']}"},
+    )
+    assert me_before.status_code == 200
+
+    # Delete the user
+    del_resp = await api_client.delete(
+        f"/api/v1/admin/users/{user['id']}",
+        headers=admin_headers,
+    )
+    assert del_resp.status_code == 204, (
+        f"DELETE /admin/users/{user['id']} must return 204: {del_resp.text}"
+    )
+
+    # User's token must now fail (user no longer exists in DB)
+    me_after = await api_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {user['access_token']}"},
+    )
+    assert me_after.status_code in (401, 403), (
+        "Deleted user's token must return 401 or 403 per spec/feature/AUTH.md §Lifecycle §Deletion"
+    )
+
+    # Email must be immediately reusable
+    rereg = await api_client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "name": "Re-registered", "password": "password1234"},
+    )
+    assert rereg.status_code == 201, (
+        f"Email must be immediately reusable after deletion "
+        f"per spec/feature/AUTH.md §Lifecycle §Deletion, got {rereg.status_code}: {rereg.text}"
+    )

@@ -4,8 +4,9 @@ Used by both the admin router and the internal activities router to ensure
 consistent validation (URN pattern + list-length cap) on DataHub sync requests.
 """
 
+import uuid
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -63,6 +64,7 @@ class RuntimeConfResponse(SingleResponse):
     stub_llm_client: bool
     stub_pgvector_manager: bool
     stub_notification_service: bool
+    auth_datahub_corp_group: str
     updated_at: datetime | None = None
 
 
@@ -130,6 +132,7 @@ class PeripheralsStatusResponse(SingleResponse):
 
     datahub: dict
     langfuse: dict
+    smtp: dict = Field(default_factory=dict)
 
 
 class RuntimeConfPatchRequest(BaseModel):
@@ -165,3 +168,77 @@ class RuntimeConfPatchRequest(BaseModel):
     stub_llm_client: bool | None = None
     stub_pgvector_manager: bool | None = None
     stub_notification_service: bool | None = None
+    auth_datahub_corp_group: str | None = None
+
+
+# ── User management ────────────────────────────────────────────────────────────
+
+
+class UserResponse(BaseModel):
+    """User representation for admin endpoints."""
+
+    id: uuid.UUID
+    email: str
+    name: str
+    has_google: bool
+    role: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class UsersListResponse(BaseModel):
+    users: list[UserResponse]
+    total: int
+
+
+class UserPatchRequest(BaseModel):
+    name: str = Field(max_length=128)
+
+
+class UserRolePatchRequest(BaseModel):
+    role: Literal["Admin", "Editor", "Reader"]
+
+
+# ── SMTP peripheral ────────────────────────────────────────────────────────────
+
+
+class SmtpPeripheralResponse(SingleResponse):
+    """Response envelope for the SMTP peripheral configuration.
+
+    ``password`` is masked: ``""`` when unset, ``"********"`` when set.
+    """
+
+    host: str
+    port: int
+    username: str
+    from_address: str
+    use_tls: bool
+    password: str
+    is_configured: bool
+    updated_at: datetime | None = None
+
+
+class SmtpPeripheralPatchRequest(BaseModel):
+    """Partial update for the SMTP peripheral configuration.
+
+    All fields are optional — only supplied (non-null) fields are applied.
+    ``password`` is routed to the Kubernetes Secret rather than the DB.
+    An explicitly provided ``""`` clears the password; ``None`` (or omitting
+    the field) means "leave the password unchanged".
+    """
+
+    host: Annotated[str | None, Field(default=None, max_length=512)] = None
+    port: Annotated[int | None, Field(default=None, ge=1, le=65535)] = None
+    username: Annotated[str | None, Field(default=None, max_length=512)] = None
+    from_address: Annotated[str | None, Field(default=None, max_length=512)] = None
+    use_tls: bool | None = None
+    password: Annotated[str | None, Field(default=None, max_length=8192)] = None
+
+
+# ── Bootstrap ──────────────────────────────────────────────────────────────────
+
+
+class BootstrapResponse(BaseModel):
+    created: bool
+    user_id: str | None = None
+    email: str | None = None

@@ -116,12 +116,90 @@ class StorageUnavailableError(DataSpokeError):
 class AuthenticationError(DataSpokeError):
     """Raised for auth flow failures (invalid credentials, missing/revoked refresh
     cookie, malformed JWT). Maps to HTTP 401.
+
+    Valid error_code values:
+      UNAUTHORIZED          — default; malformed or missing token
+      TOKEN_REVOKED         — API token has been revoked
+      TOKEN_EXPIRED         — API token has passed its expires_at
+      INVALID_API_TOKEN     — API token not found or hash mismatch
+      OAUTH_STATE_MISMATCH  — Google OAuth state cookie did not match
     """
 
     error_code: str = "UNAUTHORIZED"
 
-    def __init__(self, message: str = "Unauthorized") -> None:
+    def __init__(self, message: str = "Unauthorized", error_code: str = "UNAUTHORIZED") -> None:
+        self.error_code = error_code
         super().__init__(message)
+
+
+class OAuthNotConfiguredError(DataSpokeError):
+    """Raised when an OAuth operation is attempted but credentials are not configured.
+    Maps to HTTP 503.
+
+    error_code: OAUTH_NOT_CONFIGURED
+    """
+
+    error_code: str = "OAUTH_NOT_CONFIGURED"
+
+
+class BadRequestError(DataSpokeError):
+    """Raised for client-supplied inputs that are syntactically valid but semantically
+    wrong (HTTP 400).
+
+    Valid error_code values:
+      BAD_REQUEST           — default
+      INVALID_RESET_TOKEN   — password reset token missing, used, or expired
+    """
+
+    error_code: str = "BAD_REQUEST"
+
+    def __init__(self, message: str = "Bad request", error_code: str = "BAD_REQUEST") -> None:
+        self.error_code = error_code
+        super().__init__(message)
+
+
+class ForbiddenError(DataSpokeError):
+    """Raised when the caller is authenticated but lacks the required privilege.
+    Maps to HTTP 403.
+
+    Valid error_code values:
+      FORBIDDEN        — default; caller role not sufficient (e.g. Reader on /admin/*)
+      READ_ONLY_ROLE   — Reader attempting a write method on /spoke/* or /hub/*
+    """
+
+    error_code: str = "FORBIDDEN"
+
+    def __init__(self, message: str = "Forbidden", error_code: str = "FORBIDDEN") -> None:
+        self.error_code = error_code
+        super().__init__(message)
+
+
+class PeripheralNotConfiguredError(DataSpokeError):
+    """Raised when an operation requires a peripheral (e.g. smtp) that is not
+    configured. Maps to HTTP 503.
+
+    error_code: PERIPHERAL_NOT_CONFIGURED
+    detail: {"peripheral": "<name>"}
+    """
+
+    error_code: str = "PERIPHERAL_NOT_CONFIGURED"
+
+    def __init__(self, peripheral: str) -> None:
+        self.detail: dict[str, object] = {"peripheral": peripheral}
+        super().__init__(f"Peripheral '{peripheral}' is not configured")
+
+
+class DataHubSyncError(DataSpokeError):
+    """Raised when the DataHub mirror write fails during user registration and the
+    compensating local-row delete is triggered. Maps to HTTP 503.
+
+    Distinct from DataHubUnavailableError because this code is specific to the
+    register-time compensating-delete path, allowing callers to distinguish a
+    transient transport failure (502) from a sync failure that left the system
+    in a clean state after rollback (503).
+    """
+
+    error_code: str = "DATAHUB_SYNC_FAILED"
 
 
 class NotificationError(DataSpokeError):

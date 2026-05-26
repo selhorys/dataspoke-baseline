@@ -106,10 +106,14 @@ def test_get_user_key_extracts_sub_from_valid_jwt() -> None:
     """_get_user_key extracts sub claim from valid JWT.
 
     spec: API.md §Middleware — rate-limit key is JWT sub claim when token is valid.
+    In the new auth model, sub is the user UUID string.
     """
-    from tests.unit.api.conftest import make_token
+    import uuid
 
-    token = make_token(groups=["de"], subject="alice@example.com")
+    from src.backend.auth.tokens import issue_access_token
+
+    known_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    token, _ = issue_access_token(known_id, "alice@example.com")
 
     from unittest.mock import MagicMock
 
@@ -119,7 +123,7 @@ def test_get_user_key_extracts_sub_from_valid_jwt() -> None:
     req.client.host = "10.0.0.5"
 
     key = _get_user_key(req)
-    assert key == "alice@example.com", (
-        f"Expected key='alice@example.com', got {key!r}. "
-        "spec: API.md §Middleware — JWT sub used as rate-limit key."
+    assert key == str(known_id), (
+        f"Expected key='{known_id}', got {key!r}. "
+        "spec: API.md §Middleware — JWT sub (user UUID) used as rate-limit key."
     )

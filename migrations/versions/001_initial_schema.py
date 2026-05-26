@@ -14,7 +14,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import CITEXT, JSONB, TIMESTAMP, UUID
 
 from src.shared.config import EMBEDDING_DIMENSION
 
@@ -42,6 +42,94 @@ def upgrade() -> None:
     # this at cluster bootstrap; the guard here keeps the migration safe
     # against a DB provisioned without that hook.
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+    # citext extension — case-insensitive text, used by users.email.
+    op.execute("CREATE EXTENSION IF NOT EXISTS citext")
+
+    # ── users ────────────────────────────────────────────────────────────
+    op.create_table(
+        "users",
+        sa.Column(
+            "id",
+            UUID(as_uuid=True),
+            primary_key=True,
+            server_default=sa.text("gen_random_uuid()"),
+        ),
+        sa.Column("email", CITEXT, nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("password_hash", sa.Text(), nullable=True),
+        sa.Column("google_sub", sa.Text(), nullable=True),
+        sa.Column("role", sa.Text(), nullable=False, server_default="Reader"),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.UniqueConstraint("email", name="uq_users_email"),
+        sa.UniqueConstraint("google_sub", name="uq_users_google_sub"),
+        sa.CheckConstraint(
+            "password_hash IS NOT NULL OR google_sub IS NOT NULL",
+            name="ck_users_auth_method",
+        ),
+        sa.CheckConstraint(
+            "role IN ('Admin', 'Editor', 'Reader')",
+            name="ck_users_role",
+        ),
+        schema=SCHEMA,
+    )
+
+    # ── api_tokens ───────────────────────────────────────────────────────
+    op.create_table(
+        "api_tokens",
+        sa.Column(
+            "id",
+            UUID(as_uuid=True),
+            primary_key=True,
+            server_default=sa.text("gen_random_uuid()"),
+        ),
+        sa.Column(
+            "user_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("token_hash", sa.CHAR(64), nullable=False),
+        sa.Column("role_snapshot", sa.Text(), nullable=False),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("last_used_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("expires_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("revoked_at", TIMESTAMPTZ, nullable=True),
+        sa.UniqueConstraint("token_hash", name="uq_api_tokens_token_hash"),
+        sa.CheckConstraint(
+            "role_snapshot IN ('Admin', 'Editor', 'Reader')",
+            name="ck_api_tokens_role_snapshot",
+        ),
+        schema=SCHEMA,
+    )
+    op.execute(
+        f"CREATE INDEX ix_api_tokens_user_active "
+        f"ON {SCHEMA}.api_tokens (user_id) WHERE revoked_at IS NULL"
+    )
+
+    # ── password_reset_tokens ─────────────────────────────────────────────
+    op.create_table(
+        "password_reset_tokens",
+        sa.Column("token_hash", sa.CHAR(64), primary_key=True),
+        sa.Column(
+            "user_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("expires_at", TIMESTAMPTZ, nullable=False),
+        sa.Column("used_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_password_reset_tokens_user_expires",
+        "password_reset_tokens",
+        ["user_id", sa.text("expires_at DESC")],
+        schema=SCHEMA,
+    )
 
     # ── ingestion_configs ────────────────────────────────────────────────
     op.create_table(
@@ -360,6 +448,12 @@ def upgrade() -> None:
         sa.Column(
             "stub_notification_service", sa.Boolean(), nullable=False, server_default="false"
         ),
+        sa.Column(
+            "auth_datahub_corp_group",
+            sa.Text(),
+            nullable=False,
+            server_default="dataspoke-users",
+        ),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("id = 1", name="ck_runtime_config_singleton"),
         schema=SCHEMA,
@@ -372,7 +466,7 @@ def upgrade() -> None:
         sa.Column("settings", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
-            "name IN ('datahub', 'langfuse')", name="ck_peripheral_config_name"
+            "name IN ('datahub', 'langfuse', 'smtp')", name="ck_peripheral_config_name"
         ),
         schema=SCHEMA,
     )

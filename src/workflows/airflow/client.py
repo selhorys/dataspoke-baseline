@@ -32,22 +32,71 @@ class AirflowClient:
         self._username = username
         self._password = password
         self._token: str | None = None
-        self._token_lock = asyncio.Lock()
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=60.0)
+        self._token_lock: asyncio.Lock | None = None  # lazy — bound to the running loop on first use
+        self._client: httpx.AsyncClient | None = None  # lazy — avoids stale anyio connection events
+        self._client_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared httpx client, (re-)creating it when the event loop has changed.
+
+        httpx's connection pool holds anyio SocketStream objects that bind asyncio
+        Events to the loop they were created in. If the client is re-used across
+        event loops (e.g. module-scoped fixture → function-scoped test) those Events
+        raise "bound to a different event loop". Creating a fresh client whenever the
+        running loop changes avoids this.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+        # Recreate when no client exists, OR when we know which loop the existing
+        # client was bound to and that loop has changed. If _client_loop is None,
+        # the client was set externally (test fixture) — trust it as-is.
+        should_recreate = self._client is None or (
+            self._client_loop is not None and self._client_loop is not loop
+        )
+        if should_recreate:
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=60.0)
+            self._client_loop = loop
+            # Re-apply token header if we already have one.
+            if self._token:
+                self._client.headers["Authorization"] = f"Bearer {self._token}"
+        return self._client
 
     async def close(self) -> None:
-        await self._client.aclose()
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except RuntimeError:
+                # Suppress "Event loop is closed" when the client was created
+                # in a different (already-closed) event loop during teardown.
+                pass
+        self._client = None
+        self._client_loop = None
 
     # ── Auth ─────────────────────────────────────────────────────────────
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Return the token lock, creating it lazily in the current event loop.
+
+        asyncio.Lock() binds to the running loop at creation time. Creating it
+        lazily here (rather than in __init__) avoids the "bound to a different
+        event loop" RuntimeError when the client instance is created in one loop
+        (e.g. a module-scoped fixture) and used in another (a function-scoped test).
+        """
+        if self._token_lock is None:
+            self._token_lock = asyncio.Lock()
+        return self._token_lock
 
     async def _ensure_token(self) -> None:
         """Log in if we don't yet have a JWT; stamp the shared headers."""
         if self._token:
             return
-        async with self._token_lock:
+        async with self._get_lock():
             if self._token:
                 return
-            resp = await self._client.post(
+            client = self._get_client()
+            resp = await client.post(
                 "/auth/token",
                 json={"username": self._username, "password": self._password},
             )
@@ -59,12 +108,13 @@ class AirflowClient:
                     f"Airflow /auth/token response missing access_token: {data!r}"
                 )
             self._token = token
-            self._client.headers["Authorization"] = f"Bearer {token}"
+            client.headers["Authorization"] = f"Bearer {token}"
 
     async def _invalidate_token(self) -> None:
-        async with self._token_lock:
+        async with self._get_lock():
             self._token = None
-            self._client.headers.pop("Authorization", None)
+            if self._client is not None:
+                self._client.headers.pop("Authorization", None)
 
     async def _authed_call(self, call):
         """Run an async httpx call with JWT; refresh and retry once on 401."""
@@ -91,7 +141,7 @@ class AirflowClient:
         now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         body: dict[str, Any] = {"conf": conf or {}, "logical_date": now_iso}
         resp = await self._authed_call(
-            lambda: self._client.post(f"/api/v2/dags/{dag_id}/dagRuns", json=body)
+            lambda: self._get_client().post(f"/api/v2/dags/{dag_id}/dagRuns", json=body)
         )
         resp.raise_for_status()
         return DagRunResponse(**resp.json())
@@ -99,7 +149,7 @@ class AirflowClient:
     async def get_dag_run(self, dag_id: str, dag_run_id: str) -> DagRunResponse:
         """Get a DAG run by ID."""
         resp = await self._authed_call(
-            lambda: self._client.get(f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}")
+            lambda: self._get_client().get(f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}")
         )
         resp.raise_for_status()
         return DagRunResponse(**resp.json())
@@ -154,7 +204,7 @@ class AirflowClient:
     async def find_running_dag_runs(self, dag_id: str) -> list[DagRunResponse]:
         """Find all running DAG runs for the given dag_id."""
         resp = await self._authed_call(
-            lambda: self._client.get(
+            lambda: self._get_client().get(
                 f"/api/v2/dags/{dag_id}/dagRuns",
                 params={"state": "running", "limit": 25},
             )
@@ -166,10 +216,27 @@ class AirflowClient:
         runs = body.get("dag_runs", [])
         return [DagRunResponse(**r) for r in runs]
 
+    async def find_active_dag_runs(self, dag_id: str) -> list[DagRunResponse]:
+        """Find all active DAG runs (running or queued) for the given dag_id."""
+        active: list[DagRunResponse] = []
+        for state in ("running", "queued"):
+            resp = await self._authed_call(
+                lambda s=state: self._get_client().get(
+                    f"/api/v2/dags/{dag_id}/dagRuns",
+                    params={"state": s, "limit": 25},
+                )
+            )
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            runs = resp.json().get("dag_runs", [])
+            active.extend(DagRunResponse(**r) for r in runs)
+        return active
+
     async def kill_dag_run(self, dag_id: str, dag_run_id: str) -> None:
         """Mark a running DAG run as failed. No-op if already terminal or not found."""
         resp = await self._authed_call(
-            lambda: self._client.patch(
+            lambda: self._get_client().patch(
                 f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}",
                 json={"state": "failed"},
             )
@@ -181,7 +248,7 @@ class AirflowClient:
     async def delete_dag_run(self, dag_id: str, dag_run_id: str) -> None:
         """Delete a DAG run. No-op if not found."""
         resp = await self._authed_call(
-            lambda: self._client.delete(f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}")
+            lambda: self._get_client().delete(f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}")
         )
         if resp.status_code == 404:
             return
@@ -206,7 +273,7 @@ class AirflowClient:
             f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}"
             f"/taskInstances/{task_id}/xcomEntries/{key}"
         )
-        resp = await self._authed_call(lambda: self._client.get(path))
+        resp = await self._authed_call(lambda: self._get_client().get(path))
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -222,7 +289,7 @@ class AirflowClient:
         if prefix:
             params["dag_id_pattern"] = prefix
         resp = await self._authed_call(
-            lambda: self._client.get("/api/v2/dags", params=params)
+            lambda: self._get_client().get("/api/v2/dags", params=params)
         )
         if resp.status_code == 404:
             return []

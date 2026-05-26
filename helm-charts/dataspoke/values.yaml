@@ -56,7 +56,6 @@ api:
     tag: latest
     pullPolicy: IfNotPresent
   imagePullSecrets: []
-  enableStubAuth: false  # Never set true in production
   service:
     type: ClusterIP
     port: 8002
@@ -98,6 +97,18 @@ api:
         cpu: 500m
         memory: 512Mi
         ephemeral-storage: 512Mi
+
+# ---------------------------------------------------------------------------
+# Auth — Google OAuth and cookie settings
+# ---------------------------------------------------------------------------
+# cookieSecure: true in prod (HTTPS required); values-dev.yaml overrides to false.
+# googleClientId: set via operator overlay or --set at install time for prod.
+#   In dev, install.sh passes --set-string auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID}.
+#   Rendered into the ConfigMap as DATASPOKE_GOOGLE_OAUTH_CLIENT_ID.
+# The paired client secret (DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET) lives in dataspoke-secrets.
+auth:
+  cookieSecure: true
+  googleClientId: ""
 
 event-consumer:
   # Optional Kafka consumer for DataHub MCL/MCP events. Disabled by default —
@@ -370,12 +381,13 @@ config:
 secrets:
   # If set, the chart references this Secret instead of "dataspoke-secrets"
   # everywhere. Used for prod BYO patterns (ExternalSecrets / Vault /
-  # SealedSecrets). The Secret must contain these 10 keys:
+  # SealedSecrets). The Secret must contain these 12 keys:
   #   DATASPOKE_POSTGRES_USER, DATASPOKE_POSTGRES_PASSWORD, DATASPOKE_POSTGRES_DB,
   #   DATASPOKE_REDIS_PASSWORD, DATASPOKE_AIRFLOW_USER, DATASPOKE_AIRFLOW_PASSWORD,
   #   DATASPOKE_INTERNAL_TOKEN, DATASPOKE_JWT_SECRET_KEY,
-  #   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY, DATASPOKE_AIRFLOW_JWT_SECRET
-  # install.sh (_check_airflow_credentials_prod) validates all 10 keys in prod.
+  #   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY, DATASPOKE_AIRFLOW_JWT_SECRET,
+  #   DATASPOKE_OAUTH_STATE_SECRET, DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
+  # install.sh (_check_airflow_credentials_prod) validates all 12 keys in prod.
   # Airflow signing keys are projected into chart-compatible Secrets by
   # install.sh (_ensure_airflow_key_secrets).
   existingSecret: ""

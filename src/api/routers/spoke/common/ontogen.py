@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from src.api.auth.dependencies import require_common
+from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
 from src.api.dependencies import get_ontogen_service
 from src.api.schemas._paths import UuidPath
 from src.api.schemas.events import EventListResponse, EventResponse
@@ -47,7 +47,7 @@ from src.backend.ontogen.service import OntogenService
 router = APIRouter(
     prefix="/ontogen",
     tags=["common/ontogen"],
-    dependencies=[Depends(require_common)],
+    dependencies=[Depends(require_authenticated)],
 )
 
 # Maximum allowed size for text/markdown request bodies (128 KiB).
@@ -174,6 +174,7 @@ async def get_ontogen_conf(
 async def put_ontogen_conf(
     body: OntogenConfPutRequest,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> OntogenConfResponse:
     """Create or replace the singleton ontogen operational conf."""
     row = await service.put_conf(body.model_dump())
@@ -190,6 +191,7 @@ async def put_ontogen_conf(
 async def patch_ontogen_conf(
     body: OntogenConfPatchRequest,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> OntogenConfResponse:
     """Partially update the singleton ontogen operational conf."""
     row = await service.patch_conf(body.model_dump(exclude_unset=True))
@@ -205,6 +207,7 @@ async def patch_ontogen_conf(
 @router.delete("/attr/conf", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ontogen_conf(
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     """Remove the singleton ontogen operational conf (resets to defaults)."""
     await service.delete_conf()
@@ -240,6 +243,7 @@ async def get_ontogen_seeds(
 async def post_ontogen_seed(
     request: Request,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> dict[str, str]:
     """Create a new inference seed — body is a raw Markdown document (text/markdown)."""
     body_bytes = await _read_markdown_body(request)
@@ -266,6 +270,7 @@ async def patch_ontogen_seed(
     seed_id: UuidPath,
     request: Request,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> dict[str, str]:
     """Replace a seed Markdown body — body is a raw Markdown document (text/markdown)."""
     body_bytes = await _read_markdown_body(request)
@@ -278,6 +283,7 @@ async def patch_ontogen_seed(
 async def delete_ontogen_seed(
     seed_id: UuidPath,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     """Retire a seed (soft-delete)."""
     await service.delete_seed(seed_id)
@@ -291,6 +297,7 @@ async def post_ontogen_run(
     request: Request,
     dry_run: bool = Query(default=False),
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> OntogenRunResponse:
     """Trigger a manual ontogen re-inference run.
 
@@ -406,6 +413,7 @@ async def post_ontogen_node_review(
     node_id: str,
     body: ReviewRequest,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> NodeResponse:
     """Review a pending node — approve or reject."""
     row = await service.review_node(node_id, verdict=body.verdict, reason=body.reason)
@@ -480,6 +488,7 @@ async def post_ontogen_edge_review(
     edge_id: str,
     body: ReviewRequest,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> EdgeResponse:
     """Review a pending edge — approve or reject."""
     row = await service.review_edge(edge_id, verdict=body.verdict, reason=body.reason)
@@ -557,6 +566,7 @@ async def post_ontogen_triple_review(
     triple_id: str,
     body: ReviewRequest,
     service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> TripleResponse:
     """Review a pending triple — approve or reject.
 

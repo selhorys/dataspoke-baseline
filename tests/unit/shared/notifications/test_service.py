@@ -1,40 +1,55 @@
 """Tests for src/shared/notifications/service.py — NotificationService.
 
-Verifies contracts in spec/feature/BACKEND.md §Shared Services (Notifications row):
-master toggle DATASPOKE_NOTIFICATION_ENABLED (default false — no-ops in dev), SMTP
-dispatch, HTML body formatting for action-item and SLA-alert emails.
+The NotificationService now reads SMTP config from the peripheral_config DB
+row and the dataspoke-smtp-secret Kubernetes Secret at send time.
 
-NOTE (escalated F3/F4/F5): SMTP call sequence, log message format, and priority sort
-order are implementation details not explicitly specified in BACKEND.md. These tests
-pin the current impl. A spec extension to BACKEND.md would be needed to make them
-fully spec-anchored. See test-reviewer findings F3, F4, F5."""
+No-op mode is triggered by an unconfigured peripheral
+(PeripheralNotConfiguredError), not by a settings flag.
 
+SMTP dispatch is tested by mocking the peripheral lookup and aiosmtplib.SMTP.
+"""
+
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.shared.exceptions import NotificationError
-from src.shared.notifications.config import NotificationSettings
+from src.shared.exceptions import NotificationError, PeripheralNotConfiguredError
 from src.shared.notifications.models import ActionItem, SLAAlert
 from src.shared.notifications.service import NotificationService
 
 NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
-def _disabled_settings() -> NotificationSettings:
-    return NotificationSettings(notification_enabled=False)
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _enabled_settings() -> NotificationSettings:
-    return NotificationSettings(
-        notification_enabled=True,
-        smtp_host="smtp.example.com",
-        smtp_port=587,
-        smtp_user="user@example.com",
-        smtp_password="secret",
-        notification_from="dataspoke@example.com",
+def _make_session_factory(dto=None):
+    """Return a session factory that yields an AsyncSession mock with pre-loaded peripheral."""
+    mock_db = AsyncMock()
+
+    @asynccontextmanager
+    async def _factory():
+        yield mock_db
+
+    return _factory
+
+
+def _configured_dto():
+    from src.backend.admin.peripheral_service import SmtpConfigDTO
+
+    return SmtpConfigDTO(
+        host="smtp.example.com",
+        port=587,
+        username="user@example.com",
+        from_address="dataspoke@example.com",
+        use_tls=True,
     )
+
+
+def _unconfigured_dto():
+    return None
 
 
 def _sample_items() -> list[ActionItem]:
@@ -68,49 +83,102 @@ def _sample_alert() -> SLAAlert:
     )
 
 
-# ── No-op mode ───────────────────────────────────────────────────────────────
+def _make_svc(dto=None, password: str = "secret") -> NotificationService:
+    """Return a NotificationService whose peripheral is pre-mocked."""
+    factory = _make_session_factory(dto)
+    return NotificationService(db_session_factory=factory)
 
 
-async def test_send_email_noop_when_disabled() -> None:
-    svc = NotificationService(settings=_disabled_settings())
-    with patch("src.shared.notifications.service.logger") as mock_logger:
-        await svc.send_email(["a@b.com"], "Subject", "<p>hi</p>")
+# ── No-op mode (unconfigured peripheral) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_email_noop_when_peripheral_unconfigured() -> None:
+    svc = _make_svc()
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="",
+        ),
+        patch("src.shared.notifications.service.logger") as mock_logger,
+    ):
+        with pytest.raises(PeripheralNotConfiguredError):
+            await svc.send_email(["a@b.com"], "Subject", "<p>hi</p>")
         mock_logger.info.assert_called_once()
-        call_kwargs = mock_logger.info.call_args
-        assert call_kwargs[0][0] == "notification_noop"
-        assert call_kwargs[1]["recipients"] == ["a@b.com"]
-        assert call_kwargs[1]["subject"] == "Subject"
+        assert mock_logger.info.call_args[0][0] == "smtp_peripheral_unconfigured"
 
 
-async def test_send_action_items_noop_when_disabled() -> None:
-    svc = NotificationService(settings=_disabled_settings())
-    with patch("src.shared.notifications.service.logger") as mock_logger:
+@pytest.mark.asyncio
+async def test_send_action_items_noop_when_peripheral_unconfigured() -> None:
+    svc = _make_svc()
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="",
+        ),
+        patch("src.shared.notifications.service.logger") as mock_logger,
+    ):
+        # send_action_items swallows PeripheralNotConfiguredError
         await svc.send_action_items("owner@x.com", _sample_items())
-        mock_logger.info.assert_called_once()
-        assert mock_logger.info.call_args[1]["action"] == "send_action_items"
+        mock_logger.info.assert_called()
+        calls = [c[0][0] for c in mock_logger.info.call_args_list]
+        assert "notification_noop" in calls
 
 
-async def test_send_sla_alert_noop_when_disabled() -> None:
-    svc = NotificationService(settings=_disabled_settings())
-    with patch("src.shared.notifications.service.logger") as mock_logger:
+@pytest.mark.asyncio
+async def test_send_sla_alert_noop_when_peripheral_unconfigured() -> None:
+    svc = _make_svc()
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="",
+        ),
+        patch("src.shared.notifications.service.logger") as mock_logger,
+    ):
         await svc.send_sla_alert(["a@b.com"], _sample_alert())
-        mock_logger.info.assert_called_once()
-        assert mock_logger.info.call_args[1]["action"] == "send_sla_alert"
+        mock_logger.info.assert_called()
+        calls = [c[0][0] for c in mock_logger.info.call_args_list]
+        assert "notification_noop" in calls
 
 
-async def test_send_alarm_noop_when_disabled() -> None:
-    svc = NotificationService(settings=_disabled_settings())
-    with patch("src.shared.notifications.service.logger") as mock_logger:
+@pytest.mark.asyncio
+async def test_send_alarm_noop_when_peripheral_unconfigured() -> None:
+    svc = _make_svc()
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="",
+        ),
+        patch("src.shared.notifications.service.logger") as mock_logger,
+    ):
         await svc.send_alarm(["a@b.com"], "row_count", 50.0, 100.0)
-        mock_logger.info.assert_called_once()
-        assert mock_logger.info.call_args[1]["action"] == "send_alarm"
+        mock_logger.info.assert_called()
+        calls = [c[0][0] for c in mock_logger.info.call_args_list]
+        assert "notification_noop" in calls
 
 
 # ── Email body formatting ────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_send_action_items_formats_html() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
     svc.send_email = AsyncMock()  # type: ignore[method-assign]
 
     await svc.send_action_items("owner@x.com", _sample_items())
@@ -126,8 +194,9 @@ async def test_send_action_items_formats_html() -> None:
     assert "15.0" in body
 
 
+@pytest.mark.asyncio
 async def test_send_action_items_sorts_by_priority() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
     svc.send_email = AsyncMock()  # type: ignore[method-assign]
 
     await svc.send_action_items("owner@x.com", _sample_items())
@@ -137,8 +206,9 @@ async def test_send_action_items_sorts_by_priority() -> None:
     assert body.index("critical") < body.index("high")
 
 
+@pytest.mark.asyncio
 async def test_send_sla_alert_formats_html() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
     svc.send_email = AsyncMock()  # type: ignore[method-assign]
 
     await svc.send_sla_alert(["a@b.com"], _sample_alert())
@@ -152,8 +222,9 @@ async def test_send_sla_alert_formats_html() -> None:
     assert NOW.isoformat() in body
 
 
+@pytest.mark.asyncio
 async def test_send_alarm_formats_html() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
     svc.send_email = AsyncMock()  # type: ignore[method-assign]
 
     await svc.send_alarm(["a@b.com"], "row_count", 50.0, 100.0)
@@ -167,11 +238,22 @@ async def test_send_alarm_formats_html() -> None:
 # ── SMTP integration (mocked) ────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_send_email_connects_and_sends() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
 
     mock_smtp_instance = AsyncMock()
-    with patch("src.shared.notifications.service.aiosmtplib.SMTP") as mock_smtp_cls:
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=_configured_dto()),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="secret",
+        ),
+        patch("src.shared.notifications.service.aiosmtplib.SMTP") as mock_smtp_cls,
+    ):
         mock_smtp_cls.return_value = mock_smtp_instance
 
         await svc.send_email(["user@example.com"], "Test", "<p>body</p>")
@@ -183,23 +265,37 @@ async def test_send_email_connects_and_sends() -> None:
         mock_smtp_instance.sendmail.assert_awaited_once()
         mock_smtp_instance.quit.assert_awaited_once()
 
-        # Verify sendmail args
         sendmail_args = mock_smtp_instance.sendmail.call_args[0]
         assert sendmail_args[0] == "dataspoke@example.com"
         assert sendmail_args[1] == ["user@example.com"]
 
 
-async def test_send_email_no_auth_when_no_credentials() -> None:
-    settings = NotificationSettings(
-        notification_enabled=True,
-        smtp_host="smtp.example.com",
-        smtp_user="",
-        smtp_password="",
-    )
-    svc = NotificationService(settings=settings)
+@pytest.mark.asyncio
+async def test_send_email_no_auth_when_no_username() -> None:
+    from src.backend.admin.peripheral_service import SmtpConfigDTO
 
+    dto_no_user = SmtpConfigDTO(
+        host="smtp.example.com",
+        port=587,
+        username="",
+        from_address="dataspoke@example.com",
+        use_tls=True,
+    )
+
+    svc = _make_svc()
     mock_smtp_instance = AsyncMock()
-    with patch("src.shared.notifications.service.aiosmtplib.SMTP") as mock_smtp_cls:
+
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=dto_no_user),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="secret",
+        ),
+        patch("src.shared.notifications.service.aiosmtplib.SMTP") as mock_smtp_cls,
+    ):
         mock_smtp_cls.return_value = mock_smtp_instance
 
         await svc.send_email(["user@example.com"], "Test", "<p>body</p>")
@@ -208,13 +304,24 @@ async def test_send_email_no_auth_when_no_credentials() -> None:
         mock_smtp_instance.sendmail.assert_awaited_once()
 
 
+@pytest.mark.asyncio
 async def test_send_email_raises_notification_error_on_smtp_failure() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
 
     mock_smtp_instance = AsyncMock()
     mock_smtp_instance.connect.side_effect = ConnectionRefusedError("Connection refused")
 
-    with patch("src.shared.notifications.service.aiosmtplib.SMTP") as mock_smtp_cls:
+    with (
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            new=AsyncMock(return_value=_configured_dto()),
+        ),
+        patch(
+            "src.backend.admin.smtp_secret.get_smtp_password",
+            return_value="secret",
+        ),
+        patch("src.shared.notifications.service.aiosmtplib.SMTP") as mock_smtp_cls,
+    ):
         mock_smtp_cls.return_value = mock_smtp_instance
 
         with pytest.raises(NotificationError, match="Failed to send email"):
@@ -224,11 +331,10 @@ async def test_send_email_raises_notification_error_on_smtp_failure() -> None:
 # ── Edge cases ────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_send_action_items_empty_list() -> None:
-    svc = NotificationService(settings=_enabled_settings())
+    svc = _make_svc()
     svc.send_email = AsyncMock()  # type: ignore[method-assign]
 
-    with patch("src.shared.notifications.service.logger") as mock_logger:
-        await svc.send_action_items("owner@x.com", [])
-        svc.send_email.assert_not_awaited()
-        mock_logger.info.assert_called_once()
+    await svc.send_action_items("owner@x.com", [])
+    svc.send_email.assert_not_awaited()

@@ -40,28 +40,48 @@ async def test_verify_dags_without_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_verify_dags_non_admin_group_returns_403(client) -> None:
-    """POST /admin/dags/verify with non-admin group returns 403.
+async def test_verify_dags_non_admin_role_returns_403(client) -> None:
+    """POST /admin/dags/verify with non-Admin role returns 403.
 
-    spec: API.md §Admin routes — admin group required.
+    spec: API.md §Admin routes — Admin role required.
     """
-    resp = await client.post(_ADMIN_VERIFY, headers=auth_headers(["de"]))
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+    from tests.unit.api.conftest import _make_mock_user
+
+    reader_user = _make_mock_user(role="Reader")
+    reader_ctx = AuthContext(user=reader_user, effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.post(_ADMIN_VERIFY, headers=auth_headers(["de"]))
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 @pytest.mark.asyncio
-async def test_verify_dags_admin_group_returns_200(client) -> None:
-    """POST /admin/dags/verify with admin group returns 200 with DAG report.
+async def test_verify_dags_admin_role_returns_200(client) -> None:
+    """POST /admin/dags/verify with Admin role returns 200 with DAG report.
 
     spec: feature/BACKEND.md §DAG Catalogue — response contains found, missing, total_expected.
     """
+    from src.api.auth.dependencies import require_authenticated, require_admin
+    from src.backend.auth.privilege import AuthContext
+    from tests.unit.api.conftest import _make_mock_user
+
+    admin_user = _make_mock_user(role="Admin")
+    admin_ctx = AuthContext(user=admin_user, effective_role="Admin")
     mock_airflow = AsyncMock()
     mock_airflow.list_dags = AsyncMock(return_value=[])
 
+    app.dependency_overrides[require_authenticated] = lambda: admin_ctx
+    app.dependency_overrides[require_admin] = lambda: admin_ctx
     app.dependency_overrides[get_airflow_client] = lambda: mock_airflow
     try:
         resp = await client.post(_ADMIN_VERIFY, headers=auth_headers(["admin"]))
     finally:
+        app.dependency_overrides.pop(require_authenticated, None)
+        app.dependency_overrides.pop(require_admin, None)
         app.dependency_overrides.pop(get_airflow_client, None)
 
     assert resp.status_code == 200

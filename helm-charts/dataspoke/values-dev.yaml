@@ -22,7 +22,6 @@ api:
   image:
     # repository + tag passed via --set from .env (DATASPOKE_KUBE_IMAGE_REGISTRY)
     pullPolicy: Always
-  enableStubAuth: true
   ingress:
     enabled: true
     className: "nginx"
@@ -45,6 +44,19 @@ api:
       ephemeral-storage: 4Gi
 event-consumer:
   enabled: false
+
+# ---------------------------------------------------------------------------
+# Auth — override prod defaults for dev (HTTP)
+# ---------------------------------------------------------------------------
+# cookieSecure: false — dev runs over HTTP; Secure cookie flag would block
+#   the refresh-token cookie from being set on http:// origins.
+# googleClientId: "" — overridden at install time via
+#   --set-string auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID}
+#   from install.sh. Leaving it empty here means OAuth is disabled unless
+#   the operator sets DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID in .env.
+auth:
+  cookieSecure: false
+  googleClientId: ""
 
 # ---------------------------------------------------------------------------
 # Infrastructure components: enabled with reduced resources

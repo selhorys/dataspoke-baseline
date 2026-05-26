@@ -9,7 +9,7 @@ Spec: API.md §Validation (/spoke/common/validation).
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.auth.dependencies import require_common
+from src.api.auth.dependencies import require_authenticated
 from src.api.dependencies import get_validation_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.validation import ValidationListItem, ValidationListResponse
@@ -19,7 +19,7 @@ from src.shared.db.models import ValidationConfig
 router = APIRouter(
     prefix="/validation",
     tags=["common/validation"],
-    dependencies=[Depends(require_common)],
+    dependencies=[Depends(require_authenticated)],
 )
 
 

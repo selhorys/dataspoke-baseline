@@ -17,6 +17,7 @@ Activities:
   /metrics/run            — execute metric measurement for a single metric
   /ontogen/run            — execute the ontogen inference pipeline (singleton)
   /datahub/sync           — reconcile dataset_registry against live DataHub URN set
+  /auth/role-sync         — reconcile DataHub-side role assignments against users.role
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue + §Dependency Injection.
 """
@@ -48,6 +49,7 @@ router = APIRouter(
         "internal/activities/metrics",
         "internal/activities/ontogen",
         "internal/activities/datahub",
+        "internal/activities/auth",
     ],
     dependencies=[Depends(require_internal_token)],
 )
@@ -330,3 +332,100 @@ async def datahub_sync(body: DatahubSyncRequest) -> dict[str, object]:
             return result
     except DataSpokeError as exc:
         return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
+
+
+# ── /auth ─────────────────────────────────────────────────────────────────────
+
+
+@router.post("/auth/role-sync")
+async def auth_role_sync() -> dict[str, object]:
+    """Reconcile DataHub-side role assignments against DataSpoke users.role (SSOT).
+
+    Called daily by the auth-role-sync-daily DAG.
+
+    Algorithm:
+      1. SELECT all rows from users ordered by id.
+         (Baseline uses a simple full-scan; for large deployments the optimisation
+         path is scrollAcrossEntities on the marker corpGroup instead.)
+      2. For each user, read the DataHub-side role via IsMemberOfRole traversal.
+      3. On divergence (DataHub role differs from users.role, or no role assigned),
+         re-assert users.role to DataHub via batchAssignRole. DataSpoke wins.
+      4. Emit an AUTH.ROLE_SYNC_FIXED event row per fixed user.
+      5. Per-user DataHubUnavailableError is logged and counted — the batch
+         continues; the whole transaction commits at the end.
+
+    Note: every row in users is in-scope because DataSpoke is the SSOT for
+    which corpusers are managed. The marker-group filter is implicit — every
+    row in users was mirrored into the marker group at registration time.
+
+    Returns {checked, fixed, errors}.
+
+    Spec: spec/feature/AUTH.md §Role Drift Reconciliation,
+          spec/DATAHUB_INTEGRATION.md §Nightly Role Reconciliation.
+    """
+    from sqlalchemy import select
+
+    from src.backend.datahub import users as dh_users
+    from src.shared.db.models import Event, User
+    from src.shared.exceptions import DataHubUnavailableError
+
+    checked = 0
+    fixed = 0
+    errors = 0
+    event_rows: list[Event] = []
+
+    try:
+        async with make_db_session() as db:
+            datahub = await make_datahub(db)
+
+            result = await db.execute(select(User).order_by(User.id))
+            users = result.scalars().all()
+
+            for user in users:
+                checked += 1
+                urn = f"urn:li:corpuser:{user.email}"
+
+                try:
+                    observed_role = await dh_users.read_role(datahub, urn)
+                except DataHubUnavailableError:
+                    logger.warning(
+                        "auth_role_sync: DataHub unavailable for user",
+                        extra={"user_id": str(user.id), "corpuser_urn": urn},
+                    )
+                    errors += 1
+                    continue
+
+                if observed_role != user.role:
+                    try:
+                        await dh_users.propagate_role(datahub, urn, user.role)
+                    except DataHubUnavailableError:
+                        logger.warning(
+                            "auth_role_sync: DataHub unavailable propagating role for user",
+                            extra={"user_id": str(user.id), "corpuser_urn": urn},
+                        )
+                        errors += 1
+                        continue
+
+                    fixed += 1
+                    event_rows.append(
+                        Event(
+                            entity_type="user",
+                            entity_id=str(user.id),
+                            event_type="AUTH.ROLE_SYNC_FIXED",
+                            status="OK",
+                            detail={
+                                "dataspoke_role_authoritative": user.role,
+                                "datahub_role_observed": observed_role,
+                            },
+                        )
+                    )
+
+            # Batch all event inserts in a single transaction commit.
+            if event_rows:
+                db.add_all(event_rows)
+            await db.commit()
+
+    except DataSpokeError as exc:
+        return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
+
+    return {"checked": checked, "fixed": fixed, "errors": errors}

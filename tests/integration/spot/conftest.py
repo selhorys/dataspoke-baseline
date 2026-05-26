@@ -49,7 +49,7 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
     try:
         token_resp = httpx.post(
             f"{base_url}/api/v1/auth/token",
-            json={"email": "admin", "password": "admin"},
+            json={"email": "dataspoke", "password": "dataspoke"},
             timeout=10.0,
         )
         token_resp.raise_for_status()
@@ -88,7 +88,7 @@ def admin_token(require_server) -> str:  # noqa: ARG001
     base_url = _ingress_url()
     resp = httpx.post(
         f"{base_url}/api/v1/auth/token",
-        json={"email": "admin", "password": "admin"},
+        json={"email": "dataspoke", "password": "dataspoke"},
         timeout=10.0,
     )
     resp.raise_for_status()

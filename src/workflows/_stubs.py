@@ -250,7 +250,18 @@ class StubRedisClient:
 
 
 class StubNotificationService:
-    """Drop-in replacement for ``NotificationService`` — alerts are no-ops."""
+    """Drop-in replacement for ``NotificationService`` — all notifications are no-ops."""
 
     async def send_sla_alert(self, **kwargs: Any) -> None:
+        pass
+
+    async def send_email(
+        self,
+        to: list[str],
+        subject: str,
+        body_html: str = "",
+        body_text: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """No-op email send for stub mode (stub_notification_service=true)."""
         pass

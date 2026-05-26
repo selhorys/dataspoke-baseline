@@ -170,9 +170,10 @@ def make_notification_service(*, stub: bool = False) -> object:
         from src.workflows._stubs import StubNotificationService
 
         return StubNotificationService()
+    from src.shared.db.session import SessionLocal
     from src.shared.notifications.service import NotificationService
 
-    return NotificationService()
+    return NotificationService(db_session_factory=SessionLocal)
 
 
 async def make_ontogen(db: "AsyncSession", *, rc: "RuntimeConfigDTO | None" = None) -> tuple:  # type: ignore[type-arg]

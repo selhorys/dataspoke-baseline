@@ -49,11 +49,24 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
             "Try: ./helm-charts/bin/install.sh --profile dev --components api --skip-build"
         )
 
+    # Ensure the bootstrap admin user exists before minting a token.
+    internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
+    if internal_token:
+        try:
+            httpx.post(
+                f"{base_url}/internal/admin/bootstrap",
+                headers={"X-Internal-Token": internal_token, "Content-Type": "application/json"},
+                content="{}",
+                timeout=30.0,
+            )
+        except Exception:
+            pass  # Best-effort — may already exist; token login below will surface real failures.
+
     # Obtain admin token and verify DAGs
     try:
         token_resp = httpx.post(
             f"{base_url}/api/v1/auth/token",
-            json={"email": "admin", "password": "admin"},
+            json={"email": "dataspoke", "password": "dataspoke"},
             timeout=10.0,
         )
         token_resp.raise_for_status()
@@ -92,7 +105,7 @@ def admin_token(require_server) -> str:  # noqa: ARG001
     base_url = _ingress_url()
     resp = httpx.post(
         f"{base_url}/api/v1/auth/token",
-        json={"email": "admin", "password": "admin"},
+        json={"email": "dataspoke", "password": "dataspoke"},
         timeout=10.0,
     )
     resp.raise_for_status()

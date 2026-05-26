@@ -14,4 +14,6 @@ data:
   DATASPOKE_AIRFLOW_URL: {{ .Values.config.airflow.url | quote }}
   DATASPOKE_AIRFLOW_CALLBACK_BASE_URL: {{ .Values.config.airflow.callbackBaseUrl | quote }}
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  DATASPOKE_COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
+  DATASPOKE_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.auth.googleClientId | quote }}
 {{- end }}

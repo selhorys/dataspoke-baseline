@@ -1,80 +1,119 @@
-"""Async notification service with email delivery."""
+"""Async notification service with email delivery backed by the SMTP peripheral.
+
+SMTP connection settings are read from the ``peripheral_config`` DB table at
+send time (via ``peripheral_service.get_peripheral_config(db, 'smtp')``).
+The SMTP password is read from the ``dataspoke-smtp-secret`` Kubernetes Secret
+via ``smtp_secret.get_smtp_password()``.
+
+When the peripheral is unconfigured (no DB row, or host/from_address empty, or
+password unset), ``send_email`` raises ``PeripheralNotConfiguredError('smtp')``.
+Callers decide whether to propagate or swallow the error:
+
+- ``reset.issue_reset_token``   — propagates (password reset requires SMTP).
+- ``send_action_items``         — swallows + logs (owner digests are best-effort).
+- ``send_sla_alert``            — swallows + logs.
+- ``send_alarm``                — swallows + logs.
+"""
+
+from __future__ import annotations
 
 import html
+import logging
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Any
 
 import aiosmtplib
 import structlog
 
-from src.shared.exceptions import NotificationError
-from src.shared.notifications.config import NotificationSettings, notification_settings
+from src.shared.exceptions import NotificationError, PeripheralNotConfiguredError
 from src.shared.notifications.models import ActionItem, SLAAlert
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2}
 
 logger = structlog.get_logger(__name__)
+_stdlib_logger = logging.getLogger(__name__)
 
 
 class NotificationService:
     """Async notification service supporting email delivery.
 
-    Operates in no-op mode by default (notification_enabled=False),
-    logging notifications instead of sending them.
+    Reads SMTP config from the peripheral DB row and Kubernetes Secret at
+    send time.  Raises ``PeripheralNotConfiguredError('smtp')`` when SMTP is
+    not fully configured.
+
+    Args:
+        db_session_factory: Callable that returns an async context-manager
+            yielding an AsyncSession (e.g. ``src.shared.db.session.SessionLocal``).
     """
 
-    def __init__(self, settings: NotificationSettings | None = None) -> None:
-        self._settings = settings or notification_settings
+    def __init__(
+        self,
+        db_session_factory: Callable[..., Any],
+    ) -> None:
+        self._db_session_factory = db_session_factory
 
     async def send_email(self, to: list[str], subject: str, body_html: str) -> None:
-        """Send an HTML email to the given recipients."""
-        if not self._settings.notification_enabled:
+        """Send an HTML email to the given recipients.
+
+        Raises:
+            PeripheralNotConfiguredError('smtp')  — SMTP not configured.
+            NotificationError                     — SMTP transport failure.
+        """
+        from src.backend.admin import peripheral_service, smtp_secret
+        from src.backend.admin.peripheral_service import SmtpConfigDTO
+
+        async with self._db_session_factory() as db:
+            dto = await peripheral_service.get_peripheral_config(db, "smtp")
+
+        password = smtp_secret.get_smtp_password()
+
+        if (
+            dto is None
+            or not isinstance(dto, SmtpConfigDTO)
+            or not dto.host
+            or not dto.from_address
+            or not password
+        ):
             logger.info(
-                "notification_noop",
+                "smtp_peripheral_unconfigured",
                 action="send_email",
                 recipients=to,
                 subject=subject,
             )
-            return
+            raise PeripheralNotConfiguredError("smtp")
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"] = self._settings.notification_from
+        msg["From"] = dto.from_address
         msg["To"] = ", ".join(to)
         msg.attach(MIMEText(body_html, "html"))
 
         try:
-            smtp = aiosmtplib.SMTP(
-                hostname=self._settings.smtp_host,
-                port=self._settings.smtp_port,
-            )
+            smtp = aiosmtplib.SMTP(hostname=dto.host, port=dto.port)
             await smtp.connect()
-            await smtp.starttls()
-            if self._settings.smtp_user:
-                await smtp.login(self._settings.smtp_user, self._settings.smtp_password)
-            await smtp.sendmail(
-                self._settings.notification_from,
-                to,
-                msg.as_string(),
-            )
+            if dto.use_tls:
+                await smtp.starttls()
+            if dto.username:
+                await smtp.login(dto.username, password)
+            await smtp.sendmail(dto.from_address, to, msg.as_string())
             await smtp.quit()
         except Exception as exc:
-            logger.error("smtp_send_failed", recipients=to, subject=subject, error=str(exc))
+            _stdlib_logger.error(
+                "smtp_send_failed", extra={"recipients": to, "subject": subject, "error": str(exc)}
+            )
             raise NotificationError(f"Failed to send email: {exc}") from exc
 
     async def send_action_items(self, owner_email: str, items: list[ActionItem]) -> None:
-        """Send an action-item digest email to a dataset owner."""
-        if not self._settings.notification_enabled:
-            logger.info(
-                "notification_noop",
-                action="send_action_items",
-                owner=owner_email,
-                item_count=len(items),
-            )
-            return
+        """Send an action-item digest email to a dataset owner.
 
+        Silently no-ops (log at INFO) when SMTP is not configured, preserving
+        the existing best-effort semantics for owner digests.
+        """
         if not items:
-            logger.info("send_action_items_empty", owner=owner_email)
+            _stdlib_logger.info("send_action_items_empty", extra={"owner": owner_email})
             return
 
         sorted_items = sorted(items, key=lambda i: _PRIORITY_ORDER.get(i.priority, 99))
@@ -101,23 +140,25 @@ class NotificationService:
             + "</table>"
         )
 
-        await self.send_email(
-            to=[owner_email],
-            subject="DataSpoke: Action Items for Your Datasets",
-            body_html=body,
-        )
-
-    async def send_sla_alert(self, recipients: list[str], alert: SLAAlert) -> None:
-        """Send an SLA breach prediction alert."""
-        if not self._settings.notification_enabled:
+        try:
+            await self.send_email(
+                to=[owner_email],
+                subject="DataSpoke: Action Items for Your Datasets",
+                body_html=body,
+            )
+        except PeripheralNotConfiguredError:
             logger.info(
                 "notification_noop",
-                action="send_sla_alert",
-                recipients=recipients,
-                dataset_urn=alert.dataset_urn,
+                action="send_action_items",
+                owner=owner_email,
+                item_count=len(items),
             )
-            return
 
+    async def send_sla_alert(self, recipients: list[str], alert: SLAAlert) -> None:
+        """Send an SLA breach prediction alert.
+
+        Silently no-ops when SMTP is not configured.
+        """
         actions_html = "".join(f"<li>{html.escape(a)}</li>" for a in alert.recommended_actions)
 
         body = (
@@ -130,11 +171,19 @@ class NotificationService:
             f"<ul>{actions_html}</ul>"
         )
 
-        await self.send_email(
-            to=recipients,
-            subject=f"DataSpoke SLA Alert: {alert.sla_name}",
-            body_html=body,
-        )
+        try:
+            await self.send_email(
+                to=recipients,
+                subject=f"DataSpoke SLA Alert: {alert.sla_name}",
+                body_html=body,
+            )
+        except PeripheralNotConfiguredError:
+            logger.info(
+                "notification_noop",
+                action="send_sla_alert",
+                recipients=recipients,
+                dataset_urn=alert.dataset_urn,
+            )
 
     async def send_alarm(
         self,
@@ -143,8 +192,24 @@ class NotificationService:
         value: float,
         threshold: float,
     ) -> None:
-        """Send a metric alarm notification."""
-        if not self._settings.notification_enabled:
+        """Send a metric alarm notification.
+
+        Silently no-ops when SMTP is not configured.
+        """
+        body = (
+            "<h2>Metric Alarm</h2>"
+            f"<p><strong>Metric:</strong> {html.escape(metric_id)}</p>"
+            f"<p><strong>Current Value:</strong> {value}</p>"
+            f"<p><strong>Threshold:</strong> {threshold}</p>"
+        )
+
+        try:
+            await self.send_email(
+                to=recipients,
+                subject=f"DataSpoke Alarm: {metric_id}",
+                body_html=body,
+            )
+        except PeripheralNotConfiguredError:
             logger.info(
                 "notification_noop",
                 action="send_alarm",
@@ -153,17 +218,3 @@ class NotificationService:
                 value=value,
                 threshold=threshold,
             )
-            return
-
-        body = (
-            "<h2>Metric Alarm</h2>"
-            f"<p><strong>Metric:</strong> {html.escape(metric_id)}</p>"
-            f"<p><strong>Current Value:</strong> {value}</p>"
-            f"<p><strong>Threshold:</strong> {threshold}</p>"
-        )
-
-        await self.send_email(
-            to=recipients,
-            subject=f"DataSpoke Alarm: {metric_id}",
-            body_html=body,
-        )

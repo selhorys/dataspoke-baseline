@@ -434,6 +434,7 @@ surfaces relevant to user identity:
 | SMTP peripheral missing during password-reset request | Request refuses; no DB write. | `503 PERIPHERAL_NOT_CONFIGURED`. | Admin configures `/admin/peripherals/smtp`. |
 | Redis unreachable during refresh or revoke | Refresh/revoke fail-closed. | `503 STORAGE_UNAVAILABLE`. | Restore Redis. |
 | Google OAuth state mismatch on callback | Callback aborts before token issuance. | `400 OAUTH_STATE_MISMATCH`. | User retries the OAuth flow. |
+| Google OAuth callback receives ID token with `email_verified=false` | Callback rejects the token; no user is created or logged in. | `400 OAUTH_EMAIL_NOT_VERIFIED`. | User verifies their Google account email and retries. |
 | Role change via `/admin/users/{id}/role`: DataSpoke write succeeds, DataHub propagation fails | The new role takes effect immediately on the DataSpoke API; DataHub-side stays stale until the nightly reconciliation DAG re-asserts. | The admin call returns `200` (DataSpoke side succeeded); a warning log records the propagation failure. | None — DAG handles. Manual recovery: re-PATCH the role. |
 | Nightly role reconciliation finds a divergence | DAG re-asserts `users.role` to DataHub. | Operator visible via the `AUTH.ROLE_SYNC_FIXED` event row. | None unless the divergence was intentional (DataHub-only super-admin); in that case, exclude the corpuser from the marker group. |
 | API token revoked while in use | Next request with the token fails. | `401 TOKEN_REVOKED`. | None — expected behaviour. |
@@ -468,7 +469,8 @@ verification step in a fork (see [Out of Scope](#out-of-scope)).
 The Google callback validates the state cookie (random, signed, single-use
 per flow) and the ID token's `nonce` claim against the value embedded in
 state. Mismatches return `400 OAUTH_STATE_MISMATCH` without attempting token
-exchange.
+exchange. The Google callback rejects ID tokens with `email_verified=false` —
+unverified Google emails cannot resolve to a DataSpoke account.
 
 ### Password storage
 

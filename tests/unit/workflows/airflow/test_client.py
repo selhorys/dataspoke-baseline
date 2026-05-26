@@ -19,10 +19,15 @@ from src.workflows.airflow.models import DagRunResponse, DagRunState
 
 @pytest.fixture
 def client():
+    import httpx
+
     c = AirflowClient(base_url="http://airflow:8080", username="admin", password="admin")
     # Skip the /auth/token round-trip by pre-seeding a JWT. Individual tests
     # that exercise the login flow clear this.
     c._token = "test-jwt"
+    # Pre-set _client (with _client_loop=None) so _get_client() trusts it as-is —
+    # tests mock _client.post/get directly.
+    c._client = httpx.AsyncClient(base_url="http://airflow:8080", timeout=60.0)
     c._client.headers["Authorization"] = "Bearer test-jwt"
     return c
 

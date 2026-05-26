@@ -1,6 +1,6 @@
 """Smoke tests for all DAG files (except datahub_sync_daily.py which has its own test).
 
-Tests (parametrized over 14 DAG files):
+Tests (parametrized over 15 DAG files):
 (a) The file exists and can be read without error.
 (b) The DAG file declares a _DAG_ID constant (string literal).
 (c) The declared dag_id appears in ALL_DAG_IDS from the registry.
@@ -78,12 +78,12 @@ def test_dag_id_is_registered_in_all_dag_ids(dag_file: Path) -> None:
     )
 
 
-def test_dag_file_count_is_exactly_14() -> None:
-    """There must be exactly 14 DAG files under test (excluding datahub_sync_daily).
+def test_dag_file_count_is_exactly_15() -> None:
+    """There must be exactly 15 DAG files under test (excluding datahub_sync_daily).
 
-    spec: feature/BACKEND.md §DAG Catalogue — 15 total = 14 + datahub_sync_daily.
+    spec: feature/BACKEND.md §DAG Catalogue — 16 total = 15 + datahub_sync_daily.
     """
-    assert len(_DAG_FILES) == 14, (
-        f"Expected 14 DAG files under test (15 total - 1 for datahub_sync_daily), "
+    assert len(_DAG_FILES) == 15, (
+        f"Expected 15 DAG files under test (16 total - 1 for datahub_sync_daily), "
         f"found {len(_DAG_FILES)}: {[f.name for f in _DAG_FILES]}"
     )

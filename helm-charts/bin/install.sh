@@ -163,6 +163,8 @@ _ensure_dataspoke_secrets() {
     --from-literal=DATASPOKE_JWT_SECRET_KEY=<k> \\
     --from-literal=DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY=<k> \\
     --from-literal=DATASPOKE_AIRFLOW_JWT_SECRET=<k> \\
+    --from-literal=DATASPOKE_OAUTH_STATE_SECRET=<k> \\
+    --from-literal=DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET=<s> \\
     -n ${ns}
 or pass --values <overlay.yaml> with secrets.existingSecret: <name>"
   fi
@@ -179,6 +181,16 @@ or pass --values <overlay.yaml> with secrets.existingSecret: <name>"
   jwt_secret="$(openssl rand -hex 32)"
   airflow_webserver_secret="$(openssl rand -hex 16)"
   airflow_jwt_secret="$(openssl rand -hex 16)"
+
+  # OAuth state secret: auto-generated per install (random HMAC key).
+  local oauth_state_secret
+  oauth_state_secret="$(openssl rand -hex 32)"
+
+  # Google OAuth client secret: sourced from DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET
+  # in .env. Falls back to a placeholder if absent — the OAuth callback will fail
+  # gracefully until the operator supplies a real value.
+  local google_oauth_client_secret
+  google_oauth_client_secret="${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-placeholder-set-google-oauth-secret-via-env}"
 
   info "Creating '${secret_name}' in namespace '${ns}'..."
   cat <<EOF | kubectl apply -f -
@@ -199,6 +211,8 @@ data:
   DATASPOKE_JWT_SECRET_KEY: $(printf '%s' "${jwt_secret}" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY: $(printf '%s' "${airflow_webserver_secret}" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_JWT_SECRET: $(printf '%s' "${airflow_jwt_secret}" | base64 | tr -d '\n')
+  DATASPOKE_OAUTH_STATE_SECRET: $(printf '%s' "${oauth_state_secret}" | base64 | tr -d '\n')
+  DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET: $(printf '%s' "${google_oauth_client_secret}" | base64 | tr -d '\n')
 EOF
 }
 
@@ -357,6 +371,7 @@ _check_airflow_credentials_prod() {
     DATASPOKE_AIRFLOW_USER DATASPOKE_AIRFLOW_PASSWORD
     DATASPOKE_INTERNAL_TOKEN DATASPOKE_JWT_SECRET_KEY
     DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY DATASPOKE_AIRFLOW_JWT_SECRET
+    DATASPOKE_OAUTH_STATE_SECRET DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
   )
 
   for key in "${required_keys[@]}"; do
@@ -387,6 +402,13 @@ _check_airflow_credentials_prod() {
     -o jsonpath='{.data.DATASPOKE_AIRFLOW_PASSWORD}' | base64 --decode)"
   if [[ -z "${airflow_password}" || "${airflow_password}" == "admin" ]]; then
     error "DATASPOKE_AIRFLOW_PASSWORD in Secret '${secret_name}' must not be empty or 'admin'."
+  fi
+
+  local google_oauth_secret_val
+  google_oauth_secret_val="$(kubectl get secret "${secret_name}" -n "${ns}" \
+    -o jsonpath='{.data.DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET}' | base64 --decode)"
+  if [[ "${google_oauth_secret_val}" == placeholder-* ]]; then
+    error "DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET is the dev placeholder — operator must set a real Google OAuth client secret."
   fi
 }
 
@@ -456,6 +478,7 @@ _helm_upgrade_dataspoke_dev() {
     --set-file "airflow.extraEnv=${extra_env_file}" \
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
     --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
+    --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" \
     --timeout 10m
 }
 
@@ -749,6 +772,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     step 5 5 "post-install seeding"
     bash "$SCRIPT_DIR/post-install/seed-peripheral-config.sh"
     bash "$SCRIPT_DIR/post-install/seed-runtime-config.sh"
+    bash "$SCRIPT_DIR/post-install/seed-admin-user.sh"
   else
     info "Skipping seeding (--skip-seed or 'seed' not in components)."
   fi
@@ -892,6 +916,16 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set "postgresql.auth.existingSecret=${SECRET_TO_CHECK}" \
     --set "redis.auth.existingSecret=${SECRET_TO_CHECK}" \
     --timeout 15m
+
+  # -----------------------------------------------------------------------
+  # Seed default admin user (idempotent)
+  # -----------------------------------------------------------------------
+  if [[ "$SKIP_SEED" == "false" ]]; then
+    info "Seeding default admin user..."
+    bash "$SCRIPT_DIR/post-install/seed-admin-user.sh"
+  else
+    info "Skipping admin user seed (--skip-seed)."
+  fi
 
   echo ""
   echo "=== Installation complete (profile: prod) ==="

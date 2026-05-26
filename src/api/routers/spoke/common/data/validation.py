@@ -17,6 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from src.api.auth.dependencies import AuthContext, require_writer
 from src.api.dependencies import get_validation_service
 from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
@@ -60,6 +61,7 @@ async def put_data_validation_conf(
     body: PutValidationConfRequest,
     response: Response,
     service: ValidationService = Depends(get_validation_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> ValidationConfResponse:
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
@@ -76,6 +78,7 @@ async def patch_data_validation_conf(
     dataset_urn: DatasetUrnPath,
     body: PatchValidationConfRequest,
     service: ValidationService = Depends(get_validation_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> ValidationConfResponse:
     patch = body.model_dump(exclude_unset=True)
     config = await service.patch_config(dataset_urn, patch)
@@ -89,6 +92,7 @@ async def patch_data_validation_conf(
 async def delete_data_validation_conf(
     dataset_urn: DatasetUrnPath,
     service: ValidationService = Depends(get_validation_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     await service.delete_config(dataset_urn)
 
@@ -105,6 +109,7 @@ async def post_data_validation_result(
     dataset_urn: DatasetUrnPath,
     body: PostValidationResultRequest,
     service: ValidationService = Depends(get_validation_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> ValidationResultRow:
     record = await service.record_result(
         dataset_urn=dataset_urn,

@@ -602,9 +602,10 @@ def test_runtime_config_defaults_match_orm_column_defaults() -> None:
 
 
 def test_runtime_config_defaults_covers_all_19_fields() -> None:
-    """RUNTIME_CONFIG_DEFAULTS contains exactly the 19 documented fields.
+    """RUNTIME_CONFIG_DEFAULTS contains exactly the 20 documented fields.
 
-    Spec: plan §stub toggles — 15 behavioral tunables + 4 stub toggle booleans.
+    Spec: plan §stub toggles — 15 behavioral tunables + 4 stub toggle booleans +
+    auth_datahub_corp_group.
     spec: src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
     """
     expected_fields = {
@@ -627,9 +628,10 @@ def test_runtime_config_defaults_covers_all_19_fields() -> None:
         "stub_llm_client",
         "stub_pgvector_manager",
         "stub_notification_service",
+        "auth_datahub_corp_group",
     }
     assert set(RUNTIME_CONFIG_DEFAULTS.keys()) == expected_fields, (
-        f"RUNTIME_CONFIG_DEFAULTS must contain exactly 19 fields. "
+        f"RUNTIME_CONFIG_DEFAULTS must contain exactly 20 fields. "
         f"Extra: {set(RUNTIME_CONFIG_DEFAULTS) - expected_fields}, "
         f"missing: {expected_fields - set(RUNTIME_CONFIG_DEFAULTS)}"
     )

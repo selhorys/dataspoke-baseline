@@ -215,7 +215,7 @@ check_dataspoke_redis() {
     auth_args=(-a "$DS_REDIS_PASSWORD")
   fi
   local response
-  response=$(redis-cli -h "$DS_REDIS_HOST" -p "$DS_REDIS_PORT" "${auth_args[@]}" \
+  response=$(redis-cli -h "$DS_REDIS_HOST" -p "$DS_REDIS_PORT" ${auth_args[@]+"${auth_args[@]}"} \
     PING 2>/dev/null) || true
 
   if [[ "$response" == "PONG" ]]; then

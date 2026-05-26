@@ -1,7 +1,7 @@
 """Governance metrics router — /spoke/dg/metric/...
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Auth: require_dg.
+Auth: require_authenticated (router-level); require_writer on write endpoints.
 Spec: API.md §Metric (/spoke/dg/metric).
 """
 
@@ -11,7 +11,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
-from src.api.auth.dependencies import require_dg
+from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
 from src.api.dependencies import get_airflow_client, get_metrics_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
@@ -39,7 +39,7 @@ MetricIdParam = Annotated[str, Path(pattern=_METRIC_ID_PATTERN)]
 router = APIRouter(
     prefix="/metric",
     tags=["dg/metric"],
-    dependencies=[Depends(require_dg)],
+    dependencies=[Depends(require_authenticated)],
 )
 
 
@@ -65,6 +65,7 @@ async def post_metric(
     body: CreateMetricConfigRequest,
     response: Response,
     service: MetricsService = Depends(get_metrics_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetricDefinitionResponse:
     """Create a new metric definition; ``metric_id`` is supplied in the request body.
 
@@ -153,6 +154,7 @@ async def put_metric_conf(
     metric_id: MetricIdParam,
     body: ReplaceMetricConfigRequest,
     service: MetricsService = Depends(get_metrics_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetricDefinitionResponse:
     """Replace an existing metric definition.
 
@@ -182,6 +184,7 @@ async def patch_metric_conf(
     metric_id: MetricIdParam,
     body: PatchMetricConfigRequest,
     service: MetricsService = Depends(get_metrics_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetricDefinitionResponse:
     """Update metric definition fields.
 
@@ -199,6 +202,7 @@ async def patch_metric_conf(
 async def delete_metric_conf(
     metric_id: MetricIdParam,
     service: MetricsService = Depends(get_metrics_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     """Remove a metric definition and its configuration."""
     await service.delete_metric_config(metric_id)
@@ -247,6 +251,7 @@ async def post_metric_run(
     body: RunMetricRequest,
     airflow: AirflowClient = Depends(get_airflow_client),
     service: MetricsService = Depends(get_metrics_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetricRunResultResponse:
     """Trigger a metric measurement run; concurrent runs return 409 METRIC_RUNNING."""
     definition = await service.get_metric(metric_id)

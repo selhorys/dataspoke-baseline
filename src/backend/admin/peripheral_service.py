@@ -1,12 +1,12 @@
-"""Peripheral configuration service — DB-backed connection settings for DataHub and Langfuse.
+"""Peripheral configuration service — DB-backed connection settings for DataHub, Langfuse, and SMTP.
 
 Each peripheral stores its non-secret connection fields in the ``peripheral_config``
 table (one row per name).  Secret fields live in dedicated K8s Secrets and are
-accessed via ``datahub_secret`` / ``langfuse_secret``.
+accessed via ``datahub_secret`` / ``langfuse_secret`` / ``smtp_secret``.
 
 Public surface:
-    get_peripheral_config(db, name) -> DatahubConfigDTO | LangfuseConfigDTO | None
-    patch_peripheral_config(db, name, **partial) -> DatahubConfigDTO | LangfuseConfigDTO
+    get_peripheral_config(db, name) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO | None
+    patch_peripheral_config(db, name, **partial) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO
     invalidate_peripheral_config_cache(name=None)
 """
 
@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.db.models import PeripheralConfig
 
-PERIPHERAL_NAMES: set[str] = {"datahub", "langfuse"}
+PERIPHERAL_NAMES: set[str] = {"datahub", "langfuse", "smtp"}
 
 # ── DTOs ──────────────────────────────────────────────────────────────────────
 
@@ -37,7 +37,16 @@ class LangfuseConfigDTO:
     public_key: str
 
 
-_DTO_TYPE = DatahubConfigDTO | LangfuseConfigDTO
+@dataclass(frozen=True)
+class SmtpConfigDTO:
+    host: str
+    port: int
+    username: str
+    from_address: str
+    use_tls: bool
+
+
+_DTO_TYPE = DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO
 
 # ── Process-level per-name cache ──────────────────────────────────────────────
 
@@ -63,6 +72,14 @@ def _row_to_dto(row: PeripheralConfig) -> _DTO_TYPE:
             gms_url=s.get("gms_url", ""),
             kafka_brokers=s.get("kafka_brokers", ""),
         )
+    if row.name == "smtp":
+        return SmtpConfigDTO(
+            host=s.get("host", ""),
+            port=int(s.get("port", 587)),
+            username=s.get("username", ""),
+            from_address=s.get("from_address", ""),
+            use_tls=bool(s.get("use_tls", True)),
+        )
     return LangfuseConfigDTO(
         host=s.get("host", ""),
         public_key=s.get("public_key", ""),
@@ -74,7 +91,7 @@ def _row_to_dto(row: PeripheralConfig) -> _DTO_TYPE:
 
 async def get_peripheral_config(
     db: AsyncSession, name: str
-) -> DatahubConfigDTO | LangfuseConfigDTO | None:
+) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO | None:
     """Return the peripheral config DTO for *name*, or None when unconfigured.
 
     Uses a short-TTL process-level cache so repeated calls within a single
@@ -98,7 +115,7 @@ async def get_peripheral_config(
 
 async def patch_peripheral_config(
     db: AsyncSession, name: str, **partial: Any
-) -> DatahubConfigDTO | LangfuseConfigDTO | None:
+) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO | None:
     """Upsert the peripheral config row for *name* with the supplied fields.
 
     No-op when *partial* is empty — returns the current config (or None when

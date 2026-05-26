@@ -248,96 +248,116 @@ class TestGetNotificationProvider:
         )
 
 
-# ── Group-to-Route Access Control: admin routes require 'admin' group ─────────
+# ── Role-to-Route Access Control: admin routes require Admin role ──────────────
 
 
 class TestAdminGroupEnforcement:
-    """Tests that /admin/* routes are restricted to tokens with 'admin' in groups.
+    """Tests that /admin/* routes are restricted to users with Admin role.
 
-    spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group exclusively.
-    spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong group claim.
+    Role is DB-backed; the JWT carries only sub (user UUID) and email.
+    Tests override require_authenticated / require_admin to inject a known
+    AuthContext without a real database.
+
+    spec: API.md §Role-to-Route Access Control — /admin/* requires Admin role.
+    spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong role.
     """
 
-    async def test_dg_only_token_cannot_access_admin_dags_verify(
+    async def test_non_admin_role_cannot_access_admin_dags_verify(
         self, client: AsyncClient
     ) -> None:
-        """A token with groups=['dg'] (no admin) hitting /admin/dags/verify must get 403.
+        """A user with role=Editor hitting /admin/dags/verify must get 403.
 
-        spec: API.md §Group-to-Route Access Control — /admin/* accessible to admins only.
-        spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; groups
-        claim does not satisfy route requirement.
+        spec: API.md §Role-to-Route Access Control — /admin/* requires Admin role.
+        spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong role.
         """
-        from tests.unit.api.conftest import auth_headers
+        from unittest.mock import MagicMock
 
-        # Mint a real token with only 'dg' — no 'admin' claim
-        # spec: API.md §JWT Claims — groups is the claim enforced against URI tier
-        dg_only_headers = auth_headers(groups=["dg"])
+        from src.api.auth.dependencies import require_authenticated, require_admin
+        from src.api.main import app
+        from src.backend.auth.privilege import AuthContext
 
-        response = await client.post(
-            "/api/v1/admin/dags/verify",
-            headers=dg_only_headers,
-        )
-        assert response.status_code == 403, (
-            f"Token with groups=['dg'] must be rejected with 403 on /admin/dags/verify "
-            f"per spec/API.md §Group-to-Route Access Control, got {response.status_code}"
-        )
+        mock_user = MagicMock()
+        mock_user.id = __import__("uuid").uuid4()
+        mock_user.role = "Editor"
+        editor_ctx = AuthContext(user=mock_user, effective_role="Editor")
 
-    async def test_de_only_token_cannot_access_admin_dags_verify(
+        app.dependency_overrides[require_authenticated] = lambda: editor_ctx
+        try:
+            response = await client.post("/api/v1/admin/dags/verify")
+            assert response.status_code == 403, (
+                f"Editor role must be rejected with 403 on /admin/dags/verify "
+                f"per spec/API.md §Role-to-Route Access Control, got {response.status_code}"
+            )
+        finally:
+            app.dependency_overrides.pop(require_authenticated, None)
+
+    async def test_reader_role_cannot_access_admin_dags_verify(
         self, client: AsyncClient
     ) -> None:
-        """A token with groups=['de'] (no admin) hitting /admin/dags/verify must get 403.
+        """A user with role=Reader hitting /admin/dags/verify must get 403.
 
-        spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' claim exclusively.
+        spec: API.md §Role-to-Route Access Control — /admin/* requires Admin role.
         """
-        from tests.unit.api.conftest import auth_headers
+        from unittest.mock import MagicMock
 
-        de_only_headers = auth_headers(groups=["de"])
+        from src.api.auth.dependencies import require_authenticated
+        from src.api.main import app
+        from src.backend.auth.privilege import AuthContext
 
-        response = await client.post(
-            "/api/v1/admin/dags/verify",
-            headers=de_only_headers,
-        )
-        assert response.status_code == 403, (
-            f"Token with groups=['de'] must be rejected with 403 on /admin/dags/verify "
-            f"per spec/API.md §Group-to-Route Access Control, got {response.status_code}"
-        )
+        mock_user = MagicMock()
+        mock_user.id = __import__("uuid").uuid4()
+        mock_user.role = "Reader"
+        reader_ctx = AuthContext(user=mock_user, effective_role="Reader")
 
-    async def test_admin_token_can_access_admin_dags_verify(
+        app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+        try:
+            response = await client.post("/api/v1/admin/dags/verify")
+            assert response.status_code == 403, (
+                f"Reader role must be rejected with 403 on /admin/dags/verify "
+                f"per spec/API.md §Role-to-Route Access Control, got {response.status_code}"
+            )
+        finally:
+            app.dependency_overrides.pop(require_authenticated, None)
+
+    async def test_admin_role_can_access_admin_dags_verify(
         self, client: AsyncClient
     ) -> None:
-        """A token with groups=['admin'] passes the auth guard on /admin/dags/verify.
+        """A user with role=Admin passes the auth guard on /admin/dags/verify.
 
-        spec: API.md §Admin Role — 'admin' group bypasses group-tier restrictions.
-        We inject an AsyncMock AirflowClient so the route can complete without a
-        real Airflow instance, giving a 200 response. The key assertion is that
-        the 'admin' group is not rejected with 403.
+        spec: API.md §Admin Role — Admin role grants access to /admin/* routes.
+        We inject an AsyncMock AirflowClient and an Admin AuthContext so the route
+        can complete without a real database or Airflow instance.
         """
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
 
+        from src.api.auth.dependencies import require_authenticated, require_admin
         from src.api.dependencies import get_airflow_client
         from src.api.main import app
-        from tests.unit.api.conftest import auth_headers
+        from src.backend.auth.privilege import AuthContext
 
-        # Inject a stub Airflow client that returns an empty DAG list
+        mock_user = MagicMock()
+        mock_user.id = __import__("uuid").uuid4()
+        mock_user.role = "Admin"
+        admin_ctx = AuthContext(user=mock_user, effective_role="Admin")
+
         mock_airflow = AsyncMock()
         mock_airflow.list_dags = AsyncMock(return_value=[])
+        app.dependency_overrides[require_authenticated] = lambda: admin_ctx
+        app.dependency_overrides[require_admin] = lambda: admin_ctx
         app.dependency_overrides[get_airflow_client] = lambda: mock_airflow
 
         try:
-            admin_headers = auth_headers(groups=["admin"])
-            response = await client.post(
-                "/api/v1/admin/dags/verify",
-                headers=admin_headers,
-            )
-            # Must not be 403 — admin group must pass the auth guard
-            # spec: API.md §Admin Role — 'admin' group bypasses group-tier restrictions
+            response = await client.post("/api/v1/admin/dags/verify")
+            # Must not be 403 — Admin role must pass the auth guard
+            # spec: API.md §Admin Role — Admin role grants access to /admin/* routes
             assert response.status_code != 403, (
-                f"Admin token must not get 403 on /admin/dags/verify "
+                f"Admin role must not get 403 on /admin/dags/verify "
                 f"per spec/API.md §Admin Role, got {response.status_code}"
             )
-            # With the stub returning [], verify_dags returns a 200 with the expected shape
             assert response.status_code == 200
         finally:
+            app.dependency_overrides.pop(require_authenticated, None)
+            app.dependency_overrides.pop(require_admin, None)
             app.dependency_overrides.pop(get_airflow_client, None)
 
 

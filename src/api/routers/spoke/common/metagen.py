@@ -19,7 +19,7 @@ from fastapi import APIRouter, Body, Depends, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.auth.dependencies import require_common
+from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
 from src.api.dependencies import get_db, get_metagen_service
 from src.api.routers.spoke.common._metagen_mappers import (
     event_list,
@@ -44,7 +44,7 @@ from src.shared.exceptions import PreconditionFailedError
 router = APIRouter(
     prefix="/metagen",
     tags=["common/metagen"],
-    dependencies=[Depends(require_common)],
+    dependencies=[Depends(require_authenticated)],
 )
 
 
@@ -77,6 +77,7 @@ async def get_metagen_conf(
 async def put_metagen_conf(
     body: MetagenGlobalConfPutRequest,
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetagenGlobalConfResponse:
     dto = await service.put_global_conf(body.model_dump())
     return _conf_response(dto)
@@ -86,6 +87,7 @@ async def put_metagen_conf(
 async def patch_metagen_conf(
     body: MetagenGlobalConfPatchRequest,
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetagenGlobalConfResponse:
     dto = await service.patch_global_conf(body.model_dump(exclude_unset=True))
     return _conf_response(dto)
@@ -94,6 +96,7 @@ async def patch_metagen_conf(
 @router.delete("/attr/conf", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_metagen_conf(
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> None:
     await service.delete_global_conf()
 
@@ -109,6 +112,7 @@ _RunStatus = Literal["success", "failure"]
 async def post_metagen_run(
     body: MetagenRunRequest = Body(default_factory=MetagenRunRequest),
     service: MetagenService = Depends(get_metagen_service),
+    _writer: AuthContext = Depends(require_writer),
 ) -> MetagenRunResponse:
     """Trigger a manual metagen generation run.
 

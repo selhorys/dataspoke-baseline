@@ -1,18 +1,20 @@
 """Admin endpoints — system configuration and operational tasks.
 
-Accessible to users with the ``admin`` group claim via ``/api/v1/admin/…``.
+Accessible to users with Admin role via ``/api/v1/admin/…``.
 Also mounted as ``/internal/admin/…`` for scripts and automation (requires ``X-Internal-Token`` shared-secret header via ``require_internal_token``).
 """
 
 import logging
+import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.dependencies import require_admin
 from src.api.auth.internal import require_internal_token
 from src.api.dependencies import get_airflow_client, get_datahub, get_db
 from src.api.schemas.admin import (
+    BootstrapResponse,
     DatahubPeripheralPatchRequest,
     DatahubPeripheralResponse,
     DatahubSyncRequest,
@@ -21,7 +23,14 @@ from src.api.schemas.admin import (
     PeripheralsStatusResponse,
     RuntimeConfPatchRequest,
     RuntimeConfResponse,
+    SmtpPeripheralPatchRequest,
+    SmtpPeripheralResponse,
+    UserPatchRequest,
+    UserResponse,
+    UserRolePatchRequest,
+    UsersListResponse,
 )
+from src.api.schemas.auth import ApiTokenItem, ApiTokenListResponse
 from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
 from src.backend.admin.datahub_secret import (
     datahub_token_is_set,
@@ -39,9 +48,17 @@ from src.backend.admin.peripheral_service import (
     invalidate_peripheral_config_cache,
     patch_peripheral_config,
 )
+from src.backend.admin.smtp_secret import (
+    invalidate_smtp_password_cache,
+    set_smtp_password,
+    smtp_password_is_set,
+)
+from src.backend.auth import api_tokens, users
+from src.backend.datahub import users as dh_users
 from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.registry import sync_with_datahub
+from src.shared.exceptions import ConflictError, DataHubSyncError, StorageUnavailableError
 from src.workflows.airflow.client import AirflowClient
 from src.workflows.registry import ALL_DAG_IDS as _EXPECTED_DAGS
 
@@ -155,6 +172,7 @@ def _dto_to_response(dto: object, updated_at: object) -> RuntimeConfResponse:
         stub_llm_client=dto.stub_llm_client,
         stub_pgvector_manager=dto.stub_pgvector_manager,
         stub_notification_service=dto.stub_notification_service,
+        auth_datahub_corp_group=dto.auth_datahub_corp_group,
         updated_at=updated_at,
     )
 
@@ -310,9 +328,17 @@ async def get_peripherals_status(
     """Return a brief configured/unconfigured status for each peripheral."""
     datahub_dto = await get_peripheral_config(db, "datahub")
     langfuse_dto = await get_peripheral_config(db, "langfuse")
+    smtp_dto = await get_peripheral_config(db, "smtp")
+    smtp_configured = (
+        smtp_dto is not None
+        and bool(getattr(smtp_dto, "host", ""))
+        and bool(getattr(smtp_dto, "from_address", ""))
+        and smtp_password_is_set()
+    )
     return PeripheralsStatusResponse(
         datahub={"is_configured": datahub_dto is not None and datahub_token_is_set()},
         langfuse={"is_configured": langfuse_dto is not None and langfuse_secret_key_is_set()},
+        smtp={"is_configured": smtp_configured},
     )
 
 
@@ -448,3 +474,307 @@ async def internal_patch_langfuse_peripheral(
     Intended for install scripts and dev-env seeding.
     """
     return await _apply_langfuse_patch_and_respond(body, db)
+
+
+# ── SMTP peripheral ────────────────────────────────────────────────────────────
+
+
+def _smtp_dto_to_response(
+    dto: object | None,
+    updated_at: object,
+) -> SmtpPeripheralResponse:
+    from src.backend.admin.peripheral_service import SmtpConfigDTO
+
+    password_set = smtp_password_is_set()
+    if dto is None or not isinstance(dto, SmtpConfigDTO):
+        return SmtpPeripheralResponse(
+            host="",
+            port=0,
+            username="",
+            from_address="",
+            use_tls=False,
+            password="" if not password_set else "********",
+            is_configured=False,
+            updated_at=updated_at,  # type: ignore[arg-type]
+        )
+    is_configured = bool(dto.host and dto.from_address and password_set)
+    return SmtpPeripheralResponse(
+        host=dto.host,
+        port=dto.port,
+        username=dto.username,
+        from_address=dto.from_address,
+        use_tls=dto.use_tls,
+        password="********" if password_set else "",
+        is_configured=is_configured,
+        updated_at=updated_at,  # type: ignore[arg-type]
+    )
+
+
+@router.get("/peripherals/smtp")
+async def get_smtp_peripheral(
+    db: AsyncSession = Depends(get_db),
+) -> SmtpPeripheralResponse:
+    """Return the current SMTP peripheral configuration."""
+    dto = await get_peripheral_config(db, "smtp")
+    updated_at = await _get_peripheral_updated_at(db, "smtp")
+    return _smtp_dto_to_response(dto, updated_at)
+
+
+async def _apply_smtp_patch_and_respond(
+    body: SmtpPeripheralPatchRequest,
+    db: AsyncSession,
+) -> SmtpPeripheralResponse:
+    """Shared handler for admin and internal PATCH /peripherals/smtp endpoints.
+
+    ``password`` is routed to the Kubernetes Secret, never to the DB.
+    """
+    all_updates = body.model_dump(exclude_unset=True)
+
+    if "password" in all_updates:
+        password_value: str | None = all_updates.pop("password")
+        if password_value is None:
+            password_value = ""
+        try:
+            set_smtp_password(password_value)
+        except SecretResolverUnavailable as exc:
+            raise StorageUnavailableError(
+                "Kubernetes Secret unavailable; SMTP password could not be stored"
+            ) from exc
+
+    db_updates = {k: v for k, v in all_updates.items() if v is not None}
+    if db_updates:
+        dto = await patch_peripheral_config(db, "smtp", **db_updates)
+    else:
+        invalidate_smtp_password_cache()
+        dto = await get_peripheral_config(db, "smtp")
+
+    updated_at = await _get_peripheral_updated_at(db, "smtp")
+    return _smtp_dto_to_response(dto, updated_at)
+
+
+@router.patch("/peripherals/smtp")
+async def patch_smtp_peripheral(
+    body: SmtpPeripheralPatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SmtpPeripheralResponse:
+    """Apply a partial update to the SMTP peripheral configuration."""
+    return await _apply_smtp_patch_and_respond(body, db)
+
+
+@internal_router.patch("/peripherals/smtp")
+async def internal_patch_smtp_peripheral(
+    body: SmtpPeripheralPatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SmtpPeripheralResponse:
+    """Apply a partial update to the SMTP peripheral configuration (internal — requires X-Internal-Token).
+
+    Intended for install scripts and dev-env seeding.
+    """
+    return await _apply_smtp_patch_and_respond(body, db)
+
+
+# ── User management ────────────────────────────────────────────────────────────
+
+
+def _user_to_response(user: object) -> UserResponse:
+    from src.shared.db.models import User
+
+    assert isinstance(user, User)
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        has_google=user.google_sub is not None,
+        role=user.role,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
+
+
+def _token_to_item(t: object) -> ApiTokenItem:
+    from src.shared.db.models import ApiToken
+
+    assert isinstance(t, ApiToken)
+    return ApiTokenItem(
+        id=t.id,
+        name=t.name,
+        role_snapshot=t.role_snapshot,
+        created_at=t.created_at,
+        last_used_at=t.last_used_at,
+        expires_at=t.expires_at,
+    )
+
+
+@router.get("/users")
+async def get_users(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> UsersListResponse:
+    """List all DataSpoke users."""
+    user_list, total = await users.list_users(db, limit=limit, offset=offset)
+    return UsersListResponse(
+        users=[_user_to_response(u) for u in user_list],
+        total=total,
+    )
+
+
+@router.patch("/users/{user_id}")
+async def patch_user(
+    user_id: uuid.UUID,
+    body: UserPatchRequest,
+    db: AsyncSession = Depends(get_db),
+    datahub: DataHubClient = Depends(get_datahub),
+) -> UserResponse:
+    """Update a user's display name."""
+    user = await users.update_name(db, user_id, body.name)
+    # Propagate name change to DataHub (idempotent).
+    try:
+        await dh_users.ensure_corpuser_exists(datahub, user.email, body.name)
+    except Exception:
+        logger.warning(
+            "datahub_name_propagation_failed",
+            extra={"user_id": str(user_id)},
+            exc_info=True,
+        )
+    await db.commit()
+    return _user_to_response(user)
+
+
+@router.patch("/users/{user_id}/role")
+async def patch_user_role(
+    user_id: uuid.UUID,
+    body: UserRolePatchRequest,
+    db: AsyncSession = Depends(get_db),
+    datahub: DataHubClient = Depends(get_datahub),
+) -> dict:
+    """Update a user's role and propagate to DataHub."""
+    user = await users.update_role(db, user_id, body.role)
+    # Propagate role to DataHub (non-fatal on failure — nightly DAG reconciles).
+    try:
+        await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), body.role)
+    except Exception:
+        logger.warning(
+            "datahub_role_propagation_failed",
+            extra={"user_id": str(user_id), "role": body.role},
+            exc_info=True,
+        )
+    await db.commit()
+    return {"role": user.role}
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    datahub: DataHubClient = Depends(get_datahub),
+) -> None:
+    """Hard-delete a user and their DataHub corpuser."""
+    user = await users.get_by_id(db, user_id)
+    if user is None:
+        from src.shared.exceptions import EntityNotFoundError
+
+        raise EntityNotFoundError("user", str(user_id))
+    email = user.email
+    await users.hard_delete(db, user_id)
+    # DataHub delete is best-effort — orphan cleaned up manually.
+    try:
+        await dh_users.hard_delete_corpuser(datahub, dh_users.corpuser_urn(email))
+    except Exception:
+        logger.warning(
+            "datahub_corpuser_delete_failed",
+            extra={"user_id": str(user_id), "email": email},
+            exc_info=True,
+        )
+    await db.commit()
+
+
+@router.get("/users/{user_id}/api-tokens")
+async def get_user_api_tokens(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> ApiTokenListResponse:
+    """List all API tokens for a user (admin view — includes revoked)."""
+    token_list = await api_tokens.list_all_for_user(db, user_id)
+    return ApiTokenListResponse(
+        tokens=[_token_to_item(t) for t in token_list],
+        total=len(token_list),
+    )
+
+
+@router.delete("/users/{user_id}/api-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_api_token(
+    user_id: uuid.UUID,
+    token_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Revoke a user's API token (admin incident response — no ownership check)."""
+    await api_tokens.revoke(db, token_id=token_id)
+    await db.commit()
+
+
+# ── Bootstrap ──────────────────────────────────────────────────────────────────
+
+
+@internal_router.post("/bootstrap")
+async def internal_bootstrap(
+    db: AsyncSession = Depends(get_db),
+    datahub: DataHubClient = Depends(get_datahub),
+) -> BootstrapResponse:
+    """Seed the built-in dataspoke/dataspoke admin if no Admin user exists.
+
+    Idempotent: if any Admin user already exists, returns created=False without
+    touching anything.
+
+    Protected by X-Internal-Token — only Helm post-install scripts should call this.
+    """
+    from sqlalchemy import select
+
+    from src.shared.db.models import User
+
+    # Check for any existing Admin.
+    result = await db.execute(
+        select(User).where(User.role == "Admin").limit(1)
+    )
+    existing_admin = result.scalar_one_or_none()
+    if existing_admin is not None:
+        return BootstrapResponse(created=False, user_id=None, email=None)
+
+    # Create the bootstrap admin.
+    runtime_config = await get_runtime_config(db)
+    try:
+        user = await users.create_user(
+            db, email="dataspoke", name="DataSpoke Admin", password="dataspoke", role="Admin"
+        )
+    except ConflictError as exc:
+        if exc.error_code == "EMAIL_ALREADY_REGISTERED":
+            # A concurrent caller already created the admin — re-check and return no-op.
+            result2 = await db.execute(
+                select(User).where(User.role == "Admin").limit(1)
+            )
+            if result2.scalar_one_or_none() is not None:
+                return BootstrapResponse(created=False, user_id=None, email=None)
+        raise
+
+    # Run the DataHub mirror create sequence with Admin role.
+    try:
+        await dh_users.ensure_corpuser_exists(datahub, user.email, user.name)
+        await dh_users.ensure_marker_group_exists(datahub, runtime_config.auth_datahub_corp_group)
+        await dh_users.add_user_to_marker_group(
+            datahub,
+            dh_users.corpgroup_urn(runtime_config.auth_datahub_corp_group),
+            dh_users.corpuser_urn(user.email),
+        )
+        await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), "Admin")
+    except Exception as exc:
+        await users.hard_delete(db, user.id)
+        await db.commit()
+        raise DataHubSyncError("DataHub mirror failed during bootstrap; rolled back.") from exc
+
+    await db.commit()
+    logger.info("bootstrap_admin_created", extra={"user_id": str(user.id)})
+    logger.warning(
+        "bootstrap_admin_seeded_with_default_password",
+        extra={"hint": "rotate via PATCH /auth/me before going to production"},
+    )
+    return BootstrapResponse(created=True, user_id=str(user.id), email="dataspoke")

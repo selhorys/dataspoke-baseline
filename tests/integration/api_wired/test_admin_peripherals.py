@@ -59,7 +59,9 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-from src.api.auth.jwt import create_access_token
+import uuid as _uuid
+
+from src.backend.auth.tokens import issue_access_token as _issue_access_token
 
 # Module-level reset constants — this file only touches peripheral_config and
 # K8s Secrets; no DataHub/Postgres dummy data needed.
@@ -114,12 +116,14 @@ def _reset_peripheral_state() -> None:
 
 
 def _non_admin_headers() -> dict[str, str]:
-    """Authorization headers for a user with only the 'dg' group (non-admin)."""
-    token, _ = create_access_token(
-        subject="non-admin-user",
-        groups=["dg"],
-        email="non-admin@test.example.com",
-    )
+    """Authorization headers for a non-existent user (unknown UUID sub).
+
+    The in-cluster privilege layer cannot resolve this UUID to a DB user, so it
+    returns 403 — which is the intended outcome for non-admin 403 assertions.
+    Wave F will replace this with a properly seeded non-Admin user.
+    """
+    fake_id = _uuid.UUID("ffffffff-0000-0000-0000-000000000099")
+    token, _ = _issue_access_token(fake_id, "non-admin@test.example.com")
     return {"Authorization": f"Bearer {token}"}
 
 

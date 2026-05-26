@@ -746,15 +746,17 @@ async def test_review_reason_exactly_2000_chars_is_accepted(
 async def test_review_reviewer_id_forwarded_from_auth_token(
     client, mock_svc: AsyncMock
 ) -> None:
-    """review_candidate is called with reviewer_id equal to the token's subject claim.
+    """review_candidate is called with reviewer_id equal to the authenticated user's UUID.
 
     spec: feature/BACKEND.md §Metadata Generation Service §Approval flow —
-    reviewer_id is the authenticated user's identity (token sub claim).
+    reviewer_id is the authenticated user's identity (str(ctx.user.id)).
 
-    auth_headers(["de"]) calls make_token with default subject "test-user"
-    (see tests/unit/api/conftest.py). A regression that forwards reviewer_id=None
-    must fail this test.
+    The base client fixture provides a mock Admin user with a stable UUID
+    (_TEST_USER_ID from tests/unit/api/conftest.py). A regression that forwards
+    reviewer_id=None must fail this test.
     """
+    from tests.unit.api.conftest import _TEST_USER_ID
+
     cid = str(uuid.uuid4())
     approved_dto = _make_candidate_dto(status="approved", candidate_id=cid)
     mock_svc.review_candidate = AsyncMock(return_value=approved_dto)
@@ -763,7 +765,7 @@ async def test_review_reviewer_id_forwarded_from_auth_token(
     resp = await client.post(
         url,
         json={"verdict": "approve"},
-        headers=auth_headers(["de"]),  # subject defaults to "test-user"
+        headers=auth_headers(["de"]),
     )
 
     assert resp.status_code == 200
@@ -772,8 +774,8 @@ async def test_review_reviewer_id_forwarded_from_auth_token(
         "review_candidate must be called with reviewer_id kwarg. "
         "spec: BACKEND.md §Approval flow — reviewer_id is the authenticated user's identity"
     )
-    assert call_kwargs["reviewer_id"] == "test-user", (
-        "reviewer_id must equal the token's 'sub' claim ('test-user' from auth_headers default). "
+    assert call_kwargs["reviewer_id"] == str(_TEST_USER_ID), (
+        f"reviewer_id must equal the mock user's UUID str '{_TEST_USER_ID}'. "
         "A regression forwarding reviewer_id=None must fail this assertion. "
         "spec: BACKEND.md §Approval flow — reviewer_id is the authenticated user's identity"
     )
@@ -811,7 +813,15 @@ async def test_get_events_returns_200_with_events_envelope(
     rows_scalars.all.return_value = []
     rows_result.scalars.return_value = rows_scalars
 
-    mock_db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    # Auth (require_authenticated) issues one user-lookup query before the
+    # route's count + rows queries when an auth header is present.
+    from unittest.mock import MagicMock as _MagicMock
+    from tests.unit.api.conftest import _make_mock_user
+
+    auth_result = _MagicMock()
+    auth_result.scalar_one_or_none.return_value = _make_mock_user()
+
+    mock_db.execute = AsyncMock(side_effect=[auth_result, count_result, rows_result])
 
     app.dependency_overrides[get_db] = lambda: mock_db
 

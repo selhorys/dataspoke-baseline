@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: F811
 
 from src.shared.db.models import (
     TIMESTAMPTZ,  # noqa: F401
+    ApiToken,
     Base,
     DatasetNodeMap,
     DatasetRegistry,
@@ -32,14 +33,19 @@ from src.shared.db.models import (
     OntogenNode,
     OntogenSeed,
     OntogenTriple,
+    PasswordResetToken,
     PeripheralConfig,
     RuntimeConfig,
     TripleEmbedding,
+    User,
     ValidationConfig,
     ValidationResult,
 )
 
 ALL_MODELS = [
+    User,
+    ApiToken,
+    PasswordResetToken,
     IngestionConfig,
     DatasetRegistry,
     ValidationConfig,
@@ -67,6 +73,9 @@ ALL_MODELS = [
 ]
 
 EXPECTED_TABLES = {
+    "users",
+    "api_tokens",
+    "password_reset_tokens",
     "ingestion_configs",
     "dataset_registry",
     "validation_configs",

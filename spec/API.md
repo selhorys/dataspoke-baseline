@@ -554,10 +554,17 @@ Airflow DAGs, and automation.
 
 | Method | Path | Body | Response | Auth |
 |--------|------|------|----------|------|
+| `POST` | `/internal/admin/bootstrap` | — | `{created, user_id, email}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | `X-Internal-Token` |
+
+`POST /internal/admin/bootstrap` seeds the built-in `dataspoke / dataspoke` admin user when no
+Admin row exists in the `users` table. The endpoint is idempotent: if any Admin already exists
+it returns `{created: false}` without touching anything. The `helm-charts/bin/post-install/seed-admin-user.sh`
+post-install script invokes it during both dev and prod installs. Operators must rotate the
+default password via `PATCH /auth/me` before going to production.
 
 `PATCH /internal/admin/conf` is the unattended mirror of `PATCH /admin/conf`; the dev-profile
 install (`./helm-charts/bin/install.sh --profile dev`) uses it to seed `llm_provider`/`llm_model`
@@ -785,6 +792,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `EMAIL_ALREADY_REGISTERED` | 409 | `POST /auth/register` body carries an email already mapped to an existing user |
 | `INVALID_RESET_TOKEN` | 400 | `POST /auth/password/reset/confirm` token does not match any row, is expired, or has already been used |
 | `OAUTH_STATE_MISMATCH` | 400 | `GET /auth/google/callback` state cookie missing or does not match the value embedded in the OAuth state JWT |
+| `OAUTH_EMAIL_NOT_VERIFIED` | 400 | `GET /auth/google/callback` received an ID token where `email_verified=false`; unverified Google emails cannot resolve to a DataSpoke account |
 | `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (write method on `/spoke/*` or `/hub/*`) |
 | `INVALID_API_TOKEN` | 401 | `Authorization: Bearer dsk_...` token does not match any `api_tokens` row, or the format is malformed |
 | `TOKEN_REVOKED` | 401 | API token row exists but `revoked_at` is set |

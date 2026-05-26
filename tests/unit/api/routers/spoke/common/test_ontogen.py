@@ -91,15 +91,18 @@ async def test_get_conf_with_valid_group_token_returns_200(
 
 
 @pytest.mark.asyncio
-async def test_get_conf_with_unrecognised_group_token_returns_403(client, mock_svc: AsyncMock) -> None:
-    """GET /ontogen/attr/conf with an unrecognised group ('ops') returns 403.
+async def test_get_conf_without_token_returns_401_not_403(client, mock_svc: AsyncMock) -> None:
+    """GET /ontogen/attr/conf without a token returns 401.
 
-    Spec: spec/API.md §Group-to-Route Access Control — /spoke/common/… requires
-    any *valid* group; 'ops' is not in the valid set and must be rejected.
+    The old group-based access check ('ops' group → 403) is replaced by
+    role-based auth. Any authenticated user may GET /spoke/common/* routes.
+    Unauthenticated requests receive 401.
+
+    Spec: API.md §Authentication — /spoke/common/* requires a valid token.
     """
     mock_svc.get_conf = AsyncMock(return_value=_make_conf_row())
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["ops"]))
-    assert resp.status_code == 403
+    resp = await client.get(f"{_BASE}/attr/conf")  # no auth header
+    assert resp.status_code == 401
 
 
 # ── Conf round-trip ───────────────────────────────────────────────────────────

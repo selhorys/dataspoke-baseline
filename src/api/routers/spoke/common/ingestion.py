@@ -9,7 +9,7 @@ Spec: API.md §Ingestion (/spoke/common/ingestion).
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.auth.dependencies import require_common
+from src.api.auth.dependencies import require_authenticated
 from src.api.dependencies import get_ingestion_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.ingestion import IngestionConfigListResponse, IngestionConfigResponse
@@ -19,7 +19,7 @@ from src.shared.db.models import IngestionConfig
 router = APIRouter(
     prefix="/ingestion",
     tags=["common/ingestion"],
-    dependencies=[Depends(require_common)],
+    dependencies=[Depends(require_authenticated)],
 )
 
 

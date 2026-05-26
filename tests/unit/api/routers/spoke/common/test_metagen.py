@@ -150,16 +150,20 @@ async def test_get_conf_with_valid_group_returns_200(
 
 
 @pytest.mark.asyncio
-async def test_get_conf_with_unrecognised_group_returns_403(
+async def test_get_conf_without_token_returns_401_not_403(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /metagen/attr/conf with group 'ops' returns 403.
+    """GET /metagen/attr/conf without any token returns 401 (not 403).
 
-    Spec: API.md §Group-to-Route Access Control — 'ops' is not a valid group.
+    The old group-based access check is replaced by role-based auth. Any
+    authenticated user may GET /spoke/common/* routes; unauthenticated
+    requests get 401.
+
+    Spec: API.md §Authentication — /spoke/common/* requires a valid token.
     """
     mock_svc.get_global_conf = AsyncMock(return_value=_make_conf_dto())
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["ops"]))
-    assert resp.status_code == 403
+    resp = await client.get(f"{_BASE}/attr/conf")  # no auth header
+    assert resp.status_code == 401
 
 
 # ── GET /attr/conf ────────────────────────────────────────────────────────────
@@ -596,8 +600,13 @@ async def test_get_events_returns_200_with_events_envelope(
     rows_m = MagicMock()
     rows_m.scalars.return_value.all.return_value = []
 
+    # Auth (require_authenticated) issues a user-lookup query first.
+    from tests.unit.api.conftest import _make_mock_user
+    auth_m = MagicMock()
+    auth_m.scalar_one_or_none.return_value = _make_mock_user()
+
     mock_db_session = AsyncMock()
-    mock_db_session.execute = AsyncMock(side_effect=[count_m, rows_m])
+    mock_db_session.execute = AsyncMock(side_effect=[auth_m, count_m, rows_m])
 
     app.dependency_overrides[get_db] = lambda: mock_db_session
 

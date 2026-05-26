@@ -61,7 +61,7 @@ from src.backend.admin.peripheral_service import DatahubConfigDTO, LangfuseConfi
 from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.db.models import PeripheralConfig
 
-from tests.unit.api.conftest import auth_headers
+from tests.unit.api.conftest import _make_mock_user, auth_headers
 
 _PERIPHERALS = "/api/v1/admin/peripherals"
 _PERIPHERALS_DH = "/api/v1/admin/peripherals/datahub"
@@ -85,15 +85,23 @@ def _make_peripheral_row(name: str) -> MagicMock:
 
 
 def _fake_db(dto_for_get=None, updated_at=None) -> tuple:
-    """Return (db_mock, override_fn) with scalar_one_or_none returning a mock row."""
+    """Return (db_mock, override_fn) with scalar_one_or_none returning a mock row.
+
+    The first execute() call satisfies require_authenticated's user lookup
+    (returns an Admin User mock).  Subsequent calls return a PeripheralConfig
+    row so that service/route logic sees expected data.
+    """
     db = AsyncMock()
     row_mock = MagicMock()
     row_mock.updated_at = updated_at or datetime.now(tz=UTC)
 
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = row_mock
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = _make_mock_user(role="Admin")
 
-    db.execute = AsyncMock(return_value=result_mock)
+    row_result = MagicMock()
+    row_result.scalar_one_or_none.return_value = row_mock
+
+    db.execute = AsyncMock(side_effect=[auth_result, row_result, row_result, row_result])
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.flush = AsyncMock()
@@ -121,22 +129,38 @@ async def test_get_peripherals_without_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_peripherals_non_admin_returns_403(client) -> None:
-    """GET /admin/peripherals with non-admin group returns 403.
+    """GET /admin/peripherals with non-Admin role returns 403.
 
-    spec: API.md §Admin routes — admin group required.
+    spec: API.md §Admin routes — Admin role required.
     """
-    resp = await client.get(_PERIPHERALS, headers=auth_headers(["de"]))
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+
+    reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.get(_PERIPHERALS, headers=auth_headers())
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 @pytest.mark.asyncio
-async def test_get_peripherals_da_group_returns_403(client) -> None:
-    """GET /admin/peripherals with 'da' group returns 403.
+async def test_get_peripherals_editor_role_returns_403(client) -> None:
+    """GET /admin/peripherals with Editor role returns 403.
 
-    spec: API.md §Admin routes — admin group required exclusively.
+    spec: API.md §Admin routes — Admin role required exclusively.
     """
-    resp = await client.get(_PERIPHERALS, headers=auth_headers(["da"]))
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+
+    editor_ctx = AuthContext(user=_make_mock_user(role="Editor"), effective_role="Editor")
+    app.dependency_overrides[require_authenticated] = lambda: editor_ctx
+    try:
+        resp = await client.get(_PERIPHERALS, headers=auth_headers())
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 # ── 1b. Auth: PATCH /admin/peripherals/datahub ───────────────────────────────
@@ -154,16 +178,24 @@ async def test_patch_datahub_without_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_patch_datahub_non_admin_returns_403(client) -> None:
-    """PATCH /admin/peripherals/datahub with non-admin group returns 403.
+    """PATCH /admin/peripherals/datahub with non-Admin role returns 403.
 
-    spec: API.md §Admin routes — admin group required.
+    spec: API.md §Admin routes — Admin role required.
     """
-    resp = await client.patch(
-        _PERIPHERALS_DH,
-        json={"gms_url": "http://gms:8080"},
-        headers=auth_headers(["dg"]),
-    )
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+
+    reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.patch(
+            _PERIPHERALS_DH,
+            json={"gms_url": "http://gms:8080"},
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 # ── 1c. Auth: PATCH /internal/admin/peripherals/datahub ──────────────────────
@@ -227,7 +259,7 @@ async def test_get_peripherals_is_configured_true_when_dto_and_secret_set(client
         with (
             patch(
                 "src.api.routers.admin.get_peripheral_config",
-                AsyncMock(side_effect=[_FAKE_DH_DTO, _FAKE_LF_DTO]),
+                AsyncMock(side_effect=[_FAKE_DH_DTO, _FAKE_LF_DTO, None]),
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
@@ -290,7 +322,7 @@ async def test_get_peripherals_is_configured_false_when_dto_present_but_secret_u
         with (
             patch(
                 "src.api.routers.admin.get_peripheral_config",
-                AsyncMock(side_effect=[_FAKE_DH_DTO, _FAKE_LF_DTO]),
+                AsyncMock(side_effect=[_FAKE_DH_DTO, _FAKE_LF_DTO, None]),
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=False),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=False),
@@ -564,7 +596,8 @@ async def test_patch_datahub_secret_write_failure_returns_503_and_skips_db(clien
     spec: src/api/routers/admin.py _apply_datahub_patch_and_respond —
     SecretResolverUnavailable → StorageUnavailableError → 503; DB patch skipped.
     """
-    app.dependency_overrides[get_db] = lambda: (x for x in [AsyncMock()])
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
     try:
         with (
             patch(
@@ -817,7 +850,8 @@ async def test_patch_langfuse_secret_write_failure_returns_503(client) -> None:
     spec: src/api/routers/admin.py _apply_langfuse_patch_and_respond —
     SecretResolverUnavailable → StorageUnavailableError → 503.
     """
-    app.dependency_overrides[get_db] = lambda: (x for x in [AsyncMock()])
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
     try:
         with (
             patch(

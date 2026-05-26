@@ -95,7 +95,7 @@ async def get_notification(
         from src.workflows._stubs import StubNotificationService
 
         return StubNotificationService()  # type: ignore[return-value]
-    return NotificationService()
+    return NotificationService(db_session_factory=SessionLocal)
 
 
 def get_airflow_client(request: Request) -> AirflowClient:

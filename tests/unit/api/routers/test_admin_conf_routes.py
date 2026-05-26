@@ -18,7 +18,7 @@ Concerns covered:
 
 2. GET /admin/conf with admin group:
    - Returns 200.
-   - Response contains all 22 expected fields (20 config fields + updated_at + resp_time).
+   - Response contains all 23 expected fields (21 config fields + updated_at + resp_time).
    - Response contains resp_time (SingleResponse envelope).
    - Response contains updated_at.
    - llm_api_key is masked: "********" when set, "" when unset — never plaintext.
@@ -54,7 +54,7 @@ from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeCon
 from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.db.models import RuntimeConfig
 
-from tests.unit.api.conftest import auth_headers
+from tests.unit.api.conftest import _make_mock_user, auth_headers
 
 _ADMIN_CONF = "/api/v1/admin/conf"
 _INTERNAL_CONF = "/internal/admin/conf"
@@ -82,6 +82,7 @@ _EXPECTED_RESPONSE_KEYS = {
     "stub_llm_client",
     "stub_pgvector_manager",
     "stub_notification_service",
+    "auth_datahub_corp_group",
     "updated_at",
     "resp_time",
 }
@@ -106,11 +107,21 @@ def _make_row_mock(**overrides) -> MagicMock:
 
 
 def _fake_db_with_row(row) -> tuple:
-    """Return (db_mock, override_fn) for dependency injection."""
+    """Return (db_mock, override_fn) for dependency injection.
+
+    The first execute() call satisfies require_authenticated's user lookup
+    (returns an Admin User mock).  Subsequent calls return the provided row
+    so that service/route logic sees the expected RuntimeConfig data.
+    """
     db = AsyncMock()
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = row
-    db.execute = AsyncMock(return_value=result)
+
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = _make_mock_user(role="Admin")
+
+    row_result = MagicMock()
+    row_result.scalar_one_or_none.return_value = row
+
+    db.execute = AsyncMock(side_effect=[auth_result, row_result, row_result, row_result])
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.refresh = AsyncMock()
@@ -135,23 +146,41 @@ async def test_get_conf_without_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_conf_non_admin_group_returns_403(client) -> None:
-    """GET /admin/conf with non-admin group returns 403.
+async def test_get_conf_non_admin_role_returns_403(client) -> None:
+    """GET /admin/conf with non-Admin role returns 403.
 
-    spec: API.md §Admin routes — admin group required.
+    spec: API.md §Admin routes — Admin role required.
     """
-    resp = await client.get(_ADMIN_CONF, headers=auth_headers(["de"]))
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+    from tests.unit.api.conftest import _make_mock_user
+
+    reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.get(_ADMIN_CONF, headers=auth_headers(["de"]))
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 @pytest.mark.asyncio
-async def test_get_conf_da_group_returns_403(client) -> None:
-    """GET /admin/conf with 'da' group returns 403.
+async def test_get_conf_editor_role_returns_403(client) -> None:
+    """GET /admin/conf with Editor role returns 403.
 
-    spec: API.md §Admin routes — admin group required exclusively.
+    spec: API.md §Admin routes — Admin role required exclusively.
     """
-    resp = await client.get(_ADMIN_CONF, headers=auth_headers(["da"]))
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+    from tests.unit.api.conftest import _make_mock_user
+
+    editor_ctx = AuthContext(user=_make_mock_user(role="Editor"), effective_role="Editor")
+    app.dependency_overrides[require_authenticated] = lambda: editor_ctx
+    try:
+        resp = await client.get(_ADMIN_CONF, headers=auth_headers(["da"]))
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 # ── 1b. Auth: PATCH /admin/conf ───────────────────────────────────────────────
@@ -168,17 +197,26 @@ async def test_patch_conf_without_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_patch_conf_non_admin_group_returns_403(client) -> None:
-    """PATCH /admin/conf with non-admin group returns 403.
+async def test_patch_conf_non_admin_role_returns_403(client) -> None:
+    """PATCH /admin/conf with non-Admin role returns 403.
 
-    spec: API.md §Admin routes — admin group required.
+    spec: API.md §Admin routes — Admin role required exclusively.
     """
-    resp = await client.patch(
-        _ADMIN_CONF,
-        json={"llm_model": "gpt-4o-mini"},
-        headers=auth_headers(["dg"]),
-    )
-    assert resp.status_code == 403
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+    from tests.unit.api.conftest import _make_mock_user
+
+    reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.patch(
+            _ADMIN_CONF,
+            json={"llm_model": "gpt-4o-mini"},
+            headers=auth_headers(["dg"]),
+        )
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
 
 
 # ── 1c. Auth: PATCH /internal/admin/conf ─────────────────────────────────────
@@ -239,10 +277,10 @@ async def test_internal_patch_conf_wrong_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
-    """GET /admin/conf with admin group returns 200 with EXACTLY the 22 expected fields.
+    """GET /admin/conf with admin group returns 200 with EXACTLY the 23 expected fields.
 
-    The 22 fields are: 20 config fields (15 DB tunables + 4 stub booleans +
-    llm_api_key masked indicator) + updated_at + resp_time.
+    The 23 fields are: 21 config fields (15 DB tunables + 4 stub booleans +
+    llm_api_key masked indicator + auth_datahub_corp_group) + updated_at + resp_time.
     Any extra or missing key fails the assertion.
 
     spec: BACKEND_LLM.md §LLM API key — GET returns llm_api_key as masked indicator.
@@ -613,7 +651,8 @@ async def test_patch_conf_llm_api_key_out_of_cluster_returns_503(client) -> None
 
     spec: BACKEND_LLM.md §LLM API key — SecretResolverUnavailable → 503.
     """
-    app.dependency_overrides[get_db] = (lambda: (x for x in [AsyncMock()]))
+    _, db_gen = _fake_db_with_row(_make_row_mock())
+    app.dependency_overrides[get_db] = db_gen
     try:
         with patch(
             "src.api.routers.admin.set_llm_api_key",

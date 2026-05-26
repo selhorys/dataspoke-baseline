@@ -11,9 +11,9 @@ def _get_user_key(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         try:
-            from src.api.auth.jwt import decode_token
+            from src.backend.auth.tokens import decode_access_token
 
-            payload = decode_token(auth.removeprefix("Bearer "))
+            payload = decode_access_token(auth.removeprefix("Bearer "))
             return payload.get("sub", get_remote_address(request))
         except Exception:
             pass

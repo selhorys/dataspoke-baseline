@@ -105,12 +105,30 @@ kubectl get pods -n "${NS}"
 # Step 3: Install datahub WITHOUT --wait
 # ---------------------------------------------------------------------------
 DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.9.10}"
+
+oidc_args=()
+if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
+  oidc_args+=(
+    --set "datahub.global.datahub.auth.oidc.enabled=true"
+    --set-string "datahub.global.datahub.auth.oidc.clientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID}"
+    --set-string "datahub.global.datahub.auth.oidc.clientSecret=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET}"
+    --set-string "datahub.global.datahub.auth.oidc.discoveryUri=https://accounts.google.com/.well-known/openid-configuration"
+    --set-string "datahub.global.datahub.auth.oidc.userIdClaim=email"
+  )
+  info "Google OIDC enabled on DataHub (using DataSpoke OAuth credentials)"
+elif [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" || -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
+  warn "Google OIDC partially configured (only one of CLIENT_ID/CLIENT_SECRET set); both required — skipping OIDC"
+else
+  info "Google OIDC disabled on DataHub (no DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID/SECRET in .env)"
+fi
+
 info "Installing datahub (chart ${DATAHUB_VERSION}, app v1.5.0.2) — no --wait, polling manually..."
 helm upgrade --install datahub datahub/datahub \
   --version "${DATAHUB_VERSION}" \
   --namespace "${NS}" \
   --values "$PERIPHERALS_DIR/datahub/values.yaml" \
   --set "datahub-frontend.ingress.hosts[0].host=datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+  ${oidc_args[@]+"${oidc_args[@]}"} \
   --timeout 15m
 
 # ---------------------------------------------------------------------------

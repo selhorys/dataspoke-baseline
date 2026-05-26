@@ -378,6 +378,20 @@ class DataHubClient:
 
         return await self.get_aspect(assertion_urn, AssertionInfoClass)
 
+    async def emit_mcp(self, mcp: MetadataChangeProposalWrapper) -> None:
+        """Emit a single MCP through the REST emitter with retry."""
+        await self._with_retry(self._emitter.emit_mcp, mcp)
+
+    async def execute_graphql(self, query: str, variables: dict | None = None) -> dict:
+        """Execute a GraphQL query/mutation with retry."""
+        return await self._with_retry(
+            self._graph.execute_graphql, query, variables=variables or {}
+        )
+
+    async def hard_delete_entity(self, urn: str) -> None:
+        """Hard-delete a DataHub entity and all its references with retry."""
+        await self._with_retry(self._graph.hard_delete_entity, urn)
+
     async def check_connectivity(self) -> bool:
         try:
             await asyncio.to_thread(self._graph.test_connection)

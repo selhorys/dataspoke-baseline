@@ -5,9 +5,12 @@ description = "DataSpoke — AI-powered sidecar extension for DataHub"
 requires-python = "==3.13.*"
 dependencies = [
     # API layer
+    "authlib>=1.3",
     "fastapi>=0.115",
+    "itsdangerous>=2.1",
     "uvicorn[standard]>=0.34",
     "pydantic>=2.10",
+    "pydantic[email]>=2.10",
     "pydantic-settings>=2.7",
     "PyJWT>=2.10",
     "passlib[bcrypt]>=1.7",

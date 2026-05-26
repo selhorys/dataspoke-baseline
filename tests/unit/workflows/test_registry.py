@@ -3,13 +3,13 @@
 Pins the exact set of DAG IDs per spec/feature/BACKEND.md §DAG Catalogue.
 Also verifies tier structure for tier-based DAG groups.
 
-spec: feature/BACKEND.md §DAG Catalogue — 15 DAGs total:
+spec: feature/BACKEND.md §DAG Catalogue — 16 DAGs total:
   4 ingestion (3 active tier + 1 passive hourly)
   3 metrics tier (hourly/daily/weekly)
   3 metagen tier (hourly/daily/weekly)
   3 ontogen tier (hourly/daily/weekly)
   1 on-demand (metrics)
-  1 sync (datahub-sync-daily)
+  2 sync (datahub-sync-daily, auth-role-sync-daily)
 """
 
 import pytest
@@ -49,6 +49,7 @@ _SPEC_ALL_DAG_IDS: frozenset[str] = frozenset({
     "metrics",
     # Sync
     "datahub-sync-daily",
+    "auth-role-sync-daily",
 })
 
 _TIERS = ("hourly", "daily", "weekly")
@@ -58,7 +59,7 @@ _TIERS = ("hourly", "daily", "weekly")
 
 
 def test_all_dag_ids_exact_match_spec_catalogue() -> None:
-    """ALL_DAG_IDS must equal the 17 DAG IDs enumerated in spec/feature/BACKEND.md §DAG Catalogue.
+    """ALL_DAG_IDS must equal the 16 DAG IDs enumerated in spec/feature/BACKEND.md §DAG Catalogue.
 
     spec: feature/BACKEND.md §DAG Catalogue.
     """
@@ -82,13 +83,13 @@ def test_all_dag_ids_is_frozenset() -> None:
     assert isinstance(ALL_DAG_IDS, frozenset)
 
 
-def test_all_dag_ids_has_exactly_15_entries() -> None:
-    """ALL_DAG_IDS must have exactly 15 entries per spec.
+def test_all_dag_ids_has_exactly_16_entries() -> None:
+    """ALL_DAG_IDS must have exactly 16 entries per spec.
 
     spec: feature/BACKEND.md §DAG Catalogue.
     """
-    assert len(ALL_DAG_IDS) == 15, (
-        f"Expected 15 DAG IDs, got {len(ALL_DAG_IDS)}. "
+    assert len(ALL_DAG_IDS) == 16, (
+        f"Expected 16 DAG IDs, got {len(ALL_DAG_IDS)}. "
         f"ALL_DAG_IDS: {sorted(ALL_DAG_IDS)}"
     )
 

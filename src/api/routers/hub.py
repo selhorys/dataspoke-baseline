@@ -8,14 +8,14 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.auth.dependencies import require_common
+from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
 from src.api.dependencies import get_db
 from src.shared.exceptions import DataHubUnavailableError, StorageUnavailableError
 
 router = APIRouter(
     prefix="/hub",
     tags=["hub"],
-    dependencies=[Depends(require_common)],
+    dependencies=[Depends(require_authenticated)],
 )
 
 _PROXY_TIMEOUT = 30.0
@@ -106,6 +106,7 @@ async def _proxy(
 async def hub_graphql(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    _writer: AuthContext = Depends(require_writer),
 ) -> Response:
     """Proxy GraphQL queries to DataHub GMS."""
     gms_url, token = await _get_datahub_connection(db)
@@ -130,6 +131,7 @@ async def hub_openapi(
     request: Request,
     path: str,
     db: AsyncSession = Depends(get_db),
+    _ctx: AuthContext = Depends(require_writer),
 ) -> Response:
     """Proxy REST requests to DataHub GMS OpenAPI surface."""
     gms_url, token = await _get_datahub_connection(db)

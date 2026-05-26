@@ -67,9 +67,6 @@ spec:
             {{- end }}
             - secretRef:
                 name: {{ .Values.secrets.existingSecret | default "dataspoke-secrets" }}
-          env:
-            - name: DATASPOKE_ENABLE_STUB_AUTH
-              value: {{ .Values.api.enableStubAuth | default false | quote }}
           startupProbe:
             httpGet:
               path: /health
