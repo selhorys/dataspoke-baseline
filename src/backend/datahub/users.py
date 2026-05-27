@@ -10,10 +10,15 @@ the retry / circuit-breaker logic in ``DataHubClient`` handles this.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
+
+from datahub.metadata.schema_classes import RoleMembershipClass
 
 if TYPE_CHECKING:
     from src.shared.datahub.client import DataHubClient
+
+logger = logging.getLogger(__name__)
 
 
 # ── URN helpers ───────────────────────────────────────────────────────────────
@@ -140,32 +145,24 @@ async def read_role(
 ) -> str | None:
     """Read the DataHub-side role for *corpuser_urn_str*.
 
+    Reads the ``RoleMembership`` aspect directly — atomic single-role per
+    DataHub ``RoleService``. The GraphQL ``IsMemberOfRole`` relationship index
+    is not used here: it lags MCL→ES indexing and transiently shows roles that
+    were already overwritten in the aspect.
+
     Returns the role short name (``'Admin'`` / ``'Editor'`` / ``'Reader'``)
     or ``None`` when no role is assigned.
-
-    Only used by the nightly ``auth-role-sync-daily`` DAG — not on the hot path.
     """
-    query = """
-    query($u: String!) {
-      corpUser(urn: $u) {
-        relationships(input: {
-          types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10
-        }) {
-          relationships { entity { ... on DataHubRole { urn name } } }
-        }
-      }
-    }
-    """
-    result = await client.execute_graphql(query, {"u": corpuser_urn_str})
-
-    corp_user = (result or {}).get("corpUser") or {}
-    relationships = (corp_user.get("relationships") or {}).get("relationships") or []
-    for rel in relationships:
-        entity = (rel or {}).get("entity") or {}
-        name = entity.get("name")
-        if name in ("Admin", "Editor", "Reader"):
-            return name
-    return None
+    aspect = await client.get_aspect(corpuser_urn_str, RoleMembershipClass)
+    if aspect is None or not aspect.roles:
+        return None
+    if len(aspect.roles) > 1:
+        logger.warning(
+            "rolemembership_unexpected_multi_role",
+            extra={"corpuser": corpuser_urn_str, "role_count": len(aspect.roles)},
+        )
+    name = aspect.roles[0].removeprefix("urn:li:dataHubRole:")
+    return name if name in ("Admin", "Editor", "Reader") else None
 
 
 async def hard_delete_corpuser(

@@ -209,11 +209,12 @@ Management](../DATAHUB_INTEGRATION.md).
 
 Role propagation uses the GraphQL `batchAssignRole` mutation, called after
 every DataSpoke-side `users.role` write (registration and admin role
-changes). Role *read* via GraphQL relationship traversal on
-`IsMemberOfRole` is **not on the request hot path** — the per-request
-privilege check reads from DataSpoke `users.role` directly. The GraphQL
-read is used only by the nightly `auth-role-sync-daily` DAG to detect
-DataHub-side drift. Group membership writes use `addGroupMembers` /
+changes). Role *read* is **not on the request hot path** — the per-request
+privilege check reads from DataSpoke `users.role` directly. The DataHub-side
+read is used only by the nightly `auth-role-sync-daily` DAG to detect drift,
+and reads the `RoleMembership` aspect directly (atomic single-role per
+DataHub `RoleService`) rather than the `IsMemberOfRole` GraphQL relationship
+index, which lags MCL→ES indexing. Group membership writes use `addGroupMembers` /
 `removeGroupMembers`. User deletion uses the SDK's `hard_delete_entity` on
 the corpuser URN (no aspect write; the entity and all its incoming /
 outgoing references are removed).
@@ -391,7 +392,10 @@ directly through the DataHub UI rather than via `PATCH /admin/users/{id}/role`.
 A nightly Airflow DAG `auth-role-sync-daily` reconciles drift:
 
 1. For each row in `users` (managed identities), read the corresponding
-   DataHub corpuser's `IsMemberOfRole` via GraphQL.
+   corpuser's `RoleMembership` aspect directly (atomic single-role per
+   DataHub `RoleService`). The `IsMemberOfRole` GraphQL relationship index
+   is not used — it lags MCL→ES indexing and transiently shows roles that
+   were already overwritten in the aspect.
 2. Compare to `users.role`.
 3. On divergence: re-assert `users.role` to DataHub via `batchAssignRole`.
    **DataSpoke wins.**
@@ -399,10 +403,11 @@ A nightly Airflow DAG `auth-role-sync-daily` reconciles drift:
    datahub_role_observed, dataspoke_role_authoritative, occurred_at).
 
 The auto-fix is intentional: DataSpoke is the SSOT, so any DataHub-side
-drift is by definition a mistake to be corrected. Operators who need
-exception cases (e.g., a DataHub-only super-admin not managed by DataSpoke)
-should exclude that corpuser from the marker group — the DAG skips
-non-marker-group corpusers.
+drift is by definition a mistake to be corrected. The DAG iterates only
+rows in DataSpoke's `users` table — DataHub-only corpusers (e.g., a
+super-admin not managed by DataSpoke) are out of scope. Operators who
+need a DataHub-only role assignment keep that corpuser out of the
+DataSpoke `users` table entirely.
 
 The DAG's per-user GraphQL fan-out is bounded (one round trip per managed
 corpuser per day). For large deployments this could be batched via

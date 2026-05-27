@@ -347,7 +347,8 @@ async def auth_role_sync() -> dict[str, object]:
       1. SELECT all rows from users ordered by id.
          (Baseline uses a simple full-scan; for large deployments the optimisation
          path is scrollAcrossEntities on the marker corpGroup instead.)
-      2. For each user, read the DataHub-side role via IsMemberOfRole traversal.
+      2. For each user, read the DataHub-side role via the RoleMembership aspect
+         (atomic single-role per DataHub RoleService).
       3. On divergence (DataHub role differs from users.role, or no role assigned),
          re-assert users.role to DataHub via batchAssignRole. DataSpoke wins.
       4. Emit an AUTH.ROLE_SYNC_FIXED event row per fixed user.

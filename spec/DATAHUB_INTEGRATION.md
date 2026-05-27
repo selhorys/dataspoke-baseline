@@ -495,29 +495,22 @@ URN.
 
 #### Role read
 
-DataHub stores role membership as an `IsMemberOfRole` relationship from
-corpuser → role. Read it via relationship traversal:
+DataHub stores role membership as the `RoleMembership` aspect on the
+corpuser (atomic single-role per DataHub `RoleService`). Read it via the
+SDK aspect read:
 
 ```python
-graph.execute_graphql(
-    """
-    query($u: String!) {
-      corpUser(urn: $u) {
-        relationships(input: {types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10}) {
-          relationships { entity { ... on DataHubRole { urn name } } }
-        }
-      }
-    }
-    """,
-    {"u": corpuser_urn},
-)
+graph.get_aspect(corpuser_urn, RoleMembershipClass)
 ```
+
+The `IsMemberOfRole` GraphQL relationship index is **not** used —
+it lags MCL→ES indexing and transiently shows roles that were already
+overwritten in the aspect.
 
 **Not used on the hot path.** Per-request privilege gating reads role from
 DataSpoke `users.role` (see [feature/AUTH.md §Privilege Model](feature/AUTH.md#privilege-model)).
-The GraphQL relationship read here is used only by the nightly
-reconciliation DAG (see below) to detect DataHub-side drift from the
-DataSpoke SSOT.
+The aspect read here is used only by the nightly reconciliation DAG (see
+below) to detect DataHub-side drift from the DataSpoke SSOT.
 
 #### Hard delete
 
@@ -541,8 +534,11 @@ operator changes a corpuser's role directly in the DataHub UI rather than
 via `PATCH /admin/users/{id}/role`. The Airflow DAG `auth-role-sync-daily`
 detects and corrects this:
 
-1. For each `users` row in the marker corpGroup, execute the GraphQL
-   `IsMemberOfRole` query above to read the DataHub-side role.
+1. For each `users` row in the marker corpGroup, read the corpuser's
+   `RoleMembership` aspect directly (atomic single-role per DataHub
+   `RoleService`). The `IsMemberOfRole` GraphQL relationship index is not
+   used — it lags MCL→ES indexing and transiently shows roles that were
+   already overwritten in the aspect.
 2. If the observed role differs from DataSpoke `users.role`, re-assert
    `users.role` to DataHub via `batchAssignRole` (DataSpoke wins).
 3. Emit an `AUTH.ROLE_SYNC_FIXED` event recording the divergence and the
@@ -550,9 +546,10 @@ detects and corrects this:
    dataspoke_role_authoritative, occurred_at).
 
 The auto-fix is intentional: any DataHub-side drift is by definition a
-mistake to be corrected. Operators who need a DataHub-only role assignment
-(e.g., a super-admin not managed by DataSpoke) keep that corpuser **out of
-the marker corpGroup** — the DAG skips non-marker-group corpusers.
+mistake to be corrected. The DAG iterates only rows in DataSpoke's
+`users` table; DataHub-only corpusers (e.g., a super-admin not managed
+by DataSpoke) are out of scope. Operators who need a DataHub-only role
+assignment keep that corpuser out of the DataSpoke `users` table.
 
 For large deployments, the per-user GraphQL fan-out is bounded (one query
 per managed corpuser per day). A batched variant via `scrollAcrossEntities`
