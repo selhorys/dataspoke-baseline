@@ -96,7 +96,7 @@ Follow `spec/TESTING.md §Integration Testing` for the full 7-step workflow, pre
 
 - Run `./helm-charts/bin/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
 - Run tests in three **separate** groups (unit → spot integration → api-wired integration). Mixing causes Airflow resource contention.
-- Spot/api-wired tests need `helm-charts/.env` exported into the shell AND `DATASPOKE_TEST_MODE=true` set on the pytest invocation. `DATASPOKE_TEST_MODE` is not in `helm-charts/.env`, so the conftest preflight will fail if it is omitted. Canonical command: `set -a && source helm-charts/.env && set +a && DATASPOKE_TEST_MODE=true uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `helm-charts/.env` has no `export` prefixes).
+- Spot/api-wired tests need `helm-charts/.env` exported into the shell. Stub-mode toggles are DB-backed in `/admin/conf` (per memory `project_runtime_config_admin_conf`), not env-driven. Canonical command: `set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `helm-charts/.env` has no `export` prefixes).
 - Never truncate integration test output (no `| tail`, `| head`, or piped filters) — always show complete pytest output.
 
 ## Testing prauto
