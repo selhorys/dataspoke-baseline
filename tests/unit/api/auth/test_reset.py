@@ -1,14 +1,16 @@
 """Unit tests for src/backend/auth/reset.py.
 
 Concerns covered:
-- Unknown email → issue_reset_token no-ops silently (no enumeration leak; also swallows
-  PeripheralNotConfiguredError and NotificationError per security fix)
-- Known email → password_reset_tokens row written with SHA-256 hash of the raw token,
-  expires_at = now + 15 min
+- Unknown email → issue_reset_token no-ops silently (no enumeration leak)
+- Known email + SMTP success → row written AFTER send_email (email-first ordering),
+  SHA-256 hash stored, 15-min TTL
+- Known email + SMTP unconfigured → PeripheralNotConfiguredError re-raised, no DB write
+- Known email + SMTP delivery failure → StorageUnavailableError raised, no DB write
 - confirm_reset with invalid/expired/used token → BadRequestError("INVALID_RESET_TOKEN")
 - Successful confirm writes the new bcrypt hash AND marks used_at
 
 spec: spec/feature/AUTH.md §Lifecycle §Password reset
+spec: spec/feature/AUTH.md §Failure Modes
 spec: spec/API.md §Auth — POST /auth/password/reset/request, POST /auth/password/reset/confirm
 """
 
@@ -21,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.shared.exceptions import BadRequestError
+from src.shared.exceptions import BadRequestError, StorageUnavailableError
 
 
 def _sha256(value: str) -> str:
@@ -58,12 +60,15 @@ async def test_issue_reset_token_unknown_email_returns_silently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_issue_reset_token_swallows_peripheral_not_configured() -> None:
-    """issue_reset_token swallows PeripheralNotConfiguredError (SMTP not configured).
+async def test_issue_reset_token_peripheral_not_configured_reraises_no_db_write() -> None:
+    """PeripheralNotConfiguredError from send_email propagates; no DB row written.
 
-    spec: spec/feature/AUTH.md §Failure Modes — SMTP peripheral missing: request refuses.
-    Note: the current impl swallows it silently (no enumeration leak on delivery status).
-    Per spec/feature/AUTH.md §Lifecycle §Password reset: same response shape known/unknown.
+    The global exception handler maps this to 503 PERIPHERAL_NOT_CONFIGURED
+    with detail.peripheral="smtp".  No password_reset_tokens row must be written
+    so there is no orphan token in the DB on SMTP misconfiguration.
+
+    spec: spec/feature/AUTH.md §Failure Modes — SMTP peripheral missing →
+          503 PERIPHERAL_NOT_CONFIGURED, zero rows in password_reset_tokens.
     """
     from src.backend.auth.reset import issue_reset_token
     from src.shared.exceptions import PeripheralNotConfiguredError
@@ -85,18 +90,81 @@ async def test_issue_reset_token_swallows_peripheral_not_configured() -> None:
         side_effect=PeripheralNotConfiguredError("smtp")
     )
 
-    # Must not raise — swallowed silently
-    await issue_reset_token(mock_db, mock_notification, "exists@example.com")
+    # Must re-raise PeripheralNotConfiguredError — not swallowed
+    with pytest.raises(PeripheralNotConfiguredError) as exc_info:
+        await issue_reset_token(mock_db, mock_notification, "exists@example.com")
+
+    assert exc_info.value.detail["peripheral"] == "smtp", (
+        "PeripheralNotConfiguredError must carry detail.peripheral='smtp' "
+        "per spec/feature/AUTH.md §Failure Modes"
+    )
+
+    # No DB write must have occurred
+    mock_db.add.assert_not_called(), (
+        "db.add must NOT be called when SMTP is not configured "
+        "per spec/feature/AUTH.md §Failure Modes (zero rows in password_reset_tokens)"
+    )
+    mock_db.flush.assert_not_called(), (
+        "db.flush must NOT be called when SMTP is not configured "
+        "per spec/feature/AUTH.md §Failure Modes"
+    )
+
+
+@pytest.mark.asyncio
+async def test_issue_reset_token_notification_error_raises_storage_unavailable_no_db_write() -> None:
+    """NotificationError from send_email is wrapped as StorageUnavailableError; no DB row written.
+
+    The global exception handler maps StorageUnavailableError to 503 STORAGE_UNAVAILABLE.
+
+    spec/feature/AUTH.md §Failure Modes — SMTP configured but delivery fails
+    (transport error, auth rejection, queue full) during password-reset request →
+    503 STORAGE_UNAVAILABLE; no DB write.
+    """
+    from src.backend.auth.reset import issue_reset_token
+    from src.shared.exceptions import NotificationError
+
+    mock_user = MagicMock()
+    mock_user.id = uuid.uuid4()
+    mock_user.email = "exists@example.com"
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.add = MagicMock()
+    mock_db.flush = AsyncMock()
+
+    mock_notification = AsyncMock()
+    mock_notification.send_email = AsyncMock(
+        side_effect=NotificationError("SMTP transport refused connection")
+    )
+
+    # Must raise StorageUnavailableError (wrapping the NotificationError)
+    with pytest.raises(StorageUnavailableError):
+        await issue_reset_token(mock_db, mock_notification, "exists@example.com")
+
+    # No DB write must have occurred
+    mock_db.add.assert_not_called(), (
+        "db.add must NOT be called when email delivery fails "
+        "per spec/feature/AUTH.md §Failure Modes (zero rows in password_reset_tokens)"
+    )
+    mock_db.flush.assert_not_called(), (
+        "db.flush must NOT be called when email delivery fails "
+        "per spec/feature/AUTH.md §Failure Modes"
+    )
 
 
 @pytest.mark.asyncio
 async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> None:
-    """For a known email, issue_reset_token writes a PasswordResetToken row with SHA-256 hash.
+    """For a known email, issue_reset_token writes a DB row with the SHA-256 hash and 15-min TTL.
 
     spec: spec/feature/AUTH.md §Security Considerations §Password-reset token storage —
     the table stores the SHA-256 hash, not the raw token; raw token exists only in email body.
     spec: spec/feature/AUTH.md §Lifecycle §Password reset — 15-min TTL.
     """
+    import re
+
     from src.backend.auth.reset import issue_reset_token
 
     mock_user = MagicMock()
@@ -107,6 +175,12 @@ async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> No
     mock_result.scalar_one_or_none.return_value = mock_user
 
     captured_rows: list = []
+    sent_raw_tokens: list[str] = []
+
+    async def _capture_email(to, subject, body_html):
+        match = re.search(r"<strong>([^<]+)</strong>", body_html)
+        if match:
+            sent_raw_tokens.append(match.group(1))
 
     def _capture_add(obj):
         captured_rows.append(obj)
@@ -117,17 +191,6 @@ async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> No
     mock_db.flush = AsyncMock()
 
     mock_notification = AsyncMock()
-    # Track what raw token was sent in the email
-    sent_raw_tokens: list[str] = []
-
-    async def _capture_email(to, subject, body_html):
-        # The raw token appears in the email body
-        # We extract it by finding the part between the last <strong> tags
-        import re
-        match = re.search(r"<strong>([^<]+)</strong>", body_html)
-        if match:
-            sent_raw_tokens.append(match.group(1))
-
     mock_notification.send_email = AsyncMock(side_effect=_capture_email)
 
     await issue_reset_token(mock_db, mock_notification, "known@example.com")
@@ -169,6 +232,7 @@ async def test_confirm_reset_invalid_token_raises_bad_request() -> None:
     spec: spec/feature/AUTH.md §Lifecycle §Password reset —
     confirm_reset validates token (matches a row, not expired, used_at is null).
     """
+    from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
     mock_result = MagicMock()
@@ -177,13 +241,15 @@ async def test_confirm_reset_invalid_token_raises_bad_request() -> None:
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    with pytest.raises(BadRequestError) as exc_info:
-        await confirm_reset(mock_db, "nonexistent-raw-token", "newpassword123")
+    with patch.object(_users, "update_password") as mock_update_password:
+        with pytest.raises(BadRequestError) as exc_info:
+            await confirm_reset(mock_db, "nonexistent-raw-token", "newpassword123")
 
     assert exc_info.value.error_code == "INVALID_RESET_TOKEN", (
         "Unknown reset token must raise BadRequestError('INVALID_RESET_TOKEN') "
         "per spec/feature/AUTH.md §Lifecycle §Password reset"
     )
+    mock_update_password.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -192,6 +258,7 @@ async def test_confirm_reset_expired_token_raises_bad_request() -> None:
 
     spec: spec/feature/AUTH.md §Lifecycle §Password reset — not expired condition.
     """
+    from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
     mock_row = MagicMock()
@@ -204,10 +271,12 @@ async def test_confirm_reset_expired_token_raises_bad_request() -> None:
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    with pytest.raises(BadRequestError) as exc_info:
-        await confirm_reset(mock_db, "expired-token", "newpassword123")
+    with patch.object(_users, "update_password") as mock_update_password:
+        with pytest.raises(BadRequestError) as exc_info:
+            await confirm_reset(mock_db, "expired-token", "newpassword123")
 
     assert exc_info.value.error_code == "INVALID_RESET_TOKEN"
+    mock_update_password.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -216,6 +285,7 @@ async def test_confirm_reset_used_token_raises_bad_request() -> None:
 
     spec: spec/feature/AUTH.md §Lifecycle §Password reset — single-use: used_at is null check.
     """
+    from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
     mock_row = MagicMock()
@@ -228,10 +298,12 @@ async def test_confirm_reset_used_token_raises_bad_request() -> None:
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    with pytest.raises(BadRequestError) as exc_info:
-        await confirm_reset(mock_db, "already-used-token", "newpassword123")
+    with patch.object(_users, "update_password") as mock_update_password:
+        with pytest.raises(BadRequestError) as exc_info:
+            await confirm_reset(mock_db, "already-used-token", "newpassword123")
 
     assert exc_info.value.error_code == "INVALID_RESET_TOKEN"
+    mock_update_password.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -282,3 +354,6 @@ async def test_confirm_reset_valid_token_writes_new_hash_and_marks_used() -> Non
         "used_at must be set after successful confirm_reset to prevent token replay "
         "per spec/feature/AUTH.md §Lifecycle §Password reset"
     )
+
+    # flush must have been called to persist both the password update and the used_at mark
+    mock_db.flush.assert_awaited()

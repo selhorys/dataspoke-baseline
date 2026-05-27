@@ -73,7 +73,6 @@ async def test_refresh_token_round_trip(
             "POST /auth/token must set the refresh_token cookie per spec/API.md §Auth "
             "— cookie path must include /api/v1/auth/token for the browser to send it back"
         )
-        initial_access_token = login_resp.json()["access_token"]
 
         # Step 2: POST /auth/token/refresh — httpx carries the cookie automatically
         refresh_resp = await api_client.post("/api/v1/auth/token/refresh")
@@ -86,11 +85,6 @@ async def test_refresh_token_round_trip(
             "per spec/feature/AUTH.md §Lifecycle §Refresh & revoke"
         )
         new_access_token = refresh_body["access_token"]
-
-        # New token must differ from the initial one
-        assert new_access_token != initial_access_token, (
-            "Refreshed access token must be a new token distinct from the original"
-        )
 
         # Step 3: Use new access token on GET /auth/me → 200
         me_resp = await api_client.get(

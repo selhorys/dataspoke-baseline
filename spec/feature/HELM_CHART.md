@@ -103,7 +103,6 @@ helm-charts/
 | Image rebuild | ✓ (default) | ✓ or `--skip-build` (CI-built image) |
 | Frontend subchart | ✗ (host `npm run dev`) | ✓ |
 | Event-consumer subchart | ✗ | ✗ (opt-in by operator) |
-| `enableStubAuth: true` | ✓ | ✗ (never in prod) |
 | RuntimeConfig stub fields (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) seeded `true` | ✓ | ✗ (defaults `false`) |
 | nginx-ingress install | ✓ | ✗ (operator's controller) |
 | DataHub install | ✓ (in-cluster) | ✗ (external; operator-managed) |
@@ -254,16 +253,16 @@ Same names in dev and prod, different values. Injected into pods via ConfigMap
 - `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` — Google OAuth client secret (paired with the public client_id; see chart-values-only callout below)
 
 > **Chart-values-only env vars (not in `.env`)**: `DATASPOKE_CORS_ORIGINS`,
-> `DATASPOKE_ENABLE_STUB_AUTH`, `DATASPOKE_COOKIE_SECURE`, and
-> `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` are rendered onto the API container
-> directly from the chart values (`config.corsOrigins`, `api.enableStubAuth`,
-> `auth.cookieSecure`, `auth.googleClientId`). `values.yaml` pins stub auth
-> to `false` and cookie-secure to `true`; `values-dev.yaml` enables stub auth
-> and disables cookie-secure for laptop browsers. Keeping these out of
-> `.env` removes the prod footgun of a stray line silently re-enabling stub
-> auth or disabling cookie hardening. Stub-mode wiring for the four
-> dependency factories lives in the `runtime_config` DB row, not in chart
-> values — see `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
+> `DATASPOKE_COOKIE_SECURE`, and `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` are
+> rendered onto the API container directly from the chart values
+> (`config.corsOrigins`, `auth.cookieSecure`, `auth.googleClientId`).
+> `values.yaml` pins cookie-secure to `true`; `values-dev.yaml` overrides
+> it to `false` for HTTP laptop browsers. Keeping these out of `.env`
+> removes the prod footgun of a stray line silently disabling cookie
+> hardening. Stub-mode wiring for the four dependency factories lives in
+> the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
+> `stub_pgvector_manager`, `stub_notification_service`) — see
+> `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
 > DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
 > vars. They live in the DB `peripheral_config` and `runtime_config` tables,
@@ -439,7 +438,6 @@ chart at it via `secrets.existingSecret: <name>`.
 ### Container env rendered from chart values (not `.env`)
 
 - `DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`)
-- `DATASPOKE_ENABLE_STUB_AUTH` (from `api.enableStubAuth`)
 - `DATASPOKE_COOKIE_SECURE` (from `auth.cookieSecure`)
 - `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` (from `auth.googleClientId`)
 

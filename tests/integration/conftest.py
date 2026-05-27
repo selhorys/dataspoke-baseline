@@ -521,6 +521,7 @@ async def override_app(
     redis=None,
     vector=None,
     airflow=None,
+    notification=None,
 ):
     """Create an AsyncClient with FastAPI DI overrides for integration tests.
 
@@ -560,6 +561,11 @@ async def override_app(
         from src.api.dependencies import get_airflow_client
 
         app.dependency_overrides[get_airflow_client] = lambda: airflow
+
+    if notification is not None:
+        from src.api.dependencies import get_notification
+
+        app.dependency_overrides[get_notification] = lambda: notification
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

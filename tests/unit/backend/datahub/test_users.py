@@ -3,8 +3,7 @@
 Concerns covered:
 - URN helpers produce the right strings
 - ensure_corpuser_exists emits the correct MCP (corpUserInfo aspect)
-- ensure_marker_group_exists SKIPS the emit when corpGroup already exists (idempotent)
-- ensure_marker_group_exists emits corpGroupInfo when group does NOT exist
+- ensure_marker_group_exists always emits Status + CorpGroupInfo (unconditional, idempotent)
 - add_user_to_marker_group issues the GraphQL addGroupMembers mutation with the right variables
 - propagate_role issues batchAssignRole with the right roleUrn
 - read_role parses the relationships response correctly; returns None when no role attached
@@ -102,31 +101,43 @@ async def test_ensure_corpuser_exists_emits_correct_mcp() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_marker_group_exists_skips_when_group_already_exists() -> None:
-    """ensure_marker_group_exists is a no-op when the group already exists (idempotent).
+async def test_ensure_marker_group_exists_always_emits_both_aspects() -> None:
+    """ensure_marker_group_exists always emits Status + CorpGroupInfo, even when the group exists.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence —
-    step 3: ensure the marker corpGroup exists — create it if missing (idempotent).
-    The B1 fix pass: existing group is reused untouched; emit_mcp is NOT called.
+    spec: spec/feature/AUTH.md §Marker corpGroup — idempotent; existing group is reused.
+    Both aspects are re-asserted unconditionally so that a previous partial write
+    (Status emitted, CorpGroupInfo not yet ES-indexed) cannot leave addGroupMembers
+    seeing a 404 on retry.  No GraphQL pre-check is performed.
     """
+    from datahub.metadata.schema_classes import CorpGroupInfoClass, StatusClass
+
     from src.backend.datahub.users import ensure_marker_group_exists
 
     mock_client = AsyncMock()
-    # Simulate DataHub returning a non-null corpGroup (group already exists)
-    mock_client.execute_graphql = AsyncMock(return_value={"corpGroup": {"urn": "urn:li:corpGroup:dataspoke-users"}})
     mock_client.emit_mcp = AsyncMock()
 
     await ensure_marker_group_exists(mock_client, "dataspoke-users")
 
-    mock_client.emit_mcp.assert_not_called(), (
-        "ensure_marker_group_exists must NOT emit when group already exists (idempotent) "
-        "per spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence step 3"
+    assert mock_client.emit_mcp.call_count == 2, (
+        "ensure_marker_group_exists must always emit exactly 2 MCPs (Status + CorpGroupInfo) "
+        "regardless of whether the group already exists"
     )
+    assert not mock_client.execute_graphql.called, (
+        "ensure_marker_group_exists must not perform a GraphQL pre-check"
+    )
+
+    status_mcp = mock_client.emit_mcp.call_args_list[0][0][0]
+    assert isinstance(status_mcp.aspect, StatusClass)
+    assert status_mcp.aspect.removed is False
+
+    info_mcp = mock_client.emit_mcp.call_args_list[1][0][0]
+    assert isinstance(info_mcp.aspect, CorpGroupInfoClass)
+    assert info_mcp.aspect.displayName == "dataspoke-users"
 
 
 @pytest.mark.asyncio
-async def test_ensure_marker_group_exists_emits_when_group_missing() -> None:
-    """ensure_marker_group_exists emits Status + CorpGroupInfo MCPs when the group does not exist.
+async def test_ensure_marker_group_exists_emits_correct_aspect_content() -> None:
+    """ensure_marker_group_exists emits Status + CorpGroupInfo with the right URN and field values.
 
     spec: spec/feature/AUTH.md §Marker corpGroup — auto-created by DataSpoke on first user
     registration if missing.
@@ -140,15 +151,13 @@ async def test_ensure_marker_group_exists_emits_when_group_missing() -> None:
     from src.backend.datahub.users import ensure_marker_group_exists
 
     mock_client = AsyncMock()
-    # Simulate DataHub returning null corpGroup (group does NOT exist)
-    mock_client.execute_graphql = AsyncMock(return_value={"corpGroup": None})
     mock_client.emit_mcp = AsyncMock()
 
     await ensure_marker_group_exists(mock_client, "dataspoke-users")
 
     assert mock_client.emit_mcp.call_count == 2, (
         "ensure_marker_group_exists must emit exactly 2 MCPs (Status + CorpGroupInfo) "
-        "when group does not exist per spec/feature/AUTH.md §Marker corpGroup"
+        "per spec/feature/AUTH.md §Marker corpGroup"
     )
 
     # First call: Status aspect (activates entity for addGroupMembers)

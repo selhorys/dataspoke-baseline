@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -22,6 +21,7 @@ from src.shared.exceptions import (
     BadRequestError,
     NotificationError,
     PeripheralNotConfiguredError,
+    StorageUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,28 +40,28 @@ async def issue_reset_token(
 ) -> None:
     """Issue a password-reset token and send it by email.
 
+    Operation order (invariant): the email is sent BEFORE the token row is
+    written to the DB.  This guarantees that any failure in the SMTP layer
+    leaves no orphan row — the spec requires "no DB write" when the peripheral
+    is unavailable.
+
     If the email is unknown, returns silently (no enumeration leak).
 
     Raises:
-        PeripheralNotConfiguredError('smtp')  — SMTP peripheral not configured.
-        NotificationError                     — any other delivery failure.
+        PeripheralNotConfiguredError('smtp')  — SMTP not configured; propagates
+            to the global handler which returns 503 PERIPHERAL_NOT_CONFIGURED.
+        StorageUnavailableError               — email delivery failed for any
+            other reason (wraps NotificationError so the global handler returns
+            503 STORAGE_UNAVAILABLE rather than falling through to 500).
     """
     user = await _users.get_by_email(db, email)
     if user is None:
-        # No-op — same response shape as a known address.
+        # No-op — same response shape as a known address (no enumeration leak).
         return
 
     raw_token = secrets.token_urlsafe(32)
     token_hash = _hash(raw_token)
     expires_at = datetime.now(tz=UTC) + timedelta(minutes=_TOKEN_TTL_MINUTES)
-
-    row = PasswordResetToken(
-        token_hash=token_hash,
-        user_id=user.id,
-        expires_at=expires_at,
-    )
-    db.add(row)
-    await db.flush()
 
     subject = "DataSpoke password reset"
     body_html = (
@@ -72,20 +72,37 @@ async def issue_reset_token(
         "<p>If you did not request a password reset, you can safely ignore this email.</p>"
     )
 
+    # Send the email first — if this raises, no DB write occurs.
     try:
         await notification_service.send_email(  # type: ignore[attr-defined]
             to=[email], subject=subject, body_html=body_html
         )
     except PeripheralNotConfiguredError:
-        # SMTP not configured — suppress so the caller always returns 204.
-        # Operators can check GET /admin/peripherals/smtp to diagnose.
+        # SMTP peripheral not configured — let the global handler return 503.
         logger.warning(
             "password_reset_smtp_not_configured",
             extra={"user_id": str(user.id)},
         )
-    except NotificationError:
-        # Delivery failure — suppress so the caller always returns 204.
-        logger.error("password_reset_email_failed", extra={"user_id": str(user.id)})
+        raise
+    except NotificationError as exc:
+        # Delivery failure — wrap as StorageUnavailableError so the global
+        # handler returns 503 STORAGE_UNAVAILABLE instead of falling through
+        # to the generic 500 handler.
+        logger.error(
+            "password_reset_email_failed",
+            extra={"user_id": str(user.id)},
+            exc_info=True,
+        )
+        raise StorageUnavailableError("Password-reset email delivery failed.") from exc
+
+    # Email delivered — write the token row.
+    row = PasswordResetToken(
+        token_hash=token_hash,
+        user_id=user.id,
+        expires_at=expires_at,
+    )
+    db.add(row)
+    await db.flush()
 
 
 async def confirm_reset(

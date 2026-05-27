@@ -38,7 +38,7 @@ def role_urn(role: str) -> str:
 
 
 async def ensure_corpuser_exists(
-    client: "DataHubClient",
+    client: DataHubClient,
     email: str,
     name: str,
 ) -> None:
@@ -61,32 +61,28 @@ async def ensure_corpuser_exists(
 
 
 async def ensure_marker_group_exists(
-    client: "DataHubClient",
+    client: DataHubClient,
     group_name: str,
 ) -> None:
-    """Ensure the marker corpGroup exists without overwriting existing state.
+    """Ensure the marker corpGroup is active before ``addGroupMembers`` is called.
 
-    First checks whether the group already exists via a GraphQL query.
-    If the group is present, this is a no-op (existing members/admins are
-    left untouched).  Only emits a new ``corpGroupInfo`` aspect when the
-    group does not exist yet.
+    Both ``Status(removed=False)`` and ``CorpGroupInfo`` are re-asserted on every
+    call.  DataHub's ``addGroupMembers`` mutation rejects with "Group does not
+    exist" when the corpGroup is not yet fully resolvable, which can happen after
+    a prior attempt emitted ``Status`` but failed before ``CorpGroupInfo`` was
+    committed (or its indexing caught up).  Re-emitting both aspects is safe:
+    DataHub overwrites them in place by URN (idempotent).
+
+    Note: operators wanting a custom display name should configure
+    ``auth_datahub_corp_group`` via ``/admin/conf`` rather than editing DataHub
+    directly, as this function overwrites ``displayName`` on every call.  The
+    ``members``/``admins``/``groups`` arrays are also reset to empty on every
+    call, so the marker group must not be used as a privilege carrier.
     """
     from datahub.emitter.mcp import MetadataChangeProposalWrapper
     from datahub.metadata.schema_classes import CorpGroupInfoClass, StatusClass
 
     urn = corpgroup_urn(group_name)
-    result = await client.execute_graphql(
-        "query($u: String!) { corpGroup(urn: $u) { urn } }",
-        {"u": urn},
-    )
-    if (result or {}).get("corpGroup"):
-        return  # already exists — do not overwrite
-
-    # Emit CorpGroupInfo + Status in the same write so DataHub's entity store
-    # marks the group as active immediately.  Without Status(removed=False),
-    # the addGroupMembers GraphQL mutation returns 404 ("Group does not exist")
-    # because DataHub's mutation layer checks the Status aspect, not just the
-    # aspect store presence.
     await client.emit_mcp(
         MetadataChangeProposalWrapper(
             entityUrn=urn,
@@ -107,7 +103,7 @@ async def ensure_marker_group_exists(
 
 
 async def add_user_to_marker_group(
-    client: "DataHubClient",
+    client: DataHubClient,
     group_urn_str: str,
     corpuser_urn_str: str,
 ) -> None:
@@ -123,7 +119,7 @@ async def add_user_to_marker_group(
 
 
 async def propagate_role(
-    client: "DataHubClient",
+    client: DataHubClient,
     corpuser_urn_str: str,
     role: str,
 ) -> None:
@@ -139,7 +135,7 @@ async def propagate_role(
 
 
 async def read_role(
-    client: "DataHubClient",
+    client: DataHubClient,
     corpuser_urn_str: str,
 ) -> str | None:
     """Read the DataHub-side role for *corpuser_urn_str*.
@@ -152,7 +148,9 @@ async def read_role(
     query = """
     query($u: String!) {
       corpUser(urn: $u) {
-        relationships(input: {types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10}) {
+        relationships(input: {
+          types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10
+        }) {
           relationships { entity { ... on DataHubRole { urn name } } }
         }
       }
@@ -171,7 +169,7 @@ async def read_role(
 
 
 async def hard_delete_corpuser(
-    client: "DataHubClient",
+    client: DataHubClient,
     corpuser_urn_str: str,
 ) -> None:
     """Hard-delete the DataHub corpuser entity and all its references."""

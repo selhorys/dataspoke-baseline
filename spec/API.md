@@ -494,6 +494,7 @@ instead of a JWT.
 | `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT + Admin role |
 | `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT + Admin role |
 | `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT + Admin role |
+| `GET` | `/admin/peripherals` | — | `{datahub: {is_configured}, langfuse: {is_configured}, smtp: {is_configured}}` — quick status overview consumed by the admin landing page | JWT + Admin role |
 | `GET` | `/admin/users` | — | list of DataSpoke users (`{users: [{id, email, name, has_google, role, created_at, updated_at}], total}`) — `role` from the DB column | JWT + Admin role |
 | `PATCH` | `/admin/users/{id}` | `{name}` | updated user | JWT + Admin role |
 | `PATCH` | `/admin/users/{id}/role` | `{role: "Admin"\|"Editor"\|"Reader"}` | `{role}` | JWT + Admin role |
@@ -793,6 +794,9 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `INVALID_RESET_TOKEN` | 400 | `POST /auth/password/reset/confirm` token does not match any row, is expired, or has already been used |
 | `OAUTH_STATE_MISMATCH` | 400 | `GET /auth/google/callback` state cookie missing or does not match the value embedded in the OAuth state JWT |
 | `OAUTH_EMAIL_NOT_VERIFIED` | 400 | `GET /auth/google/callback` received an ID token where `email_verified=false`; unverified Google emails cannot resolve to a DataSpoke account |
+| `OAUTH_NOT_CONFIGURED` | 503 | `GET /auth/google/{login,callback}` invoked while Google OAuth credentials or the OAuth-state HMAC secret are not configured — operator must set `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET` |
+| `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 409 | `GET /auth/google/callback` resolved a Google `sub` that is already linked to a different DataSpoke user (one Google account per user) |
+| `INVALID_REFRESH_TOKEN` | 401 | `POST /auth/token/refresh` received a structurally-valid JWT whose `type` claim is not `"refresh"` (e.g. an access token presented at the refresh endpoint) |
 | `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (write method on `/spoke/*` or `/hub/*`) |
 | `INVALID_API_TOKEN` | 401 | `Authorization: Bearer dsk_...` token does not match any `api_tokens` row, or the format is malformed |
 | `TOKEN_REVOKED` | 401 | API token row exists but `revoked_at` is set |

@@ -5,16 +5,23 @@ Concerns covered:
 - POST /auth/password/reset/request for unknown email also returns 204 (no enumeration)
 - POST /auth/password/reset/confirm with invalid token returns 400 INVALID_RESET_TOKEN
 - Successful reset (raw token captured via DB) + confirm → new password works for login
+- Known email + SMTP unconfigured → 503 PERIPHERAL_NOT_CONFIGURED, detail.peripheral="smtp",
+  zero rows in password_reset_tokens
+- Known email + SMTP delivery failure → 503 STORAGE_UNAVAILABLE, zero rows in
+  password_reset_tokens
 
-Note: SMTP send is not exercised here (stub_notification_service=true in dev env).
-The reset token is captured directly from the DB to simulate confirmation.
+Note: SMTP success path is exercised via stub_notification_service (dev env default).
+SMTP failure paths use DI override (ASGITransport) to inject controlled exceptions
+without requiring deliberate misconfiguration of the real dev-env SMTP peripheral.
 
 spec: spec/feature/AUTH.md §Lifecycle §Password reset
+spec: spec/feature/AUTH.md §Failure Modes
 spec: spec/API.md §Auth POST /auth/password/reset/request, /auth/password/reset/confirm
 """
 
 import hashlib
 import uuid
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -264,6 +271,153 @@ async def test_reset_full_flow_via_db_token(
         await async_session.execute(
             text("DELETE FROM dataspoke.password_reset_tokens WHERE token_hash = :token_hash"),
             {"token_hash": token_hash},
+        )
+        await async_session.execute(
+            text("DELETE FROM dataspoke.users WHERE id = :id"),
+            {"id": user_id},
+        )
+        await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_reset_request_smtp_not_configured_returns_503(
+    async_session: AsyncSession,
+) -> None:
+    """POST /auth/password/reset/request returns 503 PERIPHERAL_NOT_CONFIGURED when SMTP is absent.
+
+    Uses ASGITransport with a DI override that injects a notification stub whose
+    send_email raises PeripheralNotConfiguredError("smtp").  This exercises the
+    SMTP-misconfigured path without touching the real dev-env SMTP peripheral.
+
+    Also verifies that no password_reset_tokens row is written (email-first ordering
+    invariant: the token row is only persisted after send_email succeeds).
+
+    spec: spec/feature/AUTH.md §Failure Modes — SMTP peripheral missing →
+          503 PERIPHERAL_NOT_CONFIGURED with detail.peripheral="smtp",
+          zero rows in password_reset_tokens.
+    """
+    from tests.integration.conftest import override_app
+
+    from src.shared.exceptions import PeripheralNotConfiguredError
+
+    email = _unique_email("smtp-not-cfg")
+    user_id = await _seed_user(async_session, email)
+
+    # Stub notification whose send_email raises PeripheralNotConfiguredError
+    stub_notification = AsyncMock()
+    stub_notification.send_email = AsyncMock(
+        side_effect=PeripheralNotConfiguredError("smtp")
+    )
+
+    try:
+        async with override_app(db=async_session, notification=stub_notification) as client:
+            resp = await client.post(
+                "/api/v1/auth/password/reset/request",
+                json={"email": email},
+            )
+
+        assert resp.status_code == 503, (
+            f"SMTP not configured must return 503, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert body.get("error_code") == "PERIPHERAL_NOT_CONFIGURED", (
+            "error_code must be PERIPHERAL_NOT_CONFIGURED "
+            "per spec/feature/AUTH.md §Failure Modes"
+        )
+        assert body.get("detail", {}).get("peripheral") == "smtp", (
+            "detail.peripheral must be 'smtp' "
+            "per spec/feature/AUTH.md §Failure Modes"
+        )
+
+        # No token row must have been written
+        result = await async_session.execute(
+            text(
+                "SELECT COUNT(*) FROM dataspoke.password_reset_tokens"
+                " WHERE user_id = :uid"
+            ),
+            {"uid": user_id},
+        )
+        row_count = result.scalar()
+        assert row_count == 0, (
+            f"password_reset_tokens must have zero rows after SMTP-not-configured failure "
+            f"per spec/feature/AUTH.md §Failure Modes, got {row_count}"
+        )
+
+    finally:
+        await async_session.execute(
+            text("DELETE FROM dataspoke.password_reset_tokens WHERE user_id = :uid"),
+            {"uid": user_id},
+        )
+        await async_session.execute(
+            text("DELETE FROM dataspoke.users WHERE id = :id"),
+            {"id": user_id},
+        )
+        await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_reset_request_smtp_delivery_failure_returns_503(
+    async_session: AsyncSession,
+) -> None:
+    """POST /auth/password/reset/request returns 503 STORAGE_UNAVAILABLE on SMTP delivery failure.
+
+    Uses ASGITransport with a DI override that injects a notification stub whose
+    send_email raises NotificationError (SMTP is configured but transport fails).
+    The impl wraps this as StorageUnavailableError so the global handler returns 503.
+
+    Also verifies that no password_reset_tokens row is written.
+
+    spec/feature/AUTH.md §Failure Modes — SMTP configured but delivery fails
+    (transport error, auth rejection, queue full) during password-reset request →
+    503 STORAGE_UNAVAILABLE; no DB write.
+    """
+    from tests.integration.conftest import override_app
+
+    from src.shared.exceptions import NotificationError
+
+    email = _unique_email("smtp-fail")
+    user_id = await _seed_user(async_session, email)
+
+    # Stub notification whose send_email raises NotificationError (delivery failure)
+    stub_notification = AsyncMock()
+    stub_notification.send_email = AsyncMock(
+        side_effect=NotificationError("SMTP transport refused connection")
+    )
+
+    try:
+        async with override_app(db=async_session, notification=stub_notification) as client:
+            resp = await client.post(
+                "/api/v1/auth/password/reset/request",
+                json={"email": email},
+            )
+
+        assert resp.status_code == 503, (
+            f"SMTP delivery failure must return 503, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert body.get("error_code") == "STORAGE_UNAVAILABLE", (
+            "error_code must be STORAGE_UNAVAILABLE "
+            "per spec/feature/AUTH.md §Failure Modes"
+        )
+
+        # No token row must have been written
+        result = await async_session.execute(
+            text(
+                "SELECT COUNT(*) FROM dataspoke.password_reset_tokens"
+                " WHERE user_id = :uid"
+            ),
+            {"uid": user_id},
+        )
+        row_count = result.scalar()
+        assert row_count == 0, (
+            f"password_reset_tokens must have zero rows after SMTP delivery failure "
+            f"per spec/feature/AUTH.md §Failure Modes, got {row_count}"
+        )
+
+    finally:
+        await async_session.execute(
+            text("DELETE FROM dataspoke.password_reset_tokens WHERE user_id = :uid"),
+            {"uid": user_id},
         )
         await async_session.execute(
             text("DELETE FROM dataspoke.users WHERE id = :id"),

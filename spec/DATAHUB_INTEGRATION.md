@@ -460,8 +460,11 @@ emitter.emit_mcp(MetadataChangeProposalWrapper(
 ```
 
 Idempotent — re-emit with the same data overwrites in place. The marker
-corpGroup is auto-created on first user registration via the analogous
-pattern with `CorpGroupInfoClass`.
+corpGroup is re-asserted on every user registration by emitting both
+`StatusClass(removed=False)` and `CorpGroupInfoClass(displayName=name,
+members=[], admins=[], groups=[])`. Both aspects are required: a previous
+partial bootstrap that committed only `Status` would leave the group
+unresolvable to `addGroupMembers`, so DataSpoke always re-emits the pair.
 
 #### Group membership
 

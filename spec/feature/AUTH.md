@@ -27,9 +27,10 @@
 8. [API Tokens](#api-tokens)
 9. [Role Drift Reconciliation](#role-drift-reconciliation)
 10. [Admin Surface](#admin-surface)
-11. [Failure Modes](#failure-modes)
-12. [Security Considerations](#security-considerations)
-13. [Out of Scope](#out-of-scope)
+11. [Built-in Bootstrap Admin](#built-in-bootstrap-admin)
+12. [Failure Modes](#failure-modes)
+13. [Security Considerations](#security-considerations)
+14. [Out of Scope](#out-of-scope)
 
 ---
 
@@ -111,9 +112,11 @@ mitigation rationale.
 
 ### Google OAuth registration & login
 
-`GET /auth/google/login` redirects the browser to Google with a signed state
-cookie. `GET /auth/google/callback` validates state + nonce, exchanges the
-authorisation code for an ID token, and resolves the user:
+`GET /auth/google/login` redirects the browser to Google. State and nonce
+are stored in a signed Starlette session cookie (HMAC-signed via
+`DATASPOKE_OAUTH_STATE_SECRET`) — authlib handles the round-trip end-to-end.
+`GET /auth/google/callback` validates state + nonce against the session,
+exchanges the authorisation code for an ID token, and resolves the user:
 
 | Google `sub` known? | Google `email` matches existing row? | Action |
 |---|---|---|
@@ -220,8 +223,9 @@ outgoing references are removed).
 1. Insert the DataSpoke `users` row with `role = 'Reader'` (transactional).
 2. Write the DataHub `corpUserInfo` aspect.
 3. Ensure the marker corpGroup (`/admin/conf.auth_datahub_corp_group`) exists
-   on DataHub — create it via `corpGroupInfo` aspect write if missing
-   (idempotent) — then add the corpuser to it.
+   on DataHub — re-assert both `Status(removed=false)` and `corpGroupInfo`
+   aspects (idempotent overwrite; see [§Marker corpGroup](#marker-corpgroup))
+   — then add the corpuser to it via `addGroupMembers`.
 4. Propagate the user's `users.role` to DataHub via `batchAssignRole`. For
    self-registration this is always `Reader`; for admin-initiated creation
    (future scope), it would be whichever role the admin supplied.
@@ -259,7 +263,7 @@ service accounts. It has no privilege effect on its own — it is a label.
 | Group URN | `urn:li:corpGroup:<admin/conf.auth_datahub_corp_group>` |
 | Default name | `dataspoke-users` |
 | Configured via | `PATCH /admin/conf` (`auth_datahub_corp_group` field). |
-| Created via | Auto-created by DataSpoke on first user registration if missing (idempotent — existing group is reused untouched). Display name defaults to the group name; description is empty. Admins who want richer group metadata edit it on DataHub directly. |
+| Created via | Auto-created by DataSpoke. Both `Status(removed=false)` and `corpGroupInfo` are re-asserted on every user registration (idempotent overwrite — defensive against the DataHub indexing race in which a previous failed attempt left only one of the two aspects committed). The `displayName` is reset to the group name and `members`/`admins`/sub-`groups` are reset to empty arrays on every touch, so the marker group **must not be used as a privilege carrier**. Operators wanting a different display name update `auth_datahub_corp_group` via `/admin/conf` instead of editing it on DataHub. |
 | Rename behaviour | Changing `auth_datahub_corp_group` does not migrate existing memberships. Subsequent registrations create and populate the new group; previously-registered users remain in the old group, which becomes orphaned from DataSpoke's perspective but stays valid on DataHub. Operators avoid this by renaming the corpGroup on DataHub first, then updating the conf field. |
 
 ---
@@ -404,6 +408,12 @@ The DAG's per-user GraphQL fan-out is bounded (one round trip per managed
 corpuser per day). For large deployments this could be batched via
 `scrollAcrossEntities`; baseline keeps the simple form.
 
+The DAG body is a thin HttpOperator call to
+`POST /internal/activities/auth/role-sync` (gated by `X-Internal-Token`);
+that internal-activity endpoint owns the loop, role read, and
+`AUTH.ROLE_SYNC_FIXED` event emission. Per-activity route shapes are not
+catalogued in [API](../API.md) — see [API §Internal Activities](../API.md#internal-activities-internalactivities).
+
 ---
 
 ## Admin Surface
@@ -424,6 +434,35 @@ surfaces relevant to user identity:
 
 ---
 
+## Built-in Bootstrap Admin
+
+Every fresh install needs an Admin user to drive `/admin/*` and start
+registering peripherals; spec'ing one well-known account closes the
+chicken-and-egg gap. `POST /internal/admin/bootstrap` (gated by
+`X-Internal-Token`) seeds the row idempotently: if any user with
+`role = 'Admin'` already exists it returns `{created: false}` and changes
+nothing.
+
+| Property | Value |
+|----------|-------|
+| Login identifier | `dataspoke` (not an email address — `POST /auth/token` accepts a plain string in the `email` field so this account can authenticate) |
+| Display name | `DataSpoke Admin` |
+| Initial password | `dataspoke` |
+| Role | `Admin` |
+| DataHub mirror | Full create sequence (`corpUserInfo` → marker group → `batchAssignRole`). On mirror failure the local row is compensating-deleted and the bootstrap call returns `503 DATAHUB_SYNC_FAILED`. |
+
+The dev install runs `helm-charts/bin/post-install/seed-admin-user.sh`
+after the API pod is Ready; prod operators run the same script (or call
+`/internal/admin/bootstrap` directly) once after pre-creating
+`dataspoke-secrets`. Both paths must rotate the default password via
+`PATCH /auth/me` before going to production — the install script logs a
+warning that explicitly says so. The bootstrap admin is otherwise a
+normal Admin user: it can be hard-deleted via `DELETE /admin/users/{id}`
+once another Admin exists, and the bootstrap endpoint will recreate it
+on the next install only if zero Admin rows remain.
+
+---
+
 ## Failure Modes
 
 | Failure point | Behaviour | User-visible outcome | Operator action |
@@ -432,6 +471,7 @@ surfaces relevant to user identity:
 | DataHub corpuser already exists from a prior partial registration | Mirror sequence resumes from the failing step (idempotent aspect writes). | Registration succeeds. | None. |
 | Marker corpGroup missing on DataHub | Step 3 of the mirror create sequence auto-creates it. | Registration succeeds. | None. |
 | SMTP peripheral missing during password-reset request | Request refuses; no DB write. | `503 PERIPHERAL_NOT_CONFIGURED`. | Admin configures `/admin/peripherals/smtp`. |
+| SMTP configured but delivery fails (transport error, auth rejection, queue full) during password-reset request | Request refuses; no DB write — the token row is written only after `send_email` returns successfully. | `503 STORAGE_UNAVAILABLE` with a static message; the underlying SMTP error is logged but not echoed to the client. | Inspect API logs for the upstream cause; fix the SMTP path and retry. |
 | Redis unreachable during refresh or revoke | Refresh/revoke fail-closed. | `503 STORAGE_UNAVAILABLE`. | Restore Redis. |
 | Google OAuth state mismatch on callback | Callback aborts before token issuance. | `400 OAUTH_STATE_MISMATCH`. | User retries the OAuth flow. |
 | Google OAuth callback receives ID token with `email_verified=false` | Callback rejects the token; no user is created or logged in. | `400 OAUTH_EMAIL_NOT_VERIFIED`. | User verifies their Google account email and retries. |
@@ -466,11 +506,15 @@ verification step in a fork (see [Out of Scope](#out-of-scope)).
 
 ### OAuth flow hardening
 
-The Google callback validates the state cookie (random, signed, single-use
-per flow) and the ID token's `nonce` claim against the value embedded in
-state. Mismatches return `400 OAUTH_STATE_MISMATCH` without attempting token
-exchange. The Google callback rejects ID tokens with `email_verified=false` —
-unverified Google emails cannot resolve to a DataSpoke account.
+State and nonce are stored in the signed Starlette session cookie (HMAC
+key `DATASPOKE_OAUTH_STATE_SECRET`); authlib generates fresh random
+values on every `/auth/google/login` and validates them on callback.
+Mismatches return `400 OAUTH_STATE_MISMATCH` without attempting token
+exchange. The callback rejects ID tokens with `email_verified=false`
+(`400 OAUTH_EMAIL_NOT_VERIFIED`) — unverified Google emails cannot
+resolve to a DataSpoke account. If the credentials or the session
+secret are unset, `/auth/google/{login,callback}` returns
+`503 OAUTH_NOT_CONFIGURED`.
 
 ### Password storage
 

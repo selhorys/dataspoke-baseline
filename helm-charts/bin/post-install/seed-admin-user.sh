@@ -49,12 +49,15 @@ info "Internal token retrieved."
 # Bootstrap default admin user
 # ---------------------------------------------------------------------------
 info "Calling POST /internal/admin/bootstrap to seed default admin user..."
-HTTP_CODE=$(curl -fsS -o /tmp/seed-admin-resp.json -w "%{http_code}" -X POST \
+HTTP_CODE=$(curl -sS -o /tmp/seed-admin-resp.json -w "%{http_code}" -X POST \
   "http://app.${DOMAIN}/internal/admin/bootstrap" \
   -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{}' \
-  2>&1 || echo "000")
+  || echo "000")
+
+# Parse error_code from body when present (used by all non-2xx branches).
+ERROR_CODE="$(python3 -c "import json; d=json.load(open('/tmp/seed-admin-resp.json')); print(d.get('error_code',''))" 2>/dev/null || true)"
 
 case "$HTTP_CODE" in
   200|201)
@@ -67,13 +70,28 @@ case "$HTTP_CODE" in
     fi
     ;;
   503)
-    ERROR_CODE="$(python3 -c "import json,sys; d=json.load(open('/tmp/seed-admin-resp.json')); print(d.get('error_code',''))" 2>/dev/null || true)"
-    if [[ "$ERROR_CODE" == "STORAGE_UNAVAILABLE" || "$ERROR_CODE" == "PERIPHERAL_NOT_CONFIGURED" ]]; then
-      warn "Bootstrap returned 503 ${ERROR_CODE}: peripheral dependencies not yet configured."
-      warn "Configure /admin/peripherals/datahub then re-run this script to seed the admin user."
-      exit 0
-    fi
-    error "POST failed (HTTP ${HTTP_CODE}): http://app.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
+    case "$ERROR_CODE" in
+      DATAHUB_SYNC_FAILED)
+        warn "Bootstrap got 503 DATAHUB_SYNC_FAILED — DataHub is still indexing the just-emitted corpuser/corpGroup aspects."
+        warn "This is normal ~2-3 min after a fresh DataHub install. Re-run:"
+        warn "  bash $0"
+        exit 0
+        ;;
+      PERIPHERAL_NOT_CONFIGURED|STORAGE_UNAVAILABLE)
+        warn "Bootstrap got 503 ${ERROR_CODE}: peripheral dependencies not yet configured."
+        warn "Configure /admin/peripherals/datahub then re-run this script to seed the admin user."
+        exit 0
+        ;;
+      *)
+        error "POST failed (HTTP 503, error_code=${ERROR_CODE:-unknown}): http://app.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
+        ;;
+    esac
+    ;;
+  401|403)
+    error "Bootstrap rejected with HTTP ${HTTP_CODE} — X-Internal-Token mismatch. Re-check dataspoke-secrets and the API pod env."
+    ;;
+  000)
+    error "Could not reach http://app.${DOMAIN}/internal/admin/bootstrap — check ingress, DNS, and that the dataspoke-api pod is Ready."
     ;;
   *)
     error "POST failed (HTTP ${HTTP_CODE}): http://app.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
