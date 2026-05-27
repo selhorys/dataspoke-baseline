@@ -1,39 +1,31 @@
 """API-wired integration test: role change propagates to DataHub.
 
 Concerns covered:
-- PATCH /admin/users/{id}/role to Editor propagates to DataHub IsMemberOfRole
-- DataHub-side role reflects the new role after the PATCH
+- PATCH /admin/users/{id}/role to Editor propagates to DataHub RoleMembership aspect
+- The aspect's atomic single-role reflects the new role after the PATCH
 
 spec: spec/feature/AUTH.md §Admin Surface — PATCH /admin/users/{id}/role writes DataSpoke first
 then propagates to DataHub via batchAssignRole.
 spec: spec/feature/AUTH.md §Identity Model — DataSpoke is the SSOT; DataHub holds propagated copies.
 """
 
-import asyncio
 import uuid
 
 import httpx
 import pytest
+from datahub.metadata.schema_classes import RoleMembershipClass
 
 
 def _unique_email(prefix: str = "role-change") -> str:
     return f"{prefix}-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
 
 
-async def _poll_graphql(datahub_client, query: str, variables: dict, predicate, *, timeout: int = 60, interval: float = 3.0):
-    """Poll a DataHub GraphQL query until predicate(result) is True or timeout.
-
-    DataHub's relationship queries depend on ES indexing which can lag
-    several seconds after a mutation.
-    """
-    deadline = asyncio.get_event_loop().time() + timeout
-    while True:
-        result = await datahub_client.execute_graphql(query, variables)
-        if predicate(result):
-            return result
-        if asyncio.get_event_loop().time() >= deadline:
-            return result
-        await asyncio.sleep(interval)
+async def _read_role_aspect(datahub_client, corpuser_urn: str) -> str | None:
+    """Return the corpuser's atomic single role from the RoleMembership aspect."""
+    aspect = await datahub_client.get_aspect(corpuser_urn, RoleMembershipClass)
+    if aspect is None or not aspect.roles:
+        return None
+    return aspect.roles[0].removeprefix("urn:li:dataHubRole:")
 
 
 @pytest.mark.asyncio
@@ -42,7 +34,7 @@ async def test_role_change_propagates_to_datahub(
     admin_headers: dict[str, str],
     datahub_client,
 ) -> None:
-    """PATCH /admin/users/{id}/role to Editor: DataHub IsMemberOfRole now shows Editor.
+    """PATCH /admin/users/{id}/role to Editor: RoleMembership aspect now holds Editor.
 
     spec: spec/feature/AUTH.md §Admin Surface — PATCH /admin/users/{id}/role writes DataSpoke first
     then propagates to DataHub via batchAssignRole. DataSpoke is SSOT.
@@ -73,39 +65,10 @@ async def test_role_change_propagates_to_datahub(
     )
     assert role_resp.status_code == 200, f"Role patch failed: {role_resp.text}"
 
-    # Verify DataHub-side role.
-    # DataHub's relationship queries depend on ES indexing — poll with 60s timeout.
+    # Verify the RoleMembership aspect (atomic single-role).
     corpuser_urn = f"urn:li:corpuser:{email}"
-    query = """
-    query($u: String!) {
-      corpUser(urn: $u) {
-        relationships(input: {types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10}) {
-          relationships { entity { ... on DataHubRole { urn name } } }
-        }
-      }
-    }
-    """
-
-    def _has_editor(result):
-        corp_user = (result or {}).get("corpUser") or {}
-        rels = (corp_user.get("relationships") or {}).get("relationships") or []
-        return "Editor" in [(rel.get("entity") or {}).get("name", "") for rel in rels]
-
-    result = await _poll_graphql(datahub_client, query, {"u": corpuser_urn}, _has_editor, timeout=60)
-
-    corp_user = (result or {}).get("corpUser") or {}
-    relationships = (corp_user.get("relationships") or {}).get("relationships") or []
-    role_names = [
-        (rel.get("entity") or {}).get("name", "")
-        for rel in relationships
-    ]
-
-    assert "Editor" in role_names, (
-        f"DataHub IsMemberOfRole must show Editor after PATCH /admin/users/{user_id}/role "
-        f"per spec/feature/AUTH.md §Admin Surface. Found roles: {role_names}"
-    )
-    assert "Reader" not in role_names, (
-        f"DataHub must NOT show Reader after role is promoted to Editor "
-        f"per spec/feature/AUTH.md §Admin Surface (one role at a time, DataSpoke SSOT). "
-        f"Found roles: {role_names}"
+    role = await _read_role_aspect(datahub_client, corpuser_urn)
+    assert role == "Editor", (
+        f"RoleMembership aspect must be Editor after PATCH /admin/users/{user_id}/role "
+        f"per spec/feature/AUTH.md §Admin Surface. Got: {role}"
     )

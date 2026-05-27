@@ -6,7 +6,7 @@ Concerns covered:
 - ensure_marker_group_exists always emits Status + CorpGroupInfo (unconditional, idempotent)
 - add_user_to_marker_group issues the GraphQL addGroupMembers mutation with the right variables
 - propagate_role issues batchAssignRole with the right roleUrn
-- read_role parses the relationships response correctly; returns None when no role attached
+- read_role parses the RoleMembership aspect; returns None when missing, empty, or for non-baseline role URNs
 - hard_delete_corpuser calls client.hard_delete_entity with the URN
 
 spec: spec/feature/AUTH.md §DataHub Mirror Semantics
@@ -248,76 +248,72 @@ async def test_propagate_role_issues_batch_assign_role_mutation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_role_parses_response_correctly() -> None:
-    """read_role parses IsMemberOfRole relationships and returns the role name.
+@pytest.mark.parametrize("role", ["Admin", "Editor", "Reader"])
+async def test_read_role_parses_aspect_correctly(role: str) -> None:
+    """read_role reads the RoleMembership aspect and returns the role short name.
 
-    spec: spec/feature/AUTH.md §Role Drift Reconciliation — the DAG reads
-    IsMemberOfRole via GraphQL to detect DataHub-side drift.
+    spec: spec/feature/AUTH.md §Role Drift Reconciliation — the DAG reads the
+    RoleMembership aspect directly (atomic single-role per DataHub RoleService).
     """
+    from datahub.metadata.schema_classes import RoleMembershipClass
+
     from src.backend.datahub.users import read_role
 
     mock_client = AsyncMock()
-    mock_client.execute_graphql = AsyncMock(return_value={
-        "corpUser": {
-            "relationships": {
-                "relationships": [
-                    {"entity": {"name": "Editor"}}
-                ]
-            }
-        }
-    })
+    mock_client.get_aspect = AsyncMock(
+        return_value=RoleMembershipClass(roles=[f"urn:li:dataHubRole:{role}"])
+    )
 
     result = await read_role(mock_client, "urn:li:corpuser:dave@example.com")
 
-    assert result == "Editor", (
-        "read_role must return 'Editor' when DataHub reports the Editor role "
+    assert result == role, (
+        f"read_role must return '{role}' when the aspect holds the {role} role URN "
         "per spec/feature/AUTH.md §Role Drift Reconciliation"
     )
 
 
 @pytest.mark.asyncio
-async def test_read_role_returns_none_when_no_role_assigned() -> None:
-    """read_role returns None when no IsMemberOfRole relationship exists.
-
-    spec: spec/feature/AUTH.md §Role Drift Reconciliation — returns None when no role.
-    """
+async def test_read_role_returns_none_when_aspect_missing() -> None:
+    """read_role returns None when the corpuser has no RoleMembership aspect."""
     from src.backend.datahub.users import read_role
 
     mock_client = AsyncMock()
-    mock_client.execute_graphql = AsyncMock(return_value={
-        "corpUser": {
-            "relationships": {
-                "relationships": []
-            }
-        }
-    })
+    mock_client.get_aspect = AsyncMock(return_value=None)
 
     result = await read_role(mock_client, "urn:li:corpuser:norole@example.com")
 
-    assert result is None, (
-        "read_role must return None when no IsMemberOfRole relationship exists "
-        "per spec/feature/AUTH.md §Role Drift Reconciliation"
-    )
+    assert result is None
 
 
 @pytest.mark.asyncio
-async def test_read_role_returns_none_for_unrecognised_role_name() -> None:
-    """read_role returns None for role names that are not Admin/Editor/Reader.
+async def test_read_role_returns_none_when_aspect_roles_empty() -> None:
+    """read_role returns None when the aspect's roles array is empty."""
+    from datahub.metadata.schema_classes import RoleMembershipClass
 
-    spec: spec/feature/AUTH.md §Role Drift Reconciliation — only baseline roles are valid.
-    """
     from src.backend.datahub.users import read_role
 
     mock_client = AsyncMock()
-    mock_client.execute_graphql = AsyncMock(return_value={
-        "corpUser": {
-            "relationships": {
-                "relationships": [
-                    {"entity": {"name": "CustomRole"}}  # not a recognized role
-                ]
-            }
-        }
-    })
+    mock_client.get_aspect = AsyncMock(return_value=RoleMembershipClass(roles=[]))
+
+    result = await read_role(mock_client, "urn:li:corpuser:empty@example.com")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_read_role_returns_none_for_unrecognised_role_urn() -> None:
+    """read_role returns None for role URNs not in Admin/Editor/Reader.
+
+    spec: spec/feature/AUTH.md §Role Drift Reconciliation — only baseline roles are valid.
+    """
+    from datahub.metadata.schema_classes import RoleMembershipClass
+
+    from src.backend.datahub.users import read_role
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(
+        return_value=RoleMembershipClass(roles=["urn:li:dataHubRole:CustomRole"])
+    )
 
     result = await read_role(mock_client, "urn:li:corpuser:custom@example.com")
 
