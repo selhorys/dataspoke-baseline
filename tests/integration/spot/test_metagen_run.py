@@ -418,9 +418,11 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
     """
     event_url = "/api/v1/spoke/common/metagen/event"
 
-    # Two timestamps: older (yesterday) and newer (5s ago)
+    # Two timestamps close to now so the after-filter window stays narrow.
+    # A wide window (e.g. yesterday) would let dev-env accumulated events from
+    # prior test runs paginate past `limit=100` and push the seeds off.
     now = datetime.now(tz=UTC)
-    older_time = now - timedelta(days=1)
+    older_time = now - timedelta(minutes=5)
     newer_time = now - timedelta(seconds=5)
 
     older_event_id: str | None = None
@@ -477,9 +479,9 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
             f"Newer seeded event {newer_event_id!r} not found within scoped window."
         )
 
-        # GET with 'after' set to a cutoff between the two events
-        # (older_time + 30min < cutoff < newer_time)
-        cutoff = (older_time + timedelta(minutes=30)).isoformat()
+        # GET with 'after' set to a cutoff between the two events.
+        # older_time = now-5min, newer_time = now-5s → cutoff at now-2min lies between.
+        cutoff = (older_time + timedelta(minutes=3)).isoformat()
         filtered_resp = await api_client.get(
             f"{event_url}?after={urllib.parse.quote(cutoff, safe='')}&limit=100",
             headers=admin_headers,
