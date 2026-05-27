@@ -209,6 +209,23 @@ async def redis_client():
     await client.close()
 
 
+@pytest.fixture(autouse=True)
+def _flush_rate_limit_keys() -> None:
+    """Drop slowapi `LIMITER/*` keys before each test so the per-IP 5/min limit
+    on `/auth/register` and `/auth/token` does not bleed across tests in the
+    same minute window."""
+    import redis as _redis_sync
+
+    client = _redis_sync.Redis(host=_redis_host, port=_redis_port, password=_redis_password or None)
+    try:
+        for key in client.scan_iter("LIMITS:LIMITER/*"):
+            client.delete(key)
+    except Exception:
+        pass
+    finally:
+        client.close()
+
+
 async def _bootstrap_schema(db_url: str) -> None:
     from sqlalchemy import pool as sa_pool
 
@@ -594,6 +611,19 @@ def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
     spec: TESTING.md §Integration Testing — integration tests run with stubs for infra.
     """
     base_url = _shared_ingress_url()
+
+    # Ensure the bootstrap admin user exists — a prior `--reset-all` may have wiped it.
+    internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
+    if internal_token:
+        try:
+            httpx.post(
+                f"{base_url}/internal/admin/bootstrap",
+                headers={"X-Internal-Token": internal_token, "Content-Type": "application/json"},
+                content="{}",
+                timeout=30.0,
+            )
+        except Exception:
+            pass  # Best-effort — login below will surface real failures.
 
     # Obtain admin token (bootstrap account: dataspoke / dataspoke)
     try:
