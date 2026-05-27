@@ -75,9 +75,9 @@ the dataset to already exist in DataHub (`422 DATASET_NOT_IN_DATAHUB` otherwise)
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a validation result |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | List historic results (`?from=…&until=…`) |
 
-The cross-dataset list view at `/spoke/common/validation` continues to operate under
+The cross-dataset list view at `/spoke/validation` continues to operate under
 the existing semantics in
-[API §Validation](../API.md#validation-spokecommonvalidation).
+[API §Validation](../API.md#validation-spokevalidation).
 
 ## Rule Configuration
 
@@ -106,7 +106,7 @@ Notes:
 - `DELETE` performs a soft delete by emitting `status.removed = true` on the assertion
   URN. After `DELETE`, `GET conf` returns `404` and `PATCH conf` against the tombstoned
   slot also returns `404` — the resource view treats a soft-deleted rule as absent.
-  The cross-dataset list at `/spoke/common/validation` continues to surface deleted
+  The cross-dataset list at `/spoke/validation` continues to surface deleted
   rows under `?removed=true`. A subsequent `PUT` resurrects the assertion (clears
   `removed`) and overwrites `assertionInfo`. This follows the existing soft-delete
   resurrection pattern.

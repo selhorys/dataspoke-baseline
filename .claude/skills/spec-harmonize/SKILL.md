@@ -42,7 +42,7 @@ Which spec file changed, and how?
   Examples:
     /spec-harmonize spec/feature/SEARCH.md new
     /spec-harmonize spec/ARCHITECTURE.md modified
-    /spec-harmonize spec/feature/FRONTEND_DA.md deleted
+    /spec-harmonize spec/feature/FRONTEND_INGESTION.md deleted
 ```
 
 Wait for the user's reply before proceeding.
@@ -74,7 +74,7 @@ Classify the changed file using the spec hierarchy from `CLAUDE.md`:
 | 2 | `spec/API_DESIGN_PRINCIPLE_*.md`, `spec/DATAHUB_INTEGRATION.md` | Binding conventions |
 | 3 | `spec/ARCHITECTURE.md`, `spec/TESTING.md`, `spec/USE_CASE_*.md` | System architecture |
 | 4 | `spec/AI_SCAFFOLD.md`, `spec/AI_PRAUTO.md` | Scaffold conventions |
-| 5 | `spec/feature/*.md` | Common feature specs and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`) |
+| 5 | `spec/feature/*.md` | Common feature specs and per-function FRONTEND specs (`FRONTEND_{BASIC,GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`) |
 | — | `CLAUDE.md`, `README.md`, `.claude/**` | Harness documents |
 
 The priority level determines which other documents may need updating and which require user confirmation.

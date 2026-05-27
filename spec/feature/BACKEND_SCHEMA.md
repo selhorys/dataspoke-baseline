@@ -430,11 +430,11 @@ Ingestion, validation, and metadata generation are *attributes* of a dataset, so
 their events use `entity_type=dataset`. The dataset-level event endpoint
 (`GET .../data/{urn}/event`) filters by `entity_type=dataset` to return all
 event types for that dataset. Sub-resource event endpoints (e.g.,
-`.../event/ingestion`, `.../event/metagen`) additionally filter by `event_type`
+`.../event`, `.../event`) additionally filter by `event_type`
 prefix (e.g., `INGESTION.%`, `METAGEN.%`) to return only domain-specific events.
 The Ontology Generation singleton uses `entity_type=ontogen` and `entity_id='singleton'`
 (conf) or `entity_id='seed:{seed_id}'` (seed events) for the global event log surfaced
-at `/spoke/common/ontogen/event`; per-result events use `entity_type=node|edge|triple`
+at `/spoke/ontogen/event`; per-result events use `entity_type=node|edge|triple`
 and the corresponding ID.
 
 #### `department_mapping`
@@ -497,7 +497,7 @@ endpoint.
 **Sync triggers**:
 - Scheduled: refreshed by the matching `ontogen-{hourly,daily,weekly}` tier DAG when it
   re-runs UC3 inference on the configured `schedule_tier`
-- On-demand: rebuilt by a manual `POST /spoke/common/ontogen/method/run` (synchronous, in-process)
+- On-demand: rebuilt by a manual `POST /spoke/ontogen/method/run` (synchronous, in-process)
 - Optional event-driven extension (not enabled in baseline): Kafka MCL events for
   `datasetProperties` / `schemaMetadata` / `globalTags` changes — see
   [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)
@@ -533,7 +533,7 @@ endpoint.
 **Sync triggers**:
 - Refreshed by the matching `ontogen-{hourly,daily,weekly}` tier DAG: every approved node whose
   `node_embeddings.updated_at` precedes `ontogen_nodes.updated_at` is re-embedded
-- On-demand: rebuilt by a manual `POST /spoke/common/ontogen/method/run` when name
+- On-demand: rebuilt by a manual `POST /spoke/ontogen/method/run` when name
   or description changed for an approved node
 
 ### `edge_embeddings`
@@ -558,7 +558,7 @@ Adversarial Debate Reviewer to sample RAG anchors over approved edges (see
 the LLM embedding endpoint.
 
 **Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
-DAG or manual `POST /spoke/common/ontogen/method/run` that refreshes `node_embeddings`.
+DAG or manual `POST /spoke/ontogen/method/run` that refreshes `node_embeddings`.
 
 ### `triple_embeddings`
 
@@ -581,7 +581,7 @@ Debate Reviewer to sample RAG anchors over approved triples. Lives in the
 the LLM embedding endpoint.
 
 **Sync triggers**: Refreshed by the same `ontogen-{hourly,daily,weekly}` tier
-DAG or manual `POST /spoke/common/ontogen/method/run` that refreshes `node_embeddings`.
+DAG or manual `POST /spoke/ontogen/method/run` that refreshes `node_embeddings`.
 
 ### `metagen_candidate_embeddings`
 

@@ -9,12 +9,12 @@ allowed-tools: Read, Write, Edit
 
 ```
 spec/
-├── MANIFESTO_en.md / _kr.md   ← Highest authority. Product identity, user-group
-│                                 taxonomy (DE/DA/DG), naming. Never modify.
+├── MANIFESTO_en.md / _kr.md   ← Highest authority. Product identity, five-feature
+│                                 baseline (§2.1), naming. Never modify.
 ├── ARCHITECTURE.md            ← System-wide architecture: components, tech stack,
 │                                 data flows, feature-to-architecture mapping,
 │                                 shared services, deployment. Conforms to MANIFESTO.
-├── USE_CASE_en.md / _kr.md    ← Conceptual scenarios (UC1–UC5) by user group.
+├── USE_CASE_en.md / _kr.md    ← Conceptual scenarios UC1–UC5.
 ├── AI_SCAFFOLD.md             ← Goal 2: Claude Code scaffold conventions.
 ├── TESTING.md                 ← Testing conventions: toolchain, unit/integration/E2E
 │                                 workflows, Imazon test data.
@@ -27,15 +27,17 @@ spec/
 └── feature/            ← Deep-dive specs for ALL FIVE BASELINE features
     │                     (Ingestion Control, Validation, Ontology Generation,
     │                     Metadata Generation, Governance) plus cross-cutting
-    │                     infrastructure and user-group-specific FRONTEND
-    │                     specs. Timeless reference format.
-    └── <FEATURE>.md      e.g. BACKEND.md, BACKEND_SCHEMA.md,
-                          FRONTEND_BASIC/DE/DA/DG.md, HELM_CHART.md
+    │                     infrastructure and per-function FRONTEND specs.
+    │                     Timeless reference format.
+    └── <FEATURE>.md      e.g. BACKEND.md, BACKEND_SCHEMA.md, FRONTEND_BASIC.md,
+                          FRONTEND_GOVERNANCE.md, FRONTEND_INGESTION.md,
+                          FRONTEND_VALIDATION.md, FRONTEND_ONTOGEN.md,
+                          FRONTEND_METAGEN.md, HELM_CHART.md
 ```
 
 **Routing rules:**
 - Top-level `spec/` — project-wide documents only. Do NOT create new top-level files unless the topic affects the whole system and warrants an architectural-level document.
-- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `BACKEND.md`, `HELM_CHART.md`) and user-group-specific FRONTEND specs (`FRONTEND_DE/DA/DG.md`). The user-group framing (DE / DA / DG) is a UI / API extensibility surface only — baseline governance routes under `/spoke/dg/` are still part of the baseline product and live here. Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH_DA.md`); no separate subdirectory is required.
+- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `BACKEND.md`, `HELM_CHART.md`) and one FRONTEND spec per function area (`FRONTEND_BASIC.md` for shell/auth/admin, plus `FRONTEND_{GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`). Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH.md`); no separate subdirectory is required.
 
 Implementation plans and decision records are tracked via GitHub Issues and PRs, not in the spec directory.
 
@@ -60,7 +62,7 @@ If writing about a specific feature, also check for an existing `spec/feature/<F
 
 | Destination | When to use | Document type |
 |-------------|-------------|---------------|
-| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance), a common cross-cutting topic (API, dev environment, shared services), a user-group-specific FRONTEND spec (`FRONTEND_DE/DA/DG.md`), or an organization-specific extension in a fork (e.g. `SEARCH_DA.md`). | Feature Spec (see template A; tag with user group when applicable) |
+| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance), a common cross-cutting topic (API, dev environment, shared services), a per-function FRONTEND spec (`FRONTEND_{BASIC,GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`), or an organization-specific extension in a fork (e.g. `SEARCH.md`). | Feature Spec (see template A) |
 | `spec/<DOC>.md` (top-level) | Only for project-wide topics that belong alongside MANIFESTO and ARCHITECTURE | Top-level spec (use template A without feature context) |
 
 ---
@@ -73,10 +75,9 @@ Use the template for the chosen destination. Follow these style rules for both:
 - ASCII diagrams for component/flow illustrations
 - Tables for comparisons and field definitions
 - Code blocks for schemas, interfaces, API examples
-- User group names must match the MANIFESTO exactly: **DE** (Data Engineering), **DA** (Data Analysis), **DG** (Data Governance) — these are UI / API extensibility surfaces, not feature partitions
 - Baseline feature names must match the MANIFESTO §2.1 exactly: **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, **Governance**
 - Product name is always `DataSpoke` (no space)
-- API URIs follow the three-tier pattern: `/api/v1/spoke/common/…` (shared), `/api/v1/spoke/[de|da|dg]/…` (user-group), `/api/v1/hub/…` (DataHub pass-through)
+- API URIs follow the function-namespace pattern: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metagen}/…` plus `/api/v1/hub/…` (DataHub pass-through)
 - For DataHub integration details, reference `DATAHUB_INTEGRATION.md` rather than duplicating SDK patterns or aspect catalogs
 - For API convention details, reference `API_DESIGN_PRINCIPLE_en.md` rather than restating URI/response format rules
 - When referencing architecture-level concepts (shared services, data flows, tech stack), align with `ARCHITECTURE.md`
@@ -87,13 +88,8 @@ Use the template for the chosen destination. Follow these style rules for both:
 
 No version/date/author metadata block. This is a timeless reference document.
 
-For user-group-specific or organization-extension features, include the user group tag. For common features, omit it.
-
 ```markdown
 # <Feature Name>
-
-> **User Group**: <DE | DA | DG | DE/DA (shared)>
-> (omit this line for common features in spec/feature/)
 
 ## Table of Contents
 1. [Overview](#overview)

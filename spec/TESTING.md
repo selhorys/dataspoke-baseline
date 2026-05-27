@@ -314,12 +314,12 @@ TOKEN=$(curl -s -X POST http://app.<INGRESS_IP>.nip.io/api/v1/auth/token \
   -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
 ```
 
-Admin has groups `["admin", "de", "da", "dg"]` (all tiers). Tokens expire in 15 minutes.
+Admin tokens carry `role = "Admin"` and expire in 15 minutes.
 
 ### Making Requests
 
 ```bash
-curl -s http://app.<INGRESS_IP>.nip.io/api/v1/spoke/common/data/$URN \
+curl -s "http://app.<INGRESS_IP>.nip.io/api/v1/spoke/common/data/$URN/attr/ingestion/conf" \
   -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
@@ -327,14 +327,14 @@ URN format: `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.<schema>.<t
 (`example_db` is the dummy-data instance name emitted by `tests/integration/util/datahub.py`;
 the Imazon company narrative lives at the dataset / column level, not in the URN segment.)
 
-Route tiers: `/api/v1/spoke/common/…` (any group), `/api/v1/spoke/[de|da|dg]/…` (matching
-group), `/api/v1/hub/…` (any group), `/api/v1/auth/…` (public).
+Route namespaces: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metagen}/…`,
+`/api/v1/hub/…`, `/api/v1/auth/…` (public).
 
 ### Verifying Side Effects
 
 | Side effect | How to check |
 |---|---|
-| Event logged | `GET /api/v1/spoke/common/data/{urn}/event` |
+| Event logged | `GET /api/v1/spoke/<feature>/data/{urn}/event` (one of `ingestion`, `validation`, `metagen`) |
 | Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v2/dags/{dag_id}` |
 | DB row | `psql -h $DATASPOKE_TEST_POSTGRES_HOST -p $DATASPOKE_TEST_POSTGRES_PORT -U $DATASPOKE_TEST_POSTGRES_USER -d $DATASPOKE_TEST_POSTGRES_DB` |
 | DataHub aspect | `curl http://datahub.<INGRESS_IP>.nip.io/gms/aspects?urn={urn}&aspect={aspect}` |

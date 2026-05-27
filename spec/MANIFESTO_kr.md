@@ -90,28 +90,34 @@ DataSpoke는 네 가지 컴포넌트로 구성된다.
               High Level Architecture
 ```
 
-- **DataSpoke UI**: 사용자 그룹별 진입점을 갖춘 포털 형태의 인터페이스.
+- **DataSpoke UI**: 기능 기반의 좌측 메뉴를 갖춘 단일 셸 인터페이스이다.
   ```
-  ┌─────────────────────────────────────────────┐
-  │  Data Hub & Spokes                   Login  │
-  │─────────────────────────────────────────────│
-  │                                             │
-  │              (DE)                           │
-  │                 \                           │
-  │                  \                          │
-  │                   (Hub)----(DG)             │
-  │                  /                          │
-  │                 /                           │
-  │              (DA)                           │
-  │                                             │
-  └─────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │ DataSpoke              user@imazon ▼  Logout        │
+  ├──────────────┬──────────────────────────────────────┤
+  │ Governance ▾ │   Governance · Dashboard             │
+  │  Dashboard   │                                      │
+  │  Metrics     │                                      │
+  │ Ingestion    │                                      │
+  │ Validation   │                                      │
+  │ OntoGen      │                                      │
+  │ MetaGen      │                                      │
+  ├──────────────┤                                      │
+  │ Profile      │                                      │
+  │ Admin        │                                      │
+  └──────────────┴──────────────────────────────────────┘
                   UI Main Page
   ```
-- **DataSpoke API**: 3계층 URI 구조.
+- **DataSpoke API**: 두 축 URI 구조 — 데이터셋 단위 크로스-기능 surface와
+  §2.1 기능별 네임스페이스(크로스-데이터셋 리스트 뷰와 글로벌 기능 담당).
   ```
-  /api/v1/spoke/common/…       # 사용자 그룹 공통 기능
-  /api/v1/spoke/[de|da|dg]/…   # 사용자 그룹별 전용 기능
-  /api/v1/hub/…                # DataHub 패스스루 (클라이언트용 선택적 인그레스)
+  /api/v1/spoke/common/data/{dataset_urn}/…   # 데이터셋 리소스 (per-dataset, cross-feature)
+  /api/v1/spoke/ingestion                     # 인제스천 크로스-데이터셋 리스트
+  /api/v1/spoke/validation                    # 검증 크로스-데이터셋 리스트
+  /api/v1/spoke/ontogen/…                     # 온톨로지 생성 (글로벌 싱글톤)
+  /api/v1/spoke/metagen/…                     # 메타데이터 생성 (글로벌 싱글톤)
+  /api/v1/spoke/governance/…                  # 거버넌스 메트릭
+  /api/v1/hub/…                               # DataHub 패스스루 (클라이언트용 선택적 인그레스)
   ```
 - **DataSpoke Backend/Pipeline**: 인제스션, 검증, 온톨로지 생성,
   메타데이터 생성, 거버넌스(§2.1의 다섯 가지 기능) 등 핵심 로직 처리.

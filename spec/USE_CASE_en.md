@@ -13,8 +13,9 @@ This document demonstrates how DataSpoke realises the five features defined in
 **Metadata Generation**, and **Governance**. All scenarios share a single imaginary company —
 **Imazon**, an online bookstore — so use cases coexist and reinforce each other.
 
-User-group framing (Data Engineering / Data Analysis / Data Governance) remains as a
-UI and API extensibility surface, but features are not partitioned by user group.
+The baseline organises both the UI and the API around the five MANIFESTO §2.1 features
+themselves — every authenticated user reaches every feature, with role (Reader / Editor /
+Admin) gating writes.
 
 ---
 
@@ -91,9 +92,9 @@ and
 | `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | Register, read, update, remove ingestion conf (`mode`, `platform`, `identifier`, plus `locator`/`auth`/`schedule_tier` for `active-custom`) |
 | `POST /spoke/common/data/{urn}/method/ingestion/run` | Manual run (`dry_run: true` for connection check) — **`active-custom` configs only**; passive configs return `409 INGESTION_NOT_APPLICABLE` |
 | `GET /spoke/common/data/{urn}/event/ingestion` | Per-dataset ingestion event history (active-custom: written by DataSpoke runs; passive: written by the hourly poll observing DataProcessInstance records in DataHub) |
-| `GET /spoke/common/ingestion` | Cross-dataset list view aggregating per-dataset `attr/ingestion/*` |
+| `GET /spoke/ingestion` | Cross-dataset list view aggregating per-dataset `attr/ingestion/*` |
 
-Each `event/ingestion` row carries an `event_type` (`INGESTION.COMPLETE` on success,
+Each `event` row carries an `event_type` (`INGESTION.COMPLETE` on success,
 `INGESTION.FAIL` on failure) and a matching `status` (`success` / `failure`).
 
 ### Imazon Examples
@@ -208,7 +209,7 @@ When the script runs and emits a DPI, the next hourly poll surfaces a row in
 #### Cross-dataset overview
 
 ```http
-GET /api/v1/spoke/common/ingestion?limit=100
+GET /api/v1/spoke/ingestion?limit=100
 ```
 
 Returns one row per dataset with its full `attr/ingestion/*` aggregate (mode, schedule
@@ -254,7 +255,7 @@ lives in [`spec/feature/VALIDATION.md`](feature/VALIDATION.md).
 | `POST /spoke/common/data/{urn}/attr/validation/result` | Append a result `{data_time, score, variables}`. Unknown variable keys → `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` → `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | Historical results filtered by `data_time` (RFC 3339, `from` inclusive, `until` exclusive). Default `limit=1000`, server cap `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | Per-dataset validation event history |
-| `GET /spoke/common/validation` | Cross-dataset list with conf (description + variable names) + latest result (data_time, score) |
+| `GET /spoke/validation` | Cross-dataset list with conf (description + variable names) + latest result (data_time, score) |
 
 ### Imazon Example
 
@@ -316,7 +317,7 @@ URN reinstates it (returns `201`) and the resurrected slot may carry a new
 description and variable set — e.g.
 `variables: ["row_cnt", "fill_rate", "anomaly_score", "null_rate"]`.
 
-**Cross-dataset overview.** `GET /spoke/common/validation` lists each dataset's
+**Cross-dataset overview.** `GET /spoke/validation` lists each dataset's
 `description`, `variable_count`, `latest_data_time`, `latest_score`, and
 `is_removed`. The list accepts `?removed=true|false` to include or exclude
 soft-deleted slots.
@@ -353,7 +354,7 @@ slug `subject_node_id__edge_id__object_node_id` (e.g.,
 `edition__is_edition_of__title`), so the ID itself encodes the fact.
 
 The ontology is a global artifact. A singleton operational conf at
-`/spoke/common/ontogen/attr/conf` controls when the inference DAG runs and which
+`/spoke/ontogen/attr/conf` controls when the inference DAG runs and which
 datasets are in scope. Human-authored Markdown **seeds** (prompts, domain hints,
 naming conventions) steer the LLM alongside the data sources, and a manual
 `POST /method/run` may carry an inline Markdown body as a one-shot prompt for that
@@ -374,34 +375,34 @@ The producer / reviewer adversarial-debate inference loop is in
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/ontogen/attr/conf` | Singleton operational conf — see field table above |
-| `GET /spoke/common/ontogen/attr/seed` | List seeds — `[{seed_id, updated_at, preview}]` (Markdown bodies fetched per-seed below) |
-| `POST /spoke/common/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` |
-| `GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` | Read, refine, or retire a seed |
-| `POST /spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
-| `GET /spoke/common/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
-| `GET /spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status |
-| `GET /spoke/common/ontogen/result/node/{node_id}` | Node detail incl. member datasets |
-| `GET /spoke/common/ontogen/result/node/{node_id}/attr` | Node attributes (confidence, source evidence) |
-| `GET /spoke/common/ontogen/result/node/{node_id}/event` | Node-level change history (proposed → approved / rejected, member additions) |
-| `POST /spoke/common/ontogen/result/node/{node_id}/method/review` | Approve or reject a pending node |
-| `GET /spoke/common/ontogen/result/edge` | List edges (predicates) with confidence and status |
-| `GET /spoke/common/ontogen/result/edge/{edge_id}` | Edge detail |
-| `GET /spoke/common/ontogen/result/edge/{edge_id}/attr` | Edge attributes (confidence, source evidence) |
-| `GET /spoke/common/ontogen/result/edge/{edge_id}/event` | Edge-level change history |
-| `POST /spoke/common/ontogen/result/edge/{edge_id}/method/review` | Approve or reject a pending edge |
-| `GET /spoke/common/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status |
-| `GET /spoke/common/ontogen/result/triple/{triple_id}` | Triple detail (resolved subject node, edge, object node) |
-| `GET /spoke/common/ontogen/result/triple/{triple_id}/attr` | Triple attributes (confidence, source evidence) |
-| `GET /spoke/common/ontogen/result/triple/{triple_id}/event` | Triple-level change history |
-| `POST /spoke/common/ontogen/result/triple/{triple_id}/method/review` | Approve or reject a pending triple — returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved |
+| `PUT/PATCH/GET/DELETE /spoke/ontogen/attr/conf` | Singleton operational conf — see field table above |
+| `GET /spoke/ontogen/attr/seed` | List seeds — `[{seed_id, updated_at, preview}]` (Markdown bodies fetched per-seed below) |
+| `POST /spoke/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` |
+| `GET/PATCH/DELETE /spoke/ontogen/attr/seed/{seed_id}` | Read, refine, or retire a seed |
+| `POST /spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
+| `GET /spoke/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
+| `GET /spoke/ontogen/result/node` | List nodes (subjects / objects) with confidence and status |
+| `GET /spoke/ontogen/result/node/{node_id}` | Node detail incl. member datasets |
+| `GET /spoke/ontogen/result/node/{node_id}/attr` | Node attributes (confidence, source evidence) |
+| `GET /spoke/ontogen/result/node/{node_id}/event` | Node-level change history (proposed → approved / rejected, member additions) |
+| `POST /spoke/ontogen/result/node/{node_id}/method/review` | Approve or reject a pending node |
+| `GET /spoke/ontogen/result/edge` | List edges (predicates) with confidence and status |
+| `GET /spoke/ontogen/result/edge/{edge_id}` | Edge detail |
+| `GET /spoke/ontogen/result/edge/{edge_id}/attr` | Edge attributes (confidence, source evidence) |
+| `GET /spoke/ontogen/result/edge/{edge_id}/event` | Edge-level change history |
+| `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | Approve or reject a pending edge |
+| `GET /spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status |
+| `GET /spoke/ontogen/result/triple/{triple_id}` | Triple detail (resolved subject node, edge, object node) |
+| `GET /spoke/ontogen/result/triple/{triple_id}/attr` | Triple attributes (confidence, source evidence) |
+| `GET /spoke/ontogen/result/triple/{triple_id}/event` | Triple-level change history |
+| `POST /spoke/ontogen/result/triple/{triple_id}/method/review` | Approve or reject a pending triple — returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved |
 
 ### Imazon Example
 
 **Conf.** The governance team enables ontology generation:
 
 ```http
-PUT /api/v1/spoke/common/ontogen/attr/conf
+PUT /api/v1/spoke/ontogen/attr/conf
 ```
 ```json
 {
@@ -414,7 +415,7 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 **Seed.** They post a domain seed (Markdown) to steer the LLM toward bookstore-friendly names:
 
 ```http
-POST /api/v1/spoke/common/ontogen/attr/seed
+POST /api/v1/spoke/ontogen/attr/seed
 Content-Type: text/markdown
 ```
 ```markdown
@@ -452,10 +453,10 @@ Triples (subject — predicate — object):
 LLM ambiguity between "rating" and "review"), so the reviewer starts with nodes:
 
 ```http
-GET /api/v1/spoke/common/ontogen/result/node
-GET /api/v1/spoke/common/ontogen/result/node/rating
-GET /api/v1/spoke/common/ontogen/result/node/rating/event
-POST /api/v1/spoke/common/ontogen/result/node/rating/method/review
+GET /api/v1/spoke/ontogen/result/node
+GET /api/v1/spoke/ontogen/result/node/rating
+GET /api/v1/spoke/ontogen/result/node/rating/event
+POST /api/v1/spoke/ontogen/result/node/rating/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "Confirmed FK structure; rename later if needed." }
@@ -464,17 +465,17 @@ POST /api/v1/spoke/common/ontogen/result/node/rating/method/review
 **Edges next.** With the nodes approved, the reviewer moves to edges:
 
 ```http
-GET /api/v1/spoke/common/ontogen/result/edge
-POST /api/v1/spoke/common/ontogen/result/edge/is_edition_of/method/review
-POST /api/v1/spoke/common/ontogen/result/edge/rates/method/review
+GET /api/v1/spoke/ontogen/result/edge
+POST /api/v1/spoke/ontogen/result/edge/is_edition_of/method/review
+POST /api/v1/spoke/ontogen/result/edge/rates/method/review
 ```
 
 **Triples last.** Once both endpoint nodes and the edge of a triple are approved, the
 triple becomes eligible for review:
 
 ```http
-GET /api/v1/spoke/common/ontogen/result/triple
-POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
+GET /api/v1/spoke/ontogen/result/triple
+POST /api/v1/spoke/ontogen/result/triple/{triple_id}/method/review
 ```
 
 Approval marks the entry as approved in DataSpoke storage.
@@ -517,7 +518,7 @@ the UI renders Markdown.
 Future scope (mentioned, not modelled here): proposals for `domains` and
 `globalTags`.
 
-A **global** operational conf at `/spoke/common/metagen/attr/conf` controls when the
+A **global** operational conf at `/spoke/metagen/attr/conf` controls when the
 generation DAG runs and which datasets are in scope. A **per-dataset** boundary at
 `/spoke/common/data/{urn}/attr/metagen/conf` is the opt-in switch — datasets without
 an `is_enabled=true` boundary row are excluded regardless of the global filter.
@@ -541,11 +542,11 @@ and
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/metagen/attr/conf` | Singleton operational conf — see field table above |
-| `POST /spoke/common/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}`. Concurrent runs return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
-| `GET /spoke/common/metagen/event` | Global generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
-| `GET /spoke/common/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) |
-| `GET /spoke/common/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}`, including every candidate |
+| `PUT/PATCH/GET/DELETE /spoke/metagen/attr/conf` | Singleton operational conf — see field table above |
+| `POST /spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}`. Concurrent runs return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
+| `GET /spoke/metagen/event` | Global generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
+| `GET /spoke/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) |
+| `GET /spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}`, including every candidate |
 | `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | Per-dataset boundary (`is_enabled`, `allowed`) |
 | `GET /spoke/common/data/{urn}/attr/metagen/item` | List items for one dataset |
 | `GET /spoke/common/data/{urn}/attr/metagen/item/{item_id}` | One item with all candidates |
@@ -557,7 +558,7 @@ and
 **Conf.** The governance team enables metagen globally:
 
 ```http
-PUT /api/v1/spoke/common/metagen/attr/conf
+PUT /api/v1/spoke/metagen/attr/conf
 ```
 ```json
 {
@@ -585,7 +586,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,examp
 **Run.** The daily Airflow DAG fires, or a reviewer triggers an immediate run:
 
 ```http
-POST /api/v1/spoke/common/metagen/method/run
+POST /api/v1/spoke/metagen/method/run
 ```
 
 **Browse items.** After the run, the dashboard lists the dataset's items:
@@ -708,12 +709,12 @@ delete any default, and add more metrics of the same three types.
 
 | Endpoint | Used for |
 |---|---|
-| `POST /spoke/dg/metric` | Create a metric — `metric_id` is supplied in the request body alongside the definition fields. A colliding id returns `409 METRIC_EXISTS` |
-| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | Replace / update / read / delete an existing metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT` replaces an existing definition and returns `404 METRIC_NOT_FOUND` when the id is absent |
-| `POST /spoke/dg/metric/{metric_id}/method/run` | Trigger a measurement run; `dry_run: true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
-| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries `values` and per-dataset `breakdown`) |
-| `GET /spoke/dg/metric/{metric_id}/event` | Run completion / definition change events |
-| `GET /spoke/dg/metric` | List all metrics |
+| `POST /spoke/governance/metric` | Create a metric — `metric_id` is supplied in the request body alongside the definition fields. A colliding id returns `409 METRIC_EXISTS` |
+| `PUT/PATCH/GET/DELETE /spoke/governance/metric/{metric_id}/attr/conf` | Replace / update / read / delete an existing metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT` replaces an existing definition and returns `404 METRIC_NOT_FOUND` when the id is absent |
+| `POST /spoke/governance/metric/{metric_id}/method/run` | Trigger a measurement run; `dry_run: true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
+| `GET /spoke/governance/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries `values` and per-dataset `breakdown`) |
+| `GET /spoke/governance/metric/{metric_id}/event` | Run completion / definition change events |
+| `GET /spoke/governance/metric` | List all metrics |
 
 Available `schedule_tier` values: `hourly`, `daily`, `weekly`. When enabled, the
 metric is invoked on its tier; on-demand runs always go through
@@ -725,7 +726,7 @@ The CDO add the doc-health metric with a DEV-scoped daily run, supplying the `me
 in the create body:
 
 ```http
-POST /api/v1/spoke/dg/metric
+POST /api/v1/spoke/governance/metric
 ```
 ```json
 {
@@ -745,13 +746,13 @@ POST /api/v1/spoke/dg/metric
 The CDO triggers an immediate first run rather than waiting for the schedule:
 
 ```http
-POST /api/v1/spoke/dg/metric/doc-health-dev/method/run
+POST /api/v1/spoke/governance/metric/doc-health-dev/method/run
 ```
 
 A week later, trends are pulled for a board update:
 
 ```http
-GET /api/v1/spoke/dg/metric/doc-health-dev/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/governance/metric/doc-health-dev/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
 Each result row carries `values: {"total": 142.0, "doc_health": 119.0}` plus a

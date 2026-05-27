@@ -4,7 +4,7 @@
 
 AI-powered sidecar extension for [DataHub](https://datahubproject.io/), built API-first.
 
-DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (the Hub); DataSpoke extends it with five baseline features (the Spokes): **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, and **Governance**. The user-group framing (Data Engineering / Data Analysis / Data Governance) is a UI and API extensibility surface only — `/spoke/dg/` carries baseline governance routes; `/spoke/de/` and `/spoke/da/` are reserved for organization-specific extensions.
+DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (the Hub); DataSpoke extends it with five baseline features (the Spokes): **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, and **Governance**. Both UI and API are organised by feature — one function namespace each under `/spoke/`.
 
 This repository delivers two artifacts:
 
@@ -123,7 +123,7 @@ See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full scaffold reference
 
 Fork this repository and adapt:
 
-1. Revise `spec/MANIFESTO_*.md` -- redefine user groups, features, and product identity
+1. Revise `spec/MANIFESTO_*.md` -- redefine features and product identity
 2. Run `/spec-write` -- update architecture and author feature specs
 3. Run `/k8s-deploy install` -- bring up the local environment
 4. Use the implementation workflow above

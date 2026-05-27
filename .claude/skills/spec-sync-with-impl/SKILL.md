@@ -75,7 +75,7 @@ Presets (numbers or keywords, comma-separated):
 Or describe a free-form scope in plain text, e.g.:
   - "recently developed backend ingestion secret resolution"
   - "Airflow scheduler retry policy"
-  - "/api/v1/spoke/dg/governance routes only"
+  - "/api/v1/spoke/governance routes only"
 
 Examples: "1"   "prauto, api"   "2,3,6"   "frontend dataset detail page"
 ```

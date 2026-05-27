@@ -26,17 +26,22 @@
 ## Overview
 
 The DataSpoke API is a FastAPI (Python 3.13) service that acts as the single ingress for
-all DataSpoke clients — the portal UI and external AI agents. It exposes a three-tier URI
-structure: baseline features defined in MANIFESTO §2.1 live under `/spoke/common/` and
-`/spoke/dg/`; the `/spoke/de/` and `/spoke/da/` tiers are extensibility surfaces for
-organization-specific routes.
+all DataSpoke clients — the portal UI and external AI agents. The URI structure has two
+axes:
+
+- **Per-dataset, cross-feature** routes live under `/spoke/common/data/{dataset_urn}/…`
+  — the dataset resource — with sub-resources for ingestion, validation, and metagen.
+- **Cross-dataset list views and global features** live under one namespace per
+  MANIFESTO §2.1 feature.
 
 ```
-/api/v1/spoke/common/…     — Baseline features: ingestion, validation, ontology generation, metadata generation
-/api/v1/spoke/de/…         — Reserved for Data Engineering extensions (no baseline routes)
-/api/v1/spoke/da/…         — Reserved for Data Analysis extensions (no baseline routes)
-/api/v1/spoke/dg/…         — Governance (metric)
-/api/v1/hub/…              — DataHub pass-through (optional ingress for clients)
+/api/v1/spoke/common/data/{dataset_urn}/…  — Dataset resource (per-dataset, cross-feature)
+/api/v1/spoke/ingestion                    — Ingestion Control cross-dataset list
+/api/v1/spoke/validation                   — Validation cross-dataset list
+/api/v1/spoke/ontogen/…                    — Ontology Generation (global singleton)
+/api/v1/spoke/metagen/…                    — Metadata Generation (global singleton)
+/api/v1/spoke/governance/…                 — Governance metrics
+/api/v1/hub/…                              — DataHub pass-through (optional ingress for clients)
 ```
 
 The API is the only **HTTP-facing** component for external clients (the portal UI and
@@ -79,7 +84,7 @@ conform to it.
 User identity, registration, OAuth, password reset, profile management, and the
 mirror semantics between DataSpoke users and DataHub corpusers are specified in
 [feature/AUTH.md](feature/AUTH.md). This section captures the JWT shape,
-token lifecycles, and route-tier gating that any client implementor needs.
+token lifecycles, and access-control gating that any client implementor needs.
 
 ### Authentication Mechanisms
 
@@ -87,8 +92,8 @@ Three distinct mechanisms cover different client types:
 
 | Mechanism | Carrier | Lifetime | Source | Scope |
 |-----------|---------|----------|--------|-------|
-| **User JWT** | `Authorization: Bearer <access_token>` header | 15 min access / 7 d refresh | `POST /auth/token` (email + password) or `GET /auth/google/login` (Google OAuth) | Effective role = caller's `users.role`. See [Route-Tier Access Control](#route-tier-access-control). |
-| **Long-lived API token** | `Authorization: Bearer dsk_<...>` header (same header, different format) | User-defined (default no expiry); revocable | `POST /auth/api-tokens` (self-service) | Effective role = `min(token.role_snapshot, owner.users.role)`. Same Route-Tier Access Control. |
+| **User JWT** | `Authorization: Bearer <access_token>` header | 15 min access / 7 d refresh | `POST /auth/token` (email + password) or `GET /auth/google/login` (Google OAuth) | Effective role = caller's `users.role`. See [Access Control](#access-control). |
+| **Long-lived API token** | `Authorization: Bearer dsk_<...>` header (same header, different format) | User-defined (default no expiry); revocable | `POST /auth/api-tokens` (self-service) | Effective role = `min(token.role_snapshot, owner.users.role)`. Same Access Control. |
 | **Internal shared-secret** | `X-Internal-Token: <secret>` header | Static — operator rotated | `DATASPOKE_INTERNAL_TOKEN` from `dataspoke-secrets` K8s Secret | `/internal/*` only |
 
 User JWTs are the default for browser clients. Long-lived API tokens are
@@ -121,31 +126,25 @@ DataSpoke uses **JWT (JSON Web Tokens)** for stateless authentication.
 
 ### JWT Claims
 
-Access-token payload: `sub` (user uuid), `email`, `groups`, `exp`, `iat`.
+Access-token payload: `sub` (user uuid), `email`, `exp`, `iat`.
 
-`groups` is a constant `["de", "da", "dg"]` for every authenticated user in
-the baseline — it gates workspace-tier routes (`/spoke/de`, `/spoke/da`,
-`/spoke/dg`) and exists as an extensibility affordance for organisations
-that partition workspaces. The JWT does **not** carry role; routes are
-gated by `users.role` read per-request from the DB — see
+The JWT carries identity only — it does **not** encode role. Routes are gated
+by `users.role` read per-request from the DB — see
 [AUTH §Privilege Model](feature/AUTH.md#privilege-model).
 
-### Route-Tier Access Control
+### Access Control
 
-Routes are gated by **URI tier × HTTP method × role**. The role is `users.role`
+Routes are gated by **URI prefix × HTTP method × role**. The role is `users.role`
 for JWT callers, or `min(token.role_snapshot, owner.users.role)` for API-token
 callers. The DB lookup is in the same request transaction as other route work
 — no additional round trip.
 
-**Tier gate** (independent of method):
+**Prefix gate**:
 
-| URI tier | Gate | Notes |
-|----------|------|-------|
+| URI prefix | Gate | Notes |
+|------------|------|-------|
 | `/auth/…` | none (public) | login, register, password reset, OAuth callback are public; `/auth/me`, `/auth/api-tokens`, `/auth/token/refresh`, `/auth/token/revoke` require an authenticated caller |
-| `/spoke/common/…`, `/hub/…` | authenticated; method × role gate applies (see below) | all authenticated users, with method-based restriction by role |
-| `/spoke/de/…` | `"de"` in JWT `groups` | reserved; no baseline routes |
-| `/spoke/da/…` | `"da"` in JWT `groups` | reserved; no baseline routes |
-| `/spoke/dg/…` | `"dg"` in JWT `groups`; method × role gate applies | all authenticated users (baseline) |
+| `/spoke/…`, `/hub/…` | authenticated; method × role gate applies (see below) | all authenticated users, with method-based restriction by role |
 | `/admin/…` | `users.role = 'Admin'` | Admin only |
 
 **Method × role gate** (applies on `/spoke/*` and `/hub/*`):
@@ -158,11 +157,6 @@ callers. The DB lookup is in the same request transaction as other route work
 
 `/auth/*` routes are exempt from the method gate (self-scoped writes — any
 role can change own name/password, mint own API tokens, refresh own session).
-
-Workspace-tier (`/spoke/de`, `/spoke/da`, `/spoke/dg`) gating is an
-extensibility affordance. Baseline assigns every authenticated user the full
-constant `["de", "da", "dg"]`; organisations that partition workspaces
-populate the claim selectively.
 
 Role changes (`PATCH /admin/users/{id}/role`) write `users.role` first, then
 propagate to DataHub via `batchAssignRole`. Demotion takes effect on the
@@ -177,20 +171,16 @@ re-read `users.role` on every call via the intersection check). See
 
 All routes are prefixed with `/api/v1`.
 
-> **Routing principle**: Baseline features live under `/spoke/common/` (ingestion,
-> validation, ontology generation, metadata generation) and `/spoke/dg/`
-> (governance metrics). The `/spoke/de/` and `/spoke/da/` tiers
-> exist as extensibility surfaces for organization-specific routes and contain
-> no baseline endpoints. Per-dataset operations use the canonical
-> `/spoke/common/data/{dataset_urn}/…` surface for state (`attr/<feat>/`),
-> actions (`method/<feat>/`), and events (`event/<feat>` or `event`).
-> Cross-dataset features come in two shapes: `/spoke/common/{ingestion,validation}`
-> are list-view aggregators over the per-dataset `attr/<feat>/*` data;
-> `/spoke/common/{ontogen,metagen}` are full singleton-conf surfaces — a global
-> conf, a manual run trigger, an event log, and result collections — because
-> their lifecycle is one global pipeline rather than per-dataset state. Any
-> team that owns a dataset can access per-dataset features regardless of group
-> membership.
+> **Routing principle**: The URI structure has two axes. Per-dataset, cross-feature
+> operations use the canonical `/spoke/common/data/{dataset_urn}/…` surface for
+> state (`attr/<feat>/`), actions (`method/<feat>/`), and events (`event/<feat>`
+> or `event` for the unified per-dataset timeline). Cross-dataset list views and
+> global features live under one namespace per MANIFESTO §2.1 feature:
+> `/spoke/ingestion` and `/spoke/validation` are list-view aggregators over the
+> per-dataset `attr/<feat>/*` data; `/spoke/ontogen` and `/spoke/metagen` are
+> full singleton-conf surfaces — a global conf, a manual run trigger, an event
+> log, and result collections — because their lifecycle is one global pipeline
+> rather than per-dataset state; `/spoke/governance` carries the metric catalogue.
 
 ### Auth
 
@@ -213,107 +203,17 @@ in [feature/AUTH.md](feature/AUTH.md).
 | `POST` | `/auth/api-tokens` | Mint a new API token (body `{name, expires_at?}`). Response includes the raw token in `{token: "dsk_...", id, name, role_snapshot, created_at, expires_at}` — **only time the raw token is returned plain**. `409 TOKEN_LIMIT_EXCEEDED` if user already has 10 active tokens. Authenticated. |
 | `DELETE` | `/auth/api-tokens/{id}` | Revoke own API token (sets `revoked_at = now()`). Authenticated. |
 
-### Common (`/spoke/common`)
+### Data Resource (`/spoke/common/data`)
 
-Baseline features consumed by all user groups.
-
-#### Ontology Generation
-
-The ontology is a global artifact, so its conf, seeds, manual run trigger, and
-inference-run event log are singletons rooted at `/spoke/common/ontogen` rather than
-under any dataset URN. Inference output follows a **subject / predicate / object
-triple model** with three independently reviewable result types — `node` (subject /
-object), `edge` (predicate), and `triple` (`(subject_node, edge, object_node)` fact).
-A triple may be human-approved only when its endpoint nodes and edge are themselves
-`status='approved'` (an `llm_approved` dependency does NOT satisfy the gate); review
-proceeds nodes → edges → triples.
-
-| Method | Path | Purpose | Feature | UC |
-|--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) | Ontology Generation | UC3 |
-| `PUT` | `/spoke/common/ontogen/attr/conf` | Create or replace operational conf | Ontology Generation | UC3 |
-| `PATCH` | `/spoke/common/ontogen/attr/conf` | Partially update operational conf | Ontology Generation | UC3 |
-| `DELETE` | `/spoke/common/ontogen/attr/conf` | Remove operational conf (effectively disables) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/attr/seed` | List seeds — returns `[{seed_id, updated_at, preview}]` (preview is a short Markdown snippet); the seed body is fetched per-seed below | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Get seed Markdown document (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
-| `PATCH` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Replace seed Markdown body (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
-| `DELETE` | `/spoke/common/ontogen/attr/seed/{seed_id}` | Retire a seed | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING`. Rejected with `409 ONTOGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/node` | List nodes (subjects / objects) with confidence and status | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/node/{node_id}` | Get node detail (incl. member datasets) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/node/{node_id}/attr` | Get node attributes (confidence, source evidence) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/node/{node_id}/event` | Node-level change history | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/result/node/{node_id}/method/review` | Review a pending node — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/edge` | List edges (predicates) with confidence and status | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/edge/{edge_id}` | Get edge detail | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/edge/{edge_id}/attr` | Get edge attributes (confidence, source evidence) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/edge/{edge_id}/event` | Edge-level change history | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/result/edge/{edge_id}/method/review` | Review a pending edge — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/triple/{triple_id}` | Get triple detail (resolved subject node, edge, object node) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/attr` | Get triple attributes (confidence, source evidence) | Ontology Generation | UC3 |
-| `GET` | `/spoke/common/ontogen/result/triple/{triple_id}/event` | Triple-level change history | Ontology Generation | UC3 |
-| `POST` | `/spoke/common/ontogen/result/triple/{triple_id}/method/review` | Review a triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet `status='approved'` (an `llm_approved` dependency does not satisfy the gate) | Ontology Generation | UC3 |
-
-**Payload caps** (validated at the schema layer; cap violations return `422`):
-- `attr/conf.default_run_prompt` ≤ 16,000 chars
-- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
-- `attr/seed` Markdown body ≤ 128 KiB
-- `method/run` one-shot Markdown body ≤ 128 KiB
-- node / edge / triple `method/review.reason` ≤ 2,000 chars
-
-#### Metadata Generation (`/spoke/common/metagen`)
-
-Metadata generation is a global pipeline that proposes documentation for
-**editable** DataHub description aspects — table descriptions and column
-descriptions — and lets reviewers approve one value per slot. The conf, the
-manual run trigger, and the inference-run event log are singletons rooted at
-`/spoke/common/metagen`. Per-dataset participation is opt-in via a separate
-boundary row at `/spoke/common/data/{dataset_urn}/attr/metagen/conf`; datasets
-without a boundary row (or with `is_enabled=false`) are skipped regardless of
-the global `dataset_filter`.
-
-The **result granularity is the item, not the run**. An `item` is one
-editable-metadata slot — either `dataset.description` for a dataset, or
-`column.<fieldPath>.description` for one column. Each item holds up to
-`result_limit` candidate values that accumulate across runs. A reviewer
-approves at most one candidate per item (immediate DataHub emit, item
-locked from further generation) and may reject any number of candidates
-(rejected candidates are deleted at the start of the next run). Service
-surface: [BACKEND §Metadata Generation Service](feature/BACKEND.md#metadata-generation-service-srcbackendmetagen).
-LLM step (producer-reviewer adversarial debate, identical wiring to UC3
-ontogen): [BACKEND_LLM §Metagen Adversarial Debate](feature/BACKEND_LLM.md#metagen-adversarial-debate).
-
-| Method | Path | Purpose | Feature | UC |
-|--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/metagen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) | Metadata Generation | UC4 |
-| `PUT` | `/spoke/common/metagen/attr/conf` | Create or replace operational conf | Metadata Generation | UC4 |
-| `PATCH` | `/spoke/common/metagen/attr/conf` | Partially update operational conf | Metadata Generation | UC4 |
-| `DELETE` | `/spoke/common/metagen/attr/conf` | Remove operational conf (effectively disables) | Metadata Generation | UC4 |
-| `POST` | `/spoke/common/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}` narrows scope or evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`. Rejected with `409 METAGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/metagen/event` | Global generation-run event history (e.g. `METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}` — includes all candidates with their statuses | Metadata Generation | UC4 |
-
-**Payload caps** (validated at the schema layer; cap violations return `422`):
-- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
-- `attr/conf.result_limit` ∈ `[1, 20]`
-- candidate `value` Markdown body ≤ 16 KiB
-- candidate `method/review.reason` ≤ 2,000 chars
-
-#### Data Resource (`/spoke/common/data/{dataset_urn}`)
-
-The canonical resource for a dataset. All teams (DE, DA, DG) access dataset attributes,
-ingestion, validation, and metagen participation through this shared path. The three
-meta-classifiers group sub-resources by feature: state and configuration live under
-`attr/<feature>/` (`conf`, plus `result` for validation timeseries and `item` for the
-per-dataset metagen review queue), action triggers under `method/<feature>/<action>`,
-and lifecycle events under `event/<feature>` (or `event` alone for the unified
-per-dataset timeline). In a data-mesh organization any team that owns a dataset can
-register and manage ingestion, validation, and metagen opt-in — DE teams provide deep
-technical specs while DA or other teams may register simpler configurations.
+The canonical resource for a dataset. Every per-dataset surface — ingestion,
+validation, metagen — is a sub-resource of `/spoke/common/data/{dataset_urn}/`.
+The three meta-classifiers group sub-resources by feature: state and configuration
+live under `attr/<feature>/` (`conf`, plus `result` for validation timeseries and
+`item` for the per-dataset metagen review queue), action triggers under
+`method/<feature>/<action>`, and lifecycle events under `event/<feature>` (or
+`event` alone for the unified per-dataset timeline). Any team that owns a dataset
+can register and manage its ingestion, validation, and metagen opt-in through
+this single per-dataset path.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -342,7 +242,7 @@ technical specs while DA or other teams may register simpler configurations.
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation, and metagen) | Data Resource | — |
 
-#### Redefined DataHub Functions *(TBD)*
+### Redefined DataHub Functions *(TBD)*
 
 Future routes for blended dataset creation and modification. Example candidates:
 
@@ -354,7 +254,7 @@ Future routes for blended dataset creation and modification. Example candidates:
 These routes are **not yet defined**; scope and design will be specified when the feature is
 planned. See [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overview).
 
-#### Ingestion (`/spoke/common/ingestion`)
+### Ingestion (`/spoke/ingestion`)
 
 A cross-dataset list view of ingestion attributes. Each row combines dataset identity
 with the ingestion attributes stored under `common/data/{dataset_urn}/attr/ingestion/*`
@@ -382,9 +282,9 @@ and [DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/ingestion` | List ingestion attributes across datasets — each row aggregates the per-dataset `attr/ingestion/*` (paginated, filterable) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion` | List ingestion attributes across datasets — each row aggregates the per-dataset `attr/ingestion/*` (paginated, filterable) | Ingestion Control | UC1 |
 
-#### Validation (`/spoke/common/validation`)
+### Validation (`/spoke/validation`)
 
 A cross-dataset list view of validation attributes. Each row combines dataset identity
 with the validation attributes stored under `common/data/{dataset_urn}/attr/validation/*`
@@ -405,11 +305,97 @@ Per-dataset detail and result writes live on the canonical `data/{dataset_urn}` 
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, filterable) | Validation | UC2, UC5 |
+| `GET` | `/spoke/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, filterable) | Validation | UC2, UC5 |
 
-### Data Governance (`/spoke/dg`)
+### Ontology Generation (`/spoke/ontogen`)
 
-#### Metric (`/spoke/dg/metric`)
+The ontology is a global artifact, so its conf, seeds, manual run trigger, and
+inference-run event log are singletons rooted at `/spoke/ontogen` rather than
+under any dataset URN. Inference output follows a **subject / predicate / object
+triple model** with three independently reviewable result types — `node` (subject /
+object), `edge` (predicate), and `triple` (`(subject_node, edge, object_node)` fact).
+A triple may be human-approved only when its endpoint nodes and edge are themselves
+`status='approved'` (an `llm_approved` dependency does NOT satisfy the gate); review
+proceeds nodes → edges → triples.
+
+| Method | Path | Purpose | Feature | UC |
+|--------|------|---------|---------|-----|
+| `GET` | `/spoke/ontogen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) | Ontology Generation | UC3 |
+| `PUT` | `/spoke/ontogen/attr/conf` | Create or replace operational conf | Ontology Generation | UC3 |
+| `PATCH` | `/spoke/ontogen/attr/conf` | Partially update operational conf | Ontology Generation | UC3 |
+| `DELETE` | `/spoke/ontogen/attr/conf` | Remove operational conf (effectively disables) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/attr/seed` | List seeds — returns `[{seed_id, updated_at, preview}]` (preview is a short Markdown snippet); the seed body is fetched per-seed below | Ontology Generation | UC3 |
+| `POST` | `/spoke/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/attr/seed/{seed_id}` | Get seed Markdown document (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
+| `PATCH` | `/spoke/ontogen/attr/seed/{seed_id}` | Replace seed Markdown body (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
+| `DELETE` | `/spoke/ontogen/attr/seed/{seed_id}` | Retire a seed | Ontology Generation | UC3 |
+| `POST` | `/spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING`. Rejected with `409 ONTOGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/node` | List nodes (subjects / objects) with confidence and status | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/node/{node_id}` | Get node detail (incl. member datasets) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/node/{node_id}/attr` | Get node attributes (confidence, source evidence) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/node/{node_id}/event` | Node-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/ontogen/result/node/{node_id}/method/review` | Review a pending node — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/edge` | List edges (predicates) with confidence and status | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/edge/{edge_id}` | Get edge detail | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/edge/{edge_id}/attr` | Get edge attributes (confidence, source evidence) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/edge/{edge_id}/event` | Edge-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/ontogen/result/edge/{edge_id}/method/review` | Review a pending edge — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/triple/{triple_id}` | Get triple detail (resolved subject node, edge, object node) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/triple/{triple_id}/attr` | Get triple attributes (confidence, source evidence) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/triple/{triple_id}/event` | Triple-level change history | Ontology Generation | UC3 |
+| `POST` | `/spoke/ontogen/result/triple/{triple_id}/method/review` | Review a triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet `status='approved'` (an `llm_approved` dependency does not satisfy the gate) | Ontology Generation | UC3 |
+
+**Payload caps** (validated at the schema layer; cap violations return `422`):
+- `attr/conf.default_run_prompt` ≤ 16,000 chars
+- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
+- `attr/seed` Markdown body ≤ 128 KiB
+- `method/run` one-shot Markdown body ≤ 128 KiB
+- node / edge / triple `method/review.reason` ≤ 2,000 chars
+
+### Metadata Generation (`/spoke/metagen`)
+
+Metadata generation is a global pipeline that proposes documentation for
+**editable** DataHub description aspects — table descriptions and column
+descriptions — and lets reviewers approve one value per slot. The conf, the
+manual run trigger, and the inference-run event log are singletons rooted at
+`/spoke/metagen`. Per-dataset participation is opt-in via a separate
+boundary row at `/spoke/common/data/{dataset_urn}/attr/metagen/conf`; datasets
+without a boundary row (or with `is_enabled=false`) are skipped regardless of
+the global `dataset_filter`.
+
+The **result granularity is the item, not the run**. An `item` is one
+editable-metadata slot — either `dataset.description` for a dataset, or
+`column.<fieldPath>.description` for one column. Each item holds up to
+`result_limit` candidate values that accumulate across runs. A reviewer
+approves at most one candidate per item (immediate DataHub emit, item
+locked from further generation) and may reject any number of candidates
+(rejected candidates are deleted at the start of the next run). Service
+surface: [BACKEND §Metadata Generation Service](feature/BACKEND.md#metadata-generation-service-srcbackendmetagen).
+LLM step (producer-reviewer adversarial debate, identical wiring to UC3
+ontogen): [BACKEND_LLM §Metagen Adversarial Debate](feature/BACKEND_LLM.md#metagen-adversarial-debate).
+
+| Method | Path | Purpose | Feature | UC |
+|--------|------|---------|---------|-----|
+| `GET` | `/spoke/metagen/attr/conf` | Get singleton operational conf (`is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) | Metadata Generation | UC4 |
+| `PUT` | `/spoke/metagen/attr/conf` | Create or replace operational conf | Metadata Generation | UC4 |
+| `PATCH` | `/spoke/metagen/attr/conf` | Partially update operational conf | Metadata Generation | UC4 |
+| `DELETE` | `/spoke/metagen/attr/conf` | Remove operational conf (effectively disables) | Metadata Generation | UC4 |
+| `POST` | `/spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}` narrows scope or evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`. Rejected with `409 METAGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
+| `GET` | `/spoke/metagen/event` | Global generation-run event history (e.g. `METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) | Metadata Generation | UC4 |
+| `GET` | `/spoke/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) | Metadata Generation | UC4 |
+| `GET` | `/spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}` — includes all candidates with their statuses | Metadata Generation | UC4 |
+
+**Payload caps** (validated at the schema layer; cap violations return `422`):
+- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
+- `attr/conf.result_limit` ∈ `[1, 20]`
+- candidate `value` Markdown body ≤ 16 KiB
+- candidate `method/review.reason` ≤ 2,000 chars
+
+### Governance (`/spoke/governance`)
+
+#### Metric (`/spoke/governance/metric`)
 
 Governance metrics are named, scheduled aggregations over the data estate. Each metric
 carries a definition (`attr/conf`) that controls how it is computed and scheduled, and a
@@ -427,15 +413,15 @@ DataHub aspects consumed by `doc-health` are listed in
 [DATAHUB_INTEGRATION §Aspect Usage by Feature](DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
 **`metric_id`**: Kebab-case slug, **client-supplied** (e.g. `ingestion-freshness`,
-`validation-score`, `doc-health`). On create it is carried in the `POST /spoke/dg/metric`
+`validation-score`, `doc-health`). On create it is carried in the `POST /spoke/governance/metric`
 request body and must be unique — a colliding id returns `409 METRIC_EXISTS`. Used in
 route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_id}`.
 
-**Definition body** (`POST /spoke/dg/metric`, PUT/PATCH `.../attr/conf`):
+**Definition body** (`POST /spoke/governance/metric`, PUT/PATCH `.../attr/conf`):
 
 | Field | Type | Notes |
 |---|---|---|
-| `metric_id` | string | **Create only** (`POST /spoke/dg/metric` body). Kebab-case slug matching `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$\|^[a-z0-9]$`; `422 INVALID_PARAMETER` on bad format, `409 METRIC_EXISTS` on collision. On PUT/PATCH the id comes from the path |
+| `metric_id` | string | **Create only** (`POST /spoke/governance/metric` body). Kebab-case slug matching `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$\|^[a-z0-9]$`; `422 INVALID_PARAMETER` on bad format, `409 METRIC_EXISTS` on collision. On PUT/PATCH the id comes from the path |
 | `mode` | `"active"` \| `"passive"` | `passive` is reserved; create/PUT with `mode: "passive"` returns `501 NOT_IMPLEMENTED` |
 | `is_enabled` | bool | Required; controls scheduled execution |
 | `metric_type` | `"ingestion-freshness"` \| `"validation-score"` \| `"doc-health"` | Unsupported values return `422 INVALID_PARAMETER` |
@@ -454,17 +440,17 @@ validation.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/dg/metric` | List all metrics (paginated; filterable by `metric_type`, `mode`, `is_enabled`) | Governance | UC5 |
-| `POST` | `/spoke/dg/metric` | Create a metric; `metric_id` supplied in body. Returns `409 METRIC_EXISTS` on a colliding id, `501 NOT_IMPLEMENTED` when `mode: "passive"` | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr` | Get metric attributes overview (mode, metric_type, schedule_tier, enabled status, latest `values`) | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/conf` | Get full metric definition | Governance | UC5 |
-| `PUT` | `/spoke/dg/metric/{metric_id}/attr/conf` | Replace an existing metric definition; `404 METRIC_NOT_FOUND` when the id is absent (use `POST /spoke/dg/metric` to create) | Governance | UC5 |
-| `PATCH` | `/spoke/dg/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
-| `DELETE` | `/spoke/dg/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; `?from=…&to=…` for time range) | Governance | UC5 |
-| `POST` | `/spoke/dg/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
-| `GET` | `/spoke/dg/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric` | List all metrics (paginated; filterable by `metric_type`, `mode`, `is_enabled`) | Governance | UC5 |
+| `POST` | `/spoke/governance/metric` | Create a metric; `metric_id` supplied in body. Returns `409 METRIC_EXISTS` on a colliding id, `501 NOT_IMPLEMENTED` when `mode: "passive"` | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/attr` | Get metric attributes overview (mode, metric_type, schedule_tier, enabled status, latest `values`) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/attr/conf` | Get full metric definition | Governance | UC5 |
+| `PUT` | `/spoke/governance/metric/{metric_id}/attr/conf` | Replace an existing metric definition; `404 METRIC_NOT_FOUND` when the id is absent (use `POST /spoke/governance/metric` to create) | Governance | UC5 |
+| `PATCH` | `/spoke/governance/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
+| `DELETE` | `/spoke/governance/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; `?from=…&to=…` for time range) | Governance | UC5 |
+| `POST` | `/spoke/governance/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
@@ -695,16 +681,15 @@ default 120 req/min). On 429 the response body matches the standard error envelo
 (`error_code: "RATE_LIMIT_EXCEEDED"`, `message`, `trace_id`, `resp_time`) and headers
 include `Retry-After` plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`;
 (4) **JWT validation** — verify signature/expiry and extract claims;
-(5) **group enforcement** — check the `groups` claim against the URI tier;
+(5) **role enforcement** — read `users.role`, apply the method × role gate on `/spoke/*` and `/hub/*` and the Admin-only gate on `/admin/*`;
 (6) **route handler** — FastAPI DI + business logic;
 (7) **response logging** — status, latency, trace ID.
 
 > Rate limiting runs as Starlette middleware before any route handler so unauthenticated
 > clients are rate-limited too. The per-user key is the JWT `sub` claim when present,
-> falling back to client IP. Auth/group checks (layers 4–5) are route-level dependencies
-> (`Depends(require_common)`, `Depends(require_dg)`, etc.) rather than blanket middleware,
-> so unauthenticated routes (`/health`, `/auth/*`) coexist without exclusion lists and
-> each router controls its required group membership.
+> falling back to client IP. Auth/role checks (layers 4–5) are route-level dependencies
+> rather than blanket middleware, so unauthenticated routes (`/health`, `/auth/*`)
+> coexist without exclusion lists.
 
 ### Trace ID
 
@@ -764,7 +749,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `INVALID_PARAMETER` | 400 | Query param or body field fails validation (e.g., `PUT/PATCH /spoke/common/data/{urn}/attr/validation/conf` body where `description` carries ASCII control characters other than `\t` (0x09) and `\n` (0x0a) — see [VALIDATION.md §Rule Configuration](feature/VALIDATION.md#rule-configuration)) |
 | `MISSING_REQUIRED_FIELD` | 400 | Required body field not provided |
 | `UNAUTHORIZED` | 401 | Token missing, expired, or malformed |
-| `FORBIDDEN` | 403 | Valid token; groups claim does not satisfy route requirement |
+| `FORBIDDEN` | 403 | Valid token; caller's role does not satisfy route requirement |
 | `DATASET_NOT_FOUND` | 404 | Dataset URN does not exist in DataHub (read paths, e.g. `GET /spoke/common/data/{urn}`) |
 | `DATASET_NOT_IN_DATAHUB` | 422 | The targeted dataset URN is not yet tracked by DataHub, so a feature with a "dataset must exist in SSOT first" precondition cannot proceed (e.g. `PUT /spoke/common/data/{urn}/attr/validation/conf`) |
 | `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
@@ -784,13 +769,13 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `METAGEN_DATASET_NOT_IN_BOUNDARY` | 422 | Candidate review attempted on an item whose dataset has no `is_enabled=true` per-dataset metagen boundary |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `METRIC_DISABLED` | 409 | Metric definition has `is_enabled=false`; non-dry-run rejected |
-| `METRIC_EXISTS` | 409 | `POST /spoke/dg/metric` body carries a `metric_id` that already exists |
+| `METRIC_EXISTS` | 409 | `POST /spoke/governance/metric` body carries a `metric_id` that already exists |
 | `ONTOGEN_RUNNING` | 409 | An ontology inference run is already in progress |
 | `ONTOGEN_DISABLED` | 409 | Ontogen conf has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
-| `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/common/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/common/ontogen/method/run`) bodies are capped at 128 KiB |
+| `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/ontogen/method/run`) bodies are capped at 128 KiB |
 | `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at PUT/PATCH for `ontogen/attr/conf`, `metagen/attr/conf`, and `metric/{id}/attr/conf` |
-| `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `POST /spoke/dg/metric` and `PUT /spoke/dg/metric/{id}/attr/conf` when `mode: "passive"` |
+| `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `POST /spoke/governance/metric` and `PUT /spoke/governance/metric/{id}/attr/conf` when `mode: "passive"` |
 | `EMAIL_ALREADY_REGISTERED` | 409 | `POST /auth/register` body carries an email already mapped to an existing user |
 | `INVALID_RESET_TOKEN` | 400 | `POST /auth/password/reset/confirm` token does not match any row, is expired, or has already been used |
 | `OAUTH_STATE_MISMATCH` | 400 | `GET /auth/google/callback` state cookie missing or does not match the value embedded in the OAuth state JWT |

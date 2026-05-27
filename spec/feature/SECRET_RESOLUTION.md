@@ -333,7 +333,7 @@ is rejected as `SecretRefMalformed`.
 
 ### Caller integration
 
-**At PUT/PATCH** (`src/api/routers/spoke/common/data/ingestion.py`):
+**At PUT/PATCH** (`src/api/routers/spoke/ingestion/data.py`):
 
 ```
 1. Pydantic validates auth shape (matrix above)

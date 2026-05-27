@@ -137,7 +137,7 @@ A good implementation plan produced during the Plan phase should cover:
 
 1. **Scope and goals** — What the feature does (1-3 sentences), which MANIFESTO feature(s) it
    belongs to or extends (Ingestion Control, Validation, Ontology Generation, Metadata
-   Generation, Governance, or a user-group extension on top of these), what success looks like.
+   Generation, Governance), what success looks like.
 2. **Files to create or modify** — For each file: exact path (following existing conventions),
    purpose (one line), key contents (classes, functions, endpoints — names only, not
    implementations).
@@ -184,14 +184,13 @@ cycle, phase state machine, code review, squash-finalize).
 ## Building a Custom Spoke
 
 The scaffold is designed to be forked and adapted. A custom Spoke is a DataSpoke implementation
-tailored to an organization's data sources, domain vocabulary, user groups, and operational
-requirements.
+tailored to an organization's data sources, domain vocabulary, and operational requirements.
 
 ### Typical customization points
 
 | What to customize | Where |
 |-------------------|-------|
-| Features, product identity, user-group framing | `spec/MANIFESTO_*.md` |
+| Features, product identity | `spec/MANIFESTO_*.md` |
 | Tech stack, system components | `spec/ARCHITECTURE.md` |
 | Baseline feature specs | `spec/feature/` |
 | API routers and backend services | `src/api/`, `src/backend/` |
@@ -200,8 +199,8 @@ requirements.
 
 ### Recommended sequence
 
-1. **Revise the manifesto** — adjust or add features; decide which user-group routes
-   (`/spoke/de/`, `/spoke/da/`, `/spoke/dg/`) host organization-specific extensions
+1. **Revise the manifesto** — adjust or add features; pick the function namespaces that
+   host any organization-specific extensions
 2. **Run `/spec-write`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/k8s-deploy install`** — bring up the DataHub environment
 4. **Implement features** using the plan → approve → generate → evaluate workflow:
@@ -223,14 +222,13 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    automatically.
 
 3. **Capability-driven organization** — Features are organized by MANIFESTO capability
-   (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance). The
-   user-group route tiers (`/spoke/[de|da|dg]/`) and UI entry points exist as extensibility
-   surfaces — `/spoke/dg/` hosts baseline governance routes, while `/spoke/de/` and `/spoke/da/`
-   are reserved for organization-specific extensions and contain no baseline endpoints.
+   (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance).
+   Each capability owns a top-level namespace under `/spoke/` — `/spoke/governance/`,
+   `/spoke/ingestion/`, `/spoke/validation/`, `/spoke/ontogen/`, `/spoke/metagen/`.
 
 4. **API-first development** — The `backend` subagent implements API routes as the single source
-   of truth for the API contract, following the three-tier URI pattern defined in feature specs.
-   FastAPI auto-generates OpenAPI documentation from the implementation.
+   of truth for the API contract, following the function-namespace URI pattern defined in
+   feature specs. FastAPI auto-generates OpenAPI documentation from the implementation.
 
 5. **Least privilege** — Agents read and inspect freely but cannot change shared state without
    user confirmation. Destructive cluster operations are blocked.

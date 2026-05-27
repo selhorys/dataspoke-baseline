@@ -13,9 +13,11 @@ Your job is to write production-quality Next.js + TypeScript code in `src/fronte
 
 1. Read the **feature spec** for the area you're working on:
    - `spec/feature/FRONTEND_BASIC.md` — application shell, routing, auth flow, shared components, state management, polling-based live updates (no WebSocket / SSE in the baseline)
-   - `spec/feature/FRONTEND_DE.md` — Data Engineering workspace (if building DE features)
-   - `spec/feature/FRONTEND_DA.md` — Data Analysis workspace (if building DA features)
-   - `spec/feature/FRONTEND_DG.md` — Data Governance workspace (if building DG features)
+   - `spec/feature/FRONTEND_GOVERNANCE.md` — Governance Dashboard + Metrics
+   - `spec/feature/FRONTEND_INGESTION.md` — Ingestion Control
+   - `spec/feature/FRONTEND_VALIDATION.md` — Validation
+   - `spec/feature/FRONTEND_ONTOGEN.md` — Ontology Generation
+   - `spec/feature/FRONTEND_METAGEN.md` — Metadata Generation
 2. Read `src/api/routers/` — the API contract your frontend consumes. Alternatively, check the live ReDoc UI at `http://app.<INGRESS_DOMAIN>/redoc` if the in-cluster API is running (see `helm-charts/.env` for the domain).
 3. Scan `src/frontend/` with Glob. If the directory is empty or missing, you are **bootstrapping from scratch** — initialize the Next.js project and establish the layout below before building features.
 

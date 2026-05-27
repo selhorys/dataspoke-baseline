@@ -88,28 +88,35 @@ DataSpoke consists of four components.
               High Level Architecture
 ```
 
-- **DataSpoke UI**: A portal-style interface with per-user-group entry points.
+- **DataSpoke UI**: A single shell with a function-based left-side menu.
   ```
-  ┌─────────────────────────────────────────────┐
-  │  Data Hub & Spokes                   Login  │
-  │─────────────────────────────────────────────│
-  │                                             │
-  │              (DE)                           │
-  │                 \                           │
-  │                  \                          │
-  │                   (Hub)----(DG)             │
-  │                  /                          │
-  │                 /                           │
-  │              (DA)                           │
-  │                                             │
-  └─────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │ DataSpoke              user@imazon ▼  Logout        │
+  ├──────────────┬──────────────────────────────────────┤
+  │ Governance ▾ │   Governance · Dashboard             │
+  │  Dashboard   │                                      │
+  │  Metrics     │                                      │
+  │ Ingestion    │                                      │
+  │ Validation   │                                      │
+  │ OntoGen      │                                      │
+  │ MetaGen      │                                      │
+  ├──────────────┤                                      │
+  │ Profile      │                                      │
+  │ Admin        │                                      │
+  └──────────────┴──────────────────────────────────────┘
                   UI Main Page
   ```
-- **DataSpoke API**: Three-tier URI structure.
+- **DataSpoke API**: Two-axis URI structure — a per-dataset, cross-feature surface
+  for dataset state plus one namespace per §2.1 feature for cross-dataset list views
+  and global features.
   ```
-  /api/v1/spoke/common/…       # Common features shared across user groups
-  /api/v1/spoke/[de|da|dg]/…   # User-group-specific features
-  /api/v1/hub/…                # DataHub pass-through (optional ingress for clients)
+  /api/v1/spoke/common/data/{dataset_urn}/…   # Dataset resource (per-dataset, cross-feature)
+  /api/v1/spoke/ingestion                     # Ingestion Control cross-dataset list
+  /api/v1/spoke/validation                    # Validation cross-dataset list
+  /api/v1/spoke/ontogen/…                     # Ontology Generation (global singleton)
+  /api/v1/spoke/metagen/…                     # Metadata Generation (global singleton)
+  /api/v1/spoke/governance/…                  # Governance metrics
+  /api/v1/hub/…                               # DataHub pass-through (optional ingress for clients)
   ```
 - **DataSpoke Backend/Pipeline**: Core logic — ingestion, validation, ontology generation,
   metadata generation, and governance (the five §2.1 features).

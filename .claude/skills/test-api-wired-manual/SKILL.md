@@ -145,7 +145,7 @@ Pick probes based on the route + method, not from a hardcoded map:
 | Test code pattern | Probes (via helpers/probes.py) |
 |---|---|
 | `PUT/PATCH .../attr/ingestion/conf` | `db_row ingestion_configs <urn>`, `k8s_secret <name>` if conf carries `secret_ref` |
-| `DELETE .../attr/.../conf` | `db_row` (expect 0), `gms_aspect <urn> status` (expect retained), `k8s_secret` (expect retained — vault is independent) |
+| `DELETE .../attr/ingestion/conf` | `db_row` (expect 0), `gms_aspect <urn> status` (expect retained), `k8s_secret` (expect retained — vault is independent) |
 | `POST .../method/ingestion/run` w/ `dry_run:true` | assert no `lastIngested` change |
 | `POST .../method/ingestion/run` w/ `dry_run:false`, expected 200 | `gms_aspect <urn> datasetProperties`, `gms_aspect <urn> schemaMetadata`, `gms_lastingested <urn>`, `gms_systemmetadata <urn> schemaMetadata` |
 | `POST .../method/ingestion/run` expected 4xx | `events_by_run_id <urn> <ts_window>` (expect empty) |
@@ -154,7 +154,7 @@ Pick probes based on the route + method, not from a hardcoded map:
 | `PUT/PATCH .../attr/validation/conf` | `db_row validation_configs <urn>`, `gms_aspect <assertion_urn> assertionInfo`, `gms_aspect <assertion_urn> status` (cleared on PUT-after-DELETE resurrect) |
 | `DELETE .../attr/validation/conf` | `db_row validation_configs <urn>` `is_removed=true`, `gms_aspect <assertion_urn> status.removed=true` |
 | `POST .../attr/validation/result` | `db_row validation_results <urn> <data_time>`, `gms_assertion_run_event <assertion_urn> timestampMillis=data_time` |
-| `POST .../attr/metagen/conf` | `db_row metagen_configs <urn>` |
+| `PUT/PATCH .../attr/metagen/conf` | `db_row metagen_configs <urn>` |
 | any GraphQL mutation against `${GMS}` | parse mutation name → describe expected entity URN side-effect |
 
 If no rule matches, report "no automatic probe — verify manually" and continue.

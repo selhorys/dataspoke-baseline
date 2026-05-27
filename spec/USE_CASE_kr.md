@@ -17,9 +17,9 @@
 모든 시나리오는 가상의 온라인 서점 **Imazon**이라는
 단일 회사 컨텍스트를 공유하므로, 유스케이스가 공존하고 서로 보완된다.
 
-사용자 그룹 구분(데이터 엔지니어링 / 데이터 분석 / 데이터 거버넌스)은
-UI와 API의 확장 지점으로 남지만,
-기능 자체는 사용자 그룹별로 분할되지 않는다.
+베이스라인은 UI와 API를 모두 MANIFESTO §2.1의 다섯 기능 자체를 중심으로 구성한다.
+모든 인증된 사용자는 모든 기능에 접근하며, 쓰기 동작은 역할(Reader / Editor / Admin)로
+게이팅된다.
 
 ---
 
@@ -99,9 +99,9 @@ DataProcessInstance emission 계약, 그리고 DataSpoke의 시간별 passive �
 | `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/ingestion/conf` | 인제스천 설정 등록·읽기·갱신·삭제 (`mode`, `platform`, `identifier`; `active-custom`에 한해 `locator`/`auth`/`schedule_tier` 추가) |
 | `POST /spoke/common/data/{urn}/method/ingestion/run` | 수동 실행 (`dry_run: true`로 연결 점검) — **`active-custom` 설정에서만**. passive 설정은 `409 INGESTION_NOT_APPLICABLE`을 반환한다 |
 | `GET /spoke/common/data/{urn}/event/ingestion` | 데이터셋별 인제스천 이벤트 이력 (active-custom: DataSpoke 실행이 기록; passive: DataHub의 DataProcessInstance 레코드를 시간별 폴링이 기록) |
-| `GET /spoke/common/ingestion` | 데이터셋별 `attr/ingestion/*`을 집계하는 크로스 데이터셋 리스트 뷰 |
+| `GET /spoke/ingestion` | 데이터셋별 `attr/ingestion/*`을 집계하는 크로스 데이터셋 리스트 뷰 |
 
-각 `event/ingestion` 행은 `event_type`(성공이면 `INGESTION.COMPLETE`, 실패면
+각 `event` 행은 `event_type`(성공이면 `INGESTION.COMPLETE`, 실패면
 `INGESTION.FAIL`)과 그에 대응하는 `status`(`success` / `failure`)를 담는다.
 
 ### Imazon 예시
@@ -214,12 +214,12 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:kafka,example_
 ```
 
 스크립트가 실행되어 DPI를 emit하면, 다음 시간별 폴링에서 Case 2와 동일한 형태로
-`event/ingestion`에 한 행이 노출된다.
+`event`에 한 행이 노출된다.
 
 #### 크로스 데이터셋 오버뷰
 
 ```http
-GET /api/v1/spoke/common/ingestion?limit=100
+GET /api/v1/spoke/ingestion?limit=100
 ```
 
 데이터셋별로 한 행을 반환한다.
@@ -264,7 +264,7 @@ aspect emission — 은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)에
 | `POST /spoke/common/data/{urn}/attr/validation/result` | 결과 `{data_time, score, variables}`를 추가. 미선언 변수 키는 `422 UNKNOWN_VARIABLE`; `score`가 `[0,1]` 범위를 벗어나면 `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | `data_time`을 기준으로 한 과거 결과 (RFC 3339, `from` 포함, `until` 미포함). 기본 `limit=1000`, 서버 상한 `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | 데이터셋별 검증 이벤트 이력 |
-| `GET /spoke/common/validation` | 설정(설명 + 변수 이름 목록)과 최신 결과(data_time, score)를 담은 크로스 데이터셋 리스트 |
+| `GET /spoke/validation` | 설정(설명 + 변수 이름 목록)과 최신 결과(data_time, score)를 담은 크로스 데이터셋 리스트 |
 
 ### Imazon 예시
 
@@ -323,7 +323,7 @@ GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:
 부활하며(`201` 반환), 부활된 슬롯은 새로운 설명과 변수 집합을 가질 수 있다 —
 예: `variables: ["row_cnt", "fill_rate", "anomaly_score", "null_rate"]`.
 
-**크로스 데이터셋 오버뷰.** `GET /spoke/common/validation`은 데이터셋별로
+**크로스 데이터셋 오버뷰.** `GET /spoke/validation`은 데이터셋별로
 `description`, `variable_count`, `latest_data_time`, `latest_score`, `is_removed`
 를 보여준다. 리스트는 `?removed=true|false`로 soft-delete된 슬롯의 포함 여부를
 제어한다.
@@ -361,7 +361,7 @@ GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:
 (예: `edition__is_edition_of__title`)로, ID 자체가 사실을 인코딩하므로 재추론 사이에
 자연히 idempotent하다.
 
-온톨로지는 글로벌 아티팩트이다. `/spoke/common/ontogen/attr/conf`의 싱글톤 운영
+온톨로지는 글로벌 아티팩트이다. `/spoke/ontogen/attr/conf`의 싱글톤 운영
 conf가 추론 DAG 실행 시점과 스코프 데이터셋을 제어한다. 사람이 작성한 Markdown
 **seed**(프롬프트·도메인 힌트·명명 규칙)가 데이터 소스와 함께 LLM을 안내하고,
 수동 `POST /method/run`은 Markdown 본문을 해당 실행에만 적용되는 일회성 프롬프트로
@@ -382,34 +382,34 @@ conf 필드 의미, seed 라이프사이클, 추론 파이프라인과 증분 �
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/ontogen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
-| `GET /spoke/common/ontogen/attr/seed` | seed 리스트 — `[{seed_id, updated_at, preview}]` (Markdown 본문은 아래 항목으로 개별 조회) |
-| `POST /spoke/common/ontogen/attr/seed` | 추론 seed 생성 — 본문은 원시 Markdown(`Content-Type: text/markdown`); 서버가 `seed_id` 부여 |
-| `GET/PATCH/DELETE /spoke/common/ontogen/attr/seed/{seed_id}` | seed 조회·보강·폐기 |
-| `POST /spoke/common/ontogen/method/run` | 수동 재추론 트리거. 선택적 `Content-Type: text/markdown` 본문은 해당 실행에만 적용되는 일회성 프롬프트로 작동; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
-| `GET /spoke/common/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
-| `GET /spoke/common/ontogen/result/node` | 노드(주어 / 목적어) 리스트(confidence·상태 포함) |
-| `GET /spoke/common/ontogen/result/node/{node_id}` | 멤버 데이터셋 포함 노드 상세 |
-| `GET /spoke/common/ontogen/result/node/{node_id}/attr` | 노드 속성(confidence, 근거) |
-| `GET /spoke/common/ontogen/result/node/{node_id}/event` | 노드 변경 이력(제안 → 승인/거부, 멤버 추가) |
-| `POST /spoke/common/ontogen/result/node/{node_id}/method/review` | 대기 중 노드 제안의 승인·거부 |
-| `GET /spoke/common/ontogen/result/edge` | 엣지(술어) 리스트(confidence·상태 포함) |
-| `GET /spoke/common/ontogen/result/edge/{edge_id}` | 엣지 상세 |
-| `GET /spoke/common/ontogen/result/edge/{edge_id}/attr` | 엣지 속성(confidence, 근거) |
-| `GET /spoke/common/ontogen/result/edge/{edge_id}/event` | 엣지 변경 이력 |
-| `POST /spoke/common/ontogen/result/edge/{edge_id}/method/review` | 대기 중 엣지 제안의 승인·거부 |
-| `GET /spoke/common/ontogen/result/triple` | 트리플 — `(subject_node_id, edge_id, object_node_id)` 사실 — 리스트(confidence·상태 포함) |
-| `GET /spoke/common/ontogen/result/triple/{triple_id}` | 해석된 주어 노드·엣지·목적어 노드 포함 트리플 상세 |
-| `GET /spoke/common/ontogen/result/triple/{triple_id}/attr` | 트리플 속성(confidence, 근거) |
-| `GET /spoke/common/ontogen/result/triple/{triple_id}/event` | 트리플 변경 이력 |
-| `POST /spoke/common/ontogen/result/triple/{triple_id}/method/review` | 대기 중 트리플 승인·거부 — 주어 노드·엣지·목적어 노드 중 하나라도 미승인이면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
+| `PUT/PATCH/GET/DELETE /spoke/ontogen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
+| `GET /spoke/ontogen/attr/seed` | seed 리스트 — `[{seed_id, updated_at, preview}]` (Markdown 본문은 아래 항목으로 개별 조회) |
+| `POST /spoke/ontogen/attr/seed` | 추론 seed 생성 — 본문은 원시 Markdown(`Content-Type: text/markdown`); 서버가 `seed_id` 부여 |
+| `GET/PATCH/DELETE /spoke/ontogen/attr/seed/{seed_id}` | seed 조회·보강·폐기 |
+| `POST /spoke/ontogen/method/run` | 수동 재추론 트리거. 선택적 `Content-Type: text/markdown` 본문은 해당 실행에만 적용되는 일회성 프롬프트로 작동; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
+| `GET /spoke/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
+| `GET /spoke/ontogen/result/node` | 노드(주어 / 목적어) 리스트(confidence·상태 포함) |
+| `GET /spoke/ontogen/result/node/{node_id}` | 멤버 데이터셋 포함 노드 상세 |
+| `GET /spoke/ontogen/result/node/{node_id}/attr` | 노드 속성(confidence, 근거) |
+| `GET /spoke/ontogen/result/node/{node_id}/event` | 노드 변경 이력(제안 → 승인/거부, 멤버 추가) |
+| `POST /spoke/ontogen/result/node/{node_id}/method/review` | 대기 중 노드 제안의 승인·거부 |
+| `GET /spoke/ontogen/result/edge` | 엣지(술어) 리스트(confidence·상태 포함) |
+| `GET /spoke/ontogen/result/edge/{edge_id}` | 엣지 상세 |
+| `GET /spoke/ontogen/result/edge/{edge_id}/attr` | 엣지 속성(confidence, 근거) |
+| `GET /spoke/ontogen/result/edge/{edge_id}/event` | 엣지 변경 이력 |
+| `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | 대기 중 엣지 제안의 승인·거부 |
+| `GET /spoke/ontogen/result/triple` | 트리플 — `(subject_node_id, edge_id, object_node_id)` 사실 — 리스트(confidence·상태 포함) |
+| `GET /spoke/ontogen/result/triple/{triple_id}` | 해석된 주어 노드·엣지·목적어 노드 포함 트리플 상세 |
+| `GET /spoke/ontogen/result/triple/{triple_id}/attr` | 트리플 속성(confidence, 근거) |
+| `GET /spoke/ontogen/result/triple/{triple_id}/event` | 트리플 변경 이력 |
+| `POST /spoke/ontogen/result/triple/{triple_id}/method/review` | 대기 중 트리플 승인·거부 — 주어 노드·엣지·목적어 노드 중 하나라도 미승인이면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
 
 ### Imazon 예시
 
 **Conf.** 거버넌스 팀이 온톨로지 생성을 활성화한다:
 
 ```http
-PUT /api/v1/spoke/common/ontogen/attr/conf
+PUT /api/v1/spoke/ontogen/attr/conf
 ```
 ```json
 {
@@ -422,7 +422,7 @@ PUT /api/v1/spoke/common/ontogen/attr/conf
 **Seed.** LLM이 서점 도메인 친화적인 이름을 쓰도록 도메인 seed(Markdown)를 등록한다:
 
 ```http
-POST /api/v1/spoke/common/ontogen/attr/seed
+POST /api/v1/spoke/ontogen/attr/seed
 Content-Type: text/markdown
 ```
 ```markdown
@@ -460,10 +460,10 @@ Triples (subject — predicate — object):
 "rating"과 "review"를 구분하는 데 모호함이 있음) 리뷰어가 노드부터 시작한다:
 
 ```http
-GET /api/v1/spoke/common/ontogen/result/node
-GET /api/v1/spoke/common/ontogen/result/node/rating
-GET /api/v1/spoke/common/ontogen/result/node/rating/event
-POST /api/v1/spoke/common/ontogen/result/node/rating/method/review
+GET /api/v1/spoke/ontogen/result/node
+GET /api/v1/spoke/ontogen/result/node/rating
+GET /api/v1/spoke/ontogen/result/node/rating/event
+POST /api/v1/spoke/ontogen/result/node/rating/method/review
 ```
 ```json
 { "verdict": "approve", "reason": "FK 구조 확인. 추후 이름 변경 가능." }
@@ -472,17 +472,17 @@ POST /api/v1/spoke/common/ontogen/result/node/rating/method/review
 **다음은 엣지.** 노드가 승인되면 엣지로 이동한다:
 
 ```http
-GET /api/v1/spoke/common/ontogen/result/edge
-POST /api/v1/spoke/common/ontogen/result/edge/is_edition_of/method/review
-POST /api/v1/spoke/common/ontogen/result/edge/rates/method/review
+GET /api/v1/spoke/ontogen/result/edge
+POST /api/v1/spoke/ontogen/result/edge/is_edition_of/method/review
+POST /api/v1/spoke/ontogen/result/edge/rates/method/review
 ```
 
 **마지막으로 트리플.** 트리플의 양쪽 노드와 엣지가 모두 승인되면 해당 트리플이
 리뷰 가능 상태가 된다:
 
 ```http
-GET /api/v1/spoke/common/ontogen/result/triple
-POST /api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review
+GET /api/v1/spoke/ontogen/result/triple
+POST /api/v1/spoke/ontogen/result/triple/{triple_id}/method/review
 ```
 
 승인은 DataSpoke 내부 상태를 갱신한다.
@@ -524,7 +524,7 @@ UI는 Markdown으로 렌더링한다.
 
 향후 범위(언급만, 여기서는 모델링하지 않음): `domains`·`globalTags` 제안.
 
-`/spoke/common/metagen/attr/conf`의 **글로벌** 운영 conf가 생성 DAG 실행 시점과
+`/spoke/metagen/attr/conf`의 **글로벌** 운영 conf가 생성 DAG 실행 시점과
 스코프 데이터셋을 제어한다. `/spoke/common/data/{urn}/attr/metagen/conf`의
 **데이터셋별** 경계가 옵트인 스위치이다 — `is_enabled=true` 경계 행이 없는
 데이터셋은 글로벌 필터와 무관하게 제외된다.
@@ -547,11 +547,11 @@ conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/common/metagen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
-| `POST /spoke/common/metagen/method/run` | 수동 생성 실행 트리거. body `{"dataset_urns": [...], "dry_run": bool}`은 선택. 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
-| `GET /spoke/common/metagen/event` | 글로벌 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
-| `GET /spoke/common/metagen/item` | 데이터셋 전반의 아이템 목록 (페이지네이션·`dataset_urn`·`kind`·`status` 필터) |
-| `GET /spoke/common/metagen/item/{composite_id}` | `{dataset_urn}::{item_id}` 복합 ID로 아이템과 모든 후보 조회 |
+| `PUT/PATCH/GET/DELETE /spoke/metagen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
+| `POST /spoke/metagen/method/run` | 수동 생성 실행 트리거. body `{"dataset_urns": [...], "dry_run": bool}`은 선택. 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
+| `GET /spoke/metagen/event` | 글로벌 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
+| `GET /spoke/metagen/item` | 데이터셋 전반의 아이템 목록 (페이지네이션·`dataset_urn`·`kind`·`status` 필터) |
+| `GET /spoke/metagen/item/{composite_id}` | `{dataset_urn}::{item_id}` 복합 ID로 아이템과 모든 후보 조회 |
 | `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | 데이터셋별 경계 (`is_enabled`, `allowed`) |
 | `GET /spoke/common/data/{urn}/attr/metagen/item` | 한 데이터셋의 아이템 목록 |
 | `GET /spoke/common/data/{urn}/attr/metagen/item/{item_id}` | 아이템과 모든 후보 |
@@ -563,7 +563,7 @@ conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책
 **Conf.** 거버넌스 팀이 metagen을 글로벌하게 활성화한다:
 
 ```http
-PUT /api/v1/spoke/common/metagen/attr/conf
+PUT /api/v1/spoke/metagen/attr/conf
 ```
 ```json
 {
@@ -591,7 +591,7 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,examp
 **실행.** 일일 Airflow DAG가 실행되거나, 리뷰어가 즉시 실행을 트리거한다:
 
 ```http
-POST /api/v1/spoke/common/metagen/method/run
+POST /api/v1/spoke/metagen/method/run
 ```
 
 **아이템 조회.** 실행 후, 대시보드가 해당 데이터셋의 아이템 목록을 받는다:
@@ -717,12 +717,12 @@ breakdown 형태와 DAG 시맨틱은
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `POST /spoke/dg/metric` | 메트릭 생성 — `metric_id`를 정의 필드와 함께 요청 본문에 담는다. 중복 id는 `409 METRIC_EXISTS` |
-| `PUT/PATCH/GET/DELETE /spoke/dg/metric/{metric_id}/attr/conf` | 기존 메트릭 교체·갱신·읽기·삭제 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT`은 기존 정의를 교체하며 id가 없으면 `404 METRIC_NOT_FOUND` |
-| `POST /spoke/dg/metric/{metric_id}/method/run` | 측정 실행 트리거; `dry_run: true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
-| `GET /spoke/dg/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 `values`와 데이터셋별 `breakdown`을 담음) |
-| `GET /spoke/dg/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
-| `GET /spoke/dg/metric` | 모든 메트릭 리스트 |
+| `POST /spoke/governance/metric` | 메트릭 생성 — `metric_id`를 정의 필드와 함께 요청 본문에 담는다. 중복 id는 `409 METRIC_EXISTS` |
+| `PUT/PATCH/GET/DELETE /spoke/governance/metric/{metric_id}/attr/conf` | 기존 메트릭 교체·갱신·읽기·삭제 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT`은 기존 정의를 교체하며 id가 없으면 `404 METRIC_NOT_FOUND` |
+| `POST /spoke/governance/metric/{metric_id}/method/run` | 측정 실행 트리거; `dry_run: true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
+| `GET /spoke/governance/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 `values`와 데이터셋별 `breakdown`을 담음) |
+| `GET /spoke/governance/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
+| `GET /spoke/governance/metric` | 모든 메트릭 리스트 |
 
 사용 가능한 `schedule_tier`: `hourly`, `daily`, `weekly`. 활성화되면 해당
 주기로 자동 실행되며, 온디맨드 실행은 항상 `POST .../method/run`을 통해 일어난다.
@@ -732,7 +732,7 @@ breakdown 형태와 DAG 시맨틱은
 CDO가 DEV 범위의 일간 doc-health 메트릭을, `metric_id`를 생성 본문에 담아 추가한다:
 
 ```http
-POST /api/v1/spoke/dg/metric
+POST /api/v1/spoke/governance/metric
 ```
 ```json
 {
@@ -752,13 +752,13 @@ POST /api/v1/spoke/dg/metric
 스케줄을 기다리지 않고 CDO가 즉시 첫 실행을 트리거한다:
 
 ```http
-POST /api/v1/spoke/dg/metric/doc-health-dev/method/run
+POST /api/v1/spoke/governance/metric/doc-health-dev/method/run
 ```
 
 1주일 후, 보드 보고용으로 추세를 가져온다:
 
 ```http
-GET /api/v1/spoke/dg/metric/doc-health-dev/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
+GET /api/v1/spoke/governance/metric/doc-health-dev/attr/result?from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z
 ```
 
 각 행은 `values: {"total": 142.0, "doc_health": 119.0}`와, **미문서화**

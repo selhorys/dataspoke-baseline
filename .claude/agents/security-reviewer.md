@@ -61,7 +61,7 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 ### 2. AuthN / AuthZ
 
 - Every non-public route has an auth dependency (`Depends(get_current_user)` or equivalent)
-- Role/user-group checks enforced at the service layer, not just the router
+- Role checks enforced at the service layer, not just the router
 - No IDOR — resource access checks ownership, not just authentication
 - Token handling: no tokens in URLs, query strings, or logs
 

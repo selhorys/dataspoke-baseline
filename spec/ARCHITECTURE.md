@@ -32,8 +32,9 @@ each organization-specific extension built on top of DataSpoke is a Spoke.
 ```
 ┌───────────────────────────────────────────────┐
 │                 DataSpoke UI                  │
-│         Portal: DE / DA / DG entry points     │
-│         (baseline features + extensibility)   │
+│   Single shell · function-based menu:         │
+│   Governance · Ingestion · Validation ·       │
+│   OntoGen · MetaGen                           │
 └───────────────────────┬───────────────────────┘
                         │
 ┌───────────────────────▼───────────────────────┐
@@ -74,10 +75,11 @@ existing DataHub installations; loose coupling enables independent deployment an
 2. **Five-feature baseline** — The Baseline Product implements five MANIFESTO features (Ingestion
    Control, Validation, Ontology Generation, Metadata Generation, Governance). All backend
    services, API routes, and UI surfaces map to one of these five.
-3. **Three-Tier API Routing** — Common features under `/spoke/common/`, group-specific extension
-   routes under `/spoke/[de|da|dg]/`, DataHub pass-through under `/hub/`. The group tier is an
-   extensibility affordance: baseline features live under `/spoke/common/` and `/spoke/dg/`;
-   `/spoke/de/` and `/spoke/da/` are reserved for organization-specific extensions.
+3. **Two-Axis API Routing** — Per-dataset, cross-feature routes live under
+   `/spoke/common/data/{dataset_urn}/…` (the dataset resource). Cross-dataset list
+   views and global features live under one namespace per MANIFESTO §2.1 feature —
+   `/spoke/ingestion`, `/spoke/validation`, `/spoke/ontogen/`, `/spoke/metagen/`,
+   `/spoke/governance/`. DataHub pass-through under `/hub/`.
 4. **API-First** — The FastAPI implementation in `src/api/` is the single source of truth for the
    API contract, with auto-generated OpenAPI docs enabling parallel frontend development and
    AI-agent iteration.
@@ -92,10 +94,10 @@ existing DataHub installations; loose coupling enables independent deployment an
    DataHub holds a propagated copy of role on the shadow `corpuser` record, used only for
    DataHub-UI authorisation; role changes go DataSpoke→DataHub via `batchAssignRole`, and a
    nightly `auth-role-sync-daily` DAG reconciles drift (DataSpoke wins). DataHub UI access uses
-   Google OIDC pointed at the same OAuth client as DataSpoke. JWT carries identity only;
-   per-request DB role lookup gates `/admin/*` and applies the method × role matrix on
-   `/spoke/*` and `/hub/*` (Reader = GET only). Long-lived API tokens are opaque, self-service
-   minted under `/auth/api-tokens`, with intersection privilege
+   Google OIDC pointed at the same OAuth client as DataSpoke. JWT carries identity only
+   (`sub`, `email`, `exp`, `iat`); per-request DB role lookup gates `/admin/*` and applies the
+   method × role matrix on `/spoke/*` and `/hub/*` (Reader = GET only). Long-lived API tokens
+   are opaque, self-service minted under `/auth/api-tokens`, with intersection privilege
    (`effective = min(role_snapshot, current users.role)`). See [feature/AUTH.md](feature/AUTH.md).
 
 ---
@@ -150,28 +152,34 @@ FastAPI auto-generates OpenAPI 3.0 documentation from Pydantic models and route 
 
 **Technology**: Next.js (TypeScript)
 
-Portal-style interface with user-group-specific entry points (DE, DA, DG). Provides:
-- Chart visualizations for metrics dashboards (DG) and data overviews
+A single shell with a function-based left-side menu — Governance (Dashboard + Metrics),
+Ingestion Control, Validation, OntoGen, MetaGen. Provides:
+- Chart visualizations for the Governance Dashboard and metric trends
 - Interactive graph rendering for ontology visualization (UC3 nodes / triples)
 - Polling-based live freshness against `event/...` and `attr/.../result` endpoints (no WebSocket / SSE in the baseline API)
 
 For layout, shared components, routing, and auth, see
-[`spec/feature/FRONTEND_BASIC.md`](feature/FRONTEND_BASIC.md). Per-workspace specs:
-[`FRONTEND_DE.md`](feature/FRONTEND_DE.md), [`FRONTEND_DA.md`](feature/FRONTEND_DA.md),
-[`FRONTEND_DG.md`](feature/FRONTEND_DG.md).
+[`spec/feature/FRONTEND_BASIC.md`](feature/FRONTEND_BASIC.md). Per-function specs:
+[`FRONTEND_GOVERNANCE.md`](feature/FRONTEND_GOVERNANCE.md),
+[`FRONTEND_INGESTION.md`](feature/FRONTEND_INGESTION.md),
+[`FRONTEND_VALIDATION.md`](feature/FRONTEND_VALIDATION.md),
+[`FRONTEND_ONTOGEN.md`](feature/FRONTEND_ONTOGEN.md),
+[`FRONTEND_METAGEN.md`](feature/FRONTEND_METAGEN.md).
 
 ### 2. DataSpoke API
 
 **Technology**: FastAPI (Python 3.13)
 
-Three-tier URI structure:
+Function-based URI structure — one namespace per MANIFESTO §2.1 feature:
 
 ```
-/api/v1/spoke/common/...   → Baseline features: ingestion, validation, ontogen, metagen
-/api/v1/spoke/de/...       → Reserved for DE-exclusive extensions (no baseline routes)
-/api/v1/spoke/da/...       → Reserved for DA-exclusive extensions (no baseline routes)
-/api/v1/spoke/dg/...       → Governance (metric, overview)
-/api/v1/hub/...            → DataHub pass-through (optional ingress for clients)
+/api/v1/spoke/common/data/{dataset_urn}/...  → Dataset resource (per-dataset, cross-feature)
+/api/v1/spoke/ingestion                      → Ingestion Control cross-dataset list
+/api/v1/spoke/validation                     → Validation cross-dataset list
+/api/v1/spoke/ontogen/...                    → Ontology Generation (global singleton)
+/api/v1/spoke/metagen/...                    → Metadata Generation (global singleton)
+/api/v1/spoke/governance/...                 → Governance metrics
+/api/v1/hub/...                              → DataHub pass-through (optional ingress for clients)
 ```
 
 RESTful CRUD only — the baseline API has no WebSocket or SSE surface; clients poll
@@ -239,9 +247,9 @@ the cross-cutting flow that ties the features together.
 |---|---|---|---|
 | UC1 Ingestion Control | Airflow tier DAG (`active-custom` mode) or hourly `ingestion-passive-hourly` DAG (`passive` mode); manual `POST .../method/ingestion/run` (`active-custom` only) | `IngestionService` | `active-custom`: emits `Status` + `DatasetProperties` + `SchemaMetadata` + `DataProcessInstance` aspects. `passive`: no aspect writes; mirrors externally-emitted `DataProcessInstance` run history into `event/ingestion`. |
 | UC2 Validation | External pipeline `POST .../attr/validation/result` after each partition write; `PUT/PATCH/DELETE .../attr/validation/conf` for configuration | `ValidationService` (config + result store; runs no validation logic) | Emits `assertionInfo` on conf upsert; emits `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emits `status.removed` on DELETE / resurrection. |
-| UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST .../ontogen/method/run` | `OntogenService` | None — UC3 is read-only on the DataHub side; approval flips status in DataSpoke storage only. |
-| UC4 Metadata Generation | Airflow tier DAG (singleton conf); manual `POST /spoke/common/metagen/method/run` | `MetagenService` | On reviewer approval of a candidate only: writes to the editable description aspect (`editableDatasetProperties.description` for dataset-description items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for column-description items) — never to non-editable counterparts. |
-| UC5 Governance | Airflow tier DAG; manual `POST /spoke/dg/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
+| UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST /spoke/ontogen/method/run` | `OntogenService` | None — UC3 is read-only on the DataHub side; approval flips status in DataSpoke storage only. |
+| UC4 Metadata Generation | Airflow tier DAG (singleton conf); manual `POST /spoke/metagen/method/run` | `MetagenService` | On reviewer approval of a candidate only: writes to the editable description aspect (`editableDatasetProperties.description` for dataset-description items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for column-description items) — never to non-editable counterparts. |
+| UC5 Governance | Airflow tier DAG; manual `POST /spoke/governance/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
 
 Cross-cutting invariants:
 
@@ -262,16 +270,15 @@ Cross-cutting invariants:
 ## Feature-to-Architecture Mapping
 
 Maps the five MANIFESTO features to the system components and infrastructure they require.
-Baseline features live under `/spoke/common/` and `/spoke/dg/`; the `/spoke/de/` and `/spoke/da/`
-route tiers are reserved for organization-specific extensions and have no baseline routes.
+Each feature owns a top-level namespace under `/spoke/`.
 
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|------------------|----------------|
-| Ingestion Control | UC1 | `/spoke/common/ingestion/` (cross-dataset list), `/spoke/common/data/{urn}/{attr,method,event}/ingestion/` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Validation | UC2 | `/spoke/common/validation/` (cross-dataset list), `/spoke/common/data/{urn}/attr/validation/{conf,result}`, `/spoke/common/data/{urn}/event/validation` | Validation Config Manager (PUT/PATCH/DELETE conf → `assertionInfo` / `status`), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
-| Ontology Generation | UC3 | `/spoke/common/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector), Airflow (tier-based periodic DAG) |
-| Metadata Generation | UC4 | `/spoke/common/metagen/` (singleton conf + manual run + global item browse), `/spoke/common/data/{urn}/attr/metagen/{conf,item}`, `/spoke/common/data/{urn}/event/metagen` | Metadata Generation Service, Producer-Reviewer Adversarial Debate, Per-Item Candidate Review Queue | LLM API, PostgreSQL (pgvector for `metagen_candidate_embeddings`), DataHub SDK (read context + approved writes to editable description aspects), Airflow (tier-based periodic DAG) |
-| Governance | UC5 | `/spoke/dg/metric/` | Metrics Aggregator (pure aggregation, no source-DB reads), Built-in measurers (`ingestion-freshness`, `validation-score`, `doc-health`), Per-Dataset Breakdown, Factory-Default Bootstrap | Airflow (tier-based periodic DAGs + on-demand `metrics`), PostgreSQL, DataHub GraphQL |
+| Ingestion Control | UC1 | `/spoke/ingestion` (cross-dataset list) + `/spoke/common/data/{urn}/attr/ingestion/{conf}`, `/method/ingestion/run`, `/event/ingestion` | Ingestion Service (active extractors + passive status sync), Source Adapter Framework | Airflow (tier-based periodic DAGs + hourly `ingestion-passive-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
+| Validation | UC2 | `/spoke/validation` (cross-dataset list) + `/spoke/common/data/{urn}/attr/validation/{conf,result}` + `/event/validation` | Validation Config Manager (PUT/PATCH/DELETE conf → `assertionInfo` / `status`), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
+| Ontology Generation | UC3 | `/spoke/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector), Airflow (tier-based periodic DAG) |
+| Metadata Generation | UC4 | `/spoke/metagen/` (singleton conf + manual run + global item browse) + `/spoke/common/data/{urn}/attr/metagen/{conf,item}` + `/event/metagen` | Metadata Generation Service, Producer-Reviewer Adversarial Debate, Per-Item Candidate Review Queue | LLM API, PostgreSQL (pgvector for `metagen_candidate_embeddings`), DataHub SDK (read context + approved writes to editable description aspects), Airflow (tier-based periodic DAG) |
+| Governance | UC5 | `/spoke/governance/metric/` | Metrics Aggregator (pure aggregation, no source-DB reads), Built-in measurers (`ingestion-freshness`, `validation-score`, `doc-health`), Per-Dataset Breakdown, Factory-Default Bootstrap | Airflow (tier-based periodic DAGs + on-demand `metrics`), PostgreSQL, DataHub GraphQL |
 
 ### Optional / future routes
 
@@ -313,7 +320,7 @@ on related `document` entities) and human-authored Markdown seeds.
    facts referencing already-proposed nodes and edges
 4. **Confidence Scoring & Human Review Queue** — each node, edge, and triple carries an
    independent confidence score and review status; review proceeds nodes → edges →
-   triples via `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
+   triples via `POST /spoke/ontogen/result/{node|edge|triple}/{id}/method/review`
 
 **Storage** (PostgreSQL with pgvector):
 - `ontogen_seeds` — id, markdown body, status (relational)
@@ -465,7 +472,7 @@ The repository is organized by deployment concern and application layer. Key top
 | Directory | Purpose |
 |-----------|---------|
 | `src/` | Application source: `api/` (FastAPI), `backend/` (services), `shared/` (clients), `workflows/` (Airflow DAGs), `frontend/` (Next.js) |
-| `spec/` | Architecture and feature specifications (common feature specs and user-group-specific FRONTEND_DE/DA/DG specs in `feature/`) |
+| `spec/` | Architecture and feature specifications (one FRONTEND_*.md per function area in `feature/`) |
 | `tests/` | Unit, integration, and E2E test suites |
 | `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals |
 | `docker-images/` | Dockerfiles per service (api, airflow, postgres) |
@@ -490,7 +497,7 @@ The repository is organized by deployment concern and application layer. Key top
 | Decision | Rationale |
 |----------|-----------|
 | DataHub as external dependency | Enterprises have existing installations; sidecar pattern enables independent lifecycle |
-| Three-tier URI segmentation | `/spoke/common/` for baseline shared features, `/spoke/dg/` for governance, `/spoke/[de\|da]/` reserved for organization-specific extensions, `/hub/` for DataHub pass-through — extensibility without forking the baseline |
+| Two-axis URI segmentation | Per-dataset cross-feature surface at `/spoke/common/data/{dataset_urn}/…`; cross-dataset list views + global features under one namespace per MANIFESTO §2.1 feature (`/spoke/ingestion`, `/spoke/validation`, `/spoke/ontogen/`, `/spoke/metagen/`, `/spoke/governance/`); `/hub/` for DataHub pass-through |
 | Ontology Generation as a first-class feature | Metadata Generation (UC4) and Governance (UC5) both consume the node / triple graph; making Ontology Generation (UC3) a standalone feature avoids duplication and ensures consistency across consumers |
 | Validation as a passive result store | Validation logic belongs in the data pipeline (right credentials, right scale, right environment). DataSpoke contributes a centralized schema-disciplined result store, a historical-result baseline cache, and DataHub assertion emission on the pipeline's behalf. Teams that need multiple distinct checks per dataset use DataHub's native assertion APIs directly. See [`spec/feature/VALIDATION.md`](feature/VALIDATION.md). |
 | LLM as external service | Model-agnostic; swap providers without code changes; no GPU infrastructure required |

@@ -99,11 +99,11 @@ Route handler function names must mirror the REST path they serve.
 
 | Route | Function name |
 |-------|---------------|
-| `GET /metric/{id}/attr/conf` | `get_metric_conf` |
-| `POST /metric/{id}/method/run` | `post_metric_run` |
-| `GET /data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
+| `GET /governance/metric/{id}/attr/conf` | `get_metric_conf` |
+| `POST /governance/metric/{id}/method/run` | `post_metric_run` |
+| `GET /spoke/common/data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
 | `POST /metagen/method/run` | `post_metagen_run` |
-| `POST /data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
+| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
 | `POST /ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
 | `POST /ontogen/result/edge/{edge_id}/method/review` | `post_ontogen_edge_review` |
 | `POST /ontogen/result/triple/{triple_id}/method/review` | `post_ontogen_triple_review` |
@@ -187,7 +187,8 @@ combines five dimensions with fixed weights (must sum to 1.0):
 `overall = round(sum(dimensions[k] × weights[k]), 2)`, clamped to `[0, 100]`. The
 score is read-through cached at `quality:{dataset_urn}:score` (TTL 300s; see
 [Cache Key Conventions](#cache-key-conventions)) and surfaced as the `quality_score`
-field on `GET /spoke/common/data/{urn}` and `GET /spoke/common/dataset` list rows.
+field on per-dataset rows of the function list views (`GET /spoke/ingestion`,
+`GET /spoke/validation`).
 The full breakdown (`overall_score`, `dimensions`, optional `dimension_details`) is
 returned by the dataset domain via the `QualityScore` model. The score is independent
 of the validation feature — datasets without validation configs still have a
@@ -203,7 +204,7 @@ not from aspects.
 catalogued in [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
 The DPI emission contract that all ingestors (in-house and external) must satisfy lives
 in [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide);
-DataSpoke-side consumption (event/ingestion mapping, observation fallback) is
+DataSpoke-side consumption (event mapping, observation fallback) is
 [below](#custom-ingestor-authoring-contract). This section describes the implementation only.
 
 **Supported platforms** (in-house extractor module per platform; applies to `active-custom`
@@ -429,7 +430,7 @@ write rules are catalogued in
 [DATAHUB_INTEGRATION §Editable vs Non-Editable Description Aspects](../DATAHUB_INTEGRATION.md#editable-vs-non-editable-description-aspects).
 This section describes the implementation only.
 
-**Singleton conf** at `/spoke/common/metagen/attr/conf` — there is no
+**Singleton conf** at `/spoke/metagen/attr/conf` — there is no
 per-dataset operational config; the per-dataset row
 (`/spoke/common/data/{urn}/attr/metagen/conf`) is the opt-in boundary only.
 `GET` on either resource returns a `null` body with `200 OK` when the row has
@@ -593,7 +594,7 @@ ontology** — nodes (subjects / objects), edges (predicates), and triples
 tables + pgvector embeddings. Independent review workflow (approve / reject) per
 result type, with triple review gated on its endpoint nodes and edge being approved.
 
-**Singleton conf** at `/spoke/common/ontogen/attr/conf` — there is no per-dataset ontology
+**Singleton conf** at `/spoke/ontogen/attr/conf` — there is no per-dataset ontology
 config. Fields:
 
 | Field | Purpose |
@@ -609,7 +610,7 @@ boundary shared with UC4).
 The conf is a single row in `ontogen_config` (singleton table; see
 [BACKEND_SCHEMA §ontogen_config](BACKEND_SCHEMA.md#ontogen_config)).
 
-**Seeds** at `/spoke/common/ontogen/attr/seed/{seed_id}` are human-authored Markdown
+**Seeds** at `/spoke/ontogen/attr/seed/{seed_id}` are human-authored Markdown
 documents (prompts, domain hints, naming conventions) that the inference run consumes
 alongside the data sources. The endpoint accepts and returns raw Markdown
 (`Content-Type: text/markdown`); only `seed_id` and timestamps are managed out-of-band.
@@ -674,14 +675,14 @@ Producer's inference loop is specified in
 Concurrent inference runs return `409 ONTOGEN_RUNNING`; `?dry_run=true` evaluates
 steps 2–8 without persisting.
 
-**Trigger surface**. Inference is triggered by `POST /spoke/common/ontogen/method/run`
+**Trigger surface**. Inference is triggered by `POST /spoke/ontogen/method/run`
 (synchronous, in-process) or one of the three periodic tier DAGs. Concurrency across all
 triggers is enforced by the Redis `ontogen:running:singleton` SET NX guard.
 
 **Disabled-config rejection**: `method/run` with `is_enabled=false` and `dry_run=false`
 raises `409 ONTOGEN_DISABLED`. Dry-run is permitted regardless of `is_enabled`.
 
-**Approval flow**. Each result type uses `POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`
+**Approval flow**. Each result type uses `POST /spoke/ontogen/result/{node|edge|triple}/{id}/method/review`
 with `{verdict, reason}`. Approval flips `status` in DataSpoke storage; the ontology
 graph lives entirely in DataSpoke (relational + pgvector).
 
@@ -724,7 +725,7 @@ Metric definition CRUD (PostgreSQL: `metric_definitions`). Scheduled (Airflow
 `schedule_tier`) or on-demand (`POST .../method/run` → `metrics` on-demand DAG)
 measurement execution.
 
-**Create vs replace**: `POST /spoke/dg/metric` creates a metric — `metric_id` is supplied
+**Create vs replace**: `POST /spoke/governance/metric` creates a metric — `metric_id` is supplied
 in the body and must not collide with an existing row (`MetricsService.create_metric_config`
 raises `409 METRIC_EXISTS`; the concurrent-create race is closed by catching the primary-key
 `IntegrityError` and re-raising the same conflict). `PUT .../attr/conf` replaces an existing
@@ -866,7 +867,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 - **Entity-level endpoint** (`GET .../data/{urn}/event`): returns all events
   for the entity regardless of domain — filters only by `entity_type` +
   `entity_id`.
-- **Domain-level endpoint** (`GET .../event/ingestion`): additionally
+- **Domain-level endpoint** (`GET .../event`): additionally
   filters by `event_type` prefix (e.g., `INGESTION.%`) to return only
   domain-specific events.
 
@@ -1097,7 +1098,7 @@ This section captures the service-layer composition only.
 | Module | Responsibility |
 |--------|---------------|
 | `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via `passlib.hash.bcrypt` at cost factor 12. Google `sub` linking onto existing rows. UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`. |
-| `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. The JWT `groups` claim is the constant `["de", "da", "dg"]`; role is **not** in the JWT (read from `users.role` per request). |
+| `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. The JWT carries identity only (`sub`, `email`, `exp`, `iat`); role is **not** in the JWT (read from `users.role` per request). |
 | `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; updates `last_used_at` throttled to per-minute granularity. Revoke sets `revoked_at = now()`. |
 | `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve user by Google `sub`, then by email; create otherwise. |
 | `reset.py` | Password-reset token issuance (256-bit `secrets.token_urlsafe`, SHA-256 hashed into `password_reset_tokens`) and confirm. Email transport via `aiosmtplib` driven by the SMTP peripheral (below). |

@@ -109,7 +109,7 @@ Each MANIFESTO feature has a clear integration direction:
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
 | Ingestion Control (`active-custom`) | UC1 | **Write** | Emit dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. Applies to `mode: active-custom` configs only. |
-| Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event/ingestion`. No aspect writes by DataSpoke. |
+| Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event`. No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
 | Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
@@ -163,10 +163,9 @@ upstream call. Implications:
   `lastUpdated.actor`) points to the service-token's corpuser URN, not the
   DataSpoke user who triggered the write. User-level audit lives only in
   the DataSpoke `events` table.
-- DataSpoke user privileges (DataHub `Admin` / `Editor` / `Reader`, plus
-  workspace tier in the JWT `groups` claim) gate access only to DataSpoke
-  routes. They do not constrain what the upstream call can write — that
-  is bounded by the service-token's own DataHub role.
+- DataSpoke user privileges (`Admin` / `Editor` / `Reader`) gate access
+  only to DataSpoke routes. They do not constrain what the upstream call
+  can write — that is bounded by the service-token's own DataHub role.
 - Per-user impersonation against DataHub (user-bound PATs, token exchange,
   on-behalf-of writes) is out of scope for the baseline. Organisations
   needing DataHub-side per-user attribution add it as an extension.

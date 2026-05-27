@@ -131,19 +131,17 @@ can later add Google without losing the ability to log in with the password.
 
 `POST /auth/token` with `{email, password}` issues an access JWT (15 min
 lifetime, in response body) and a refresh JWT (7 d lifetime, as `HttpOnly`
-cookie). The access JWT carries identity only — `sub`, `email`, and a
-constant `groups` claim of `["de", "da", "dg"]` for every authenticated
-user. The JWT does not encode role (see [Privilege Model](#privilege-model));
-role is read per-request from `users.role`.
+cookie). The access JWT carries identity only — `sub`, `email`, `exp`, `iat`.
+The JWT does not encode role (see [Privilege Model](#privilege-model)); role
+is read per-request from `users.role`.
 
 ### Refresh & revoke
 
 `POST /auth/token/refresh` validates the refresh-cookie JWT, checks the Redis
-revocation list, and issues a fresh access token with the same constant
-`groups` claim. `POST /auth/token/revoke` records the refresh token's hash in
-Redis under `revoked_refresh:{sha256[:16]}` with TTL equal to the token's
-remaining lifetime; both flows fail-closed on Redis unreachability
-(`503 STORAGE_UNAVAILABLE`).
+revocation list, and issues a fresh access token with the same identity claims.
+`POST /auth/token/revoke` records the refresh token's hash in Redis under
+`revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime;
+both flows fail-closed on Redis unreachability (`503 STORAGE_UNAVAILABLE`).
 
 ### Profile read & update
 
@@ -258,6 +256,8 @@ DataSpoke even if the DataHub side fails.
 The marker corpGroup is the provenance signal that distinguishes
 DataSpoke-managed corpusers from natively-created users, OIDC-only users, or
 service accounts. It has no privilege effect on its own — it is a label.
+The DataHub `corpGroup` entity used here is a metadata-graph artifact and does
+not factor into DataSpoke API authorization, which is method × role.
 
 | Property | Value |
 |----------|-------|
@@ -277,10 +277,10 @@ For API-token-carried requests, the effective role is the **intersection**
 of the token's `role_snapshot` and the owner's current `users.role` (see
 [§API Tokens](#api-tokens)).
 
-The privilege model is two-axis: URI tier × HTTP method.
+The privilege model is two-axis: URI prefix × HTTP method.
 
-| URI tier | Reader | Editor | Admin |
-|----------|--------|--------|-------|
+| URI prefix | Reader | Editor | Admin |
+|------------|--------|--------|-------|
 | `/auth/*` (self-scoped) | ✓ all methods | ✓ all methods | ✓ all methods |
 | `/spoke/*`, `/hub/*` | ✓ `GET` / `HEAD` / `OPTIONS` only | ✓ all methods | ✓ all methods |
 | `/admin/*` | ✗ | ✗ | ✓ all methods |
@@ -563,5 +563,6 @@ The following are explicitly not part of the baseline auth surface:
   the real DataSpoke user. User-level audit lives in the DataSpoke `events`
   table. See [DATAHUB_INTEGRATION §Service Credential Model](../DATAHUB_INTEGRATION.md#service-credential-model).
 - **Per-feature fine-grained authorisation.** The baseline gates routes by
-  tier (`/spoke/dg`, `/admin`, etc.); per-resource ACLs on individual
-  datasets, runs, or reviews are out of scope and live in DataHub policies.
+  prefix (`/spoke/*`, `/hub/*`, `/admin/*`) and HTTP method × role;
+  per-resource ACLs on individual datasets, runs, or reviews are out of
+  scope and live in DataHub policies.

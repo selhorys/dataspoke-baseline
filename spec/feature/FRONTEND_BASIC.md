@@ -1,8 +1,9 @@
 # DataSpoke Frontend — Shared Layer
 
 > Conforms to [MANIFESTO](../MANIFESTO_en.md). API contract in [API.md](../API.md).
-> Per-workspace specs: [FRONTEND_DE](FRONTEND_DE.md), [FRONTEND_DA](FRONTEND_DA.md),
-> [FRONTEND_DG](FRONTEND_DG.md).
+> Per-function specs: [FRONTEND_GOVERNANCE](FRONTEND_GOVERNANCE.md),
+> [FRONTEND_INGESTION](FRONTEND_INGESTION.md), [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md),
+> [FRONTEND_ONTOGEN](FRONTEND_ONTOGEN.md), [FRONTEND_METAGEN](FRONTEND_METAGEN.md).
 
 DataSpoke is API-first. This frontend is a thin reference client over the routes
 catalogued in `API.md`; UI elements MUST trace to a real API surface — invented
@@ -22,11 +23,38 @@ on `401`.
 
 ---
 
+## Shell
+
+A single application shell hosts every page. The shell has a top header
+(product name, user menu, logout) and a left-side menu organised by MANIFESTO
+§2.1 feature plus account/admin entries. The page area on the right renders
+the active route.
+
+```
+┌─────────────────────────────────────────────────────┐
+│ DataSpoke              user@imazon ▼  Logout        │
+├──────────────┬──────────────────────────────────────┤
+│ Governance ▾ │   (page content)                     │
+│  Dashboard   │                                      │
+│  Metrics     │                                      │
+│ Ingestion    │                                      │
+│ Validation   │                                      │
+│ OntoGen      │                                      │
+│ MetaGen      │                                      │
+├──────────────┤                                      │
+│ Profile      │                                      │
+│ Admin        │                                      │
+└──────────────┴──────────────────────────────────────┘
+                  Application shell
+```
+
+---
+
 ## Routing
 
 | UI path | Purpose | API calls |
 |---|---|---|
-| `/` | Portal landing — links to DE, DA, DG cards | — |
+| `/` | 302 to `/governance/dashboard` (post-login home) | — |
 | `/login` | Login page (email+password and Google sign-in) | `POST /auth/token`, `GET /auth/google/login` |
 | `/register` | Self-service sign-up (email + name + password ≥ 10 chars) and Google sign-up | `POST /auth/register`, `GET /auth/google/login` |
 | `/forgot-password` | Request a password-reset email | `POST /auth/password/reset/request` |
@@ -34,32 +62,18 @@ on `401`.
 | `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
-| `/de/...` | [Data Engineering workspace](FRONTEND_DE.md) | per workspace |
-| `/da/...` | [Data Analysis workspace](FRONTEND_DA.md) | per workspace |
-| `/dg/...` | [Data Governance workspace](FRONTEND_DG.md) | per workspace |
+| `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
+| `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
+| `/ingestion` | [Ingestion Control](FRONTEND_INGESTION.md) | `/spoke/ingestion/...` |
+| `/validation` | [Validation](FRONTEND_VALIDATION.md) | `/spoke/validation/...` |
+| `/ontogen` | [Ontology Generation](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/...` |
+| `/metagen` | [Metadata Generation](FRONTEND_METAGEN.md) | `/spoke/metagen/...` |
 | `/settings` | Theme + locale toggle, persisted in `localStorage` only | — |
 
-Route guards layer three checks:
+Route guards layer two checks:
 
 - **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, and the OAuth callback URL are public; all other routes redirect to `/login` when no access token is available.
-- **JWT `groups` claim** — workspace routes (`/de/…`, `/da/…`, `/dg/…`) redirect to the portal landing when the corresponding group is missing.
-- **`users.role` (read from `GET /auth/me.role`)** — `/admin/users` is server-side gated by the API's role check (`role = 'Admin'`); the UI hides the admin-menu entry when the role is not `Admin`. Workspace pages additionally render write actions (approve/reject buttons, edit forms) only when `role ∈ {Editor, Admin}` — Reader users see read-only views. The API enforces the same gate via `403 READ_ONLY_ROLE` on write methods; the UI suppression is for UX hygiene, not security.
-
-```
-┌─────────────────────────────────────────────────┐
-│  DataSpoke              user@imazon  ▼  Logout  │
-├─────────────────────────────────────────────────┤
-│                                                 │
-│   Pick a workspace:                             │
-│                                                 │
-│   ┌──────────┐   ┌──────────┐   ┌──────────┐    │
-│   │   DE     │   │   DA     │   │   DG     │    │
-│   │Engineering   │  Analysis │   │Governance│    │
-│   └──────────┘   └──────────┘   └──────────┘    │
-│                                                 │
-└─────────────────────────────────────────────────┘
-                  Portal landing (`/`)
-```
+- **`users.role` (read from `GET /auth/me.role`)** — `/admin/*` is server-side gated by the API's role check (`role = 'Admin'`); the UI hides the admin-menu entry when the role is not `Admin`. Inside each function page, write actions (approve/reject buttons, edit forms, run triggers) are rendered only when `role ∈ {Editor, Admin}` — Reader users see read-only views. The API enforces the same gate via `403 READ_ONLY_ROLE` on write methods; the UI suppression is for UX hygiene, not security.
 
 ---
 
@@ -183,30 +197,17 @@ blur). Frontend code MUST NOT introduce paths under `/spoke/.../stream/...`.
 
 ---
 
-## Cross-Workspace Permission Gates
-
-The API gates workspace routes by the JWT `groups` claim and gates admin
-routes plus the method × role matrix on `/spoke/*` and `/hub/*` by reading
-`users.role` per request (see [API §Route-Tier Access Control](../API.md#route-tier-access-control)). DataSpoke applies one
-workspace-level UI override on top of that: DG is the only workspace that
-exposes ontogen approve/reject buttons
-(`POST /spoke/common/ontogen/result/{node|edge|triple}/{id}/method/review`).
-DE and DA render approval **status** badges but hide the action buttons; the
-governance team holds approval per UC3.
-
----
-
 ## Shared Component Notes
 
-These component IDs are referenced from per-workspace specs.
+These component IDs are referenced from per-function specs.
 
 - **OntologyNavigator** — flat node list with approved triples overlaid as
-  labelled arrows. Reads `GET /spoke/common/ontogen/result/{node,edge,triple}`.
+  labelled arrows. Reads `GET /spoke/ontogen/result/{node,edge,triple}`.
   Outgoing-triples-on-a-node is a client-side filter on the triple list (the
   API exposes only the standard pagination / sort / time-range query
   parameters from [API §Query Parameters](../API.md#query-parameters)).
   **Read-only**: the action button for `method/review` is rendered only when
-  the host workspace permits approval (DG only).
+  the caller's role permits approval (Editor / Admin).
 - **NotificationCenter** — bell-icon popover that polls per-feature
   `event/...` endpoints (see [Live Updates](#live-updates)).
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).

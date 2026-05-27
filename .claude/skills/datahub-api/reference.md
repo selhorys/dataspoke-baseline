@@ -255,9 +255,9 @@ DataSpoke's Validation feature is a **passive result store**: data pipelines run
 
 DataSpoke writes three aspects on a single `assertion` entity per dataset:
 
-- `assertionInfo` (versioned) — emitted on `PUT/PATCH /attr/validation/conf`. Always `type = CUSTOM`.
-- `assertionRunEvent` (timeseries) — emitted on each `POST /attr/validation/result`. `timestampMillis` = the pipeline-supplied `data_time`.
-- `status` (versioned) — emitted on `DELETE /attr/validation/conf` (`removed = true`) and on `PUT`-after-`DELETE` resurrection (`removed = false`).
+- `assertionInfo` (versioned) — emitted on `PUT/PATCH /attr/conf`. Always `type = CUSTOM`.
+- `assertionRunEvent` (timeseries) — emitted on each `POST /attr/result`. `timestampMillis` = the pipeline-supplied `data_time`.
+- `status` (versioned) — emitted on `DELETE /attr/conf` (`removed = true`) and on `PUT`-after-`DELETE` resurrection (`removed = false`).
 
 ### Mandatory conventions
 
@@ -278,7 +278,7 @@ DataSpoke writes three aspects on a single `assertion` entity per dataset:
 
 ### Append-only timeseries
 
-Multiple POSTs sharing the same `data_time` become **distinct** `assertionRunEvent` rows in DataHub's timeseries store. The `GET /attr/validation/result` endpoint collapses duplicates with last-write-wins per distinct `data_time`. This matches DataHub's timeseries aspect being fundamentally append-only; forcing replace requires `messageId` workarounds.
+Multiple POSTs sharing the same `data_time` become **distinct** `assertionRunEvent` rows in DataHub's timeseries store. The `GET /attr/result` endpoint collapses duplicates with last-write-wins per distinct `data_time`. This matches DataHub's timeseries aspect being fundamentally append-only; forcing replace requires `messageId` workarounds.
 
 ### Multi-rule scope-out
 
@@ -304,7 +304,7 @@ DataSpoke deliberately exposes **one** validation slot per dataset (description 
 | `timestampMillis = now()` (server ingest time) | Misaligns DataHub's chart axis with the user mental model. Use the pipeline-supplied `data_time`; preserve `now()` separately in `runtimeContext.ingestion_time`. |
 | Best-effort error swallowing on `emit_mcp` for `assertionInfo` / `status` (config emission) | Hides integration breakage. Config emission must propagate failures as `502/503` so users learn DataHub is unhealthy at config-save time. |
 | Best-effort silence on `emit_mcp` for `assertionRunEvent` | The row stays in `validation_results` (the historical-baseline cache is local), but the caller must receive `502/503` so the pipeline can decide whether to retry. |
-| Out-of-band `status.removed = true` set in DataHub UI to hide a DataSpoke assertion | Reverted on the next config `PUT/PATCH`. To durably hide, call `DELETE /attr/validation/conf`. |
+| Out-of-band `status.removed = true` set in DataHub UI to hide a DataSpoke assertion | Reverted on the next config `PUT/PATCH`. To durably hide, call `DELETE /attr/conf`. |
 
 ---
 
