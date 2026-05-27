@@ -248,7 +248,7 @@ class TestGetNotificationProvider:
         )
 
 
-# ── Role-to-Route Access Control: admin routes require Admin role ──────────────
+# ── Access Control: admin routes require Admin role ──────────────────────────
 
 
 class TestAdminGroupEnforcement:
@@ -258,7 +258,7 @@ class TestAdminGroupEnforcement:
     Tests override require_authenticated / require_admin to inject a known
     AuthContext without a real database.
 
-    spec: API.md §Role-to-Route Access Control — /admin/* requires Admin role.
+    spec: API.md §Access Control — /admin/* requires Admin role.
     spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong role.
     """
 
@@ -267,7 +267,7 @@ class TestAdminGroupEnforcement:
     ) -> None:
         """A user with role=Editor hitting /admin/dags/verify must get 403.
 
-        spec: API.md §Role-to-Route Access Control — /admin/* requires Admin role.
+        spec: API.md §Access Control — /admin/* requires Admin role.
         spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong role.
         """
         from unittest.mock import MagicMock
@@ -286,7 +286,7 @@ class TestAdminGroupEnforcement:
             response = await client.post("/api/v1/admin/dags/verify")
             assert response.status_code == 403, (
                 f"Editor role must be rejected with 403 on /admin/dags/verify "
-                f"per spec/API.md §Role-to-Route Access Control, got {response.status_code}"
+                f"per spec/API.md §Access Control, got {response.status_code}"
             )
         finally:
             app.dependency_overrides.pop(require_authenticated, None)
@@ -296,7 +296,7 @@ class TestAdminGroupEnforcement:
     ) -> None:
         """A user with role=Reader hitting /admin/dags/verify must get 403.
 
-        spec: API.md §Role-to-Route Access Control — /admin/* requires Admin role.
+        spec: API.md §Access Control — /admin/* requires Admin role.
         """
         from unittest.mock import MagicMock
 
@@ -314,7 +314,7 @@ class TestAdminGroupEnforcement:
             response = await client.post("/api/v1/admin/dags/verify")
             assert response.status_code == 403, (
                 f"Reader role must be rejected with 403 on /admin/dags/verify "
-                f"per spec/API.md §Role-to-Route Access Control, got {response.status_code}"
+                f"per spec/API.md §Access Control, got {response.status_code}"
             )
         finally:
             app.dependency_overrides.pop(require_authenticated, None)
@@ -324,7 +324,7 @@ class TestAdminGroupEnforcement:
     ) -> None:
         """A user with role=Admin passes the auth guard on /admin/dags/verify.
 
-        spec: API.md §Admin Role — Admin role grants access to /admin/* routes.
+        spec: API.md §Access Control — Admin role grants access to /admin/* routes.
         We inject an AsyncMock AirflowClient and an Admin AuthContext so the route
         can complete without a real database or Airflow instance.
         """
@@ -349,10 +349,10 @@ class TestAdminGroupEnforcement:
         try:
             response = await client.post("/api/v1/admin/dags/verify")
             # Must not be 403 — Admin role must pass the auth guard
-            # spec: API.md §Admin Role — Admin role grants access to /admin/* routes
+            # spec: API.md §Access Control — Admin role grants access to /admin/* routes
             assert response.status_code != 403, (
                 f"Admin role must not get 403 on /admin/dags/verify "
-                f"per spec/API.md §Admin Role, got {response.status_code}"
+                f"per spec/API.md §Access Control, got {response.status_code}"
             )
             assert response.status_code == 200
         finally:

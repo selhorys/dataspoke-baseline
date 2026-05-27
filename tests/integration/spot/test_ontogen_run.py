@@ -53,7 +53,7 @@ async def test_ontogen_run_dry_run(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /spoke/common/ontogen/method/run?dry_run=true returns OntogenRunSummary body
+    """POST /spoke/ontogen/method/run?dry_run=true returns OntogenRunSummary body
     and emits exactly one ONTOGEN.RUN_COMPLETE event with dry_run=true in detail.
 
     Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
@@ -62,7 +62,7 @@ async def test_ontogen_run_dry_run(
     Spec: spec/feature/BACKEND.md L661 — RUN_COMPLETE recorded for both dry-run and
     non-dry-run; dry_run flag in detail.
     """
-    event_url = "/api/v1/spoke/common/ontogen/event"
+    event_url = "/api/v1/spoke/ontogen/event"
 
     # Snapshot count of existing ONTOGEN.RUN_COMPLETE events before the POST
     pre_resp = await api_client.get(
@@ -74,7 +74,7 @@ async def test_ontogen_run_dry_run(
     pre_count = sum(1 for e in pre_events if e["event_type"] == "ONTOGEN.RUN_COMPLETE")
 
     resp = await api_client.post(
-        "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+        "/api/v1/spoke/ontogen/method/run?dry_run=true",
         headers=admin_headers,
     )
 
@@ -190,7 +190,7 @@ async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
     doc1_urn: str | None = None
     doc2_urn: str | None = None
 
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
     try:
         # ── Step 1: Seed two NATIVE documents whose relatedAssets include dataset_urn ──
@@ -230,7 +230,7 @@ async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
         # spec: USE_CASE_en.md §UC3 L415-L416 — dry_run=true evaluates without persisting
         # spec: DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery path
         dry_run_resp = await api_client.post(
-            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            "/api/v1/spoke/ontogen/method/run?dry_run=true",
             headers=admin_headers,
         )
         assert dry_run_resp.status_code == 200, (
@@ -294,8 +294,8 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
     spec: BACKEND.md L661 — RUN_COMPLETE is emitted only when the run completes;
     a rejected (409) call must not emit it.
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
-    event_url = "/api/v1/spoke/common/ontogen/event"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
+    event_url = "/api/v1/spoke/ontogen/event"
 
     try:
         put_resp = await api_client.put(
@@ -320,7 +320,7 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
         )
 
         run_resp = await api_client.post(
-            "/api/v1/spoke/common/ontogen/method/run",
+            "/api/v1/spoke/ontogen/method/run",
             headers=admin_headers,
         )
         assert run_resp.status_code == 409, (
@@ -351,7 +351,7 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
         # Dry-run must still succeed when is_enabled=False — disabled gate is
         # scoped to non-dry-run only. spec: USE_CASE_en.md L541
         dry_resp = await api_client.post(
-            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            "/api/v1/spoke/ontogen/method/run?dry_run=true",
             headers=admin_headers,
         )
         assert dry_resp.status_code == 200, (
@@ -368,9 +368,9 @@ async def test_ontogen_list_nodes_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/common/ontogen/result/node returns paginated node list."""
+    """GET /spoke/ontogen/result/node returns paginated node list."""
     resp = await api_client.get(
-        "/api/v1/spoke/common/ontogen/result/node?offset=0&limit=10",
+        "/api/v1/spoke/ontogen/result/node?offset=0&limit=10",
         headers=admin_headers,
     )
 
@@ -388,9 +388,9 @@ async def test_ontogen_list_edges_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/common/ontogen/result/edge returns paginated edge list."""
+    """GET /spoke/ontogen/result/edge returns paginated edge list."""
     resp = await api_client.get(
-        "/api/v1/spoke/common/ontogen/result/edge?offset=0&limit=10",
+        "/api/v1/spoke/ontogen/result/edge?offset=0&limit=10",
         headers=admin_headers,
     )
 
@@ -408,9 +408,9 @@ async def test_ontogen_list_triples_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/common/ontogen/result/triple returns paginated triple list."""
+    """GET /spoke/ontogen/result/triple returns paginated triple list."""
     resp = await api_client.get(
-        "/api/v1/spoke/common/ontogen/result/triple?offset=0&limit=10",
+        "/api/v1/spoke/ontogen/result/triple?offset=0&limit=10",
         headers=admin_headers,
     )
 
@@ -438,7 +438,7 @@ async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
           cleanly when no datasets match the origin filter.
     spec: USE_CASE_en.md §UC3 §Run semantics — dry_run=true with empty scope completes.
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
     try:
         put_resp = await api_client.put(
@@ -455,7 +455,7 @@ async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
         )
 
         run_resp = await api_client.post(
-            "/api/v1/spoke/common/ontogen/method/run?dry_run=true",
+            "/api/v1/spoke/ontogen/method/run?dry_run=true",
             headers=admin_headers,
         )
         assert run_resp.status_code == 200, (

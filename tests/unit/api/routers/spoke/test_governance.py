@@ -1,7 +1,7 @@
-"""Unit tests for the DG metrics router — /spoke/dg/metric/...
+"""Unit tests for the governance metrics router — /spoke/governance/metric/...
 
 Spec traceability:
-- spec/API.md §Metric (/spoke/dg/metric)
+- spec/API.md §Metric (/spoke/governance/metric)
 - spec/USE_CASE_en.md §UC5 — create vs replace, is_enabled=false gate, passive mode 501
 - spec/feature/BACKEND.md §Metrics Service §Create vs replace
 """
@@ -17,9 +17,9 @@ from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 from tests.unit.api.conftest import auth_headers
 
-_METRIC_RUN_URL = "/api/v1/spoke/dg/metric/{metric_id}/method/run"
-_METRIC_CONF_URL = "/api/v1/spoke/dg/metric/{metric_id}/attr/conf"
-_METRIC_CREATE_URL = "/api/v1/spoke/dg/metric"
+_METRIC_RUN_URL = "/api/v1/spoke/governance/metric/{metric_id}/method/run"
+_METRIC_CONF_URL = "/api/v1/spoke/governance/metric/{metric_id}/attr/conf"
+_METRIC_CREATE_URL = "/api/v1/spoke/governance/metric"
 
 
 def _make_definition_record(
@@ -72,7 +72,7 @@ def override_dependencies(mock_service: AsyncMock, mock_airflow: AsyncMock, mock
     app.dependency_overrides.pop(get_redis, None)
 
 
-# ── POST /spoke/dg/metric — create ───────────────────────────────────────────
+# ── POST /spoke/governance/metric — create ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -80,11 +80,11 @@ async def test_post_metric_create_returns_201(
     client,
     mock_service: AsyncMock,
 ) -> None:
-    """POST /spoke/dg/metric returns 201 on successful create.
+    """POST /spoke/governance/metric returns 201 on successful create.
 
-    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/dg/metric creates a metric;
+    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric creates a metric;
           metric_id is supplied in the request body. Success → 201.
-    Spec: spec/API.md §Metric — POST /spoke/dg/metric.
+    Spec: spec/API.md §Metric — POST /spoke/governance/metric.
     """
     definition = _make_definition_record(metric_id="my-new-metric")
     mock_service.create_metric_config = AsyncMock(return_value=definition)
@@ -103,7 +103,7 @@ async def test_post_metric_create_returns_201(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 201, (
@@ -122,7 +122,7 @@ async def test_post_metric_create_duplicate_returns_409(
     client,
     mock_service: AsyncMock,
 ) -> None:
-    """POST /spoke/dg/metric returns 409 METRIC_EXISTS on duplicate metric_id.
+    """POST /spoke/governance/metric returns 409 METRIC_EXISTS on duplicate metric_id.
 
     Spec: spec/USE_CASE_en.md §UC5 §API Mapping — a colliding id returns 409 METRIC_EXISTS.
     Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
@@ -146,7 +146,7 @@ async def test_post_metric_create_duplicate_returns_409(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 409, (
@@ -165,7 +165,7 @@ async def test_post_metric_create_passive_mode_returns_501(
     client,
     mock_service: AsyncMock,
 ) -> None:
-    """POST /spoke/dg/metric with mode='passive' returns 501 NOT_IMPLEMENTED.
+    """POST /spoke/governance/metric with mode='passive' returns 501 NOT_IMPLEMENTED.
 
     Spec: spec/USE_CASE_en.md §UC5 §Modes — passive is reserved; POST with
           mode:'passive' returns 501 NOT_IMPLEMENTED.
@@ -185,7 +185,7 @@ async def test_post_metric_create_passive_mode_returns_501(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 501, (
@@ -206,7 +206,7 @@ async def test_post_metric_create_bad_metric_id_format_returns_422(
     client,
     mock_service: AsyncMock,
 ) -> None:
-    """POST /spoke/dg/metric with bad-format metric_id returns 422.
+    """POST /spoke/governance/metric with bad-format metric_id returns 422.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
           bad-format metric_id → 422 at the schema validation layer.
@@ -225,7 +225,7 @@ async def test_post_metric_create_bad_metric_id_format_returns_422(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422, (
@@ -234,7 +234,7 @@ async def test_post_metric_create_bad_metric_id_format_returns_422(
     )
 
 
-# ── PUT /spoke/dg/metric/{id}/attr/conf — replace only ───────────────────────
+# ── PUT /spoke/governance/metric/{id}/attr/conf — replace only ───────────────────────
 
 
 @pytest.mark.asyncio
@@ -266,7 +266,7 @@ async def test_put_metric_conf_absent_id_returns_404(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 404, (
@@ -308,7 +308,7 @@ async def test_put_metric_conf_existing_id_returns_200(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200, (
@@ -342,7 +342,7 @@ async def test_put_metric_conf_passive_mode_returns_501(
             "schedule_tier": "daily",
             "dataset_filter": {},
         },
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 501, (
@@ -355,7 +355,7 @@ async def test_put_metric_conf_passive_mode_returns_501(
     mock_service.replace_metric_config.assert_not_called()
 
 
-# ── POST /spoke/dg/metric/{id}/method/run — disabled guard ───────────────────
+# ── POST /spoke/governance/metric/{id}/method/run — disabled guard ───────────────────
 
 
 @pytest.mark.asyncio
@@ -373,7 +373,7 @@ async def test_post_metric_run_disabled_returns_409(
     spec: USE_CASE_en.md §UC5 — "When is_enabled=false, non-dry-run calls to
     method/run on a metric return 409 METRIC_DISABLED. Dry-run is always
     permitted regardless of is_enabled." (L739)
-    spec: API.md §Metric (/spoke/dg/metric) — POST /{metric_id}/method/run
+    spec: API.md §Metric (/spoke/governance/metric) — POST /{metric_id}/method/run
     """
     metric_id = "ingestion-freshness"
     definition = _make_definition_record(metric_id=metric_id, is_enabled=False)
@@ -382,7 +382,7 @@ async def test_post_metric_run_disabled_returns_409(
     resp = await client.post(
         _METRIC_RUN_URL.format(metric_id=metric_id),
         json={"dry_run": False},
-        headers=auth_headers(["dg"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 409, (

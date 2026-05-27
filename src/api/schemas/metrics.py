@@ -1,6 +1,6 @@
-"""Metric definition, result, and attribute models (DG).
+"""Metric definition, result, and attribute models (Governance).
 
-Spec: spec/API.md §Metric (/spoke/dg/metric), spec/USE_CASE_en.md §UC5.
+Spec: spec/API.md §Metric (/spoke/governance/metric), spec/USE_CASE_en.md §UC5.
 """
 
 from datetime import datetime

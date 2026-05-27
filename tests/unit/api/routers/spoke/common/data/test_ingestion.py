@@ -154,7 +154,7 @@ async def test_get_ingestion_conf_200_when_present(client, mock_svc: AsyncMock) 
     """
     mock_svc.get_config = AsyncMock(return_value=_make_config_record())
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["dataset_urn"] == _VALID_URN
@@ -168,7 +168,7 @@ async def test_get_ingestion_conf_404_when_absent(client, mock_svc: AsyncMock) -
     """
     mock_svc.get_config = AsyncMock(return_value=None)
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 404
 
 
@@ -189,7 +189,7 @@ async def test_put_ingestion_conf_201_on_create(client, mock_svc: AsyncMock) -> 
             "identifier": {"topic": "imazon.orders.events", "cluster": "prod"},
             "is_enabled": False,
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 201
 
@@ -210,7 +210,7 @@ async def test_put_ingestion_conf_200_on_update(client, mock_svc: AsyncMock) -> 
             "identifier": {"topic": "imazon.orders.events", "cluster": "prod"},
             "is_enabled": False,
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
 
@@ -226,7 +226,7 @@ async def test_patch_ingestion_conf_200(client, mock_svc: AsyncMock) -> None:
     resp = await client.patch(
         _CONF_URL,
         json={"is_enabled": False},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
 
@@ -239,7 +239,7 @@ async def test_delete_ingestion_conf_204(client, mock_svc: AsyncMock) -> None:
     """
     mock_svc.delete_config = AsyncMock(return_value=None)
 
-    resp = await client.delete(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.delete(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 204
 
 
@@ -258,7 +258,7 @@ async def test_post_ingestion_run_200(client, mock_svc: AsyncMock) -> None:
     resp = await client.post(
         _RUN_URL,
         json={"dry_run": False},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -274,7 +274,7 @@ async def test_get_ingestion_events_200_returns_events_key(client, mock_svc: Asy
     """
     mock_svc.get_events = AsyncMock(return_value=([], 0))
 
-    resp = await client.get(_EVENTS_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_EVENTS_URL, headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert "events" in body

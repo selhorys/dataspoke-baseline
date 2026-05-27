@@ -1,7 +1,7 @@
 """Spot tests — Ingestion Control: miscellaneous edge cases.
 
 Concerns covered:
-- GET /spoke/common/ingestion — paginated collection envelope (list)
+- GET /spoke/ingestion — paginated collection envelope (list)
 - GET /data/{urn}/attr/ingestion/conf — 404 for unknown URN
 - Secret collision: second PUT with same (name, key) without force_overwrite → 422
 - Invalid secret-ref prefix (not starting with dataspoke-source-cred-) → 422
@@ -43,7 +43,7 @@ async def test_ingestion_list_paginated_envelope(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/common/ingestion returns a paginated collection envelope with required keys.
+    """GET /spoke/ingestion returns a paginated collection envelope with required keys.
 
     Seeding N=2 configs verifies total_count >= N and that limit=1 trims the page.
     spec: API.md §Standard Envelope — paginated response carries configs[], total_count, offset, limit
@@ -92,7 +92,7 @@ async def test_ingestion_list_paginated_envelope(
     )
 
     resp_all = await api_client.get(
-        "/api/v1/spoke/common/ingestion?offset=0&limit=10",
+        "/api/v1/spoke/ingestion?offset=0&limit=10",
         headers=admin_headers,
     )
     assert resp_all.status_code == 200
@@ -109,7 +109,7 @@ async def test_ingestion_list_paginated_envelope(
 
     # limit=1 must trim page to 1 item, total_count must still reflect full count
     resp_paged = await api_client.get(
-        "/api/v1/spoke/common/ingestion?offset=0&limit=1",
+        "/api/v1/spoke/ingestion?offset=0&limit=1",
         headers=admin_headers,
     )
     assert resp_paged.status_code == 200

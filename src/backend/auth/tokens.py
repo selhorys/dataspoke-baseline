@@ -20,10 +20,6 @@ import redis.exceptions as _redis_exceptions
 from src.shared.exceptions import AuthenticationError, StorageUnavailableError
 from src.shared.settings import settings
 
-# Groups claim — constant for every authenticated user.
-# This is an extensibility hook only; route-tier gating is done by privilege.py.
-GROUPS_CLAIM: tuple[str, ...] = ("de", "da", "dg")
-
 _REFRESH_REVOCATION_KEY_PREFIX = "revoked_refresh:"
 
 
@@ -45,14 +41,13 @@ def _revocation_key(token: str) -> str:
 def issue_access_token(user_id: uuid.UUID, email: str) -> tuple[str, int]:
     """Return ``(encoded_token, expires_in_seconds)``.
 
-    Payload: sub=str(user_id), email, groups=list(GROUPS_CLAIM), exp, iat.
+    Payload: sub=str(user_id), email, exp, iat.
     """
     expire_seconds = settings.jwt_access_token_expire_minutes * 60
     now = _utc_now()
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "email": email,
-        "groups": list(GROUPS_CLAIM),
         "exp": now + timedelta(seconds=expire_seconds),
         "iat": now,
     }

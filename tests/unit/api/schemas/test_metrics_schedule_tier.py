@@ -2,9 +2,9 @@
 dataset_filter caps, and create vs replace contract.
 
 Spec sources:
-  spec/API.md §Metric (/spoke/dg/metric):
-    - POST /spoke/dg/metric: CreateMetricConfigRequest with metric_id in body
-    - PUT /spoke/dg/metric/{id}/attr/conf: ReplaceMetricConfigRequest (replace-only)
+  spec/API.md §Metric (/spoke/governance/metric):
+    - POST /spoke/governance/metric: CreateMetricConfigRequest with metric_id in body
+    - PUT /spoke/governance/metric/{id}/attr/conf: ReplaceMetricConfigRequest (replace-only)
     - mode: "active" | "passive"
     - metric_type: "ingestion-freshness" | "validation-score" | "doc-health"
     - metrics: list[str] subset of type's emitted keys
@@ -323,9 +323,9 @@ class TestPatchMetricConfigRequest:
 
 
 class TestCreateMetricConfigRequest:
-    """Tests for CreateMetricConfigRequest — POST /spoke/dg/metric body.
+    """Tests for CreateMetricConfigRequest — POST /spoke/governance/metric body.
 
-    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/dg/metric; metric_id
+    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric; metric_id
           is supplied in the request body. Bad-format metric_id → 422. Collision → 409.
     Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
           metric_id kebab pattern: ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$.
@@ -475,7 +475,7 @@ class TestCreateMetricConfigRequest:
     def test_field_set_includes_metric_id(self) -> None:
         """CreateMetricConfigRequest has metric_id in addition to all ReplaceMetricConfigRequest fields.
 
-        Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/dg/metric accepts
+        Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric accepts
               metric_id in the request body alongside the definition fields.
         """
         actual = set(CreateMetricConfigRequest.model_fields.keys())

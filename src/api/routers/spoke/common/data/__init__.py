@@ -1,6 +1,6 @@
 """Data package — composes the canonical /data/{dataset_urn}/… route surface.
 
-``router`` — HTTP routes (auth-guarded via require_common dependency).
+``router`` — HTTP routes (auth-guarded via require_authenticated dependency).
 No WebSocket router: streaming surface is not exposed in the baseline
 (clients poll event/... and attr/.../result per spec/feature/FRONTEND_BASIC.md).
 """

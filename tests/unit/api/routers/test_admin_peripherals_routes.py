@@ -1,11 +1,11 @@
 """Unit tests for admin peripheral routes.
 
 Routes under test:
-  GET  /api/v1/admin/peripherals                — requires 'admin' group JWT
-  GET  /api/v1/admin/peripherals/datahub        — requires 'admin' group JWT
-  PATCH /api/v1/admin/peripherals/datahub       — requires 'admin' group JWT
-  GET  /api/v1/admin/peripherals/langfuse       — requires 'admin' group JWT
-  PATCH /api/v1/admin/peripherals/langfuse      — requires 'admin' group JWT
+  GET  /api/v1/admin/peripherals                — requires Admin role
+  GET  /api/v1/admin/peripherals/datahub        — requires Admin role
+  PATCH /api/v1/admin/peripherals/datahub       — requires Admin role
+  GET  /api/v1/admin/peripherals/langfuse       — requires Admin role
+  PATCH /api/v1/admin/peripherals/langfuse      — requires Admin role
   PATCH /internal/admin/peripherals/datahub     — requires X-Internal-Token
   PATCH /internal/admin/peripherals/langfuse    — requires X-Internal-Token
 
@@ -13,9 +13,9 @@ Concerns covered:
 
 1. Auth gates:
    - GET  /admin/peripherals without JWT → 401
-   - GET  /admin/peripherals with non-admin group → 403
+   - GET  /admin/peripherals with non-Admin role → 403
    - PATCH /admin/peripherals/datahub without JWT → 401
-   - PATCH /admin/peripherals/datahub with non-admin group → 403
+   - PATCH /admin/peripherals/datahub with non-Admin role → 403
    - PATCH /internal/admin/peripherals/datahub without X-Internal-Token → 401
    - PATCH /internal/admin/peripherals/datahub with wrong token → 401
 
@@ -44,7 +44,7 @@ Concerns covered:
 
 Spec traceability:
 - plan/scalable-beaming-hamster.md §Peripheral configuration — is_configured predicate.
-- spec/API.md §Admin routes — admin group required.
+- spec/API.md §Access Control — Admin role required for /admin/*.
 - spec/API.md §Internal routes — X-Internal-Token required.
 - src/api/routers/admin.py _apply_datahub_patch_and_respond — token to Secret first.
 - src/api/schemas/admin.py DatahubPeripheralResponse — token masking.

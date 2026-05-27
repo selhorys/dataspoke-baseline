@@ -114,13 +114,10 @@ def make_token(role: str = "Editor", subject: str | None = None) -> str:
 def auth_headers(
     role: str = "Editor",
     subject: str | None = None,
-    # Legacy alias: groups parameter accepted but ignored — role is DB-backed.
-    groups: list[str] | None = None,
 ) -> dict[str, str]:
     """Return Authorization header dict.
 
     ``role`` is used only when callers override ``require_authenticated`` via
-    ``app.dependency_overrides``; the JWT itself carries no role claim.
-    ``groups`` is accepted for backwards-compatibility but has no effect.
+    ``app.dependency_overrides``; the JWT itself carries no role or groups claim.
     """
     return {"Authorization": f"Bearer {make_token(role=role, subject=subject)}"}

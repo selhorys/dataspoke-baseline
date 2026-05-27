@@ -135,7 +135,7 @@ async def test_get_validation_conf_200_when_present(client, mock_svc: AsyncMock)
         )
     )
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 200
     assert resp.json()["dataset_urn"] == _VALID_URN
 
@@ -148,7 +148,7 @@ async def test_get_validation_conf_404_when_absent(client, mock_svc: AsyncMock) 
     """
     mock_svc.get_config = AsyncMock(return_value=None)
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 404
 
 
@@ -177,7 +177,7 @@ async def test_put_validation_conf_201_on_create(client, mock_svc: AsyncMock) ->
     resp = await client.put(
         _CONF_URL,
         json={"description": "null rate check", "variables": ["null_rate_rating_score"]},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 201
 
@@ -207,7 +207,7 @@ async def test_put_validation_conf_200_on_update(client, mock_svc: AsyncMock) ->
     resp = await client.put(
         _CONF_URL,
         json={"description": "updated check", "variables": ["null_rate_rating_score"]},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
 
@@ -234,7 +234,7 @@ async def test_patch_validation_conf_200(client, mock_svc: AsyncMock) -> None:
     resp = await client.patch(
         _CONF_URL,
         json={"description": "patched description"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     assert resp.json()["description"] == "patched description"
@@ -248,7 +248,7 @@ async def test_delete_validation_conf_204(client, mock_svc: AsyncMock) -> None:
     """
     mock_svc.delete_config = AsyncMock(return_value=None)
 
-    resp = await client.delete(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.delete(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 204
 
 
@@ -275,7 +275,7 @@ async def test_post_validation_result_200(client, mock_svc: AsyncMock) -> None:
             "score": 0.7,
             "variables": {"null_rate_rating_score": 0.3},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     assert resp.json()["score"] == 0.7
@@ -289,7 +289,7 @@ async def test_get_validation_result_200_with_results_key(client, mock_svc: Asyn
     """
     mock_svc.get_results = AsyncMock(return_value=([], 0))
 
-    resp = await client.get(_RESULT_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_RESULT_URL, headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert "results" in body
@@ -304,7 +304,7 @@ async def test_get_validation_events_200_with_events_key(client, mock_svc: Async
     """
     mock_svc.get_events = AsyncMock(return_value=([], 0))
 
-    resp = await client.get(_EVENTS_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_EVENTS_URL, headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert "events" in body

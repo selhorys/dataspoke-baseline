@@ -1,14 +1,14 @@
 """Spot integration test: role × method privilege matrix.
 
 Concerns covered:
-- Reader + POST on /spoke/common/* → 403 READ_ONLY_ROLE
-- Reader + GET on /spoke/common/* → 200 (allowed)
-- Editor + POST on /spoke/common/* → allowed (not 403)
+- Reader + POST on /spoke/* → 403 READ_ONLY_ROLE
+- Reader + GET on /spoke/* → 200 (allowed)
+- Editor + POST on /spoke/* → allowed (not 403)
 - Reader accessing /admin/* → 403 FORBIDDEN
 - No-auth → 401 UNAUTHORIZED
 
 spec: spec/feature/AUTH.md §Privilege Model
-spec: spec/API.md §Route-Tier Access Control
+spec: spec/API.md §Authentication — method × role gate
 """
 
 import uuid
@@ -18,9 +18,9 @@ import pytest
 import pytest_asyncio
 
 # Simple endpoint with no required state — exists on all envs
-_SPOKE_COMMON_GET_URL = "/api/v1/spoke/common/ingestion"
+_SPOKE_COMMON_GET_URL = "/api/v1/spoke/ingestion"
 # An endpoint that accepts POST and returns quickly without side effects on a GET
-_SPOKE_COMMON_POST_URL = "/api/v1/spoke/common/metagen/method/run"
+_SPOKE_COMMON_POST_URL = "/api/v1/spoke/metagen/method/run"
 _ADMIN_URL = "/api/v1/admin/users"
 
 
@@ -131,7 +131,7 @@ async def test_reader_get_spoke_common_allowed(
     api_client: httpx.AsyncClient,
     reader_token: str,
 ) -> None:
-    """Reader + GET on /spoke/common/* → allowed (200).
+    """Reader + GET on /spoke/* → allowed (200).
 
     spec: spec/feature/AUTH.md §Privilege Model —
     Reader on /spoke/* and /hub/*: GET/HEAD/OPTIONS only → allowed.
@@ -141,7 +141,7 @@ async def test_reader_get_spoke_common_allowed(
         headers={"Authorization": f"Bearer {reader_token}"},
     )
     assert resp.status_code == 200, (
-        f"Reader GET on /spoke/common/* must be allowed (200) per spec/feature/AUTH.md §Privilege Model, "
+        f"Reader GET on /spoke/* must be allowed (200) per spec/feature/AUTH.md §Privilege Model, "
         f"got {resp.status_code}: {resp.text}"
     )
 
@@ -151,11 +151,11 @@ async def test_reader_post_spoke_common_returns_403(
     api_client: httpx.AsyncClient,
     reader_token: str,
 ) -> None:
-    """Reader + POST on /spoke/common/* → 403 READ_ONLY_ROLE.
+    """Reader + POST on /spoke/* → 403 READ_ONLY_ROLE.
 
     spec: spec/feature/AUTH.md §Privilege Model — Reader role on /spoke/* or /hub/*
     POST/PUT/PATCH/DELETE → 403 READ_ONLY_ROLE.
-    spec: spec/API.md §Route-Tier Access Control §Method × role gate.
+    spec: spec/API.md §Authentication — method × role gate.
     """
     # POST an endpoint that requires writer — even if the body is invalid, auth check comes first
     resp = await api_client.post(
@@ -164,7 +164,7 @@ async def test_reader_post_spoke_common_returns_403(
         headers={"Authorization": f"Bearer {reader_token}"},
     )
     assert resp.status_code == 403, (
-        f"Reader POST on /spoke/common/* must return 403 READ_ONLY_ROLE "
+        f"Reader POST on /spoke/* must return 403 READ_ONLY_ROLE "
         f"per spec/feature/AUTH.md §Privilege Model, got {resp.status_code}: {resp.text}"
     )
     assert resp.json()["error_code"] == "READ_ONLY_ROLE", (
@@ -180,7 +180,7 @@ async def test_reader_admin_access_returns_403(
     """Reader accessing /admin/* → 403 FORBIDDEN.
 
     spec: spec/feature/AUTH.md §Privilege Model — Editor or Reader on /admin/* → 403 FORBIDDEN.
-    spec: spec/API.md §Route-Tier Access Control — /admin/* requires users.role='Admin'.
+    spec: spec/API.md §Authentication — /admin/* requires users.role='Admin'.
     """
     resp = await api_client.get(
         _ADMIN_URL,
@@ -198,7 +198,7 @@ async def test_editor_post_spoke_common_allowed(
     api_client: httpx.AsyncClient,
     editor_token: str,
 ) -> None:
-    """Editor + POST on /spoke/common/* is allowed (not 403).
+    """Editor + POST on /spoke/* is allowed (not 403).
 
     spec: spec/feature/AUTH.md §Privilege Model — Editor can use all methods on /spoke/* and /hub/*.
     """
@@ -209,7 +209,7 @@ async def test_editor_post_spoke_common_allowed(
     )
     # Editor can post — may get 400/409/422 from business logic but NOT 403
     assert resp.status_code != 403, (
-        f"Editor POST on /spoke/common/* must NOT be 403 (READ_ONLY_ROLE) "
+        f"Editor POST on /spoke/* must NOT be 403 (READ_ONLY_ROLE) "
         f"per spec/feature/AUTH.md §Privilege Model, got {resp.status_code}"
     )
 

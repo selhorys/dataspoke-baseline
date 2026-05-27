@@ -2,7 +2,7 @@
 
 Concerns covered:
 - POST /admin/dags/verify — returns 200 with expected DAG list structure
-- POST /admin/dags/verify — 403 FORBIDDEN when token lacks 'admin' group
+- POST /admin/dags/verify — 403 FORBIDDEN when caller is not Admin role
 - POST /internal/admin/datahub/sync — full sync returns sync result envelope
 - POST /internal/admin/datahub/sync — targeted sync (single URN) returns sync result
 - POST /internal/admin/datahub/sync — 401 when X-Internal-Token header is missing
@@ -27,7 +27,7 @@ async def test_admin_dags_verify(
 ) -> None:
     """POST /admin/dags/verify returns 200 with found/missing/total_expected.
 
-    spec: API.md §Admin — /admin routes require 'admin' group claim.
+    spec: API.md §Access Control — Admin role required for /admin/*.
     spec: API.md §Internal Admin — POST /admin/dags/verify returns {found, missing, total_expected}.
     """
     resp = await api_client.post(
@@ -52,11 +52,11 @@ async def test_admin_dags_verify(
 
 
 @pytest.mark.asyncio
-async def test_admin_dags_verify_requires_admin_group(api_client: httpx.AsyncClient) -> None:
-    """POST /admin/dags/verify returns 403 when token has no 'admin' group.
+async def test_admin_dags_verify_requires_admin_role(api_client: httpx.AsyncClient) -> None:
+    """POST /admin/dags/verify returns 403 when caller is not Admin role.
 
-    spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group exclusively.
-    spec: API.md §Admin Role — admin routes require the 'admin' claim exclusively.
+    spec: API.md §Access Control — /admin/* requires users.role = 'Admin'.
+    spec: feature/AUTH.md §Privilege Model — Admin row in the role × method matrix.
     """
     import uuid
 
@@ -73,8 +73,8 @@ async def test_admin_dags_verify_requires_admin_group(api_client: httpx.AsyncCli
         headers=non_admin_headers,
     )
     assert resp.status_code == 403, (
-        f"Non-admin token must get 403 on /admin route per spec/API.md "
-        f"§Role-to-Route Access Control, got {resp.status_code}"
+        f"Non-Admin caller must get 403 on /admin route per spec/API.md "
+        f"§Access Control, got {resp.status_code}"
     )
 
 

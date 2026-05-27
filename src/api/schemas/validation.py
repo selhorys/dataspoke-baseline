@@ -209,7 +209,7 @@ class ValidationListItem(BaseModel):
 
 
 class ValidationListResponse(PaginatedResponse):
-    """Response for GET /spoke/common/validation."""
+    """Response for GET /spoke/validation."""
 
     validations: list[ValidationListItem] = Field(
         default=[],

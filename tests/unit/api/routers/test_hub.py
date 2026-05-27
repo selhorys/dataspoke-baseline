@@ -17,7 +17,7 @@ from src.api.main import app
 from src.backend.admin.peripheral_service import DatahubConfigDTO
 from tests.unit.api.conftest import auth_headers
 
-_DE_HEADERS = auth_headers(groups=["de"])
+_AUTH_HEADERS = auth_headers()
 _GRAPHQL_URL = "/api/v1/hub/graphql"
 _OPENAPI_BASE = "/api/v1/hub/openapi"
 
@@ -96,7 +96,7 @@ async def test_graphql_proxy_forwards_request(client: AsyncClient) -> None:
         resp = await client.post(
             _GRAPHQL_URL,
             content=b'{"query":"{ listDatasets { total } }"}',
-            headers={**_DE_HEADERS, "content-type": "application/json"},
+            headers={**_AUTH_HEADERS, "content-type": "application/json"},
         )
 
     assert resp.status_code == 200
@@ -122,7 +122,7 @@ async def test_graphql_proxy_forwards_datahub_token(client: AsyncClient) -> None
         await client.post(
             _GRAPHQL_URL,
             content=b"{}",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     call_kwargs = mock_client.request.call_args
@@ -146,7 +146,7 @@ async def test_graphql_proxy_handles_datahub_error(client: AsyncClient) -> None:
         resp = await client.post(
             _GRAPHQL_URL,
             content=b"{}",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     assert resp.status_code == 500
@@ -167,7 +167,7 @@ async def test_graphql_proxy_handles_connect_error(client: AsyncClient) -> None:
         resp = await client.post(
             _GRAPHQL_URL,
             content=b"{}",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     assert resp.status_code == 502
@@ -189,7 +189,7 @@ async def test_graphql_proxy_handles_timeout(client: AsyncClient) -> None:
         resp = await client.post(
             _GRAPHQL_URL,
             content=b"{}",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     assert resp.status_code == 502
@@ -214,7 +214,7 @@ async def test_openapi_proxy_get(client: AsyncClient) -> None:
 
         resp = await client.get(
             f"{_OPENAPI_BASE}/v3/entity/dataset",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     assert resp.status_code == 200
@@ -238,7 +238,7 @@ async def test_openapi_proxy_post(client: AsyncClient) -> None:
         resp = await client.post(
             f"{_OPENAPI_BASE}/v3/entity/dataset",
             content=b'{"aspect":"value"}',
-            headers={**_DE_HEADERS, "content-type": "application/json"},
+            headers={**_AUTH_HEADERS, "content-type": "application/json"},
         )
 
     assert resp.status_code == 201
@@ -260,7 +260,7 @@ async def test_openapi_proxy_preserves_query_params(client: AsyncClient) -> None
 
         resp = await client.get(
             f"{_OPENAPI_BASE}/v3/entity/dataset?type=dataset&count=10",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     assert resp.status_code == 200
@@ -284,7 +284,7 @@ async def test_openapi_proxy_preserves_status_code(client: AsyncClient) -> None:
 
         resp = await client.get(
             f"{_OPENAPI_BASE}/v3/entity/dataset/unknown",
-            headers=_DE_HEADERS,
+            headers=_AUTH_HEADERS,
         )
 
     assert resp.status_code == 404

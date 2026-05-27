@@ -61,8 +61,8 @@ async def test_metagen_global_conf_roundtrip_put_get_patch_delete(
     spec: BACKEND.md §UC4 — METAGEN.CONFIG_CREATE / CONFIG_UPDATE / CONFIG_DELETE
       events emitted by each mutation; entity_type='metagen', entity_id='singleton'
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
-    event_url = "/api/v1/spoke/common/metagen/event"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
+    event_url = "/api/v1/spoke/metagen/event"
 
     try:
         # PUT — create singleton conf
@@ -175,11 +175,11 @@ async def test_metagen_global_conf_get_when_unset_returns_null_body(
     The route is declared as response_model=MetagenGlobalConfResponse | None,
     so an absent singleton row returns 200 null — not 404.
 
-    spec: src/api/routers/spoke/common/metagen.py L68-73 —
+    spec: src/api/routers/spoke/metagen.py L68-73 —
       get_metagen_conf returns None when no row exists
     spec: USE_CASE_en.md §UC4 — conf is optional until first PUT
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
 
     # Ensure no conf exists
     with suppress(Exception):
@@ -188,12 +188,12 @@ async def test_metagen_global_conf_get_when_unset_returns_null_body(
     get_resp = await api_client.get(conf_url, headers=admin_headers)
     assert get_resp.status_code == 200, (
         f"GET conf when unset must return 200; got {get_resp.status_code}. "
-        "spec: src/api/routers/spoke/common/metagen.py L68-73"
+        "spec: src/api/routers/spoke/metagen.py L68-73"
     )
     body = get_resp.json()
     assert body is None, (
         f"GET conf when unset must return null body; got {body!r}. "
-        "spec: src/api/routers/spoke/common/metagen.py L73 — returns None"
+        "spec: src/api/routers/spoke/metagen.py L73 — returns None"
     )
 
 
@@ -207,7 +207,7 @@ async def test_metagen_global_conf_put_invalid_result_limit_422(
     spec: src/api/schemas/metagen.py L41 — result_limit: int = Field(default=3, ge=1, le=20)
     spec: USE_CASE_en.md §UC4 L605 — result_limit must be a positive integer
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
 
     resp = await api_client.put(
         conf_url,
@@ -238,7 +238,7 @@ async def test_metagen_global_conf_put_invalid_dataset_urn_422(
 
     spec: USE_CASE_en.md §UC4 — dataset_filter.dataset_urns must be valid URNs
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
 
     resp = await api_client.put(
         conf_url,
@@ -456,7 +456,7 @@ async def test_metagen_global_conf_put_dataset_filter_dimension_caps(
     spec: API.md §UC4 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
       ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted; 1,001 MUST be rejected.
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
 
     # Build n well-formed URN strings for the chosen dimension.
     if dimension == "tags":
@@ -538,7 +538,7 @@ async def test_metagen_global_conf_put_origin_filter_round_trips(
     spec: spec/API.md §UC4 — dataset_filter unified four-dimension shape; origin dimension.
     spec: USE_CASE_en.md §UC4 §Conf — dataset_filter is optional scope filter.
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
     expected_filter = {
         "origin": "DEV",
         "tags": ["urn:li:tag:area:fulfillment"],
@@ -588,7 +588,7 @@ async def test_metagen_global_conf_patch_adds_origin_to_existing_conf(
     spec: spec/API.md §UC4 — dataset_filter unified four-dimension shape; PATCH is partial.
     spec: USE_CASE_en.md §UC4 §Conf — PATCH must update only the provided fields.
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
 
     try:
         await api_client.put(
@@ -638,7 +638,7 @@ async def test_metagen_global_conf_put_invalid_schedule_tier_422(
     spec: API.md §UC4 / BACKEND.md — schedule_tier ∈ {"hourly","daily","weekly"};
       Pydantic Literal auto-422
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
 
     resp = await api_client.put(
         conf_url,

@@ -72,7 +72,7 @@ async def test_metagen_items_list_global_paginated_envelope(
     spec: API.md §Standard Envelope — items, offset, limit, total_count
     spec: src/api/schemas/metagen.py L103-104 — MetagenItemListResponse
     """
-    item_list_url = "/api/v1/spoke/common/metagen/item"
+    item_list_url = "/api/v1/spoke/metagen/item"
 
     try:
         await seed_metagen_item(
@@ -171,9 +171,9 @@ async def test_metagen_items_list_filters_dataset_kind_status(
       ?status=llm_approved includes the dataset.description item with llm_approved cand
 
     spec: USE_CASE_en.md §UC4 L683 — item list filterable by dataset_urn, kind, status
-    spec: src/api/routers/spoke/common/metagen.py L184-207 — filter params
+    spec: src/api/routers/spoke/metagen.py L184-207 — filter params
     """
-    item_list_url = "/api/v1/spoke/common/metagen/item"
+    item_list_url = "/api/v1/spoke/metagen/item"
 
     try:
         # Seed dataset.description item with one llm_approved candidate
@@ -221,7 +221,7 @@ async def test_metagen_items_list_filters_dataset_kind_status(
         urn_set = {i["dataset_urn"] for i in by_urn_items}
         assert urn_set <= {_TEST_URN}, (
             f"dataset_urn filter returned items for other URNs: {urn_set!r}. "
-            "spec: src/api/routers/spoke/common/metagen.py L195"
+            "spec: src/api/routers/spoke/metagen.py L195"
         )
 
         # Filter by kind=column.description
@@ -233,7 +233,7 @@ async def test_metagen_items_list_filters_dataset_kind_status(
         by_kind_items = resp_by_kind.json()["items"]
         assert all(i["kind"] == "column.description" for i in by_kind_items), (
             f"kind filter returned non-column items: {[i['kind'] for i in by_kind_items]!r}. "
-            "spec: src/api/routers/spoke/common/metagen.py L196"
+            "spec: src/api/routers/spoke/metagen.py L196"
         )
 
         # Filter by status=llm_approved — must include the seeded dataset.description item
@@ -248,7 +248,7 @@ async def test_metagen_items_list_filters_dataset_kind_status(
         ), (
             f"status=llm_approved filter returned non-matching items: "
             f"{[i['status'] for i in by_status_items]!r}. "
-            "spec: src/api/routers/spoke/common/metagen.py L197"
+            "spec: src/api/routers/spoke/metagen.py L197"
         )
         item_ids = {i["item_id"] for i in by_status_items}
         assert "dataset.description" in item_ids, (
@@ -273,13 +273,13 @@ async def test_metagen_item_detail_by_composite_id(
     list of the detail response.
 
     spec: USE_CASE_en.md §UC4 L684 — composite_id = '{dataset_urn}::{item_id}'
-    spec: src/api/routers/spoke/common/metagen.py L213-229 — composite_id parsing
+    spec: src/api/routers/spoke/metagen.py L213-229 — composite_id parsing
     spec: src/api/schemas/metagen.py L120 — MetagenItemDetailResponse.candidates
     """
     item_id = "dataset.description"
     composite_id = f"{_TEST_URN}::{item_id}"
     encoded_composite = urllib.parse.quote(composite_id, safe="")
-    item_detail_url = f"/api/v1/spoke/common/metagen/item/{encoded_composite}"
+    item_detail_url = f"/api/v1/spoke/metagen/item/{encoded_composite}"
 
     try:
         cid1 = await seed_metagen_candidate(
@@ -302,7 +302,7 @@ async def test_metagen_item_detail_by_composite_id(
         resp = await api_client.get(item_detail_url, headers=admin_headers)
         assert resp.status_code == 200, (
             f"GET item detail by composite_id failed: {resp.status_code} {resp.text}. "
-            "spec: src/api/routers/spoke/common/metagen.py L213"
+            "spec: src/api/routers/spoke/metagen.py L213"
         )
         body = resp.json()
 

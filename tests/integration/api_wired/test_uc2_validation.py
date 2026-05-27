@@ -4,10 +4,10 @@ Maps `spec/USE_CASE_en.md §UC2` paragraphs to executable steps. REST-only
 per `spec/TESTING.md §Api-Wired Integration Tests`.
 
 Test in this module:
-  - test_uc2_passive_result_store: DE creates conf for two datasets (a Postgres table
-    and a Kafka topic), pipelines POST results, DA queries historical series in
-    descending data_time order, cross-dataset list shows both datasets,
-    DE deletes the Postgres conf, resurrection cycle verified.
+  - test_uc2_passive_result_store: caller creates conf for two datasets (a Postgres
+    table and a Kafka topic), pipelines POST results, caller queries historical
+    series in descending data_time order, cross-dataset list shows both datasets,
+    caller deletes the Postgres conf, resurrection cycle verified.
 
 Prerequisites (spec/TESTING.md §Integration Testing):
   ./helm-charts/bin/install.sh --profile dev --components api --skip-build
@@ -52,7 +52,7 @@ _PG_CONF_URL = f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/conf"
 _PG_RESULT_URL = f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/result"
 _KAFKA_CONF_URL = f"/api/v1/spoke/common/data/{_enc(_KAFKA_URN)}/attr/validation/conf"
 _KAFKA_RESULT_URL = f"/api/v1/spoke/common/data/{_enc(_KAFKA_URN)}/attr/validation/result"
-_VALIDATION_LIST_URL = "/api/v1/spoke/common/validation"
+_VALIDATION_LIST_URL = "/api/v1/spoke/validation"
 
 # Consumed by the api-wired `purge_urns` autouse fixture (see conftest.py).
 URNS_TO_PURGE: list[str] = [_PG_URN, _KAFKA_URN]
@@ -63,15 +63,15 @@ async def test_uc2_passive_result_store(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """UC2 narrative: 'As a data engineer, I want to register validation rules for both
-    a fulfillment summary table and an upstream events topic, POST daily quality
+    """UC2 narrative: 'As a data team member, I want to register validation rules for
+    both a fulfillment summary table and an upstream events topic, POST daily quality
     results from each pipeline, and later query the historical series as a baseline,
     so that I can detect anomalies in today's partition without re-scanning sources.'
 
     Steps mirror USE_CASE_en.md §UC2:
-      1. DE creates confs via PUT for postgres + kafka datasets — 2 × 201
+      1. PUT validation conf for postgres + kafka datasets — 2 × 201
       2. Pipelines POST results: 3 days for postgres, 2 days for kafka — 5 × 200
-      3. DA queries postgres GET result?from=…&until=… → 3 rows, descending by data_time
+      3. GET postgres result?from=…&until=… → 3 rows, descending by data_time
       4. Cross-dataset GET /validation → shows BOTH datasets with their descriptions,
          variable counts, latest_data_time, latest_score
       5. DELETE postgres conf → 204; GET conf → 404; ?removed=true includes postgres,
@@ -79,8 +79,8 @@ async def test_uc2_passive_result_store(
       6. PUT postgres again → 201 (resurrected); GET conf → 200 with new description
     """
     try:
-        # ── Step 1: DE creates confs for both datasets ───────────────────────
-        # UC2 narrative: "The data engineer registers validation slots for the
+        # ── Step 1: Caller creates confs for both datasets ───────────────────
+        # UC2 narrative: "The caller registers validation slots for the
         # fulfillment table and the upstream order-events topic."
         # spec: VALIDATION.md §Rule Configuration — description + variables required.
 
@@ -162,7 +162,7 @@ async def test_uc2_passive_result_store(
                 f"got {resp.status_code}: {resp.text}"
             )
 
-        # ── Step 3: DA queries postgres historical GET result?from=…&until=… ─
+        # ── Step 3: GET postgres result?from=…&until=… (historical range) ────
         # UC2 narrative: "The next day's validation task GETs the prior 30-day
         # series to compute a rolling baseline without re-scanning source tables."
         # spec: VALIDATION.md §GET result — from inclusive, until exclusive;
@@ -198,9 +198,9 @@ async def test_uc2_passive_result_store(
         )
 
         # ── Step 4: Cross-dataset list shows BOTH datasets ───────────────────
-        # UC2 narrative: "The data analyst checks the cross-dataset validation list
+        # UC2 narrative: "The caller checks the cross-dataset validation list
         # to see which datasets have recent quality signals."
-        # spec: VALIDATION.md §API Surface — GET /spoke/common/validation aggregates conf + latest result.
+        # spec: VALIDATION.md §API Surface — GET /spoke/validation aggregates conf + latest result.
 
         list_resp = await api_client.get(
             f"{_VALIDATION_LIST_URL}?limit=100",

@@ -1,11 +1,11 @@
 """Spot integration tests for the DB-backed peripheral configuration feature.
 
 Routes under test:
-  GET  /api/v1/admin/peripherals               — requires 'admin' group JWT
-  GET  /api/v1/admin/peripherals/datahub       — requires 'admin' group JWT
-  PATCH /api/v1/admin/peripherals/datahub      — requires 'admin' group JWT
-  GET  /api/v1/admin/peripherals/langfuse      — requires 'admin' group JWT
-  PATCH /api/v1/admin/peripherals/langfuse     — requires 'admin' group JWT
+  GET  /api/v1/admin/peripherals               — requires Admin role
+  GET  /api/v1/admin/peripherals/datahub       — requires Admin role
+  PATCH /api/v1/admin/peripherals/datahub      — requires Admin role
+  GET  /api/v1/admin/peripherals/langfuse      — requires Admin role
+  PATCH /api/v1/admin/peripherals/langfuse     — requires Admin role
   PATCH /internal/admin/peripherals/datahub   — requires X-Internal-Token
   PATCH /internal/admin/peripherals/langfuse  — requires X-Internal-Token
 
@@ -46,7 +46,7 @@ the K8s Secrets at setup AND teardown so tests are order-independent.
 Spec traceability:
 - plan/scalable-beaming-hamster.md §API surface — all endpoint shapes, masking,
   is_configured predicate, F6 empty-PATCH guard.
-- spec/API.md §Admin routes — admin group required.
+- spec/API.md §Access Control — Admin role required for /admin/*.
 - spec/API.md §Internal routes — X-Internal-Token required.
 - src/api/schemas/admin.py DatahubPeripheralResponse / LangfusePeripheralResponse.
 - src/backend/admin/peripheral_service.py — patch_peripheral_config empty partial.
@@ -695,7 +695,7 @@ async def test_patch_datahub_non_admin_returns_403(
 ) -> None:
     """PATCH /admin/peripherals/datahub by non-admin user → 403.
 
-    spec: spec/API.md §Admin routes — admin group required.
+    spec: spec/API.md §Access Control — Admin role required for /admin/*.
     """
     resp = await api_client.patch(
         _ADMIN_PERIPHERALS_DH,
@@ -714,7 +714,7 @@ async def test_patch_langfuse_non_admin_returns_403(
 ) -> None:
     """PATCH /admin/peripherals/langfuse by non-admin user → 403.
 
-    spec: spec/API.md §Admin routes — admin group required.
+    spec: spec/API.md §Access Control — Admin role required for /admin/*.
     """
     resp = await api_client.patch(
         _ADMIN_PERIPHERALS_LF,

@@ -214,7 +214,7 @@ async def test_get_boundary_returns_200_when_present(client, mock_svc: AsyncMock
     """
     mock_svc.get_boundary = AsyncMock(return_value=_make_boundary_dto())
 
-    resp = await client.get(_BOUNDARY_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_BOUNDARY_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     body = resp.json()
@@ -233,7 +233,7 @@ async def test_get_boundary_returns_null_when_absent(client, mock_svc: AsyncMock
     """
     mock_svc.get_boundary = AsyncMock(return_value=None)
 
-    resp = await client.get(_BOUNDARY_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_BOUNDARY_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     assert resp.json() is None
@@ -251,7 +251,7 @@ async def test_put_boundary_returns_200_with_boundary_fields(client, mock_svc: A
     resp = await client.put(
         _BOUNDARY_URL,
         json={"is_enabled": True, "allowed": ["dataset.description", "column.description"]},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -270,7 +270,7 @@ async def test_put_boundary_rejects_invalid_kind(client, mock_svc: AsyncMock) ->
     resp = await client.put(
         _BOUNDARY_URL,
         json={"is_enabled": True, "allowed": ["invalid.kind"]},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422
@@ -290,7 +290,7 @@ async def test_put_boundary_with_owner_returns_owner_in_response(client, mock_sv
     resp = await client.put(
         _BOUNDARY_URL,
         json={"is_enabled": True, "allowed": ["dataset.description"], "owner": "some-user"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -314,7 +314,7 @@ async def test_patch_boundary_returns_200_with_updated_fields(client, mock_svc: 
     resp = await client.patch(
         _BOUNDARY_URL,
         json={"is_enabled": False},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -330,7 +330,7 @@ async def test_delete_boundary_returns_204(client, mock_svc: AsyncMock) -> None:
     """
     mock_svc.delete_boundary = AsyncMock(return_value=None)
 
-    resp = await client.delete(_BOUNDARY_URL, headers=auth_headers(["de"]))
+    resp = await client.delete(_BOUNDARY_URL, headers=auth_headers())
 
     assert resp.status_code == 204
 
@@ -350,7 +350,7 @@ async def test_get_items_returns_200_with_items_and_total_count(
     dto = _make_item_summary_dto()
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto], 1))
 
-    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     body = resp.json()
@@ -372,7 +372,7 @@ async def test_get_items_returns_empty_list_when_none_exist(
     """
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([], 0))
 
-    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     body = resp.json()
@@ -396,7 +396,7 @@ async def test_get_items_item_status_approved_when_has_approved_true(
     )
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_approved], 1))
 
-    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     items = resp.json()["items"]
@@ -423,7 +423,7 @@ async def test_get_items_item_status_llm_approved_when_no_approved_but_candidate
     )
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_llm_approved], 1))
 
-    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     items = resp.json()["items"]
@@ -450,7 +450,7 @@ async def test_get_items_item_status_zero_candidates_returns_200_with_string_sta
     )
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_no_cands], 1))
 
-    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     items = resp.json()["items"]
@@ -470,7 +470,7 @@ async def test_get_items_composite_id_uses_double_colon_separator(
     dto = _make_item_summary_dto(item_id="dataset.description")
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto], 1))
 
-    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     item = resp.json()["items"][0]
@@ -488,7 +488,7 @@ async def test_get_items_respects_offset_and_limit(client, mock_svc: AsyncMock) 
 
     resp = await client.get(
         f"{_ITEM_LIST_URL}?offset=10&limit=5",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -515,7 +515,7 @@ async def test_get_item_detail_returns_200_with_candidates(
 
     resp = await client.get(
         f"{_ITEM_LIST_URL}/dataset.description",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -540,7 +540,7 @@ async def test_get_item_detail_returns_404_when_not_found(
 
     resp = await client.get(
         f"{_ITEM_LIST_URL}/dataset.description",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 404
@@ -568,7 +568,7 @@ async def test_review_approve_returns_200_with_approved_status(
     resp = await client.post(
         url,
         json={"verdict": "approve", "reason": "Looks good"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -596,7 +596,7 @@ async def test_review_reject_returns_200_with_rejected_status(
     resp = await client.post(
         url,
         json={"verdict": "reject", "reason": "Not relevant"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -624,7 +624,7 @@ async def test_review_reject_approved_returns_409(client, mock_svc: AsyncMock) -
     resp = await client.post(
         url,
         json={"verdict": "reject"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 409
@@ -653,7 +653,7 @@ async def test_review_dataset_not_in_boundary_returns_422(
     resp = await client.post(
         url,
         json={"verdict": "approve"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422
@@ -678,7 +678,7 @@ async def test_review_candidate_not_found_returns_404(
     resp = await client.post(
         url,
         json={"verdict": "approve"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 404
@@ -696,7 +696,7 @@ async def test_review_invalid_verdict_returns_422(client, mock_svc: AsyncMock) -
     resp = await client.post(
         url,
         json={"verdict": "invalid_verdict"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422
@@ -714,7 +714,7 @@ async def test_review_reason_too_long_returns_422(client, mock_svc: AsyncMock) -
     resp = await client.post(
         url,
         json={"verdict": "approve", "reason": "x" * 2001},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422
@@ -736,7 +736,7 @@ async def test_review_reason_exactly_2000_chars_is_accepted(
     resp = await client.post(
         url,
         json={"verdict": "approve", "reason": "x" * 2000},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -765,7 +765,7 @@ async def test_review_reviewer_id_forwarded_from_auth_token(
     resp = await client.post(
         url,
         json={"verdict": "approve"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -826,7 +826,7 @@ async def test_get_events_returns_200_with_events_envelope(
     app.dependency_overrides[get_db] = lambda: mock_db
 
     try:
-        resp = await client.get(_EVENTS_URL, headers=auth_headers(["de"]))
+        resp = await client.get(_EVENTS_URL, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 

@@ -144,7 +144,7 @@ async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
     Called by the three metagen tier DAGs. Each tier DAG supplies ``tier``;
     the activity short-circuits when ``tier`` does not match
     ``metagen_config.schedule_tier`` so only the one DAG matching the conf
-    actually runs. Manual API calls (``POST /spoke/common/metagen/method/run``)
+    actually runs. Manual API calls (``POST /spoke/metagen/method/run``)
     call MetagenService.run() directly in-process.
 
     Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
@@ -262,7 +262,7 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
     Called by the three ontogen tier DAGs. Each tier DAG supplies ``tier``;
     the activity short-circuits when ``tier`` does not match
     ``ontogen_config.schedule_tier`` so only the one DAG matching the conf
-    actually runs. Manual API calls (``POST /spoke/common/ontogen/method/run``)
+    actually runs. Manual API calls (``POST /spoke/ontogen/method/run``)
     call OntogenService.run() directly in-process.
 
     Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.

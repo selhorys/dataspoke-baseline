@@ -53,8 +53,8 @@ async def test_uc3_ontology_generation_under_stub(
     Spec: BACKEND_LLM.md §Test Mode — stub Producer returns empty payload so no rows
     are persisted; step 6 per-row loop is intentionally a no-op under stub mode.
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
-    seed_url = "/api/v1/spoke/common/ontogen/attr/seed"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
+    seed_url = "/api/v1/spoke/ontogen/attr/seed"
     seed_id: str | None = None
 
     try:
@@ -141,7 +141,7 @@ async def test_uc3_ontology_generation_under_stub(
         # spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
         # spec: BACKEND_LLM.md §Adversarial Debate Framework — debate runs unconditionally
         run_resp = await api_client.post(
-            "/api/v1/spoke/common/ontogen/method/run",
+            "/api/v1/spoke/ontogen/method/run",
             headers=admin_headers,
         )
         assert run_resp.status_code == 200, (
@@ -177,7 +177,7 @@ async def test_uc3_ontology_generation_under_stub(
         # spec: BACKEND_LLM.md §Adversarial Debate Framework §Wiring — _run_inner emits
         # debate_outcome, producer_iterations, producer_errors_dropped in event detail
         event_resp = await api_client.get(
-            "/api/v1/spoke/common/ontogen/event?limit=20",
+            "/api/v1/spoke/ontogen/event?limit=20",
             headers=admin_headers,
         )
         assert event_resp.status_code == 200, (
@@ -217,7 +217,7 @@ async def test_uc3_ontology_generation_under_stub(
             ("triple", "triples"),
         ]:
             list_resp = await api_client.get(
-                f"/api/v1/spoke/common/ontogen/result/{result_type}?offset=0&limit=10",
+                f"/api/v1/spoke/ontogen/result/{result_type}?offset=0&limit=10",
                 headers=admin_headers,
             )
             assert list_resp.status_code == 200, (
@@ -259,7 +259,7 @@ async def test_uc3_ontology_generation_under_stub(
             rows = list_body[list_key]
             for row in rows:
                 attr_resp = await api_client.get(
-                    f"/api/v1/spoke/common/ontogen/result/{result_type}/{row['id']}/attr",
+                    f"/api/v1/spoke/ontogen/result/{result_type}/{row['id']}/attr",
                     headers=admin_headers,
                 )
                 assert attr_resp.status_code == 200, (
@@ -347,8 +347,8 @@ async def test_uc3_ontology_generation_with_real_llm(
     if runtime_conf.get("stub_llm_client"):
         pytest.skip("stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf to run real-LLM tests")
 
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
-    seed_url = "/api/v1/spoke/common/ontogen/attr/seed"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
+    seed_url = "/api/v1/spoke/ontogen/attr/seed"
     seed_id: str | None = None
 
     try:
@@ -424,7 +424,7 @@ async def test_uc3_ontology_generation_with_real_llm(
         # spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
         # spec: BACKEND_LLM.md §Adversarial Debate Framework — debate runs unconditionally
         run_resp = await api_client.post(
-            "/api/v1/spoke/common/ontogen/method/run",
+            "/api/v1/spoke/ontogen/method/run",
             headers=admin_headers,
         )
         assert run_resp.status_code == 200, (
@@ -460,7 +460,7 @@ async def test_uc3_ontology_generation_with_real_llm(
         # spec: BACKEND_LLM.md §Adversarial Debate Framework §Wiring — _run_inner emits
         # debate_outcome, producer_iterations, producer_errors_dropped in event detail
         event_resp = await api_client.get(
-            "/api/v1/spoke/common/ontogen/event?limit=20",
+            "/api/v1/spoke/ontogen/event?limit=20",
             headers=admin_headers,
         )
         assert event_resp.status_code == 200, (
@@ -502,7 +502,7 @@ async def test_uc3_ontology_generation_with_real_llm(
             ("triple", "triples"),
         ]:
             list_resp = await api_client.get(
-                f"/api/v1/spoke/common/ontogen/result/{result_type}?offset=0&limit=10",
+                f"/api/v1/spoke/ontogen/result/{result_type}?offset=0&limit=10",
                 headers=admin_headers,
             )
             assert list_resp.status_code == 200, (
@@ -541,7 +541,7 @@ async def test_uc3_ontology_generation_with_real_llm(
             for row in rows:
                 any_rows_found = True
                 attr_resp = await api_client.get(
-                    f"/api/v1/spoke/common/ontogen/result/{result_type}/{row['id']}/attr",
+                    f"/api/v1/spoke/ontogen/result/{result_type}/{row['id']}/attr",
                     headers=admin_headers,
                 )
                 assert attr_resp.status_code == 200, (

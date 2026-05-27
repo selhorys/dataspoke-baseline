@@ -7,7 +7,7 @@ Concerns covered:
 - require_admin: Reader/Editor → ForbiddenError("FORBIDDEN"); Admin → allowed
 
 spec: spec/feature/AUTH.md §Privilege Model
-spec: spec/API.md §Route-Tier Access Control
+spec: spec/API.md §Access Control
 spec: spec/API.md §Authentication §Authentication Mechanisms
 """
 
@@ -45,7 +45,7 @@ async def test_require_authenticated_no_token_raises_401(client) -> None:
     """Missing Authorization header returns 401 UNAUTHORIZED.
 
     spec: spec/feature/AUTH.md §Privilege Model — unauthenticated requests are rejected.
-    spec: spec/API.md §Route-Tier Access Control — /auth/me requires authenticated caller.
+    spec: spec/API.md §Access Control — /auth/me requires authenticated caller.
     """
     response = await client.get("/api/v1/auth/me")
     assert response.status_code == 401, (
@@ -148,7 +148,7 @@ async def test_require_writer_reader_on_post_raises_forbidden() -> None:
 
     spec: spec/feature/AUTH.md §Privilege Model — Reader role on /spoke/* or /hub/*
     POST/PUT/PATCH/DELETE → 403 READ_ONLY_ROLE.
-    spec: spec/API.md §Route-Tier Access Control §Method × role gate.
+    spec: spec/API.md §Access Control §Method × role gate.
     """
     from src.backend.auth.privilege import require_writer, AuthContext
     from src.shared.exceptions import ForbiddenError
@@ -172,7 +172,7 @@ async def test_require_writer_reader_on_get_is_allowed() -> None:
     """Reader + GET is allowed (Reader can perform read-only operations).
 
     spec: spec/feature/AUTH.md §Privilege Model — Reader can GET on /spoke/* and /hub/*.
-    spec: spec/API.md §Route-Tier Access Control — Reader: GET/HEAD/OPTIONS only.
+    spec: spec/API.md §Access Control — Reader: GET/HEAD/OPTIONS only.
     """
     from src.backend.auth.privilege import require_writer
 
@@ -228,7 +228,7 @@ async def test_require_admin_reader_raises_forbidden() -> None:
     """Reader accessing /admin/* → ForbiddenError('FORBIDDEN').
 
     spec: spec/feature/AUTH.md §Privilege Model — /admin/* requires Admin role.
-    spec: spec/API.md §Route-Tier Access Control — /admin/* requires users.role='Admin'.
+    spec: spec/API.md §Access Control — /admin/* requires users.role='Admin'.
     """
     from src.backend.auth.privilege import require_admin
     from src.shared.exceptions import ForbiddenError

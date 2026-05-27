@@ -253,7 +253,7 @@ class TestMetricsSchemas:
     def test_replace_request(self) -> None:
         """ReplaceMetricConfigRequest accepts the full field set (mode, metric_type, etc).
 
-        Spec: spec/API.md §Metric — PUT /spoke/dg/metric/{id}/attr/conf fields.
+        Spec: spec/API.md §Metric — PUT /spoke/governance/metric/{id}/attr/conf fields.
         """
         req = ReplaceMetricConfigRequest(
             mode="active",

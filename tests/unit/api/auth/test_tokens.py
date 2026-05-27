@@ -1,7 +1,7 @@
 """Unit tests for src/backend/auth/tokens.py.
 
 Concerns covered:
-- issue_access_token payload shape: sub, email, groups=["de","da","dg"], exp, iat
+- issue_access_token payload shape: sub, email, exp, iat (no groups claim)
 - decode_refresh_token rejects access tokens (type != "refresh") with
   AuthenticationError("INVALID_REFRESH_TOKEN")
 - decode_access_token rejects refresh tokens (security: refresh token cannot be used for auth)
@@ -24,10 +24,10 @@ import pytest
 
 
 def test_issue_access_token_payload_shape() -> None:
-    """issue_access_token returns a token with sub, email, groups, exp, iat.
+    """issue_access_token returns a token with sub, email, exp, iat and no groups claim.
 
-    spec: spec/API.md §JWT Claims — access-token payload: sub (user uuid),
-    email, groups (["de","da","dg"]), exp, iat.
+    spec: spec/API.md §JWT Claims — access-token payload: sub (user uuid), email, exp, iat.
+    The groups claim is absent; authorization is URI-prefix × HTTP method × users.role.
     """
     import jwt
 
@@ -54,10 +54,9 @@ def test_issue_access_token_payload_shape() -> None:
     assert "email" in payload, "Access token must carry 'email' claim per spec/API.md §JWT Claims"
     assert payload["email"] == email
 
-    # spec: spec/API.md §JWT Claims — groups is constant ["de","da","dg"] for every user
-    assert "groups" in payload, "Access token must carry 'groups' claim per spec/API.md §JWT Claims"
-    assert payload["groups"] == ["de", "da", "dg"], (
-        "groups must be ['de','da','dg'] (literal order) for every authenticated user "
+    # spec: spec/API.md §JWT Claims — groups claim must be absent
+    assert "groups" not in payload, (
+        "Access token must NOT carry a 'groups' claim — authorization is role-based "
         "per spec/API.md §JWT Claims"
     )
 

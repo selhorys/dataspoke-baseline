@@ -486,9 +486,9 @@ async def test_uc1_active_custom_postgres(
         assert restore_resp.status_code == 200
 
         # ── Step 6: Cross-dataset overview includes this URN ──────────────────
-        # spec: USE_CASE_en.md §UC1 — cross-dataset overview at GET /spoke/common/ingestion
+        # spec: USE_CASE_en.md §UC1 — cross-dataset overview at GET /spoke/ingestion
         overview_resp = await api_client.get(
-            "/api/v1/spoke/common/ingestion?limit=100",
+            "/api/v1/spoke/ingestion?limit=100",
             headers=admin_headers,
         )
         assert overview_resp.status_code == 200
@@ -498,7 +498,7 @@ async def test_uc1_active_custom_postgres(
 
         configs_by_urn = {c["dataset_urn"]: c for c in overview_body["configs"]}
         assert _ACTIVE_URN in configs_by_urn, (
-            f"Active URN {_ACTIVE_URN!r} not found in GET /spoke/common/ingestion. "
+            f"Active URN {_ACTIVE_URN!r} not found in GET /spoke/ingestion. "
             "spec: USE_CASE_en.md §UC1 §Cross-dataset overview"
         )
         active_row = configs_by_urn[_ACTIVE_URN]

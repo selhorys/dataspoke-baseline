@@ -3,7 +3,7 @@
 Orchestration is handled by the Airflow DAG definitions in:
   - dags/metagen_hourly.py / metagen_daily.py / metagen_weekly.py (tier)
 
-Manual API runs go through `POST /spoke/common/metagen/method/run`, which calls
+Manual API runs go through `POST /spoke/metagen/method/run`, which calls
 MetagenService.run() synchronously in-process. Business logic lives in
 src/backend/metagen/service.py.
 Activity endpoint: POST /internal/activities/metagen/run

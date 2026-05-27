@@ -3,11 +3,11 @@
 Routes under test:
   GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf
   POST/GET             /spoke/common/data/{urn}/attr/validation/result
-  GET                  /spoke/common/validation
+  GET                  /spoke/validation
 
 spec: VALIDATION.md §API Surface
-spec: API.md §Data Resource (validation rows) lines 305-326
-spec: API.md §Validation (/spoke/common/validation) lines 239-252
+spec: API.md §Data Resource (validation rows)
+spec: API.md §Validation (/spoke/validation)
 """
 
 from datetime import UTC, datetime
@@ -26,7 +26,7 @@ from src.shared.exceptions import (
 from tests.unit.api.conftest import auth_headers
 
 _DATA_BASE = "/api/v1/spoke/common/data"
-_VALIDATION_BASE = "/api/v1/spoke/common/validation"
+_VALIDATION_BASE = "/api/v1/spoke/validation"
 
 # The dataset URN used in tests — includes parens that must be URL-encoded.
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
@@ -151,7 +151,7 @@ async def test_get_conf_200_when_present(client, mock_svc: AsyncMock) -> None:
         )
     )
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 200
     data = resp.json()
     assert data["dataset_urn"] == _VALID_URN
@@ -166,7 +166,7 @@ async def test_get_conf_404_when_absent(client, mock_svc: AsyncMock) -> None:
     """
     mock_svc.get_config = AsyncMock(return_value=None)
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 404
 
 
@@ -201,7 +201,7 @@ async def test_put_conf_201_on_first_create(client, mock_svc: AsyncMock) -> None
             "description": "Daily row count check",
             "variables": ["row_cnt", "col1_mean"],
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 201
 
@@ -234,7 +234,7 @@ async def test_put_conf_200_on_subsequent_update(client, mock_svc: AsyncMock) ->
             "description": "Updated check",
             "variables": ["row_cnt"],
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
 
@@ -264,7 +264,7 @@ async def test_patch_conf_200_with_merged_response(client, mock_svc: AsyncMock) 
     resp = await client.patch(
         _CONF_URL,
         json={"description": "Updated description"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -282,7 +282,7 @@ async def test_delete_conf_204(client, mock_svc: AsyncMock) -> None:
     """
     mock_svc.delete_config = AsyncMock(return_value=None)
 
-    resp = await client.delete(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.delete(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 204
 
 
@@ -312,7 +312,7 @@ async def test_post_result_200(client, mock_svc: AsyncMock) -> None:
             "score": 1.0,
             "variables": {"row_cnt": 50.0},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -342,7 +342,7 @@ async def test_post_result_unknown_variable_returns_422_with_code(
             "score": 1.0,
             "variables": {"bad_var": 1.0},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
     data = resp.json()
@@ -376,7 +376,7 @@ async def test_post_result_invalid_score_returns_422_with_code(
             "score": 0.5,  # valid at Pydantic level but service raises anyway for test
             "variables": {"row_cnt": 50.0},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
     body = resp.json()
@@ -406,7 +406,7 @@ async def test_post_result_dataset_not_in_datahub_returns_422(
             "score": 1.0,
             "variables": {"row_cnt": 50.0},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
     assert resp.json()["error_code"] == "DATASET_NOT_IN_DATAHUB"
@@ -427,7 +427,7 @@ async def test_get_result_honors_from_until_limit_params(
 
     resp = await client.get(
         f"{_RESULT_URL}?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:00Z&limit=10",
-        headers=auth_headers(["da"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     call_kwargs = mock_svc.get_results.call_args.kwargs
@@ -436,14 +436,14 @@ async def test_get_result_honors_from_until_limit_params(
     assert call_kwargs.get("until_dt") is not None
 
 
-# ── GET /spoke/common/validation ─────────────────────────────────────────────
+# ── GET /spoke/validation ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_get_validation_list_removed_true_filter(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /spoke/common/validation?removed=true filters to soft-deleted entries.
+    """GET /spoke/validation?removed=true filters to soft-deleted entries.
 
     spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
     """
@@ -451,7 +451,7 @@ async def test_get_validation_list_removed_true_filter(
 
     resp = await client.get(
         f"{_VALIDATION_BASE}?removed=true",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     call_kwargs = mock_svc.list_configs.call_args.kwargs
@@ -462,7 +462,7 @@ async def test_get_validation_list_removed_true_filter(
 async def test_get_validation_list_removed_false_filter(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /spoke/common/validation?removed=false filters to active entries.
+    """GET /spoke/validation?removed=false filters to active entries.
 
     spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
     """
@@ -470,7 +470,7 @@ async def test_get_validation_list_removed_false_filter(
 
     resp = await client.get(
         f"{_VALIDATION_BASE}?removed=false",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     call_kwargs = mock_svc.list_configs.call_args.kwargs
@@ -507,7 +507,7 @@ async def test_url_with_encoded_parens_decoded_correctly(
 
     mock_svc.get_config = capture_get_config
 
-    resp = await client.get(_CONF_URL, headers=auth_headers(["de"]))
+    resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 200
     # The service must receive the fully decoded URN — full equality check
     assert received_urn == _VALID_URN, (
@@ -553,7 +553,7 @@ async def test_resurrection_via_put_after_delete_returns_201_at_route_layer(
             "description": "Resurrected daily row count check",
             "variables": ["row_cnt"],
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     # spec: USE_CASE_en.md §UC2 — resurrection returns 201, not 200
@@ -562,14 +562,14 @@ async def test_resurrection_via_put_after_delete_returns_201_at_route_layer(
     )
 
 
-# ── GET /spoke/common/validation — removed filter response content ─────────────
+# ── GET /spoke/validation — removed filter response content ─────────────
 
 
 @pytest.mark.asyncio
 async def test_get_validation_list_removed_true_returns_only_removed_items(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /spoke/common/validation?removed=true returns only soft-deleted items.
+    """GET /spoke/validation?removed=true returns only soft-deleted items.
 
     spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
     Tests that ?removed=true both (a) forwards removed_filter=True to the service AND
@@ -590,7 +590,7 @@ async def test_get_validation_list_removed_true_returns_only_removed_items(
 
     resp = await client.get(
         f"{_VALIDATION_BASE}?removed=true",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
 
@@ -619,7 +619,7 @@ async def test_get_validation_list_removed_true_returns_only_removed_items(
 async def test_get_validation_list_removed_false_returns_only_active_items(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /spoke/common/validation?removed=false returns only active (non-deleted) items.
+    """GET /spoke/validation?removed=false returns only active (non-deleted) items.
 
     spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
     Tests that ?removed=false both (a) forwards removed_filter=False to the service AND
@@ -640,7 +640,7 @@ async def test_get_validation_list_removed_false_returns_only_active_items(
 
     resp = await client.get(
         f"{_VALIDATION_BASE}?removed=false",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
 
@@ -707,7 +707,7 @@ async def test_post_result_real_score_above_1_returns_invalid_score(client) -> N
                 "score": 1.5,
                 "variables": {"row_cnt": 50.0},
             },
-            headers=auth_headers(["de"]),
+            headers=auth_headers(),
         )
     finally:
         app.dependency_overrides.pop(get_validation_service, None)
@@ -735,7 +735,7 @@ async def test_post_result_real_score_negative_returns_invalid_score(client) -> 
                 "score": -0.1,
                 "variables": {"row_cnt": 50.0},
             },
-            headers=auth_headers(["de"]),
+            headers=auth_headers(),
         )
     finally:
         app.dependency_overrides.pop(get_validation_service, None)
@@ -774,7 +774,7 @@ async def test_post_result_real_score_nan_returns_invalid_score(client) -> None:
         resp = await client.post(
             _RESULT_URL,
             content=raw_body,
-            headers={**auth_headers(["de"]), "Content-Type": "application/json"},
+            headers={**auth_headers(), "Content-Type": "application/json"},
         )
     finally:
         app.dependency_overrides.pop(get_validation_service, None)

@@ -6,7 +6,7 @@ Spec sources:
   spec/feature/BACKEND.md §Metrics Service (service contracts, create vs replace,
     breakdown, disabled guard)
   spec/feature/BACKEND_SCHEMA.md §metric_definitions, §metric_results
-  spec/API.md §Metric (/spoke/dg/metric) — NOT_IMPLEMENTED lives at the route layer
+  spec/API.md §Metric (/spoke/governance/metric) — NOT_IMPLEMENTED lives at the route layer
 """
 
 import uuid
@@ -92,7 +92,7 @@ async def test_create_metric_config_inserts_new_row(service, db):
     """create_metric_config inserts a new row; returns MetricDefinitionRecord.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
-          POST /spoke/dg/metric creates a metric; metric_id supplied in the body.
+          POST /spoke/governance/metric creates a metric; metric_id supplied in the body.
     """
     mock_scalar_query(db, None)  # no existing row
     mock_db_refresh(db)
@@ -323,7 +323,7 @@ async def test_patch_metrics_with_unknown_key_raises(service, db):
 async def test_list_metrics_filter_by_metric_type(service, db):
     """list_metrics(metric_type_filter=...) filters by metric_type.
 
-    Spec: spec/API.md §Metric — GET /spoke/dg/metric filterable by metric_type.
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by metric_type.
     """
     rows = [_make_definition_row(metric_type="doc-health")]
     mock_paginated_query(db, rows, total_count=1)
@@ -337,7 +337,7 @@ async def test_list_metrics_filter_by_metric_type(service, db):
 async def test_list_metrics_filter_by_mode(service, db):
     """list_metrics(mode_filter=...) filters by mode.
 
-    Spec: spec/API.md §Metric — GET /spoke/dg/metric filterable by mode.
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by mode.
     """
     rows = [_make_definition_row(mode="active")]
     mock_paginated_query(db, rows, total_count=1)
@@ -350,7 +350,7 @@ async def test_list_metrics_filter_by_mode(service, db):
 async def test_list_metrics_filter_by_is_enabled(service, db):
     """list_metrics(is_enabled_filter=True) filters by is_enabled.
 
-    Spec: spec/API.md §Metric — GET /spoke/dg/metric filterable by is_enabled.
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by is_enabled.
     """
     rows = [_make_definition_row(is_enabled=True)]
     mock_paginated_query(db, rows, total_count=1)

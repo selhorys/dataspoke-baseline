@@ -1,10 +1,11 @@
-"""Cross-dataset ingestion list view — /spoke/common/ingestion.
+"""Cross-dataset ingestion list view — /spoke/ingestion.
 
 Per-dataset operations (attr CRUD, method/run, event) live under the
 canonical /spoke/common/data/{dataset_urn}/... surface.
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Spec: API.md §Ingestion (/spoke/common/ingestion).
+Auth: authenticated; writes require Editor or Admin (require_writer).
+Spec: API.md §Ingestion (/spoke/ingestion).
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -18,7 +19,7 @@ from src.shared.db.models import IngestionConfig
 
 router = APIRouter(
     prefix="/ingestion",
-    tags=["common/ingestion"],
+    tags=["ingestion"],
     dependencies=[Depends(require_authenticated)],
 )
 

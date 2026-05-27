@@ -43,9 +43,9 @@ async def test_ontogen_conf_get_returns_defaults(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/common/ontogen/attr/conf returns 200 with singleton conf structure."""
+    """GET /spoke/ontogen/attr/conf returns 200 with singleton conf structure."""
     resp = await api_client.get(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
     )
 
@@ -65,9 +65,9 @@ async def test_ontogen_conf_put(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT /spoke/common/ontogen/attr/conf creates or replaces the singleton conf."""
+    """PUT /spoke/ontogen/attr/conf creates or replaces the singleton conf."""
     resp = await api_client.put(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
         json={
             "is_enabled": True,
@@ -84,7 +84,7 @@ async def test_ontogen_conf_put(
 
     # Cleanup — reset to disabled
     await api_client.patch(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
         json={"is_enabled": False},
     )
@@ -95,10 +95,10 @@ async def test_ontogen_conf_patch(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PATCH /spoke/common/ontogen/attr/conf partially updates the singleton conf."""
+    """PATCH /spoke/ontogen/attr/conf partially updates the singleton conf."""
     # Ensure a conf exists
     await api_client.put(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
         json={
             "is_enabled": False,
@@ -108,7 +108,7 @@ async def test_ontogen_conf_patch(
     )
 
     patch_resp = await api_client.patch(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
         json={"schedule_tier": "weekly"},
     )
@@ -123,10 +123,10 @@ async def test_ontogen_conf_delete_resets(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """DELETE /spoke/common/ontogen/attr/conf removes/resets the singleton conf (204)."""
+    """DELETE /spoke/ontogen/attr/conf removes/resets the singleton conf (204)."""
     # Ensure conf exists first
     await api_client.put(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
         json={
             "is_enabled": False,
@@ -136,7 +136,7 @@ async def test_ontogen_conf_delete_resets(
     )
 
     del_resp = await api_client.delete(
-        "/api/v1/spoke/common/ontogen/attr/conf",
+        "/api/v1/spoke/ontogen/attr/conf",
         headers=admin_headers,
     )
     assert del_resp.status_code == 204
@@ -148,7 +148,7 @@ async def test_ontogen_seed_create_list_get_patch_delete(
     admin_headers: dict[str, str],
 ) -> None:
     """Seed CRUD: create (201), list, get body, patch, delete (204)."""
-    base_seed = "/api/v1/spoke/common/ontogen/attr/seed"
+    base_seed = "/api/v1/spoke/ontogen/attr/seed"
     seed_md = "# Imazon Ontology Seed\n\nImazon is an online bookstore."
 
     # Create
@@ -231,7 +231,7 @@ async def test_ontogen_conf_put_dataset_filter_dimension_caps(
     spec: API.md §UC3 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
       ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted; 1,001 MUST be rejected.
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
     # Build n well-formed URN strings for the chosen dimension.
     if dimension == "tags":
@@ -305,7 +305,7 @@ async def test_ontogen_conf_put_origin_filter_round_trips(
     spec: spec/API.md §UC3 — dataset_filter unified four-dimension shape; origin dimension.
     spec: USE_CASE_en.md §UC3 §Conf — dataset_filter is optional scope filter.
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
     expected_filter = {
         "origin": "DEV",
         "tags": ["urn:li:tag:area:fulfillment"],
@@ -359,7 +359,7 @@ async def test_ontogen_conf_patch_adds_origin_to_existing_conf(
     spec: spec/API.md §UC3 — dataset_filter unified four-dimension shape; PATCH is partial.
     spec: USE_CASE_en.md §UC3 §Conf — PATCH must update only the provided fields.
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
     try:
         # Seed an existing conf without origin
@@ -412,7 +412,7 @@ async def test_ontogen_conf_put_invalid_schedule_tier_422(
     spec: BACKEND.md §UC3 Ontology Generation — schedule_tier ∈ {"hourly","daily","weekly"};
       Pydantic Literal auto-422
     """
-    conf_url = "/api/v1/spoke/common/ontogen/attr/conf"
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
     resp = await api_client.put(
         conf_url,

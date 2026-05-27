@@ -1,4 +1,4 @@
-"""Metadata Generation router — /spoke/common/metagen/...
+"""Metadata Generation router — /spoke/metagen/...
 
 Routes:
   singleton conf CRUD   GET/PUT/PATCH/DELETE /metagen/attr/conf
@@ -8,8 +8,8 @@ Routes:
   item detail           GET /metagen/item/{composite_id}
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Auth: require_common (de/da/dg/admin groups).
-Spec: API.md §Metadata Generation (/spoke/common/metagen).
+Auth: authenticated; writes require Editor or Admin (require_writer).
+Spec: API.md §Metadata Generation (/spoke/metagen).
 """
 
 from datetime import datetime
@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
 from src.api.dependencies import get_db, get_metagen_service
-from src.api.routers.spoke.common._metagen_mappers import (
+from src.api.routers.spoke._metagen_mappers import (
     event_list,
     to_item_detail,
     to_item_summary,
@@ -43,7 +43,7 @@ from src.shared.exceptions import PreconditionFailedError
 
 router = APIRouter(
     prefix="/metagen",
-    tags=["common/metagen"],
+    tags=["metagen"],
     dependencies=[Depends(require_authenticated)],
 )
 

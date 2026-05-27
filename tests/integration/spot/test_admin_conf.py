@@ -1,8 +1,8 @@
 """Spot integration tests for the DB-backed runtime configuration feature.
 
 Routes under test:
-  GET  /api/v1/admin/conf            — requires 'admin' group JWT
-  PATCH /api/v1/admin/conf           — requires 'admin' group JWT
+  GET  /api/v1/admin/conf            — requires Admin role
+  PATCH /api/v1/admin/conf           — requires Admin role
   PATCH /internal/admin/conf         — requires X-Internal-Token
 
 Concerns covered:
@@ -15,7 +15,7 @@ Concerns covered:
 
 3. PATCH /admin/conf with out-of-bounds value → 422.
 
-4. Auth: GET/PATCH without JWT → 401; with non-admin JWT → 403.
+4. Auth: GET/PATCH without JWT → 401; with non-Admin role → 403.
 
 5. PATCH /internal/admin/conf with valid X-Internal-Token → 200, reflected by
    GET; without / with wrong token → 401 (or 503 if token unset).
@@ -34,7 +34,7 @@ Spec traceability:
 - task brief §api-wired — all concerns listed above.
 - task brief §What's under test — factory defaults, 15 fields, auth rules,
   no-secret-in-response, updated_at, resp_time invariants.
-- spec/API.md §Admin routes — admin group required for /admin/…
+- spec/API.md §Access Control — Admin role required for /admin/*
 - spec/API.md §Internal routes — X-Internal-Token for /internal/…
 - src/api/schemas/admin.py RuntimeConfResponse, RuntimeConfPatchRequest bounds.
 - src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
@@ -206,7 +206,7 @@ async def test_get_conf_masks_llm_api_key_and_exposes_no_other_secret(
     )
 
 
-# ── 2. Auth: GET/PATCH require admin group ────────────────────────────────────
+# ── 2. Auth: GET/PATCH require Admin role ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -225,13 +225,12 @@ async def test_get_conf_without_auth_returns_401(
 
 
 @pytest.mark.asyncio
-async def test_get_conf_non_admin_group_returns_403(
+async def test_get_conf_non_admin_role_returns_403(
     api_client: httpx.AsyncClient,
 ) -> None:
-    """GET /admin/conf with non-admin JWT returns 403.
+    """GET /admin/conf with non-Admin caller returns 403.
 
-    spec: task brief §api-wired — 'without admin group (non-admin JWT) → 403'.
-    spec: API.md §Group-to-Route Access Control — /admin/* requires 'admin' group.
+    spec: API.md §Access Control — /admin/* requires users.role = 'Admin'.
     """
     import uuid
 
@@ -245,7 +244,7 @@ async def test_get_conf_non_admin_group_returns_403(
         headers={"Authorization": f"Bearer {non_admin_token}"},
     )
     assert resp.status_code == 403, (
-        f"Non-admin JWT must return 403 on GET /admin/conf; got {resp.status_code}"
+        f"Non-Admin caller must return 403 on GET /admin/conf; got {resp.status_code}"
     )
 
 
@@ -265,12 +264,12 @@ async def test_patch_conf_without_auth_returns_401(
 
 
 @pytest.mark.asyncio
-async def test_patch_conf_non_admin_group_returns_403(
+async def test_patch_conf_non_admin_role_returns_403(
     api_client: httpx.AsyncClient,
 ) -> None:
-    """PATCH /admin/conf with non-admin JWT returns 403.
+    """PATCH /admin/conf with non-Admin caller returns 403.
 
-    spec: task brief §api-wired — 'without admin group (non-admin JWT) → 403'.
+    spec: API.md §Access Control — /admin/* requires users.role = 'Admin'.
     """
     import uuid
 

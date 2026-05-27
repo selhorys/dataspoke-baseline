@@ -1,8 +1,7 @@
-"""Unit tests for /spoke/common/ontogen routes.
+"""Unit tests for /spoke/ontogen routes.
 
 Spec traceability:
-- spec/API.md §Authentication & Authorization §Group-to-Route Access Control
-- spec/API.md §Common (/spoke/common) §Ontology Generation
+- spec/API.md §Ontology Generation (/spoke/ontogen)
 - spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
 """
 
@@ -21,7 +20,7 @@ from src.shared.exceptions import (
 
 from tests.unit.api.conftest import auth_headers, make_token
 
-_BASE = "/api/v1/spoke/common/ontogen"
+_BASE = "/api/v1/spoke/ontogen"
 
 # Named constants — cap values from the implementation
 # impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
@@ -29,9 +28,6 @@ _REASON_MAX_LEN = 2000
 _BODY_MAX_BYTES = 128 * 1024  # 128 KiB
 # impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
 _DATASET_FILTER_LIST_CAP = 1000
-
-# Valid groups per spec/API.md §Group-to-Route Access Control table
-_VALID_GROUPS = ("de", "da", "dg", "admin")
 
 
 def _make_conf_row() -> MagicMock:
@@ -76,33 +72,16 @@ async def test_get_conf_without_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("group", list(_VALID_GROUPS))
-async def test_get_conf_with_valid_group_token_returns_200(
-    client, mock_svc: AsyncMock, group: str
+async def test_get_conf_with_valid_token_returns_200(
+    client, mock_svc: AsyncMock
 ) -> None:
-    """GET /ontogen/attr/conf with any valid group token returns 200.
+    """GET /ontogen/attr/conf with a valid token returns 200.
 
-    Spec: spec/API.md §Group-to-Route Access Control — /spoke/common/… requires
-    any valid group; de/da/dg/admin all qualify.
+    Spec: spec/API.md §Authentication — /spoke/ontogen routes require a valid JWT.
     """
     mock_svc.get_conf = AsyncMock(return_value=_make_conf_row())
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers([group]))
+    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers())
     assert resp.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_get_conf_without_token_returns_401_not_403(client, mock_svc: AsyncMock) -> None:
-    """GET /ontogen/attr/conf without a token returns 401.
-
-    The old group-based access check ('ops' group → 403) is replaced by
-    role-based auth. Any authenticated user may GET /spoke/common/* routes.
-    Unauthenticated requests receive 401.
-
-    Spec: API.md §Authentication — /spoke/common/* requires a valid token.
-    """
-    mock_svc.get_conf = AsyncMock(return_value=_make_conf_row())
-    resp = await client.get(f"{_BASE}/attr/conf")  # no auth header
-    assert resp.status_code == 401
 
 
 # ── Conf round-trip ───────────────────────────────────────────────────────────
@@ -117,7 +96,7 @@ async def test_put_conf_returns_200(client, mock_svc: AsyncMock) -> None:
     resp = await client.put(
         f"{_BASE}/attr/conf",
         json={"is_enabled": False},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -139,7 +118,7 @@ async def test_put_conf_validates_dataset_filter_list_cap(client, mock_svc: Asyn
             "is_enabled": False,
             "dataset_filter": {"dataset_urns": too_many_urns},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
 
@@ -156,7 +135,7 @@ async def test_post_seed_returns_201(client, mock_svc: AsyncMock) -> None:
     resp = await client.post(
         f"{_BASE}/attr/seed",
         content=b"# My seed\n\nContent",
-        headers={**auth_headers(["de"]), "Content-Type": "text/markdown"},
+        headers={**auth_headers(), "Content-Type": "text/markdown"},
     )
     assert resp.status_code == 201
     data = resp.json()
@@ -174,7 +153,7 @@ async def test_post_seed_body_too_large_returns_413(client, mock_svc: AsyncMock)
         f"{_BASE}/attr/seed",
         content=big_body,
         headers={
-            **auth_headers(["de"]),
+            **auth_headers(),
             "Content-Type": "text/markdown",
             "Content-Length": str(len(big_body)),
         },
@@ -187,7 +166,7 @@ async def test_get_seed_malformed_uuid_returns_422(client, mock_svc: AsyncMock) 
     """GET /ontogen/attr/seed/{bad_id} with non-UUID path segment returns 422."""
     resp = await client.get(
         f"{_BASE}/attr/seed/not-a-uuid-at-all",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
 
@@ -217,7 +196,7 @@ async def test_post_run_returns_200_with_run_summary_body(client, mock_svc: Asyn
     resp = await client.post(
         f"{_BASE}/method/run",
         content=b"",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -239,7 +218,7 @@ async def test_post_run_body_too_large_returns_413(client, mock_svc: AsyncMock) 
         f"{_BASE}/method/run",
         content=big_body,
         headers={
-            **auth_headers(["de"]),
+            **auth_headers(),
             "Content-Type": "text/markdown",
             "Content-Length": str(len(big_body)),
         },
@@ -260,7 +239,7 @@ async def test_post_triple_review_dependency_error_returns_422(client, mock_svc:
     resp = await client.post(
         f"{_BASE}/result/triple/{triple_id}/method/review",
         json={"verdict": "approve"},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
     body = resp.json()
@@ -279,7 +258,7 @@ async def test_post_node_review_reason_too_long_returns_422(client, mock_svc: As
     resp = await client.post(
         f"{_BASE}/result/node/book/method/review",
         json={"verdict": "approve", "reason": "x" * (_REASON_MAX_LEN + 1)},  # impl-cap
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
 
@@ -344,7 +323,7 @@ async def test_put_conf_with_origin_and_tags_returns_200(
             "is_enabled": False,
             "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200, (
         f"PUT with origin+tags dataset_filter must return 200; "
@@ -371,7 +350,7 @@ async def test_put_conf_with_malformed_urn_returns_422_invalid_dataset_urn(
             "is_enabled": False,
             "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422, (
         f"PUT with malformed URN must return 422; got {resp.status_code}: {resp.text}. "
@@ -395,7 +374,7 @@ async def test_patch_conf_with_malformed_urn_returns_422_invalid_dataset_urn(
     resp = await client.patch(
         f"{_BASE}/attr/conf",
         json={"dataset_filter": {"dataset_urns": ["not-a-valid-urn"]}},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422, (
         f"PATCH with malformed URN must return 422; got {resp.status_code}: {resp.text}. "

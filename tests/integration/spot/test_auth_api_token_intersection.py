@@ -25,8 +25,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Simple spoke endpoint used as the write target — auth check fires before body validation
-_WRITE_URL = "/api/v1/spoke/common/metagen/method/run"
-_READ_URL = "/api/v1/spoke/common/ingestion"
+_WRITE_URL = "/api/v1/spoke/metagen/method/run"
+_READ_URL = "/api/v1/spoke/ingestion"
 
 
 def _unique_email(prefix: str = "intersection") -> str:

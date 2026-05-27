@@ -2,21 +2,21 @@
 PATCH /internal/admin/conf).
 
 Routes under test:
-  GET  /api/v1/admin/conf            — requires 'admin' group JWT
-  PATCH /api/v1/admin/conf           — requires 'admin' group JWT
+  GET  /api/v1/admin/conf            — requires Admin role
+  PATCH /api/v1/admin/conf           — requires Admin role
   PATCH /internal/admin/conf         — requires X-Internal-Token header
 
 Concerns covered:
 
 1. Auth gates:
    - GET  /admin/conf without JWT → 401
-   - GET  /admin/conf with non-admin group → 403
+   - GET  /admin/conf with non-Admin role → 403
    - PATCH /admin/conf without JWT → 401
-   - PATCH /admin/conf with non-admin group → 403
+   - PATCH /admin/conf with non-Admin role → 403
    - PATCH /internal/admin/conf without X-Internal-Token → 401
    - PATCH /internal/admin/conf with wrong token → 401
 
-2. GET /admin/conf with admin group:
+2. GET /admin/conf with Admin role:
    - Returns 200.
    - Response contains all 23 expected fields (21 config fields + updated_at + resp_time).
    - Response contains resp_time (SingleResponse envelope).
@@ -38,7 +38,7 @@ Concerns covered:
 Spec traceability:
 - spec/feature/BACKEND_LLM.md §LLM API key — masked GET, write to Secret on PATCH,
   SecretResolverUnavailable → 503.
-- spec/API.md §Admin routes — admin group required for /admin/…
+- spec/API.md §Access Control — Admin role required for /admin/*
 - spec/API.md §Internal routes — X-Internal-Token required for /internal/…
 - src/api/schemas/admin.py RuntimeConfResponse — resp_time, updated_at, masked llm_api_key.
 """
@@ -158,7 +158,7 @@ async def test_get_conf_non_admin_role_returns_403(client) -> None:
     reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
     app.dependency_overrides[require_authenticated] = lambda: reader_ctx
     try:
-        resp = await client.get(_ADMIN_CONF, headers=auth_headers(["de"]))
+        resp = await client.get(_ADMIN_CONF, headers=auth_headers())
         assert resp.status_code == 403
     finally:
         app.dependency_overrides.pop(require_authenticated, None)
@@ -177,7 +177,7 @@ async def test_get_conf_editor_role_returns_403(client) -> None:
     editor_ctx = AuthContext(user=_make_mock_user(role="Editor"), effective_role="Editor")
     app.dependency_overrides[require_authenticated] = lambda: editor_ctx
     try:
-        resp = await client.get(_ADMIN_CONF, headers=auth_headers(["da"]))
+        resp = await client.get(_ADMIN_CONF, headers=auth_headers())
         assert resp.status_code == 403
     finally:
         app.dependency_overrides.pop(require_authenticated, None)
@@ -212,7 +212,7 @@ async def test_patch_conf_non_admin_role_returns_403(client) -> None:
         resp = await client.patch(
             _ADMIN_CONF,
             json={"llm_model": "gpt-4o-mini"},
-            headers=auth_headers(["dg"]),
+            headers=auth_headers(),
         )
         assert resp.status_code == 403
     finally:
@@ -277,7 +277,7 @@ async def test_internal_patch_conf_wrong_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
-    """GET /admin/conf with admin group returns 200 with EXACTLY the 23 expected fields.
+    """GET /admin/conf with Admin role returns 200 with EXACTLY the 23 expected fields.
 
     The 23 fields are: 21 config fields (15 DB tunables + 4 stub booleans +
     llm_api_key masked indicator + auth_datahub_corp_group) + updated_at + resp_time.

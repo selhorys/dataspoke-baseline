@@ -137,7 +137,7 @@ async def test_ontogen_node_review_approve(
 
     try:
         review_resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/node/{node_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": "spot-test approval"},
         )
@@ -164,7 +164,7 @@ async def test_ontogen_edge_review_approve(
 
     try:
         review_resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/edge/{edge_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/edge/{edge_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": "spot-test edge approval"},
         )
@@ -234,7 +234,7 @@ async def test_ontogen_triple_review_dependency_order(
         # Step 1: triple approve must fail because deps are only llm_approved (not human-approved)
         # spec: plan §7 — strict gate: status='approved' only passes; llm_approved blocks
         deny_resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": "spot-test triple approval"},
         )
@@ -251,7 +251,7 @@ async def test_ontogen_triple_review_dependency_order(
         # After human approval, status transitions llm_approved → approved (human sets it).
         for nid in (subj_id, obj_id):
             r = await api_client.post(
-                f"/api/v1/spoke/common/ontogen/result/node/{nid}/method/review",
+                f"/api/v1/spoke/ontogen/result/node/{nid}/method/review",
                 headers=admin_headers,
                 json={"verdict": "approve", "reason": "spot-test"},
             )
@@ -260,7 +260,7 @@ async def test_ontogen_triple_review_dependency_order(
                 f"Node {nid!r} must be 'approved' after human review; got {r.json()['status']!r}"
             )
         r = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/edge/{edge_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/edge/{edge_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": "spot-test"},
         )
@@ -270,7 +270,7 @@ async def test_ontogen_triple_review_dependency_order(
         # Step 3: triple approve now succeeds because all deps are human-approved
         # spec: plan §7 — gate passes when status='approved' for all deps
         ok_resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": "spot-test triple approval"},
         )
@@ -309,7 +309,7 @@ async def test_ontogen_node_review_reject(
 
     try:
         review_resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/node/{node_id}/method/review",
             headers=admin_headers,
             json={"verdict": "reject", "reason": "spot-test rejection"},
         )
@@ -342,7 +342,7 @@ async def test_ontogen_edge_review_reject(
 
     try:
         review_resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/edge/{edge_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/edge/{edge_id}/method/review",
             headers=admin_headers,
             json={"verdict": "reject", "reason": "spot-test edge rejection"},
         )
@@ -371,7 +371,7 @@ async def test_ontogen_node_detail_carries_evidence(
     LLM-generated and varies.
     spec: spec/feature/BACKEND_SCHEMA.md §ontogen_nodes — confidence_score FLOAT NOT NULL,
     evidence JSONB.
-    Route: src/api/routers/spoke/common/ontogen.py:373-384
+    Route: src/api/routers/spoke/ontogen.py:373-384
       GET /result/node/{node_id}/attr → NodeAttrResponse {node_id, confidence_score, evidence}
     """
     from src.shared.db.models import OntogenNode
@@ -398,7 +398,7 @@ async def test_ontogen_node_detail_carries_evidence(
 
     try:
         get_resp = await api_client.get(
-            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/attr",
+            f"/api/v1/spoke/ontogen/result/node/{node_id}/attr",
             headers=admin_headers,
         )
         assert get_resp.status_code == 200, get_resp.text
@@ -481,7 +481,7 @@ async def test_ontogen_node_detail_round_trips_evidence_debate(
         # ── GET /result/node/{node_id}/attr ────────────────────────────────────
         # spec: BACKEND_LLM.md §Evidence shape — evidence round-trips through JSONB
         get_resp = await api_client.get(
-            f"/api/v1/spoke/common/ontogen/result/node/{node_id}/attr",
+            f"/api/v1/spoke/ontogen/result/node/{node_id}/attr",
             headers=admin_headers,
         )
         assert get_resp.status_code == 200, get_resp.text
@@ -621,7 +621,7 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
     try:
         # POST triple review approve — must be blocked because deps are not human-approved
         resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": f"regression: dep-gate blocks {dep_status} deps"},
         )
@@ -704,7 +704,7 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
     try:
         # POST triple review approve — must succeed because all deps are human-approved
         resp = await api_client.post(
-            f"/api/v1/spoke/common/ontogen/result/triple/{triple_id}/method/review",
+            f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
             json={"verdict": "approve", "reason": "regression: dep-gate passes human-approved deps"},
         )

@@ -3,7 +3,7 @@
 Orchestration is handled by the Airflow DAG definitions in:
   - dags/ontogen_hourly.py / ontogen_daily.py / ontogen_weekly.py (tier)
 
-Manual API runs go through `POST /spoke/common/ontogen/method/run`, which calls
+Manual API runs go through `POST /spoke/ontogen/method/run`, which calls
 OntogenService.run() synchronously in-process. Business logic lives in
 src/backend/ontogen/service.py.
 Activity endpoint: POST /internal/activities/ontogen/run

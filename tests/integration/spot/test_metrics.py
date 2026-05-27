@@ -1,9 +1,9 @@
 """Spot tests for Governance Metrics endpoints.
 
 Concerns covered (each test targets one spec contract):
-- GET /spoke/dg/metric — factory-seeded entries present after reset
+- GET /spoke/governance/metric — factory-seeded entries present after reset
 - factory defaults have time_window_sec=172800 for windowed types
-- POST /spoke/dg/metric → 201 (create), 409 METRIC_EXISTS (duplicate), 422 (bad metric_id)
+- POST /spoke/governance/metric → 201 (create), 409 METRIC_EXISTS (duplicate), 422 (bad metric_id)
 - PUT .../attr/conf → 200 replace existing, 404 METRIC_NOT_FOUND when absent
 - POST create + PUT replace full flow (create → duplicate → replace → absent 404)
 - PATCH/GET/DELETE round-trip on a custom metric
@@ -36,7 +36,7 @@ and clean up in `finally` blocks.
 
 Spec:
 - spec/USE_CASE_en.md §UC5 — Factory defaults, Built-in active metric types, API Mapping
-- spec/API.md §Metric (/spoke/dg/metric) — field rules, payload caps, error codes, create/replace
+- spec/API.md §Metric (/spoke/governance/metric) — field rules, payload caps, error codes, create/replace
 - spec/feature/BACKEND.md §Metrics Service §Breakdown format, §Create vs replace, §Time windows
 """
 
@@ -95,7 +95,7 @@ async def test_factory_defaults_present_after_reset(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/dg/metric returns the three factory-seeded entries.
+    """GET /spoke/governance/metric returns the three factory-seeded entries.
 
     Each must have is_enabled=False, mode='active', schedule_tier='daily'.
 
@@ -103,7 +103,7 @@ async def test_factory_defaults_present_after_reset(
           mode='active', schedule_tier='daily'.
     """
     resp = await api_client.get(
-        "/api/v1/spoke/dg/metric?limit=100",
+        "/api/v1/spoke/governance/metric?limit=100",
         headers=admin_headers,
     )
     assert resp.status_code == 200
@@ -148,7 +148,7 @@ async def test_factory_defaults_time_window_sec_is_172800(
     """
     for metric_id in ("ingestion-freshness", "validation-score"):
         resp = await api_client.get(
-            f"/api/v1/spoke/dg/metric/{metric_id}/attr/conf",
+            f"/api/v1/spoke/governance/metric/{metric_id}/attr/conf",
             headers=admin_headers,
         )
         assert resp.status_code == 200, (
@@ -173,13 +173,13 @@ async def test_create_replace_flow(
 ) -> None:
     """POST create (201) → POST same id (409 METRIC_EXISTS) → PUT replace existing (200) → PUT absent id (404) → bad metric_id (422).
 
-    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/dg/metric creates;
+    Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric creates;
           PUT .../attr/conf replaces an existing definition and returns 404 when absent.
     Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace.
     """
     _METRIC_ID = "spot-create-replace-flow"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    create_url = "/api/v1/spoke/dg/metric"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    create_url = "/api/v1/spoke/governance/metric"
 
     _CREATE_BODY = {
         "metric_id": _METRIC_ID,
@@ -205,7 +205,7 @@ async def test_create_replace_flow(
             json=_CREATE_BODY,
         )
         assert create_resp.status_code == 201, (
-            f"POST /spoke/dg/metric must return 201 on create; got {create_resp.status_code}: {create_resp.text}. "
+            f"POST /spoke/governance/metric must return 201 on create; got {create_resp.status_code}: {create_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
         )
         assert create_resp.json()["id"] == _METRIC_ID
@@ -306,8 +306,8 @@ async def test_post_get_patch_delete_round_trip(
     Spec: spec/API.md §Metric — POST creates, PATCH updates fields, DELETE returns 204.
     """
     _METRIC_ID = "doc-health-custom"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    create_url = "/api/v1/spoke/dg/metric"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    create_url = "/api/v1/spoke/governance/metric"
 
     # Ensure clean state
     await api_client.delete(base_conf, headers=admin_headers)
@@ -375,14 +375,14 @@ async def test_post_passive_mode_returns_501(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /spoke/dg/metric with mode='passive' → 501 NOT_IMPLEMENTED.
+    """POST /spoke/governance/metric with mode='passive' → 501 NOT_IMPLEMENTED.
 
     Spec: spec/USE_CASE_en.md §UC5 §Modes — passive is reserved;
           POST with mode:'passive' returns 501 NOT_IMPLEMENTED.
     Spec: spec/API.md §Metric.
     """
     resp = await api_client.post(
-        "/api/v1/spoke/dg/metric",
+        "/api/v1/spoke/governance/metric",
         headers=admin_headers,
         json={
             "metric_id": "spot-passive-test-post",
@@ -419,7 +419,7 @@ async def test_put_passive_mode_returns_501(
     Spec: spec/USE_CASE_en.md §UC5 §Modes.
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/passive-test/attr/conf",
+        "/api/v1/spoke/governance/metric/passive-test/attr/conf",
         headers=admin_headers,
         json={
             "mode": "passive",
@@ -454,7 +454,7 @@ async def test_unknown_metric_type_returns_422(
     Spec: spec/API.md §Metric — unsupported values return 422 INVALID_PARAMETER.
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/bogus-type-test/attr/conf",
+        "/api/v1/spoke/governance/metric/bogus-type-test/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -484,7 +484,7 @@ async def test_metric_conf_missing_time_window_returns_422(
     Spec: spec/API.md §Metric — ingestion-freshness requires time_window_sec (positive int).
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/spot-missing-tw/attr/conf",
+        "/api/v1/spoke/governance/metric/spot-missing-tw/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -514,7 +514,7 @@ async def test_metric_conf_negative_time_window_returns_422(
     Spec: spec/API.md §Metric — time_window_sec must be positive int.
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/spot-neg-tw/attr/conf",
+        "/api/v1/spoke/governance/metric/spot-neg-tw/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -544,7 +544,7 @@ async def test_doc_health_nonempty_metric_conf_returns_422(
     Spec: spec/API.md §Metric — doc-health takes metric_conf={}.
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/spot-dochealth-conf/attr/conf",
+        "/api/v1/spoke/governance/metric/spot-dochealth-conf/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -574,7 +574,7 @@ async def test_metrics_list_unknown_key_returns_422(
     Spec: spec/API.md §Metric — unknown metrics[] keys return 422 INVALID_PARAMETER.
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/spot-unknown-key/attr/conf",
+        "/api/v1/spoke/governance/metric/spot-unknown-key/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -611,7 +611,7 @@ async def test_dataset_filter_cap_returns_422(
         for i in range(1001)
     ]
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/spot-cap-over/attr/conf",
+        "/api/v1/spoke/governance/metric/spot-cap-over/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -645,12 +645,12 @@ async def test_dataset_filter_at_cap_accepted(
         f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
         for i in range(1000)
     ]
-    base = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
+    base = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
     # Ensure clean state
     await api_client.delete(base, headers=admin_headers)
     try:
         resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -685,7 +685,7 @@ async def test_invalid_dataset_urn_format_returns_422_with_specific_code(
           (422 INVALID_DATASET_URN).
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/spot-bad-urn/attr/conf",
+        "/api/v1/spoke/governance/metric/spot-bad-urn/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -721,7 +721,7 @@ async def test_invalid_metric_id_path_param_returns_422(
           ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$.
     """
     resp = await api_client.put(
-        "/api/v1/spoke/dg/metric/UPPER!/attr/conf",
+        "/api/v1/spoke/governance/metric/UPPER!/attr/conf",
         headers=admin_headers,
         json={
             "mode": "active",
@@ -756,10 +756,10 @@ async def test_dry_run_does_not_persist_result_or_event(
     Spec: spec/USE_CASE_en.md §UC5 §API Mapping — dry_run: true evaluates without persisting.
     Spec: spec/API.md §Metric — POST method/run dry_run.
     """
-    base_conf = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/conf"
-    base_run = "/api/v1/spoke/dg/metric/ingestion-freshness/method/run"
-    base_results = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/result"
-    base_events = "/api/v1/spoke/dg/metric/ingestion-freshness/event"
+    base_conf = "/api/v1/spoke/governance/metric/ingestion-freshness/attr/conf"
+    base_run = "/api/v1/spoke/governance/metric/ingestion-freshness/method/run"
+    base_results = "/api/v1/spoke/governance/metric/ingestion-freshness/attr/result"
+    base_events = "/api/v1/spoke/governance/metric/ingestion-freshness/event"
 
     # Enable the seeded metric and scope to bounded URN
     patch_resp = await api_client.patch(
@@ -841,9 +841,9 @@ async def test_metric_run_persists_values_dict(
           emits {total, ingested_in_time}.
     Spec: spec/API.md §Metric — attr/result carries values: dict[str,float].
     """
-    base_conf = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/conf"
-    base_run = "/api/v1/spoke/dg/metric/ingestion-freshness/method/run"
-    base_results = "/api/v1/spoke/dg/metric/ingestion-freshness/attr/result"
+    base_conf = "/api/v1/spoke/governance/metric/ingestion-freshness/attr/conf"
+    base_run = "/api/v1/spoke/governance/metric/ingestion-freshness/method/run"
+    base_results = "/api/v1/spoke/governance/metric/ingestion-freshness/attr/result"
 
     # Enable metric, scope to bounded URN
     patch_resp = await api_client.patch(
@@ -914,13 +914,13 @@ async def test_metric_run_concurrent_returns_409(
     Spec: spec/API.md §Metric — POST method/run concurrent runs return 409 METRIC_RUNNING.
     """
     _CONCURRENT_ID = "spot-test-concurrent"
-    base_conf = f"/api/v1/spoke/dg/metric/{_CONCURRENT_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_CONCURRENT_ID}/method/run"
+    base_conf = f"/api/v1/spoke/governance/metric/{_CONCURRENT_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_CONCURRENT_ID}/method/run"
 
     await api_client.delete(base_conf, headers=admin_headers)
 
     create_resp = await api_client.post(
-        "/api/v1/spoke/dg/metric",
+        "/api/v1/spoke/governance/metric",
         headers=admin_headers,
         json={
             "metric_id": _CONCURRENT_ID,
@@ -988,9 +988,9 @@ async def test_breakdown_datasets_has_no_category_field(
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
           datasets[] carries only failed entries: {urn, detail?}. No 'category' field.
     """
-    base_conf = "/api/v1/spoke/dg/metric/doc-health/attr/conf"
-    base_run = "/api/v1/spoke/dg/metric/doc-health/method/run"
-    base_results = "/api/v1/spoke/dg/metric/doc-health/attr/result"
+    base_conf = "/api/v1/spoke/governance/metric/doc-health/attr/conf"
+    base_run = "/api/v1/spoke/governance/metric/doc-health/method/run"
+    base_results = "/api/v1/spoke/governance/metric/doc-health/attr/result"
 
     # Enable doc-health, scope to bounded URN
     patch_resp = await api_client.patch(
@@ -1066,9 +1066,9 @@ async def test_metric_run_unresolved_urns_in_event(
     # Use a fresh custom metric to avoid mutating the factory-seeded ingestion-freshness
     # without a guaranteed-restore guard.  Pattern mirrors test_dataset_filter_at_cap_accepted.
     _METRIC_ID = "unresolved-urns-spot-test"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_events = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/event"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_events = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/event"
 
     # Ensure clean state before creating
     await api_client.delete(base_conf, headers=admin_headers)
@@ -1076,7 +1076,7 @@ async def test_metric_run_unresolved_urns_in_event(
     try:
         # POST a fresh metric scoped to a ghost URN only — fast and deterministic.
         put_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1178,7 +1178,7 @@ async def test_metric_id_path_regex_acceptance_and_rejection(
     valid_ids = ["a", "doc-health-dev", "ingestion-freshness"]
     for mid in valid_ids:
         resp = await api_client.get(
-            f"/api/v1/spoke/dg/metric/{mid}/attr/conf",
+            f"/api/v1/spoke/governance/metric/{mid}/attr/conf",
             headers=admin_headers,
         )
         assert resp.status_code != 422, (
@@ -1190,7 +1190,7 @@ async def test_metric_id_path_regex_acceptance_and_rejection(
     invalid_ids = ["UPPER", "with_underscore", "-leading", "trailing-"]
     for mid in invalid_ids:
         resp = await api_client.get(
-            f"/api/v1/spoke/dg/metric/{mid}/attr/conf",
+            f"/api/v1/spoke/governance/metric/{mid}/attr/conf",
             headers=admin_headers,
         )
         assert resp.status_code == 422, (
@@ -1230,9 +1230,9 @@ async def test_ingestion_freshness_active_custom_daily_window(
           carries time_window_sec and window_source.
     """
     _METRIC_ID = "spot-freshness-daily-window"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/result"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     urn_fresh = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
     urn_stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
@@ -1256,6 +1256,15 @@ async def test_ingestion_freshness_active_custom_daily_window(
                 True,
             )
 
+        # Clear any pre-existing INGESTION.COMPLETE events for these URNs (seed
+        # ingestion or prior tests may have produced events whose MAX(occurred_at)
+        # would otherwise mask the controlled timestamps inserted below).
+        for urn in (urn_fresh, urn_stale):
+            await conn.execute(
+                "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
+                urn,
+            )
+
         # Insert INGESTION.COMPLETE events with controlled timestamps
         await conn.execute(
             "INSERT INTO dataspoke.events "
@@ -1276,7 +1285,7 @@ async def test_ingestion_freshness_active_custom_daily_window(
 
         # Create and enable the metric scoped to these two datasets
         create_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1374,9 +1383,9 @@ async def test_ingestion_freshness_passive_window(
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='passive'.
     """
     _METRIC_ID = "spot-freshness-passive-window"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/result"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     # Use catalog schema URNs — only catalog.* is seeded into DataHub by this module's
     # DUMMY_DATA_DATAHUB_SCHEMAS constant. Non-catalog URNs are unresolved → total=0 → vacuous pass.
@@ -1400,6 +1409,15 @@ async def test_ingestion_freshness_passive_window(
                 True,
             )
 
+        # Clear any pre-existing INGESTION.COMPLETE events for these URNs (seed
+        # ingestion or prior tests may have produced events whose MAX(occurred_at)
+        # would otherwise mask the controlled timestamps inserted below).
+        for urn in (urn_fresh, urn_stale):
+            await conn.execute(
+                "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
+                urn,
+            )
+
         await conn.execute(
             "INSERT INTO dataspoke.events "
             "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
@@ -1418,7 +1436,7 @@ async def test_ingestion_freshness_passive_window(
         )
 
         create_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1496,9 +1514,9 @@ async def test_ingestion_freshness_no_config_fallback(
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='default'.
     """
     _METRIC_ID = "spot-freshness-fallback-window"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/result"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     # Use a catalog URN — only catalog.* is seeded into DataHub by this module's
     # DUMMY_DATA_DATAHUB_SCHEMAS constant. No-config condition is enforced by deleting any
@@ -1530,7 +1548,7 @@ async def test_ingestion_freshness_no_config_fallback(
 
         # Create with small fallback window (3600s) → 50000s outside → stale
         create_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1612,9 +1630,9 @@ async def test_validation_score_intervals_window(
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='intervals'.
     """
     _METRIC_ID = "spot-validation-intervals"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/result"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     urn_fresh = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
     # urn_stale: same 24h spacing but latest row is 200h ago — outside 172800s (48h) window.
@@ -1658,7 +1676,7 @@ async def test_validation_score_intervals_window(
             )
 
         create_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1746,9 +1764,9 @@ async def test_validation_score_sparse_fallback_window(
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='default'.
     """
     _METRIC_ID = "spot-validation-sparse"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/result"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     # Use a catalog URN — only catalog.* is seeded into DataHub by this module's
     # DUMMY_DATA_DATAHUB_SCHEMAS constant. Non-catalog URNs are unresolved → total=0 → vacuous pass.
@@ -1777,7 +1795,7 @@ async def test_validation_score_sparse_fallback_window(
             )
 
         create_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1862,9 +1880,9 @@ async def test_metric_values_filtered_to_declared_subset(
           before persisting.
     """
     _METRIC_ID = "spot-subset-filter-check"
-    base_conf = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/dg/metric/{_METRIC_ID}/attr/result"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     # catalog.title_master is registered in DataHub by this module's
     # DUMMY_DATA_DATAHUB_SCHEMAS={"catalog"} constant — guaranteed resolvable.
@@ -1876,7 +1894,7 @@ async def test_metric_values_filtered_to_declared_subset(
     try:
         # Create: ingestion-freshness with metrics=['total'] ONLY — omitting 'ingested_in_time'
         create_resp = await api_client.post(
-            "/api/v1/spoke/dg/metric",
+            "/api/v1/spoke/governance/metric",
             headers=admin_headers,
             json={
                 "metric_id": _METRIC_ID,
@@ -1892,7 +1910,7 @@ async def test_metric_values_filtered_to_declared_subset(
             },
         )
         assert create_resp.status_code == 201, (
-            f"POST /spoke/dg/metric must return 201 on create; got {create_resp.status_code}: {create_resp.text}. "
+            f"POST /spoke/governance/metric must return 201 on create; got {create_resp.status_code}: {create_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
         )
         assert create_resp.json()["metrics"] == ["total"], (

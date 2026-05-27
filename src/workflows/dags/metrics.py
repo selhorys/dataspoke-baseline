@@ -1,7 +1,7 @@
 """Airflow DAG: metrics
 
 On-demand metric measurement run for a single metric definition.
-Triggered via POST /api/v1/spoke/dg/metrics/{metric_id}/method/metrics/run.
+Triggered via POST /api/v1/spoke/governance/metric/{metric_id}/method/run.
 
 Concurrency guard: the triggering API route calls
 AirflowClient.check_no_duplicate("metrics", "conf_key", "metrics-{metric_id}")

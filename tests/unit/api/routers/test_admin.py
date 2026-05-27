@@ -1,11 +1,11 @@
 """Unit tests for admin router endpoints.
 
 Routes under test:
-  POST /api/v1/admin/dags/verify       — requires 'admin' group JWT
+  POST /api/v1/admin/dags/verify       — requires Admin role
   POST /internal/admin/dags/verify     — requires X-Internal-Token header
   POST /internal/admin/datahub/sync    — requires X-Internal-Token header
 
-spec: API.md §Admin routes — admin group required for /admin/…
+spec: API.md §Access Control — Admin role required for /admin/*
 spec: API.md §Internal routes — X-Internal-Token required for /internal/…
 spec: feature/BACKEND.md §DAG Catalogue — verify returns found/missing/total_expected.
 """
@@ -53,7 +53,7 @@ async def test_verify_dags_non_admin_role_returns_403(client) -> None:
     reader_ctx = AuthContext(user=reader_user, effective_role="Reader")
     app.dependency_overrides[require_authenticated] = lambda: reader_ctx
     try:
-        resp = await client.post(_ADMIN_VERIFY, headers=auth_headers(["de"]))
+        resp = await client.post(_ADMIN_VERIFY, headers=auth_headers())
         assert resp.status_code == 403
     finally:
         app.dependency_overrides.pop(require_authenticated, None)

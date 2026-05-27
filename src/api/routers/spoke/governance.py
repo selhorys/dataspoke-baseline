@@ -1,8 +1,8 @@
-"""Governance metrics router — /spoke/dg/metric/...
+"""Governance metrics router — /spoke/governance/metric/...
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Auth: require_authenticated (router-level); require_writer on write endpoints.
-Spec: API.md §Metric (/spoke/dg/metric).
+Auth: authenticated; writes require Editor or Admin (require_writer).
+Spec: API.md §Metric (/spoke/governance/metric).
 """
 
 from datetime import datetime
@@ -38,7 +38,7 @@ MetricIdParam = Annotated[str, Path(pattern=_METRIC_ID_PATTERN)]
 
 router = APIRouter(
     prefix="/metric",
-    tags=["dg/metric"],
+    tags=["governance/metric"],
     dependencies=[Depends(require_authenticated)],
 )
 
@@ -158,7 +158,8 @@ async def put_metric_conf(
 ) -> MetricDefinitionResponse:
     """Replace an existing metric definition.
 
-    Returns 404 METRIC_NOT_FOUND when the id is absent (use POST /spoke/dg/metric to create).
+    Returns 404 METRIC_NOT_FOUND when the id is absent (use POST /spoke/governance/metric
+    to create).
     Returns 501 NOT_IMPLEMENTED when mode is 'passive'.
     """
     if body.mode == "passive":

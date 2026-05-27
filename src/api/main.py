@@ -20,22 +20,12 @@ from src.api.routers import auth as auth_router
 from src.api.routers import health
 from src.api.routers import hub as hub_router
 from src.api.routers.internal import activities as internal_activities
-from src.api.routers.spoke.common import (
-    data as common_data,
-)
-from src.api.routers.spoke.common import (
-    ingestion as common_ingestion,
-)
-from src.api.routers.spoke.common import (
-    metagen as common_metagen,
-)
-from src.api.routers.spoke.common import (
-    ontogen as common_ontogen,
-)
-from src.api.routers.spoke.common import (
-    validation as common_validation,
-)
-from src.api.routers.spoke.dg import metrics as dg_metrics
+from src.api.routers.spoke import governance as spoke_governance
+from src.api.routers.spoke import ingestion as spoke_ingestion
+from src.api.routers.spoke import metagen as spoke_metagen
+from src.api.routers.spoke import ontogen as spoke_ontogen
+from src.api.routers.spoke import validation as spoke_validation
+from src.api.routers.spoke.common import data as common_data
 from src.shared.exceptions import (
     AuthenticationError,
     BadRequestError,
@@ -58,8 +48,8 @@ logger = logging.getLogger(__name__)
 _TRACE_HEADER = "X-Trace-Id"
 
 API_PREFIX = "/api/v1"
-SPOKE_COMMON = f"{API_PREFIX}/spoke/common"
-SPOKE_DG = f"{API_PREFIX}/spoke/dg"
+SPOKE = f"{API_PREFIX}/spoke"
+SPOKE_COMMON = f"{SPOKE}/common"
 HUB = f"{API_PREFIX}/hub"
 
 
@@ -245,10 +235,11 @@ async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JS
 def create_app() -> FastAPI:
     openapi_tags = [
         {
-            "name": "common/ingestion",
+            "name": "ingestion",
             "description": (
-                "Ingestion config CRUD and run operations. Requires common auth "
-                "(de/da/dg/admin groups). See spec/feature/BACKEND.md §Ingestion Service "
+                "Ingestion config CRUD and run operations. "
+                "Authenticated; writes require Editor or Admin. "
+                "See spec/feature/BACKEND.md §Ingestion Service "
                 "for the active/passive split, extractor model, and aspect emission details."
             ),
             "externalDocs": {
@@ -257,13 +248,13 @@ def create_app() -> FastAPI:
             },
         },
         {
-            "name": "common/validation",
+            "name": "validation",
             "description": (
                 "Passive validation result store. DataSpoke runs no rule logic — "
                 "external pipelines compute results and POST them, and DataSpoke "
                 "stores the configuration plus the result timeseries and emits the "
                 "matching DataHub assertion aspects on the pipeline's behalf. "
-                "Requires common auth.\n\n"
+                "Authenticated; writes require Editor or Admin.\n\n"
                 "One slot per dataset. Configuration is `description` + declared "
                 "`variables[]` (each name matches `[a-z][a-z0-9_]{0,99}`, 1–200 "
                 "entries). Each `POST .../attr/validation/result` carries "
@@ -280,31 +271,31 @@ def create_app() -> FastAPI:
             },
         },
         {
-            "name": "common/metagen",
+            "name": "metagen",
             "description": (
                 "AI metadata generation config CRUD, run, and result review. "
-                "Requires common auth."
+                "Authenticated; writes require Editor or Admin."
             ),
         },
         {
             "name": "common/data",
             "description": (
                 "Dataset overview with embedded ingestion, validation, and metagen "
-                "sub-resources. Requires common auth."
+                "sub-resources. Authenticated; writes require Editor or Admin."
             ),
         },
         {
-            "name": "common/ontogen",
+            "name": "ontogen",
             "description": (
                 "Ontology generation config, seed management, run, and node/edge/triple "
-                "graph view. Requires common auth."
+                "graph view. Authenticated; writes require Editor or Admin."
             ),
         },
         {
-            "name": "dg/metric",
+            "name": "governance/metric",
             "description": (
                 "Governance metric definitions, measurement results, and scheduling. "
-                "Requires DG auth (dg/admin groups). Built-in metric types: "
+                "Authenticated; writes require Editor or Admin. Built-in metric types: "
                 "ingestion-freshness, validation-score, doc-health. "
                 "See spec/feature/BACKEND.md §Metrics Service for measurer semantics, "
                 "dataset_filter shape, and breakdown format."
@@ -312,7 +303,7 @@ def create_app() -> FastAPI:
         },
         {
             "name": "hub",
-            "description": "Pass-through proxy to DataHub GMS GraphQL. Requires common auth.",
+            "description": "Pass-through proxy to DataHub GMS GraphQL. Authenticated.",
         },
         {
             "name": "auth",
@@ -392,20 +383,18 @@ def create_app() -> FastAPI:
     app.include_router(internal_activities.router, include_in_schema=False)
     app.include_router(admin_router.internal_router, include_in_schema=False)
 
-    # ── Spoke/common routes ────────────────────────────────────────────────────
-    app.include_router(common_ontogen.router, prefix=SPOKE_COMMON)
-    app.include_router(common_data.router, prefix=SPOKE_COMMON)
-    app.include_router(common_ingestion.router, prefix=SPOKE_COMMON)
-    app.include_router(common_validation.router, prefix=SPOKE_COMMON)
-    app.include_router(common_metagen.router, prefix=SPOKE_COMMON)
-
-    # ── Spoke/dg routes ────────────────────────────────────────────────────────
-    app.include_router(dg_metrics.router, prefix=SPOKE_DG)
+    # ── Spoke routes ───────────────────────────────────────────────────────────
+    app.include_router(common_data.router,       prefix=SPOKE_COMMON)
+    app.include_router(spoke_ontogen.router,     prefix=SPOKE)
+    app.include_router(spoke_metagen.router,     prefix=SPOKE)
+    app.include_router(spoke_ingestion.router,   prefix=SPOKE)
+    app.include_router(spoke_validation.router,  prefix=SPOKE)
+    app.include_router(spoke_governance.router,  prefix=f"{SPOKE}/governance")
 
     # ── Hub pass-through routes ────────────────────────────────────────────────
     app.include_router(hub_router.router, prefix=API_PREFIX)
 
-    # ── Admin routes (admin group only) ───────────────────────────────────────
+    # ── Admin routes (Admin role only) ────────────────────────────────────────
     app.include_router(admin_router.router, prefix=API_PREFIX)
 
     return app

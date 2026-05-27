@@ -1,7 +1,9 @@
 """FastAPI dependency family for role-based access control.
 
-All three dependencies read role from the DB on every request — instant
-demotion takes effect immediately without waiting for token rotation.
+Authorization is method × role: Reader callers cannot use write methods
+(POST/PUT/PATCH/DELETE); Admin-only routes require require_admin.
+All dependencies read role from the DB on every request — instant demotion
+takes effect immediately without waiting for token rotation.
 """
 
 from __future__ import annotations
@@ -131,23 +133,3 @@ async def require_admin(
     return ctx
 
 
-def require_tier(tier: str):
-    """Workspace-tier gate (extensibility hook).
-
-    In the baseline deployment the JWT ``groups`` claim is the constant
-    ``["de","da","dg"]`` so every authenticated caller passes every tier.
-    This dependency exists as an affordance for organizations that selectively
-    populate the claim to gate workspace-specific paths.  API-token callers are
-    treated as workspace-universal (tokens are not workspace-scoped).
-
-    Usage::
-
-        router = APIRouter(dependencies=[Depends(require_tier("dg"))])
-    """
-
-    async def _check(ctx: AuthContext = Depends(require_authenticated)) -> AuthContext:
-        # No-op for the baseline — constant groups covers all tiers.
-        # Override this dependency to implement real tier partitioning.
-        return ctx
-
-    return _check

@@ -63,9 +63,9 @@ async def test_metagen_run_disabled_conf_non_dry_run_returns_409_METAGEN_DISABLE
       when conf.is_enabled=false
     spec: BACKEND.md L949 — error-code table: METAGEN_DISABLED -> 409
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
-    event_url = "/api/v1/spoke/common/metagen/event"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
+    run_url = "/api/v1/spoke/metagen/method/run"
+    event_url = "/api/v1/spoke/metagen/event"
 
     try:
         # Ensure conf exists with is_enabled=false
@@ -135,9 +135,9 @@ async def test_metagen_run_dry_run_permitted_when_disabled(
     spec: BACKEND.md §766 — dry-run response counts shape: items_considered,
       candidates_proposed (not candidates_added); dry_run=true in RUN_COMPLETE detail
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
-    event_url = "/api/v1/spoke/common/metagen/event"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
+    run_url = "/api/v1/spoke/metagen/method/run"
+    event_url = "/api/v1/spoke/metagen/event"
 
     try:
         # Conf disabled, dataset_filter scoped to _TEST_URN
@@ -249,8 +249,8 @@ async def test_metagen_run_concurrent_returns_409_METAGEN_RUNNING(
     spec: USE_CASE_en.md §UC4 L659-660 — concurrent run guard
     spec: BACKEND.md L949 — error-code table: METAGEN_RUNNING -> 409
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
+    run_url = "/api/v1/spoke/metagen/method/run"
     admin_conf_url = "/api/v1/admin/conf"
     lock_key = "metagen:running:singleton"
     fake_token = f"spot-test-concurrent-{uuid.uuid4().hex[:8]}"
@@ -320,9 +320,9 @@ async def test_metagen_run_empty_scope_completes_with_zero_items(
     spec: BACKEND.md §UC4 — RUN_COMPLETE emitted even for zero-item runs;
       counts.items_considered == 0
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
-    event_url = "/api/v1/spoke/common/metagen/event"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
+    run_url = "/api/v1/spoke/metagen/method/run"
+    event_url = "/api/v1/spoke/metagen/event"
     boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/conf"
 
     try:
@@ -409,14 +409,14 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
 
     NOTE: The global metagen event endpoint uses 'after' (not 'from'/'to') as
     its time-filter parameter — per route signature at
-    src/api/routers/spoke/common/metagen.py L139.
+    src/api/routers/spoke/metagen.py L139.
 
-    spec: USE_CASE_en.md §UC4 L682 — GET /spoke/common/metagen/event (global event history)
+    spec: USE_CASE_en.md §UC4 L682 — GET /spoke/metagen/event (global event history)
     spec: API.md §Standard Envelope — events, offset, limit, total_count
-    spec: src/api/routers/spoke/common/metagen.py L137-178 — GET /metagen/event
+    spec: src/api/routers/spoke/metagen.py L137-178 — GET /metagen/event
       with optional 'after' query param; EventListResponse envelope
     """
-    event_url = "/api/v1/spoke/common/metagen/event"
+    event_url = "/api/v1/spoke/metagen/event"
 
     # Two timestamps close to now so the after-filter window stays narrow.
     # A wide window (e.g. yesterday) would let dev-env accumulated events from
@@ -492,11 +492,11 @@ async def test_metagen_global_event_list_envelope_filters_by_time(
         filtered_ids = {e["id"] for e in filtered_resp.json().get("events", [])}
         assert newer_event_id in filtered_ids, (
             f"Newer event must appear with after filter; got {filtered_ids!r}. "
-            "spec: src/api/routers/spoke/common/metagen.py L151"
+            "spec: src/api/routers/spoke/metagen.py L151"
         )
         assert older_event_id not in filtered_ids, (
             f"Older event must be excluded by after filter; got {filtered_ids!r}. "
-            "spec: src/api/routers/spoke/common/metagen.py L151"
+            "spec: src/api/routers/spoke/metagen.py L151"
         )
 
     finally:
@@ -647,8 +647,8 @@ async def test_metagen_dry_run_with_origin_filter_does_not_raise(
           cleanly when no datasets match the origin filter.
     spec: USE_CASE_en.md §UC4 §Run semantics — dry_run=true with empty scope completes.
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
+    run_url = "/api/v1/spoke/metagen/method/run"
 
     try:
         put_resp = await api_client.put(

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.dependencies import AuthContext, require_writer
 from src.api.dependencies import get_db, get_metagen_service
-from src.api.routers.spoke.common._metagen_mappers import (
+from src.api.routers.spoke._metagen_mappers import (
     event_list,
     to_item_detail,
     to_item_summary,

@@ -1,18 +1,17 @@
-"""Unit tests for /spoke/common/metagen/* routes (global singleton conf + items + run).
+"""Unit tests for /spoke/metagen/* routes (global singleton conf + items + run).
 
 Routes under test:
-  GET    /spoke/common/metagen/attr/conf
-  PUT    /spoke/common/metagen/attr/conf
-  PATCH  /spoke/common/metagen/attr/conf
-  DELETE /spoke/common/metagen/attr/conf
-  POST   /spoke/common/metagen/method/run
-  GET    /spoke/common/metagen/event
-  GET    /spoke/common/metagen/item
-  GET    /spoke/common/metagen/item/{composite_id}
+  GET    /spoke/metagen/attr/conf
+  PUT    /spoke/metagen/attr/conf
+  PATCH  /spoke/metagen/attr/conf
+  DELETE /spoke/metagen/attr/conf
+  POST   /spoke/metagen/method/run
+  GET    /spoke/metagen/event
+  GET    /spoke/metagen/item
+  GET    /spoke/metagen/item/{composite_id}
 
 Spec traceability:
-  spec/API.md §Common (/spoke/common) §Metadata Generation
-  spec/API.md §Authentication & Authorization §Group-to-Route Access Control
+  spec/API.md §Metadata Generation (/spoke/metagen)
   spec/feature/BACKEND.md §Metadata Generation Service
 """
 
@@ -30,8 +29,7 @@ from src.shared.exceptions import ConflictError, EntityNotFoundError
 
 from tests.unit.api.conftest import auth_headers
 
-_BASE = "/api/v1/spoke/common/metagen"
-_VALID_GROUPS = ("de", "da", "dg", "admin")
+_BASE = "/api/v1/spoke/metagen"
 
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 
@@ -132,38 +130,20 @@ async def test_post_run_without_token_returns_401(client) -> None:
     assert resp.status_code == 401
 
 
-# ── Auth — valid group tokens ─────────────────────────────────────────────────
+# ── Auth — authenticated access ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("group", list(_VALID_GROUPS))
-async def test_get_conf_with_valid_group_returns_200(
-    client, mock_svc: AsyncMock, group: str
-) -> None:
-    """GET /metagen/attr/conf with any valid group token returns 200.
-
-    Spec: API.md §Group-to-Route Access Control — /spoke/common/… accepts de/da/dg/admin.
-    """
-    mock_svc.get_global_conf = AsyncMock(return_value=_make_conf_dto())
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers([group]))
-    assert resp.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_get_conf_without_token_returns_401_not_403(
+async def test_get_conf_with_valid_token_returns_200(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /metagen/attr/conf without any token returns 401 (not 403).
+    """GET /metagen/attr/conf with a valid token returns 200.
 
-    The old group-based access check is replaced by role-based auth. Any
-    authenticated user may GET /spoke/common/* routes; unauthenticated
-    requests get 401.
-
-    Spec: API.md §Authentication — /spoke/common/* requires a valid token.
+    Spec: API.md §Authentication — /spoke/metagen routes require a valid JWT.
     """
     mock_svc.get_global_conf = AsyncMock(return_value=_make_conf_dto())
-    resp = await client.get(f"{_BASE}/attr/conf")  # no auth header
-    assert resp.status_code == 401
+    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers())
+    assert resp.status_code == 200
 
 
 # ── GET /attr/conf ────────────────────────────────────────────────────────────
@@ -177,7 +157,7 @@ async def test_get_conf_returns_200_with_conf_body(client, mock_svc: AsyncMock) 
     """
     mock_svc.get_global_conf = AsyncMock(return_value=_make_conf_dto(is_enabled=True))
 
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers())
 
     assert resp.status_code == 200
     body = resp.json()
@@ -193,7 +173,7 @@ async def test_get_conf_returns_null_when_absent(client, mock_svc: AsyncMock) ->
     """
     mock_svc.get_global_conf = AsyncMock(return_value=None)
 
-    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/attr/conf", headers=auth_headers())
 
     assert resp.status_code == 200
     assert resp.json() is None
@@ -213,7 +193,7 @@ async def test_put_conf_returns_200_with_conf_body(client, mock_svc: AsyncMock) 
     resp = await client.put(
         f"{_BASE}/attr/conf",
         json={"is_enabled": True, "result_limit": 5},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -231,7 +211,7 @@ async def test_put_conf_with_invalid_result_limit_returns_422(client, mock_svc: 
     resp = await client.put(
         f"{_BASE}/attr/conf",
         json={"is_enabled": False, "result_limit": 0},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
 
@@ -248,7 +228,7 @@ async def test_put_conf_with_too_many_dataset_filter_urns_returns_422(
     resp = await client.put(
         f"{_BASE}/attr/conf",
         json={"is_enabled": False, "dataset_filter": {"dataset_urns": too_many}},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
 
@@ -272,7 +252,7 @@ async def test_put_conf_with_malformed_dataset_urn_returns_422_invalid_dataset_u
     resp = await client.put(
         f"{_BASE}/attr/conf",
         json={"is_enabled": False, "dataset_filter": {"dataset_urns": ["not-a-urn"]}},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422, (
@@ -305,7 +285,7 @@ async def test_patch_conf_with_malformed_dataset_urn_returns_422_invalid_dataset
     resp = await client.patch(
         f"{_BASE}/attr/conf",
         json={"dataset_filter": {"dataset_urns": ["not-a-urn"]}},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 422, (
@@ -333,7 +313,7 @@ async def test_patch_conf_returns_200(client, mock_svc: AsyncMock) -> None:
     resp = await client.patch(
         f"{_BASE}/attr/conf",
         json={"is_enabled": True},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -351,7 +331,7 @@ async def test_delete_conf_returns_204(client, mock_svc: AsyncMock) -> None:
     """
     mock_svc.delete_global_conf = AsyncMock(return_value=None)
 
-    resp = await client.delete(f"{_BASE}/attr/conf", headers=auth_headers(["de"]))
+    resp = await client.delete(f"{_BASE}/attr/conf", headers=auth_headers())
 
     assert resp.status_code == 204
 
@@ -370,7 +350,7 @@ async def test_post_run_returns_200_with_run_response(client, mock_svc: AsyncMoc
     resp = await client.post(
         f"{_BASE}/method/run",
         json={},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -399,7 +379,7 @@ async def test_post_run_returns_200_with_dry_run_true(client, mock_svc: AsyncMoc
     resp = await client.post(
         f"{_BASE}/method/run",
         json={"dry_run": True},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -420,7 +400,7 @@ async def test_post_run_returns_409_when_metagen_running(client, mock_svc: Async
     resp = await client.post(
         f"{_BASE}/method/run",
         json={},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 409
@@ -444,7 +424,7 @@ async def test_post_run_returns_409_when_metagen_disabled(client, mock_svc: Asyn
     resp = await client.post(
         f"{_BASE}/method/run",
         json={},
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 409
@@ -468,7 +448,7 @@ async def test_get_items_returns_200_with_item_list_envelope(
     """
     mock_svc.list_items = AsyncMock(return_value=([_make_item_summary_dto()], 1))
 
-    resp = await client.get(f"{_BASE}/item", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/item", headers=auth_headers())
 
     assert resp.status_code == 200
     body = resp.json()
@@ -488,7 +468,7 @@ async def test_get_items_with_kind_filter(client, mock_svc: AsyncMock) -> None:
 
     resp = await client.get(
         f"{_BASE}/item?kind=dataset.description",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -508,7 +488,7 @@ async def test_get_items_with_invalid_kind_returns_422(client, mock_svc: AsyncMo
     """
     resp = await client.get(
         f"{_BASE}/item?kind=invalid.kind",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422
 
@@ -528,7 +508,7 @@ async def test_get_item_by_composite_id_returns_200(client, mock_svc: AsyncMock)
 
     resp = await client.get(
         f"{_BASE}/item/{composite_id}",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 200
@@ -548,7 +528,7 @@ async def test_get_item_by_composite_id_without_separator_returns_422(
     """
     resp = await client.get(
         f"{_BASE}/item/some-id-without-separator",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     # Router raises PreconditionFailedError → mapped to 422
     assert resp.status_code == 422
@@ -575,7 +555,7 @@ async def test_get_item_by_composite_id_not_found_returns_404(
 
     resp = await client.get(
         f"{_BASE}/item/{composite_id}",
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
 
     assert resp.status_code == 404
@@ -611,7 +591,7 @@ async def test_get_events_returns_200_with_events_envelope(
     app.dependency_overrides[get_db] = lambda: mock_db_session
 
     try:
-        resp = await client.get(f"{_BASE}/event", headers=auth_headers(["de"]))
+        resp = await client.get(f"{_BASE}/event", headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -648,7 +628,7 @@ async def test_put_conf_with_origin_and_tags_returns_200(
             "is_enabled": False,
             "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
         },
-        headers=auth_headers(["de"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 200, (
         f"PUT with origin+tags dataset_filter must return 200; "

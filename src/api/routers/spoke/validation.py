@@ -1,10 +1,11 @@
-"""Cross-dataset validation list view — GET /spoke/common/validation.
+"""Cross-dataset validation list view — GET /spoke/validation.
 
 Per-dataset operations (attr CRUD, result, event) live under the
 canonical /spoke/common/data/{dataset_urn}/... surface.
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Spec: API.md §Validation (/spoke/common/validation).
+Auth: authenticated; writes require Editor or Admin (require_writer).
+Spec: API.md §Validation (/spoke/validation).
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -18,7 +19,7 @@ from src.shared.db.models import ValidationConfig
 
 router = APIRouter(
     prefix="/validation",
-    tags=["common/validation"],
+    tags=["validation"],
     dependencies=[Depends(require_authenticated)],
 )
 

@@ -447,13 +447,13 @@ async def test_uc1_passive_postgres_via_datahub_managed_ingestion(
 
         # ── Step 8: Cross-dataset overview includes passive URN ───────────────
         overview_resp = await api_client.get(
-            "/api/v1/spoke/common/ingestion?limit=100",
+            "/api/v1/spoke/ingestion?limit=100",
             headers=admin_headers,
         )
         assert overview_resp.status_code == 200
         configs_by_urn = {c["dataset_urn"]: c for c in overview_resp.json().get("configs", [])}
         assert _PASSIVE_PG_URN in configs_by_urn, (
-            f"Passive PG URN {_PASSIVE_PG_URN!r} not found in GET /spoke/common/ingestion. "
+            f"Passive PG URN {_PASSIVE_PG_URN!r} not found in GET /spoke/ingestion. "
             "spec: USE_CASE_en.md §UC1 §Cross-dataset overview"
         )
         assert configs_by_urn[_PASSIVE_PG_URN]["mode"] == "passive"

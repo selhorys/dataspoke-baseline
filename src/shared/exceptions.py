@@ -64,7 +64,7 @@ class ConflictError(DataSpokeError):
       INGESTION_RUNNING             — concurrent active ingestion run for the dataset
       GENERATION_RUNNING            — concurrent metadata-generation run for the dataset
       METRIC_RUNNING                — concurrent metric measurement
-      METRIC_EXISTS                 — POST /spoke/dg/metric carries a metric_id that already exists
+      METRIC_EXISTS                 — POST /spoke/governance/metric carries a metric_id that already exists
       ONTOGEN_RUNNING               — ontogen singleton inference already in progress
       METAGEN_RUNNING               — metagen singleton inference already in progress
       INGESTION_DISABLED            — ingestion conf has is_enabled=false; only dry-run permitted

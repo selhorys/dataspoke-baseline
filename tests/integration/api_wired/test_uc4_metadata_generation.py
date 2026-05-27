@@ -97,11 +97,11 @@ async def test_uc4_metadata_generation_under_stub(
     Spec: BACKEND.md §UC4 Metadata Generation — MetagenRunResponse, event catalogue,
       approval pipeline, idempotency (approved items skipped on subsequent runs)
     """
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
     eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/conf"
     oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
-    global_event_url = "/api/v1/spoke/common/metagen/event"
+    run_url = "/api/v1/spoke/metagen/method/run"
+    global_event_url = "/api/v1/spoke/metagen/event"
 
     # Mutable state captured during the try block for use in finally.
     document_urn: str | None = None
@@ -965,11 +965,11 @@ async def test_uc4_metadata_generation_with_real_llm(
     if runtime_conf.get("stub_llm_client"):
         pytest.skip("stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf to run real-LLM tests")
 
-    conf_url = "/api/v1/spoke/common/metagen/attr/conf"
+    conf_url = "/api/v1/spoke/metagen/attr/conf"
     eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/conf"
     oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/conf"
-    run_url = "/api/v1/spoke/common/metagen/method/run"
-    global_event_url = "/api/v1/spoke/common/metagen/event"
+    run_url = "/api/v1/spoke/metagen/method/run"
+    global_event_url = "/api/v1/spoke/metagen/event"
 
     document_urn: str | None = None
     node_ids: list[str] = []

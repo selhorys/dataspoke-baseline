@@ -95,7 +95,7 @@ async def test_get_data_returns_200_with_urn_and_name(client, mock_svc: AsyncMoc
         )
     )
 
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}", headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["urn"] == _VALID_URN
@@ -123,7 +123,7 @@ async def test_get_data_attr_returns_200_with_column_count(client, mock_svc: Asy
         )
     )
 
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/attr", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/attr", headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["urn"] == _VALID_URN
@@ -138,7 +138,7 @@ async def test_get_data_events_returns_200_with_events_key(client, mock_svc: Asy
     """
     mock_svc.get_events = AsyncMock(return_value=([], 0))
 
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/event", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/event", headers=auth_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert "events" in body
@@ -159,7 +159,7 @@ async def test_get_data_unknown_urn_returns_404(client, mock_svc: AsyncMock) -> 
         side_effect=EntityNotFoundError("dataset", _VALID_URN)
     )
 
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}", headers=auth_headers())
     assert resp.status_code == 404
 
 
@@ -173,5 +173,5 @@ async def test_get_data_attr_unknown_urn_returns_404(client, mock_svc: AsyncMock
         side_effect=EntityNotFoundError("dataset", _VALID_URN)
     )
 
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/attr", headers=auth_headers(["de"]))
+    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/attr", headers=auth_headers())
     assert resp.status_code == 404

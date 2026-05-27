@@ -1,4 +1,4 @@
-"""Ontology Generation router — /spoke/common/ontogen/...
+"""Ontology Generation router — /spoke/ontogen/...
 
 Routes:
   conf CRUD           GET/PUT/PATCH/DELETE /ontogen/attr/conf
@@ -11,7 +11,7 @@ Routes:
   triple result set   (same shape; requires dependency check on review)
 
 Handler naming: BACKEND.md §Route Handler Naming Convention.
-Auth: require_common (de/da/dg/admin groups).
+Auth: authenticated; writes require Editor or Admin (require_writer).
 Spec: API.md §Ontology Generation.
 """
 
@@ -46,7 +46,7 @@ from src.backend.ontogen.service import OntogenService
 
 router = APIRouter(
     prefix="/ontogen",
-    tags=["common/ontogen"],
+    tags=["ontogen"],
     dependencies=[Depends(require_authenticated)],
 )
 

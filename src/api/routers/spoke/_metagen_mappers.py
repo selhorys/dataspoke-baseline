@@ -1,6 +1,6 @@
 """Shared mapper helpers for metagen routers.
 
-Used by both src/api/routers/spoke/common/metagen.py (cross-dataset routes)
+Used by both src/api/routers/spoke/metagen.py (cross-dataset routes)
 and src/api/routers/spoke/common/data/metagen.py (per-dataset routes).
 
 DB CHECK constraints ck_metagen_items_kind and ck_metagen_candidates_status
