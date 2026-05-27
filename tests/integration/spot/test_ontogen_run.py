@@ -30,6 +30,7 @@ Spec traceability:
 - spec/DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery filter
 """
 
+import re
 import uuid
 
 import httpx
@@ -39,6 +40,12 @@ import pytest
 # into DataHub before tests that seed NATIVE documents (evidence path tests).
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
+# UUID4 regex: version nibble = 4, variant nibble = 8-b
+# spec: BACKEND_LLM.md §Observability — run_id is uuid4 from service.run()
+_UUID4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 
 
 @pytest.mark.asyncio
@@ -117,6 +124,27 @@ async def test_ontogen_run_dry_run(
         f"Event detail unresolved_urns={new_event['detail'].get('unresolved_urns')!r} must "
         f"match response unresolved_urns={body['unresolved_urns']!r}. "
         "spec: BACKEND.md L661 — event and response must agree on unresolved_urns"
+    )
+    # run_id (uuid4) must be present in detail and match the UUID4 pattern
+    # spec: BACKEND_LLM.md §Observability — run_id generated in service.run(),
+    # threaded through debate, recorded in ONTOGEN_RUN_COMPLETE detail.
+    run_id = new_event["detail"].get("run_id")
+    assert isinstance(run_id, str) and _UUID4_RE.match(run_id), (
+        f"detail['run_id'] must match UUID4 pattern; got {run_id!r}. "
+        "spec: BACKEND_LLM.md §Observability — run_id is uuid4 from service.run()"
+    )
+    # Regression: producer_iterations / producer_errors_dropped must remain in detail
+    # after run_id was added (run_id must not displace prior telemetry fields).
+    # spec: BACKEND_LLM.md §Inference Loop
+    assert "producer_iterations" in new_event["detail"], (
+        f"ONTOGEN.RUN_COMPLETE detail must contain 'producer_iterations'; "
+        f"got keys {list(new_event['detail'].keys())!r}. "
+        "Regression: BACKEND_LLM.md §Inference Loop"
+    )
+    assert "producer_errors_dropped" in new_event["detail"], (
+        f"ONTOGEN.RUN_COMPLETE detail must contain 'producer_errors_dropped'; "
+        f"got keys {list(new_event['detail'].keys())!r}. "
+        "Regression: BACKEND_LLM.md §Inference Loop"
     )
 
 

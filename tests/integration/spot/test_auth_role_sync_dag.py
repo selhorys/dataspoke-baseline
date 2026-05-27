@@ -1,4 +1,4 @@
-"""API-wired integration test: auth-role-sync-daily DAG reconciles DataHub role drift.
+"""Spot integration test: auth-role-sync-daily DAG reconciles DataHub role drift.
 
 Concerns covered:
 - When DataHub-side role is mutated directly (set to Editor while DataSpoke users.role is Admin),

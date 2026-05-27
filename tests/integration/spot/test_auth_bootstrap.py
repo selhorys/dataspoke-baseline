@@ -1,12 +1,15 @@
-"""Spot integration test: /internal/admin/bootstrap idempotency.
+"""Spot integration test: /internal/admin/bootstrap idempotency + DataHub corpuser mirror.
 
 Concerns covered:
 - First call to /internal/admin/bootstrap returns created=True (or is already done — created=False)
 - Second consecutive call returns created=False (idempotency)
 - Bootstrap endpoint requires X-Internal-Token header (401 without it)
+- Bootstrap admin's corpuser exists in DataHub after bootstrap with active=True
 
 spec: plan §Bootstrap — first-admin bootstrap = built-in default dataspoke/dataspoke.
 spec: spec/API.md §Internal — /internal/* routes gated by X-Internal-Token.
+spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence —
+      bootstrap admin is mirrored to DataHub like any registered user.
 """
 
 import httpx
@@ -92,3 +95,40 @@ async def test_bootstrap_admin_can_login(
         f"got {login.status_code}: {login.text}"
     )
     assert "access_token" in login.json()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_admin_corpuser_exists_in_datahub(
+    api_client: httpx.AsyncClient,
+    internal_headers: dict[str, str],
+    datahub_client,
+) -> None:
+    """POST /internal/admin/bootstrap: bootstrap admin's corpuser lands in DataHub with active=True.
+
+    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence —
+          every managed user, including the bootstrap admin, is mirrored into DataHub
+          as a corpuser with the corpUserInfo aspect.
+    spec: plan §Bootstrap — built-in default dataspoke/dataspoke; corpuser URN
+          urn:li:corpuser:dataspoke.
+    """
+    from datahub.metadata.schema_classes import CorpUserInfoClass
+
+    # Ensure bootstrap has run (idempotent — safe whether or not first call)
+    bootstrap_resp = await api_client.post(
+        "/internal/admin/bootstrap",
+        headers=internal_headers,
+        content="{}",
+    )
+    assert bootstrap_resp.status_code == 200, (
+        f"POST /internal/admin/bootstrap must return 200: {bootstrap_resp.text}"
+    )
+
+    corpuser_urn = "urn:li:corpuser:dataspoke"
+    aspect = await datahub_client.get_aspect(corpuser_urn, CorpUserInfoClass)
+    assert aspect is not None, (
+        f"Bootstrap admin corpuser {corpuser_urn} must exist in DataHub after bootstrap "
+        f"per spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence."
+    )
+    assert aspect.active is True, (
+        "Bootstrap admin corpuser must have active=True in corpUserInfo aspect"
+    )

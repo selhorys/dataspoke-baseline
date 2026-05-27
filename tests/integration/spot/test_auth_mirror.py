@@ -1,4 +1,4 @@
-"""API-wired integration test: DataHub mirror on user registration.
+"""Spot integration test: DataHub mirror on user registration.
 
 Concerns covered:
 - POST /auth/register creates urn:li:corpuser:<email> in DataHub with corpUserInfo aspect

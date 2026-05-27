@@ -1,4 +1,4 @@
-"""Api-wired integration tests for the DB-backed runtime configuration feature.
+"""Spot integration tests for the DB-backed runtime configuration feature.
 
 Routes under test:
   GET  /api/v1/admin/conf            — requires 'admin' group JWT

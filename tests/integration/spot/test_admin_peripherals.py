@@ -1,4 +1,4 @@
-"""Api-wired integration tests for the DB-backed peripheral configuration feature.
+"""Spot integration tests for the DB-backed peripheral configuration feature.
 
 Routes under test:
   GET  /api/v1/admin/peripherals               — requires 'admin' group JWT

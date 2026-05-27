@@ -1,4 +1,4 @@
-"""API-wired integration test: role change propagates to DataHub.
+"""Spot integration test: role change propagates to DataHub.
 
 Concerns covered:
 - PATCH /admin/users/{id}/role to Editor propagates to DataHub RoleMembership aspect
