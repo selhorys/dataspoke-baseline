@@ -78,19 +78,13 @@ async def test_role_drift_corrected_by_dag(
     #    This uses the DataHub GraphQL batchAssignRole mutation directly,
     #    bypassing DataSpoke — simulating the drift scenario.
     editor_role_urn = "urn:li:dataHubRole:Editor"
-    drift_mutation = """
-    mutation($input: BatchAssignRoleInput!) {
-      batchAssignRole(input: $input)
-    }
-    """
+    drift_mutation = (
+        "mutation($r: String!, $u: [String!]!) "
+        "{ batchAssignRole(input: {roleUrn: $r, actors: $u}) }"
+    )
     drift_result = await datahub_client.execute_graphql(
         drift_mutation,
-        {
-            "input": {
-                "roleUrn": editor_role_urn,
-                "actors": [{"resourceUrn": corpuser_urn}],
-            }
-        },
+        {"r": editor_role_urn, "u": [corpuser_urn]},
     )
     # Mutation may return True or a truthy value on success
     assert drift_result is not None, "batchAssignRole mutation to create drift must succeed"
@@ -105,18 +99,25 @@ async def test_role_drift_corrected_by_dag(
       }
     }
     """
-    check_result = await datahub_client.execute_graphql(check_query, {"u": corpuser_urn})
-    corp_user = (check_result or {}).get("corpUser") or {}
-    relationships = (corp_user.get("relationships") or {}).get("relationships") or []
-    role_names_before = [
-        (rel.get("entity") or {}).get("name", "")
-        for rel in relationships
-    ]
+    # Poll DataHub's relationship index until the Editor assignment propagates.
+    # batchAssignRole writes synchronously but the IsMemberOfRole relationship
+    # index updates asynchronously through MCL → ES indexing.
+    import asyncio as _asyncio
+
+    role_names_before: list[str] = []
+    for _ in range(30):
+        check_result = await datahub_client.execute_graphql(check_query, {"u": corpuser_urn})
+        corp_user = (check_result or {}).get("corpUser") or {}
+        relationships = (corp_user.get("relationships") or {}).get("relationships") or []
+        role_names_before = [(rel.get("entity") or {}).get("name", "") for rel in relationships]
+        if "Editor" in role_names_before and "Admin" not in role_names_before:
+            break
+        await _asyncio.sleep(2)
     # DataHub should reflect Editor (the drift we introduced); Admin must no longer be assigned.
     # Verify drift is established before triggering the DAG so a false-passing test cannot occur.
     assert "Editor" in role_names_before and "Admin" not in role_names_before, (
-        f"Drift not established: DataHub should show Editor and NOT Admin after direct mutation. "
-        f"Found roles: {role_names_before}"
+        f"Drift not established after 60s poll: DataHub should show Editor and NOT Admin "
+        f"after direct mutation. Found roles: {role_names_before}"
     )
 
     # 4. Unpause DAG, kill any existing active runs, then trigger manually.
@@ -147,14 +148,17 @@ async def test_role_drift_corrected_by_dag(
     )
     assert dag_run is not None, "auth-role-sync-daily DAG run must complete"
 
-    # 5. Verify DataHub role is back to Admin (DataSpoke won)
-    after_result = await datahub_client.execute_graphql(check_query, {"u": corpuser_urn})
-    corp_user_after = (after_result or {}).get("corpUser") or {}
-    rel_after = (corp_user_after.get("relationships") or {}).get("relationships") or []
-    role_names_after = [
-        (rel.get("entity") or {}).get("name", "")
-        for rel in rel_after
-    ]
+    # 5. Verify DataHub role is back to Admin (DataSpoke won).
+    # Poll the relationship index until propagation completes (same lag as drift check).
+    role_names_after: list[str] = []
+    for _ in range(30):
+        after_result = await datahub_client.execute_graphql(check_query, {"u": corpuser_urn})
+        corp_user_after = (after_result or {}).get("corpUser") or {}
+        rel_after = (corp_user_after.get("relationships") or {}).get("relationships") or []
+        role_names_after = [(rel.get("entity") or {}).get("name", "") for rel in rel_after]
+        if "Admin" in role_names_after and "Editor" not in role_names_after:
+            break
+        await _asyncio.sleep(2)
     assert "Admin" in role_names_after, (
         f"DataHub must show Admin after auth-role-sync-daily run "
         f"per spec/feature/AUTH.md §Role Drift Reconciliation (DataSpoke wins). "
