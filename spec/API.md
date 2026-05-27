@@ -482,9 +482,10 @@ after JWT validation.
 
 ### Admin (`/admin`)
 
-Operator and system routes accessible to users with the DataHub `Admin` role.
-Admin status is checked per request via a DataHub `IsMemberOfRole` lookup — the
-JWT does not carry an `admin` claim. Internal mirrors of selected routes live
+Operator and system routes accessible to users with the DataSpoke `Admin` role.
+Admin status is checked per request from DataSpoke `users.role` (or
+`min(role_snapshot, users.role)` for API-token callers) — the JWT does not carry
+an `admin` claim. Internal mirrors of selected routes live
 under `/internal/admin/…` for unattended automation (Airflow DAGs, scripts) —
 the internal mount is gated by the `X-Internal-Token` shared-secret header
 instead of a JWT.

@@ -1112,7 +1112,7 @@ Single module wrapping the SDK + GraphQL primitives catalogued in
 - `ensure_marker_group_exists()` — idempotent `emit_mcp(corpGroupInfo)` using the group name read from `runtime_config.auth_datahub_corp_group`.
 - `add_user_to_marker_group(corpuser_urn)` — GraphQL `addGroupMembers`.
 - `propagate_role(corpuser_urn, role)` — GraphQL `batchAssignRole`. Called after every DataSpoke-side role write (registration default `Reader`, admin role change). DataHub-side is a mirror; DataSpoke `users.role` is the SSOT.
-- `read_role(corpuser_urn)` — GraphQL relationship traversal on `IsMemberOfRole`. **Used only by the nightly reconciliation DAG**, not on the request hot path.
+- `read_role(corpuser_urn)` — SDK `get_aspect(corpuser_urn, RoleMembershipClass)` (atomic single-role per DataHub `RoleService`); the `IsMemberOfRole` GraphQL relationship index is **not** used because it lags MCL→ES indexing. **Used only by the nightly reconciliation DAG**, not on the request hot path.
 - `hard_delete_corpuser(corpuser_urn)` — SDK `hard_delete_entity`.
 
 The module never writes `corpUserCredentials`.

@@ -529,16 +529,16 @@ retire a managed group.
 
 ### Nightly Role Reconciliation
 
-`DataSpoke is the SSOT for role. The DataHub-side mirror can drift if an
+DataSpoke is the SSOT for role. The DataHub-side mirror can drift if an
 operator changes a corpuser's role directly in the DataHub UI rather than
 via `PATCH /admin/users/{id}/role`. The Airflow DAG `auth-role-sync-daily`
 detects and corrects this:
 
-1. For each `users` row in the marker corpGroup, read the corpuser's
-   `RoleMembership` aspect directly (atomic single-role per DataHub
-   `RoleService`). The `IsMemberOfRole` GraphQL relationship index is not
-   used — it lags MCL→ES indexing and transiently shows roles that were
-   already overwritten in the aspect.
+1. For each row in `users` (managed identities), read the corresponding
+   corpuser's `RoleMembership` aspect directly (atomic single-role per
+   DataHub `RoleService`). The `IsMemberOfRole` GraphQL relationship index
+   is not used — it lags MCL→ES indexing and transiently shows roles that
+   were already overwritten in the aspect.
 2. If the observed role differs from DataSpoke `users.role`, re-assert
    `users.role` to DataHub via `batchAssignRole` (DataSpoke wins).
 3. Emit an `AUTH.ROLE_SYNC_FIXED` event recording the divergence and the

@@ -144,7 +144,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `peripherals/datahub.sh` ‖ `peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. |
 | 4 | **Parallel post-bootstrap** | `peripherals/dummy-data.sh` ‖ `peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
-| 5 | Post-install seeding | `seed-peripheral-config.sh` then `seed-runtime-config.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}` and `/internal/admin/conf`. Skipped by `--skip-seed`. |
+| 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
 
 ### Phases — prod profile
 
@@ -613,6 +613,7 @@ Dev only. Runs after the umbrella chart's API deployment is Ready.
 |---|---|
 | `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. The token / secret_key fields are populated into K8s Secrets out-of-band by the install script (so the API reads them via RBAC); only non-secret fields go through the admin API. |
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`. |
+| `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). Tolerates `503 DATAHUB_SYNC_FAILED` retries while DataHub finishes indexing corpuser/corpGroup aspects on a fresh install. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 
 Auth: both use the `DATASPOKE_INTERNAL_TOKEN` read from the `dataspoke-secrets` Secret
 (mounted on the API pod via `envFrom`).
