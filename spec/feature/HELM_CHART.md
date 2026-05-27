@@ -180,11 +180,13 @@ rolls the API deployment.
 
 ## Uninstallation
 
-`bin/uninstall.sh --profile {dev|prod} [--yes] [--delete-namespaces]`
+`bin/uninstall.sh --profile {dev|prod} [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]`
 
 Reverse order of install. Both profiles tear down the umbrella Helm release.
-The dev profile additionally removes peripherals and dev-lock; prompts before
-namespace deletion unless `--delete-namespaces`.
+The dev profile additionally removes peripherals and dev-lock. PVCs and
+namespaces are preserved by default — pass `--delete-pvcs` / `--delete-namespaces`
+(or `--delete-all`) to drop them. `--no-question` suppresses every interactive
+prompt (gate, PVC, namespace).
 
 ---
 

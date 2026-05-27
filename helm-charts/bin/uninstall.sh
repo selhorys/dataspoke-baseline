@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # DataSpoke uninstaller.
 #
-# Usage: uninstall.sh --profile {dev|prod} [--yes] [--delete-namespaces]
+# Usage: uninstall.sh --profile {dev|prod} [OPTIONS]
 #
 #   --profile {dev|prod}   Required. Selects which component set to tear down.
-#   --yes                  Skip the confirmation prompt.
-#   --delete-namespaces    Delete namespaces after uninstalling releases.
+#   --no-question          Skip every interactive prompt (gate, PVC, namespace).
+#   --delete-pvcs          Also delete PersistentVolumeClaims (dev only).
+#   --delete-namespaces    Also delete the application namespaces.
+#   --delete-all           Shortcut for --delete-pvcs --delete-namespaces.
+#   --help, -h             Print this usage message.
+#
+# Default behaviour: uninstalls Helm releases and chart-derived Secrets.
+# PVCs and namespaces are preserved unless explicitly opted in.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,20 +28,27 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 # Argument parsing
 # ---------------------------------------------------------------------------
 PROFILE=""
-YES=false
+NO_QUESTION=false
+DELETE_PVCS=false
 DELETE_NAMESPACES=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) PROFILE="${2:-}"; shift 2 ;;
-    --yes) YES=true; shift ;;
+    --no-question) NO_QUESTION=true; shift ;;
+    --delete-pvcs) DELETE_PVCS=true; shift ;;
     --delete-namespaces) DELETE_NAMESPACES=true; shift ;;
-    *) shift ;;
+    --delete-all) DELETE_PVCS=true; DELETE_NAMESPACES=true; shift ;;
+    --help|-h) print_usage; exit 0 ;;
+    *) error "Unknown option: $1 (use --help)" ;;
   esac
 done
 
 if [[ -z "$PROFILE" ]]; then
-  error "--profile {dev|prod} is required."
+  error "--profile {dev|prod} is required. Use --help for usage."
+fi
+if [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
+  error "Invalid profile '${PROFILE}'. Must be 'dev' or 'prod'."
 fi
 
 # ---------------------------------------------------------------------------
@@ -53,7 +66,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Confirm before proceeding
 # ---------------------------------------------------------------------------
-if [[ "${YES}" != true ]]; then
+if [[ "${NO_QUESTION}" != true ]]; then
   read -r -p "Remove all ${PROFILE} resources? [y/N] " CONFIRM
   if [[ ! "${CONFIRM}" =~ ^[Yy]$ ]]; then
     info "Aborted — no changes made."
@@ -104,13 +117,6 @@ if [[ "$PROFILE" == "dev" ]]; then
   fi
   kubectl delete pod -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
     --force --grace-period=0 2>/dev/null || true
-  info "Deleting dataspoke PVCs..."
-  for pvc in $(kubectl get pvc -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
-      -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-    kubectl delete pvc "$pvc" -n "${NS}" 2>/dev/null \
-      && info "  Deleted PVC '${pvc}'." \
-      || warn "  Could not delete PVC '${pvc}'."
-  done
   for SECRET in dataspoke-secrets \
                 dataspoke-airflow-metadata-db \
                 dataspoke-llm-secret \
@@ -132,14 +138,6 @@ if [[ "$PROFILE" == "dev" ]]; then
   kubectl delete pod -n "${LANGFUSE_NS}" \
     -l app.kubernetes.io/instance=langfuse \
     --force --grace-period=0 2>/dev/null || true
-  info "Deleting Langfuse PVCs..."
-  for pvc in $(kubectl get pvc -n "${LANGFUSE_NS}" \
-      -l app.kubernetes.io/instance=langfuse \
-      -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-    kubectl delete pvc "$pvc" -n "${LANGFUSE_NS}" 2>/dev/null \
-      && info "  Deleted PVC '${pvc}'." \
-      || warn "  Could not delete PVC '${pvc}'."
-  done
   if kubectl get secret dataspoke-langfuse-secret -n "${LANGFUSE_NS}" >/dev/null 2>&1; then
     kubectl delete secret dataspoke-langfuse-secret -n "${LANGFUSE_NS}"
   fi
@@ -173,10 +171,33 @@ if [[ "$PROFILE" == "dev" ]]; then
     kubectl delete namespace "ingress-nginx"
   fi
 
-  # 7. Optionally delete application namespaces
+  # 7. Optionally delete PVCs (dataspoke + Langfuse)
+  echo ""
+  if [[ "${DELETE_PVCS}" != true && "${NO_QUESTION}" != true ]]; then
+    read -r -p "Delete PVCs in '${NS}' and '${LANGFUSE_NS}'? [y/N] " CONFIRM_PVC
+    [[ "${CONFIRM_PVC}" =~ ^[Yy]$ ]] && DELETE_PVCS=true
+  fi
+  if [[ "${DELETE_PVCS}" == true ]]; then
+    for PVC_NS_LABEL in "${NS}:app.kubernetes.io/instance=dataspoke" \
+                        "${LANGFUSE_NS}:app.kubernetes.io/instance=langfuse"; do
+      PVC_NS="${PVC_NS_LABEL%%:*}"
+      PVC_LABEL="${PVC_NS_LABEL#*:}"
+      info "Deleting PVCs in '${PVC_NS}' (label ${PVC_LABEL})..."
+      for pvc in $(kubectl get pvc -n "${PVC_NS}" -l "${PVC_LABEL}" \
+          -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        kubectl delete pvc "$pvc" -n "${PVC_NS}" 2>/dev/null \
+          && info "  Deleted PVC '${pvc}'." \
+          || warn "  Could not delete PVC '${pvc}'."
+      done
+    done
+  else
+    info "PVCs retained."
+  fi
+
+  # 8. Optionally delete application namespaces
   NAMESPACES=("${DATAHUB_NS}" "${NS}" "${LANGFUSE_NS}" "${DUMMY_NS}")
   echo ""
-  if [[ "${DELETE_NAMESPACES}" != true ]]; then
+  if [[ "${DELETE_NAMESPACES}" != true && "${NO_QUESTION}" != true ]]; then
     read -r -p "Delete namespaces (${NAMESPACES[*]})? [y/N] " CONFIRM_NS
     [[ "${CONFIRM_NS}" =~ ^[Yy]$ ]] && DELETE_NAMESPACES=true
   fi
@@ -217,7 +238,7 @@ elif [[ "$PROFILE" == "prod" ]]; then
   info "Operator-owned Secret 'dataspoke-secrets' (or secrets.existingSecret) retained."
 
   echo ""
-  if [[ "${DELETE_NAMESPACES}" != true ]]; then
+  if [[ "${DELETE_NAMESPACES}" != true && "${NO_QUESTION}" != true ]]; then
     read -r -p "Delete namespace '${NS}'? [y/N] " CONFIRM_NS
     [[ "${CONFIRM_NS}" =~ ^[Yy]$ ]] && DELETE_NAMESPACES=true
   fi

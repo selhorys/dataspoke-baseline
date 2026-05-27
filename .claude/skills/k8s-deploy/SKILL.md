@@ -116,12 +116,14 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 
 ### Full uninstall
 
-1. **Ask the user** whether to also delete namespaces and their PVCs.
+1. **Ask the user** whether to also delete PVCs and namespaces (both default to preserved).
 2. Execute the uninstall script with flags:
-   - Always pass `--yes` (user already confirmed).
-   - If user wants namespace deletion, also pass `--delete-namespaces`:
-     `./helm-charts/bin/uninstall.sh --profile dev --yes --delete-namespaces`
-   - Otherwise: `./helm-charts/bin/uninstall.sh --profile dev --yes`
+   - Always pass `--no-question` (user already confirmed).
+   - For full wipe (PVCs + namespaces):
+     `./helm-charts/bin/uninstall.sh --profile dev --no-question --delete-all`
+   - Release-only (preserve PVCs and namespaces):
+     `./helm-charts/bin/uninstall.sh --profile dev --no-question`
+   - Mix-and-match with `--delete-pvcs` and/or `--delete-namespaces` for partial wipes.
 3. Clean up any orphaned PersistentVolumes in `Released` state.
 
 ### Partial uninstall (specific components)

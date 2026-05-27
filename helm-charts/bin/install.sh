@@ -50,10 +50,7 @@ while [[ $# -gt 0 ]]; do
     --skip-seed)       SKIP_SEED=true; shift ;;
     --values)          EXTRA_VALUES="${2:-}"; shift 2 ;;
     --image-tag)       IMAGE_TAG="${2:-dev}"; shift 2 ;;
-    --help|-h)
-      grep '^#' "$0" | head -20 | sed 's/^# \{0,2\}//'
-      exit 0
-      ;;
+    --help|-h) print_usage; exit 0 ;;
     *) error "Unknown option: $1 (use --help)" ;;
   esac
 done

@@ -4,6 +4,7 @@
 # Usage: build-image.sh <name> [<tag>]
 #   <name>  One of: api, airflow, postgres
 #   <tag>   Image tag (default: dev)
+#   --help, -h   Print this usage message.
 #
 # Dispatches on DATASPOKE_KUBE_CLOUD_VENDOR:
 #   GCP|gcp   → gcloud builds submit (no local Docker required)
@@ -20,6 +21,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/helpers.sh"
 
 # ---------------------------------------------------------------------------
+# Argument parsing — handle --help before loading .env so it works without one
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  print_usage
+  exit 0
+fi
+
+NAME="${1:-}"
+TAG="${2:-dev}"
+
+if [[ -z "$NAME" ]]; then
+  print_usage >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
 ENV_FILE="$SCRIPT_DIR/../.env"
@@ -27,20 +44,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   error ".env not found at $ENV_FILE — copy helm-charts/.env.example and edit it."
 fi
 source "$ENV_FILE"
-
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-NAME="${1:-}"
-TAG="${2:-dev}"
-
-if [[ -z "$NAME" ]]; then
-  echo "Usage: $0 <name> [<tag>]"
-  echo ""
-  echo "  <name>  One of: api, airflow, postgres"
-  echo "  <tag>   Image tag (default: dev)"
-  exit 1
-fi
 
 case "$NAME" in
   api|airflow|postgres) ;;

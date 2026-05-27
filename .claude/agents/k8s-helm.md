@@ -22,7 +22,7 @@ helm-charts/
 ├── .env.example                # 3-section env file (kube deployment / dev profile / auto-populated test access)
 ├── bin/
 │   ├── install.sh              # --profile {dev|prod} [--components …] [--skip-build] …
-│   ├── uninstall.sh            # --profile {dev|prod} [--yes] [--delete-namespaces]
+│   ├── uninstall.sh            # --profile {dev|prod} [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]
 │   ├── health-check.sh
 │   ├── build-image.sh          # api | airflow | postgres
 │   ├── lib/helpers.sh          # info/warn/error/step/upsert_env_var/wait_for_pod

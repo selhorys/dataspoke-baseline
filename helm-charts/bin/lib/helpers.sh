@@ -7,6 +7,14 @@ info()  { echo -e "\033[0;32m[INFO]\033[0m  $*"; }
 warn()  { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
 error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
 
+# print_usage [script_path]
+# Print the script's leading comment block (after the shebang), stripped of
+# the `# ` prefix. Stops at the first non-comment line. Default: caller's $0.
+print_usage() {
+  local script="${1:-$0}"
+  awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$script"
+}
+
 # step <n> <total> <name>
 # Print a green [INFO] step-boundary header with elapsed time.
 # Reads START_TIME from the environment (exported by the parent script).

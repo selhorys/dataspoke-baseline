@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
 # Health check for DataSpoke services used by integration tests.
 #
 # Verifies each ingress-exposed service is reachable AND responding at the
@@ -10,9 +9,9 @@
 #   ./helm-charts/bin/health-check.sh --quick           # TCP-only (skip deep checks)
 #   ./helm-charts/bin/health-check.sh --keep-lock       # Don't touch an existing lock
 #   ./helm-charts/bin/health-check.sh --force-release   # Release held lock without prompting
+#   ./helm-charts/bin/health-check.sh --help            # Print this usage message
 #
 # Exit codes: 0 = all healthy, 1 = one or more unhealthy
-# ---------------------------------------------------------------------------
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +25,14 @@ for arg in "$@"; do
     --quick) QUICK=true ;;
     --keep-lock) KEEP_LOCK=true ;;
     --force-release) FORCE_RELEASE=true ;;
+    --help|-h)
+      awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
+      exit 0
+      ;;
+    *)
+      echo -e "\033[0;31m[ERROR]\033[0m Unknown option: $arg (use --help)" >&2
+      exit 1
+      ;;
   esac
 done
 
