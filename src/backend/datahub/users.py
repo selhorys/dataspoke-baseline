@@ -153,7 +153,7 @@ async def read_role(
     Returns the role short name (``'Admin'`` / ``'Editor'`` / ``'Reader'``)
     or ``None`` when no role is assigned.
     """
-    aspect = await client.get_aspect(corpuser_urn_str, RoleMembershipClass)
+    aspect = await client.get_aspect(corpuser_urn_str, RoleMembershipClass, strict=True)
     if aspect is None or not aspect.roles:
         return None
     if len(aspect.roles) > 1:

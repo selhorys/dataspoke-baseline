@@ -301,6 +301,24 @@ async def test_read_role_returns_none_when_aspect_roles_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_role_propagates_datahub_unavailable() -> None:
+    """read_role uses strict=True so transient read failures surface as
+    DataHubUnavailableError rather than being mis-recorded as 'no role'.
+
+    spec: spec/feature/AUTH.md §Role Drift Reconciliation — the activity
+    catches DataHubUnavailableError, counts as error, skips the user.
+    """
+    from src.backend.datahub.users import read_role
+    from src.shared.exceptions import DataHubUnavailableError
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(side_effect=DataHubUnavailableError("read failed"))
+
+    with pytest.raises(DataHubUnavailableError):
+        await read_role(mock_client, "urn:li:corpuser:transient@example.com")
+
+
+@pytest.mark.asyncio
 async def test_read_role_returns_none_for_unrecognised_role_urn() -> None:
     """read_role returns None for role URNs not in Admin/Editor/Reader.
 

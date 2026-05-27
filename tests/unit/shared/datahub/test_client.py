@@ -85,6 +85,35 @@ async def test_get_aspect_fails_fast_on_401(client, mock_graph) -> None:
     assert mock_graph.get_aspect.call_count == 1
 
 
+async def test_get_aspect_strict_raises_on_unexpected_exception(client, mock_graph) -> None:
+    """strict=True surfaces non-fail-fast, non-retryable exceptions as
+    DataHubUnavailableError so audit-critical callers (read_role) can
+    distinguish a read failure from a legitimate 'no aspect'."""
+    exc = Exception("schema mismatch")  # no status_code → not fail-fast, not retryable
+    mock_graph.get_aspect.side_effect = exc
+
+    with pytest.raises(DataHubUnavailableError):
+        await client.get_aspect("urn:li:dataset:test", MagicMock, strict=True)
+
+
+async def test_get_aspect_strict_still_returns_value_on_success(client, mock_graph) -> None:
+    aspect = MagicMock()
+    mock_graph.get_aspect.return_value = aspect
+
+    result = await client.get_aspect("urn:li:dataset:test", type(aspect), strict=True)
+    assert result is aspect
+
+
+async def test_get_aspect_default_swallows_unexpected_exception(client, mock_graph) -> None:
+    """Default (strict=False) preserves graceful-degrade behavior for the
+    15+ existing callers (dataset/service, ontogen/evidence, etc.)."""
+    exc = Exception("schema mismatch")
+    mock_graph.get_aspect.side_effect = exc
+
+    result = await client.get_aspect("urn:li:dataset:test", MagicMock)
+    assert result is None
+
+
 async def test_circuit_breaker_opens_after_threshold(client, mock_graph) -> None:
     mock_graph.get_aspect.side_effect = ConnectionError("refused")
 

@@ -98,7 +98,24 @@ class DataHubClient:
         self._record_failure()
         raise DataHubUnavailableError(str(last_exc))
 
-    async def get_aspect(self, urn: str, aspect_class: type[T]) -> T | None:
+    async def get_aspect(
+        self,
+        urn: str,
+        aspect_class: type[T],
+        *,
+        strict: bool = False,
+    ) -> T | None:
+        """Read *aspect_class* off *urn*. Returns None when the aspect is absent.
+
+        Default behavior swallows non-fail-fast, non-retryable exceptions and
+        returns None — callers that degrade gracefully (e.g. evidence/dataset
+        readers) rely on this.
+
+        With ``strict=True``, those exceptions surface as
+        ``DataHubUnavailableError`` instead — used by audit-critical readers
+        like ``read_role`` so a transient read failure is not mis-recorded as
+        a legitimate "no aspect" observation.
+        """
         try:
             return await self._with_retry(self._graph.get_aspect, urn, aspect_class)
         except DataHubUnavailableError:
@@ -107,6 +124,8 @@ class DataHubClient:
             status_code = _extract_status_code(exc)
             if status_code in _FAIL_FAST_STATUS_CODES:
                 raise
+            if strict:
+                raise DataHubUnavailableError(str(exc)) from exc
             return None
 
     async def get_timeseries(
