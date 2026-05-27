@@ -20,7 +20,8 @@ def _get_user_key(request: Request) -> str:
     return get_remote_address(request)
 
 
-storage_uri = f"redis://{settings.redis_host}:{settings.redis_port}"
+_auth = f":{settings.redis_password}@" if settings.redis_password else ""
+storage_uri = f"redis://{_auth}{settings.redis_host}:{settings.redis_port}"
 limiter = Limiter(
     key_func=_get_user_key,
     storage_uri=storage_uri,
