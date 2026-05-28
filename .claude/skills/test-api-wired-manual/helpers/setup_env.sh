@@ -18,11 +18,11 @@ set -a
 source "$ENV_FILE"
 set +a
 
-BASE="http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}"
+BASE="http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}"
 
 ADMIN_TOKEN=$(curl -sS -X POST "${BASE}/api/v1/auth/token" \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin","password":"admin"}' \
+  -d '{"email":"dataspoke@dataspoke.local","password":"dataspoke"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 
 if [[ -z "${ADMIN_TOKEN}" ]]; then

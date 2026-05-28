@@ -27,6 +27,10 @@ config:
   apiBaseUrl: ""
   # URL of the DataHub frontend. Used for deep links from the DataSpoke UI.
   datahubUrl: ""
+  # URL of the Langfuse UI. Used for the header infra link (hidden when empty).
+  langfuseUrl: ""
+  # URL of the Airflow UI. Used for the header infra link (hidden when empty).
+  airflowUrl: ""
 
 # Name of the pre-created K8s Secret containing runtime credentials.
 # Set by the umbrella chart via the parent's secrets.existingSecret value.

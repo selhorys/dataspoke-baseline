@@ -1,7 +1,7 @@
 """Spot integration test: GET /auth/me and PATCH /auth/me.
 
 Concerns covered:
-- Login as bootstrap admin (dataspoke/dataspoke) succeeds
+- Login as bootstrap admin (dataspoke@dataspoke.local/dataspoke) succeeds
 - GET /auth/me returns the right shape (no password_hash); role=Admin for bootstrap admin
 - PATCH /auth/me with new name works (name updated, DataHub propagated best-effort)
 - PATCH /auth/me with new password works (new password accepted on next login)

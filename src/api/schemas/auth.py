@@ -9,10 +9,9 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 class TokenRequest(BaseModel):
-    # str (not EmailStr) to allow the built-in bootstrap admin login
-    # (email="dataspoke") in addition to normal email-addressed users.
-    # Registration uses EmailStr to enforce valid email format.
-    email: str = Field(max_length=254, description="User email address or bootstrap admin login name")
+    # str (not EmailStr) keeps token-request parsing lenient; format is enforced
+    # at registration, which uses EmailStr.
+    email: str = Field(max_length=254, description="User email address")
     password: str = Field(description="User password")
 
 

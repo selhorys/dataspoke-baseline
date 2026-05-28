@@ -111,9 +111,9 @@ export function OntogenConfForm({
         hint="Periodic re-inference cadence"
       >
         <Select
-          value={scheduleTier ?? ""}
+          value={scheduleTier || "none"}
           onValueChange={(v) =>
-            setValue("schedule_tier", v === "" ? null : (v as "hourly" | "daily" | "weekly"))
+            setValue("schedule_tier", v === "none" ? null : (v as "hourly" | "daily" | "weekly"))
           }
           disabled={disabled}
         >
@@ -121,7 +121,7 @@ export function OntogenConfForm({
             <SelectValue placeholder="None (manual only)" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">None (manual only)</SelectItem>
+            <SelectItem value="none">None (manual only)</SelectItem>
             <SelectItem value="hourly">hourly</SelectItem>
             <SelectItem value="daily">daily</SelectItem>
             <SelectItem value="weekly">weekly</SelectItem>

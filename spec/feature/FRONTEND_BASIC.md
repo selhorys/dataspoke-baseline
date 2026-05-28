@@ -32,6 +32,15 @@ A single application shell hosts every page. The shell has a top header
 §2.1 feature plus account/admin entries. The page area on the right renders
 the active route.
 
+The header right cluster also carries infra shortcut icons (new-tab links) to
+the surrounding systems: DataHub, Langfuse, Airflow, and the DataSpoke ReDoc API
+docs. Each icon renders only when its URL is configured — DataHub/Langfuse/Airflow
+from runtime config `datahubUrl`/`langfuseUrl`/`airflowUrl` (the
+`DATASPOKE_{DATAHUB,LANGFUSE,AIRFLOW}_URL` env vars, `NEXT_PUBLIC_*` in host dev);
+ReDoc from `apiBaseUrl` + `/redoc`. Operators control visibility by setting or
+omitting the URLs, so deployments that should not expose an infra UI simply leave
+its URL unset.
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │ DataSpoke              user@imazon ▼  Logout        │

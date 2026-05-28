@@ -88,7 +88,7 @@ _promote_test_runtime_overrides()
 
 def _shared_ingress_url() -> str:
     domain = os.environ["DATASPOKE_KUBE_INGRESS_DOMAIN"]
-    return f"http://app.{domain}"
+    return f"http://api.{domain}"
 
 
 # ── Shared infrastructure env vars ────────────────────────────────────────────
@@ -625,11 +625,11 @@ def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
         except Exception:
             pass  # Best-effort — login below will surface real failures.
 
-    # Obtain admin token (bootstrap account: dataspoke / dataspoke)
+    # Obtain admin token (bootstrap account: dataspoke@dataspoke.local / dataspoke)
     try:
         token_resp = httpx.post(
             f"{base_url}/api/v1/auth/token",
-            json={"email": "dataspoke", "password": "dataspoke"},
+            json={"email": "dataspoke@dataspoke.local", "password": "dataspoke"},
             timeout=10.0,
         )
         token_resp.raise_for_status()

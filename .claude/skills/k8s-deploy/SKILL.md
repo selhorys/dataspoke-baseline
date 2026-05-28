@@ -77,7 +77,7 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 1. Execute the top-level install script **in the background**:
    - dev: `./helm-charts/bin/install.sh --profile dev`
    - prod: `./helm-charts/bin/install.sh --profile prod --values <operator-overlay>` (ask the user for the overlay path)
-   - **Frontend** (`--frontend none|local|cluster`, default `none` in dev / `cluster` in prod): pass `--frontend local` for the host-`pnpm dev` workflow (writes `src/frontend/.env.local`), `--frontend cluster` to deploy the containerised UI in-cluster, or `--frontend none` for API-only. `local` is dev-only. The install summary prints the resulting Web UI URL + default `dataspoke / dataspoke` login. If the user hasn't said, ask which frontend mode they want (or default per profile).
+   - **Frontend** (`--frontend none|local|cluster`, default `none` in dev / `cluster` in prod): pass `--frontend local` for the host-`pnpm dev` workflow (writes `src/frontend/.env.local`), `--frontend cluster` to deploy the containerised UI in-cluster, or `--frontend none` for API-only. `local` is dev-only. The install summary prints the resulting Web UI URL + default `dataspoke@dataspoke.local / dataspoke` login. If the user hasn't said, ask which frontend mode they want (or default per profile).
    - Note the background task ID and output file path.
 2. While the script runs, **alternate between two monitoring sources every ~30 seconds**:
    a. **Script output**: read the background task output file (e.g., `tail -20 <output-file>`) to report install progress messages.
@@ -206,9 +206,9 @@ Parse `$ARGUMENTS` and the user's request for these options:
 1. Run `./helm-charts/bin/install.sh --profile dev --components api` with parsed flags in the foreground. The script builds the API image (via `helm-charts/bin/build-image.sh api`), runs `helm upgrade --install`, and rolls the API deployment to pick up the new `:dev` image. First run can take 5–10 minutes due to image builds; `--skip-build` rebuilds are 1–2 minutes.
 2. Monitor the output for errors. If the build or rollout fails, report the error and suggest remediation.
 3. On success, report the running state to the user:
-   - API URL: `http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/api/v1/`
-   - ReDoc UI: `http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/redoc`
-   - Health: `http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/health`
+   - API URL: `http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/api/v1/`
+   - ReDoc UI: `http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/redoc`
+   - Health: `http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/health`
    - How to run tests: `set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/spot/` (spot) or `… tests/integration/api_wired/` (UC user stories) — run in separate invocations. The conftest `runtime_conf` fixture verifies the API has `stub_redis_client / stub_pgvector_manager / stub_notification_service` all `true` before the suite runs.
    - How to stop: `kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"`
 

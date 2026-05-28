@@ -67,11 +67,11 @@ async def real_run_state() -> dict:
     if not _DATAHUB_GMS_URL:
         pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DataHub aspect assertions")
 
-    base_url = f"http://app.{os.environ['DATASPOKE_KUBE_INGRESS_DOMAIN']}"
+    base_url = f"http://api.{os.environ['DATASPOKE_KUBE_INGRESS_DOMAIN']}"
     async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:
         token_resp = await client.post(
             "/api/v1/auth/token",
-            json={"email": "dataspoke", "password": "dataspoke"},
+            json={"email": "dataspoke@dataspoke.local", "password": "dataspoke"},
         )
         token_resp.raise_for_status()
         admin_headers = {"Authorization": f"Bearer {token_resp.json()['access_token']}"}

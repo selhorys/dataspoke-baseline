@@ -18,7 +18,7 @@ Your job is to write production-quality Next.js + TypeScript code in `src/fronte
    - `spec/feature/FRONTEND_VALIDATION.md` — Validation
    - `spec/feature/FRONTEND_ONTOGEN.md` — Ontology Generation
    - `spec/feature/FRONTEND_METAGEN.md` — Metadata Generation
-2. Read the API contract your code consumes: the hand-written client modules in `src/frontend/lib/api/` (one per feature) and `src/api/routers/` for the source of truth. Or check live ReDoc at `http://app.<INGRESS_DOMAIN>/redoc` when the in-cluster API is up (domain in `helm-charts/.env`).
+2. Read the API contract your code consumes: the hand-written client modules in `src/frontend/lib/api/` (one per feature) and `src/api/routers/` for the source of truth. Or check live ReDoc at `http://api.<INGRESS_DOMAIN>/redoc` when the in-cluster API is up (domain in `helm-charts/.env`).
 3. Scan `src/frontend/` with Glob to match existing conventions before adding files.
 
 ## Source layout

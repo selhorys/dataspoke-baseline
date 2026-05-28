@@ -548,7 +548,7 @@ Airflow DAGs, and automation.
 | `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | `X-Internal-Token` |
 
-`POST /internal/admin/bootstrap` seeds the built-in `dataspoke / dataspoke` admin user when no
+`POST /internal/admin/bootstrap` seeds the built-in `dataspoke@dataspoke.local / dataspoke` admin user when no
 Admin row exists in the `users` table. The endpoint is idempotent: if any Admin already exists
 it returns `{created: false}` without touching anything. The `helm-charts/bin/post-install/seed-admin-user.sh`
 post-install script invokes it during both dev and prod installs. Operators must rotate the

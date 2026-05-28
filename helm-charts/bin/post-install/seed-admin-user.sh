@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Seed the built-in default admin user (dataspoke / dataspoke) via the
+# Seed the built-in default admin user (dataspoke@dataspoke.local / dataspoke) via the
 # internal bootstrap endpoint. Safe to re-run — the endpoint is idempotent:
 # if any Admin already exists, it returns {created: false} and this script
 # exits cleanly.
 #
 # Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: http://app.<DOMAIN>/internal/admin/bootstrap
+# Endpoint: http://api.<DOMAIN>/internal/admin/bootstrap
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +50,7 @@ info "Internal token retrieved."
 # ---------------------------------------------------------------------------
 info "Calling POST /internal/admin/bootstrap to seed default admin user..."
 HTTP_CODE=$(curl -sS -o /tmp/seed-admin-resp.json -w "%{http_code}" -X POST \
-  "http://app.${DOMAIN}/internal/admin/bootstrap" \
+  "http://api.${DOMAIN}/internal/admin/bootstrap" \
   -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{}' \
@@ -63,8 +63,8 @@ case "$HTTP_CODE" in
   200|201)
     CREATED="$(python3 -c "import json,sys; d=json.load(open('/tmp/seed-admin-resp.json')); print(d.get('created',''))" 2>/dev/null || true)"
     if [[ "$CREATED" == "True" || "$CREATED" == "true" ]]; then
-      info "Seeded default admin user 'dataspoke'."
-      warn "Default admin 'dataspoke / dataspoke' seeded. Rotate via PATCH /auth/me before production use."
+      info "Seeded default admin user 'dataspoke@dataspoke.local'."
+      warn "Default admin 'dataspoke@dataspoke.local / dataspoke' seeded. Rotate via PATCH /auth/me before production use."
     else
       info "Admin user already exists; skipping seed."
     fi
@@ -83,7 +83,7 @@ case "$HTTP_CODE" in
         exit 0
         ;;
       *)
-        error "POST failed (HTTP 503, error_code=${ERROR_CODE:-unknown}): http://app.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
+        error "POST failed (HTTP 503, error_code=${ERROR_CODE:-unknown}): http://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
         ;;
     esac
     ;;
@@ -91,9 +91,9 @@ case "$HTTP_CODE" in
     error "Bootstrap rejected with HTTP ${HTTP_CODE} — X-Internal-Token mismatch. Re-check dataspoke-secrets and the API pod env."
     ;;
   000)
-    error "Could not reach http://app.${DOMAIN}/internal/admin/bootstrap — check ingress, DNS, and that the dataspoke-api pod is Ready."
+    error "Could not reach http://api.${DOMAIN}/internal/admin/bootstrap — check ingress, DNS, and that the dataspoke-api pod is Ready."
     ;;
   *)
-    error "POST failed (HTTP ${HTTP_CODE}): http://app.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
+    error "POST failed (HTTP ${HTTP_CODE}): http://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
     ;;
 esac

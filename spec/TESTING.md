@@ -110,7 +110,7 @@ Integration tests run against the dev environment, exercising real infrastructur
 
 The API runs **in-cluster** alongside Airflow so that Airflow DAGs can call back to the API
 directly via `http://dataspoke-api:8002`. Developers access the in-cluster API via the
-nginx-ingress endpoint (`http://app.<INGRESS_IP>.nip.io/api/v1/`) for running tests and manual
+nginx-ingress endpoint (`http://api.<INGRESS_IP>.nip.io/api/v1/`) for running tests and manual
 exploration. Code changes require `docker build` + `helm upgrade` (automated by
 `./helm-charts/bin/install.sh --profile dev --components api`).
 
@@ -238,7 +238,7 @@ public REST API. Files are named `test_uc{1..5}_<slug>.py`; a UC may be split ac
 files when the user story has independent scenarios (e.g., `test_uc1_active_custom_postgres.py`
 and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
 
-- **REST only**: test logic uses `httpx.AsyncClient` against `http://app.<INGRESS_IP>.nip.io/`.
+- **REST only**: test logic uses `httpx.AsyncClient` against `http://api.<INGRESS_IP>.nip.io/`.
   No direct imports of `src/backend`, `src/workflows`, or peripheral SDK clients in the test
   body. Setup/teardown fixtures may use `tests.integration.util` to reset/ingest data; the
   test itself stays REST-only.
@@ -309,7 +309,7 @@ uv run python -m tests.integration.util --reset-seed               # Seed Imazon
 
 ```bash
 # Replace <INGRESS_IP> with DATASPOKE_KUBE_INGRESS_IP from helm-charts/.env
-TOKEN=$(curl -s -X POST http://app.<INGRESS_IP>.nip.io/api/v1/auth/token \
+TOKEN=$(curl -s -X POST http://api.<INGRESS_IP>.nip.io/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
 ```
@@ -319,7 +319,7 @@ Admin tokens carry `role = "Admin"` and expire in 15 minutes.
 ### Making Requests
 
 ```bash
-curl -s "http://app.<INGRESS_IP>.nip.io/api/v1/spoke/common/data/$URN/attr/ingestion/conf" \
+curl -s "http://api.<INGRESS_IP>.nip.io/api/v1/spoke/common/data/$URN/attr/ingestion/conf" \
   -H "Authorization: Bearer $TOKEN" | jq .
 ```
 
@@ -358,7 +358,7 @@ kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPO
 E2E tests verify the full stack through a real browser (Playwright, TypeScript, `tests/e2e/`).
 
 **Prerequisites**: All services running -- Frontend (`http://app.<INGRESS_IP>.nip.io/`), API
-(`http://app.<INGRESS_IP>.nip.io/api/v1/`), dev environment installed with nginx-ingress.
+(`http://api.<INGRESS_IP>.nip.io/api/v1/`), dev environment installed with nginx-ingress.
 
 **Lock protocol**: Same seven-step workflow as integration tests (acquire lock -> reset data ->
 run -> reset -> release lock).

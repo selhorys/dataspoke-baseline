@@ -4,7 +4,7 @@
 # Langfuse secret key) are already in K8s Secrets placed by install.sh.
 #
 # Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: http://app.<DOMAIN>/internal/admin/peripherals/{datahub,langfuse}
+# Endpoint: http://api.<DOMAIN>/internal/admin/peripherals/{datahub,langfuse}
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,7 +51,7 @@ if [[ -z "$INTERNAL_TOKEN" ]]; then
 fi
 info "Internal token retrieved."
 
-BASE_URL="http://app.${DOMAIN}/internal/admin/peripherals"
+BASE_URL="http://api.${DOMAIN}/internal/admin/peripherals"
 
 # ---------------------------------------------------------------------------
 # Seed DataHub peripheral config (non-secret fields only)

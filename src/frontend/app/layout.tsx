@@ -17,7 +17,12 @@ export const metadata: Metadata = {
  * Serialise a runtime config object into a safe inline script string.
  * Escapes "<" to prevent "</script>" injection from operator-controlled values.
  */
-function buildRuntimeConfigScript(config: { apiBaseUrl: string; datahubUrl: string }): string {
+function buildRuntimeConfigScript(config: {
+  apiBaseUrl: string;
+  datahubUrl: string;
+  langfuseUrl: string;
+  airflowUrl: string;
+}): string {
   const safe = JSON.stringify(config).replace(/</g, "\\u003c");
   return `window.__DATASPOKE_RUNTIME_CONFIG__ = ${safe};`;
 }
@@ -30,8 +35,10 @@ export default function RootLayout({
   // Read non-public env vars at request time (server-only; never inlined by Next.js).
   const apiBaseUrl = process.env.DATASPOKE_API_BASE_URL ?? "";
   const datahubUrl = process.env.DATASPOKE_DATAHUB_URL ?? "";
+  const langfuseUrl = process.env.DATASPOKE_LANGFUSE_URL ?? "";
+  const airflowUrl = process.env.DATASPOKE_AIRFLOW_URL ?? "";
 
-  const runtimeScript = buildRuntimeConfigScript({ apiBaseUrl, datahubUrl });
+  const runtimeScript = buildRuntimeConfigScript({ apiBaseUrl, datahubUrl, langfuseUrl, airflowUrl });
 
   return (
     <html lang="en" suppressHydrationWarning>

@@ -70,7 +70,7 @@ are exposed on dedicated ports.
 | DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
 | DataSpoke Web UI (dev `--frontend cluster`) | `http://app.<INGRESS_IP>.nip.io/` | `dataspoke` / `dataspoke` — rotate via `PATCH /auth/me` before production |
 | DataSpoke Web UI (dev `--frontend local`) | `http://localhost:3000` | same as above |
-| DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
+| DataSpoke API | `http://api.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
 | Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env` (auto-generated on first install) |
 | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
@@ -88,14 +88,14 @@ The dev default (`--frontend none`) does not deploy the frontend pod. To run the
 
 # 2. Start the Next.js dev server
 pnpm -C src/frontend install && pnpm -C src/frontend dev
-# Open http://localhost:3000  —  login: dataspoke / dataspoke
+# Open http://localhost:3000  —  login: dataspoke@dataspoke.local / dataspoke
 ```
 
 To deploy the containerised frontend in-cluster instead:
 
 ```bash
 ./helm-charts/bin/install.sh --profile dev --frontend cluster
-# Open http://app.<INGRESS_IP>.nip.io/  —  login: dataspoke / dataspoke
+# Open http://app.<INGRESS_IP>.nip.io/  —  login: dataspoke@dataspoke.local / dataspoke
 ```
 
 The `--components frontend` fast path (rebuild + redeploy only the frontend pod) remains available as a code-iteration shortcut.

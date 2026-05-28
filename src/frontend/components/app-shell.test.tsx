@@ -51,6 +51,12 @@ vi.mock("@/components/notification-center", () => ({
   NotificationCenter: () => React.createElement("div", { "data-testid": "notification-center" }),
 }));
 
+// getRuntimeConfig — controllable per test via mockGetRuntimeConfig
+const mockGetRuntimeConfig = vi.fn();
+vi.mock("@/lib/runtime-config", () => ({
+  getRuntimeConfig: () => mockGetRuntimeConfig(),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -68,6 +74,8 @@ function makeMe(role: Me["role"]): Me {
 
 beforeEach(() => {
   mockUseMe.mockReset();
+  // Default: no infra URLs configured
+  mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
 });
 
 // ---------------------------------------------------------------------------
@@ -129,5 +137,87 @@ describe("AppShell — Admin Users link visibility", () => {
     // Ingestion and Validation links must always be visible
     expect(screen.getByRole("link", { name: /ingestion/i })).toBeTruthy();
     expect(screen.getByRole("link", { name: /validation/i })).toBeTruthy();
+  });
+});
+
+describe("AppShell — infra icon links", () => {
+  beforeEach(() => {
+    mockUseMe.mockReturnValue({
+      me: makeMe("Reader"),
+      isAdmin: false,
+      isEditor: false,
+      canWrite: false,
+      isLoading: false,
+    });
+  });
+
+  it("renders all four infra links when all URLs are configured", () => {
+    mockGetRuntimeConfig.mockReturnValue({
+      datahubUrl: "http://datahub.example.com",
+      langfuseUrl: "http://langfuse.example.com",
+      airflowUrl: "http://airflow.example.com",
+      apiBaseUrl: "http://api.example.com",
+    });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    const datahubLink = screen.getByRole("link", { name: /open datahub/i });
+    expect(datahubLink).toBeTruthy();
+    expect(datahubLink.getAttribute("href")).toBe("http://datahub.example.com");
+    expect(datahubLink.getAttribute("target")).toBe("_blank");
+
+    const langfuseLink = screen.getByRole("link", { name: /open langfuse/i });
+    expect(langfuseLink).toBeTruthy();
+    expect(langfuseLink.getAttribute("href")).toBe("http://langfuse.example.com");
+    expect(langfuseLink.getAttribute("target")).toBe("_blank");
+
+    const airflowLink = screen.getByRole("link", { name: /open airflow/i });
+    expect(airflowLink).toBeTruthy();
+    expect(airflowLink.getAttribute("href")).toBe("http://airflow.example.com");
+    expect(airflowLink.getAttribute("target")).toBe("_blank");
+
+    const apiDocsLink = screen.getByRole("link", { name: /open api docs/i });
+    expect(apiDocsLink).toBeTruthy();
+    expect(apiDocsLink.getAttribute("href")).toBe("http://api.example.com/redoc");
+    expect(apiDocsLink.getAttribute("target")).toBe("_blank");
+  });
+
+  it("omits a link when its URL is empty", () => {
+    mockGetRuntimeConfig.mockReturnValue({
+      datahubUrl: "http://datahub.example.com",
+      langfuseUrl: "",
+      airflowUrl: "",
+      apiBaseUrl: "",
+    });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    expect(screen.getByRole("link", { name: /open datahub/i })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /open langfuse/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /open airflow/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /open api docs/i })).toBeNull();
+  });
+
+  it("renders no infra links when all URLs are empty", () => {
+    mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    expect(screen.queryByRole("link", { name: /open datahub/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /open langfuse/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /open airflow/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /open api docs/i })).toBeNull();
   });
 });

@@ -45,8 +45,8 @@ For local dev, the defaults work when the dev environment is installed and servi
 ### 3. Access the API
 
 The API runs **in-cluster** by default (deployed via `./helm-charts/bin/install.sh --profile dev --components api`). Access via nginx-ingress:
-- API: `http://app.<INGRESS_DOMAIN>/api/v1/`
-- ReDoc: `http://app.<INGRESS_DOMAIN>/redoc`
+- API: `http://api.<INGRESS_DOMAIN>/api/v1/`
+- ReDoc: `http://api.<INGRESS_DOMAIN>/redoc`
 
 ---
 

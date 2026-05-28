@@ -69,9 +69,9 @@ export default function GovernanceMetricsPage() {
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
         <Select
-          value={filterType}
+          value={filterType || "all"}
           onValueChange={(v) => {
-            setFilterType(v as MetricType | "");
+            setFilterType(v === "all" ? "" : (v as MetricType));
             setOffset(0);
           }}
         >
@@ -79,7 +79,7 @@ export default function GovernanceMetricsPage() {
             <SelectValue placeholder="All types" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All types</SelectItem>
+            <SelectItem value="all">All types</SelectItem>
             <SelectItem value="ingestion-freshness">ingestion-freshness</SelectItem>
             <SelectItem value="validation-score">validation-score</SelectItem>
             <SelectItem value="doc-health">doc-health</SelectItem>
@@ -87,9 +87,9 @@ export default function GovernanceMetricsPage() {
         </Select>
 
         <Select
-          value={filterMode}
+          value={filterMode || "all"}
           onValueChange={(v) => {
-            setFilterMode(v as MetricMode | "");
+            setFilterMode(v === "all" ? "" : (v as MetricMode));
             setOffset(0);
           }}
         >
@@ -97,16 +97,16 @@ export default function GovernanceMetricsPage() {
             <SelectValue placeholder="All modes" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All modes</SelectItem>
+            <SelectItem value="all">All modes</SelectItem>
             <SelectItem value="active">active</SelectItem>
             <SelectItem value="passive">passive</SelectItem>
           </SelectContent>
         </Select>
 
         <Select
-          value={filterEnabled}
+          value={filterEnabled || "all"}
           onValueChange={(v) => {
-            setFilterEnabled(v as "" | "true" | "false");
+            setFilterEnabled(v === "all" ? "" : (v as "true" | "false"));
             setOffset(0);
           }}
         >
@@ -114,7 +114,7 @@ export default function GovernanceMetricsPage() {
             <SelectValue placeholder="All status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All status</SelectItem>
+            <SelectItem value="all">All status</SelectItem>
             <SelectItem value="true">Enabled</SelectItem>
             <SelectItem value="false">Disabled</SelectItem>
           </SelectContent>

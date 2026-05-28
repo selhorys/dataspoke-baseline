@@ -15,7 +15,7 @@ set +a
 
 NEW_TOKEN=$(curl -sS -X POST "${BASE}/api/v1/auth/token" \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin","password":"admin"}' \
+  -d '{"email":"dataspoke@dataspoke.local","password":"dataspoke"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 
 if [[ -z "${NEW_TOKEN}" ]]; then

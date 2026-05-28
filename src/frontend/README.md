@@ -12,7 +12,7 @@ pnpm dev          # starts on http://localhost:3000
 The dev server proxies nothing. Configure the API base and DataHub URL in `.env.local`:
 
 ```
-NEXT_PUBLIC_API_BASE_URL=http://app.<INGRESS_IP>.nip.io
+NEXT_PUBLIC_API_BASE_URL=http://api.<INGRESS_IP>.nip.io
 NEXT_PUBLIC_DATAHUB_URL=http://datahub.<INGRESS_IP>.nip.io
 ```
 
@@ -38,7 +38,7 @@ Once the backend is running, regenerate TypeScript types from the live OpenAPI s
 ```bash
 pnpm codegen
 # or point at a non-default URL:
-API_OPENAPI_URL=http://app.<INGRESS_IP>.nip.io/api/v1/openapi.json pnpm codegen
+API_OPENAPI_URL=http://api.<INGRESS_IP>.nip.io/api/v1/openapi.json pnpm codegen
 ```
 
 This writes `lib/api/types.generated.ts` using `openapi-typescript`. That file is git-ignored. The hand-written stubs in `lib/api/types.ts` remain the source of truth until the generated file is available.

@@ -15,7 +15,7 @@ import pytest_asyncio
 def _ingress_url() -> str:
     """Return the ingress base URL, resolved at fixture time."""
     domain = os.environ["DATASPOKE_KUBE_INGRESS_DOMAIN"]
-    return f"http://app.{domain}"
+    return f"http://api.{domain}"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -49,7 +49,7 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
     try:
         token_resp = httpx.post(
             f"{base_url}/api/v1/auth/token",
-            json={"email": "dataspoke", "password": "dataspoke"},
+            json={"email": "dataspoke@dataspoke.local", "password": "dataspoke"},
             timeout=10.0,
         )
         token_resp.raise_for_status()
@@ -88,7 +88,7 @@ def admin_token(require_server) -> str:  # noqa: ARG001
     base_url = _ingress_url()
     resp = httpx.post(
         f"{base_url}/api/v1/auth/token",
-        json={"email": "dataspoke", "password": "dataspoke"},
+        json={"email": "dataspoke@dataspoke.local", "password": "dataspoke"},
         timeout=10.0,
     )
     resp.raise_for_status()

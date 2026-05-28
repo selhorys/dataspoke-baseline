@@ -60,7 +60,7 @@ fi
 # ---------------------------------------------------------------------------
 # Tier A: HTTP services via ingress hostname
 # ---------------------------------------------------------------------------
-DS_API_URL="http://app.${DOMAIN}"
+DS_API_URL="http://api.${DOMAIN}"
 DH_GMS_URL="http://datahub.${DOMAIN}/gms"
 DH_UI_URL="http://datahub.${DOMAIN}"
 AIRFLOW_URL="http://airflow.${DOMAIN}"

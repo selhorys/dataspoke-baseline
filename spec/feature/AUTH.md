@@ -143,6 +143,25 @@ revocation list, and issues a fresh access token with the same identity claims.
 `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime;
 both flows fail-closed on Redis unreachability (`503 STORAGE_UNAVAILABLE`).
 
+### Same-site requirement for cookie-based session
+
+The refresh JWT is an `HttpOnly`, `SameSite=Lax` cookie scoped to the API host;
+Lax cookies are sent only on same-site requests, so the browser UI and the API
+must share a registrable domain for the cookie to flow on `/auth/token/refresh`.
+Password login is unaffected on first sign-in (its access token is returned in
+the response body), but **Google/OIDC login establishes the session solely via
+this cookie**: the callback sets the cookie and 302-redirects to
+`oauth_post_login_redirect` (the UI origin, not an API-relative path), and the UI
+then calls `/auth/token/refresh` to obtain an access token. That refresh call
+must be same-site for the cookie to be sent.
+
+In prod the UI and API share a domain, so this holds. In dev it holds for the
+in-cluster frontend (`app.<INGRESS_IP>.nip.io`, same site as the API at
+`api.<INGRESS_IP>.nip.io`) but not for host `pnpm dev` on `localhost:3000`, which
+is cross-site to the nip.io API — so OIDC login completes only from the in-cluster
+frontend. `SameSite=None` would lift this but requires HTTPS, which the dev stack
+does not serve. Host `pnpm dev` should use password login.
+
 ### Profile read & update
 
 `GET /auth/me` returns the caller's `users` row (without `password_hash`),
@@ -450,7 +469,7 @@ nothing.
 
 | Property | Value |
 |----------|-------|
-| Login identifier | `dataspoke` (not an email address — `POST /auth/token` accepts a plain string in the `email` field so this account can authenticate) |
+| Login identifier | `dataspoke@dataspoke.local` (DataHub corpuser URN `urn:li:corpuser:dataspoke@dataspoke.local`) |
 | Display name | `DataSpoke Admin` |
 | Initial password | `dataspoke` |
 | Role | `Admin` |

@@ -80,7 +80,7 @@ kubectl scale deployment/dataspoke-api --replicas=0 \
   -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"                           # Scale down in-cluster API
 ```
 
-The API is accessible via nginx-ingress at `http://app.<INGRESS_IP>.nip.io/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
+The API is accessible via nginx-ingress at `http://api.<INGRESS_IP>.nip.io/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
 
 ### Implementation Status
 

@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Activity,
   BarChart3,
   Database,
+  FileText,
   GitBranch,
   LayoutDashboard,
   LogOut,
@@ -14,6 +16,7 @@ import {
   Sparkles,
   User,
   Users,
+  Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/auth/store";
@@ -30,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationCenter } from "@/components/notification-center";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 
 interface NavItem {
   label: string;
@@ -93,6 +97,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const displayName = me?.name ?? me?.email ?? "Account";
 
+  const { datahubUrl, langfuseUrl, airflowUrl, apiBaseUrl } = getRuntimeConfig();
+  const infraLinks = [
+    { label: "DataHub", href: datahubUrl, icon: Database },
+    { label: "Langfuse", href: langfuseUrl, icon: Activity },
+    { label: "Airflow", href: airflowUrl, icon: Workflow },
+    { label: "API docs", href: apiBaseUrl ? `${apiBaseUrl}/redoc` : "", icon: FileText },
+  ];
+
   return (
     <div className="flex h-screen flex-col">
       {/* Header */}
@@ -100,6 +112,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <span className="mr-auto text-base font-semibold tracking-tight">DataSpoke</span>
 
         <div className="flex items-center gap-2">
+          {infraLinks
+            .filter((l) => l.href)
+            .map((l) => {
+              const Icon = l.icon;
+              return (
+                <Button
+                  key={l.label}
+                  asChild
+                  variant="ghost"
+                  size="icon"
+                  title={l.label}
+                  aria-label={`Open ${l.label}`}
+                >
+                  <a href={l.href} target="_blank" rel="noopener noreferrer">
+                    <Icon className="h-4 w-4" />
+                  </a>
+                </Button>
+              );
+            })}
           <ThemeToggle />
           <NotificationCenter />
           <DropdownMenu>

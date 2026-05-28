@@ -150,12 +150,12 @@ def _restore_dev_baseline_after_module() -> Iterator[None]:
     headers = {"X-Internal-Token": token, "Content-Type": "application/json"}
     with httpx.Client(timeout=10.0) as client:
         client.patch(
-            f"http://app.{base}/internal/admin/peripherals/datahub",
+            f"http://api.{base}/internal/admin/peripherals/datahub",
             headers=headers,
             json={"gms_url": dh_gms, "kafka_brokers": dh_kafka, "token": dh_token},
         )
         client.patch(
-            f"http://app.{base}/internal/admin/peripherals/langfuse",
+            f"http://api.{base}/internal/admin/peripherals/langfuse",
             headers=headers,
             json={"host": lf_host, "public_key": lf_pk, "secret_key": lf_sk},
         )

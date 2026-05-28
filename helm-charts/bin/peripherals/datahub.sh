@@ -108,12 +108,24 @@ DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.9.10}"
 
 oidc_args=()
 if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
+  # SSO is configured on the datahub-frontend subchart's oidcAuthentication block,
+  # which renders the AUTH_OIDC_* env the Play frontend reads. user_name_claim_regex
+  # = "(.*)" keeps the full email as the corpuser id (default "([^@]+)" strips the
+  # domain), so it matches DataSpoke-mirrored corpusers (urn:li:corpuser:<email>).
+  # The chart derives an https AUTH_OIDC_BASE_URL from the ingress host; dev serves
+  # DataHub over plain HTTP, so set oidcBaseUrl to override it (one env value — an
+  # extraEnvs duplicate would break the strategic-merge patch on helm upgrade) so the
+  # OAuth redirect_uri matches the registered http://datahub.../callback/oidc.
+  # provider=google makes the chart set the OIDC discoveryUri automatically.
+  oidc_base="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
   oidc_args+=(
-    --set "datahub.global.datahub.auth.oidc.enabled=true"
-    --set-string "datahub.global.datahub.auth.oidc.clientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID}"
-    --set-string "datahub.global.datahub.auth.oidc.clientSecret=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET}"
-    --set-string "datahub.global.datahub.auth.oidc.discoveryUri=https://accounts.google.com/.well-known/openid-configuration"
-    --set-string "datahub.global.datahub.auth.oidc.userIdClaim=email"
+    --set "datahub-frontend.oidcAuthentication.enabled=true"
+    --set-string "datahub-frontend.oidcAuthentication.provider=google"
+    --set-string "datahub-frontend.oidcAuthentication.clientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID}"
+    --set-string "datahub-frontend.oidcAuthentication.clientSecret=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET}"
+    --set-string "datahub-frontend.oidcAuthentication.oidcBaseUrl=${oidc_base}"
+    --set-string "datahub-frontend.oidcAuthentication.user_name_claim=email"
+    --set-string "datahub-frontend.oidcAuthentication.user_name_claim_regex=(.*)"
   )
   info "Google OIDC enabled on DataHub (using DataSpoke OAuth credentials)"
 elif [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" || -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then

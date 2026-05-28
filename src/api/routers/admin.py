@@ -721,7 +721,7 @@ async def internal_bootstrap(
     db: AsyncSession = Depends(get_db),
     datahub: DataHubClient = Depends(get_datahub),
 ) -> BootstrapResponse:
-    """Seed the built-in dataspoke/dataspoke admin if no Admin user exists.
+    """Seed the built-in dataspoke@dataspoke.local/dataspoke admin if no Admin user exists.
 
     Idempotent: if any Admin user already exists, returns created=False without
     touching anything.
@@ -744,7 +744,7 @@ async def internal_bootstrap(
     runtime_config = await get_runtime_config(db)
     try:
         user = await users.create_user(
-            db, email="dataspoke", name="DataSpoke Admin", password="dataspoke", role="Admin"
+            db, email="dataspoke@dataspoke.local", name="DataSpoke Admin", password="dataspoke", role="Admin"
         )
     except ConflictError as exc:
         if exc.error_code == "EMAIL_ALREADY_REGISTERED":
@@ -777,4 +777,4 @@ async def internal_bootstrap(
         "bootstrap_admin_seeded_with_default_password",
         extra={"hint": "rotate via PATCH /auth/me before going to production"},
     )
-    return BootstrapResponse(created=True, user_id=str(user.id), email="dataspoke")
+    return BootstrapResponse(created=True, user_id=str(user.id), email="dataspoke@dataspoke.local")

@@ -403,11 +403,11 @@ export function IngestionConfForm({
           error={errors.schedule_tier?.message as string | undefined}
         >
           <Select
-            value={watch("schedule_tier") ?? ""}
+            value={watch("schedule_tier") || "none"}
             onValueChange={(v) =>
               setValue(
                 "schedule_tier",
-                v as "hourly" | "daily" | "weekly" | "",
+                v === "none" ? "" : (v as "hourly" | "daily" | "weekly"),
                 { shouldDirty: true },
               )
             }
@@ -416,7 +416,7 @@ export function IngestionConfForm({
               <SelectValue placeholder="On-demand only" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">On-demand only</SelectItem>
+              <SelectItem value="none">On-demand only</SelectItem>
               <SelectItem value="hourly">hourly</SelectItem>
               <SelectItem value="daily">daily</SelectItem>
               <SelectItem value="weekly">weekly</SelectItem>

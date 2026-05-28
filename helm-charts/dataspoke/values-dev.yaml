@@ -29,7 +29,7 @@ api:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
       nginx.ingress.kubernetes.io/ssl-redirect: "false"
     hosts:
-      - host: "app.dev.dataspoke.example.com"
+      - host: "api.dev.dataspoke.example.com"
         paths:
           - path: /
             pathType: Prefix
