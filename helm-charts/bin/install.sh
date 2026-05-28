@@ -4,15 +4,24 @@
 # Usage: install.sh --profile {dev|prod} [OPTIONS]
 #
 # OPTIONS
-#   --components <csv>    Subset of components to install (default: all-for-profile).
-#                         Names: nginx-ingress, datahub, langfuse, dataspoke-infra,
-#                                api, frontend, dummy-data, dev-lock, seed
-#   --from-component <n>  Resume an interrupted full install at <n>.
-#   --skip-build          Skip Docker image rebuilds (api/airflow/postgres/frontend).
-#   --skip-seed           Skip post-install admin-API seeding (dev only).
-#   --values <path>       Extra values file for the umbrella chart (prod).
-#   --image-tag <tag>     Override image tag (default: dev).
-#   --help, -h            Print this usage message.
+#   --components <csv>          Subset of components to install (default: all-for-profile).
+#                               Names: nginx-ingress, datahub, langfuse, dataspoke-infra,
+#                                      api, frontend, dummy-data, dev-lock, seed
+#   --from-component <n>        Resume an interrupted full install at <n>.
+#   --frontend none|local|cluster
+#                               Frontend deployment mode. Controls whether the Next.js
+#                               frontend is deployed and how developers access it.
+#                               none    — do not deploy; no image build. (dev default)
+#                               local   — do not deploy; write src/frontend/.env.local
+#                                         so `pnpm dev` points at the in-cluster API.
+#                                         (dev only)
+#                               cluster — build image and deploy in-cluster via Helm.
+#                                         (prod default; also available in dev)
+#   --skip-build                Skip Docker image rebuilds (api/airflow/postgres/frontend).
+#   --skip-seed                 Skip post-install admin-API seeding (dev only).
+#   --values <path>             Extra values file for the umbrella chart (prod).
+#   --image-tag <tag>           Override image tag (default: dev).
+#   --help, -h                  Print this usage message.
 #
 # The --components api path rebuilds the API image, runs helm upgrade, and
 # waits for rollout.
@@ -40,6 +49,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 PROFILE=""
 COMPONENTS_CSV=""
 FROM_COMPONENT=""
+FRONTEND_MODE=""
 SKIP_BUILD=false
 SKIP_SEED=false
 EXTRA_VALUES=""
@@ -50,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --profile)         PROFILE="${2:-}"; shift 2 ;;
     --components)      COMPONENTS_CSV="${2:-}"; shift 2 ;;
     --from-component)  FROM_COMPONENT="${2:-}"; shift 2 ;;
+    --frontend)        FRONTEND_MODE="${2:-}"; shift 2 ;;
     --skip-build)      SKIP_BUILD=true; shift ;;
     --skip-seed)       SKIP_SEED=true; shift ;;
     --values)          EXTRA_VALUES="${2:-}"; shift 2 ;;
@@ -64,6 +75,22 @@ if [[ -z "$PROFILE" ]]; then
 fi
 if [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
   error "Invalid profile '${PROFILE}'. Must be 'dev' or 'prod'."
+fi
+
+# Apply per-profile defaults for FRONTEND_MODE
+if [[ -z "$FRONTEND_MODE" ]]; then
+  if [[ "$PROFILE" == "dev" ]]; then
+    FRONTEND_MODE="none"
+  else
+    FRONTEND_MODE="cluster"
+  fi
+fi
+# Validate FRONTEND_MODE
+if [[ "$FRONTEND_MODE" != "none" && "$FRONTEND_MODE" != "local" && "$FRONTEND_MODE" != "cluster" ]]; then
+  error "Invalid --frontend '${FRONTEND_MODE}'. Must be none|local|cluster."
+fi
+if [[ "$FRONTEND_MODE" == "local" && "$PROFILE" == "prod" ]]; then
+  error "--frontend local is dev-only (no localhost story for prod)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -452,35 +479,96 @@ print((data.get("secrets") or {}).get("existingSecret", ""))
 PYEOF
 }
 
+# _frontend_helm_set_args <domain>
+# Prints the --set flags required to enable and wire the frontend subchart.
+# Output is one token per line; callers read into an array via a while-read loop.
+# The nginx annotation key contains a dot that helm interprets as a path
+# separator, so it must be escaped as \\.
+_frontend_helm_set_args() {
+  local domain="$1"
+  cat <<EOF
+--set
+frontend.enabled=true
+--set
+frontend.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend
+--set
+frontend.image.tag=${IMAGE_TAG}
+--set
+frontend.image.pullPolicy=Always
+--set
+frontend.ingress.enabled=true
+--set
+frontend.ingress.className=nginx
+--set-string
+frontend.ingress.annotations.nginx\.ingress\.kubernetes\.io/ssl-redirect=false
+--set
+frontend.ingress.hosts[0].host=app.${domain}
+--set
+frontend.ingress.hosts[0].paths[0].path=/
+--set
+frontend.ingress.hosts[0].paths[0].pathType=Prefix
+--set
+frontend.config.apiBaseUrl=http://app.${domain}/api/v1
+--set
+frontend.config.datahubUrl=http://datahub.${domain}
+EOF
+}
+
+# _write_frontend_env_local <domain>
+# Overwrites src/frontend/.env.local with NEXT_PUBLIC_* vars pointing at the
+# in-cluster API and DataHub. Always overwrites — no backup.
+_write_frontend_env_local() {
+  local domain="$1"
+  local env_local_path="${REPO_ROOT}/src/frontend/.env.local"
+  cat > "${env_local_path}" <<EOF
+# Auto-generated by helm-charts/bin/install.sh --frontend local — safe to edit or delete.
+NEXT_PUBLIC_API_BASE_URL=http://app.${domain}
+NEXT_PUBLIC_DATAHUB_URL=http://datahub.${domain}
+EOF
+  info "Wrote ${env_local_path} (API: http://app.${domain}, DataHub: http://datahub.${domain})"
+}
+
 # helm upgrade --install for the dataspoke umbrella chart (dev overlay).
 # Used by both the full dev install (phase 3) and the --components api fast path.
+# Reads the global $FRONTEND_MODE to decide whether to append frontend --set flags.
 _helm_upgrade_dataspoke_dev() {
   local ns="$1"
   local extra_env_file
   extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
+  local dev_domain="${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
 
-  helm upgrade --install dataspoke "$CHART_DIR" \
-    -f "$CHART_DIR/values-dev.yaml" \
-    -n "${ns}" \
-    --set-string global.imageRegistry="" \
-    --set-string postgresql.image.registry="" \
-    --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
-    --set-string postgresql.image.tag="${IMAGE_TAG}" \
-    --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
-    --set "api.image.tag=${IMAGE_TAG}" \
-    --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
-    --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
-    --set airflow.images.airflow.pullPolicy=Always \
-    --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002" \
-    --set "api.ingress.hosts[0].host=app.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-    --set "api.ingress.hosts[0].paths[0].path=/" \
-    --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
-    --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
-    --set-file "airflow.extraEnv=${extra_env_file}" \
-    --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
-    --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
-    --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" \
+  local args=(
+    upgrade --install dataspoke "$CHART_DIR"
+    -f "$CHART_DIR/values-dev.yaml"
+    -n "${ns}"
+    --set-string global.imageRegistry=""
+    --set-string postgresql.image.registry=""
+    --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres"
+    --set-string "postgresql.image.tag=${IMAGE_TAG}"
+    --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api"
+    --set "api.image.tag=${IMAGE_TAG}"
+    --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow"
+    --set-string "airflow.images.airflow.tag=${IMAGE_TAG}"
+    --set airflow.images.airflow.pullPolicy=Always
+    --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002"
+    --set "api.ingress.hosts[0].host=app.${dev_domain}"
+    --set "api.ingress.hosts[0].paths[0].path=/"
+    --set "api.ingress.hosts[0].paths[0].pathType=Prefix"
+    --set "airflow.ingress.apiServer.hosts[0].name=airflow.${dev_domain}"
+    --set-file "airflow.extraEnv=${extra_env_file}"
+    --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key"
+    --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret"
+    --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}"
     --timeout 10m
+  )
+
+  if [[ "${FRONTEND_MODE:-none}" == "cluster" ]]; then
+    while IFS= read -r _farg; do
+      args+=("${_farg}")
+    done < <(_frontend_helm_set_args "${dev_domain}")
+  fi
+
+  helm "${args[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -604,6 +692,10 @@ if [[ "$PROFILE" == "dev" ]]; then
     use_context "${DATASPOKE_KUBE_CLUSTER}"
 
     local_extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
+    frontend_fast_args=()
+    while IFS= read -r _farg; do
+      frontend_fast_args+=("${_farg}")
+    done < <(_frontend_helm_set_args "${DOMAIN}")
     helm upgrade --install dataspoke "$CHART_DIR" \
       -f "$CHART_DIR/values-dev.yaml" \
       -n "${NS}" \
@@ -625,18 +717,7 @@ if [[ "$PROFILE" == "dev" ]]; then
       --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
       --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
       --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" \
-      --set frontend.enabled=true \
-      --set "frontend.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend" \
-      --set "frontend.image.tag=${IMAGE_TAG}" \
-      --set frontend.image.pullPolicy=Always \
-      --set "frontend.ingress.enabled=true" \
-      --set "frontend.ingress.className=nginx" \
-      --set "frontend.ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/ssl-redirect=false" \
-      --set "frontend.ingress.hosts[0].host=app.${DOMAIN}" \
-      --set "frontend.ingress.hosts[0].paths[0].path=/" \
-      --set "frontend.ingress.hosts[0].paths[0].pathType=Prefix" \
-      --set "frontend.config.apiBaseUrl=http://app.${DOMAIN}/api/v1" \
-      --set "frontend.config.datahubUrl=http://datahub.${DOMAIN}" \
+      "${frontend_fast_args[@]}" \
       --timeout 10m
 
     info "Waiting for frontend deployment to become ready..."
@@ -689,6 +770,9 @@ if [[ "$PROFILE" == "dev" ]]; then
     _run_bg "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
     _run_bg "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
     _run_bg "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
+    if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+      _run_bg "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
+    fi
   else
     info "  --skip-build: skipping image builds."
   fi
@@ -806,6 +890,14 @@ if [[ "$PROFILE" == "dev" ]]; then
       && info "DataSpoke API is ready." \
       || warn "DataSpoke API did not become ready in time."
 
+    # Wait for frontend (only when deployed in-cluster)
+    if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+      info "Waiting for DataSpoke frontend to become ready..."
+      kubectl rollout status deployment/dataspoke-frontend -n "${NS}" --timeout=5m \
+        && info "DataSpoke frontend is ready." \
+        || warn "DataSpoke frontend did not become ready in time — check pod logs."
+    fi
+
     # Populate DATASPOKE_TEST_* block in .env for laptop-side test access
     info "Writing DATASPOKE_TEST_* values to .env..."
     _sync_env_from_secret "${NS}" "DATASPOKE_POSTGRES_USER"     "DATASPOKE_TEST_POSTGRES_USER"
@@ -853,6 +945,11 @@ if [[ "$PROFILE" == "dev" ]]; then
     info "Skipping seeding (--skip-seed or 'seed' not in components)."
   fi
 
+  # Write src/frontend/.env.local when local mode is requested
+  if [[ "$FRONTEND_MODE" == "local" ]]; then
+    _write_frontend_env_local "${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+  fi
+
   # -----------------------------------------------------------------------
   # Re-read .env for summary
   # -----------------------------------------------------------------------
@@ -885,6 +982,32 @@ if [[ "$PROFILE" == "dev" ]]; then
   echo ""
   echo "  Credentials (auto-generated): see DATASPOKE_TEST_AIRFLOW_{USER,PASSWORD} in helm-charts/.env"
   echo "  Langfuse: ${DATASPOKE_DEV_LANGFUSE_INIT_USER_EMAIL:-dataspoke@dataspoke.local} / ${DATASPOKE_DEV_LANGFUSE_INIT_USER_PASSWORD:-<see .env>}"
+  echo ""
+  case "$FRONTEND_MODE" in
+    none)
+      echo "  Frontend:      not deployed (--frontend none). Use --frontend local | cluster to deploy."
+      ;;
+    local)
+      echo "  Frontend (host dev):"
+      echo "    src/frontend/.env.local written (API: http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}, DataHub: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>})"
+      echo "    Run:   pnpm -C src/frontend install && pnpm -C src/frontend dev"
+      echo "    Open:  http://localhost:3000"
+      if [[ "$SKIP_SEED" == "true" ]]; then
+        echo "    Login: (admin not seeded — --skip-seed)"
+      else
+        echo "    Login: dataspoke / dataspoke  (rotate via PATCH /auth/me)"
+      fi
+      ;;
+    cluster)
+      echo "  Frontend (in-cluster):"
+      echo "    Web UI: http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
+      if [[ "$SKIP_SEED" == "true" ]]; then
+        echo "    Login:  (admin not seeded — --skip-seed)"
+      else
+        echo "    Login:  dataspoke / dataspoke  (rotate via PATCH /auth/me)"
+      fi
+      ;;
+  esac
   echo ""
   echo "API iteration:"
   echo "  ./helm-charts/bin/install.sh --profile dev --components api"
@@ -940,7 +1063,9 @@ elif [[ "$PROFILE" == "prod" ]]; then
     _run_bg "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
     _run_bg "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
     _run_bg "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
-    _run_bg "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
+    if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+      _run_bg "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
+    fi
     _wait_all
   else
     step 2 3 "image builds (skipped via --skip-build)"
@@ -976,6 +1101,12 @@ elif [[ "$PROFILE" == "prod" ]]; then
   local_extra_env_file="$(_build_airflow_extra_env_file "${SECRET_TO_CHECK}")"
 
   info "Installing DataSpoke umbrella chart (prod)..."
+  # Derive frontend.enabled from FRONTEND_MODE (true=cluster, false=none)
+  if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+    _prod_frontend_enabled="true"
+  else
+    _prod_frontend_enabled="false"
+  fi
   helm upgrade --install dataspoke "$CHART_DIR" \
     "${VALUES_ARGS[@]}" \
     -n "${NS}" \
@@ -985,6 +1116,7 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set-string "postgresql.image.tag=${IMAGE_TAG}" \
     --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
     --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
+    --set "frontend.enabled=${_prod_frontend_enabled}" \
     --set "frontend.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend" \
     --set "frontend.image.tag=${IMAGE_TAG}" \
     --set-file "airflow.extraEnv=${local_extra_env_file}" \
@@ -1010,6 +1142,24 @@ elif [[ "$PROFILE" == "prod" ]]; then
   echo "=== Installation complete (profile: prod) ==="
   echo ""
   echo "  Helm release: dataspoke  namespace: ${NS}"
+  echo ""
+  if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+    # Best-effort: resolve the deployed frontend ingress host
+    _frontend_host="$(kubectl get ingress -n "${NS}" \
+      -o jsonpath='{.items[?(@.metadata.name=="dataspoke-frontend")].spec.rules[0].host}' 2>/dev/null || true)"
+    if [[ -n "${_frontend_host}" ]]; then
+      echo "  Web UI: http://${_frontend_host}/"
+    else
+      echo "  Web UI: served at your configured frontend.ingress host (see your operator overlay)."
+    fi
+    if [[ "$SKIP_SEED" == "true" ]]; then
+      echo "  Login:  (admin not seeded — --skip-seed)"
+    else
+      echo "  Login:  dataspoke / dataspoke  (rotate via PATCH /auth/me)"
+    fi
+  else
+    echo "  Frontend: disabled (--frontend none)."
+  fi
   echo ""
   echo "  Post-install: configure peripherals and runtime settings via:"
   echo "    /api/v1/admin/peripherals/{datahub,langfuse}"

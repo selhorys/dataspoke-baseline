@@ -21,19 +21,23 @@ helm-charts/
 ├── README.md                  # Operational guide for bin/ scripts
 ├── .env.example                # 3-section env file (kube deployment / dev profile / auto-populated test access)
 ├── bin/
-│   ├── install.sh              # --profile {dev|prod} [--components …] [--skip-build] …
-│   ├── uninstall.sh            # --profile {dev|prod} [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]
+│   ├── install.sh              # --profile {dev|prod} [--components …] [--frontend none|local|cluster] [--skip-build] …
+│   ├── uninstall.sh            # --profile {dev|prod} [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]
 │   ├── health-check.sh
-│   ├── build-image.sh          # api | airflow | postgres
+│   ├── build-image.sh          # api | airflow | postgres | frontend
 │   ├── lib/helpers.sh          # info/warn/error/step/upsert_env_var/wait_for_pod
 │   ├── peripherals/            # nginx-ingress, datahub, langfuse, dummy-data, dev-lock (dev only)
 │   └── post-install/           # seed-peripheral-config, seed-runtime-config (dev only)
 ├── dataspoke/                  # Umbrella chart (values.yaml + values-dev.yaml + templates/)
+│   └── subcharts/              # frontend, event-consumer
 ├── langfuse/                   # Sibling chart for the Langfuse observability subsystem
 └── peripherals/                # Dev-only values + manifests (datahub, nginx-ingress, dummy-data, dev-lock)
 
-docker-images/{api,airflow,postgres}/Dockerfile   # One per service
+docker-images/{api,airflow,postgres}/Dockerfile   # One per Python service
+src/frontend/Dockerfile                            # Next.js image (built by build-image.sh frontend)
 ```
+
+In dev the umbrella defaults to `frontend.enabled=false` (developers run host `pnpm dev`); `install.sh --components frontend` builds the image and helm-upgrades with `frontend.enabled=true` to deploy it in-cluster.
 
 ## Helm rules
 
@@ -47,7 +51,7 @@ docker-images/{api,airflow,postgres}/Dockerfile   # One per service
 
 - Multi-stage builds: `builder` → `runtime`
 - Python: base `python:3.13-slim`, copy `uv` from `ghcr.io/astral-sh/uv:latest`, install with `uv sync --frozen --no-dev`
-- Next.js: base `node:20-alpine` with `standalone` output mode
+- Next.js: base `node:22-alpine`, enable pnpm via `corepack`, `pnpm install --frozen-lockfile`, `standalone` output mode
 - Never run as root: `USER nonroot` or create a non-root user
 
 ## Dev script conventions

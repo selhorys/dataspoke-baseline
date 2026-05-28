@@ -17,11 +17,15 @@ Run every command from the directory it expects (usually project root). Do not `
 ./helm-charts/bin/uninstall.sh --profile dev      # Tear down everything
 ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra   # Single component reinstall
 ./helm-charts/bin/install.sh --profile dev --components api               # Rebuild + redeploy the API
+./helm-charts/bin/install.sh --profile dev --components frontend          # Rebuild + redeploy the Next.js UI
+./helm-charts/bin/install.sh --profile dev --frontend local              # Full dev stack + write src/frontend/.env.local for host `pnpm dev`
 ```
 
 Settings in `helm-charts/.env`. See `helm-charts/README.md` for access details and ingress endpoints; `spec/feature/HELM_CHART.md` for the full deployment subsystem.
 
 The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://app.<INGRESS_IP>.nip.io/api/v1/`). Code changes are picked up by `install.sh --profile dev --components api` (docker build + `helm upgrade` + rollout).
+
+The **frontend** (`src/frontend/`, Next.js 15 + pnpm) is a thin reference UI. A full install's `--frontend` flag (default `none` in dev, `cluster` in prod) controls it: `none` deploys nothing; `local` (dev-only) writes `src/frontend/.env.local` so host `pnpm dev` reaches the in-cluster API; `cluster` deploys the containerised UI. `--components frontend` is the standalone rebuild+redeploy iteration path. Frontend tests run via `pnpm -C src/frontend test` (Vitest), separate from the Python `pytest` groups.
 
 Prod uses the same umbrella chart with `values.yaml` plus an operator-supplied overlay: `./helm-charts/bin/install.sh --profile prod --values <overlay.yaml>`.
 

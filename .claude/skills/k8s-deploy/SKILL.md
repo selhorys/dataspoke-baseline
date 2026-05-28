@@ -1,6 +1,6 @@
 ---
 name: k8s-deploy
-description: Drive the helm-charts/bin/ install/uninstall/build/health scripts for both dev and prod profiles — configure, install, reinstall, uninstall, health-check, and rebuild-the-API. The dev profile installs umbrella chart + peripherals (nginx-ingress, DataHub, Langfuse, dummy data, dev-lock) and auto-seeds peripheral connection config via the admin API. The prod profile installs the umbrella chart only; operator wires peripherals via /api/v1/admin/peripherals/*.
+description: Drive the helm-charts/bin/ install/uninstall/build/health scripts for both dev and prod profiles — configure, install, reinstall, uninstall, health-check, and rebuild-the-API / rebuild-the-frontend. The dev profile installs umbrella chart + peripherals (nginx-ingress, DataHub, Langfuse, dummy data, dev-lock) and auto-seeds peripheral connection config via the admin API. The prod profile installs the umbrella chart only; operator wires peripherals via /api/v1/admin/peripherals/*.
 disable-model-invocation: false
 user-invocable: true
 argument-hint: [configure|install|reinstall|uninstall|health-check|run-api] [--profile dev|prod] [--components <csv>] [other options...]
@@ -40,6 +40,7 @@ are specified, operate on **all-for-profile**.
 | `langfuse` | dev | `lf`, `observability` |
 | `dataspoke-infra` | dev, prod | `infra`, `infrastructure`, `chart`, `umbrella` |
 | `api` | dev, prod | (rebuild + helm-upgrade the API only — iteration path) |
+| `frontend` | dev, prod | `ui`, `web` (rebuild + helm-upgrade the Next.js UI only — iteration path) |
 | `dummy-data` | dev | `example`, `dummy` |
 | `dev-lock` | dev | `lock` |
 | `seed` | dev | (post-install admin-API seeding only) |
@@ -76,6 +77,7 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 1. Execute the top-level install script **in the background**:
    - dev: `./helm-charts/bin/install.sh --profile dev`
    - prod: `./helm-charts/bin/install.sh --profile prod --values <operator-overlay>` (ask the user for the overlay path)
+   - **Frontend** (`--frontend none|local|cluster`, default `none` in dev / `cluster` in prod): pass `--frontend local` for the host-`pnpm dev` workflow (writes `src/frontend/.env.local`), `--frontend cluster` to deploy the containerised UI in-cluster, or `--frontend none` for API-only. `local` is dev-only. The install summary prints the resulting Web UI URL + default `dataspoke / dataspoke` login. If the user hasn't said, ask which frontend mode they want (or default per profile).
    - Note the background task ID and output file path.
 2. While the script runs, **alternate between two monitoring sources every ~30 seconds**:
    a. **Script output**: read the background task output file (e.g., `tail -20 <output-file>`) to report install progress messages.
@@ -89,7 +91,8 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 1. **Resuming an interrupted full install** (starting component plus every component after it in dependency order): prefer `./helm-charts/bin/install.sh --profile dev --from-component <name>` — it inherits the orchestrator's step markers, error handling, and final summary.
 2. **Installing one or a few specific components**: `./helm-charts/bin/install.sh --profile dev --components <csv>`. Honors phase ordering automatically.
 3. **Rebuild and redeploy the API only** (code-iteration path): `./helm-charts/bin/install.sh --profile dev --components api`. This rebuilds the API image, runs helm upgrade, and rolls the deployment — replaces the previous standalone `dataspoke-test-mode.sh` workflow.
-4. Monitor with `/k8s-work` after each component completes.
+4. **Rebuild and redeploy the frontend only** (code-iteration path): `./helm-charts/bin/install.sh --profile dev --components frontend`. The dev umbrella keeps `frontend.enabled=false` (developers run host `pnpm dev` at `src/frontend`); this fast path builds the frontend image and helm-upgrades with `frontend.enabled=true` to deploy the containerised UI in-cluster (verification / prod-parity). Stop it with `kubectl scale deployment/dataspoke-frontend --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"`.
+5. Monitor with `/k8s-work` after each component completes.
 
 ### Post-install
 
@@ -128,11 +131,15 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
 
 ### Partial uninstall (specific components)
 
-`uninstall.sh` does not support `--components` — it always tears down the
-full profile. For a single-component teardown, delete the component's Helm
-release (or manifests) directly with `helm uninstall <release> -n <ns>` or
-`kubectl delete -f ...`, then reinstall via `install.sh --components <csv>`.
-Do NOT delete namespaces during partial uninstall.
+`uninstall.sh --components frontend` is the one supported targeted teardown:
+it runs `helm upgrade --reuse-values --set frontend.enabled=false` on the
+`dataspoke` release (removes the UI Deployment/Service/Ingress, leaves
+everything else). `--components api` is rejected — the api subchart is the core
+service; to stop it temporarily use `kubectl scale deployment/dataspoke-api
+--replicas=0`. For any other single component, delete its Helm release (or
+manifests) directly with `helm uninstall <release> -n <ns>` or `kubectl delete
+-f ...`, then reinstall via `install.sh --components <csv>`. Do NOT delete
+namespaces during partial uninstall.
 
 ### Post-uninstall
 
@@ -175,7 +182,7 @@ There is no dedicated `reinstall.sh`, and `uninstall.sh` does not support `--com
 
 ## Action: run-api
 
-Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll the API deployment. This is the **code-iteration path**. The API is accessible via nginx-ingress — no port-forward needed. Airflow callbacks reach it via cluster DNS (`http://dataspoke-api:8002`). Stub-mode toggles are in `runtime_config` (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`); the dev-profile install seeds them all to `true` post-install, flippable via `PATCH /api/v1/admin/conf`.
+Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll the API deployment. This is the **code-iteration path** for the backend. (For the frontend equivalent, use `--components frontend` — see Partial install above; most frontend iteration happens via host `pnpm dev` and only needs an in-cluster deploy for prod-parity verification.) The API is accessible via nginx-ingress — no port-forward needed. Airflow callbacks reach it via cluster DNS (`http://dataspoke-api:8002`). Stub-mode toggles are in `runtime_config` (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`); the dev-profile install seeds them all to `true` post-install, flippable via `PATCH /api/v1/admin/conf`.
 
 ### Pre-flight
 

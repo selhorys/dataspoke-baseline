@@ -25,6 +25,16 @@ cp helm-charts/.env.example helm-charts/.env
 ./helm-charts/bin/install.sh --profile dev
 ```
 
+The `--frontend` flag controls how the Next.js UI is handled:
+
+| Flag | Behavior |
+|------|----------|
+| `--frontend none` | Do not deploy the frontend (dev default). |
+| `--frontend local` | Write `src/frontend/.env.local` pointing at the in-cluster API, then run `pnpm dev` on the host. |
+| `--frontend cluster` | Build the frontend image and deploy it in-cluster. |
+
+`--frontend local` and `--frontend cluster` are dev-only modes. In prod the default is `--frontend cluster` (always deployed).
+
 ### Health check
 
 ```bash
@@ -34,7 +44,8 @@ cp helm-charts/.env.example helm-charts/.env
 ### Uninstall
 
 ```bash
-./helm-charts/bin/uninstall.sh --profile dev
+./helm-charts/bin/uninstall.sh --profile dev                       # Full teardown
+./helm-charts/bin/uninstall.sh --profile dev --components frontend  # Remove only the frontend (helm upgrade frontend.enabled=false)
 ```
 
 ### Prod profile
@@ -57,7 +68,8 @@ are exposed on dedicated ports.
 |---------|---------|-------------|
 | DataHub UI | `http://datahub.<INGRESS_IP>.nip.io/` | `datahub` / `datahub` |
 | DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
-| DataSpoke UI (prod / `--components frontend`) | `http://app.<INGRESS_IP>.nip.io/` | login via DataSpoke auth |
+| DataSpoke Web UI (dev `--frontend cluster`) | `http://app.<INGRESS_IP>.nip.io/` | `dataspoke` / `dataspoke` — rotate via `PATCH /auth/me` before production |
+| DataSpoke Web UI (dev `--frontend local`) | `http://localhost:3000` | same as above |
 | DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
 | Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env` (auto-generated on first install) |
@@ -68,11 +80,25 @@ are exposed on dedicated ports.
 | Example Kafka | `<INGRESS_IP>:9104` | -- |
 | Lock API | `<INGRESS_IP>:9221` | -- |
 
-Dev frontend runs on the host (`pnpm dev` in `src/frontend/`) — the in-cluster
-frontend pod is disabled by default. To deploy the containerised frontend in dev:
-`./helm-charts/bin/install.sh --profile dev --components frontend`.
-Runtime config vars (`DATASPOKE_API_BASE_URL`, `DATASPOKE_DATAHUB_URL`) are
-injected via ConfigMap; values come from `frontend.config.*` in `values.yaml`.
+The dev default (`--frontend none`) does not deploy the frontend pod. To run the UI on the host:
+
+```bash
+# 1. Write src/frontend/.env.local pointing at the in-cluster API
+./helm-charts/bin/install.sh --profile dev --frontend local
+
+# 2. Start the Next.js dev server
+pnpm -C src/frontend install && pnpm -C src/frontend dev
+# Open http://localhost:3000  —  login: dataspoke / dataspoke
+```
+
+To deploy the containerised frontend in-cluster instead:
+
+```bash
+./helm-charts/bin/install.sh --profile dev --frontend cluster
+# Open http://app.<INGRESS_IP>.nip.io/  —  login: dataspoke / dataspoke
+```
+
+The `--components frontend` fast path (rebuild + redeploy only the frontend pod) remains available as a code-iteration shortcut.
 
 Replace `<INGRESS_IP>` with the value of `DATASPOKE_KUBE_INGRESS_IP` from
 `helm-charts/.env`. The `nip.io` suffix provides automatic wildcard DNS

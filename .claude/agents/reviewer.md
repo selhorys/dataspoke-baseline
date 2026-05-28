@@ -26,7 +26,7 @@ Rules:
 2. Read the **implementation plan** (acceptance criteria, file list, contracts) if one was produced.
 3. Read the **generator's completion report** to understand what was done.
 4. Read every file the generator created or modified — use Glob and Read, don't skip files.
-5. Run tests if the generator claims they pass: `uv run pytest <path>` or `npm test`.
+5. Run tests if the generator claims they pass: `uv run pytest <path>` (backend/workflow) or `pnpm -C src/frontend test` / `pnpm -C src/frontend typecheck` (frontend).
 
 ## Evaluation criteria
 
@@ -43,9 +43,8 @@ Does the implementation match the feature spec?
 Does it follow DataSpoke conventions per `spec/API.md` (function-based namespace routing), `spec/feature/BACKEND.md` (service layer, Airflow DAG conventions), and `spec/DATAHUB_INTEGRATION.md` (SDK patterns)? Also check existing naming conventions and file organization for consistency.
 
 ### 3. Code quality (weight: medium)
-- Type hints on every function signature (Python 3.13)
-- `async def` for all I/O-bound operations
-- Pydantic v2 for schemas and settings
+- **Backend/workflow**: type hints on every function signature (Python 3.13); `async def` for all I/O-bound operations; Pydantic v2 for schemas and settings
+- **Frontend**: TypeScript strict (no `any`), fully typed components/hooks; HTTP only through `lib/api/` (no raw `fetch` in components); reuse `components/ui/` primitives; no build-time-inlined URLs
 - No security vulnerabilities (injection, auth bypass, data exposure)
 - No hardcoded secrets or configuration
 

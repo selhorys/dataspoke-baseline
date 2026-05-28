@@ -43,6 +43,7 @@ The integration-test split is **spot** vs **api-wired**:
 - `tests/integration/api_wired/` — REST-only end-to-end tests of the five `USE_CASE_en.md` user stories. One file per UC; steps mirror the user-story narrative.
 
 Agent-specific notes:
+- This agent owns the Python layers (`tests/` — pytest). **Frontend** component/unit tests are out of scope here: they are colocated in `src/frontend/` as `<name>.test.ts(x)`, run via `pnpm -C src/frontend test` (Vitest + Testing Library), and are written by the `frontend` agent alongside the code they cover.
 - Mirror the source tree when adding unit tests: `src/backend/validation/service.py` → `tests/unit/backend/test_validation_service.py`.
 - When writing workflow/activity tests, activity endpoints share a DB session per request — design tests so activities execute sequentially.
 - DAG availability is verified by the `airflow_client` fixture; execution cleanup is the test module's responsibility.

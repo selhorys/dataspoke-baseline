@@ -4,6 +4,12 @@
 # Usage: uninstall.sh --profile {dev|prod} [OPTIONS]
 #
 #   --profile {dev|prod}   Required. Selects which component set to tear down.
+#   --components frontend  Targeted teardown of the frontend only — helm upgrade
+#                          with frontend.enabled=false (the frontend is an optional
+#                          umbrella subchart). Everything else is left untouched.
+#                          Only `frontend` is supported; the api subchart is the
+#                          core service and has no partial teardown (stop it with
+#                          `kubectl scale deployment/dataspoke-api --replicas=0`).
 #   --no-question          Skip every interactive prompt (gate, PVC, namespace).
 #   --delete-pvcs          Also delete PersistentVolumeClaims (dev only).
 #   --delete-namespaces    Also delete the application namespaces.
@@ -16,6 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELM_CHARTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CHART_DIR="$HELM_CHARTS_DIR/dataspoke"
 ENV_FILE="$HELM_CHARTS_DIR/.env"
 
 # ---------------------------------------------------------------------------
@@ -28,6 +35,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 # Argument parsing
 # ---------------------------------------------------------------------------
 PROFILE=""
+COMPONENTS_CSV=""
 NO_QUESTION=false
 DELETE_PVCS=false
 DELETE_NAMESPACES=false
@@ -35,6 +43,7 @@ DELETE_NAMESPACES=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) PROFILE="${2:-}"; shift 2 ;;
+    --components) COMPONENTS_CSV="${2:-}"; shift 2 ;;
     --no-question) NO_QUESTION=true; shift ;;
     --delete-pvcs) DELETE_PVCS=true; shift ;;
     --delete-namespaces) DELETE_NAMESPACES=true; shift ;;
@@ -62,6 +71,51 @@ source "$ENV_FILE"
 echo ""
 echo "=== Uninstalling DataSpoke (profile: ${PROFILE}) ==="
 echo ""
+
+# ---------------------------------------------------------------------------
+# Targeted component teardown (--components)
+# Only `frontend` is supported: it is an optional umbrella subchart, so teardown
+# is a helm upgrade with frontend.enabled=false (not a `helm uninstall`). The api
+# subchart is the core service (Airflow callbacks + seeding depend on it) and has
+# no coherent partial teardown — stop it with `kubectl scale --replicas=0`.
+# ---------------------------------------------------------------------------
+if [[ -n "$COMPONENTS_CSV" ]]; then
+  NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
+  case "$COMPONENTS_CSV" in
+    frontend)
+      use_context "${DATASPOKE_KUBE_CLUSTER}"
+      if ! helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
+        error "Helm release 'dataspoke' not found in namespace '${NS}' — nothing to do."
+      fi
+      if [[ "${NO_QUESTION}" != true ]]; then
+        read -r -p "Disable the frontend (helm upgrade frontend.enabled=false) in '${NS}'? [y/N] " CONFIRM
+        if [[ ! "${CONFIRM}" =~ ^[Yy]$ ]]; then
+          info "Aborted — no changes made."
+          exit 0
+        fi
+      fi
+      info "Disabling frontend subchart (frontend.enabled=false)..."
+      helm dependency build "$CHART_DIR" >/dev/null 2>&1 || true
+      helm upgrade dataspoke "$CHART_DIR" \
+        --namespace "${NS}" \
+        --reuse-values \
+        --set frontend.enabled=false \
+        --wait --timeout 120s
+      kubectl wait --for=delete deployment/dataspoke-frontend -n "${NS}" --timeout=120s 2>/dev/null || true
+      echo ""
+      info "Frontend removed; other components untouched."
+      info "Redeploy with: ./helm-charts/bin/install.sh --profile ${PROFILE} --components frontend"
+      echo ""
+      exit 0
+      ;;
+    api)
+      error "uninstall --components api is unsupported: api is the core service (Airflow callbacks + seeding depend on it). To stop it temporarily: kubectl scale deployment/dataspoke-api --replicas=0 -n '${NS}'"
+      ;;
+    *)
+      error "uninstall --components supports only 'frontend' (got '${COMPONENTS_CSV}'). Omit --components for a full teardown."
+      ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------------
 # Confirm before proceeding

@@ -134,6 +134,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | `--skip-seed` | false (dev) | Skip post-install admin-API seeding. |
 | `--values <path>` | — | Extra values file passed to the umbrella chart (prod). |
 | `--image-tag <tag>` | `dev` | Override the image tag for api/airflow/postgres (prod CI). |
+| `--frontend {none\|local\|cluster}` | `none` (dev), `cluster` (prod) | Frontend deployment mode for a full install. `none`: not deployed. `local` (dev-only): writes `src/frontend/.env.local` pointing at the in-cluster API for host `pnpm dev`. `cluster`: builds the image and deploys the UI in-cluster. |
 | `--help`, `-h` | — | Print usage. |
 
 ### Phases — dev profile
@@ -141,8 +142,8 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | # | Phase | Components | Notes |
 |---|---|---|---|
 | 1 | Pre-flight | tool check, context switch, namespace ensure, nginx-ingress install | nginx-ingress must complete first to provide `INGRESS_IP` / `_DOMAIN` for downstream. |
-| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `peripherals/datahub.sh` ‖ `peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. |
-| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. |
+| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `peripherals/datahub.sh` ‖ `peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. |
+| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. `frontend.enabled` is `false` unless `--frontend cluster`, which appends the frontend `--set` flags and waits for the `dataspoke-frontend` rollout. |
 | 4 | **Parallel post-bootstrap** | `peripherals/dummy-data.sh` ‖ `peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
 | 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
 
@@ -151,8 +152,8 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | # | Phase | Components | Notes |
 |---|---|---|---|
 | 1 | Pre-flight | tool check, context switch, namespace ensure | No nginx-ingress install — operator's controller. |
-| 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. |
-| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. |
+| 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. |
+| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
 
 Peripheral wiring (DataHub URL/token, Langfuse host/keys, LLM provider/model/key)
 is the operator's responsibility post-install, via `/api/v1/admin/peripherals/*`
@@ -168,19 +169,33 @@ but is out of baseline scope.
 | `langfuse` | dev | `peripherals/langfuse.sh` |
 | `dataspoke-infra` | dev, prod | `dataspoke/` umbrella chart (alias: `chart`, `umbrella`) |
 | `api` | dev, prod | umbrella chart, `api.*` block (rebuilds api image and `helm upgrade` of the API only) |
+| `frontend` | dev, prod | umbrella chart, `frontend.*` block (rebuilds frontend image and `helm upgrade` of the UI only) |
 | `dummy-data` | dev | `peripherals/dummy-data.sh` |
 | `dev-lock` | dev | `peripherals/dev-lock.sh` |
 | `seed` | dev | `post-install/*` |
 
 `--components api` replaces the previous standalone `dataspoke-test-mode.sh` —
 it rebuilds the API image, runs `helm upgrade` against the umbrella chart, and
-rolls the API deployment.
+rolls the API deployment. `--components frontend` is the analogous code-iteration
+path for the UI pod.
+
+For a full install, `--frontend` governs the UI: `none` deploys nothing; `local`
+(dev-only) writes `src/frontend/.env.local` after seeding so host `pnpm dev`
+reaches the in-cluster API; `cluster` deploys the containerised UI. The `local`
+and `cluster` install summaries surface the Web UI URL and the default
+`dataspoke / dataspoke` login.
 
 ---
 
 ## Uninstallation
 
-`bin/uninstall.sh --profile {dev|prod} [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]`
+`bin/uninstall.sh --profile {dev|prod} [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]`
+
+`--components frontend` is a targeted teardown: `helm upgrade --reuse-values
+--set frontend.enabled=false` on the `dataspoke` release, leaving all other
+components in place. Only `frontend` is supported (the api subchart is the core
+service — stop it with `kubectl scale --replicas=0`). Without `--components`, the
+full profile is torn down.
 
 Reverse order of install. Both profiles tear down the umbrella Helm release.
 The dev profile additionally removes peripherals and dev-lock. PVCs and

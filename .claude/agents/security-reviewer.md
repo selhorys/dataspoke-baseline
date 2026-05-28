@@ -31,7 +31,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `src/backend/ingestion/**`, `src/backend/metagen/**`, `src/backend/ontogen/**`, `src/api/routers/internal/activities.py` — DataHub write paths
 - `migrations/**` — any DB migration (data-loss or privilege risk)
 - `helm-charts/**/templates/secrets.yaml`, `helm-charts/**/values*.yaml` — credentials / config
-- `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/package-lock.json` — new/bumped dependencies
+- `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/pnpm-lock.yaml` — new/bumped dependencies
 - `.prauto/**` — autonomous worker (unsupervised, higher blast radius)
 - `helm-charts/langfuse/templates/**`, `helm-charts/langfuse/values*.yaml`, `helm-charts/bin/peripherals/langfuse.sh` — Langfuse credentials and config (LLM trace store)
 - `helm-charts/bin/post-install/**`, `helm-charts/bin/peripherals/**` — install-time orchestration that mutates Kubernetes Secrets and PATCHes admin API endpoints
