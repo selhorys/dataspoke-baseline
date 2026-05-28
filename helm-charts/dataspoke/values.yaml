@@ -47,6 +47,13 @@ frontend:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Runtime config consumed server-side by Next.js (injected via ConfigMap;
+  # no NEXT_PUBLIC_ prefix — values are not baked at build time).
+  config:
+    # DataSpoke API base URL — the Next.js server proxies API calls here.
+    apiBaseUrl: "https://api.dataspoke.example.com"
+    # DataHub frontend URL — used for deep links from the DataSpoke UI.
+    datahubUrl: "https://datahub.dataspoke.example.com"
 
 api:
   enabled: true

@@ -1,0 +1,24 @@
+# Node modules — installed fresh in the builder stage
+node_modules/
+
+# Next.js build output — produced by pnpm build in the builder stage
+.next/
+
+# Git metadata
+.git/
+.gitignore
+
+# Test and tooling artefacts
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+vitest.config.mts
+vitest.setup.ts
+coverage/
+
+# Editor and OS noise
+.DS_Store
+*.log
+.env*
+*.local

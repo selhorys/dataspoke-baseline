@@ -19,7 +19,9 @@ client state via Zustand; forms via React Hook Form. The API client at
 `src/frontend/lib/api/client.ts` prepends `/api/v1`, attaches
 `Authorization: Bearer <access_token>`, surfaces the standard error envelope
 (`{error_code, message, trace_id}`) as typed errors, and triggers a refresh
-on `401`.
+on `401`. The API base URL is resolved at runtime (the server injects
+`DATASPOKE_API_BASE_URL` into the page; empty falls back to same-origin),
+not inlined at build time, so one image serves any environment.
 
 ---
 
@@ -208,7 +210,12 @@ These component IDs are referenced from per-function specs.
   parameters from [API §Query Parameters](../API.md#query-parameters)).
   **Read-only**: the action button for `method/review` is rendered only when
   the caller's role permits approval (Editor / Admin).
-- **NotificationCenter** — bell-icon popover that polls per-feature
-  `event/...` endpoints (see [Live Updates](#live-updates)).
+- **NotificationCenter** — bell-icon popover that merges the global
+  cross-feature event feeds (`GET /spoke/ontogen/event`,
+  `GET /spoke/metagen/event`) on one poll (see [Live Updates](#live-updates)).
+  Governance exposes only per-metric feeds, so it is not aggregated here.
+- **DatasetFilterEditor** — controlled editor for the four-dimension
+  `dataset_filter` (`origin` plus `tags[]` / `glossary_terms[]` /
+  `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
   No API of its own.

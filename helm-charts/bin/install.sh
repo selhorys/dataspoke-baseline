@@ -6,16 +6,20 @@
 # OPTIONS
 #   --components <csv>    Subset of components to install (default: all-for-profile).
 #                         Names: nginx-ingress, datahub, langfuse, dataspoke-infra,
-#                                api, dummy-data, dev-lock, seed
+#                                api, frontend, dummy-data, dev-lock, seed
 #   --from-component <n>  Resume an interrupted full install at <n>.
-#   --skip-build          Skip Docker image rebuilds (api/airflow/postgres).
+#   --skip-build          Skip Docker image rebuilds (api/airflow/postgres/frontend).
 #   --skip-seed           Skip post-install admin-API seeding (dev only).
 #   --values <path>       Extra values file for the umbrella chart (prod).
 #   --image-tag <tag>     Override image tag (default: dev).
 #   --help, -h            Print this usage message.
 #
 # The --components api path rebuilds the API image, runs helm upgrade, and
-# waits for rollout. This replaces the former dataspoke-test-mode.sh workflow.
+# waits for rollout.
+# The --components frontend path builds the frontend image, runs helm upgrade
+# with frontend.enabled=true, and waits for rollout. In dev the default install
+# keeps frontend.enabled=false (host pnpm dev); --components frontend explicitly
+# deploys the containerised frontend in-cluster for verification.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -578,6 +582,81 @@ if [[ "$PROFILE" == "dev" ]]; then
   fi
 
   # -------------------------------------------------------------------------
+  # Handle --components frontend (containerised frontend fast path)
+  # The default dev install keeps frontend.enabled=false so host `pnpm dev`
+  # remains the standard dev workflow. This path explicitly enables and deploys
+  # the containerised frontend in-cluster for verification or prod-parity testing.
+  # -------------------------------------------------------------------------
+  if [[ "${#COMPONENTS[@]}" -eq 1 && "${COMPONENTS[0]}" == "frontend" ]]; then
+    NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
+    DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+    info "==> Fast path: rebuild frontend image + helm upgrade + rollout"
+    info "    Note: deploys the containerised frontend in-cluster (overrides frontend.enabled=false)."
+
+    if [[ "$SKIP_BUILD" == "false" ]]; then
+      info "Building frontend image (tag: ${IMAGE_TAG})..."
+      bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
+    else
+      info "--skip-build: skipping frontend image build."
+    fi
+
+    info "Running helm upgrade for dataspoke umbrella chart (frontend.enabled=true)..."
+    use_context "${DATASPOKE_KUBE_CLUSTER}"
+
+    local_extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
+    helm upgrade --install dataspoke "$CHART_DIR" \
+      -f "$CHART_DIR/values-dev.yaml" \
+      -n "${NS}" \
+      --set-string global.imageRegistry="" \
+      --set-string postgresql.image.registry="" \
+      --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
+      --set-string postgresql.image.tag="${IMAGE_TAG}" \
+      --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
+      --set "api.image.tag=${IMAGE_TAG}" \
+      --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
+      --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
+      --set airflow.images.airflow.pullPolicy=Always \
+      --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002" \
+      --set "api.ingress.hosts[0].host=app.${DOMAIN}" \
+      --set "api.ingress.hosts[0].paths[0].path=/" \
+      --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
+      --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DOMAIN}" \
+      --set-file "airflow.extraEnv=${local_extra_env_file}" \
+      --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
+      --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
+      --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" \
+      --set frontend.enabled=true \
+      --set "frontend.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend" \
+      --set "frontend.image.tag=${IMAGE_TAG}" \
+      --set frontend.image.pullPolicy=Always \
+      --set "frontend.ingress.enabled=true" \
+      --set "frontend.ingress.className=nginx" \
+      --set "frontend.ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/ssl-redirect=false" \
+      --set "frontend.ingress.hosts[0].host=app.${DOMAIN}" \
+      --set "frontend.ingress.hosts[0].paths[0].path=/" \
+      --set "frontend.ingress.hosts[0].paths[0].pathType=Prefix" \
+      --set "frontend.config.apiBaseUrl=http://app.${DOMAIN}/api/v1" \
+      --set "frontend.config.datahubUrl=http://datahub.${DOMAIN}" \
+      --timeout 10m
+
+    info "Waiting for frontend deployment to become ready..."
+    kubectl rollout status deployment/dataspoke-frontend -n "${NS}" --timeout=5m \
+      && info "dataspoke-frontend is ready." \
+      || error "dataspoke-frontend did not become ready in time — check pod logs."
+
+    echo ""
+    info "Frontend deploy complete (t+$((SECONDS - START_TIME))s)."
+    echo ""
+    echo "  Frontend: http://app.${DOMAIN}/"
+    echo "  API:      http://app.${DOMAIN}/api/v1/"
+    echo ""
+    echo "  To stop the frontend pod:"
+    echo "    kubectl scale deployment/dataspoke-frontend --replicas=0 -n '${NS}'"
+    echo ""
+    exit 0
+  fi
+
+  # -------------------------------------------------------------------------
   # Full dev install — phased
   # -------------------------------------------------------------------------
 
@@ -861,6 +940,7 @@ elif [[ "$PROFILE" == "prod" ]]; then
     _run_bg "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
     _run_bg "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
     _run_bg "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
+    _run_bg "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
     _wait_all
   else
     step 2 3 "image builds (skipped via --skip-build)"
@@ -905,6 +985,8 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set-string "postgresql.image.tag=${IMAGE_TAG}" \
     --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
     --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
+    --set "frontend.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend" \
+    --set "frontend.image.tag=${IMAGE_TAG}" \
     --set-file "airflow.extraEnv=${local_extra_env_file}" \
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
     --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \

@@ -34,9 +34,10 @@ cross-dataset queue of pending items (filterable by `dataset_urn`, `kind`,
 (`is_enabled`, `allowed`) and the dataset's items grouped by kind. Each item
 renders as a card with up to `result_limit` candidate sub-cards carrying
 Approve / Reject buttons; the confirm dialog labels the destination DataHub
-aspect. Finalized items collapse to a single approved row with sibling
-`llm_approved` candidates shown as read-only history. Review semantics
-(approve-supersedes-sibling, reject-only-on-llm-approved) are in
+aspect. Finalized items collapse to a single approved row; sibling candidates
+are shown as collapsed history and remain selectable — approving a sibling
+switches the approved candidate, demoting the prior approval to `llm_approved`.
+Review semantics (approve-supersedes-sibling, reject-only-on-llm-approved) are in
 [API §Metadata Generation](../API.md#metadata-generation-spokemetagen).
 
 ```

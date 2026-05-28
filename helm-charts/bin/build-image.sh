@@ -2,7 +2,7 @@
 # Build and push a DataSpoke container image.
 #
 # Usage: build-image.sh <name> [<tag>]
-#   <name>  One of: api, airflow, postgres
+#   <name>  One of: api, airflow, postgres, frontend
 #   <tag>   Image tag (default: dev)
 #   --help, -h   Print this usage message.
 #
@@ -46,11 +46,10 @@ fi
 source "$ENV_FILE"
 
 case "$NAME" in
-  api|airflow|postgres) ;;
-  *) error "Unknown image name '${NAME}'. Must be one of: api, airflow, postgres." ;;
+  api|airflow|postgres) DOCKERFILE_PATH="docker-images/${NAME}/Dockerfile" ;;
+  frontend)             DOCKERFILE_PATH="src/frontend/Dockerfile" ;;
+  *) error "Unknown image name '${NAME}'. Must be one of: api, airflow, postgres, frontend." ;;
 esac
-
-DOCKERFILE_PATH="docker-images/${NAME}/Dockerfile"
 REGISTRY="${DATASPOKE_KUBE_IMAGE_REGISTRY:?DATASPOKE_KUBE_IMAGE_REGISTRY must be set in .env}"
 VENDOR="${DATASPOKE_KUBE_CLOUD_VENDOR:-}"
 IMAGE="${REGISTRY}/${NAME}:${TAG}"

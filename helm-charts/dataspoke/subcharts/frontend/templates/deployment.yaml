@@ -25,8 +25,7 @@ spec:
           {{- $secretName := .Values.existingSecretName | default (printf "%s-secrets" .Release.Name) }}
           envFrom:
             - configMapRef:
-                name: {{ .Release.Name }}-config
-                optional: true
+                name: {{ include "frontend.fullname" . }}-config
             - secretRef:
                 name: {{ $secretName }}
                 optional: true

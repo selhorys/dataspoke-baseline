@@ -28,7 +28,7 @@ The Dashboard is a read-only visualization of every enabled metric:
 | Block | Read | Notes |
 |---|---|---|
 | Metric cards | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric | One card per enabled metric. Each card shows `title`, the latest `values` dict (each key on its own line as `key: number`), and the run time |
-| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…&to=…` per metric on the same daily window | One line per `values` key per metric. Default window is the last 30 days |
+| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…&to=…` per metric on the same daily window | Small multiples — one chart per metric, each plotting one line per that metric's `values` key. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. Default window is the last 30 days |
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -42,9 +42,12 @@ The Dashboard is a read-only visualization of every enabled metric:
 │  └────────────────┘    └────────────────┘  └──────────┘  │
 │                                                          │
 │  Daily trend (last 30 d)                                 │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │  (Recharts line chart — one line per values key) │    │
-│  └──────────────────────────────────────────────────┘    │
+│  ┌────────────────┐ ┌────────────────┐ ┌──────────────┐  │
+│  │ (one chart per │ │ (one chart per │ │ (one chart   │  │
+│  │  metric — lines│ │  metric — lines│ │  per metric) │  │
+│  │  per values    │ │  per values    │ │              │  │
+│  │  key)          │ │  key)          │ │              │  │
+│  └────────────────┘ └────────────────┘ └──────────────┘  │
 └──────────────────────────────────────────────────────────┘
         Dashboard (`/governance/dashboard`)
 ```

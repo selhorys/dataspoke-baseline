@@ -57,6 +57,7 @@ are exposed on dedicated ports.
 |---------|---------|-------------|
 | DataHub UI | `http://datahub.<INGRESS_IP>.nip.io/` | `datahub` / `datahub` |
 | DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
+| DataSpoke UI (prod / `--components frontend`) | `http://app.<INGRESS_IP>.nip.io/` | login via DataSpoke auth |
 | DataSpoke API | `http://app.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
 | Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env` (auto-generated on first install) |
@@ -66,6 +67,12 @@ are exposed on dedicated ports.
 | Example PostgreSQL | `<INGRESS_IP>:9102` | `postgres` / `ExampleDev2024!` |
 | Example Kafka | `<INGRESS_IP>:9104` | -- |
 | Lock API | `<INGRESS_IP>:9221` | -- |
+
+Dev frontend runs on the host (`pnpm dev` in `src/frontend/`) — the in-cluster
+frontend pod is disabled by default. To deploy the containerised frontend in dev:
+`./helm-charts/bin/install.sh --profile dev --components frontend`.
+Runtime config vars (`DATASPOKE_API_BASE_URL`, `DATASPOKE_DATAHUB_URL`) are
+injected via ConfigMap; values come from `frontend.config.*` in `values.yaml`.
 
 Replace `<INGRESS_IP>` with the value of `DATASPOKE_KUBE_INGRESS_IP` from
 `helm-charts/.env`. The `nip.io` suffix provides automatic wildcard DNS
@@ -118,7 +125,7 @@ Install (or reinstall) a subset of components:
 ```
 
 Component names: `nginx-ingress`, `datahub`, `langfuse`, `dataspoke-infra`,
-`api`, `dummy-data`, `dev-lock`, `seed`.
+`api`, `frontend`, `dummy-data`, `dev-lock`, `seed`.
 
 ---
 

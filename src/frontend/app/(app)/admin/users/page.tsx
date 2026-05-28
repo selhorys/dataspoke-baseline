@@ -1,0 +1,387 @@
+"use client";
+
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { MoreHorizontal, Pencil } from "lucide-react";
+import { useMe } from "@/lib/auth/use-me";
+import {
+  useAdminUsers,
+  useUpdateUserName,
+  useUpdateUserRole,
+  useDeleteUser,
+  useAdminUserTokens,
+  useDeleteAdminUserToken,
+} from "@/lib/api/admin";
+import type { AdminUser, UserRole } from "@/lib/api/types";
+import { ApiError } from "@/lib/api/client";
+import { toast } from "@/components/ui/use-toast";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const roles: UserRole[] = ["Admin", "Editor", "Reader"];
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString();
+}
+
+const renameSchema = z.object({
+  name: z.string().min(1, "Name is required").max(128, "Name is too long"),
+});
+type RenameValues = z.infer<typeof renameSchema>;
+
+// ── Inline role select ────────────────────────────────────────────────────────
+
+function RoleSelect({ user }: { user: AdminUser }) {
+  const { mutateAsync: updateRole, isPending } = useUpdateUserRole();
+
+  async function onChange(role: UserRole) {
+    try {
+      await updateRole({ id: user.id, role });
+      toast({ title: `Role updated to ${role}.` });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        toast({ variant: "destructive", title: "Role update failed", description: err.message });
+      } else {
+        toast({ variant: "destructive", title: "Role update failed", description: "An unexpected error occurred." });
+      }
+    }
+  }
+
+  return (
+    <Select value={user.role} onValueChange={(v) => onChange(v as UserRole)} disabled={isPending}>
+      <SelectTrigger className="h-8 w-28 text-xs" disabled={isPending}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {roles.map((r) => (
+          <SelectItem key={r} value={r}>
+            {r}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+// ── Rename dialog ─────────────────────────────────────────────────────────────
+
+function RenameDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const { mutateAsync: updateName, isPending } = useUpdateUserName();
+
+  const { register, handleSubmit, formState: { errors } } = useForm<RenameValues>({
+    resolver: zodResolver(renameSchema),
+    defaultValues: { name: user.name },
+  });
+
+  async function onSubmit(values: RenameValues) {
+    try {
+      await updateName({ id: user.id, name: values.name });
+      toast({ title: "Name updated." });
+      onClose();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        toast({ variant: "destructive", title: "Update failed", description: err.message });
+      } else {
+        toast({ variant: "destructive", title: "Update failed", description: "An unexpected error occurred." });
+      }
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      <div className="space-y-1.5">
+        <Input id="rename-name" {...register("name")} />
+        {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={isPending}>
+          {isPending ? "Saving..." : "Save"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ── User tokens drawer ────────────────────────────────────────────────────────
+
+function UserTokensDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const { data, isLoading } = useAdminUserTokens(user.id);
+  const { mutateAsync: revokeToken, isPending: revoking } = useDeleteAdminUserToken();
+  const [confirmTokenId, setConfirmTokenId] = useState<string | null>(null);
+
+  async function onRevoke(tokenId: string) {
+    try {
+      await revokeToken({ userId: user.id, tokenId });
+      setConfirmTokenId(null);
+      toast({ title: "Token revoked." });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        toast({ variant: "destructive", title: "Revoke failed", description: err.message });
+      } else {
+        toast({ variant: "destructive", title: "Revoke failed", description: "An unexpected error occurred." });
+      }
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {isLoading ? (
+        <Skeleton className="h-20 w-full" />
+      ) : data?.tokens.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No tokens.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data?.tokens.map((t) => (
+              <TableRow key={t.id}>
+                <TableCell className="font-medium">{t.name}</TableCell>
+                <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
+                <TableCell>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setConfirmTokenId(t.id)}
+                  >
+                    Revoke
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+      <div className="flex justify-end">
+        <Button variant="outline" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+      <ConfirmDialog
+        open={!!confirmTokenId}
+        onOpenChange={(open) => !open && setConfirmTokenId(null)}
+        title="Revoke token"
+        description="This will permanently revoke the token. The user will lose access via this token immediately."
+        confirmLabel="Revoke"
+        onConfirm={() => confirmTokenId && onRevoke(confirmTokenId)}
+        loading={revoking}
+      />
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+type DialogState =
+  | { kind: "rename"; user: AdminUser }
+  | { kind: "tokens"; user: AdminUser }
+  | { kind: "delete"; user: AdminUser }
+  | null;
+
+export default function AdminUsersPage() {
+  const { isAdmin, isLoading: meLoading } = useMe();
+  const { data, isLoading } = useAdminUsers();
+  const { mutateAsync: deleteUser, isPending: deleting } = useDeleteUser();
+  const [dialog, setDialog] = useState<DialogState>(null);
+  const [search, setSearch] = useState("");
+
+  async function onDeleteUser(user: AdminUser) {
+    try {
+      await deleteUser({ id: user.id });
+      setDialog(null);
+      toast({ title: `User ${user.email} deleted.` });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        toast({ variant: "destructive", title: "Delete failed", description: err.message });
+      } else {
+        toast({ variant: "destructive", title: "Delete failed", description: "An unexpected error occurred." });
+      }
+    }
+  }
+
+  if (meLoading) {
+    return <Skeleton className="h-40 w-full" />;
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="space-y-2">
+        <h1 className="text-2xl font-semibold tracking-tight">Admin — Users</h1>
+        <p className="text-sm text-muted-foreground">
+          You do not have permission to access this page.
+        </p>
+      </div>
+    );
+  }
+
+  const filtered = (data?.users ?? []).filter(
+    (u) =>
+      u.email.toLowerCase().includes(search.toLowerCase()) ||
+      u.name.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  return (
+    <div>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Admin — Users</h1>
+        <Input
+          className="max-w-xs"
+          placeholder="Search..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Email</TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.map((user) => (
+              <TableRow key={user.id}>
+                <TableCell className="font-medium">{user.email}</TableCell>
+                <TableCell>{user.name}</TableCell>
+                <TableCell>
+                  <RoleSelect user={user} />
+                </TableCell>
+                <TableCell>{formatDate(user.created_at)}</TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setDialog({ kind: "rename", user })}
+                      aria-label="Edit name"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" aria-label="More actions">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => setDialog({ kind: "tokens", user })}
+                        >
+                          Manage tokens
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onClick={() => setDialog({ kind: "delete", user })}
+                        >
+                          Delete user
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      {/* Rename dialog */}
+      <Dialog
+        open={dialog?.kind === "rename"}
+        onOpenChange={(open) => !open && setDialog(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit name</DialogTitle>
+            <DialogDescription>{dialog?.kind === "rename" && dialog.user.email}</DialogDescription>
+          </DialogHeader>
+          {dialog?.kind === "rename" && (
+            <RenameDialog user={dialog.user} onClose={() => setDialog(null)} />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Tokens dialog */}
+      <Dialog
+        open={dialog?.kind === "tokens"}
+        onOpenChange={(open) => !open && setDialog(null)}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>API tokens</DialogTitle>
+            <DialogDescription>{dialog?.kind === "tokens" && dialog.user.email}</DialogDescription>
+          </DialogHeader>
+          {dialog?.kind === "tokens" && (
+            <UserTokensDialog user={dialog.user} onClose={() => setDialog(null)} />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm dialog */}
+      <ConfirmDialog
+        open={dialog?.kind === "delete"}
+        onOpenChange={(open) => !open && setDialog(null)}
+        title="Delete user"
+        description={
+          dialog?.kind === "delete"
+            ? `Permanently delete ${dialog.user.email}? This cannot be undone.`
+            : "Permanently delete this user?"
+        }
+        confirmLabel="Delete"
+        onConfirm={() => dialog?.kind === "delete" && onDeleteUser(dialog.user)}
+        loading={deleting}
+      />
+    </div>
+  );
+}
