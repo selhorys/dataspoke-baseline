@@ -553,6 +553,10 @@ _helm_upgrade_dataspoke_dev() {
   local extra_env_file
   extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
   local dev_domain="${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+  # OIDC post-login redirect = where the UI is served for this frontend mode
+  # (host pnpm dev on localhost vs in-cluster app.<domain>).
+  local oauth_redirect="http://app.${dev_domain}/"
+  [[ "$FRONTEND_MODE" == "local" ]] && oauth_redirect="http://localhost:3000/"
 
   local args=(
     upgrade --install dataspoke "$CHART_DIR"
@@ -572,6 +576,7 @@ _helm_upgrade_dataspoke_dev() {
     --set "api.ingress.hosts[0].paths[0].path=/"
     --set "api.ingress.hosts[0].paths[0].pathType=Prefix"
     --set-string "config.corsOrigins=http://localhost:3000\,http://app.${dev_domain}"
+    --set-string "config.oauthPostLoginRedirect=${oauth_redirect}"
     --set "airflow.ingress.apiServer.hosts[0].name=airflow.${dev_domain}"
     --set-file "airflow.extraEnv=${extra_env_file}"
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key"
@@ -735,6 +740,7 @@ if [[ "$PROFILE" == "dev" ]]; then
       --set "api.ingress.hosts[0].paths[0].path=/" \
       --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
       --set-string "config.corsOrigins=http://localhost:3000\,http://app.${DOMAIN}" \
+      --set-string "config.oauthPostLoginRedirect=http://app.${DOMAIN}/" \
       --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DOMAIN}" \
       --set-file "airflow.extraEnv=${local_extra_env_file}" \
       --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \

@@ -381,6 +381,10 @@ config:
     url: "http://dataspoke-airflow-api-server:8080"
     callbackBaseUrl: "http://dataspoke-api:8002"
   corsOrigins: "http://localhost:3000"
+  # URL the Google/OIDC callback 302-redirects to after login (the frontend
+  # origin). install.sh sets this per --frontend mode in dev; prod operators set
+  # it in their overlay. Default "/" works only when UI and API share a host.
+  oauthPostLoginRedirect: "/"
 
 # ---------------------------------------------------------------------------
 # Shared secrets — pre-created by install.sh (dev) or operator (prod)

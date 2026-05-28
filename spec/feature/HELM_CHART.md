@@ -269,17 +269,21 @@ Same names in dev and prod, different values. Injected into pods via ConfigMap
 - `DATASPOKE_OAUTH_STATE_SECRET` — HMAC key for the Google-OAuth state cookie
 - `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` — Google OAuth client secret (paired with the public client_id; see chart-values-only callout below)
 
-> **Chart-values-only env vars (not in `.env`)**: `DATASPOKE_CORS_ORIGINS`,
-> `DATASPOKE_COOKIE_SECURE`, and `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` are
-> rendered onto the API container directly from the chart values
-> (`config.corsOrigins`, `auth.cookieSecure`, `auth.googleClientId`).
-> `values.yaml` pins cookie-secure to `true`; `values-dev.yaml` overrides
-> it to `false` for HTTP laptop browsers. Keeping these out of `.env`
-> removes the prod footgun of a stray line silently disabling cookie
-> hardening. Stub-mode wiring for the four dependency factories lives in
-> the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
-> `stub_pgvector_manager`, `stub_notification_service`) — see
-> `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
+**Chart-values-only env vars (not in `.env`)** — rendered onto the API container
+directly from chart values, never sourced from `.env`:
+
+| Env var | Chart value | Role |
+|---|---|---|
+| `DATASPOKE_CORS_ORIGINS` | `config.corsOrigins` | Comma-separated CORS origins the API accepts (the browser UI origin). |
+| `DATASPOKE_COOKIE_SECURE` | `auth.cookieSecure` | `Secure` flag on auth cookies — `true` in `values.yaml`, `false` in `values-dev.yaml` for HTTP laptop browsers. |
+| `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` | `auth.googleClientId` | Google OAuth public client id; absence disables Google login. |
+| `DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` | `config.oauthPostLoginRedirect` | URL the Google/OIDC callback 302-redirects to after login (the frontend origin). `install.sh` sets it per `--frontend` mode (`local`→`localhost:3000`, `cluster`→`app.<domain>`); default `"/"` only works when UI and API share a host. |
+
+Keeping these out of `.env` removes the prod footgun of a stray line silently
+disabling cookie hardening. Stub-mode wiring for the four dependency factories
+lives in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
+`stub_pgvector_manager`, `stub_notification_service`) — see
+`BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
 > DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
 > vars. They live in the DB `peripheral_config` and `runtime_config` tables,
@@ -457,6 +461,7 @@ chart at it via `secrets.existingSecret: <name>`.
 - `DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`)
 - `DATASPOKE_COOKIE_SECURE` (from `auth.cookieSecure`)
 - `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` (from `auth.googleClientId`)
+- `DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` (from `config.oauthPostLoginRedirect`)
 
 ### DB-backed (no env var)
 

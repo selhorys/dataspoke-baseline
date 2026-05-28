@@ -16,4 +16,5 @@ data:
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
   DATASPOKE_COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
   DATASPOKE_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.auth.googleClientId | quote }}
+  DATASPOKE_OAUTH_POST_LOGIN_REDIRECT: {{ .Values.config.oauthPostLoginRedirect | quote }}
 {{- end }}
