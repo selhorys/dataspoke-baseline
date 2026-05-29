@@ -406,6 +406,11 @@ The LLM API key is **not** a column here — it is rotated through the same
 | `metagen_ontology_rag_edge_k` | `INTEGER` | Metagen ontology-edge RAG top-K [0, 20]; default 5 |
 | `metagen_ontology_rag_triple_k` | `INTEGER` | Metagen RDF-triple RAG top-K [0, 20]; default 5 |
 | `validation_score_n_intervals` | `INTEGER` | Validation-cadence window (inter-arrival intervals), ≥ 1; default 3 |
+| `stub_redis_client` | `BOOLEAN` | Stub the Redis client dependency; default `false` |
+| `stub_llm_client` | `BOOLEAN` | Stub the LLM client dependency; default `false` |
+| `stub_pgvector_manager` | `BOOLEAN` | Stub the pgvector manager dependency; default `false` |
+| `stub_notification_service` | `BOOLEAN` | Stub the notification service dependency; default `false` |
+| `auth_datahub_corp_group` | `TEXT` | DataHub corpGroup naming the DataSpoke-user provenance marker; default `dataspoke-users` |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 #### `events`

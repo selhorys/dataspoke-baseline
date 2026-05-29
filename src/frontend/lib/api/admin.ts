@@ -6,6 +6,8 @@ import type {
   AdminUser,
   ApiTokenItem,
   ApiTokenListResponse,
+  RuntimeConf,
+  RuntimeConfPatch,
   UsersListResponse,
   UserRole,
 } from "@/lib/api/types";
@@ -104,3 +106,28 @@ export function useDeleteAdminUserToken() {
 }
 
 export type { ApiTokenItem };
+
+// ── Runtime configuration ──────────────────────────────────────────────────────
+
+export function useRuntimeConf() {
+  return useQuery<RuntimeConf>({
+    queryKey: ["admin", "conf"],
+    queryFn: () => apiFetch<RuntimeConf>("/admin/conf"),
+    meta: { handledInline: true },
+  });
+}
+
+export function useUpdateRuntimeConf() {
+  const qc = useQueryClient();
+  return useMutation<RuntimeConf, Error, RuntimeConfPatch>({
+    mutationFn: (body) =>
+      apiFetch<RuntimeConf>("/admin/conf", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "conf"] });
+    },
+  });
+}

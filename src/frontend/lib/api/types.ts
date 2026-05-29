@@ -71,3 +71,55 @@ export interface UsersListResponse {
   users: AdminUser[];
   total: number;
 }
+
+// ── Runtime Configuration ─────────────────────────────────────────────────────
+
+export interface RuntimeConf {
+  resp_time: string;
+  llm_provider: string;
+  llm_model: string;
+  llm_api_key: string;
+  ontogen_llm_max_iterations: number;
+  ontogen_debate_max_turns: number;
+  ontogen_debate_rag_k: number;
+  ontogen_debate_reviewer_model: string | null;
+  metagen_llm_max_iterations: number;
+  metagen_debate_max_turns: number;
+  metagen_debate_rag_k: number;
+  metagen_debate_reviewer_model: string | null;
+  metagen_confidence_threshold: number;
+  metagen_ontology_rag_node_k: number;
+  metagen_ontology_rag_edge_k: number;
+  metagen_ontology_rag_triple_k: number;
+  validation_score_n_intervals: number;
+  stub_redis_client: boolean;
+  stub_llm_client: boolean;
+  stub_pgvector_manager: boolean;
+  stub_notification_service: boolean;
+  auth_datahub_corp_group: string;
+  updated_at: string | null;
+}
+
+export interface RuntimeConfPatch {
+  llm_provider?: string;
+  llm_model?: string;
+  llm_api_key?: string;
+  ontogen_llm_max_iterations?: number;
+  ontogen_debate_max_turns?: number;
+  ontogen_debate_rag_k?: number;
+  ontogen_debate_reviewer_model?: string | null;
+  metagen_llm_max_iterations?: number;
+  metagen_debate_max_turns?: number;
+  metagen_debate_rag_k?: number;
+  metagen_debate_reviewer_model?: string | null;
+  metagen_confidence_threshold?: number;
+  metagen_ontology_rag_node_k?: number;
+  metagen_ontology_rag_edge_k?: number;
+  metagen_ontology_rag_triple_k?: number;
+  validation_score_n_intervals?: number;
+  stub_redis_client?: boolean;
+  stub_llm_client?: boolean;
+  stub_pgvector_manager?: boolean;
+  stub_notification_service?: boolean;
+  auth_datahub_corp_group?: string;
+}

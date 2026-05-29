@@ -3,6 +3,10 @@
  *
  * Spec traces:
  *   - spec/API.md §Auth: Admin role has user-management access; Editor/Reader do not
+ *   - spec/feature/FRONTEND_BASIC.md §Shell: Admin section (Users + Configurations links)
+ *     renders ONLY when isAdmin is true; placed ABOVE the Account section which always
+ *     renders for everyone; adminNav = [{label:"Users",href:"/admin/users"},
+ *     {label:"Configurations",href:"/admin/conf"}]
  *   - spec/feature/FRONTEND_BASIC.md §Routing: the UI hides the admin-menu entry when
  *     the role is not Admin; write actions rendered only when role ∈ {Editor, Admin}
  */
@@ -81,7 +85,147 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-describe("AppShell — Admin Users link visibility", () => {
+describe("AppShell — Admin section visibility (FRONTEND_BASIC.md §Shell)", () => {
+  it("shows the Admin section label when the user is Admin", () => {
+    mockUseMe.mockReturnValue({ me: makeMe("Admin"), isAdmin: true, isEditor: false, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    // The sidebar must contain the "Admin" section label (uppercase per spec)
+    const adminLabel = screen.getByText(/^admin$/i);
+    expect(adminLabel).toBeTruthy();
+  });
+
+  it("shows the Users link at /admin/users in the Admin section when isAdmin", () => {
+    mockUseMe.mockReturnValue({ me: makeMe("Admin"), isAdmin: true, isEditor: false, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    // adminNav[0]: {label:"Users", href:"/admin/users"}
+    const usersLinks = screen.getAllByRole("link", { name: /^users$/i });
+    const adminLink = usersLinks.find((el) => el.getAttribute("href") === "/admin/users");
+    expect(adminLink).toBeTruthy();
+  });
+
+  it("shows the Configurations link at /admin/conf in the Admin section when isAdmin", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell: adminNav includes Configurations → /admin/conf
+    mockUseMe.mockReturnValue({ me: makeMe("Admin"), isAdmin: true, isEditor: false, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    // adminNav[1]: {label:"Configurations", href:"/admin/conf"}
+    const confLink = screen.getByRole("link", { name: /configurations/i });
+    expect(confLink).toBeTruthy();
+    expect(confLink.getAttribute("href")).toBe("/admin/conf");
+  });
+
+  it("places Admin section ABOVE Account section in the DOM when isAdmin", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell: Admin section is rendered above Account section
+    mockUseMe.mockReturnValue({ me: makeMe("Admin"), isAdmin: true, isEditor: false, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    const adminLabel = screen.getByText(/^admin$/i);
+    const accountLabel = screen.getByText(/^account$/i);
+
+    // compareDocumentPosition bit 0x04 = DOCUMENT_POSITION_FOLLOWING
+    // adminLabel.compareDocumentPosition(accountLabel) & 0x04 being truthy means
+    // accountLabel comes AFTER adminLabel (i.e., Admin is above Account in DOM)
+    const position = adminLabel.compareDocumentPosition(accountLabel);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("hides the Admin section label for Editor role", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell: Admin section renders only when isAdmin
+    mockUseMe.mockReturnValue({ me: makeMe("Editor"), isAdmin: false, isEditor: true, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    // The "Admin" section label must not appear
+    expect(screen.queryByText(/^admin$/i)).toBeNull();
+  });
+
+  it("hides the Configurations link for Editor role", () => {
+    mockUseMe.mockReturnValue({ me: makeMe("Editor"), isAdmin: false, isEditor: true, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    const confLinks = screen.queryAllByRole("link", { name: /configurations/i });
+    const adminConfLink = confLinks.find((el) => el.getAttribute("href") === "/admin/conf");
+    expect(adminConfLink).toBeUndefined();
+  });
+
+  it("hides the Admin section and Users/Configurations links for Reader role", () => {
+    mockUseMe.mockReturnValue({ me: makeMe("Reader"), isAdmin: false, isEditor: false, canWrite: false, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    expect(screen.queryByText(/^admin$/i)).toBeNull();
+
+    const usersLinks = screen.queryAllByRole("link", { name: /^users$/i });
+    const adminUsersLink = usersLinks.find((el) => el.getAttribute("href") === "/admin/users");
+    expect(adminUsersLink).toBeUndefined();
+
+    const confLinks = screen.queryAllByRole("link", { name: /configurations/i });
+    const adminConfLink = confLinks.find((el) => el.getAttribute("href") === "/admin/conf");
+    expect(adminConfLink).toBeUndefined();
+  });
+
+  it("always renders the Account section regardless of role (Admin)", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell: Account section renders for everyone
+    mockUseMe.mockReturnValue({ me: makeMe("Admin"), isAdmin: true, isEditor: false, canWrite: true, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    expect(screen.getByText(/^account$/i)).toBeTruthy();
+  });
+
+  it("always renders the Account section for Reader role", () => {
+    mockUseMe.mockReturnValue({ me: makeMe("Reader"), isAdmin: false, isEditor: false, canWrite: false, isLoading: false });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    expect(screen.getByText(/^account$/i)).toBeTruthy();
+  });
+});
+
+describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
   it("shows the Users sidebar link when the user is Admin", () => {
     mockUseMe.mockReturnValue({ me: makeMe("Admin"), isAdmin: true, isEditor: false, canWrite: true, isLoading: false });
 
@@ -92,8 +236,9 @@ describe("AppShell — Admin Users link visibility", () => {
     );
 
     // The sidebar must contain a link to /admin/users
-    const usersLink = screen.getByRole("link", { name: /users/i });
-    expect(usersLink).toBeTruthy();
+    const usersLinks = screen.getAllByRole("link", { name: /^users$/i });
+    const adminLink = usersLinks.find((el) => el.getAttribute("href") === "/admin/users");
+    expect(adminLink).toBeTruthy();
   });
 
   it("hides the Users sidebar link for Editor role", () => {

@@ -3,20 +3,18 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  Activity,
   BarChart3,
   Database,
-  FileText,
   GitBranch,
   LayoutDashboard,
   LogOut,
   Network,
   Settings,
   Shield,
+  SlidersHorizontal,
   Sparkles,
   User,
   Users,
-  Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/auth/store";
@@ -33,6 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationCenter } from "@/components/notification-center";
+import { DataHubIcon, AirflowIcon, LangfuseIcon, RedocIcon } from "@/components/brand-icons";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 
 interface NavItem {
@@ -56,7 +55,10 @@ const accountNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
-const adminNav: NavItem[] = [{ label: "Users", href: "/admin/users", icon: Users }];
+const adminNav: NavItem[] = [
+  { label: "Users", href: "/admin/users", icon: Users },
+  { label: "Configurations", href: "/admin/conf", icon: SlidersHorizontal },
+];
 
 function SidebarLink({ item }: { item: NavItem }) {
   const pathname = usePathname();
@@ -99,14 +101,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const { datahubUrl, langfuseUrl, airflowUrl, apiBaseUrl } = getRuntimeConfig();
   const infraLinks = [
-    { label: "DataHub", href: datahubUrl, icon: Database },
-    { label: "Langfuse", href: langfuseUrl, icon: Activity },
-    { label: "Airflow", href: airflowUrl, icon: Workflow },
-    { label: "API docs", href: apiBaseUrl ? `${apiBaseUrl}/redoc` : "", icon: FileText },
+    { label: "DataHub", href: datahubUrl, icon: DataHubIcon },
+    { label: "Langfuse", href: langfuseUrl, icon: LangfuseIcon },
+    { label: "Airflow", href: airflowUrl, icon: AirflowIcon },
+    { label: "API docs", href: apiBaseUrl ? `${apiBaseUrl}/redoc` : "", icon: RedocIcon },
   ];
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="fixed inset-0 flex flex-col">
       {/* Header */}
       <header className="flex h-14 shrink-0 items-center border-b bg-background px-4">
         <span className="mr-auto text-base font-semibold tracking-tight">DataSpoke</span>
@@ -126,7 +128,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   aria-label={`Open ${l.label}`}
                 >
                   <a href={l.href} target="_blank" rel="noopener noreferrer">
-                    <Icon className="h-4 w-4" />
+                    <Icon className="h-[18px] w-[18px]" />
                   </a>
                 </Button>
               );
@@ -177,16 +179,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ))}
 
             <div className="mt-auto border-t pt-3">
-              <p className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Account
-              </p>
-              {accountNav.map((item) => (
-                <SidebarLink key={item.href} item={item} />
-              ))}
-              {isAdmin &&
-                adminNav.map((item) => (
+              {isAdmin && (
+                <div className="mb-3">
+                  <p className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Admin
+                  </p>
+                  {adminNav.map((item) => (
+                    <SidebarLink key={item.href} item={item} />
+                  ))}
+                </div>
+              )}
+              <div>
+                <p className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Account
+                </p>
+                {accountNav.map((item) => (
                   <SidebarLink key={item.href} item={item} />
                 ))}
+              </div>
             </div>
           </nav>
         </aside>

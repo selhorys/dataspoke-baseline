@@ -28,9 +28,12 @@ not inlined at build time, so one image serves any environment.
 ## Shell
 
 A single application shell hosts every page. The shell has a top header
-(product name, user menu, logout) and a left-side menu organised by MANIFESTO
-§2.1 feature plus account/admin entries. The page area on the right renders
-the active route.
+(product name, user menu, logout) and a left-side menu. The menu lists the
+MANIFESTO §2.1 feature pages at the top, then two labelled sections pinned to
+the bottom: an **Admin** section and, below it, an **Account** section. The
+Admin section (entries **Users** and **Configurations**) renders only when the
+caller's role is `Admin`; the Account section (Profile, API Tokens, Settings)
+renders for everyone. The page area on the right renders the active route.
 
 The header right cluster also carries infra shortcut icons (new-tab links) to
 the surrounding systems: DataHub, Langfuse, Airflow, and the DataSpoke ReDoc API
@@ -53,8 +56,13 @@ its URL unset.
 │ OntoGen      │                                      │
 │ MetaGen      │                                      │
 ├──────────────┤                                      │
-│ Profile      │                                      │
-│ Admin        │                                      │
+│ ADMIN        │   (Admin role only)                  │
+│  Users       │                                      │
+│  Configs.    │                                      │
+│ ACCOUNT      │                                      │
+│  Profile     │                                      │
+│  API Tokens  │                                      │
+│  Settings    │                                      │
 └──────────────┴──────────────────────────────────────┘
                   Application shell
 ```
@@ -73,6 +81,7 @@ its URL unset.
 | `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
+| `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key | `GET /admin/conf`, `PATCH /admin/conf` |
 | `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
 | `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
 | `/ingestion` | [Ingestion Control](FRONTEND_INGESTION.md) | `/spoke/ingestion/...` |
@@ -165,6 +174,46 @@ hard delete (writes `DELETE /admin/users/{id}` behind a `ConfirmDialog`),
 and "manage tokens" — a drawer listing the user's `api_tokens` rows with
 per-token revoke buttons (`GET /admin/users/{id}/api-tokens`,
 `DELETE /admin/users/{id}/api-tokens/{token_id}`).
+
+### Configurations (`/admin/conf`)
+
+A single form that reads the runtime configuration with `GET /admin/conf` and
+saves edits with a partial `PATCH /admin/conf` (only changed fields). The field
+set is exactly the conf contract in [API.md](../API.md) §`/admin/conf` — the
+page does not invent fields. Fields are grouped for legibility:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Admin · Configurations                  updated 2026-05-29  │
+├──────────────────────────────────────────────────────────────┤
+│  LLM         provider [gemini      ]  model [gemini-3.5-…  ]  │
+│              API key  [•••••• leave blank to keep current]   │
+│  OntoGen     max iters [3]  debate turns [4]  rag k [5]       │
+│              reviewer model [                              ]  │
+│  MetaGen     max iters [3]  debate turns [4]  rag k [5]       │
+│              reviewer model [        ]  confidence [0.70]     │
+│              ontology rag  node [5]  edge [5]  triple [5]     │
+│  Validation  score intervals [3]                             │
+│  Stubs       ☐ redis  ☐ llm  ☐ pgvector  ☐ notifications     │
+│  Auth        DataHub corp group [dataspoke-users          ]  │
+│                                            [ Save changes ]  │
+└──────────────────────────────────────────────────────────────┘
+       Runtime configuration (`/admin/conf`)
+```
+
+- **Numeric inputs** mirror the API bounds so out-of-range never reaches the
+  server (the API still enforces them via `422`): `*_llm_max_iterations` 1–20,
+  `*_debate_max_turns` 2–10, `*_rag_k` and `metagen_ontology_rag_*_k` 0–20,
+  `metagen_confidence_threshold` 0.0–1.0, `validation_score_n_intervals` ≥ 1.
+- **`stub_*` toggles** are booleans rendered as switches; they gate the four
+  dependency stubs (redis, llm, pgvector, notifications).
+- **`llm_api_key`** is a masked write-only secret: `GET` returns `""` (unset) or
+  `"********"` (set); the input shows "leave blank to keep current"; submitting
+  an empty string clears it, omitting it leaves it unchanged. The key is routed
+  to the Kubernetes Secret, not the DB.
+- The nullable `*_reviewer_model` fields clear on blank: an empty input is sent as
+  `null` (reuse `llm_model`) when changed.
+- The response `updated_at` is shown after a successful save.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
