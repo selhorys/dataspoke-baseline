@@ -29,8 +29,8 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
 
   // Fetch triples (paginated) plus ALL nodes and edges for gating lookup.
   const triplesQuery = useOntogenTriples({ offset, limit: PAGE_SIZE });
-  const nodesQuery = useOntogenNodes({ limit: 200 });
-  const edgesQuery = useOntogenEdges({ limit: 200 });
+  const nodesQuery = useOntogenNodes({ limit: 100 });
+  const edgesQuery = useOntogenEdges({ limit: 100 });
 
   const triples = triplesQuery.data?.triples ?? [];
   const total = triplesQuery.data?.total_count ?? 0;
