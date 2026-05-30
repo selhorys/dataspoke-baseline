@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -57,13 +58,16 @@ interface NewConfDialogProps {
 }
 
 function NewConfDialog({ open, onOpenChange }: NewConfDialogProps) {
+  const router = useRouter();
   const [urn, setUrn] = useState("");
 
   const handleGo = () => {
     const trimmed = urn.trim();
     if (!trimmed) return;
-    // Navigate to the detail page for the given URN — the form will be in create state.
-    window.location.href = `/ingestion/data/${encodeURIComponent(trimmed)}`;
+    // Client-side navigation preserves the in-memory access token — a hard
+    // reload would drop it and bounce through /login. The form will be in
+    // create state for a URN with no existing config.
+    router.push(`/ingestion/data/${encodeURIComponent(trimmed)}`);
   };
 
   return (

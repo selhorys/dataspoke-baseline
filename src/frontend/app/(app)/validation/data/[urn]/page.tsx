@@ -84,9 +84,12 @@ export default function ValidationDetailPage({
 }: {
   params: Promise<{ urn: string }>;
 }) {
-  // Next.js App Router: params.urn is already URL-decoded once from the segment.
-  // The API layer re-encodes it with encodeURIComponent. Do NOT double-decode here.
-  const { urn: datasetUrn } = use(params);
+  // Next.js returns the [urn] segment URL-decoded on server render but still
+  // encoded after client-side navigation. Normalize to the raw URN so the API
+  // client encodes exactly once — double-encoding yields a 422
+  // string_pattern_mismatch with an empty error message.
+  const { urn: rawUrn } = use(params);
+  const datasetUrn = rawUrn.startsWith("urn:") ? rawUrn : decodeURIComponent(rawUrn);
   const { canWrite } = useMe();
   const router = useRouter();
 
