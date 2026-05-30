@@ -101,7 +101,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const { datahubUrl, langfuseUrl, airflowUrl, apiBaseUrl } = getRuntimeConfig();
   const infraLinks = [
-    { label: "DataHub", href: datahubUrl, icon: DataHubIcon },
+    // Link to /login (not the root): the React login page offers both the
+    // username/password form and a "Sign in with SSO" button. The root would
+    // hit /authenticate and auto-redirect to the OIDC provider for guests.
+    { label: "DataHub", href: datahubUrl ? `${datahubUrl}/login` : "", icon: DataHubIcon },
     { label: "Langfuse", href: langfuseUrl, icon: LangfuseIcon },
     { label: "Airflow", href: airflowUrl, icon: AirflowIcon },
     { label: "API docs", href: apiBaseUrl ? `${apiBaseUrl}/redoc` : "", icon: RedocIcon },
