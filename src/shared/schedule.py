@@ -12,9 +12,9 @@ SCHEDULE_TIER_SECONDS: dict[str, int] = {
     "weekly": 604800,
 }
 
-# Passive ingestion sync period in seconds.
-# MUST mirror the ``@hourly`` schedule of the ``ingestion-passive-hourly`` DAG
-# defined in ``src/workflows/dags/ingestion_passive_hourly.py``.
+# Ingestion sync period in seconds.
+# MUST mirror the ``@hourly`` schedule of the ``ingestion-sync-hourly`` DAG
+# defined in ``src/workflows/dags/ingestion_sync_hourly.py``.
 PASSIVE_SYNC_PERIOD_SEC: int = 3600
 
 # Multiplier applied to a dataset's nominal cadence to form its freshness window.

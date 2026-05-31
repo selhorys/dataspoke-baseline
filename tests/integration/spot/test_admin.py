@@ -152,54 +152,72 @@ async def test_internal_admin_datahub_sync_targeted(
 ) -> None:
     """POST /internal/admin/datahub/sync with dataset_urns performs a targeted sync.
 
-    Pre-seeds dataset_registry by upserting an ingestion conf for the URN — this is
-    the natural flow that populates the registry (BACKEND.md §Ingestion Service
-    "Config upsert registers the dataset URN in dataset_registry"). Without seeding,
-    sync_with_datahub counts the URN as not_found rather than checked.
+    Pre-seeds dataset_registry by creating an ACTIVE_CUSTOM_MANAGED source whose
+    dataset mapping covers catalog.title_master. The sync sweep registers the URN in
+    dataset_registry; sync_with_datahub then checks that URN against DataHub.
+
+    spec: API.md §Internal Admin — POST /internal/admin/datahub/sync response shape.
+    spec: BACKEND.md §Ingestion Service — dataset_registry populated by source creation.
     """
     test_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    encoded_urn = urllib.parse.quote(test_urn, safe="")
-    conf_path = f"/api/v1/spoke/common/data/{encoded_urn}/attr/ingestion/conf"
+    pg_host_port = os.environ.get(
+        "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
+        "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
+    )
 
-    pg_host = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-    pg_port = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
-    pg_db = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
-
-    # Seed registry via ingestion conf upsert (calls ensure_dataset_registered).
-    put_resp = await api_client.put(
-        conf_path,
+    # Create a source that covers the catalog schema; the sync sweep populates dataset_registry.
+    create_resp = await api_client.post(
+        "/api/v1/spoke/ingestion/sources",
         headers=admin_headers,
         json={
-            "mode": "active-custom",
-            "platform": "postgres",
-            "locator": {"host": pg_host, "port": pg_port},
-            "identifier": {"database": pg_db, "schema_name": "catalog", "table": "title_master"},
-            "auth": {
-                "username": _PG_USER,
-                "password": _PG_PASSWORD,
-                "secret_ref": {
-                    "name": _VAULT_NAME,
-                    "key": _VAULT_KEY,
-                    "force_overwrite": True,
-                },
+            "mode": "ACTIVE_CUSTOM_MANAGED",
+            "name": "admin-sync-targeted-test-source",
+            "schedule": "0 0 * * *",
+            "recipe": {
+                "source": {
+                    "type": "postgres",
+                    "config": {
+                        "host_port": pg_host_port,
+                        "database": "example_db",
+                        "username": "postgres",
+                        "password": "${admin_test_pg__password}",
+                        "env": "DEV",
+                        "schema_pattern": {"allow": ["^catalog$"]},
+                    },
+                }
             },
-            "is_enabled": False,
         },
     )
-    assert put_resp.status_code in (200, 201), put_resp.text
+    assert create_resp.status_code == 201, (
+        f"Create source failed: {create_resp.status_code} {create_resp.text}"
+    )
+    source_id = create_resp.json()["id"]
 
     try:
-        # Internal routes are mounted WITHOUT /api/v1 prefix (see main.py)
+        # Trigger ingestion sync to populate dataset_registry via the source mapping.
+        await api_client.post(
+            "/internal/activities/ingestion/sync",
+            headers=internal_headers,
+        )
+
+        # Now run the targeted datahub sync.
+        # Internal routes are mounted WITHOUT /api/v1 prefix (see main.py).
         resp = await api_client.post(
             "/internal/admin/datahub/sync",
             headers=internal_headers,
             json={"dataset_urns": [test_urn]},
         )
-
-        assert resp.status_code == 200
+        assert resp.status_code == 200, (
+            f"/internal/admin/datahub/sync expected 200, got {resp.status_code}: {resp.text}"
+        )
         body = resp.json()
         assert "checked" in body
-        # Targeted: checked should be 1 (the URN we submitted)
-        assert body["checked"] >= 1
+        # Targeted: checked should be >= 1 (the URN we submitted, if it is in dataset_registry)
+        assert body["checked"] >= 1, (
+            f"Expected checked >= 1 for the submitted URN; got checked={body['checked']}. "
+            "spec: API.md §Internal Admin — POST /internal/admin/datahub/sync"
+        )
     finally:
-        await api_client.delete(conf_path, headers=admin_headers)
+        await api_client.delete(
+            f"/api/v1/spoke/ingestion/sources/{source_id}", headers=admin_headers
+        )

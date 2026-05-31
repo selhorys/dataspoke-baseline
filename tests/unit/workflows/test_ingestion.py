@@ -4,7 +4,7 @@ The per-dataset get_datasets_for_tier function is removed in the per-source mode
 Tier-based dispatch now uses IngestionService.list_active_sources_for_tier().
 The ingestion activity at /internal/activities/ingestion/list-active calls that method.
 
-This module tests the IngestionPassiveSyncParams model and any remaining workflow helpers.
+This module tests the IngestionSyncParams model and any remaining workflow helpers.
 
 Spec: BACKEND.md §Ingestion Workflow, §Tier DAG support
 Spec: USE_CASE_en.md §UC1
@@ -14,21 +14,21 @@ from __future__ import annotations
 
 import pytest
 
-from src.workflows.ingestion import IngestionPassiveSyncParams
+from src.workflows.ingestion import IngestionSyncParams
 
 
-class TestIngestionPassiveSyncParams:
-    """Spec: BACKEND.md §Ingestion Workflow — passive-sync activity has no inputs."""
+class TestIngestionSyncParams:
+    """Spec: BACKEND.md §Ingestion Workflow — sync activity has no inputs."""
 
     def test_params_is_instantiable_with_no_args(self) -> None:
-        """IngestionPassiveSyncParams can be instantiated with no arguments.
+        """IngestionSyncParams can be instantiated with no arguments.
 
-        Spec: BACKEND.md §Ingestion Workflow — passive-sync activity takes no parameters.
+        Spec: BACKEND.md §Ingestion Workflow — sync activity takes no parameters.
         """
-        params = IngestionPassiveSyncParams()
+        params = IngestionSyncParams()
         assert params is not None
 
     def test_params_is_pydantic_model(self) -> None:
-        """IngestionPassiveSyncParams is a Pydantic BaseModel for Airflow compatibility."""
+        """IngestionSyncParams is a Pydantic BaseModel for Airflow compatibility."""
         from pydantic import BaseModel
-        assert issubclass(IngestionPassiveSyncParams, BaseModel)
+        assert issubclass(IngestionSyncParams, BaseModel)

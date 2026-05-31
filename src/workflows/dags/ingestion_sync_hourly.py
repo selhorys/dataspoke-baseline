@@ -1,10 +1,12 @@
-"""Airflow DAG: ingestion-passive-hourly
+"""Airflow DAG: ingestion-sync-hourly
 
-Hourly passive ingestion sync. Mirrors DataHub run history for all
-passive-mode ingestion configs into the DataSpoke events table.
-Single task, no fan-out — the service iterates all passive configs internally.
+Hourly sync sweep. Reconciles all ingestion sources (DATAHUB_MANAGED, PASSIVE,
+ACTIVE_CUSTOM_MANAGED) against DataHub: pulls source definitions, rebuilds
+dataset mappings, mirrors run events into the events table.
 
-Spec: spec/feature/BACKEND.md §Ingestion Workflow, §DAG Catalogue
+Single task — the service iterates all sources internally.
+
+Spec: spec/feature/BACKEND.md §Sync + mapping sweep, §DAG Catalogue
 """
 from __future__ import annotations
 
@@ -15,11 +17,11 @@ from _internal_headers import internal_headers
 from airflow import DAG
 from airflow.providers.http.operators.http import HttpOperator
 
-_DAG_ID = "ingestion-passive-hourly"
+_DAG_ID = "ingestion-sync-hourly"
 
 with DAG(
     dag_id=_DAG_ID,
-    description="Hourly mirror of DataHub passive ingestion run history into events table",
+    description="Hourly sync of all ingestion sources against DataHub",
     schedule="@hourly",
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -30,12 +32,12 @@ with DAG(
         "retry_delay": timedelta(seconds=10),
         "execution_timeout": timedelta(minutes=5),
     },
-    tags=["ingestion", "passive", "hourly"],
+    tags=["ingestion", "sync", "hourly"],
 ) as dag:
-    passive_sync = HttpOperator(
-        task_id="passive_sync",
+    ingestion_sync = HttpOperator(
+        task_id="ingestion_sync",
         http_conn_id="dataspoke_api",
-        endpoint="/internal/activities/ingestion/passive-sync",
+        endpoint="/internal/activities/ingestion/sync",
         method="POST",
         headers=internal_headers(),
         data=json.dumps({}),

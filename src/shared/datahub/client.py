@@ -407,6 +407,190 @@ class DataHubClient:
             self._graph.execute_graphql, query, variables=variables or {}
         )
 
+    async def list_ingestion_sources(self) -> list[dict[str, Any]]:
+        """Return all DataHub-managed ingestion sources.
+
+        Paginates listIngestionSources until all pages are consumed.
+
+        Each returned dict contains:
+          - urn (str): the dataHubIngestionSource URN
+          - name (str): display name
+          - type (str): source type (e.g. "postgres", "mysql")
+          - schedule (dict | None): {"interval": str, "timezone": str | None}
+          - recipe (str): the raw JSON recipe string as DataHub returned it
+            (secrets may be raw plaintext — the caller is responsible for masking
+            before persisting)
+
+        Raises:
+            DataHubUnavailableError: on transport failure after retries.
+        """
+        _QUERY = """
+        query ListIngestionSources($input: ListIngestionSourcesInput!) {
+            listIngestionSources(input: $input) {
+                start
+                count
+                total
+                ingestionSources {
+                    urn
+                    name
+                    type
+                    schedule {
+                        interval
+                        timezone
+                    }
+                    config {
+                        recipe
+                    }
+                }
+            }
+        }
+        """
+        page_size = 100
+        start = 0
+        all_sources: list[dict[str, Any]] = []
+
+        while True:
+            raw = await self.execute_graphql(
+                _QUERY, variables={"input": {"start": start, "count": page_size}}
+            )
+            outer = (raw or {}).get("listIngestionSources") or {}
+            sources_page: list[dict] = outer.get("ingestionSources") or []
+            for s in sources_page:
+                schedule_raw = s.get("schedule")
+                all_sources.append(
+                    {
+                        "urn": s.get("urn") or "",
+                        "name": s.get("name") or "",
+                        "type": s.get("type") or "",
+                        "schedule": (
+                            {
+                                "interval": schedule_raw.get("interval") or "",
+                                "timezone": schedule_raw.get("timezone"),
+                            }
+                            if schedule_raw
+                            else None
+                        ),
+                        "recipe": (s.get("config") or {}).get("recipe") or "",
+                    }
+                )
+            total: int = outer.get("total") or 0
+            start += len(sources_page)
+            if start >= total or not sources_page:
+                break
+
+        return all_sources
+
+    async def list_execution_requests(
+        self, ingestion_source_urn: str, count: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return terminal execution requests for an ingestion source.
+
+        Uses the IngestionSource.executions(start, count) field on the source
+        entity (see ingestion.graphql: IngestionSource.executions).  Only
+        requests whose result field is non-null (i.e. terminal) are returned.
+
+        Each returned dict contains:
+          - urn (str): execution request URN
+          - status (str): "SUCCEEDED" | "FAILED" | other
+          - startTimeMs (int | None): epoch ms when the task began
+          - durationMs (int | None): task duration in ms
+
+        Raises:
+            DataHubUnavailableError: on transport failure after retries.
+        """
+        _QUERY = """
+        query GetIngestionSourceExecutions($urn: String!, $start: Int!, $count: Int!) {
+            ingestionSource(urn: $urn) {
+                executions(start: $start, count: $count) {
+                    total
+                    executionRequests {
+                        urn
+                        result {
+                            status
+                            startTimeMs
+                            durationMs
+                        }
+                    }
+                }
+            }
+        }
+        """
+        page_size = count
+        start = 0
+        all_requests: list[dict[str, Any]] = []
+
+        while True:
+            raw = await self.execute_graphql(
+                _QUERY,
+                variables={
+                    "urn": ingestion_source_urn,
+                    "start": start,
+                    "count": page_size,
+                },
+            )
+            source_node = (raw or {}).get("ingestionSource") or {}
+            executions = source_node.get("executions") or {}
+            requests_page: list[dict] = executions.get("executionRequests") or []
+            total: int = executions.get("total") or 0
+
+            for req in requests_page:
+                result = req.get("result")
+                if result is None:
+                    # Non-terminal (still running) — skip.
+                    continue
+                all_requests.append(
+                    {
+                        "urn": req.get("urn") or "",
+                        "status": result.get("status") or "",
+                        "startTimeMs": result.get("startTimeMs"),
+                        "durationMs": result.get("durationMs"),
+                    }
+                )
+
+            start += len(requests_page)
+            if start >= total or not requests_page:
+                break
+
+        return all_requests
+
+    async def get_pipeline_names(
+        self, dataset_urns: list[str]
+    ) -> dict[str, str | None]:
+        """Return the systemMetadata.pipelineName for each dataset URN.
+
+        Reads all MCPs for the dataset via graph.get_entity_as_mcps() and
+        returns the first non-null pipelineName found across any aspect.
+
+        Returns a dict {dataset_urn: pipelineName | None} for every input URN.
+        URNs that raise exceptions or have no pipelineName map to None.
+
+        Raises:
+            DataHubUnavailableError: only propagated when the circuit breaker
+            fires.  Individual per-URN errors degrade to None (best-effort).
+        """
+        result: dict[str, str | None] = {urn: None for urn in dataset_urns}
+
+        # TODO: batch via getEntities if the estate grows
+        for urn in dataset_urns:
+            try:
+                mcps = await self._with_retry(self._graph.get_entity_as_mcps, urn)
+                for mcp in mcps or []:
+                    sys_meta = getattr(mcp, "systemMetadata", None)
+                    if sys_meta is not None:
+                        pipeline_name = getattr(sys_meta, "pipelineName", None)
+                        if pipeline_name:
+                            result[urn] = pipeline_name
+                            break
+            except DataHubUnavailableError:
+                # Circuit breaker fired — re-raise immediately to let the caller
+                # (sync sweep) abort rather than silently returning all Nones.
+                raise
+            except Exception:
+                # Per-URN failure: log and continue with None.
+                pass
+
+        return result
+
     async def hard_delete_entity(self, urn: str) -> None:
         """Hard-delete a DataHub entity and all its references with retry."""
         await self._with_retry(self._graph.hard_delete_entity, urn)

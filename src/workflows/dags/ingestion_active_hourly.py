@@ -32,7 +32,7 @@ with DAG(
         "retry_delay": timedelta(seconds=10),
         "execution_timeout": timedelta(minutes=5),
     },
-    tags=["ingestion", "active-custom", _TIER],
+    tags=["ingestion", "ACTIVE_CUSTOM_MANAGED", _TIER],
 ) as dag:
     list_active = HttpOperator(
         task_id="list_active",
@@ -46,9 +46,9 @@ with DAG(
     )
 
     @task(task_id="extract_targets")  # type: ignore[untyped-decorator]
-    def extract_targets(dataset_urns: list[str]) -> list[str]:
-        """Convert a list of dataset URNs into JSON-encoded run request bodies."""
-        return [json.dumps({"dataset_urn": urn, "dry_run": False}) for urn in dataset_urns]
+    def extract_targets(source_ids: list[str]) -> list[str]:
+        """Convert a list of source IDs into JSON-encoded run request bodies."""
+        return [json.dumps({"source_id": sid, "dry_run": False}) for sid in source_ids]
 
     targets = extract_targets(list_active.output)
 

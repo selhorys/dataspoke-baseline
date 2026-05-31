@@ -1,14 +1,18 @@
 """Spot tests for internal activity endpoints.
 
 Concerns covered — for each domain (ingestion, validation, metagen, metrics, ontogen):
-- POST /internal/activities/{domain}/list-active — returns list of URNs/IDs for given tier
-- POST /internal/activities/{domain}/run — executes for a dataset URN (or metric_id)
+- POST /internal/activities/ingestion/list-active — returns source IDs for given tier
+- POST /internal/activities/ingestion/run — executes for a source_id (per-source model)
+- POST /internal/activities/ingestion/sync — reconcile all sources against DataHub
+- POST /internal/activities/{domain}/list-active — returns list of IDs for given tier
+- POST /internal/activities/{domain}/run — executes for a metric_id
 
 Auth: X-Internal-Token header (internal_headers fixture).
 Internal routes are mounted WITHOUT the /api/v1 prefix (see src/api/main.py line 271).
 """
 # spec: BACKEND.md §Tier-DAG selection
-# spec: BACKEND.md §Ingestion Service / §Validation Service / §Metrics Service
+# spec: BACKEND.md §Ingestion Service §Active-custom run pipeline
+# spec: BACKEND.md §Validation Service / §Metrics Service
 
 import os
 import urllib.parse
@@ -18,26 +22,22 @@ import pytest
 
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
 
-# Dummy-data Postgres: spec/TESTING.md L312-313 — example_db on the dev-env host.
-_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
-_PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
-_PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
-_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
-_VAULT_NAME = "dataspoke-source-cred-spot-pg"
-_VAULT_KEY = "password"
+# In-cluster hostname for the dummy-data postgres (resolvable inside the cluster).
+# spec: TESTING.md — example_db on the dev-env host.
+_PG_HOST_PORT = os.environ.get(
+    "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
+    "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
+)
+# Secret reference: K8s Secret dataspoke-source-cred-spot-pg, key 'password'.
+_SECRET_REF_HOURLY = "${spot_pg_hourly__password}"
+_SECRET_REF_DAILY = "${spot_pg_daily__password}"
 
 # Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
 # before this module's tests run (autoused by tests/integration/conftest.py).
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
-# Imazon dataset that is guaranteed to exist in DataHub after reset
+# Imazon dataset URN — guaranteed to exist in DataHub after reset-seed
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-_ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
-
-# Second URN for tier-isolation cross-check (seeded in a different tier)
-_TEST_URN_2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
-_ENCODED_URN_2 = urllib.parse.quote(_TEST_URN_2, safe="")
 
 
 @pytest.mark.asyncio
@@ -46,83 +46,97 @@ async def test_ingestion_list_active_hourly(
     internal_headers: dict[str, str],
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /internal/activities/ingestion/list-active returns URNs for the requested tier
-    and excludes URNs assigned to a different tier.
+    """POST /internal/activities/ingestion/list-active returns source IDs for the given
+    tier and excludes source IDs assigned to a different tier.
+
+    Ingestion is per-source (per-source model). The activity returns a list of source IDs
+    (UUIDs) whose ACTIVE_CUSTOM_MANAGED sources have schedule_tier matching the requested tier.
 
     spec: BACKEND.md §Tier-DAG selection — "the periodic DAG that runs at a given tier
     fetches only the configs whose schedule_tier matches the DAG's tier"
+    spec: API.md §Ingestion — POST /spoke/ingestion/sources (ACTIVE_CUSTOM_MANAGED)
     """
-    # spec: BACKEND.md §Tier-DAG selection
-    conf_hourly = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
-    conf_daily = f"/api/v1/spoke/common/data/{_ENCODED_URN_2}/attr/ingestion/conf"
-
-    # Seed an enabled config in the target tier (hourly)
-    await api_client.put(
-        conf_hourly,
+    # Create two sources: one hourly (target tier), one daily (must be excluded).
+    create_hourly_resp = await api_client.post(
+        "/api/v1/spoke/ingestion/sources",
         headers=admin_headers,
         json={
-            "mode": "active-custom",
-            "platform": "postgres",
-            "locator": {"host": _PG_HOST, "port": _PG_PORT},
-            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "title_master"},
-            "auth": {
-                "username": _PG_USER,
-                "password": _PG_PASSWORD,
-                "secret_ref": {
-                    "name": _VAULT_NAME,
-                    "key": _VAULT_KEY,
-                    "force_overwrite": True,
-                },
+            "mode": "ACTIVE_CUSTOM_MANAGED",
+            "name": "spot-test-hourly-source",
+            "schedule": "0 * * * *",
+            "recipe": {
+                "source": {
+                    "type": "postgres",
+                    "config": {
+                        "host_port": _PG_HOST_PORT,
+                        "database": "example_db",
+                        "username": "postgres",
+                        "password": _SECRET_REF_HOURLY,
+                        "env": "DEV",
+                        "schema_pattern": {"allow": ["^catalog$"]},
+                    },
+                }
             },
-            "is_enabled": True,
-            "schedule_tier": "hourly",
         },
     )
+    assert create_hourly_resp.status_code == 201, (
+        f"Create hourly source failed: {create_hourly_resp.status_code} {create_hourly_resp.text}"
+    )
+    hourly_source_id = create_hourly_resp.json()["id"]
 
-    # Seed an enabled config in a DIFFERENT tier (daily) — must NOT appear in hourly results
-    await api_client.put(
-        conf_daily,
+    create_daily_resp = await api_client.post(
+        "/api/v1/spoke/ingestion/sources",
         headers=admin_headers,
         json={
-            "mode": "active-custom",
-            "platform": "postgres",
-            "locator": {"host": _PG_HOST, "port": _PG_PORT},
-            "identifier": {"database": _PG_DB, "schema_name": "catalog", "table": "editions"},
-            "auth": {
-                "username": _PG_USER,
-                "password": _PG_PASSWORD,
-                "secret_ref": {
-                    "name": _VAULT_NAME,
-                    "key": _VAULT_KEY,
-                    "force_overwrite": True,
-                },
+            "mode": "ACTIVE_CUSTOM_MANAGED",
+            "name": "spot-test-daily-source",
+            "schedule": "0 0 * * *",
+            "recipe": {
+                "source": {
+                    "type": "postgres",
+                    "config": {
+                        "host_port": _PG_HOST_PORT,
+                        "database": "example_db",
+                        "username": "postgres",
+                        "password": _SECRET_REF_DAILY,
+                        "env": "DEV",
+                        "schema_pattern": {"allow": ["^orders$"]},
+                    },
+                }
             },
-            "is_enabled": True,
-            "schedule_tier": "daily",
         },
     )
-
-    resp = await api_client.post(
-        "/internal/activities/ingestion/list-active",
-        headers=internal_headers,
-        json={"tier": "hourly"},
+    assert create_daily_resp.status_code == 201, (
+        f"Create daily source failed: {create_daily_resp.status_code} {create_daily_resp.text}"
     )
+    daily_source_id = create_daily_resp.json()["id"]
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-    # Hourly-tier URN must appear
-    assert _TEST_URN in body, (
-        f"Expected {_TEST_URN} in hourly list, got: {body}"
-    )
-    # Daily-tier URN must NOT appear in hourly results
-    assert _TEST_URN_2 not in body, (
-        f"Tier isolation violated: {_TEST_URN_2} (daily tier) appeared in hourly list"
-    )
-
-    # Cleanup
-    await api_client.delete(conf_hourly, headers=admin_headers)
-    await api_client.delete(conf_daily, headers=admin_headers)
+    try:
+        resp = await api_client.post(
+            "/internal/activities/ingestion/list-active",
+            headers=internal_headers,
+            json={"tier": "hourly"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert isinstance(body, list)
+        # Hourly-tier source ID must appear in the list
+        assert hourly_source_id in body, (
+            f"Expected hourly source {hourly_source_id!r} in list-active tier=hourly, got: {body}. "
+            "spec: BACKEND.md §Tier-DAG selection"
+        )
+        # Daily-tier source ID must NOT appear in hourly results
+        assert daily_source_id not in body, (
+            f"Tier isolation violated: daily source {daily_source_id!r} appeared in hourly list. "
+            "spec: BACKEND.md §Tier-DAG selection"
+        )
+    finally:
+        await api_client.delete(
+            f"/api/v1/spoke/ingestion/sources/{hourly_source_id}", headers=admin_headers
+        )
+        await api_client.delete(
+            f"/api/v1/spoke/ingestion/sources/{daily_source_id}", headers=admin_headers
+        )
 
 
 @pytest.mark.asyncio
@@ -131,62 +145,65 @@ async def test_ingestion_run_activity(
     internal_headers: dict[str, str],
     admin_headers: dict[str, str],
 ) -> None:
-    """POST /internal/activities/ingestion/run executes ingestion for a dataset URN.
+    """POST /internal/activities/ingestion/run executes ingestion for a source_id.
 
-    Pre-condition: an active ingestion config must exist. Creates one, runs activity,
-    then cleans up.
+    Pre-condition: an ACTIVE_CUSTOM_MANAGED source must exist. Creates one, runs the
+    activity with dry_run=True (no DataHub emission), then cleans up.
 
-    spec: BACKEND.md §Active run pipeline L195-L204
+    spec: BACKEND.md §Active-custom run pipeline — response shape: {run_id, status, ...}
+    spec: API.md §Ingestion — POST /internal/activities/ingestion/run takes {source_id, dry_run}
     """
-    # spec: BACKEND.md §Active run pipeline — shape: {run_id, status, ...}
-    conf_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion/conf"
-
-    # Create active ingestion config
-    await api_client.put(
-        conf_url,
+    # Create an ACTIVE_CUSTOM_MANAGED source for the catalog schema
+    create_resp = await api_client.post(
+        "/api/v1/spoke/ingestion/sources",
         headers=admin_headers,
         json={
-            "mode": "active-custom",
-            "platform": "postgres",
-            "locator": {"host": _PG_HOST, "port": _PG_PORT},
-            "identifier": {
-                "database": _PG_DB,
-                "schema_name": "catalog",
-                "table": "title_master",
+            "mode": "ACTIVE_CUSTOM_MANAGED",
+            "name": "spot-test-run-activity-source",
+            "schedule": "0 0 * * *",
+            "recipe": {
+                "source": {
+                    "type": "postgres",
+                    "config": {
+                        "host_port": _PG_HOST_PORT,
+                        "database": "example_db",
+                        "username": "postgres",
+                        "password": "${spot_pg_daily__password}",
+                        "env": "DEV",
+                        "schema_pattern": {"allow": ["^catalog$"]},
+                    },
+                }
             },
-            "auth": {
-                "username": _PG_USER,
-                "password": _PG_PASSWORD,
-                "secret_ref": {
-                    "name": _VAULT_NAME,
-                    "key": _VAULT_KEY,
-                    "force_overwrite": True,
-                },
-            },
-            "is_enabled": True,
-            "schedule_tier": "daily",
         },
     )
-
-    resp = await api_client.post(
-        "/internal/activities/ingestion/run",
-        headers=internal_headers,
-        json={"dataset_urn": _TEST_URN, "dry_run": True},
+    assert create_resp.status_code == 201, (
+        f"Create source failed: {create_resp.status_code} {create_resp.text}"
     )
+    source_id = create_resp.json()["id"]
 
-    assert resp.status_code == 200
-    body = resp.json()
-    # spec: BACKEND.md §Active run pipeline — response must carry both run_id and status
-    assert "run_id" in body and "status" in body, (
-        f"Expected both 'run_id' and 'status' in ingestion run response, got: {list(body.keys())}"
-    )
-    assert body["status"].lower() not in _FAIL_TAIL, (
-        f"run unexpectedly returned fail-tail status {body['status']!r} — "
-        "secret resolution or downstream connectivity may be broken"
-    )
-
-    # Cleanup
-    await api_client.delete(conf_url, headers=admin_headers)
+    try:
+        resp = await api_client.post(
+            "/internal/activities/ingestion/run",
+            headers=internal_headers,
+            json={"source_id": source_id, "dry_run": True},
+        )
+        assert resp.status_code == 200, (
+            f"ingestion/run expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        # spec: BACKEND.md §Active-custom run pipeline — response carries run_id and status
+        assert "run_id" in body and "status" in body, (
+            f"Expected both 'run_id' and 'status' in ingestion run response, got: {list(body.keys())}. "
+            "spec: BACKEND.md §Active-custom run pipeline"
+        )
+        assert body["status"].lower() not in _FAIL_TAIL, (
+            f"run unexpectedly returned fail-tail status {body['status']!r} — "
+            "secret resolution or downstream connectivity may be broken"
+        )
+    finally:
+        await api_client.delete(
+            f"/api/v1/spoke/ingestion/sources/{source_id}", headers=admin_headers
+        )
 
 
 @pytest.mark.asyncio

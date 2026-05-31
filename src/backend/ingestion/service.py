@@ -30,6 +30,9 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import json
+import re
+
 from src.backend.ingestion.extractors import run_extractor
 from src.backend.ingestion.secret_resolver import (
     SecretRefMalformed,
@@ -50,7 +53,7 @@ from src.shared.events import (
     INGESTION_SOURCE_UPDATE,
 )
 from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError, StorageUnavailableError
-from src.shared.models.ingestion import Mode, extract_secret_refs, parse_recipe, cron_to_tier
+from src.shared.models.ingestion import Mode, build_matcher, extract_secret_refs, parse_recipe, cron_to_tier
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +190,115 @@ def _reject_if_datahub_managed(mode: str, source_id: str) -> None:
             f"Source {source_id!r} is DATAHUB_MANAGED and read-only in DataSpoke. "
             "Edit the source in DataHub directly.",
         )
+
+
+# ── Sync sweep helpers ────────────────────────────────────────────────────────
+
+# Known plaintext-secret keys that may appear in a DataHub recipe config.
+# If DataHub returns the recipe with these keys set to non-${...} values,
+# those values are masked.  Keys that already use ${...} refs are kept as-is
+# because they do not contain actual secrets.
+_SECRET_REF_RE_INLINE = re.compile(r"^\$\{[A-Za-z0-9_]+\}$")
+
+_PLAINTEXT_SECRET_KEYS: frozenset[str] = frozenset(
+    {
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "api_secret",
+        "client_secret",
+        "access_token",
+        "secret_key",
+        "private_key",
+        "auth_token",
+        "credential",
+        "credentials",
+        "aws_secret_access_key",
+    }
+)
+
+_MASKED_VALUE = "********"
+
+
+def _mask_recipe_secrets(recipe: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of *recipe* with sensitive plaintext values masked.
+
+    Masking rule:
+      - Walk all string values in recipe.source.config recursively.
+      - For each value whose key (case-insensitive) is in _PLAINTEXT_SECRET_KEYS:
+        - If the value is already a ${...} reference → keep as-is.
+        - Otherwise → replace with "********".
+    - Values outside recipe.source.config (e.g. the type field) are never masked.
+
+    This guards against DataHub returning raw credentials in the recipe JSON.
+    """
+    import copy
+
+    masked = copy.deepcopy(recipe)
+    config = (masked.get("source") or {}).get("config")
+    if isinstance(config, dict):
+        _mask_dict_inplace(config)
+    return masked
+
+
+def _mask_dict_inplace(obj: Any, *, _key: str | None = None) -> None:
+    """Recursively mask plaintext secret values in-place."""
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if isinstance(v, str):
+                if k.lower() in _PLAINTEXT_SECRET_KEYS and not _SECRET_REF_RE_INLINE.match(v):
+                    obj[k] = _MASKED_VALUE
+                # else: leave as-is (either not a secret key, or already a ref)
+            elif isinstance(v, (dict, list)):
+                _mask_dict_inplace(v, _key=k)
+    elif isinstance(obj, list):
+        for item in obj:
+            _mask_dict_inplace(item, _key=_key)
+
+
+def _parse_recipe_str_safe(recipe_str: str) -> dict[str, Any]:
+    """Parse a JSON recipe string safely; return empty dict on failure."""
+    if not recipe_str:
+        return {}
+    try:
+        parsed = json.loads(recipe_str)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _safe_parse_recipe(recipe: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """parse_recipe that returns ('unknown', {}) on failure."""
+    try:
+        return parse_recipe(recipe)
+    except ValueError:
+        return "unknown", {}
+
+
+def _name_from_dataset_urn(urn: str) -> str | None:
+    """Extract the name segment (second comma-field) from a dataset URN.
+
+    Dataset URN format: ``urn:li:dataset:(urn:li:dataPlatform:<platform>,<name>,<origin>)``
+
+    The platform itself is a nested URN that contains a comma, so the first
+    comma separates the platform URN from the name, and the last comma separates
+    the name from the origin.  We use rfind to locate the last comma (origin
+    boundary) and the second-to-last comma (platform/name boundary).
+
+    Returns None for malformed URNs.
+    """
+    if not urn.startswith("urn:li:dataset:(") or not urn.endswith(")"):
+        return None
+    inner = urn[len("urn:li:dataset:("):-1]
+    last_comma = inner.rfind(",")
+    if last_comma == -1:
+        return None
+    second_last_comma = inner.rfind(",", 0, last_comma)
+    if second_last_comma == -1:
+        return None
+    name = inner[second_last_comma + 1:last_comma].strip()
+    return name if name else None
 
 
 # ── Service ───────────────────────────────────────────────────────────────────
@@ -904,21 +1016,408 @@ class IngestionService:
         self._db.add(event)
         await self._db.commit()
 
-    # ── Phase 2b stubs ────────────────────────────────────────────────────────
-    # The following methods are placeholders for the DataHub-source sync sweep
-    # implemented in Phase 2b. They are defined here so the API layer and Airflow
-    # DAGs can reference the service without import errors.
+    # ── Sync sweep (Phase 2b) ─────────────────────────────────────────────────
 
     async def sync(self) -> dict[str, Any]:
-        """Sync DATAHUB_MANAGED source definitions and mapping sweep.
+        """Reconcile all ingestion sources against DataHub.
 
-        TODO(phase-2b): Implement the full ingestion-sync-hourly pipeline:
-          1. listIngestionSources → upsert DATAHUB_MANAGED rows.
-          2. Rebuild ingestion_source_dataset for all modes via filter-matcher.
-          3. Enrich via systemMetadata.pipelineName observation.
-          4. Mirror run events for DATAHUB_MANAGED / PASSIVE.
+        Five-step pipeline (per spec/feature/BACKEND.md §Sync + mapping sweep):
+
+        1. **Source defs**: pull DATAHUB_MANAGED source recipes + schedules via
+           listIngestionSources; upsert read-only rows; remove stale rows.
+        2. **Mapping**: enumerate all DataHub datasets once, rebuild
+           ingestion_source_dataset rows with origin='matcher' for every source.
+           Preserve origin='emitted' rows (authoritative from active-custom runs).
+        3. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
+           sources, read systemMetadata.pipelineName per dataset and upsert
+           origin='pipeline_name' rows where the name matches a source.
+        4. **Run events**: mirror terminal execution requests for DATAHUB_MANAGED
+           sources as INGESTION.COMPLETE / INGESTION.FAIL events.
+           For PASSIVE sources, observe Operation timeseries on mapped datasets.
+        5. **Unmanaged bucket**: served on-read by the router — sync() does not
+           persist a separate table.
+
+        Returns:
+            Summary dict for the activity endpoint / logging:
+              sources_synced   — DATAHUB_MANAGED rows upserted
+              sources_removed  — DATAHUB_MANAGED rows removed (gone from DataHub)
+              datasets_mapped  — new ingestion_source_dataset matcher rows inserted
+              pipeline_links   — pipeline_name-origin rows upserted
+              events_mirrored  — new INGESTION events written
         """
-        raise NotImplementedError(
-            "IngestionService.sync() is implemented in Phase 2b "
-            "(ingestion-sync-hourly DAG integration)."
+        summary: dict[str, Any] = {
+            "sources_synced": 0,
+            "sources_removed": 0,
+            "datasets_mapped": 0,
+            "pipeline_links": 0,
+            "events_mirrored": 0,
+        }
+
+        # ── Step 1: Source defs (DATAHUB_MANAGED) ────────────────────────────
+        dh_sources = await self._datahub.list_ingestion_sources()
+        seen_urns: set[str] = set()
+
+        for s in dh_sources:
+            source_urn = s.get("urn") or ""
+            if not source_urn:
+                continue
+            seen_urns.add(source_urn)
+
+            recipe_str = s.get("recipe") or ""
+            recipe_dict = _parse_recipe_str_safe(recipe_str)
+            masked_recipe = _mask_recipe_secrets(recipe_dict)
+
+            source_type, _ = _safe_parse_recipe(masked_recipe)
+            schedule_interval: str | None = (s.get("schedule") or {}).get("interval") or None
+
+            # Derive internal tier for informational purposes only — no error on unknown.
+            try:
+                tier = cron_to_tier(schedule_interval)
+            except ValueError:
+                tier = None
+
+            # Upsert the DATAHUB_MANAGED row matched on datahub_source_urn.
+            result = await self._db.execute(
+                select(IngestionSource).where(
+                    IngestionSource.datahub_source_urn == source_urn,
+                    IngestionSource.mode == Mode.DATAHUB_MANAGED.value,
+                )
+            )
+            row = result.scalar_one_or_none()
+            now = datetime.now(tz=UTC)
+
+            if row is None:
+                row = IngestionSource(
+                    id=uuid.uuid4(),
+                    mode=Mode.DATAHUB_MANAGED.value,
+                    name=s.get("name") or source_urn,
+                    platform=source_type,
+                    recipe=masked_recipe,
+                    schedule=schedule_interval,
+                    schedule_tier=tier,
+                    datahub_source_urn=source_urn,
+                    status="OK",
+                )
+                self._db.add(row)
+            else:
+                row.name = s.get("name") or source_urn
+                row.platform = source_type
+                row.recipe = masked_recipe
+                row.schedule = schedule_interval
+                row.schedule_tier = tier
+                row.status = "OK"
+                row.updated_at = now
+                self._db.add(row)
+
+            summary["sources_synced"] += 1
+
+        await self._db.commit()
+
+        # Remove DATAHUB_MANAGED rows whose source URN is no longer in DataHub.
+        result = await self._db.execute(
+            select(IngestionSource).where(
+                IngestionSource.mode == Mode.DATAHUB_MANAGED.value
+            )
         )
+        all_managed_rows = result.scalars().all()
+        for row in all_managed_rows:
+            if row.datahub_source_urn and row.datahub_source_urn not in seen_urns:
+                await self._db.delete(row)
+                summary["sources_removed"] += 1
+
+        if summary["sources_removed"]:
+            await self._db.commit()
+
+        # ── Step 2: Mapping (all modes) ───────────────────────────────────────
+        # Enumerate the full dataset set once.
+        all_dataset_urns = await self._datahub.enumerate_datasets()
+
+        # Build a lookup: dataset_urn -> name segment (second comma-field of the
+        # URN inner tuple: (platform, name, origin)).
+        urn_to_name: dict[str, str] = {}
+        for urn in all_dataset_urns:
+            name = _name_from_dataset_urn(urn)
+            if name:
+                urn_to_name[urn] = name
+
+        # Load all source rows to evaluate matchers.
+        result = await self._db.execute(select(IngestionSource))
+        all_sources_rows = result.scalars().all()
+
+        for src_row in all_sources_rows:
+            source_id = src_row.id
+            recipe = dict(src_row.recipe) if src_row.recipe else {}
+
+            matcher = build_matcher(recipe)
+            matched_urns: set[str] = {
+                urn for urn, name in urn_to_name.items() if matcher(name)
+            }
+
+            # Fetch currently stored matcher-origin rows for this source.
+            existing_result = await self._db.execute(
+                select(IngestionSourceDataset).where(
+                    IngestionSourceDataset.source_id == source_id,
+                    IngestionSourceDataset.origin == "matcher",
+                )
+            )
+            existing_matcher_rows: dict[str, IngestionSourceDataset] = {
+                r.dataset_urn: r for r in existing_result.scalars().all()
+            }
+
+            now = datetime.now(tz=UTC)
+
+            # Upsert matcher rows for currently-matched datasets.
+            # F1+F2: use pg_insert with a WHERE guard on the conflict path so that:
+            #   - A conflict against an existing emitted/pipeline_name row is a no-op
+            #     (the higher-precedence row is never overwritten or demoted).
+            #   - A conflict against an existing matcher row just bumps last_seen_at.
+            #   - A genuinely new row is inserted with origin='matcher'.
+            for urn in matched_urns:
+                stmt = (
+                    pg_insert(IngestionSourceDataset)
+                    .values(
+                        source_id=source_id,
+                        dataset_urn=urn,
+                        origin="matcher",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["source_id", "dataset_urn"],
+                        set_={"last_seen_at": now},
+                        where=(IngestionSourceDataset.origin == "matcher"),
+                    )
+                )
+                insert_result = await self._db.execute(stmt)
+                # rowcount == 1 on INSERT, 1 on UPDATE, 0 when the WHERE filtered
+                # out the conflict update (higher-precedence row untouched).
+                if insert_result.rowcount == 1 and urn not in existing_matcher_rows:
+                    summary["datasets_mapped"] += 1
+
+            # Prune stale matcher rows (origin='matcher') that no longer match.
+            # These rows were fetched with origin=='matcher' filter above, so this
+            # loop can only delete matcher-origin rows — emitted/pipeline_name rows
+            # are never in existing_matcher_rows and are therefore never deleted here.
+            for urn, stale_row in existing_matcher_rows.items():
+                if urn not in matched_urns:
+                    await self._db.delete(stale_row)
+
+        await self._db.commit()
+
+        # ── Step 3: Observed enrichment (MANAGED modes) ───────────────────────
+        if all_dataset_urns:
+            pipeline_map = await self._datahub.get_pipeline_names(all_dataset_urns)
+
+            # Build lookup: pipeline_name -> source_id for MANAGED sources.
+            # DATAHUB_MANAGED: pipelineName == datahub_source_urn (DataHub stamps the URN).
+            # ACTIVE_CUSTOM_MANAGED: pipelineName == str(source.id) (DataSpoke extractor
+            #   stamps pipelineName = source_id per the DPI emission convention).
+            pipeline_to_source: dict[str, uuid.UUID] = {}
+            for src_row in all_sources_rows:
+                if src_row.mode == Mode.DATAHUB_MANAGED.value and src_row.datahub_source_urn:
+                    pipeline_to_source[src_row.datahub_source_urn] = src_row.id
+                elif src_row.mode == Mode.ACTIVE_CUSTOM_MANAGED.value:
+                    pipeline_to_source[str(src_row.id)] = src_row.id
+
+            now = datetime.now(tz=UTC)
+            for dataset_urn, pipeline_name in pipeline_map.items():
+                if not pipeline_name:
+                    continue
+                source_id = pipeline_to_source.get(pipeline_name)
+                if source_id is None:
+                    continue
+
+                stmt = (
+                    pg_insert(IngestionSourceDataset)
+                    .values(
+                        source_id=source_id,
+                        dataset_urn=dataset_urn,
+                        origin="pipeline_name",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["source_id", "dataset_urn"],
+                        # F3: do not demote an emitted row to pipeline_name.
+                        # origin is not in set_ (so it never overwrites the existing
+                        # origin value), and the WHERE guard prevents even last_seen_at
+                        # from being bumped on emitted rows — keeping them pristine
+                        # across sweeps.
+                        set_={"origin": "pipeline_name", "last_seen_at": now},
+                        where=(IngestionSourceDataset.origin != "emitted"),
+                    )
+                )
+                await self._db.execute(stmt)
+                summary["pipeline_links"] += 1
+
+            await self._db.commit()
+
+        # ── Step 4: Run events ────────────────────────────────────────────────
+        # Mirror DATAHUB_MANAGED terminal executions into the events table.
+        for src_row in all_sources_rows:
+            if src_row.mode == Mode.DATAHUB_MANAGED.value and src_row.datahub_source_urn:
+                mirrored = await self._mirror_execution_requests(
+                    source_id=str(src_row.id),
+                    datahub_source_urn=src_row.datahub_source_urn,
+                )
+                summary["events_mirrored"] += mirrored
+
+        # PASSIVE: observe Operation timeseries on mapped datasets (best-effort).
+        for src_row in all_sources_rows:
+            if src_row.mode == Mode.PASSIVE.value:
+                mirrored = await self._observe_passive_operations(str(src_row.id))
+                summary["events_mirrored"] += mirrored
+
+        return summary
+
+    # ── Sync helpers ──────────────────────────────────────────────────────────
+
+    async def _mirror_execution_requests(
+        self,
+        source_id: str,
+        datahub_source_urn: str,
+    ) -> int:
+        """Mirror terminal execution requests for a DATAHUB_MANAGED source.
+
+        Deduplicates by (entity_id, event_type, occurred_at).
+
+        Returns the count of newly inserted events.
+        """
+        try:
+            requests = await self._datahub.list_execution_requests(datahub_source_urn)
+        except Exception as exc:
+            logger.warning(
+                "list_execution_requests failed for %s: %s", datahub_source_urn, exc
+            )
+            return 0
+
+        inserted = 0
+        for req in requests:
+            status_str = req.get("status") or ""
+            event_type = (
+                INGESTION_COMPLETE if status_str == "SUCCEEDED" else INGESTION_FAIL
+            )
+            start_ms = req.get("startTimeMs")
+            if start_ms:
+                occurred_at = datetime.fromtimestamp(start_ms / 1000, tz=UTC)
+            else:
+                occurred_at = datetime.now(tz=UTC)
+
+            # Deduplicate: skip if (entity_id, event_type, occurred_at) exists.
+            dup_result = await self._db.execute(
+                select(Event).where(
+                    Event.entity_type == "ingestion_source",
+                    Event.entity_id == source_id,
+                    Event.event_type == event_type,
+                    Event.occurred_at == occurred_at,
+                )
+            )
+            if dup_result.scalar_one_or_none() is not None:
+                continue
+
+            self._db.add(
+                Event(
+                    entity_type="ingestion_source",
+                    entity_id=source_id,
+                    event_type=event_type,
+                    status="success" if event_type == INGESTION_COMPLETE else "failure",
+                    detail={
+                        "execution_request_urn": req.get("urn") or "",
+                        "duration_ms": req.get("durationMs"),
+                        "source": "datahub_sync",
+                    },
+                    occurred_at=occurred_at,
+                )
+            )
+            inserted += 1
+
+        if inserted:
+            await self._db.commit()
+
+        return inserted
+
+    async def _observe_passive_operations(self, source_id: str) -> int:
+        """Observe Operation timeseries on datasets mapped to a PASSIVE source.
+
+        Best-effort: per-dataset errors are logged and skipped.
+
+        Returns the count of newly inserted events.
+        """
+        from datahub.metadata.schema_classes import OperationClass  # type: ignore
+
+        _INGESTION_OP_TYPES = {"INSERT", "UPDATE", "CREATE", "ALTER"}
+
+        try:
+            uid = uuid.UUID(source_id)
+        except ValueError:
+            return 0
+
+        # Fetch datasets mapped to this PASSIVE source.
+        ds_result = await self._db.execute(
+            select(IngestionSourceDataset).where(
+                IngestionSourceDataset.source_id == uid,
+            )
+        )
+        dataset_rows = ds_result.scalars().all()
+
+        inserted = 0
+        for ds_row in dataset_rows:
+            try:
+                ops = await self._datahub.get_timeseries(
+                    ds_row.dataset_urn,
+                    OperationClass,
+                    limit=5,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "get_timeseries(Operation) failed for %s: %s", ds_row.dataset_urn, exc
+                )
+                continue
+
+            for op in ops:
+                op_type = getattr(op, "operationType", None)
+                if op_type not in _INGESTION_OP_TYPES:
+                    continue
+
+                last_updated_ts = getattr(op, "lastUpdatedTimestamp", None)
+                if last_updated_ts:
+                    occurred_at = datetime.fromtimestamp(last_updated_ts / 1000, tz=UTC)
+                else:
+                    occurred_at = datetime.now(tz=UTC)
+
+                event_type = INGESTION_COMPLETE
+
+                # Deduplicate.
+                dup_result = await self._db.execute(
+                    select(Event).where(
+                        Event.entity_type == "ingestion_source",
+                        Event.entity_id == source_id,
+                        Event.event_type == event_type,
+                        Event.occurred_at == occurred_at,
+                    )
+                )
+                if dup_result.scalar_one_or_none() is not None:
+                    continue
+
+                self._db.add(
+                    Event(
+                        entity_type="ingestion_source",
+                        entity_id=source_id,
+                        event_type=event_type,
+                        status="success",
+                        detail={
+                            "dataset_urn": ds_row.dataset_urn,
+                            "operation_type": op_type,
+                            "source": "passive_observation",
+                        },
+                        occurred_at=occurred_at,
+                    )
+                )
+                inserted += 1
+                # One event per dataset per sweep is sufficient.
+                break
+
+        if inserted:
+            await self._db.commit()
+
+        return inserted

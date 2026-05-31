@@ -20,7 +20,7 @@ _DAGS_DIR = Path(__file__).resolve().parents[4] / "src" / "workflows" / "dags"
 _DAG_ID = "datahub-sync-daily"
 
 # Exact set of 16 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue.
-# 4 ingestion (3 active tier + 1 passive hourly)
+# 4 ingestion (3 active tier + 1 sync hourly)
 # 3 metrics tier (hourly/daily/weekly)
 # 3 metagen tier (hourly/daily/weekly)
 # 3 ontogen tier (hourly/daily/weekly)
@@ -32,8 +32,8 @@ _EXPECTED_ALL_DAG_IDS: frozenset[str] = frozenset({
     "ingestion-active-hourly",
     "ingestion-active-daily",
     "ingestion-active-weekly",
-    # Ingestion — passive sync
-    "ingestion-passive-hourly",
+    # Ingestion — sync sweep
+    "ingestion-sync-hourly",
     # Metrics — scheduled tiers
     "metrics-hourly",
     "metrics-daily",

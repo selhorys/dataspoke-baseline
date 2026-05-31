@@ -4,7 +4,7 @@ Pins the exact set of DAG IDs per spec/feature/BACKEND.md §DAG Catalogue.
 Also verifies tier structure for tier-based DAG groups.
 
 spec: feature/BACKEND.md §DAG Catalogue — 16 DAGs total:
-  4 ingestion (3 active tier + 1 passive hourly)
+  4 ingestion (3 active tier + 1 sync hourly)
   3 metrics tier (hourly/daily/weekly)
   3 metagen tier (hourly/daily/weekly)
   3 ontogen tier (hourly/daily/weekly)
@@ -17,7 +17,7 @@ import pytest
 from src.workflows.registry import (
     ALL_DAG_IDS,
     INGESTION_ACTIVE_DAG_IDS,
-    INGESTION_PASSIVE_DAG_IDS,
+    INGESTION_SYNC_DAG_IDS,
     METAGEN_TIER_DAG_IDS,
     METRICS_TIER_DAG_IDS,
     ON_DEMAND_DAG_IDS,
@@ -31,8 +31,8 @@ _SPEC_ALL_DAG_IDS: frozenset[str] = frozenset({
     "ingestion-active-hourly",
     "ingestion-active-daily",
     "ingestion-active-weekly",
-    # Ingestion — passive sync
-    "ingestion-passive-hourly",
+    # Ingestion — sync sweep
+    "ingestion-sync-hourly",
     # Metrics — scheduled tiers
     "metrics-hourly",
     "metrics-daily",
@@ -117,23 +117,23 @@ def test_ingestion_active_dag_ids_count() -> None:
     assert len(INGESTION_ACTIVE_DAG_IDS) == 3
 
 
-# ── INGESTION_PASSIVE_DAG_IDS ─────────────────────────────────────────────────
+# ── INGESTION_SYNC_DAG_IDS ────────────────────────────────────────────────────
 
 
-def test_ingestion_passive_dag_ids_contains_hourly() -> None:
-    """INGESTION_PASSIVE_DAG_IDS must contain ingestion-passive-hourly.
+def test_ingestion_sync_dag_ids_contains_hourly() -> None:
+    """INGESTION_SYNC_DAG_IDS must contain ingestion-sync-hourly.
 
-    spec: feature/BACKEND.md §DAG Catalogue — passive ingestion runs hourly.
+    spec: feature/BACKEND.md §DAG Catalogue — ingestion sync sweep runs hourly.
     """
-    assert "ingestion-passive-hourly" in INGESTION_PASSIVE_DAG_IDS
+    assert "ingestion-sync-hourly" in INGESTION_SYNC_DAG_IDS
 
 
-def test_ingestion_passive_dag_ids_count() -> None:
-    """INGESTION_PASSIVE_DAG_IDS must have exactly 1 entry.
+def test_ingestion_sync_dag_ids_count() -> None:
+    """INGESTION_SYNC_DAG_IDS must have exactly 1 entry.
 
     spec: feature/BACKEND.md §DAG Catalogue.
     """
-    assert len(INGESTION_PASSIVE_DAG_IDS) == 1
+    assert len(INGESTION_SYNC_DAG_IDS) == 1
 
 
 # ── METRICS_TIER_DAG_IDS ──────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ def test_all_dag_ids_is_union_of_component_sets() -> None:
     """
     union = frozenset(
         list(INGESTION_ACTIVE_DAG_IDS)
-        + list(INGESTION_PASSIVE_DAG_IDS)
+        + list(INGESTION_SYNC_DAG_IDS)
         + list(METRICS_TIER_DAG_IDS)
         + list(METAGEN_TIER_DAG_IDS)
         + list(ONTOGEN_TIER_DAG_IDS)

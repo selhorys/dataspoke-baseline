@@ -142,6 +142,21 @@ async def reset_all() -> None:
         await conn.close()
 
 
+async def reset_ingestion_sources() -> None:
+    """DELETE all rows from ingestion_source (cascades to ingestion_source_dataset).
+
+    Used by UC1 api-wired tests before each run to guarantee a clean slate.
+    ``reset_all()`` covers this via TRUNCATE; this is the narrow helper for when
+    only ingestion state needs clearing (e.g. between individual UC1 test steps).
+    """
+    conn = await _get_connection()
+    try:
+        await conn.execute(f"DELETE FROM {_SCHEMA}.ingestion_source_dataset")
+        await conn.execute(f"DELETE FROM {_SCHEMA}.ingestion_source")
+    finally:
+        await conn.close()
+
+
 async def purge_urn(urn: str) -> None:
     """Hard-delete operational rows scoped to a single dataset URN.
 

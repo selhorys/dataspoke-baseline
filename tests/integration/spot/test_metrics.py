@@ -18,8 +18,8 @@ Concerns covered (each test targets one spec contract):
 - PUT dataset_filter.dataset_urns == 1000 entries → 200/201
 - PUT dataset_filter.dataset_urns=['not-a-urn'] → 422 INVALID_DATASET_URN
 - PUT metric_id with invalid path chars → 422
-- ingestion-freshness per-dataset window: active-custom daily (in-time and stale),
-  passive (boundary ~7200s), no ingestion_config row (uses metric_conf fallback)
+- ingestion-freshness per-dataset window: ACTIVE_CUSTOM_MANAGED daily (in-time and stale),
+  PASSIVE (boundary ~7200s), no ingestion_source_dataset row (uses metric_conf fallback)
 - validation-score per-dataset window: ≥ N+1 rows derive window from intervals
   (window_source='intervals'); sparse < N+1 rows fall back (window_source='default')
 - POST method/run dry_run=true → no persisted result, no RUN_COMPLETE event
@@ -30,9 +30,9 @@ Concerns covered (each test targets one spec contract):
 
 Spot is the right layer for the window-math tests (ingestion-freshness and
 validation-score per-dataset windows) because they require raw ORM/SQL-seeded state
-(events, validation_results, ingestion_configs with controlled timestamps) that the
-api-wired pipeline cannot naturally produce.  Tests insert rows directly via asyncpg
-and clean up in `finally` blocks.
+(events, validation_results, ingestion_source/ingestion_source_dataset with controlled
+timestamps) that the api-wired pipeline cannot naturally produce.
+Tests insert rows directly via asyncpg and clean up in `finally` blocks.
 
 Spec:
 - spec/USE_CASE_en.md §UC5 — Factory defaults, Built-in active metric types, API Mapping
@@ -1204,9 +1204,13 @@ async def test_metric_id_path_regex_acceptance_and_rejection(
 # These tests need raw ORM/SQL-seeded state that the api-wired pipeline cannot
 # naturally produce. They insert rows directly via asyncpg and clean up in finally.
 #
+# The freshness measurer reads ingestion_source + ingestion_source_dataset (via a
+# JOIN) to resolve the per-dataset window. Seeds insert into those tables directly.
+#
 # Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — per-dataset
-#       freshness window derived from ingestion_configs.
+#       freshness window derived from ingestion_source / ingestion_source_dataset.
 # Spec: spec/feature/BACKEND.md §Metrics Service §Time windows.
+# Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
 
 
 @pytest.mark.asyncio
@@ -1214,20 +1218,22 @@ async def test_ingestion_freshness_active_custom_daily_window(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ingestion-freshness: active-custom daily config → window = 172800s.
+    """ingestion-freshness: ACTIVE_CUSTOM_MANAGED daily source → window = 172800s.
 
-    Seeds an ingestion_config with mode='active-custom', schedule_tier='daily'
-    and two events for two datasets:
+    Seeds an ingestion_source row with mode='ACTIVE_CUSTOM_MANAGED', schedule_tier='daily'
+    and ingestion_source_dataset rows (origin='emitted') for two datasets:
       - urn_fresh: INGESTION.COMPLETE 130000s ago (< 172800s) → in-time
-      - urn_stale: INGESTION.COMPLETE 200000s ago (> 172800s) → stale, breakdown has window_source
+      - urn_stale: INGESTION.COMPLETE 200000s ago (> 172800s) → stale
 
     Breakdown stale entry detail must include time_window_sec=172800 and
-    window_source='active-custom:daily'.
+    window_source='managed:daily'.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — active-custom
-          daily → window = 86400 × 2 = 172800s.
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
+          ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED daily → SCHEDULE_TIER_SECONDS[daily] × 2
+          = 86400 × 2 = 172800s.
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — breakdown detail
           carries time_window_sec and window_source.
+    Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
     """
     _METRIC_ID = "spot-freshness-daily-window"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
@@ -1242,23 +1248,39 @@ async def test_ingestion_freshness_active_custom_daily_window(
 
     conn = await _get_ds_conn()
     now = datetime.now(tz=UTC)
+    # Stable source ID — deterministic so cleanup is reliable even on partial failure.
+    source_id = "00000000-spot-fresh-daily-w-0000"
     try:
-        # Insert ingestion_configs for both datasets (active-custom daily)
+        # Insert ingestion_source (ACTIVE_CUSTOM_MANAGED, daily schedule_tier)
+        # spec: BACKEND_SCHEMA.md §ingestion_source — columns: id, mode, name, platform, recipe,
+        #   schedule, schedule_tier, datahub_source_urn, status, created_at, updated_at
+        await conn.execute(
+            "INSERT INTO dataspoke.ingestion_source "
+            "(id, mode, name, platform, recipe, schedule, schedule_tier, status) "
+            "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) "
+            "ON CONFLICT (id) DO UPDATE SET mode=$2, schedule_tier=$7",
+            source_id,
+            "ACTIVE_CUSTOM_MANAGED",
+            "spot-freshness-daily-test",
+            "postgres",
+            json.dumps({"source": {"type": "postgres", "config": {}}}),
+            "0 0 * * *",
+            "daily",
+            "OK",
+        )
+
+        # Insert ingestion_source_dataset rows (origin='emitted') for both datasets
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — (source_id, dataset_urn, origin, ...)
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
-                "INSERT INTO dataspoke.ingestion_configs "
-                "(id, dataset_urn, mode, schedule_tier, platform, locator, identifier, is_enabled) "
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7) "
-                "ON CONFLICT (dataset_urn) DO UPDATE SET mode=$2, schedule_tier=$3",
-                urn, "active-custom", "daily", "postgres",
-                json.dumps({"host": "example-postgres"}),
-                json.dumps({"database": "example_db"}),
-                True,
+                "INSERT INTO dataspoke.ingestion_source_dataset "
+                "(source_id, dataset_urn, origin) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET origin=$3",
+                source_id, urn, "emitted",
             )
 
-        # Clear any pre-existing INGESTION.COMPLETE events for these URNs (seed
-        # ingestion or prior tests may have produced events whose MAX(occurred_at)
-        # would otherwise mask the controlled timestamps inserted below).
+        # Clear any pre-existing INGESTION.COMPLETE events for these URNs
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
                 "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
@@ -1293,7 +1315,7 @@ async def test_ingestion_freshness_active_custom_daily_window(
                 "is_enabled": True,
                 "metric_type": "ingestion-freshness",
                 "title": "Daily Window Spot Test",
-                "description": "Tests per-dataset daily window from ingestion_configs",
+                "description": "Tests per-dataset daily window from ingestion_source mapping",
                 "metrics": ["total", "ingested_in_time"],
                 "metric_conf": {"time_window_sec": 3600},  # fallback — must NOT be used
                 "schedule_tier": None,
@@ -1324,10 +1346,13 @@ async def test_ingestion_freshness_active_custom_daily_window(
         )
         assert values["ingested_in_time"] == 1.0, (
             f"ingested_in_time must be 1 (only urn_fresh); got {values['ingested_in_time']}. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — active-custom daily window=172800s."
+            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "
+            "ACTIVE_CUSTOM_MANAGED daily window=172800s."
         )
 
-        # Stale breakdown entry must have time_window_sec=172800 and window_source='active-custom:daily'
+        # Stale breakdown entry must have time_window_sec=172800 and window_source='managed:daily'
+        # spec: feature/BACKEND.md §Metrics Service §Time windows — window_source='managed:{tier}'
+        # for ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED sources.
         breakdown = row.get("breakdown", {})
         stale_entries = [e for e in breakdown.get("datasets", []) if e["urn"] == urn_stale]
         assert len(stale_entries) == 1, (
@@ -1339,9 +1364,11 @@ async def test_ingestion_freshness_active_custom_daily_window(
             f"Stale entry time_window_sec must be {_DAILY_WINDOW_SEC}; got {detail.get('time_window_sec')}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
-        assert detail["window_source"] == "active-custom:daily", (
-            f"Stale entry window_source must be 'active-custom:daily'; got {detail.get('window_source')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        assert detail["window_source"] == "managed:daily", (
+            f"Stale entry window_source must be 'managed:daily' for ACTIVE_CUSTOM_MANAGED daily; "
+            f"got {detail.get('window_source')!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "
+            "window_source='managed:{tier}' for MANAGED modes."
         )
         # urn_fresh must NOT appear in breakdown (it's in-time)
         fresh_entries = [e for e in breakdown.get("datasets", []) if e["urn"] == urn_fresh]
@@ -1352,11 +1379,15 @@ async def test_ingestion_freshness_active_custom_daily_window(
 
     finally:
         # Clean up seeds and metric
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source_dataset WHERE source_id = $1", source_id
+            )
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source WHERE id = $1", source_id
+            )
         for urn in (urn_fresh, urn_stale):
-            with suppress(Exception):
-                await conn.execute(
-                    "DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = $1", urn
-                )
             with suppress(Exception):
                 await conn.execute(
                     "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
@@ -1372,15 +1403,17 @@ async def test_ingestion_freshness_passive_window(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ingestion-freshness: passive config → window = 7200s (2 × hourly sync cadence).
+    """ingestion-freshness: PASSIVE source → window = 7200s (2 × hourly sync cadence).
 
-    Seeds a passive ingestion_config and two events:
+    Seeds an ingestion_source with mode='PASSIVE' and ingestion_source_dataset rows
+    (origin='matcher') for two datasets:
       - urn_fresh: event 3600s ago (< 7200s) → in-time
       - urn_stale: event 8000s ago (> 7200s) → stale, detail.window_source='passive'
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          passive → twice the DataHub-sync cadence (hourly → 7200s).
+          PASSIVE → twice the DataHub-sync cadence (hourly → 7200s).
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='passive'.
+    Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
     """
     _METRIC_ID = "spot-freshness-passive-window"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
@@ -1396,22 +1429,38 @@ async def test_ingestion_freshness_passive_window(
 
     conn = await _get_ds_conn()
     now = datetime.now(tz=UTC)
+    # Deterministic source ID for reliable cleanup.
+    source_id = "00000000-spot-fresh-passv-w-0000"
     try:
+        # Insert ingestion_source (PASSIVE, no schedule_tier)
+        # spec: BACKEND_SCHEMA.md §ingestion_source — PASSIVE sources have no schedule/schedule_tier
+        await conn.execute(
+            "INSERT INTO dataspoke.ingestion_source "
+            "(id, mode, name, platform, recipe, schedule, schedule_tier, status) "
+            "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) "
+            "ON CONFLICT (id) DO UPDATE SET mode=$2, schedule_tier=$7",
+            source_id,
+            "PASSIVE",
+            "spot-freshness-passive-test",
+            "kafka",
+            json.dumps({"source": {"type": "kafka", "config": {}}}),
+            None,
+            None,
+            "OK",
+        )
+
+        # Insert ingestion_source_dataset rows (origin='matcher') for both datasets
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin='matcher' for PASSIVE
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
-                "INSERT INTO dataspoke.ingestion_configs "
-                "(id, dataset_urn, mode, schedule_tier, platform, locator, identifier, is_enabled) "
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7) "
-                "ON CONFLICT (dataset_urn) DO UPDATE SET mode=$2, schedule_tier=$3",
-                urn, "passive", None, "postgres",
-                json.dumps({"host": "example-postgres"}),
-                json.dumps({"database": "example_db"}),
-                True,
+                "INSERT INTO dataspoke.ingestion_source_dataset "
+                "(source_id, dataset_urn, origin) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET origin=$3",
+                source_id, urn, "matcher",
             )
 
-        # Clear any pre-existing INGESTION.COMPLETE events for these URNs (seed
-        # ingestion or prior tests may have produced events whose MAX(occurred_at)
-        # would otherwise mask the controlled timestamps inserted below).
+        # Clear any pre-existing INGESTION.COMPLETE events for these URNs
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
                 "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
@@ -1444,7 +1493,7 @@ async def test_ingestion_freshness_passive_window(
                 "is_enabled": True,
                 "metric_type": "ingestion-freshness",
                 "title": "Passive Window Spot Test",
-                "description": "Tests per-dataset passive window",
+                "description": "Tests per-dataset passive window from ingestion_source mapping",
                 "metrics": ["total", "ingested_in_time"],
                 "metric_conf": {"time_window_sec": 86400},  # fallback — must NOT be used
                 "schedule_tier": None,
@@ -1466,7 +1515,7 @@ async def test_ingestion_freshness_passive_window(
             "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
         )
         assert row["values"]["ingested_in_time"] == 1.0, (
-            "Passive fresh dataset must be counted (event 3600s < 7200s window). "
+            "PASSIVE fresh dataset must be counted (event 3600s < 7200s window). "
             "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — passive window=7200s."
         )
 
@@ -1474,7 +1523,7 @@ async def test_ingestion_freshness_passive_window(
         assert stale_entries, "urn_stale must be in breakdown."
         detail = stale_entries[0]["detail"]
         assert detail["window_source"] == "passive", (
-            f"window_source for passive config must be 'passive'; got {detail.get('window_source')!r}. "
+            f"window_source for PASSIVE source must be 'passive'; got {detail.get('window_source')!r}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         assert detail["time_window_sec"] == _PASSIVE_WINDOW_SEC, (
@@ -1483,11 +1532,15 @@ async def test_ingestion_freshness_passive_window(
         )
 
     finally:
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source_dataset WHERE source_id = $1", source_id
+            )
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source WHERE id = $1", source_id
+            )
         for urn in (urn_fresh, urn_stale):
-            with suppress(Exception):
-                await conn.execute(
-                    "DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = $1", urn
-                )
             with suppress(Exception):
                 await conn.execute(
                     "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
@@ -1503,15 +1556,19 @@ async def test_ingestion_freshness_no_config_fallback(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ingestion-freshness: dataset with no ingestion_config uses metric_conf.time_window_sec.
+    """ingestion-freshness: dataset with no ingestion_source mapping uses metric_conf.time_window_sec.
 
-    Uses a URN that has no ingestion_configs row, and an event 50000s ago.
-    With fallback time_window_sec=86400 → 50000s < 86400s → in-time.
+    Uses a URN that has no ingestion_source_dataset row, and an event 50000s ago.
     With fallback time_window_sec=3600 → 50000s > 3600s → stale, window_source='default'.
 
+    The no-mapping condition is enforced by ensuring no ingestion_source_dataset row
+    covers this specific URN (delete any stale rows before seeding the event).
+    Resolvability in DataHub and absence of source mapping are independent concerns.
+
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          no config → metric_conf.time_window_sec.
+          dataset mapped to no source → metric_conf.time_window_sec.
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='default'.
+    Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source_dataset — no row → fallback.
     """
     _METRIC_ID = "spot-freshness-fallback-window"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
@@ -1519,8 +1576,7 @@ async def test_ingestion_freshness_no_config_fallback(
     base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     # Use a catalog URN — only catalog.* is seeded into DataHub by this module's
-    # DUMMY_DATA_DATAHUB_SCHEMAS constant. No-config condition is enforced by deleting any
-    # ingestion_configs row below; resolvability in DataHub and absence of config are independent.
+    # DUMMY_DATA_DATAHUB_SCHEMAS constant.
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
 
     await api_client.delete(base_conf, headers=admin_headers)
@@ -1528,9 +1584,11 @@ async def test_ingestion_freshness_no_config_fallback(
     conn = await _get_ds_conn()
     now = datetime.now(tz=UTC)
     try:
-        # Ensure no config row for this URN
+        # Ensure no ingestion_source_dataset row maps this URN (removes any stale entry
+        # left by a prior test run that seeded a source covering catalog.editions).
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — absence means no source mapping
         await conn.execute(
-            "DELETE FROM dataspoke.ingestion_configs WHERE dataset_urn = $1", urn
+            "DELETE FROM dataspoke.ingestion_source_dataset WHERE dataset_urn = $1", urn
         )
         # Insert an event 50000s ago
         await conn.execute(
@@ -1556,7 +1614,7 @@ async def test_ingestion_freshness_no_config_fallback(
                 "is_enabled": True,
                 "metric_type": "ingestion-freshness",
                 "title": "Fallback Window Spot Test",
-                "description": "Tests metric_conf fallback when no ingestion_configs row",
+                "description": "Tests metric_conf fallback when no ingestion_source_dataset row exists",
                 "metrics": ["total", "ingested_in_time"],
                 "metric_conf": {"time_window_sec": 3600},  # 50000s > 3600s → stale
                 "schedule_tier": None,
@@ -1578,14 +1636,14 @@ async def test_ingestion_freshness_no_config_fallback(
             "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
         )
         assert row["values"]["ingested_in_time"] == 0.0, (
-            "No config row + 50000s event + 3600s fallback → stale (ingested_in_time=0). "
+            "No source mapping + 50000s event + 3600s fallback → stale (ingested_in_time=0). "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         stale_entries = row.get("breakdown", {}).get("datasets", [])
         assert stale_entries, "Must have stale entry."
         detail = stale_entries[0]["detail"]
         assert detail["window_source"] == "default", (
-            f"No config → window_source must be 'default'; got {detail.get('window_source')!r}. "
+            f"No source mapping → window_source must be 'default'; got {detail.get('window_source')!r}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         assert detail["time_window_sec"] == 3600, (

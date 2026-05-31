@@ -11,7 +11,7 @@ orchestrator running inside the same K8s namespace, gated by X-Internal-Token.
 Activities:
   /ingestion/list-active  — list source IDs with ACTIVE_CUSTOM_MANAGED configs for a tier
   /ingestion/run          — execute ingestion pipeline for a single source
-  /ingestion/passive-sync — Phase-2b stub: sync DATAHUB_MANAGED and PASSIVE sources
+  /ingestion/sync         — reconcile all ingestion sources against DataHub (hourly sweep)
   /metagen/run            — execute global metagen inference pipeline (singleton)
   /metrics/list-active    — list metric IDs with is_enabled=True for a tier
   /metrics/run            — execute metric measurement for a single metric
@@ -117,15 +117,30 @@ async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
         return _error_response(exc)  # type: ignore[return-value]
 
 
-@router.post("/ingestion/passive-sync")
-async def ingestion_passive_sync() -> dict[str, object]:
-    """Sync DATAHUB_MANAGED source definitions and mapping sweep.
+@router.post("/ingestion/sync")
+async def ingestion_sync() -> dict[str, object]:
+    """Reconcile all ingestion sources against DataHub.
 
-    Phase-2b stub: the full sync is implemented in Phase 2b
-    (ingestion-sync-hourly DAG integration). Returns 200 with status=skipped
-    until then so the Airflow DAG does not permanently fail.
+    Called hourly by the ingestion-sync-hourly DAG. Runs the five-step sync
+    pipeline (source defs, mapping, observed enrichment, run events, unmanaged
+    bucket) and returns a summary dict.
+
+    Retryable: DataHub transient failures surface as 500 so Airflow retries.
+
+    Returns:
+        {sources_synced, sources_removed, datasets_mapped, pipeline_links, events_mirrored}
     """
-    return {"status": "skipped", "reason": "phase-2b-not-implemented"}
+    try:
+        async with make_db_session() as db:
+            from src.backend.ingestion.service import IngestionService
+            from src.shared.exceptions import DataHubUnavailableError
+
+            datahub = await make_datahub(db)
+            service = IngestionService(datahub=datahub, db=db)
+            summary = await service.sync()
+            return summary
+    except DataSpokeError as exc:
+        return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
 
 
 # ── /metagen ──────────────────────────────────────────────────────────────────

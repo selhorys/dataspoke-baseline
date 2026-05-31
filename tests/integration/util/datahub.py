@@ -360,6 +360,28 @@ def hard_delete_document(*, document_urn: str, token: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def discover_catalog_tables() -> set[str]:
+    """Return the set of catalog-schema URNs found in example-postgres.
+
+    Used by integration tests that seed only the catalog schema (spec:
+    project_datahub_resolvable_urns_catalog_only).  Raises AssertionError
+    if the query returns no tables — an empty result means example-postgres
+    is not seeded, which is an environment failure that must fail loudly
+    rather than silently passing a set-equality.
+
+    F1 fix: non-empty floor guard so vacuous equality on empty discovery
+    cannot silently pass.
+    """
+    tables = await discover_tables(schemas=frozenset({"catalog"}))
+    assert tables, (
+        "discover_catalog_tables() returned no tables in the 'catalog' schema. "
+        "The dummy-data postgres is not seeded — run "
+        "'uv run python -m tests.integration.util --reset-seed' before "
+        "executing integration tests."
+    )
+    return set(tables.keys())
+
+
 async def discover_tables(
     schemas: frozenset[str] | None = None,
 ) -> dict[str, list[dict]]:  # type: ignore[type-arg]

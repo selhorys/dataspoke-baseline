@@ -1,11 +1,24 @@
-"""UC1 Case 1 — Active-custom Postgres ingestion: end-to-end through public REST API.
+"""UC1 Case 2 — ACTIVE_CUSTOM_MANAGED postgres source: end-to-end through public REST API.
 
-DataSpoke owns the extraction for catalog.title_master. An Airflow tier DAG runs the
-platform extractor on the configured schedule_tier and emits results to DataHub. Steps
-cover PUT conf, dry-run guard, disabled-run 409 rejection, PATCH enable, real run,
-DPI/aspect assertions against DataHub GMS, and cross-dataset overview verification.
+DataSpoke owns the extraction for the catalog schema. The team creates the source via the
+API; an Airflow tier DAG runs DataSpoke's postgres extractor on the cron schedule.
+
+Steps mirror USE_CASE_en.md §UC1 Case 2:
+  1. POST /spoke/ingestion/sources with ACTIVE_CUSTOM_MANAGED + catalog-only recipe
+  2. Assert 201 + response body shape (mode, name, schedule, recipe with ${...} ref intact)
+  3. Dry-run POST /sources/{id}/method/run {dry_run: true} → success, no datasets emitted
+  4. Real run {dry_run: false} → success
+  5. Assert catalog.* datasets present in DataHub (ES settle: up to 30s poll)
+  6. GET /sources/{id}/datasets → origin='emitted' rows for catalog datasets
+  7. GET /sources/{id}/event → INGESTION.COMPLETE event
+  8. GET /spoke/common/data/{catalog_urn}/attr/ingestion → reverse-lookup returns this source
+  9. Cleanup: DELETE /sources/{id}
+
+spec: USE_CASE_en.md §UC1 Case 2
+spec: API.md §Ingestion (/spoke/ingestion/sources)
+spec: feature/BACKEND.md §Ingestion Service §Active-custom run pipeline
+spec: TESTING.md §Api-Wired Integration Tests
 """
-# spec: USE_CASE_en.md §UC1
 
 import asyncio
 import os
@@ -15,25 +28,40 @@ import urllib.parse
 import httpx
 import pytest
 
-# ── Dataset URN constants ─────────────────────────────────────────────────────
+from tests.integration.util import dataspoke_db
+from tests.integration.util.datahub import discover_catalog_tables
 
-_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
-_PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
-_PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
-_PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
+# ── Environment / credential references ──────────────────────────────────────
 
-# spec: SECRET_RESOLUTION.md §Name prefix policy — names must start with dataspoke-source-cred-
-_VAULT_NAME = "dataspoke-source-cred-uc1-title-master"
-_VAULT_KEY = "password"
+# The in-cluster hostname for the dummy-data postgres (resolvable inside the cluster).
+_PG_HOST_PORT = os.environ.get(
+    "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
+    "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
+)
 
-# spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master is UC1 primary dataset
-_ACTIVE_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-_ACTIVE_ENCODED = urllib.parse.quote(_ACTIVE_URN, safe="")
+# Secret reference: K8s Secret dataspoke-source-cred-dummy_data_pg, key 'password'.
+# The secret must be pre-created in the cluster; DataSpoke lists and resolves it at run time.
+# spec: USE_CASE_en.md §UC1 Case 2 — password: '${dummy_data_pg__password}'
+_SECRET_REF = "${dummy_data_pg__password}"
 
+# F4: plaintext password for negative-secret assertion.
+# Populated by the dev install from helm-charts/.env DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD;
+# mirrors the value stored in the dataspoke-source-cred-dummy_data_pg K8s secret.
+_PG_PLAINTEXT_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
+
+# ── Dummy-data module constants ────────────────────────────────────────────────
 # spec: TESTING.md §Per-Module Dummy-Data Reset
-DUMMY_DATA_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
+
+# ── Catalog URNs (resolvable after DUMMY_DATA_DATAHUB_SCHEMAS seed) ───────────
+# spec: project_datahub_resolvable_urns_catalog_only — only catalog.* seeded into DataHub
+_CATALOG_TITLE_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+)
+_CATALOG_EDITIONS_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+)
+_CATALOG_TITLE_ENCODED = urllib.parse.quote(_CATALOG_TITLE_URN, safe="")
 
 
 @pytest.mark.asyncio
@@ -41,476 +69,310 @@ async def test_uc1_active_custom_postgres(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """UC1 Case 1 — DataSpoke owns the extraction for catalog.title_master.
+    """UC1 Case 2 — DataSpoke owns extraction for the catalog schema.
 
-    Narrative: "DataSpoke is the ingestor. An Airflow tier DAG runs the platform
-    extractor on the configured schedule_tier and emits results to DataHub.
-    Manual and dry-run runs are also supported."
-    spec: USE_CASE_en.md §UC1 Case 1
+    Narrative from USE_CASE_en.md §UC1 Case 2:
+      "DataSpoke is the ingestor. An Airflow tier DAG runs DataSpoke's postgres
+       extractor on the schedule. The recipe is DataHub-compatible; the password
+       references a k8s secret via ${name__key}."
 
-    Steps:
-      1. PUT active-custom conf for catalog.title_master
-      2. Dry-run (is_enabled=false) — must succeed (200)
-      3. Real run while disabled — must return 409 INGESTION_DISABLED
-      4. PATCH is_enabled=true, real run — must succeed with run_id + status
-      5. Assert DPI in DataHub via runs GraphQL after real run
-      6. Cross-dataset overview includes this URN with mode='active-custom'
-      7. Cleanup
+    spec: USE_CASE_en.md §UC1 Case 2
+    spec: API.md §Ingestion — POST /spoke/ingestion/sources (ACTIVE_CUSTOM_MANAGED)
+    spec: feature/BACKEND.md §Ingestion Service §Active-custom run pipeline
     """
-    active_conf_url = f"/api/v1/spoke/common/data/{_ACTIVE_ENCODED}/attr/ingestion/conf"
-    active_run_url = f"/api/v1/spoke/common/data/{_ACTIVE_ENCODED}/method/ingestion/run"
-    active_events_url = f"/api/v1/spoke/common/data/{_ACTIVE_ENCODED}/event/ingestion"
+    # Guarantee clean slate: no leftover ingestion_source rows from a prior run.
+    # spec: feedback_reset_before_api_wired — reset before api-wired tests.
+    await dataspoke_db.reset_ingestion_sources()
+
+    source_id: str | None = None
 
     try:
-        # ── Step 1: Register active-custom conf ──────────────────────────────
-        # spec: USE_CASE_en.md §UC1 Case 1 — PUT conf with mode='active-custom'
-        put_resp = await api_client.put(
-            active_conf_url,
+        # ── Step 1: POST source — ACTIVE_CUSTOM_MANAGED with UC1 Case 2 recipe ──
+        # spec: USE_CASE_en.md §UC1 Case 2 — exact recipe YAML → JSON body:
+        #   mode: ACTIVE_CUSTOM_MANAGED, schedule: '0 0 * * *',
+        #   recipe.source.type: postgres, schema_pattern.allow: ['^catalog$'],
+        #   password: '${dummy_data_pg__password}'
+        create_resp = await api_client.post(
+            "/api/v1/spoke/ingestion/sources",
             headers=admin_headers,
             json={
-                "mode": "active-custom",
-                "platform": "postgres",
-                "locator": {"host": _PG_HOST, "port": _PG_PORT},
-                "identifier": {
-                    "database": _PG_DB,
-                    "schema_name": "catalog",
-                    "table": "title_master",
+                "mode": "ACTIVE_CUSTOM_MANAGED",
+                "name": "dummy postgres example_db in catalog schema",
+                "schedule": "0 0 * * *",
+                "recipe": {
+                    "source": {
+                        "type": "postgres",
+                        "config": {
+                            "host_port": _PG_HOST_PORT,
+                            "database": "example_db",
+                            "username": "postgres",
+                            "password": _SECRET_REF,
+                            "env": "DEV",
+                            "schema_pattern": {
+                                "allow": ["^catalog$"]
+                            },
+                        },
+                    }
                 },
-                "auth": {
-                    "username": _PG_USER,
-                    "password": _PG_PASSWORD,
-                    "secret_ref": {
-                        "name": _VAULT_NAME,
-                        "key": _VAULT_KEY,
-                        "force_overwrite": True,
-                    },
-                },
-                "is_enabled": False,
-                "schedule_tier": "daily",
             },
         )
-        assert put_resp.status_code in (200, 201), (
-            f"PUT active-custom conf failed: {put_resp.status_code} {put_resp.text}"
-        )
-        put_body = put_resp.json()
-        assert put_body["dataset_urn"] == _ACTIVE_URN
-        assert put_body["mode"] == "active-custom", (
-            f"Response mode must be 'active-custom'; got {put_body['mode']!r}. "
-            "spec: USE_CASE_en.md §UC1 Case 1"
-        )
-        assert put_body["platform"] == "postgres"
-        assert put_body["schedule_tier"] == "daily"
-        assert put_body["workflow_dag_id"] == "ingestion-active-daily", (
-            f"active-custom + daily must surface workflow_dag_id='ingestion-active-daily'; "
-            f"got {put_body.get('workflow_dag_id')!r}. "
-            "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
-        )
-        assert put_body["is_enabled"] is False
-        assert put_body["identifier"]["table"] == "title_master"
-        # spec: SECRET_RESOLUTION.md §Vault-write flow — password stripped from response
-        assert "password" not in put_body["auth"], (
-            "Response auth must not expose the plaintext password. "
-            "spec: SECRET_RESOLUTION.md §Vault-write flow step 4"
-        )
-        assert put_body["auth"]["secret_ref"] == {"name": _VAULT_NAME, "key": _VAULT_KEY}, (
-            f"Response secret_ref must be reference shape {{name, key}}; "
-            f"got {put_body['auth'].get('secret_ref')!r}. "
-            "spec: SECRET_RESOLUTION.md §Vault-write flow step 5"
+        assert create_resp.status_code == 201, (
+            f"POST /spoke/ingestion/sources expected 201, got "
+            f"{create_resp.status_code}: {create_resp.text}"
         )
 
-        # ── Step 2: Dry-run while disabled — must succeed ────────────────────
-        # spec: USE_CASE_en.md §UC1 Case 1 — "A coding agent verifies connectivity
-        # before turning the schedule on: POST .../method/ingestion/run { 'dry_run': true }"
-        # spec: USE_CASE_en.md §UC1 — dry-run is permitted regardless of is_enabled
+        # ── Step 2: Assert 201 body shape ──────────────────────────────────────
+        # spec: API.md §Ingestion §Source body shape — response fields
+        body = create_resp.json()
+        assert "id" in body, "Response must include 'id'"
+        source_id = body["id"]
+        assert body["mode"] == "ACTIVE_CUSTOM_MANAGED", (
+            f"mode must be 'ACTIVE_CUSTOM_MANAGED'; got {body['mode']!r}. "
+            "spec: USE_CASE_en.md §UC1 Case 2"
+        )
+        assert body["name"] == "dummy postgres example_db in catalog schema"
+        assert body["schedule"] == "0 0 * * *", (
+            f"schedule cron must be '0 0 * * *'; got {body['schedule']!r}. "
+            "spec: API.md §Ingestion §Source body shape — schedule is the cron string"
+        )
+        # spec: API.md §Ingestion §Source body shape — no schedule_tier on the wire
+        assert "schedule_tier" not in body, (
+            "schedule_tier must NOT appear in the API response body. "
+            "spec: API.md §Ingestion §Source body shape"
+        )
+        # Secret reference must be preserved verbatim (masked form — not plaintext).
+        # spec: API.md §Ingestion §Source body shape — ${name__key} refs returned verbatim on GET
+        recipe_password = (
+            body.get("recipe", {})
+            .get("source", {})
+            .get("config", {})
+            .get("password")
+        )
+        assert recipe_password == _SECRET_REF, (
+            f"recipe.source.config.password must be the ${{name__key}} reference verbatim; "
+            f"got {recipe_password!r}. "
+            "spec: USE_CASE_en.md §UC1 Case 2 — password stored as masked ref"
+        )
+        # F4: negative check — the API must never return plaintext credentials.
+        # The K8s secret dataspoke-source-cred-dummy_data_pg holds the same value as
+        # DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD in helm-charts/.env.
+        # spec: API.md §Ingestion §Source body shape — secret refs never expanded in responses
+        assert _PG_PLAINTEXT_PASSWORD, (
+            "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD not set; "
+            "cannot verify plaintext is absent from the API response. "
+            "Source helm-charts/.env before running this test."
+        )
+        create_resp_text = create_resp.text
+        assert _PG_PLAINTEXT_PASSWORD not in create_resp_text, (
+            "API response must not contain the plaintext postgres password. "
+            "spec: API.md §Ingestion §Source body shape — credentials never returned in plaintext"
+        )
+        assert "status" in body
+        assert "created_at" in body
+        assert "updated_at" in body
+
+        source_run_url = f"/api/v1/spoke/ingestion/sources/{source_id}/method/run"
+        source_datasets_url = f"/api/v1/spoke/ingestion/sources/{source_id}/datasets"
+        source_event_url = f"/api/v1/spoke/ingestion/sources/{source_id}/event"
+
+        # ── Step 3: Dry-run — connection check, no DataHub emission ───────────
+        # spec: USE_CASE_en.md §UC1 Case 2 — "POST .../method/run {dry_run: true}"
+        # spec: feature/BACKEND.md §Active-custom run pipeline — dry_run skips aspect emission
         dry_run_resp = await api_client.post(
-            active_run_url,
+            source_run_url,
             headers=admin_headers,
             json={"dry_run": True},
         )
         assert dry_run_resp.status_code == 200, (
-            f"Dry-run while disabled failed: {dry_run_resp.status_code} {dry_run_resp.text}"
+            f"Dry-run expected 200, got {dry_run_resp.status_code}: {dry_run_resp.text}"
         )
         dry_run_body = dry_run_resp.json()
         assert "run_id" in dry_run_body, "Dry-run response must carry run_id"
         assert "status" in dry_run_body, "Dry-run response must carry status"
-        # Reject {"run_id": null, "status": null} — both fields must be usable
         assert dry_run_body["run_id"], "run_id must be non-empty"
-        assert dry_run_body["status"], "status must be non-empty"
         _fail_tail = {"fail", "failed", "failure", "error", "errored"}
         assert dry_run_body["status"].lower() not in _fail_tail, (
-            f"Dry-run against reachable Postgres unexpectedly returned fail status "
-            f"{dry_run_body['status']!r}"
+            f"Dry-run returned fail status {dry_run_body['status']!r}. "
+            "spec: USE_CASE_en.md §UC1 Case 2 — dry_run exercises connectivity"
+        )
+        # Dry-run must not emit datasets — detail.emitted_urns_count = 0
+        dry_detail = dry_run_body.get("detail", {})
+        assert dry_detail.get("dry_run") is True, "detail.dry_run must be true for dry runs"
+        emitted = dry_detail.get("emitted_urns_count", 0)
+        assert emitted == 0, (
+            f"Dry-run must not emit any datasets (emitted_urns_count=0); got {emitted}. "
+            "spec: feature/BACKEND.md §Active-custom run pipeline — aspect emission skipped on dry_run"
         )
 
-        # ── Step 3: Real run while disabled — must return 409 INGESTION_DISABLED
-        # spec: USE_CASE_en.md §UC1 — "non-dry-run calls return 409 INGESTION_DISABLED"
-        disabled_run_resp = await api_client.post(
-            active_run_url,
+        # ── Step 4: Real run — emit dataset aspects to DataHub ────────────────
+        # spec: USE_CASE_en.md §UC1 Case 2 — "A real run emits dataset aspects + a
+        # DataProcessInstance, and records emitted URNs as the authoritative mapping"
+        run_start = time.time()
+        real_run_resp = await api_client.post(
+            source_run_url,
             headers=admin_headers,
             json={"dry_run": False},
         )
-        assert disabled_run_resp.status_code == 409, (
-            f"Expected 409 INGESTION_DISABLED when is_enabled=false; "
-            f"got {disabled_run_resp.status_code}: {disabled_run_resp.text}"
+        assert real_run_resp.status_code == 200, (
+            f"Real run expected 200, got {real_run_resp.status_code}: {real_run_resp.text}"
         )
-        assert disabled_run_resp.json().get("error_code") == "INGESTION_DISABLED", (
-            f"Expected error_code='INGESTION_DISABLED'; "
-            f"got {disabled_run_resp.json().get('error_code')!r}. "
-            "spec: USE_CASE_en.md §UC1"
+        real_run_body = real_run_resp.json()
+        assert "run_id" in real_run_body
+        assert "status" in real_run_body
+        run_id = real_run_body["run_id"]
+        assert real_run_body["status"].lower() not in _fail_tail, (
+            f"Real run returned fail status {real_run_body['status']!r}. "
+            "spec: USE_CASE_en.md §UC1 Case 2 — catalog schema must be reachable"
         )
-
-        # ── Step 4: PATCH is_enabled=true, real run succeeds ─────────────────
-        # spec: USE_CASE_en.md §UC1 — after PATCH is_enabled=true, run proceeds
-        enable_resp = await api_client.patch(
-            active_conf_url,
-            headers=admin_headers,
-            json={"is_enabled": True, "schedule_tier": "daily"},
-        )
-        assert enable_resp.status_code == 200, (
-            f"PATCH is_enabled=true failed: {enable_resp.status_code} {enable_resp.text}"
-        )
-        enable_body = enable_resp.json()
-        assert enable_body["workflow_dag_id"] == "ingestion-active-daily", (
-            f"PATCH is_enabled=true must preserve workflow_dag_id='ingestion-active-daily'; "
-            f"got {enable_body.get('workflow_dag_id')!r}. "
-            "spec: feature/BACKEND_SCHEMA.md §workflow_dag_id"
+        real_detail = real_run_body.get("detail", {})
+        assert real_detail.get("dry_run") is False
+        # At least 2 catalog datasets (title_master + editions) must have been emitted.
+        real_emitted = real_detail.get("emitted_urns_count", 0)
+        assert real_emitted >= 2, (
+            f"Real run must emit at least 2 catalog datasets "
+            f"(title_master + editions); emitted={real_emitted}. "
+            "spec: USE_CASE_en.md §UC1 Case 2 — catalog schema produces multiple datasets"
         )
 
-        # Capture run_start_ms before the run so lastIngested.time comparison is bounded.
-        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
-        #     lastObserved is set to int(time.time()*1000) at run time.
-        run_start_ms = int(time.time() * 1000)
-        enabled_run_resp = await api_client.post(
-            active_run_url,
-            headers=admin_headers,
-            json={"dry_run": False},
+        # ── Step 5: GET /sources/{id}/datasets → origin='emitted' rows ────────
+        # spec: API.md §Ingestion — GET /sources/{id}/datasets returns mapping rows
+        # spec: feature/BACKEND.md §Active-custom run pipeline — emitted URNs recorded
+        #       into ingestion_source_dataset with origin='emitted'
+        #
+        # F1: discover_catalog_tables() asserts the dummy-postgres seed is non-empty
+        # before we compute expected_urns; prevents vacuous set-equality on both sides
+        # empty (environment failure masked as a pass).
+        # spec: project_datahub_resolvable_urns_catalog_only — catalog.* always seeded
+        expected_urns = await discover_catalog_tables()
+        assert expected_urns, "seed discovery returned no catalog tables"
+        #
+        # F2 (SYNC): _run_inner() in src/backend/ingestion/service.py calls
+        # _upsert_dataset_mappings() and awaits its db.commit() BEFORE returning
+        # IngestionRunResult.  The mapping rows are therefore committed synchronously
+        # before run() returns 200, so a single-shot read is correct here — no poll needed.
+        datasets_resp = await api_client.get(source_datasets_url, headers=admin_headers)
+        assert datasets_resp.status_code == 200, (
+            f"GET /sources/{source_id}/datasets expected 200, "
+            f"got {datasets_resp.status_code}: {datasets_resp.text}"
         )
-        assert enabled_run_resp.status_code == 200, (
-            f"Real run after enable failed: {enabled_run_resp.status_code}: {enabled_run_resp.text}"
+        datasets_body = datasets_resp.json()
+        assert "datasets" in datasets_body
+        assert "total_count" in datasets_body
+        dataset_urns = {d["dataset_urn"] for d in datasets_body["datasets"]}
+        # F2: non-empty floor — if mapping rows are absent the run silently produced nothing.
+        assert dataset_urns, (
+            "no emitted mapping rows after run — "
+            "_upsert_dataset_mappings() should have committed rows synchronously before run() returned. "
+            "spec: feature/BACKEND.md §Active-custom run pipeline"
         )
-        enabled_run_body = enabled_run_resp.json()
-        assert "run_id" in enabled_run_body, "Enabled real-run response must carry run_id"
-        assert "status" in enabled_run_body, "Enabled real-run response must carry status"
-        run_id = enabled_run_body["run_id"]
+        # At least 2 catalog datasets must appear in the mapping.
+        assert len(dataset_urns) >= 2, (
+            f"Source mapping must list at least 2 catalog datasets; "
+            f"got {sorted(dataset_urns)}. "
+            "spec: API.md §Ingestion — GET /sources/{id}/datasets"
+        )
+        # Every discovered catalog table must be mapped (subset check; allows extras).
+        assert expected_urns.issubset(dataset_urns), (
+            f"Not all catalog tables appeared in the source mapping. "
+            f"expected subset: {sorted(expected_urns)}; got: {sorted(dataset_urns)}. "
+            "spec: USE_CASE_en.md §UC1 Case 2 — all catalog datasets emitted by the run"
+        )
+        # All emitted rows must carry origin='emitted' (authoritative mapping).
+        # spec: feature/BACKEND.md §Active-custom run pipeline — origin=emitted for real runs
+        emitted_origins = {d["origin"] for d in datasets_body["datasets"]}
+        assert "emitted" in emitted_origins, (
+            f"At least one dataset must have origin='emitted' after a real run; "
+            f"got origins={emitted_origins}. "
+            "spec: feature/BACKEND.md §Ingestion Service §Source→dataset mapping"
+        )
+        for d in datasets_body["datasets"]:
+            assert "first_seen_at" in d
+            assert "last_seen_at" in d
 
-        # ── Step 5: Assert DPI in DataHub after real run ──────────────────────
-        # spec: BACKEND.md §Custom Ingestor Authoring Contract —
-        #     DPI URN convention: urn:li:dataProcessInstance:<platform>-<run_id>
-        # spec: USE_CASE_en.md §UC1 Case 1 — "Each row is backed by a
-        #     DataProcessInstance aspect that DataSpoke's extractor emitted to DataHub"
-
-        # Bounded poll loop — waits until the run event appears in event/ingestion.
-        # spec: feedback_no_increase_timeout — use polls with clear failure mode, not sleep.
-        # spec: USE_CASE_en.md §UC1 Case 1 — active-custom run with real Postgres
-        #     target is expected to succeed; pin INGESTION.COMPLETE (not FAIL).
-        event_body = None
-        found_dpi = False
+        # ── Step 6: GET /sources/{id}/event → INGESTION.COMPLETE ─────────────
+        # Poll until the INGESTION.COMPLETE event for this run_id appears.
+        # spec: feature/BACKEND.md §Active-custom run pipeline — INGESTION.COMPLETE event recorded
+        # spec: USE_CASE_en.md §UC1 — "Each event row carries event_type INGESTION.COMPLETE on success"
+        event_body: dict = {}
+        found_complete = False
         deadline = time.time() + 30.0
         while time.time() < deadline:
-            runs_resp = await api_client.get(
-                active_events_url + "?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z",
-                headers=admin_headers,
-            )
-            assert runs_resp.status_code == 200, (
-                f"GET event/ingestion after run failed: {runs_resp.status_code}"
-            )
-            event_body = runs_resp.json()
+            event_resp = await api_client.get(source_event_url, headers=admin_headers)
+            assert event_resp.status_code == 200
+            event_body = event_resp.json()
             for evt in event_body.get("events", []):
                 detail = evt.get("detail", {}) or {}
-                if detail.get("run_id") == run_id:
-                    found_dpi = True
-                    # spec: USE_CASE_en.md §UC1 Case 1 — active-custom run against a
-                    # reachable Postgres target is expected to succeed; INGESTION.COMPLETE
-                    # is the required outcome (not FAIL).
-                    assert evt["event_type"] == "INGESTION.COMPLETE", (
-                        f"Case 1 active-custom run must produce INGESTION.COMPLETE; "
-                        f"got {evt['event_type']!r}. "
-                        "spec: USE_CASE_en.md §UC1 Case 1 — DataSpoke owns the extraction"
-                    )
-                    # spec: USE_CASE_en.md §UC1 Case 2 — INGESTION.COMPLETE rows
-                    # carry status: "success"; INGESTION.FAIL → status: "failure"
+                if detail.get("run_id") == run_id and evt.get("event_type") == "INGESTION.COMPLETE":
+                    found_complete = True
+                    # spec: USE_CASE_en.md §UC1 — INGESTION.COMPLETE carries status='success'
                     assert evt.get("status") == "success", (
                         f"INGESTION.COMPLETE event must carry status='success'; "
-                        f"got {evt.get('status')!r}"
+                        f"got {evt.get('status')!r}. "
+                        "spec: USE_CASE_en.md §UC1"
                     )
                     break
-            if found_dpi:
+            if found_complete:
                 break
             await asyncio.sleep(1.0)
 
-        assert found_dpi, (
-            f"Expected an INGESTION.COMPLETE event/ingestion row with run_id={run_id!r} "
-            f"within 30s. Events returned: {(event_body or {}).get('events', [])}. "
-            "spec: BACKEND.md §Active run pipeline — INGESTION.COMPLETE event recorded"
+        assert found_complete, (
+            f"Expected INGESTION.COMPLETE event with run_id={run_id!r} within 30s. "
+            f"Events: {event_body.get('events', [])}. "
+            "spec: feature/BACKEND.md §Active-custom run pipeline — event recorded on success"
         )
 
-        # ── Step 5b: Assert DataHub aspects carry PG comments + typed fields ──
-        # spec: BACKEND.md §Ingestion Service — PG comment ingestion.
-        # spec: DATAHUB_INTEGRATION.md §datasetProperties — description from ingestion.
-        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed union fix.
-        # spec: BACKEND.md §Active run pipeline lines 246-257 — a non-dry-run completing
-        # with INGESTION.COMPLETE must have emitted both aspects in full.
-        datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
-        datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+        # ── Step 7: Reverse-lookup — GET /data/{urn}/attr/ingestion ──────────
+        # spec: API.md §Data Resource — GET /spoke/common/data/{urn}/attr/ingestion
+        # spec: USE_CASE_en.md §UC1 API Mapping — reverse-lookup: the source covering a
+        #       dataset, its mode, latest run
+        #
+        # NOTE: The DataHub ES index may lag up to ~2-3 min after the run seed.
+        # The dataset_registry is populated at source-create time; the reverse-lookup
+        # queries ingestion_source_dataset which is populated by the run.
+        # We use a bounded poll to allow the reverse-lookup to populate.
+        # spec: project_es_indexing_lag_after_reset_seed — allow settle time
+        reverse_body: dict = {}
+        found_reverse = False
+        deadline = time.time() + 30.0
+        while time.time() < deadline:
+            reverse_resp = await api_client.get(
+                f"/api/v1/spoke/common/data/{_CATALOG_TITLE_ENCODED}/attr/ingestion",
+                headers=admin_headers,
+            )
+            assert reverse_resp.status_code == 200, (
+                f"GET /data/{{urn}}/attr/ingestion expected 200, "
+                f"got {reverse_resp.status_code}: {reverse_resp.text}"
+            )
+            reverse_body = reverse_resp.json()
+            if reverse_body.get("source_id") == source_id:
+                found_reverse = True
+                break
+            await asyncio.sleep(1.0)
 
-        if not datahub_gms_url:
-            pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping aspect verification")
-
-        gms_headers: dict[str, str] = {}
-        if datahub_token:
-            gms_headers["Authorization"] = f"Bearer {datahub_token}"
-
-        encoded_active_urn = urllib.parse.quote(_ACTIVE_URN, safe="")
-
-        # datasetProperties — description must start with seeded COMMENT ON TABLE text.
-        # spec: TESTING.md §Imazon Dummy-Data Reference — seed in 01_catalog.sql:
-        #   COMMENT ON TABLE catalog.title_master IS 'Master record for each book title — ...'
-        props_resp = httpx.get(
-            f"{datahub_gms_url}/aspects/{encoded_active_urn}?aspect=datasetProperties&version=0",
-            headers=gms_headers,
-            timeout=15.0,
+        assert found_reverse, (
+            f"Reverse-lookup for {_CATALOG_TITLE_URN!r} must return source_id={source_id!r}; "
+            f"got {reverse_body}. "
+            "spec: USE_CASE_en.md §UC1 API Mapping — reverse-lookup returns owning source"
         )
-        assert props_resp.status_code == 200, (
-            f"GMS GET datasetProperties failed: {props_resp.status_code} {props_resp.text}"
+        assert reverse_body.get("mode") == "ACTIVE_CUSTOM_MANAGED", (
+            f"Reverse-lookup mode must be 'ACTIVE_CUSTOM_MANAGED'; got {reverse_body.get('mode')!r}. "
+            "spec: USE_CASE_en.md §UC1 API Mapping"
         )
-        dp_description = (
-            props_resp.json()
-            .get("aspect", {})
-            .get("com.linkedin.dataset.DatasetProperties", {})
-            .get("description", "")
+        assert reverse_body.get("dataset_urn") == _CATALOG_TITLE_URN
+        # latest_run must reflect the real run we just executed.
+        latest_run = reverse_body.get("latest_run")
+        assert latest_run is not None, (
+            "Reverse-lookup must include latest_run after a real run. "
+            "spec: API.md §Ingestion — IngestionReverseLookupResponse.latest_run"
         )
-        assert dp_description.startswith("Master record for each book title"), (
-            f"datasetProperties.description must begin with seeded COMMENT ON TABLE text "
-            f"after UC1 active-custom run; got {dp_description!r}. "
-            "spec: BACKEND.md §Ingestion Service — PG comment ingestion. "
-            "spec: USE_CASE_en.md §UC1 Case 1"
-        )
-
-        # schemaMetadata — at least one NumberType field (page_count: integer) and
-        # one StringType field (title: character varying).
-        # spec: DATAHUB_INTEGRATION.md §schemaMetadata — typed union fix.
-        schema_resp = httpx.get(
-            f"{datahub_gms_url}/aspects/{encoded_active_urn}?aspect=schemaMetadata&version=0",
-            headers=gms_headers,
-            timeout=15.0,
-        )
-        assert schema_resp.status_code == 200, (
-            f"GMS GET schemaMetadata failed: {schema_resp.status_code} {schema_resp.text}"
-        )
-        fields_raw = (
-            schema_resp.json()
-            .get("aspect", {})
-            .get("com.linkedin.schema.SchemaMetadata", {})
-            .get("fields", [])
-        )
-        assert fields_raw, (
-            "schemaMetadata.fields must be non-empty after UC1 active-custom run. "
-            "spec: BACKEND.md §Active run pipeline — aspects emitted per discovered dataset."
-        )
-        fields_by_path = {f.get("fieldPath"): f for f in fields_raw}
-
-        # page_count (integer) → NumberType
-        assert "page_count" in fields_by_path, (
-            f"Expected 'page_count' field in schemaMetadata; got {list(fields_by_path.keys())}. "
-            "spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master schema"
-        )
-        pc_type = (
-            fields_by_path["page_count"]
-            .get("type", {})
-            .get("type", {})
-            .get("com.linkedin.schema.NumberType")
-        )
-        assert pc_type is not None, (
-            f"page_count (integer) must have type.type=NumberType after UC1 run; "
-            f"got type={fields_by_path['page_count'].get('type')!r}. "
-            "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
-        )
-
-        # title (character varying) → StringType
-        assert "title" in fields_by_path, (
-            f"Expected 'title' field in schemaMetadata; got {list(fields_by_path.keys())}. "
-            "spec: TESTING.md §Imazon Dummy-Data Reference — catalog.title_master schema"
-        )
-        title_type = (
-            fields_by_path["title"]
-            .get("type", {})
-            .get("type", {})
-            .get("com.linkedin.schema.StringType")
-        )
-        assert title_type is not None, (
-            f"title (character varying) must have type.type=StringType after UC1 run; "
-            f"got type={fields_by_path['title'].get('type')!r}. "
-            "spec: DATAHUB_INTEGRATION.md §schemaMetadata typed union fix."
-        )
-
-        # ── Step 5b (cont.): Assert container hierarchy in DataHub ───────────
-        # spec: BACKEND.md §Ingestion Service — Aspects emitted (ContainerClass + container hierarchy emission).
-        # spec: DATAHUB_INTEGRATION.md §Container URN Construction — URN parity with upstream plugin;
-        # backcompat_env_as_instance=True is mandatory. GUID dict for schema container:
-        # {"platform": "postgres", "database": "example_db", "schema": "catalog", "instance": "DEV"}
-
-        _SCHEMA_CONTAINER_URN = "urn:li:container:d30ba0aa3cb3374982ca9a9db3466b5e"
-        _DB_CONTAINER_URN = "urn:li:container:877925964b937b391ead54462bf98b9d"
-
-        container_resp = httpx.get(
-            f"{datahub_gms_url}/aspects/{encoded_active_urn}?aspect=container&version=0",
-            headers=gms_headers,
-            timeout=15.0,
-        )
-        assert container_resp.status_code == 200, (
-            f"GMS GET container aspect failed: {container_resp.status_code} {container_resp.text}"
-        )
-        container_urn = (
-            container_resp.json()
-            .get("aspect", {})
-            .get("com.linkedin.container.Container", {})
-            .get("container")
-        )
-        assert container_urn == _SCHEMA_CONTAINER_URN, (
-            f"After UC1 active-custom run, dataset container aspect must point to schema "
-            f"container {_SCHEMA_CONTAINER_URN!r}; got {container_urn!r}. "
-            "spec: BACKEND.md §Ingestion Service — Aspects emitted (ContainerClass + container hierarchy emission). "
-            "spec: DATAHUB_INTEGRATION.md §Container URN Construction — dataset emits ContainerClass(container=schema_key.as_urn()). "
-            "spec: USE_CASE_en.md §UC1 Case 1"
-        )
-
-        # Schema container must exist and have name='catalog', subType='Schema', platform=postgres
-        schema_enc = urllib.parse.quote(_SCHEMA_CONTAINER_URN, safe="")
-        schema_props_resp = httpx.get(
-            f"{datahub_gms_url}/aspects/{schema_enc}?aspect=containerProperties&version=0",
-            headers=gms_headers,
-            timeout=15.0,
-        )
-        assert schema_props_resp.status_code == 200, (
-            f"GMS GET containerProperties for schema container failed: "
-            f"{schema_props_resp.status_code}"
-        )
-        schema_container_name = (
-            schema_props_resp.json()
-            .get("aspect", {})
-            .get("com.linkedin.container.ContainerProperties", {})
-            .get("name")
-        )
-        assert schema_container_name == "catalog", (
-            f"Schema container ContainerProperties.name must be 'catalog'; "
-            f"got {schema_container_name!r}. "
-            "spec: DATAHUB_INTEGRATION.md §Container URN Construction — SchemaKey fields include schema name"
-        )
-
-        schema_subtypes_resp = httpx.get(
-            f"{datahub_gms_url}/aspects/{schema_enc}?aspect=subTypes&version=0",
-            headers=gms_headers,
-            timeout=15.0,
-        )
-        assert schema_subtypes_resp.status_code == 200
-        schema_subtypes = (
-            schema_subtypes_resp.json()
-            .get("aspect", {})
-            .get("com.linkedin.common.SubTypes", {})
-            .get("typeNames", [])
-        )
-        assert "Schema" in schema_subtypes, (
-            f"Schema container SubTypes must include 'Schema'; got {schema_subtypes!r}. "
-            "spec: DATAHUB_INTEGRATION.md §Container URN Construction — sub_types=['Schema'] and parent_container_key=db_key"
-        )
-
-        # ── Step 5b (cont.): Assert dataset.lastIngested via GraphQL ─────────
-        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
-        #     "When all aspects carry the default sentinel, lastIngested stays null
-        #     and the UI's 'Synced X ago from <Platform>' badge does not render."
-        #     After a DataSpoke active-custom run with a non-default runId, the field
-        #     MUST be non-null.
-        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
-        #     "runId='dataspoke-{platform}-{run_id}'"
-        # spec: USE_CASE_en.md §UC1 Case 1 — active-custom run emits systemMetadata
-        #     on every dataset-aspect emit so DataHub computes lastIngested.
-        gql_headers = {}
-        if datahub_token:
-            gql_headers["Authorization"] = f"Bearer {datahub_token}"
-        gql_headers["Content-Type"] = "application/json"
-
-        last_ingested_resp = httpx.post(
-            f"{datahub_gms_url}/api/graphql",
-            headers=gql_headers,
-            json={
-                "query": (
-                    "query getLastIngested($urn: String!) { dataset(urn: $urn) { lastIngested } }"
-                ),
-                "variables": {"urn": _ACTIVE_URN},
-            },
-            timeout=10.0,
-        )
-        assert last_ingested_resp.status_code == 200, last_ingested_resp.text
-        last_ingested_ms = (
-            last_ingested_resp.json().get("data", {}).get("dataset", {}).get("lastIngested")
-        )
-        assert last_ingested_ms is not None, (
-            "dataset.lastIngested must be non-null after active-custom run; "
-            "the UI badge depends on this. "
-            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement"
-        )
-        assert last_ingested_ms >= run_start_ms, (
-            f"lastIngested ({last_ingested_ms}) must be >= run start ({run_start_ms}). "
-            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — "
-            "lastObserved is epoch-ms of the run"
-        )
-
-        # Verify runId via the openapi v3 endpoint — dataset.lastIngested is a scalar Long
-        # and does not expose runId; schemaMetadata.systemMetadata carries it instead.
-        # spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement —
-        #     runId='dataspoke-{platform}-{run_id}'
-        dataset_urn_enc = urllib.parse.quote(_ACTIVE_URN, safe="")
-        sysmeta_resp = httpx.get(
-            f"{datahub_gms_url}/openapi/v3/entity/dataset/{dataset_urn_enc}"
-            "?systemMetadata=true&aspects=schemaMetadata",
-            headers=gms_headers,
-            timeout=10.0,
-        )
-        assert sysmeta_resp.status_code == 200, sysmeta_resp.text
-        schema_runId = (
-            sysmeta_resp.json().get("schemaMetadata", {}).get("systemMetadata", {}).get("runId")
-        )
-        assert schema_runId is not None and schema_runId.startswith("dataspoke-postgres-"), (
-            f"schemaMetadata.systemMetadata.runId must start with 'dataspoke-postgres-'; "
-            f"got {schema_runId!r}. "
-            "spec: DATAHUB_INTEGRATION.md §Custom Ingestor Guide §systemMetadata requirement — "
-            "runId='dataspoke-{platform}-{run_id}'"
-        )
-
-        # Restore to disabled state
-        restore_resp = await api_client.patch(
-            active_conf_url,
-            headers=admin_headers,
-            json={"is_enabled": False},
-        )
-        assert restore_resp.status_code == 200
-
-        # ── Step 6: Cross-dataset overview includes this URN ──────────────────
-        # spec: USE_CASE_en.md §UC1 — cross-dataset overview at GET /spoke/ingestion
-        overview_resp = await api_client.get(
-            "/api/v1/spoke/ingestion?limit=100",
-            headers=admin_headers,
-        )
-        assert overview_resp.status_code == 200
-        overview_body = overview_resp.json()
-        assert "configs" in overview_body
-        assert "total_count" in overview_body
-
-        configs_by_urn = {c["dataset_urn"]: c for c in overview_body["configs"]}
-        assert _ACTIVE_URN in configs_by_urn, (
-            f"Active URN {_ACTIVE_URN!r} not found in GET /spoke/ingestion. "
-            "spec: USE_CASE_en.md §UC1 §Cross-dataset overview"
-        )
-        active_row = configs_by_urn[_ACTIVE_URN]
-        assert active_row["mode"] == "active-custom", (
-            f"Cross-dataset overview mode expected 'active-custom'; "
-            f"got {active_row['mode']!r}. spec: USE_CASE_en.md §UC1"
-        )
-        assert active_row["schedule_tier"] == "daily", (
-            f"Cross-dataset overview schedule_tier expected 'daily'; "
-            f"got {active_row.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC1"
+        assert latest_run.get("status") == "success", (
+            f"latest_run.status must be 'success'; got {latest_run.get('status')!r}"
         )
 
     finally:
-        # ── Step 7: Cleanup ──────────────────────────────────────────────────
-        await api_client.delete(active_conf_url, headers=admin_headers)
+        # ── Cleanup: DELETE the source (cascades ingestion_source_dataset) ───
+        if source_id is not None:
+            await api_client.delete(
+                f"/api/v1/spoke/ingestion/sources/{source_id}",
+                headers=admin_headers,
+            )
