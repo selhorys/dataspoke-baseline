@@ -1,321 +1,277 @@
-"""Ingestion config CRUD and run request/response models."""
+"""Ingestion source request/response schemas — per-source model.
+
+The request and response bodies mirror the UC1 recipe YAML 1:1 in JSON.
+recipe is the DataHub-compatible {source:{type,config}} object; shape-level
+validation is here while semantic validation (secret refs, schedule tier,
+platform constraints) is performed by the service layer.
+
+Spec: API.md §Ingestion, §Source body shape
+      spec/feature/SECRET_RESOLUTION.md §API schema
+"""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
-from src.backend.ingestion.secret_resolver import _NAME_PREFIX
-from src.shared.models.enums import IngestionConfigStatus
-from src.shared.models.ingestion import (
-    Platform,
-    validate_platform_fields,
-)
-
-_VALID_MODES = frozenset({"active-custom", "passive"})
-_ScheduleTier = Literal["hourly", "daily", "weekly"]
+from src.shared.models.ingestion import Mode
 
 
-# ── Auth sub-models ───────────────────────────────────────────────────────────
+# ── Sub-models ────────────────────────────────────────────────────────────────
 
 
-class SecretRefSpec(BaseModel):
-    name: str = Field(
-        min_length=1,
-        max_length=253,
-        description="Kubernetes Secret name (k8s DNS-label limit: 253 chars)",
-    )
-    key: str = Field(min_length=1, description="Key within the Kubernetes Secret data map")
-    force_overwrite: bool = Field(
-        default=False,
-        description=(
-            "Vault path only: when true, overwrite an existing (name, key) "
-            "instead of raising 422 SecretCollision. Ignored on reference path."
-        ),
-    )
+class SecretRefInfo(BaseModel):
+    """Metadata for one (secret, key) pair exposed by GET /spoke/ingestion/secrets.
 
-    @field_validator("name")
-    @classmethod
-    def _validate_name_prefix(cls, v: str) -> str:
-        if not v.startswith(_NAME_PREFIX):
-            raise ValueError(
-                f"SecretRefNameForbidden: secret_ref.name must start with '{_NAME_PREFIX}'; "
-                f"got '{v}'"
-            )
-        return v
+    Values are never included — ref is the literal ``name__key`` string an
+    author pastes into a recipe as ``${ref}``.
+    """
 
-
-class AuthSpec(BaseModel):
-    username: str = Field(min_length=1, description="Database / service username")
-    password: str | None = Field(
-        default=None,
-        description=(
-            "Plaintext password — vault path only. Written to the Kubernetes Secret "
-            "identified by secret_ref and never persisted in the DataSpoke database."
-        ),
-    )
-    secret_ref: SecretRefSpec | None = Field(
-        default=None,
-        description=(
-            "Reference to a Kubernetes Secret in DataSpoke's own namespace. "
-            "Required when password is present (vault path) or alone (reference path)."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def enforce_matrix(self) -> "AuthSpec":
-        if self.password is None and self.secret_ref is None:
-            raise ValueError(
-                "auth must include secret_ref (reference path) or password+secret_ref (vault path)"
-            )
-        if self.password is not None and self.secret_ref is None:
-            raise ValueError(
-                "Plaintext-only auth is not allowed; supply secret_ref (vault path) "
-                "or omit password and reference a pre-existing secret"
-            )
-        return self
+    ref: str = Field(description="'name__key' token — paste into recipe.source.config as ${ref}")
+    secret_name: str = Field(description="Full Kubernetes Secret name: dataspoke-source-cred-<name>")
+    key: str = Field(description="Key within the Secret's data map")
 
 
 # ── Request models ────────────────────────────────────────────────────────────
 
 
-class CreateIngestionConfigRequest(BaseModel):
-    mode: Literal["active-custom", "passive"] = Field(
-        default="active-custom",
+class CreateIngestionSourceRequest(BaseModel):
+    """Request body for POST /spoke/ingestion/sources.
+
+    Only ACTIVE_CUSTOM_MANAGED and PASSIVE are accepted here; DATAHUB_MANAGED
+    rows are synced from DataHub (not created by the API).
+    """
+
+    mode: Mode = Field(
         description=(
-            "Ingestion mode: 'active-custom' (DataSpoke's in-house extractor runs on "
-            "schedule_tier, handling connectivity and auth) or 'passive' (external "
-            "pipeline or DataHub Managed Ingestion handles connectivity/auth out-of-band; "
-            "DataSpoke mirrors run history)."
+            "Ingestion mode: ACTIVE_CUSTOM_MANAGED (DataSpoke extractor runs on a schedule) "
+            "or PASSIVE (ingested outside DataHub/DataSpoke; DataSpoke tracks scope). "
+            "DATAHUB_MANAGED is read-only — synced from DataHub."
         ),
     )
-    platform: Platform = Field(
-        description="Data platform that determines the locator/identifier/auth structure"
+    name: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Human-readable name for this source (e.g. 'prod postgres catalog schema')",
     )
-    locator: dict[str, Any] | None = Field(
+    schedule: str | None = Field(
         default=None,
         description=(
-            "Infrastructure location. Required for `active-custom` mode; must be omitted "
-            "for `passive` mode (passive ingestors handle their own connectivity out-of-band). "
-            "Structure varies by platform:\n"
-            "- postgres/mysql/oracle: {\"host\": \"db.example.com\", \"port\": 5432}\n"
-            "- bigquery: {\"project_id\": \"my-project\"}\n"
-            "- snowflake: {\"account_id\": \"abc12345\"}\n"
-            "- kafka: {\"bootstrap_servers\": \"kafka:9092\"}"
+            "Cron expression mapping to one of three tiers: "
+            "'0 * * * *' (hourly), '0 0 * * *' (daily), '0 0 * * 0' (weekly), "
+            "or null for manual-only. Omit (or null) for PASSIVE sources."
         ),
     )
-    identifier: dict[str, Any] = Field(
+    recipe: dict[str, Any] = Field(
         description=(
-            "Dataset identity within the source infrastructure. Structure varies by platform:\n"
-            "- postgres/mysql/oracle: {\"database\": \"mydb\", \"schema_name\": \"public\", \"table\": \"orders\"}\n"
-            "- bigquery: {\"dataset\": \"analytics\", \"table\": \"events\"}\n"
-            "- snowflake: {\"database\": \"DW\", \"schema_name\": \"PUBLIC\", \"table\": \"SALES\"}\n"
-            "- kafka: {\"topic\": \"user-events\", \"cluster\": \"prod\"}"
-        )
-    )
-    auth: AuthSpec | None = Field(
-        default=None,
-        description=(
-            "Access credentials. Required for postgres/mysql/oracle/snowflake; "
-            "omit for bigquery/kafka. "
-            "Vault path: supply both password and secret_ref. "
-            "Reference path: supply secret_ref only (pre-provisioned Secret)."
-        ),
-    )
-    is_enabled: bool = Field(
-        default=False,
-        description="Whether the ingestion config is enabled and scheduled to run (active-custom mode only)",
-    )
-    schedule_tier: _ScheduleTier | None = Field(
-        default=None,
-        description=(
-            "Schedule tier for periodic active-custom-mode runs: 'hourly', 'daily', or 'weekly'. "
-            "Required when mode is 'active-custom' and is_enabled is true; "
-            "must not be set for passive mode."
+            "DataHub-compatible recipe: {source: {type: <str>, config: <dict>}}. "
+            "Credentials are referenced as ${name__key} placeholders — never plaintext. "
+            "The service validates the shape and verifies all secret refs at save time."
         ),
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "mode": "active-custom",
-                "platform": "postgres",
-                "locator": {"host": "db.example.com", "port": 5432},
-                "identifier": {"database": "mydb", "schema_name": "public", "table": "orders"},
-                "auth": {
-                    "username": "readonly",
-                    "secret_ref": {"name": "dataspoke-source-cred-mydb-creds", "key": "password"},
+                "mode": "ACTIVE_CUSTOM_MANAGED",
+                "name": "dummy postgres example_db in catalog schema",
+                "schedule": "0 0 * * *",
+                "recipe": {
+                    "source": {
+                        "type": "postgres",
+                        "config": {
+                            "host_port": "pg.example:5432",
+                            "username": "spoke_reader",
+                            "password": "${dummy_data_pg__password}",
+                            "schema_pattern": {"allow": ["^catalog$"]},
+                            "env": "DEV",
+                        },
+                    }
                 },
-                "is_enabled": True,
-                "schedule_tier": "daily",
             }
         }
     }
 
-    @model_validator(mode="after")
-    def validate_fields(self) -> "CreateIngestionConfigRequest":
-        if self.mode == "passive":
-            if self.schedule_tier is not None:
-                raise ValueError("schedule_tier is not allowed for passive mode")
-            if self.locator is not None:
-                raise ValueError("locator is not allowed for passive mode")
-            if self.auth is not None:
-                raise ValueError("auth is not allowed for passive mode")
-            return self
-        if self.locator is None:
-            raise ValueError("locator is required for active-custom mode")
-        if self.is_enabled and not self.schedule_tier:
-            raise ValueError(
-                "schedule_tier is required when is_enabled is true and mode is active-custom"
-            )
-        auth_dict: dict[str, Any] | None = None
-        if self.auth is not None:
-            auth_dict = {"username": self.auth.username}
-            if self.auth.secret_ref is not None:
-                auth_dict["secret_ref"] = {
-                    "name": self.auth.secret_ref.name,
-                    "key": self.auth.secret_ref.key,
-                }
-        validate_platform_fields(
-            self.platform, self.locator, self.identifier, auth_dict
-        )
-        return self
 
+class ReplaceIngestionSourceRequest(BaseModel):
+    """Request body for PUT /spoke/ingestion/sources/{id} (full replacement)."""
 
-class PatchIngestionConfigRequest(BaseModel):
-    mode: Literal["active-custom", "passive"] | None = Field(
-        default=None, description="Update the ingestion mode ('active-custom' or 'passive')"
-    )
-    platform: Platform | None = Field(
+    mode: Mode = Field(description="Ingestion mode after the replacement.")
+    name: str = Field(min_length=1, max_length=512, description="Display name for this source.")
+    schedule: str | None = Field(
         default=None,
-        description="Update the data platform (also re-validates locator/identifier/auth when provided)",
+        description="Cron expression for the schedule tier, or null for manual-only.",
     )
-    locator: dict[str, Any] | None = Field(
+    recipe: dict[str, Any] = Field(
+        description="DataHub-compatible recipe: {source: {type, config}}.",
+    )
+
+
+class PatchIngestionSourceRequest(BaseModel):
+    """Request body for PATCH /spoke/ingestion/sources/{id} (partial update).
+
+    All fields are optional. Fields absent from the request body are left unchanged.
+    ``mode`` is not patchable — use PUT for a mode change.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=512)
+    schedule: str | None = Field(
         default=None,
-        description="Updated infrastructure location dict.",
-    )
-    identifier: dict[str, Any] | None = Field(
-        default=None,
-        description="Updated dataset identity dict.",
-    )
-    auth: AuthSpec | None = Field(
-        default=None, description="Updated access credentials. Same vault/reference shapes as PUT."
-    )
-    is_enabled: bool | None = Field(
-        default=None,
-        description="Set to true to activate scheduling (schedule_tier must be provided), false to pause.",
-    )
-    schedule_tier: _ScheduleTier | None = Field(
-        default=None,
-        description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
-    )
-
-    @model_validator(mode="after")
-    def validate_fields(self) -> "PatchIngestionConfigRequest":
-        if self.mode == "passive":
-            if self.schedule_tier is not None:
-                raise ValueError("schedule_tier is not allowed for passive mode")
-            if self.locator is not None:
-                raise ValueError("locator is not allowed for passive mode")
-            if self.auth is not None:
-                raise ValueError("auth is not allowed for passive mode")
-        if self.mode == "active-custom" and self.is_enabled is True and self.schedule_tier is None:
-            raise ValueError(
-                "schedule_tier must be provided in the same patch when setting "
-                "is_enabled to true and mode to active-custom"
-            )
-        if self.mode is None and self.is_enabled is True and self.schedule_tier is None:
-            raise ValueError(
-                "schedule_tier must be provided in the same patch when setting is_enabled to true"
-            )
-        if self.platform is not None:
-            from src.shared.models.ingestion import PLATFORM_REGISTRY
-
-            locator_cls, identifier_cls, auth_cls = PLATFORM_REGISTRY[self.platform]
-            if self.locator is not None:
-                locator_cls.model_validate(self.locator)
-            if self.identifier is not None:
-                identifier_cls.model_validate(self.identifier)
-            if self.auth is not None:
-                # Pass only the persisted shape so CredentialAuth (extra="forbid")
-                # does not reject transient API fields (password, force_overwrite).
-                auth_payload: dict[str, Any] = {"username": self.auth.username}
-                if self.auth.secret_ref is not None:
-                    auth_payload["secret_ref"] = {
-                        "name": self.auth.secret_ref.name,
-                        "key": self.auth.secret_ref.key,
-                    }
-                auth_cls.model_validate(auth_payload)
-        return self
-
-
-class RunIngestionRequest(BaseModel):
-    dry_run: bool = Field(
-        default=False,
-        description="When true, validate and simulate the ingestion without writing any data",
-    )
-
-
-class IngestionConfigResponse(SingleResponse):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str = Field(description="Unique identifier of the ingestion config")
-    dataset_urn: str = Field(description="DataHub URN of the dataset")
-    mode: str = Field(
-        default="active-custom",
         description=(
-            "Ingestion mode: 'active-custom' (DataSpoke's in-house extractor) or "
-            "'passive' (externally-run; DataSpoke mirrors run history)"
+            "New cron expression, or null to switch to manual-only. "
+            "Explicitly omitting this field leaves the existing schedule unchanged; "
+            "pass null to clear it."
         ),
     )
-    platform: Platform = Field(description="Data platform, e.g. 'postgres'")
-    locator: dict[str, Any] | None = Field(
+    recipe: dict[str, Any] | None = Field(
         default=None,
-        description="Infrastructure location configuration (`active-custom` only; null for `passive`)",
+        description="Replacement recipe dict. Partial recipe updates are not supported; supply the full new recipe.",
     )
-    identifier: dict[str, Any] = Field(
-        description="Dataset identity within the source infrastructure"
+
+
+class RunIngestionSourceRequest(BaseModel):
+    """Request body for POST /spoke/ingestion/sources/{id}/method/run."""
+
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "When true, perform a no-write connection and extraction check without "
+            "emitting any aspects to DataHub."
+        ),
     )
-    auth: dict[str, Any] | None = Field(
-        description="Access credentials (reference shape only — no plaintext passwords)"
+
+
+# ── Response models ───────────────────────────────────────────────────────────
+
+
+class IngestionSourceResponse(SingleResponse):
+    """Response shape for GET/POST/PUT/PATCH /spoke/ingestion/sources/{id}.
+
+    recipe is returned verbatim from storage — ``${name__key}`` references
+    remain as-is (they are the masked form; plaintext is never stored).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(description="Unique identifier of the ingestion source (UUID)")
+    mode: Mode = Field(description="Ingestion mode: DATAHUB_MANAGED | ACTIVE_CUSTOM_MANAGED | PASSIVE")
+    name: str = Field(description="Human-readable name for this source")
+    schedule: str | None = Field(
+        description="Cron expression for the schedule tier, or null for manual-only"
     )
-    is_enabled: bool = Field(description="Whether scheduled ingestion runs are enabled")
-    schedule_tier: _ScheduleTier | None = Field(
-        description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'"
+    recipe: dict[str, Any] = Field(
+        description=(
+            "DataHub-compatible recipe. Secret values are stored as ${name__key} "
+            "references — the response returns those references verbatim (never plaintext)."
+        )
     )
-    workflow_dag_id: str | None = Field(
-        description="Airflow DAG ID for the registered ingestion DAG"
+    platform: str = Field(description="Derived source platform (recipe.source.type)")
+    status: str = Field(description="Source health status: 'OK' or 'ERROR'")
+    datahub_source_urn: str | None = Field(
+        default=None,
+        description="DataHub IngestionSource URN for DATAHUB_MANAGED sources; null otherwise",
     )
-    status: IngestionConfigStatus = Field(
-        description="DAG verification outcome: 'OK' (DAG registered and ready) or 'ERROR' (verification failed)"
-    )
-    created_at: datetime = Field(description="UTC timestamp when the config was created")
+    created_at: datetime = Field(description="UTC timestamp when this source was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
-    @field_validator("id", mode="before")
-    @classmethod
-    def _coerce_id(cls, v: object) -> str:
-        return v if isinstance(v, str) else str(v)
 
+class IngestionSourceListResponse(PaginatedResponse):
+    """Paginated list of ingestion sources."""
 
-class IngestionConfigListResponse(PaginatedResponse):
-    configs: list[IngestionConfigResponse] = Field(
-        default=[], description="Page of ingestion config records"
+    sources: list[IngestionSourceResponse] = Field(
+        default=[], description="Page of ingestion source records"
     )
 
 
-class RunResultResponse(SingleResponse):
-    run_id: str = Field(
-        description="Run identifier (uuid4) generated by IngestionService for this invocation"
-    )
-    status: str = Field(
-        description="Execution status returned by IngestionService: 'success' or 'error'"
-    )
+class IngestionRunResponse(SingleResponse):
+    """Response for POST /spoke/ingestion/sources/{id}/method/run."""
+
+    run_id: str = Field(description="Run identifier (UUID) generated for this invocation")
+    status: str = Field(description="Execution status: 'success' or 'error'")
     detail: dict[str, Any] = Field(
         default={},
         description=(
-            "Run metadata: run_id, platform, entities_ingested, dry_run, "
-            "plus optional errors/warnings"
+            "Run metadata: entities_ingested, dry_run, emitted_urns count, "
+            "plus optional errors/warnings lists"
+        ),
+    )
+
+
+class IngestionSourceDatasetRow(BaseModel):
+    """One row in the dataset mapping for a source."""
+
+    dataset_urn: str = Field(description="DataHub URN of the mapped dataset")
+    origin: str = Field(
+        description="How the mapping was established: 'emitted' | 'pipeline_name' | 'matcher'"
+    )
+    first_seen_at: datetime = Field(description="UTC timestamp when the mapping was first recorded")
+    last_seen_at: datetime = Field(description="UTC timestamp when the mapping was last confirmed")
+
+
+class IngestionSourceDatasetsResponse(PaginatedResponse):
+    """Paginated list of datasets covered by a source."""
+
+    datasets: list[IngestionSourceDatasetRow] = Field(
+        default=[], description="Page of dataset mapping rows"
+    )
+
+
+class IngestionUnmanagedResponse(PaginatedResponse):
+    """Paginated list of dataset URNs not covered by any source."""
+
+    dataset_urns: list[str] = Field(
+        default=[], description="Dataset URNs in the unmanaged bucket"
+    )
+
+
+class SecretRefListResponse(SingleResponse):
+    """Response for GET /spoke/ingestion/secrets.
+
+    Lists source-credential references available for use in recipes.
+    Values are never returned — only (ref, secret_name, key) metadata.
+    """
+
+    secrets: list[SecretRefInfo] = Field(
+        default=[],
+        description="Available ${name__key} references (one per (secret, key) pair)",
+    )
+
+
+class IngestionLatestRunSummary(BaseModel):
+    """Summary of the most recent ingestion run for the owning source."""
+
+    run_id: str | None = Field(
+        default=None,
+        description="Run identifier, or null when not recorded in the event detail",
+    )
+    status: str = Field(description="Run outcome: 'success' or 'error'")
+    occurred_at: datetime = Field(description="UTC timestamp of the run event")
+
+
+class IngestionReverseLookupResponse(SingleResponse):
+    """Response for GET /spoke/common/data/{dataset_urn}/attr/ingestion.
+
+    Returns the owning source for a dataset, or null if unmapped.
+    """
+
+    dataset_urn: str = Field(description="The queried dataset URN")
+    source_id: str | None = Field(
+        default=None,
+        description="ID of the source that covers this dataset, or null if unmapped",
+    )
+    mode: Mode | None = Field(
+        default=None,
+        description="Mode of the owning source, or null if unmapped",
+    )
+    name: str | None = Field(
+        default=None,
+        description="Name of the owning source, or null if unmapped",
+    )
+    latest_run: IngestionLatestRunSummary | None = Field(
+        default=None,
+        description=(
+            "Summary of the most recent INGESTION.COMPLETE or INGESTION.FAIL event "
+            "for the owning source, or null when no run has been recorded yet."
         ),
     )

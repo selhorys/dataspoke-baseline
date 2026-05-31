@@ -1,20 +1,26 @@
 """Source-specific metadata extraction and DataHub emission.
 
-Connects to data sources (PostgreSQL, Kafka, …), discovers schema metadata,
-and emits aspects (Status, DatasetProperties, SchemaMetadata) to DataHub.
+The extractor registry maps ``recipe.source.type`` → async extractor function.
+This release ships a **postgres extractor only**. The Kafka ACTIVE extraction
+path is removed (Kafka is reachable as PASSIVE only).
+
+Adding an extractor for a new ``source.type`` is the fork-and-extend path:
+register an async function that accepts ``(datahub, source_id, recipe,
+dry_run, run_id)`` and returns a set of emitted dataset URNs.
+
+Spec: spec/feature/BACKEND.md §Custom Extractor Authoring Contract
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
-import asyncpg
-from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers
-from datahub.metadata.schema_classes import (
+import asyncpg  # type: ignore[import-untyped]
+from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers  # type: ignore
+from datahub.metadata.schema_classes import (  # type: ignore
     ArrayTypeClass,
     BooleanTypeClass,
     BrowsePathEntryClass,
@@ -37,39 +43,25 @@ from datahub.metadata.schema_classes import (
 )
 from pydantic import BaseModel
 
-from src.backend.ingestion.secret_resolver import (
-    SecretRefMalformed,
-    SecretRefNotFound,
-    SecretResolverUnavailable,
-    resolve_secret_ref,
-)
-from src.shared.models.ingestion import Platform
-
 if TYPE_CHECKING:
     from src.shared.datahub.client import DataHubClient
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_PLATFORMS: frozenset[str] = frozenset(p.value for p in Platform)
+
+# ── Result model ──────────────────────────────────────────────────────────────
 
 
-def _parse_env_from_dataset_urn(dataset_urn: str) -> str:
-    """Extract the env component from a dataset URN.
+class IngestionResult(BaseModel):
+    """Result of a single extractor invocation."""
 
-    Dataset URN format: urn:li:dataset:(urn:li:dataPlatform:<plat>,<name>,<env>)
-    Returns "PROD" as a fallback when the URN is malformed.
-    """
-    try:
-        # Strip outer wrapper: urn:li:dataset:(...)
-        inner = dataset_urn[len("urn:li:dataset:("):-1]
-        # inner is: urn:li:dataPlatform:<plat>,<name>,<env>
-        parts = inner.rsplit(",", 1)
-        return parts[-1].strip()
-    except Exception:
-        return "PROD"
+    entities_ingested: int
+    emitted_urns: list[str]
+    errors: list[str]
+    warnings: list[str]
 
 
-# ── Type mappings ─────────────────────────────────────────────────────────────
+# ── PostgreSQL type map ───────────────────────────────────────────────────────
 
 _PG_TO_DATAHUB_TYPE: dict[str, object] = {
     "integer": NumberTypeClass(),
@@ -96,96 +88,82 @@ _PG_TO_DATAHUB_TYPE: dict[str, object] = {
     "ARRAY": ArrayTypeClass(),
 }
 
-_JSON_TO_DATAHUB_TYPE: dict[str, object] = {
-    "str": StringTypeClass(),
-    "int": NumberTypeClass(),
-    "float": NumberTypeClass(),
-    "bool": BooleanTypeClass(),
-    "list": ArrayTypeClass(),
-    "dict": MapTypeClass(),
-    "NoneType": NullTypeClass(),
-}
+
+def _parse_env_from_config(config: dict[str, Any]) -> str:
+    """Extract the DataHub env string from recipe config, defaulting to 'DEV'."""
+    return config.get("env", "DEV")
 
 
-class IngestionResult(BaseModel):
-    """Result of a DataHub ingestion run."""
-
-    entities_ingested: int
-    errors: list[str]
-    warnings: list[str]
-
-
-def _resolve_auth_password(auth: dict[str, Any] | None) -> str | IngestionResult:
-    """Return the plaintext password from auth, or an IngestionResult on resolution error.
-
-    Handles the persisted reference shape ``{username, secret_ref: {name, key}}``.
-    Plaintext passwords in the persisted dict are never used — the only valid source
-    of a credential at run time is ``auth.secret_ref``.
-    """
-    if not auth:
-        return ""
-
-    if "password" in auth:
-        logger.warning(
-            "Persisted auth contains a plaintext 'password' field — ignoring. "
-            "Only secret_ref is used at run time."
-        )
-
-    secret_ref = auth.get("secret_ref")
-    if not secret_ref:
-        return ""
-
-    if not isinstance(secret_ref, dict):
-        return IngestionResult(
-            entities_ingested=0,
-            errors=[f"Invalid secret_ref shape: {secret_ref!r}"],
-            warnings=[],
-        )
-
-    name = secret_ref.get("name")
-    key = secret_ref.get("key")
-    if not name or not key:
-        return IngestionResult(
-            entities_ingested=0,
-            errors=["secret_ref missing name or key"],
-            warnings=[],
-        )
-
-    try:
-        return resolve_secret_ref(f"k8s-secret/{name}/{key}")
-    except (SecretRefMalformed, SecretRefNotFound, SecretResolverUnavailable) as exc:
-        return IngestionResult(
-            entities_ingested=0,
-            errors=[f"Secret resolution failed: {exc}"],
-            warnings=[],
-        )
+def _make_dataset_urn(platform: str, name: str, env: str) -> str:
+    """Build a dataset URN using the SDK builder for correctness."""
+    from datahub.emitter.mce_builder import make_dataset_urn  # type: ignore
+    return make_dataset_urn(platform=platform, name=name, env=env)
 
 
 # ── PostgreSQL extractor ─────────────────────────────────────────────────────
 
 
-async def _extract_postgresql(
+async def _extract_postgres(
     datahub: DataHubClient,
-    locator: dict[str, Any],
-    identifier: dict[str, Any],
-    auth: dict[str, Any] | None,
-    dataset_urn: str,
+    source_id: str,
+    recipe: dict[str, Any],
     dry_run: bool,
-    platform: str,
     run_id: str,
 ) -> IngestionResult:
-    """Connect to PostgreSQL, discover columns, emit schema to DataHub."""
-    host = locator["host"]
-    port = locator["port"]
-    database = identifier.get("database", "")
-    schema_name = identifier.get("schema_name")
-    table = identifier.get("table")
-    username = auth.get("username", "") if auth else ""
-    resolved = _resolve_auth_password(auth)
-    if isinstance(resolved, IngestionResult):
-        return resolved
-    password = resolved
+    """Connect to PostgreSQL via resolved recipe.source.config; emit metadata.
 
+    Config keys consumed:
+      - ``host_port`` (required): ``"<host>:<port>"`` or ``"<host>"`` (default port 5432)
+      - ``database`` (required): target database name
+      - ``username`` (required): DB user
+      - ``password``: plaintext password (resolved from ``${name__key}`` before call)
+      - ``schema_pattern``: ``{allow: [...], deny: [...]}`` (optional)
+      - ``env``: DataHub ``FabricType`` value; defaults to ``"DEV"``
+
+    Aspects emitted per discovered table (non-dry-run):
+      StatusClass, ContainerClass (schema), BrowsePathsV2Class,
+      DatasetPropertiesClass, SchemaMetadataClass
+
+    Also emits the database and schema container hierarchy
+    (DatabaseKey / SchemaKey) for Browse v2 parity with DataHub's managed PG source.
+
+    Returns:
+        IngestionResult with ``emitted_urns`` listing every dataset URN emitted.
+    """
+    config = recipe.get("source", {}).get("config", {})
+    host_port: str = config.get("host_port", "localhost:5432")
+    if ":" in host_port:
+        host, port_str = host_port.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 5432
+    else:
+        host = host_port
+        port = 5432
+
+    database: str = config.get("database", "")
+    username: str = config.get("username", "")
+    password: str = config.get("password", "")
+    env: str = _parse_env_from_config(config)
+
+    # Build schema allow/deny predicate from schema_pattern.
+    schema_allow: list[str] = [".*"]
+    schema_deny: list[str] = []
+    if "schema_pattern" in config:
+        sp = config["schema_pattern"]
+        if isinstance(sp, dict):
+            schema_allow = sp.get("allow", [".*"])
+            schema_deny = sp.get("deny", [])
+
+    # Use AllowDenyPattern for schema filtering.
+    try:
+        from datahub.configuration.common import AllowDenyPattern  # type: ignore
+        schema_filter = AllowDenyPattern(allow=schema_allow, deny=schema_deny)
+    except ImportError:
+        schema_filter = None  # type: ignore[assignment]
+
+    # Connect to PostgreSQL.
     try:
         conn = await asyncpg.connect(
             host=host, port=port, user=username, password=password, database=database,
@@ -193,24 +171,14 @@ async def _extract_postgresql(
     except Exception as exc:
         return IngestionResult(
             entities_ingested=0,
+            emitted_urns=[],
             errors=[f"PostgreSQL connection failed: {exc}"],
             warnings=[],
         )
 
     try:
-        # Build WHERE clause based on identifier granularity
-        conditions = ["table_schema NOT IN ('pg_catalog', 'information_schema')"]
-        params: list[Any] = []
-        if schema_name:
-            params.append(schema_name)
-            conditions.append(f"table_schema = ${len(params)}")
-        if table:
-            params.append(table)
-            conditions.append(f"table_name = ${len(params)}")
-
-        where = " AND ".join(conditions)
         rows = await conn.fetch(
-            f"""
+            """
             SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
                    c.ordinal_position, c.is_nullable,
                    col_description(
@@ -222,96 +190,95 @@ async def _extract_postgresql(
                        'pg_class'
                    ) AS table_comment
             FROM information_schema.columns c
-            WHERE {where}
+            WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')
             ORDER BY c.table_schema, c.table_name, c.ordinal_position
-            """,
-            *params,
+            """
         )
     finally:
         await conn.close()
 
     if not rows:
         return IngestionResult(
-            entities_ingested=0, errors=[], warnings=["No columns found for the given identifier"],
+            entities_ingested=0,
+            emitted_urns=[],
+            errors=[],
+            warnings=["No columns found in database"],
         )
 
-    # Group columns by (schema, table)
+    # Group by (schema, table).
     tables: dict[tuple[str, str], list[asyncpg.Record]] = {}
     for row in rows:
-        key = (row["table_schema"], row["table_name"])
-        tables.setdefault(key, []).append(row)
+        schema = row["table_schema"]
+        table = row["table_name"]
+        if schema_filter is not None and not schema_filter.allowed(schema):
+            continue
+        tables.setdefault((schema, table), []).append(row)
 
-    entities_ingested = 0
-    errors: list[str] = []
+    if not tables:
+        return IngestionResult(
+            entities_ingested=0,
+            emitted_urns=[],
+            errors=[],
+            warnings=["No tables matched schema_pattern filter"],
+        )
+
+    # pipelineName stamps the source_id so the sync sweep can observe it.
     sysmeta = SystemMetadataClass(
-        runId=f"dataspoke-{platform}-{run_id}",
+        runId=f"dataspoke-{source_id}-{run_id}",
+        pipelineName=source_id,
         lastObserved=int(time.time() * 1000),
     )
 
-    # Emit database + schema containers before dataset aspects so DataHub's
-    # browse-path v2 groups all datasets under the same container hierarchy
-    # as managed-ingestion runs (URNs are byte-identical because we use the
-    # same DatabaseKey/SchemaKey helpers with backcompat_env_as_instance=True).
-    env = _parse_env_from_dataset_urn(dataset_urn)
-    schemas_seen: set[str] = set()
     db_key = DatabaseKey(
         database=database,
-        platform=platform,
+        platform="postgres",
         instance=None,
         env=env,
         backcompat_env_as_instance=True,
     )
 
+    # Emit database container once (non-dry-run).
     if not dry_run:
-        for wu in gen_containers(
-            container_key=db_key,
-            name=database,
-            sub_types=["Database"],
-        ):
+        for wu in gen_containers(container_key=db_key, name=database, sub_types=["Database"]):
             mcp = wu.metadata
-            if (
-                hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
-                and mcp.entityUrn and mcp.aspect
-            ):
+            if hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect") and mcp.entityUrn and mcp.aspect:
                 try:
-                    await datahub.emit_aspect(
-                        mcp.entityUrn, mcp.aspect, system_metadata=sysmeta
-                    )
+                    await datahub.emit_aspect(mcp.entityUrn, mcp.aspect, system_metadata=sysmeta)
                 except Exception as exc:
-                    logger.warning("Failed to emit database container aspect: %s", exc)
+                    logger.warning("Failed to emit database container: %s", exc)
 
-    for (s, t), columns in tables.items():
-        # Emit schema container once per schema (tables share the same schema container).
-        if s not in schemas_seen:
-            schemas_seen.add(s)
-            if not dry_run:
-                schema_key = SchemaKey(
-                    database=database,
-                    schema=s,
-                    platform=platform,
-                    instance=None,
-                    env=env,
-                    backcompat_env_as_instance=True,
-                )
-                for wu in gen_containers(
-                    container_key=schema_key,
-                    name=s,
-                    sub_types=["Schema"],
-                    parent_container_key=db_key,
-                ):
-                    mcp = wu.metadata
-                    if (
-                        hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
-                        and mcp.entityUrn and mcp.aspect
-                    ):
-                        try:
-                            await datahub.emit_aspect(
-                                mcp.entityUrn, mcp.aspect, system_metadata=sysmeta
-                            )
-                        except Exception as exc:
-                            logger.warning("Failed to emit schema container aspect: %s", exc)
-        # Build the URN for this specific table
-        table_urn = dataset_urn  # For single-table configs, reuse the provided URN
+    emitted_urns: list[str] = []
+    errors: list[str] = []
+    schemas_seen: set[str] = set()
+
+    for (schema, table), columns in tables.items():
+        schema_key = SchemaKey(
+            database=database,
+            schema=schema,
+            platform="postgres",
+            instance=None,
+            env=env,
+            backcompat_env_as_instance=True,
+        )
+
+        # Emit schema container once per schema (non-dry-run).
+        if not dry_run and schema not in schemas_seen:
+            schemas_seen.add(schema)
+            for wu in gen_containers(
+                container_key=schema_key,
+                name=schema,
+                sub_types=["Schema"],
+                parent_container_key=db_key,
+            ):
+                mcp = wu.metadata
+                if hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect") and mcp.entityUrn and mcp.aspect:
+                    try:
+                        await datahub.emit_aspect(mcp.entityUrn, mcp.aspect, system_metadata=sysmeta)
+                    except Exception as exc:
+                        logger.warning("Failed to emit schema container for '%s': %s", schema, exc)
+
+        dataset_name = f"{database}.{schema}.{table}"
+        dataset_urn = _make_dataset_urn("postgres", dataset_name, env)
 
         fields = [
             SchemaFieldClass(
@@ -327,33 +294,22 @@ async def _extract_postgresql(
         ]
 
         table_comment = columns[0].get("table_comment") if columns else None
-        description = table_comment or f"Ingested by DataSpoke: {database}.{s}.{t}"
+        description = table_comment or f"Ingested by DataSpoke: {dataset_name}"
 
         if not dry_run:
+            schema_container_urn = schema_key.as_urn()
+            db_container_urn = db_key.as_urn()
             try:
-                schema_key_for_dataset = SchemaKey(
-                    database=database,
-                    schema=s,
-                    platform=platform,
-                    instance=None,
-                    env=env,
-                    backcompat_env_as_instance=True,
-                )
-                schema_container_urn = schema_key_for_dataset.as_urn()
-                db_container_urn = db_key.as_urn()
                 await datahub.emit_aspect(
-                    table_urn, StatusClass(removed=False), system_metadata=sysmeta
+                    dataset_urn, StatusClass(removed=False), system_metadata=sysmeta
                 )
                 await datahub.emit_aspect(
-                    table_urn,
+                    dataset_urn,
                     ContainerClass(container=schema_container_urn),
                     system_metadata=sysmeta,
                 )
-                # Explicit BrowsePathsV2 with container URN refs. DataHub's server-side
-                # generation from Container is unreliable when later aspect writes follow;
-                # upstream sources also emit explicitly via auto_browse_path_v2.
                 await datahub.emit_aspect(
-                    table_urn,
+                    dataset_urn,
                     BrowsePathsV2Class(
                         path=[
                             BrowsePathEntryClass(id=db_container_urn, urn=db_container_urn),
@@ -363,24 +319,25 @@ async def _extract_postgresql(
                     system_metadata=sysmeta,
                 )
                 await datahub.emit_aspect(
-                    table_urn,
+                    dataset_urn,
                     DatasetPropertiesClass(
-                        name=f"{s}.{t}",
-                        qualifiedName=f"{database}.{s}.{t}",
+                        name=f"{schema}.{table}",
+                        qualifiedName=dataset_name,
                         description=description,
                         customProperties={
                             "source": "dataspoke-ingestion",
+                            "source_id": source_id,
                             "database": database,
-                            "schema": s,
+                            "schema": schema,
                         },
                     ),
                     system_metadata=sysmeta,
                 )
                 await datahub.emit_aspect(
-                    table_urn,
+                    dataset_urn,
                     SchemaMetadataClass(
-                        schemaName=f"{s}.{t}",
-                        platform=f"urn:li:dataPlatform:{platform}",
+                        schemaName=f"{schema}.{table}",
+                        platform="urn:li:dataPlatform:postgres",
                         version=0,
                         hash="",
                         platformSchema=OtherSchemaClass(rawSchema=""),
@@ -389,185 +346,76 @@ async def _extract_postgresql(
                     system_metadata=sysmeta,
                 )
             except Exception as exc:
-                errors.append(f"Failed to emit aspects for {s}.{t}: {exc}")
+                errors.append(f"Failed to emit aspects for '{dataset_name}': {exc}")
                 continue
 
-        entities_ingested += 1
+        emitted_urns.append(dataset_urn)
 
-    return IngestionResult(entities_ingested=entities_ingested, errors=errors, warnings=[])
+    return IngestionResult(
+        entities_ingested=len(emitted_urns),
+        emitted_urns=emitted_urns,
+        errors=errors,
+        warnings=[],
+    )
 
 
-# ── Kafka extractor ──────────────────────────────────────────────────────────
+# ── Extractor registry ────────────────────────────────────────────────────────
+#
+# Maps recipe.source.type → async extractor coroutine function.
+# Signature: async (datahub, source_id, recipe, dry_run, run_id) -> IngestionResult
+#
+# Only postgres is registered in this release. To add support for another
+# source type, implement an extractor function and register it here.
+
+_EXTRACTOR_REGISTRY: dict[
+    str,
+    Any,  # Callable[[DataHubClient, str, dict, bool, str], Coroutine[Any, Any, IngestionResult]]
+] = {
+    "postgres": _extract_postgres,
+}
 
 
-async def _extract_kafka(
+async def run_extractor(
     datahub: DataHubClient,
-    locator: dict[str, Any],
-    identifier: dict[str, Any],
-    dataset_urn: str,
+    source_id: str,
+    recipe: dict[str, Any],
     dry_run: bool,
-    platform: str,
     run_id: str,
 ) -> IngestionResult:
-    """Consume sample messages from a Kafka topic, infer schema, emit to DataHub."""
-    bootstrap_servers = locator["bootstrap_servers"]
-    topic = identifier["topic"]
-    cluster = identifier.get("cluster", "")
+    """Dispatch to the registered extractor for ``recipe.source.type``.
 
-    # Discover schema by polling messages
-    field_types: dict[str, str] = {}
-    errors: list[str] = []
+    Args:
+        datahub:   DataHub client (pre-configured).
+        source_id: The ``ingestion_source.id`` UUID string — stamped as
+                   ``systemMetadata.pipelineName`` for observed-mapping.
+        recipe:    The RESOLVED recipe dict (plaintext credentials in-memory).
+        dry_run:   When True, discover schema but do not emit any aspects.
+        run_id:    A fresh UUID string per run for DPI URN derivation.
 
-    try:
-        messages = await asyncio.to_thread(
-            _poll_kafka_messages, bootstrap_servers, topic,
-        )
-        for msg in messages:
-            for key, value in msg.items():
-                if key not in field_types and value is not None:
-                    field_types[key] = type(value).__name__
-    except Exception as exc:
+    Returns:
+        IngestionResult with emitted_urns populated (empty on dry_run or error).
+    """
+    source_type = recipe.get("source", {}).get("type", "")
+    extractor = _EXTRACTOR_REGISTRY.get(source_type)
+
+    if extractor is None:
         return IngestionResult(
             entities_ingested=0,
-            errors=[f"Kafka consumer failed: {exc}"],
+            emitted_urns=[],
+            errors=[
+                f"No ACTIVE_CUSTOM_MANAGED extractor registered for source.type='{source_type}'. "
+                "Fork and extend extractors.py to add support."
+            ],
             warnings=[],
         )
 
-    if not field_types:
-        return IngestionResult(
-            entities_ingested=0, errors=[], warnings=["No messages found in topic or all values null"],
-        )
-
-    fields = [
-        SchemaFieldClass(
-            fieldPath=name,
-            nativeDataType=py_type,
-            type=SchemaFieldDataTypeClass(
-                type=_JSON_TO_DATAHUB_TYPE.get(py_type, StringTypeClass()),
-            ),
-            nullable=True,
-        )
-        for name, py_type in field_types.items()
-    ]
-
-    if not dry_run:
-        sysmeta = SystemMetadataClass(
-            runId=f"dataspoke-{platform}-{run_id}",
-            lastObserved=int(time.time() * 1000),
-        )
-        try:
-            await datahub.emit_aspect(dataset_urn, StatusClass(removed=False), system_metadata=sysmeta)
-            await datahub.emit_aspect(
-                dataset_urn,
-                DatasetPropertiesClass(
-                    name=topic,
-                    qualifiedName=f"{cluster}.{topic}" if cluster else topic,
-                    description=f"Ingested by DataSpoke: Kafka topic {topic}",
-                    customProperties={
-                        "source": "dataspoke-ingestion",
-                        "cluster": cluster,
-                    },
-                ),
-                system_metadata=sysmeta,
-            )
-            await datahub.emit_aspect(
-                dataset_urn,
-                SchemaMetadataClass(
-                    schemaName=topic,
-                    platform=f"urn:li:dataPlatform:{platform}",
-                    version=0,
-                    hash="",
-                    platformSchema=OtherSchemaClass(rawSchema=""),
-                    fields=fields,
-                ),
-                system_metadata=sysmeta,
-            )
-        except Exception as exc:
-            errors.append(f"Failed to emit aspects for topic {topic}: {exc}")
-
-    entities_ingested = 0 if errors else 1
-    return IngestionResult(entities_ingested=entities_ingested, errors=errors, warnings=[])
-
-
-def _poll_kafka_messages(
-    bootstrap_servers: str, topic: str, *, max_messages: int = 100, timeout_s: float = 15.0,
-) -> list[dict[str, Any]]:
-    """Synchronous helper: poll Kafka topic and return parsed JSON messages."""
-    import time
-
-    from confluent_kafka import Consumer, KafkaError
-
-    consumer = Consumer({
-        "bootstrap.servers": bootstrap_servers,
-        "group.id": f"dataspoke-ingestion-{topic}",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": False,
-    })
-    consumer.subscribe([topic])
-
-    messages: list[dict[str, Any]] = []
-    try:
-        deadline = time.monotonic() + timeout_s
-        while len(messages) < max_messages:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            msg = consumer.poll(timeout=min(remaining, 1.0))
-            if msg is None:
-                continue
-            if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    break
-                continue
-            try:
-                parsed = json.loads(msg.value().decode("utf-8"))
-                if isinstance(parsed, dict):
-                    messages.append(parsed)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-    finally:
-        consumer.close()
-
-    return messages
-
-
-# ── Dispatcher ───────────────────────────────────────────────────────────────
-
-
-async def run_datahub_ingestion(
-    datahub: DataHubClient,
-    platform: str,
-    locator: dict[str, Any],
-    identifier: dict[str, Any],
-    auth: dict[str, Any] | None,
-    dataset_urn: str,
-    run_id: str,
-    dry_run: bool = False,
-) -> IngestionResult:
-    """Extract metadata from a data source and emit aspects to DataHub.
-
-    Dispatches to source-specific extractors based on platform.
-    """
     logger.info(
-        "run_datahub_ingestion",
-        extra={"platform": platform, "dataset_urn": dataset_urn, "dry_run": dry_run},
+        "run_extractor",
+        extra={
+            "source_type": source_type,
+            "source_id": source_id,
+            "dry_run": dry_run,
+            "run_id": run_id,
+        },
     )
-
-    if platform == Platform.POSTGRESQL.value:
-        return await _extract_postgresql(datahub, locator, identifier, auth, dataset_urn, dry_run, platform=platform, run_id=run_id)
-
-    if platform == Platform.KAFKA.value:
-        return await _extract_kafka(datahub, locator, identifier, dataset_urn, dry_run, platform=platform, run_id=run_id)
-
-    if platform in SUPPORTED_PLATFORMS:
-        return IngestionResult(
-            entities_ingested=0,
-            errors=[],
-            warnings=[f"Extraction for {platform} is not yet implemented"],
-        )
-
-    return IngestionResult(
-        entities_ingested=0,
-        errors=[f"Unsupported platform: {platform}"],
-        warnings=[],
-    )
+    return await extractor(datahub, source_id, recipe, dry_run, run_id)

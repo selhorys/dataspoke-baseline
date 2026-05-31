@@ -89,7 +89,7 @@ async def test_ingestion_list_active_returns_list_of_urns(client) -> None:
     spec: feature/BACKEND.md §Ingestion Workflow — list-active returns URNs for tier.
     """
     mock_svc = AsyncMock()
-    mock_svc.list_active_for_tier = AsyncMock(return_value=[_VALID_URN])
+    mock_svc.list_active_sources_for_tier = AsyncMock(return_value=[])
 
     from unittest.mock import AsyncMock as AM, MagicMock as MM
 
@@ -105,8 +105,8 @@ async def test_ingestion_list_active_returns_list_of_urns(client) -> None:
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
         patch(
-            "src.backend.ingestion.service.IngestionService.list_active_for_tier",
-            new=AsyncMock(return_value=[_VALID_URN]),
+            "src.backend.ingestion.service.IngestionService.list_active_sources_for_tier",
+            new=AsyncMock(return_value=[]),
         ),
     ):
         resp = await client.post(
@@ -125,13 +125,15 @@ async def test_ingestion_list_active_returns_list_of_urns(client) -> None:
 
 @pytest.mark.asyncio
 async def test_ingestion_run_accepts_documented_payload(client) -> None:
-    """POST /internal/activities/ingestion/run accepts {dataset_urn, dry_run} payload.
+    """POST /internal/activities/ingestion/run accepts {source_id, dry_run} payload.
 
-    spec: feature/BACKEND.md §Ingestion Workflow — /ingestion/run accepts the documented shape.
+    spec: feature/BACKEND.md §Ingestion Workflow — /ingestion/run accepts source_id
+    (per-source model — not dataset_urn).
     The endpoint catches DataSpokeError and returns a structured error dict (not 422).
     We stub the service.run call to raise DataSpokeError so the endpoint handles it gracefully.
     """
     import src.backend.ingestion.service as _ing_svc
+    import uuid
 
     class _FakeSession:
         async def __aenter__(self):
@@ -144,6 +146,7 @@ async def test_ingestion_run_accepts_documented_payload(client) -> None:
 
     _ds_error = DataSpokeError("stubbed ingestion failure")
     fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
+    test_source_id = str(uuid.uuid4())
 
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
@@ -158,7 +161,7 @@ async def test_ingestion_run_accepts_documented_payload(client) -> None:
     ):
         resp = await client.post(
             _INGESTION_RUN,
-            json={"dataset_urn": _VALID_URN, "dry_run": True},
+            json={"source_id": test_source_id, "dry_run": True},
             headers=_internal_headers(),
         )
 
@@ -501,9 +504,10 @@ async def test_ingestion_run_threads_stub_redis_flag(client) -> None:
             new=AsyncMock(side_effect=DataSpokeError("stub")),
         ),
     ):
+        import uuid as _uuid
         await client.post(
             _INGESTION_RUN,
-            json={"dataset_urn": _VALID_URN, "dry_run": True},
+            json={"source_id": str(_uuid.uuid4()), "dry_run": True},
             headers=_internal_headers(),
         )
 

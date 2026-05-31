@@ -1,4 +1,4 @@
-"""Unit tests for feature-specific API schemas."""
+"""Unit tests for feature-specific API schemas (non-ingestion)."""
 
 from datetime import UTC, datetime
 
@@ -8,12 +8,6 @@ from pydantic import ValidationError
 from src.api.schemas.common import PaginationParams, TimeRangeParams
 from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse
 from src.api.schemas.events import EventListResponse, EventResponse
-from src.api.schemas.ingestion import (
-    CreateIngestionConfigRequest,
-    IngestionConfigListResponse,
-    IngestionConfigResponse,
-    RunResultResponse,
-)
 from src.api.schemas.metrics import (
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
@@ -65,130 +59,6 @@ class TestTimeRangeParams:
         now = datetime.now(tz=UTC)
         t = TimeRangeParams(**{"from": now})
         assert t.from_time == now
-
-
-class TestIngestionSchemas:
-    def test_create_request_round_trip(self) -> None:
-        # spec: SECRET_RESOLUTION.md §Validation matrix row 4 — reference path shape
-        # {username, secret_ref: {name, key}} must survive a model_dump / re-validate cycle.
-        req = CreateIngestionConfigRequest.model_validate(
-            {
-                "platform": "postgres",
-                "locator": {"host": "localhost", "port": 5432},
-                "identifier": {"database": "testdb"},
-                "auth": {
-                    "username": "readonly",
-                    "secret_ref": {"name": "dataspoke-source-cred-db", "key": "password"},
-                },
-            }
-        )
-        data = req.model_dump()
-        parsed = CreateIngestionConfigRequest.model_validate(data)
-        assert parsed.is_enabled is False
-        assert parsed.auth is not None
-        assert parsed.auth.username == "readonly"
-        assert parsed.auth.secret_ref is not None
-        assert parsed.auth.secret_ref.name == "dataspoke-source-cred-db"
-        assert parsed.auth.secret_ref.key == "password"
-        assert parsed.auth.password is None
-
-    def test_create_request_kafka_no_auth(self) -> None:
-        req = CreateIngestionConfigRequest(
-            platform="kafka",
-            locator={"bootstrap_servers": "kafka:9092"},
-            identifier={"topic": "my-topic"},
-        )
-        assert req.auth is None
-
-    def test_create_request_invalid_platform(self) -> None:
-        with pytest.raises(ValidationError):
-            CreateIngestionConfigRequest(
-                platform="unsupported",
-                locator={},
-                identifier={},
-            )
-
-    def test_create_request_missing_auth_for_postgresql(self) -> None:
-        with pytest.raises(ValidationError, match="auth is required"):
-            CreateIngestionConfigRequest(
-                platform="postgres",
-                locator={"host": "localhost", "port": 5432},
-                identifier={"database": "testdb"},
-            )
-
-    def test_passive_mode_with_schedule_tier_raises(self) -> None:
-        # spec: USE_CASE_en.md §UC1 — passive mode carries no schedule_tier.
-        # spec: BACKEND.md §Ingestion Service — schedule_tier is for active mode only.
-        with pytest.raises(ValidationError, match="schedule_tier is not allowed for passive"):
-            CreateIngestionConfigRequest(
-                mode="passive",
-                platform="kafka",
-                identifier={"topic": "my-topic"},
-                schedule_tier="daily",
-            )
-
-    def test_passive_mode_is_enabled_true_without_schedule_tier_ok(self) -> None:
-        # spec: USE_CASE_en.md §UC1 — passive can be enabled without a schedule_tier;
-        # the hourly status-sync DAG drives passive runs, not a tier-DAG.
-        req = CreateIngestionConfigRequest(
-            mode="passive",
-            platform="kafka",
-            identifier={"topic": "my-topic"},
-            is_enabled=True,
-        )
-        assert req.is_enabled is True
-        assert req.schedule_tier is None
-
-    def test_active_mode_is_enabled_true_without_schedule_tier_raises(self) -> None:
-        # spec: BACKEND.md §Ingestion Service — active-custom mode tied to schedule_tier
-        # for tier-DAG dispatch.
-        with pytest.raises(ValidationError, match="schedule_tier is required"):
-            CreateIngestionConfigRequest(
-                mode="active-custom",
-                platform="postgres",
-                locator={"host": "localhost", "port": 5432},
-                identifier={"database": "testdb"},
-                auth={
-                    "username": "u",
-                    "secret_ref": {"name": "dataspoke-source-cred-x", "key": "k"},
-                },
-                is_enabled=True,
-            )
-
-    def test_config_response_has_resp_time(self) -> None:
-        # spec: SECRET_RESOLUTION.md §Data Model — persisted (response) shape is
-        # {username, secret_ref: {name, key}} — no password.
-        resp = IngestionConfigResponse(
-            id="1",
-            dataset_urn="urn:li:dataset:test",
-            platform="postgres",  # type: ignore[arg-type]
-            locator={"host": "localhost", "port": 5432},
-            identifier={"database": "testdb"},
-            auth={
-                "username": "readonly",
-                "secret_ref": {"name": "dataspoke-source-cred-db", "key": "password"},
-            },
-            is_enabled=False,
-            mode="active",
-            schedule_tier=None,
-            workflow_dag_id=None,
-            status="OK",  # type: ignore[arg-type]
-            created_at=datetime.now(tz=UTC),
-            updated_at=datetime.now(tz=UTC),
-        )
-        assert resp.resp_time is not None
-
-    def test_list_response_has_pagination_fields(self) -> None:
-        resp = IngestionConfigListResponse(total_count=5)
-        assert resp.offset == 0
-        assert resp.limit == 20
-        assert resp.total_count == 5
-        assert resp.configs == []
-
-    def test_run_result_response(self) -> None:
-        resp = RunResultResponse(run_id="r1", status="started")
-        assert resp.run_id == "r1"
-        assert resp.detail == {}
 
 
 class TestValidationSchemas:

@@ -19,7 +19,8 @@ from src.shared.db.models import (
     DepartmentMapping,
     EdgeEmbedding,
     Event,
-    IngestionConfig,
+    IngestionSource,
+    IngestionSourceDataset,
     MetagenBoundary,
     MetagenCandidate,
     MetagenCandidateEmbedding,
@@ -46,7 +47,8 @@ ALL_MODELS = [
     User,
     ApiToken,
     PasswordResetToken,
-    IngestionConfig,
+    IngestionSource,
+    IngestionSourceDataset,
     DatasetRegistry,
     ValidationConfig,
     ValidationResult,
@@ -76,7 +78,8 @@ EXPECTED_TABLES = {
     "users",
     "api_tokens",
     "password_reset_tokens",
-    "ingestion_configs",
+    "ingestion_source",
+    "ingestion_source_dataset",
     "dataset_registry",
     "validation_configs",
     "validation_results",
@@ -129,7 +132,7 @@ def test_uuid_primary_keys() -> None:
     # ValidationConfig PK is TEXT (dataset_urn), not UUID — see test_validation_config_text_pk.
     # MetagenConfig PK is INTEGER (singleton); MetagenCandidate PK is UUID.
     uuid_pk_models = [
-        IngestionConfig,
+        IngestionSource,
         ValidationResult,
         MetagenCandidate,
         MetricResult,
@@ -199,9 +202,7 @@ def test_node_embedding_text_pk() -> None:
 def test_jsonb_columns() -> None:
     # spec: BACKEND_SCHEMA.md — JSONB columns per table.
     jsonb_checks = [
-        (IngestionConfig, "locator"),
-        (IngestionConfig, "identifier"),
-        (IngestionConfig, "auth"),
+        (IngestionSource, "recipe"),
         # ValidationConfig: no JSONB column — variables is ARRAY(Text)
         (ValidationResult, "variables"),  # measured variable values
         (MetagenConfig, "dataset_filter"),
@@ -225,10 +226,11 @@ def test_jsonb_columns() -> None:
 def test_is_enabled_column_on_config_models() -> None:
     """Mutable config models that have lifecycle scheduling use is_enabled (not is_active).
 
-    spec: BACKEND_SCHEMA.md — is_enabled present on IngestionConfig, MetagenConfig,
-    MetagenBoundary, MetricDefinition, OntogenConfig. ValidationConfig uses is_removed instead.
+    spec: BACKEND_SCHEMA.md — is_enabled present on MetagenConfig, MetagenBoundary,
+    MetricDefinition, OntogenConfig. IngestionSource uses status column instead.
+    ValidationConfig uses is_removed instead.
     """
-    enabled_models = [IngestionConfig, MetagenConfig, MetagenBoundary, MetricDefinition, OntogenConfig]
+    enabled_models = [MetagenConfig, MetagenBoundary, MetricDefinition, OntogenConfig]
     for model in enabled_models:
         col_names = {col.name for col in model.__table__.columns}
         assert "is_enabled" in col_names, f"{model.__name__} missing is_enabled column"
@@ -379,9 +381,43 @@ def test_metric_definition_has_no_alarm_columns() -> None:
     assert "alarm_recipients" not in col_names
 
 
-def test_ingestion_config_has_mode_column() -> None:
-    col_names = {col.name for col in IngestionConfig.__table__.columns}
-    assert "mode" in col_names
+def test_ingestion_source_has_required_columns() -> None:
+    """IngestionSource has all columns specified in BACKEND_SCHEMA.md §ingestion_source.
+
+    spec: BACKEND_SCHEMA.md §ingestion_source — mode, name, platform, recipe,
+          schedule, schedule_tier, datahub_source_urn, status columns.
+    """
+    col_names = {col.name for col in IngestionSource.__table__.columns}
+    for expected in ("mode", "name", "platform", "recipe", "schedule", "schedule_tier",
+                     "datahub_source_urn", "status", "created_at", "updated_at"):
+        assert expected in col_names, (
+            f"IngestionSource missing column '{expected}'. "
+            "spec: BACKEND_SCHEMA.md §ingestion_source."
+        )
+
+
+def test_ingestion_source_dataset_has_required_columns() -> None:
+    """IngestionSourceDataset has all columns specified in BACKEND_SCHEMA.md §ingestion_source_dataset.
+
+    spec: BACKEND_SCHEMA.md §ingestion_source_dataset — source_id, dataset_urn, origin,
+          first_seen_at, last_seen_at.
+    """
+    col_names = {col.name for col in IngestionSourceDataset.__table__.columns}
+    for expected in ("source_id", "dataset_urn", "origin", "first_seen_at", "last_seen_at"):
+        assert expected in col_names, (
+            f"IngestionSourceDataset missing column '{expected}'. "
+            "spec: BACKEND_SCHEMA.md §ingestion_source_dataset."
+        )
+
+
+def test_ingestion_source_dataset_fk_to_ingestion_source() -> None:
+    """IngestionSourceDataset.source_id is a FK → ingestion_source(id) ON DELETE CASCADE.
+
+    spec: BACKEND_SCHEMA.md §ingestion_source_dataset.
+    """
+    table = IngestionSourceDataset.__table__
+    fk_targets = {fk.column.table.name for fk in table.foreign_keys}
+    assert "ingestion_source" in fk_targets
 
 
 def test_metagen_candidate_columns() -> None:

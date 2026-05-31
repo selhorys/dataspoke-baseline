@@ -1,6 +1,6 @@
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
-from src.shared.models.ingestion import Platform, validate_platform_fields
+from src.shared.models.ingestion import Mode, Platform
 from src.shared.models.ontogen import (
     DatasetNodeMap,
     OntogenConf,
@@ -18,6 +18,7 @@ __all__ = [
     "DatasetNodeMap",
     "DatasetSummary",
     "EventRecord",
+    "Mode",
     "OntogenConf",
     "OntogenEdge",
     "OntogenNode",
@@ -27,5 +28,4 @@ __all__ = [
     "QualityIssue",
     "QualityScore",
     "SLAAlert",
-    "validate_platform_fields",
 ]

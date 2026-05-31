@@ -9,9 +9,9 @@ These endpoints are NOT exposed to end users — they are called by the Airflow
 orchestrator running inside the same K8s namespace, gated by X-Internal-Token.
 
 Activities:
-  /ingestion/list-active  — list dataset URNs with active ingestion configs for a tier
-  /ingestion/run          — execute ingestion pipeline for a single dataset
-  /ingestion/passive-sync — mirror DataHub run history for passive-mode configs
+  /ingestion/list-active  — list source IDs with ACTIVE_CUSTOM_MANAGED configs for a tier
+  /ingestion/run          — execute ingestion pipeline for a single source
+  /ingestion/passive-sync — Phase-2b stub: sync DATAHUB_MANAGED and PASSIVE sources
   /metagen/run            — execute global metagen inference pipeline (singleton)
   /metrics/list-active    — list metric IDs with is_enabled=True for a tier
   /metrics/run            — execute metric measurement for a single metric
@@ -74,26 +74,27 @@ class IngestionListActiveRequest(BaseModel):
 
 @router.post("/ingestion/list-active")
 async def ingestion_list_active(body: IngestionListActiveRequest) -> list[str]:
-    """Return dataset URNs with active-custom-mode ingestion configs matching the given tier."""
+    """Return source IDs with ACTIVE_CUSTOM_MANAGED ingestion configs for the given tier."""
     try:
         async with make_db_session() as db:
             from src.backend.ingestion.service import IngestionService
 
             datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db)
-            return await service.list_active_for_tier(body.tier)
+            records = await service.list_active_sources_for_tier(body.tier)
+            return [r.id for r in records]
     except DataSpokeError as exc:
         return _error_response(exc)  # type: ignore[return-value]
 
 
 class IngestionRunRequest(BaseModel):
-    dataset_urn: str
+    source_id: str
     dry_run: bool = False
 
 
 @router.post("/ingestion/run")
 async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
-    """Execute ingestion pipeline for a single dataset."""
+    """Execute ingestion pipeline for a single ACTIVE_CUSTOM_MANAGED source."""
     try:
         async with make_db_session() as db:
             from src.backend.admin.config_service import get_runtime_config
@@ -103,28 +104,28 @@ async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
             cache = make_redis_client(stub=rc.stub_redis_client)
             datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db, cache=cache)
-            result = await service.run(body.dataset_urn, dry_run=body.dry_run)
-            return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
+            result = await service.run(source_id=body.source_id, dry_run=body.dry_run)
+            return {
+                "run_id": result.run_id,
+                "status": result.status,
+                "entities_ingested": result.entities_ingested,
+                "dry_run": result.dry_run,
+                "errors": result.errors,
+                "warnings": result.warnings,
+            }
     except DataSpokeError as exc:
         return _error_response(exc)  # type: ignore[return-value]
 
 
 @router.post("/ingestion/passive-sync")
 async def ingestion_passive_sync() -> dict[str, object]:
-    """Mirror DataHub run history for all passive-mode configs into the events table.
+    """Sync DATAHUB_MANAGED source definitions and mapping sweep.
 
-    Called hourly by the ingestion-passive-hourly DAG.
+    Phase-2b stub: the full sync is implemented in Phase 2b
+    (ingestion-sync-hourly DAG integration). Returns 200 with status=skipped
+    until then so the Airflow DAG does not permanently fail.
     """
-    try:
-        async with make_db_session() as db:
-            from src.backend.ingestion.service import IngestionService
-
-            datahub = await make_datahub(db)
-            service = IngestionService(datahub=datahub, db=db)
-            await service.sync_passive_status()
-            return {"status": "ok"}
-    except DataSpokeError as exc:
-        return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
+    return {"status": "skipped", "reason": "phase-2b-not-implemented"}
 
 
 # ── /metagen ──────────────────────────────────────────────────────────────────

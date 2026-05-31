@@ -792,15 +792,30 @@ named Secret is absent.
 
 When `api.secretReader.enabled` is `true` (default), the umbrella renders
 `templates/api-secret-reader-rbac.yaml`: a dedicated ServiceAccount on the
-API Deployment, plus a `Role` granting `get` / `create` / `patch` on
-`secrets` in the API release namespace, and a matching `RoleBinding`.
-`delete` is intentionally omitted — ingestion-config DELETE does not
-auto-clean source-credential Secrets (reference counting is out of scope;
-see SECRET_RESOLUTION.md §Open Questions). Single-namespace policy: no
-cross-namespace Roles or RoleBindings. Disable to opt out entirely; the
-Deployment then falls back to the default ServiceAccount and the resolver
-raises `SecretResolverUnavailable` on every PUT/PATCH that touches
-`secret_ref`.
+API Deployment, a `Role`, and a matching `RoleBinding`. The Role grants
+`get`, `list`, `create`, and `patch` on `secrets` in the API release
+namespace. `delete` is intentionally omitted — ingestion-config DELETE does
+not auto-clean source-credential Secrets (reference counting is out of
+scope; see SECRET_RESOLUTION.md §Open Questions).
+
+The Role is shared between two distinct access patterns:
+
+- **Source-cred reads** (`get` + `list`): the secret resolver reads and
+  enumerates `dataspoke-source-cred-*` Secrets. The application-level
+  prefix guard in `secret_resolver.py` ensures the resolver never touches
+  infra Secrets; RBAC cannot enforce this boundary because the Role is
+  namespace-scoped without `resourceNames`.
+- **Infra accessor writes** (`get` + `create` + `patch`): the admin
+  peripheral accessors (`datahub_secret.py`, `llm_secret.py`,
+  `langfuse_secret.py`, `smtp_secret.py`) use create-or-patch semantics
+  against their respective fixed-name Secrets (`dataspoke-datahub-secret`,
+  `dataspoke-llm-secret`, `dataspoke-langfuse-secret`,
+  `dataspoke-smtp-secret`).
+
+Single-namespace policy: no cross-namespace Roles or RoleBindings. Disable
+to opt out entirely; the Deployment then falls back to the default
+ServiceAccount and the resolver raises `SecretResolverUnavailable` on every
+PUT/PATCH that touches `secret_ref`.
 
 ---
 

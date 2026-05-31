@@ -4,11 +4,15 @@
 # Full catalogue per spec/feature/BACKEND.md §Event Catalogue.
 # Entity-type mapping per spec/feature/BACKEND_SCHEMA.md §events.
 
-# ── Ingestion (entity_type = "dataset") ──────────────────────────────────────
+# ── Ingestion (entity_type varies: "ingestion_source" for source-level events,
+#    "dataset" for dataset-level run events) ──────────────────────────────────
 
-INGESTION_CONFIG_CREATE = "INGESTION.CONFIG_CREATE"
-INGESTION_CONFIG_UPDATE = "INGESTION.CONFIG_UPDATE"
-INGESTION_CONFIG_DELETE = "INGESTION.CONFIG_DELETE"
+# Source-level management events (entity_type = "ingestion_source")
+INGESTION_SOURCE_CREATE = "INGESTION.SOURCE_CREATE"
+INGESTION_SOURCE_UPDATE = "INGESTION.SOURCE_UPDATE"
+INGESTION_SOURCE_DELETE = "INGESTION.SOURCE_DELETE"
+
+# Run events (entity_type = "ingestion_source", entity_id = source_id)
 INGESTION_COMPLETE = "INGESTION.COMPLETE"
 INGESTION_FAIL = "INGESTION.FAIL"
 INGESTION_PREFIX = "INGESTION."

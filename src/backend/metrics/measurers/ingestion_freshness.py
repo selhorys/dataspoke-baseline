@@ -2,11 +2,13 @@
 
 A dataset is counted as *ingested in time* if its latest ``INGESTION.COMPLETE``
 event occurred within its resolved freshness window. The window is derived
-per dataset from ``ingestion_configs``:
+per dataset from ``ingestion_source`` / ``ingestion_source_dataset``:
 
-- active-custom with a known schedule_tier → SCHEDULE_TIER_SECONDS[tier] × LATE_INGESTION_FACTOR
-- passive → PASSIVE_SYNC_PERIOD_SEC × LATE_INGESTION_FACTOR
-- no config row, or active-custom with an unknown/null tier → metric_conf["time_window_sec"]
+- ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED with a known schedule_tier
+  → SCHEDULE_TIER_SECONDS[tier] × LATE_INGESTION_FACTOR
+- PASSIVE → PASSIVE_SYNC_PERIOD_SEC × LATE_INGESTION_FACTOR
+- dataset mapped to no source, or source with no derivable schedule
+  → metric_conf["time_window_sec"]
 
 Spec: spec/feature/BACKEND.md §Metrics Service — Time windows
 """
@@ -19,8 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.metrics.measurers.registry import register_measurer
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import Event, IngestionConfig
+from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
 from src.shared.events import INGESTION_COMPLETE
+from src.shared.models.ingestion import Mode
 from src.shared.schedule import (
     LATE_INGESTION_FACTOR,
     PASSIVE_SYNC_PERIOD_SEC,
@@ -44,11 +47,12 @@ async def measure(
         Dataset URNs to measure.
     metric_conf:
         Must contain ``time_window_sec`` (positive int) used as the fallback
-        window when no per-dataset config can be resolved.
+        window when no per-dataset source can be resolved.
     datahub:
         DataHubClient — accepted for signature uniformity, not used here.
     db:
-        Async SQLAlchemy session for querying ``events`` and ``ingestion_configs``.
+        Async SQLAlchemy session for querying ``events``,
+        ``ingestion_source_dataset``, and ``ingestion_source``.
 
     Returns
     -------
@@ -59,29 +63,77 @@ async def measure(
     """
     default_window_sec = int(metric_conf["time_window_sec"])
 
-    # ── 1. Resolve per-dataset window from ingestion_configs ──────────────────
-    configs_q = select(
-        IngestionConfig.dataset_urn,
-        IngestionConfig.mode,
-        IngestionConfig.schedule_tier,
-    ).where(IngestionConfig.dataset_urn.in_(datasets))
-    config_rows = (await db.execute(configs_q)).all()
-    config_map: dict[str, tuple[str, str | None]] = {
-        row.dataset_urn: (row.mode, row.schedule_tier) for row in config_rows
-    }
+    # ── 1. Resolve per-dataset window from ingestion_source_dataset + ingestion_source ──
+    #
+    # Join ingestion_source_dataset -> ingestion_source to obtain (mode, schedule_tier)
+    # for each dataset URN.  When a dataset appears under multiple sources, use
+    # the highest-priority origin (emitted > pipeline_name > matcher) and then the
+    # most-recent last_seen_at to pick one source row per dataset.
+    _ORIGIN_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matcher": 2}
+
+    mapping_q = (
+        select(
+            IngestionSourceDataset.dataset_urn,
+            IngestionSourceDataset.origin,
+            IngestionSourceDataset.last_seen_at,
+            IngestionSource.mode,
+            IngestionSource.schedule_tier,
+        )
+        .join(IngestionSource, IngestionSourceDataset.source_id == IngestionSource.id)
+        .where(IngestionSourceDataset.dataset_urn.in_(datasets))
+    )
+    mapping_rows = (await db.execute(mapping_q)).all()
+
+    # Group by dataset_urn and pick the best row per dataset.
+    _best: dict[str, tuple[str, str | None]] = {}  # urn -> (mode, schedule_tier)
+    _best_priority: dict[str, tuple[int, float]] = {}  # urn -> (origin_prio, -ts)
+
+    for row in mapping_rows:
+        urn = row.dataset_urn
+        origin = getattr(row, "origin", "matcher")
+        prio = _ORIGIN_PRIORITY.get(origin, 99)
+        # last_seen_at may be absent in test mocks; default to epoch so it
+        # sorts last within the same priority level.
+        last_seen = getattr(row, "last_seen_at", None)
+        try:
+            neg_ts: float = -last_seen.timestamp() if last_seen is not None else 0.0
+        except (AttributeError, TypeError):
+            neg_ts = 0.0
+        current = _best_priority.get(urn)
+        if current is None or (prio, neg_ts) < current:
+            _best_priority[urn] = (prio, neg_ts)
+            _best[urn] = (row.mode, row.schedule_tier)
+
+    _MANAGED_MODES = frozenset({
+        Mode.ACTIVE_CUSTOM_MANAGED.value,
+        Mode.DATAHUB_MANAGED.value,
+    })
+    _PASSIVE_MODES = frozenset({
+        Mode.PASSIVE.value,
+    })
 
     def _resolve_window(urn: str) -> tuple[int, str]:
         """Return (window_sec, window_source) for the given URN."""
-        if urn not in config_map:
+        if urn not in _best:
             return default_window_sec, "default"
-        mode, tier = config_map[urn]
-        if mode == "active-custom" and tier in SCHEDULE_TIER_SECONDS:
-            return SCHEDULE_TIER_SECONDS[tier] * LATE_INGESTION_FACTOR, f"active-custom:{tier}"
-        if mode == "passive":
+        mode, tier = _best[urn]
+        if mode in _MANAGED_MODES:
+            if tier and tier in SCHEDULE_TIER_SECONDS:
+                return (
+                    SCHEDULE_TIER_SECONDS[tier] * LATE_INGESTION_FACTOR,
+                    f"managed:{tier}",
+                )
+        if mode in _PASSIVE_MODES:
             return PASSIVE_SYNC_PERIOD_SEC * LATE_INGESTION_FACTOR, "passive"
         return default_window_sec, "default"
 
     # ── 2. Fetch latest INGESTION.COMPLETE event per dataset ──────────────────
+    #
+    # The freshness measurer queries dataset-entity events keyed by
+    # entity_id = dataset_urn (entity_type='dataset').  The sync sweep (Phase 2b)
+    # mirrors INGESTION.COMPLETE events with entity_type='dataset' /
+    # entity_id=dataset_urn; until that is implemented, datasets with only
+    # source-level events are counted as stale (conservative / safe default).
     sub = (
         select(
             Event.entity_id,
@@ -95,6 +147,7 @@ async def measure(
         )
         .where(
             Event.event_type == INGESTION_COMPLETE,
+            Event.entity_type == "dataset",
             Event.entity_id.in_(datasets),
         )
         .subquery()

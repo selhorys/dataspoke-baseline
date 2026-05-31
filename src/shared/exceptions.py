@@ -42,12 +42,13 @@ class EntityNotFoundError(DataSpokeError):
     """Raised when a requested entity does not exist.
 
     Valid entity_type values (each maps to a 404 error code):
-      "dataset"  → DATASET_NOT_FOUND
-      "config"   → CONFIG_NOT_FOUND
-      "metric"   → METRIC_NOT_FOUND
-      "node"     → NODE_NOT_FOUND
-      "edge"     → EDGE_NOT_FOUND
-      "triple"   → TRIPLE_NOT_FOUND
+      "dataset"          → DATASET_NOT_FOUND
+      "config"           → CONFIG_NOT_FOUND
+      "ingestion_source" → INGESTION_SOURCE_NOT_FOUND
+      "metric"           → METRIC_NOT_FOUND
+      "node"             → NODE_NOT_FOUND
+      "edge"             → EDGE_NOT_FOUND
+      "triple"           → TRIPLE_NOT_FOUND
     """
 
     def __init__(self, entity_type: str, entity_id: str) -> None:
@@ -61,7 +62,9 @@ class ConflictError(DataSpokeError):
 
     Valid error_code values:
       DUPLICATE_CONFIG              — attempt to create a config that already exists
-      INGESTION_RUNNING             — concurrent active ingestion run for the dataset
+      INGESTION_RUNNING             — concurrent active ingestion run for the source
+      INGESTION_SOURCE_READONLY     — create/update/delete attempted on DATAHUB_MANAGED row
+      INGESTION_RUN_NOT_APPLICABLE  — run attempted on non-ACTIVE_CUSTOM_MANAGED source
       GENERATION_RUNNING            — concurrent metadata-generation run for the dataset
       METRIC_RUNNING                — concurrent metric measurement
       METRIC_EXISTS                 — POST /spoke/governance/metric carries a metric_id that already exists
@@ -86,6 +89,8 @@ class PreconditionFailedError(DataSpokeError):
 
     Valid error_code values:
       DATASET_NOT_IN_DATAHUB            — dataset URN not registered in DataHub
+      SECRET_REF_MALFORMED              — ${...} ref has no __ or empty name/key segment
+      SECRET_REF_NOT_FOUND              — referenced k8s Secret or key absent (incl. 403)
       ONTOGEN_TRIPLE_DEPENDENCY_PENDING — triple approval attempted when endpoint
                                           nodes or edge are not yet approved
       UNKNOWN_VARIABLE                  — result POST carries variable keys not declared

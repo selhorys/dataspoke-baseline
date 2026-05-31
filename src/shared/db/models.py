@@ -152,26 +152,21 @@ class PasswordResetToken(Base):
     user: Mapped["User"] = relationship("User", back_populates="password_reset_tokens")
 
 
-# ── ingestion_configs ────────────────────────────────────────────────────────
+# ── ingestion_source ─────────────────────────────────────────────────────────
 
 
-class IngestionConfig(Base):
-    __tablename__ = "ingestion_configs"
-    __table_args__ = (
-        UniqueConstraint("dataset_urn"),
-        {"schema": SCHEMA},
-    )
+class IngestionSource(Base):
+    __tablename__ = "ingestion_source"
+    __table_args__ = {"schema": SCHEMA}
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
-    mode: Mapped[str] = mapped_column(Text, nullable=False, default="active-custom")
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     platform: Mapped[str] = mapped_column(Text, nullable=False)
-    locator: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    identifier: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    auth: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recipe: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    workflow_dag_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    datahub_source_urn: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="OK")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -179,6 +174,34 @@ class IngestionConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+    datasets: Mapped[list["IngestionSourceDataset"]] = relationship(
+        "IngestionSourceDataset", back_populates="source", cascade="all, delete-orphan"
+    )
+
+
+# ── ingestion_source_dataset ─────────────────────────────────────────────────
+
+
+class IngestionSourceDataset(Base):
+    __tablename__ = "ingestion_source_dataset"
+    __table_args__ = {"schema": SCHEMA}
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.ingestion_source.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    source: Mapped["IngestionSource"] = relationship("IngestionSource", back_populates="datasets")
 
 
 # ── dataset_registry ─────────────────────────────────────────────────────────

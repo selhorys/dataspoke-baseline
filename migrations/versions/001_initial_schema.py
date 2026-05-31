@@ -131,23 +131,41 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── ingestion_configs ────────────────────────────────────────────────
+    # ── ingestion_source ─────────────────────────────────────────────────
     op.create_table(
-        "ingestion_configs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("dataset_urn", sa.Text(), nullable=False),
-        sa.Column("mode", sa.Text(), nullable=False, server_default="active-custom"),
+        "ingestion_source",
+        sa.Column(
+            "id",
+            UUID(as_uuid=True),
+            primary_key=True,
+            server_default=sa.text("gen_random_uuid()"),
+        ),
+        sa.Column("mode", sa.Text(), nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
         sa.Column("platform", sa.Text(), nullable=False),
-        sa.Column("locator", JSONB, nullable=True),
-        sa.Column("identifier", JSONB, nullable=False),
-        sa.Column("auth", JSONB, nullable=True),
-        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("recipe", JSONB, nullable=False),
+        sa.Column("schedule", sa.Text(), nullable=True),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("workflow_dag_id", sa.Text(), nullable=True),
+        sa.Column("datahub_source_urn", sa.Text(), nullable=True),
         sa.Column("status", sa.Text(), nullable=False, server_default="OK"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("dataset_urn"),
+        schema=SCHEMA,
+    )
+
+    # ── ingestion_source_dataset ─────────────────────────────────────────
+    op.create_table(
+        "ingestion_source_dataset",
+        sa.Column(
+            "source_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.ingestion_source.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column("origin", sa.Text(), nullable=False),
+        sa.Column("first_seen_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        sa.Column("last_seen_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
     )
 

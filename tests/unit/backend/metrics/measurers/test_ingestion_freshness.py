@@ -450,11 +450,15 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch) -> None:
 
 def _make_two_query_db(config_rows: list, event_rows: list) -> AsyncMock:
     """Build a mock DB that returns config_rows on the first execute call
-    (ingestion_configs query) and event_rows on the second (events query).
+    (ingestion_source_dataset JOIN ingestion_source query) and event_rows on
+    the second (events query).
 
     The ingestion-freshness measurer calls db.execute twice per invocation:
-    1. SELECT from ingestion_configs (returns config rows)
+    1. SELECT from ingestion_source_dataset JOIN ingestion_source (returns mapping rows)
     2. SELECT from events with row_number() (returns event rows)
+
+    Each config_row mock must have fields: dataset_urn, origin, last_seen_at, mode, schedule_tier.
+    Mode values use the new per-source enum: ACTIVE_CUSTOM_MANAGED, DATAHUB_MANAGED, PASSIVE.
     """
     config_result = MagicMock()
     config_result.all.return_value = config_rows
@@ -484,7 +488,7 @@ async def test_active_custom_daily_window_is_twice_daily_period() -> None:
     # Config row: active-custom daily
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "active-custom"
+    config_row.mode = "ACTIVE_CUSTOM_MANAGED"
     config_row.schedule_tier = "daily"
 
     # Event within the window: 130000s ago < 172800s (spec literal: daily=86400×2)
@@ -518,14 +522,14 @@ async def test_active_custom_daily_stale_outside_window() -> None:
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
           active-custom daily window = 172800s; event outside → stale.
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — breakdown detail
-          carries time_window_sec and window_source='active-custom:daily'.
+          carries time_window_sec and window_source='managed:daily'.
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.daily-stale,DEV)"
 
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "active-custom"
+    config_row.mode = "ACTIVE_CUSTOM_MANAGED"
     config_row.schedule_tier = "daily"
 
     stale_event = MagicMock()
@@ -553,8 +557,8 @@ async def test_active_custom_daily_stale_outside_window() -> None:
         "detail.time_window_sec must be 172800 (active-custom:daily = 86400 × 2). "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
     )
-    assert detail["window_source"] == "active-custom:daily", (
-        "detail.window_source must be 'active-custom:daily'. "
+    assert detail["window_source"] == "managed:daily", (
+        "detail.window_source must be 'managed:daily' for ACTIVE_CUSTOM_MANAGED daily tier. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
     )
 
@@ -571,7 +575,7 @@ async def test_active_custom_hourly_window_is_7200s() -> None:
 
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "active-custom"
+    config_row.mode = "ACTIVE_CUSTOM_MANAGED"
     config_row.schedule_tier = "hourly"
 
     stale_event = MagicMock()
@@ -595,7 +599,7 @@ async def test_active_custom_hourly_window_is_7200s() -> None:
     # Spec literal: active-custom hourly → 3600 × 2 = 7200s
     # spec/USE_CASE_en.md §UC5 §Built-in active metric types — hourly → 7200s.
     assert breakdown["datasets"][0]["detail"]["time_window_sec"] == 7200
-    assert breakdown["datasets"][0]["detail"]["window_source"] == "active-custom:hourly"
+    assert breakdown["datasets"][0]["detail"]["window_source"] == "managed:hourly"
 
 
 @pytest.mark.asyncio
@@ -610,7 +614,7 @@ async def test_active_custom_weekly_window_is_1209600s() -> None:
 
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "active-custom"
+    config_row.mode = "ACTIVE_CUSTOM_MANAGED"
     config_row.schedule_tier = "weekly"
 
     fresh_event = MagicMock()
@@ -649,7 +653,7 @@ async def test_passive_window_is_7200s() -> None:
 
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "passive"
+    config_row.mode = "PASSIVE"
     config_row.schedule_tier = None
 
     stale_event = MagicMock()
@@ -691,7 +695,7 @@ async def test_passive_in_window_fresh() -> None:
 
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "passive"
+    config_row.mode = "PASSIVE"
     config_row.schedule_tier = None
 
     fresh_event = MagicMock()
@@ -768,7 +772,7 @@ async def test_active_custom_null_schedule_tier_falls_back_to_metric_conf() -> N
 
     config_row = MagicMock()
     config_row.dataset_urn = urn
-    config_row.mode = "active-custom"
+    config_row.mode = "ACTIVE_CUSTOM_MANAGED"
     config_row.schedule_tier = None  # null tier → fallback
 
     fresh_event = MagicMock()

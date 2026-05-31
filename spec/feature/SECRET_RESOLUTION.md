@@ -36,8 +36,10 @@ future subsystems reuse the same module.
 
 - Plaintext credentials never persist in `ingestion_source.recipe` (or any DataSpoke table).
   The recipe holds only `${name__key}` references.
-- Credentials live in Kubernetes Secrets in DataSpoke's own namespace, with bounded read-only
-  RBAC (`get`, `list` — no `create`/`patch`/`delete`) on `secrets` resources in that namespace.
+- Credentials live in Kubernetes Secrets in DataSpoke's own namespace. The secret resolver
+  itself is read-only (`get`, `list`) — it never calls write verbs on `secrets`. The shared
+  API ServiceAccount Role also carries `create`/`patch` for infra accessors; see
+  [RBAC model](#rbac-model).
 - The reference syntax is DataHub-recipe-compatible (`${...}`), so the recipe can be lifted to
   DataHub Managed Ingestion (or vice versa) without rewriting the secret wiring.
 - The API lets users discover which references are available (`name__key`) without ever
@@ -197,20 +199,31 @@ response (200 envelope), consistent with the `sources/{id}/method/run` contract.
 
 ### RBAC model
 
-The Helm chart adds a single `Role` in the API pod's own namespace granting **`get` and
-`list`** (no `create`, `patch`, or `delete`) on the `secrets` resource. A `RoleBinding` binds
-the Role to the API ServiceAccount.
+The Helm chart adds a single `Role` in the API pod's own namespace granting `get`, `list`,
+`create`, and `patch` on the `secrets` resource (`delete` intentionally omitted). A
+`RoleBinding` binds the Role to the API ServiceAccount.
 
-Reference-only means DataSpoke never mutates `dataspoke-source-cred-*` Secrets, so no write
-verb is granted. The chart exposes
-`Values.api.secretReader.enabled` (default `true`) to gate the entire RBAC bundle for
-deployments that disable ingestion entirely. There is no `Values.api.secretReader.namespaces[]`
-— single-namespace policy is enforced.
+The Role is shared between two access patterns in the same ServiceAccount:
 
-> The DataHub-token / LLM-key accessors ([HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management),
-> [BACKEND_LLM §LLM API key](BACKEND_LLM.md)) are DataSpoke-owned infra Secrets with their own
-> fixed names and `create`/`patch` needs; they are governed by a separate RBAC grant, not this
-> read-only source-cred Role.
+- **Source-cred reads** (uses `get` + `list`): `list_source_cred_refs` enumerates
+  `dataspoke-source-cred-*` Secrets; `verify_secret_ref` / `resolve_secret_ref` read them.
+  The resolver never issues write calls — the security property "DataSpoke does not mutate
+  source-cred Secrets" is enforced in application code (`secret_resolver.py` prefix guard).
+- **Infra accessor writes** (uses `get` + `create` + `patch`): the admin peripheral accessors
+  (`datahub_secret.py`, `llm_secret.py`, `langfuse_secret.py`, `smtp_secret.py`) use
+  create-or-patch semantics against their respective fixed-name infra Secrets. The fixed
+  hardcoded names (`dataspoke-datahub-secret`, `dataspoke-llm-secret`, etc.) are the
+  application-level control; RBAC cannot narrow this further because `resourceNames`
+  scoping per pattern would require two separate Roles.
+
+`create` and `patch` are present in the Role because the infra accessors need them.
+This does not weaken the source-cred model: the resolver module never calls write verbs,
+and the prefix guard prevents a recipe reference from reaching any non-`dataspoke-source-cred-`
+Secret name.
+
+The chart exposes `Values.api.secretReader.enabled` (default `true`) to gate the entire RBAC
+bundle for deployments that disable ingestion entirely. There is no
+`Values.api.secretReader.namespaces[]` — single-namespace policy is enforced.
 
 ## Data Model
 
