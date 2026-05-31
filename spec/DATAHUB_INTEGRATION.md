@@ -6,13 +6,15 @@
 2. [Goals & Non-Goals](#goals--non-goals)
 3. [Integration Model](#integration-model)
 4. [Aspect Reference](#aspect-reference)
-5. [Custom Ingestor Guide](#custom-ingestor-guide)
-6. [SDK Patterns](#sdk-patterns)
-7. [GraphQL Patterns](#graphql-patterns)
-8. [Event Subscription](#event-subscription)
-9. [Error Handling & Resilience](#error-handling--resilience)
-10. [Configuration](#configuration)
-11. [Open Questions](#open-questions)
+5. [User & Role Management](#user--role-management)
+6. [Ingestion Source Sync](#ingestion-source-sync)
+7. [Custom Extractor Guide](#custom-extractor-guide)
+8. [SDK Patterns](#sdk-patterns)
+9. [GraphQL Patterns](#graphql-patterns)
+10. [Event Subscription](#event-subscription)
+11. [Error Handling & Resilience](#error-handling--resilience)
+12. [Configuration](#configuration)
+13. [Open Questions](#open-questions)
 
 ## Overview
 
@@ -108,8 +110,8 @@ Each MANIFESTO feature has a clear integration direction:
 
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
-| Ingestion Control (`active-custom`) | UC1 | **Write** | Emit dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. Applies to `mode: active-custom` configs only. |
-| Ingestion Control (`passive`) | UC1 | **Read** | The hourly `ingestion-passive-hourly` DAG polls DataHub for `DataProcessInstance` runs of `mode: passive` configs and mirrors status into `event`. No aspect writes by DataSpoke. |
+| Ingestion Control (`ACTIVE_CUSTOM_MANAGED`) | UC1 | **Write** | The pluggable extractor emits dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. |
+| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `ingestion-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and mirrors run history (`listExecutionRequests` / `DataProcessInstance` / `Operation`). No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
 | Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
@@ -138,7 +140,7 @@ emitter = DatahubRestEmitter(
 ```
 
 Read-only features (Governance, Ontology Generation) use `DataHubGraph` only. Features that
-write back (Ingestion Control `active-custom` mode, Validation, Metadata Generation)
+write back (Ingestion Control `ACTIVE_CUSTOM_MANAGED` mode, Validation, Metadata Generation)
 additionally use `DatahubRestEmitter`. Redefined DataHub functions would use both clients
 to blend DataHub and DataSpoke data in a single API call.
 
@@ -385,12 +387,12 @@ in the DataHub source for the authoritative list. DataSpoke populates
 ### Aspect Usage by Feature
 
 Which features read (R) or write (W) each aspect. *Ingestion Control writes apply to
-`mode: active-custom` configs only (Status, DatasetProperties, SchemaMetadata, plus
-per-run DataProcessInstance aspects per the [Custom Ingestor Guide](#custom-ingestor-guide);
+`mode: ACTIVE_CUSTOM_MANAGED` sources only (Status, DatasetProperties, SchemaMetadata, plus
+per-run DataProcessInstance aspects per the [Custom Extractor Guide](#custom-extractor-guide);
 postgres datasets additionally receive `Container` and `BrowsePathsV2` aspects so they
 nest under the same database → schema hierarchy as DataHub's managed-PG source);
-`passive` mode reads `DataProcessInstance` run history out-of-band via the
-`ingestion-passive-hourly` DAG and writes no aspects.*
+`DATAHUB_MANAGED` / `PASSIVE` modes read source defs + run history out-of-band via the
+`ingestion-sync-hourly` DAG and write no aspects.*
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
@@ -563,18 +565,52 @@ is an organisation-specific optimisation.
 | `hard_delete_entity` (post-DataSpoke-row deletion) | DataSpoke row is already gone; orphan corpuser remains in DataHub for operator cleanup. Admin call returns `200`. |
 | GraphQL role read during the reconciliation DAG | Skip-and-log the affected user; next nightly run retries. No user-facing impact (DataSpoke `users.role` is authoritative). |
 
-## Custom Ingestor Guide
+## Ingestion Source Sync {#ingestion-source-sync}
 
-**Audience**: anyone writing an ingestor that emits dataset metadata to DataHub —
-in-house custom extractors, external scripts using `acryl-datahub`, or third-party
-pipelines. This guide describes the generic DataHub-side contract (aspects to
-emit, ordering, identity). DataSpoke-side consumption (how DataSpoke turns these
-emissions into `event/ingestion` rows) is documented in
-[BACKEND §Custom Ingestor Authoring Contract](feature/BACKEND.md#custom-ingestor-authoring-contract).
+DataSpoke models ingestion **per source / recipe** in three modes (`DATAHUB_MANAGED`,
+`ACTIVE_CUSTOM_MANAGED`, `PASSIVE` — see
+[BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)). This
+section catalogues the DataHub surfaces the hourly `ingestion-sync-hourly` sweep uses; citations
+are to `ref/github/datahub/` v1.5.0.2.
+
+- **Reading managed source defs**: `DATAHUB_MANAGED` sources are synced down (DataHub is SSOT)
+  via GraphQL `listIngestionSources` / `ingestionSource(urn)`
+  (`datahub-graphql-core/src/main/resources/ingestion.graphql`), returning `config.recipe`
+  (JSON string), `schedule {interval, timezone}`, `type`, `name`. **Secrets in the recipe come
+  back raw** — DataSpoke masks them before storing/displaying.
+- **Source → dataset mapping (no native reverse lookup)**: DataHub has no query for "which
+  datasets did this source produce" — no reverse edge from `dataHubIngestionSource`, and
+  `systemMetadata.pipelineName`/`runId` (`metadata-models/.../mxe/SystemMetadata.pdl`) are
+  stamped per-aspect but **not searchable**. DataSpoke builds the mapping by evaluating each
+  source's filter-matcher against the dataset set — recipe-derived (`platform`+`database`+
+  `schema_pattern`/`table_pattern`) for the managed modes, the declared `AllowDenyPattern` scope
+  for `PASSIVE`. `AllowDenyPattern` semantics:
+  `metadata-ingestion/.../configuration/common.py` (`allow` default `[".*"]`, `deny` wins,
+  `re.match` start-anchored, `ignoreCase` default true). **Optional observed enrichment** for the
+  two MANAGED modes reads `systemMetadata.pipelineName` (DataHub stamps the source URN for its
+  own sources; DataSpoke's extractor stamps the source id) to link authoritatively.
+- **Run/event history**: `listExecutionRequests` +
+  `ExecutionRequestResult{status,startTimeMs,durationMs,structuredReport}` for `DATAHUB_MANAGED`;
+  `DataProcessInstance` runs + ingestion-like `Operation` aspects for `PASSIVE`.
+- **Recipe secret substitution**: DataHub substitutes `${NAME}` where `NAME` matches
+  `[A-Za-z_][A-Za-z0-9_]*` (`metadata-ingestion/.../configuration/config_loader.py`). DataSpoke
+  uses `${name__key}` and pre-resolves it (split on the last `__` → K8s Secret
+  `dataspoke-source-cred-<name>` key `<key>`) before a run. See
+  [SECRET_RESOLUTION.md](feature/SECRET_RESOLUTION.md).
+
+## Custom Extractor Guide {#custom-extractor-guide}
+
+**Audience**: anyone writing a DataSpoke `ACTIVE_CUSTOM_MANAGED` extractor — the shipped postgres
+extractor or a forked one for a new `recipe.source.type`. The extractor reads a subset of the
+DataHub-format `recipe.source.config`, crawls the source, and emits dataset metadata to DataHub.
+This guide describes the DataHub-side contract (aspects to emit, ordering, identity).
+DataSpoke-side run/event mapping is documented in
+[BACKEND §Custom Extractor Authoring Contract](feature/BACKEND.md#custom-extractor-authoring-contract).
+`DATAHUB_MANAGED` / `PASSIVE` runs are *observed* by the sync sweep (above), not emitted here.
 
 **Why this contract exists**: DataHub's `DataProcessInstance` (DPI) is the universal
 "this is an ingestion run" entity. Without DPI emission, runs are invisible to any
-DataHub consumer that wants per-run drill-down (DataSpoke's hourly poll, the DataHub
+DataHub consumer that wants per-run drill-down (DataSpoke's sync sweep, the DataHub
 UI's run history, downstream lineage tools). Without correct `systemMetadata`,
 DataHub's `dataset.lastIngested` field stays `null` and the UI's "Synced X ago from
 \<Platform\>" badge does not render.
@@ -585,7 +621,7 @@ In the listed order:
 
 | # | Aspect | Notes |
 |---|--------|-------|
-| 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"<author>-<platform>-<run_id>"`); `type = BATCH_SCHEDULED` |
+| 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"<source_id>-<run_id>"`); `type = BATCH_SCHEDULED` for tier runs, `BATCH_AD_HOC` for manual `sources/{id}/method/run` |
 | 2a | `DataProcessInstanceRelationships` | `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs (DPI-to-DPI lineage; no dataset linkage on this aspect) |
 | 2b | `DataProcessInstanceOutput` | `outputs = [<dataset_urn>]` — the dataset(s) this DPI ingested into. This is what makes the DPI surface in DataHub's `dataset(urn).runs` GraphQL query. |
 | 3 | `DataProcessInstanceRunEvent` (`status = STARTED`) | Emitted **before** any schema/property aspect work begins on the dataset |
@@ -594,7 +630,7 @@ In the listed order:
 
 ### DPI URN convention
 
-`urn:li:dataProcessInstance:<deterministic-id>`. Recommend `<platform>-<run_id>` so
+`urn:li:dataProcessInstance:<deterministic-id>`. Recommend `<source_id>-<run_id>` so
 retries on the same logical run remain addressable.
 
 ### Failure semantics
@@ -646,17 +682,17 @@ Self-verify before treating an ingestor as "done":
 
 ### Conventions adopted by DataSpoke
 
-DataSpoke's in-house extractors implement this contract with these specific
-choices, useful as a reference template:
+DataSpoke's shipped postgres extractor implements this contract with these specific
+choices, useful as a reference template for a fork:
 
-- `runId = "dataspoke-{platform}-{run_id}"`, with `run_id = uuid4()` per
-  `IngestionService._run_inner` invocation.
-- DPI URN = `urn:li:dataProcessInstance:{platform}-{run_id}`, matching the
+- `runId = "dataspoke-{source_id}-{run_id}"`, with `run_id = uuid4()` per run.
+- DPI URN = `urn:li:dataProcessInstance:{source_id}-{run_id}`, matching the
   `runId` suffix so dataset aspects and the DPI cross-reference cleanly.
-- One `SystemMetadataClass` instance per run, reused across all 11 emissions
-  (5 DPI + 3 dataset for postgres, 5 DPI + 3 dataset for kafka).
+- `systemMetadata.pipelineName = <source_id>` on every emission, enabling the
+  optional observed source→dataset mapping.
+- One `SystemMetadataClass` instance per run, reused across all of a run's emissions.
 
-Reference implementation: `src/backend/ingestion/service.py::_run_inner`,
+Reference implementation: `src/backend/ingestion/service.py` and the extractor registry in
 `src/backend/ingestion/extractors.py`.
 
 ## SDK Patterns

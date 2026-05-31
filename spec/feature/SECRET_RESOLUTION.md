@@ -10,402 +10,331 @@
 
 ## Overview
 
-Configs that hold credentials (today: `ingestion_configs.auth`; later: any subsystem that
-reaches an external source) never persist plaintext passwords in the DataSpoke database.
-Credentials live in Kubernetes Secrets in DataSpoke's own namespace; configs hold a
-structured reference (`secret_ref: {name, key}`) that the backend resolves at credential-use
-time.
+Ingestion recipes reach external sources with credentials, but the recipe stored in
+DataSpoke (`ingestion_source.recipe`) never contains plaintext. Credentials live in
+Kubernetes Secrets in DataSpoke's own namespace; the recipe references them inline, in a
+DataHub-compatible form, and the backend resolves the reference at run time.
 
-The API surface accepts two write shapes:
+The model is **reference-only**: DataSpoke never writes credential values. An operator/admin
+pre-creates the Kubernetes Secret out-of-band (`kubectl`, Terraform, External Secrets
+Operator, …); DataSpoke only **lists** the available references, **verifies** they exist at
+source-save time, and **resolves** them when an `ACTIVE_CUSTOM_MANAGED` extractor runs.
 
-1. **Vault path** — caller submits `{username, password, secret_ref: {name, key,
-   force_overwrite?}}`. The API writes the password to a Kubernetes Secret in its own
-   namespace, then persists the reference (plaintext password is dropped before DB write).
-2. **Reference path** — caller submits `{username, secret_ref: {name, key}}` pointing at a
-   Secret they pre-provisioned (Terraform, ESO, manual `kubectl`, etc.). The API verifies
-   the Secret + key exist at PUT time and persists the reference.
+The reference syntax is `${name__key}`, embedded directly in `recipe.source.config` (e.g.
+`password: '${team_pg__password}'`) — the same `${...}` substitution DataHub's own recipe
+loader uses, so the recipe stays byte-compatible. `${name__key}` resolves to Kubernetes
+Secret `dataspoke-source-cred-<name>`, data key `<key>`.
 
-Password-only requests (`{username, password}` with no `secret_ref`) are rejected with 422
-to enforce the no-plaintext-in-DB invariant.
-
-This spec covers the API contract, the validator matrix, the vault-write and read flows,
-the RBAC model, and the error taxonomy. UC1 Ingestion Control is the first consumer
-([BACKEND §Ingestion Service](BACKEND.md#ingestion-service-srcbackendingestion)); future
-subsystems reuse the same module.
+This spec covers the secret-naming convention, the admin authoring guide, the list/verify/
+resolve flows, the RBAC model, and the error taxonomy. UC1 Ingestion Control is the first
+consumer ([BACKEND §Ingestion Service](BACKEND.md#ingestion-service-srcbackendingestion));
+future subsystems reuse the same module.
 
 ## Goals & Non-Goals
 
 ### Goals
 
-- Plaintext credentials never persist in `ingestion_configs.auth` (or any future config
-  table).
-- Credentials live in Kubernetes Secrets in DataSpoke's own namespace, with bounded RBAC
-  (`get`, `create`, `patch`) on `secrets` resources in that namespace only.
-- Caller controls Secret naming and key — no auto-generated names. Predictable from
-  outside.
-- Validator at the API boundary makes invalid `auth` shapes explicit (typed errors, clear
-  422 messages).
-- Resolution failures are non-fatal at the API layer (5xx-free) and surface as ingestion
-  run errors at the appropriate point in the lifecycle.
+- Plaintext credentials never persist in `ingestion_source.recipe` (or any DataSpoke table).
+  The recipe holds only `${name__key}` references.
+- Credentials live in Kubernetes Secrets in DataSpoke's own namespace, with bounded read-only
+  RBAC (`get`, `list` — no `create`/`patch`/`delete`) on `secrets` resources in that namespace.
+- The reference syntax is DataHub-recipe-compatible (`${...}`), so the recipe can be lifted to
+  DataHub Managed Ingestion (or vice versa) without rewriting the secret wiring.
+- The API lets users discover which references are available (`name__key`) without ever
+  exposing values, and verifies a referenced secret exists when a source is saved.
+- Resolution failures are non-fatal at the API layer (5xx-free) and surface as ingestion run
+  errors at the appropriate point in the lifecycle.
 
 ### Non-Goals
 
-- Pluggable secret backends (Vault, AWS Secrets Manager, GCP Secret Manager). Future work;
-  the resolver/writer interface is shaped to allow it but the baseline ships only the
-  Kubernetes Secret backend.
-- Cross-namespace `secret_ref`. All Secrets live in DataSpoke's own namespace. Operators
-  needing a credential from another namespace replicate the secret into the DataSpoke
-  namespace (via ESO, copy-secret jobs, or manual kubectl).
-- Auto-deleting Kubernetes Secrets when an ingestion config is deleted. Multiple configs
-  may share a Secret; reference counting is out of scope. See [Open Questions](#open-questions).
-- Encrypting Kubernetes Secrets at rest beyond what the cluster's etcd encryption-at-rest
-  config provides. Operators are responsible for cluster hardening.
-- Client-side credential resolution. The frontend and CLI never resolve `secret_ref`.
+- **Writing/vaulting credential values through DataSpoke.** Reference-only — DataSpoke has no
+  create/patch path for `dataspoke-source-cred-*` Secrets. Admins author them out-of-band.
+- Pluggable secret backends (Vault, AWS Secrets Manager, GCP Secret Manager). Future work; the
+  resolver interface is shaped to allow it but the baseline ships only the Kubernetes backend.
+- Cross-namespace references. All Secrets live in DataSpoke's own namespace. Operators needing
+  a credential from another namespace replicate it into the DataSpoke namespace (ESO,
+  copy-secret jobs, manual kubectl).
+- Auto-deleting Kubernetes Secrets when a source is deleted. Multiple sources may share a
+  Secret; reference counting is out of scope. See [Open Questions](#open-questions).
+- Encrypting Kubernetes Secrets at rest beyond the cluster's etcd encryption-at-rest config.
+  Operators are responsible for cluster hardening.
+- Client-side credential resolution. The frontend and CLI never resolve references.
 
 ## Design
 
 ### Single namespace policy
 
-All Kubernetes Secrets accessed by DataSpoke live in the API pod's own namespace
-(e.g., `dataspoke-01` in dev). The resolver reads the namespace at startup from
-`/var/run/secrets/kubernetes.io/serviceaccount/namespace`. There is no cross-namespace
-form; the parser rejects anything that looks like one.
+All Kubernetes Secrets accessed by DataSpoke live in the API pod's own namespace (e.g.,
+`dataspoke-01` in dev). The resolver reads the namespace at startup from
+`/var/run/secrets/kubernetes.io/serviceaccount/namespace`. There is no cross-namespace form.
 
-This is a deliberate simplification over the prior cross-ns design:
-- One Role grants `get/create/patch secrets` in the API namespace; no per-target-namespace
-  RoleBinding loop in the Helm chart.
-- Operators with sources whose secrets are managed elsewhere (e.g., a Terraform-managed
-  Postgres password in a `databases` namespace) replicate the secret into DataSpoke's
-  namespace via ESO, a copy-secret CronJob, or a one-time `kubectl create secret`.
+Operators with source credentials managed elsewhere (e.g., a Terraform-managed Postgres
+password in a `databases` namespace) replicate the secret into DataSpoke's namespace via ESO,
+a copy-secret CronJob, or a one-time `kubectl create secret`.
 
 ### Name prefix policy
 
-Both the vault path and the reference path require `secret_ref.name` to start with the
-fixed prefix `dataspoke-source-cred-`. Names not matching the prefix are rejected with 422
-`SecretRefNameForbidden` at the API boundary.
+A referenceable Secret's name must start with the fixed prefix `dataspoke-source-cred-`.
+The `${name__key}` reference resolves to Secret `dataspoke-source-cred-<name>` — i.e. the
+prefix is implicit in the syntax and `<name>` is the part after it.
 
-This is a security boundary, not a convention: DataSpoke's own runtime config Secrets
-(`dataspoke-secrets`, `dataspoke-airflow-metadata-db`, `dataspoke-llm-secret`, per [HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management))
-live in the same namespace and are writable under the `Role`'s `create/patch` verbs.
-Without the prefix constraint, any caller authorised to PUT an ingestion conf could
-overwrite the JWT signing key, the DataHub token, or the internal-auth token via the
-vault path — a privilege escalation. The prefix shrinks the writer's effective surface
-to Secrets DataSpoke itself owns by convention.
+This is a security boundary, not a convention. DataSpoke's own runtime-config Secrets
+(`dataspoke-secrets`, `dataspoke-airflow-metadata-db`, `dataspoke-llm-secret`, per
+[HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management)) live in the same namespace.
+Confining resolution and listing to the `dataspoke-source-cred-` prefix means a recipe author
+can never read (or even enumerate) the JWT signing key, the DataHub token, or the internal-auth
+token via a reference. DataSpoke holds no write verb on Secrets at all (reference-only), so a
+recipe can never mutate an infra Secret either.
 
-Operators with externally-managed source credentials (Terraform, ESO, manual `kubectl`)
-must place those Secrets under the prefix, e.g., rename `team-pg-prod` to
-`dataspoke-source-cred-team-pg-prod`, or have ESO sync into the prefix.
+`<name>` must be a DNS-label-safe segment (lowercase alphanumeric and `-`, no underscores), since
+it forms part of a Kubernetes object name. `<key>` follows Kubernetes Secret data-key rules
+(`[A-Za-z0-9._-]+`). Because `<name>` cannot contain `__`, the reference parser splits
+unambiguously on the **last** `__` (see [resolve flow](#run-time-resolve-flow)).
 
-Defense-in-depth: the Helm `Role`'s `resourceNames` may also be constrained to a prefix
-where Kubernetes supports it. Note that `resourceNames` does not constrain `create`
-([k8s authorization reference](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources)),
-so the prefix is enforced primarily at the writer (application layer); RBAC
-`resourceNames` adds a second layer for `get`/`patch` only.
+### Admin authoring guide (out-of-band)
 
-### `auth` request shape
+An admin creates a source credential Secret before a source that references it is saved:
 
-The `auth` field on `PUT/PATCH ingestion/conf` accepts these structured forms:
+```bash
+# Secret name = dataspoke-source-cred-<name>; one or more data keys.
+kubectl create secret generic dataspoke-source-cred-team-pg \
+  --namespace dataspoke-01 \
+  --from-literal=password='<plaintext>'
+```
+
+A single Secret may hold multiple keys (e.g. `password`, `ssl_key`), and a single Secret may
+back multiple sources. After creation, the reference `${team_pg__password}` is usable in any
+recipe. Equivalent ESO / Terraform / sealed-secrets flows are supported as long as the
+resulting object lands in DataSpoke's namespace under the prefix. Rotation is a plain
+`kubectl` update of the Secret value — the recipe is untouched, and the resolver picks up the
+new value within the cache TTL.
+
+The same guidance, rendered for end users with the in-cluster namespace and the available-
+reference list, surfaces in the UI source editor (see
+[FRONTEND_INGESTION.md](FRONTEND_INGESTION.md)).
+
+### Reference discovery (list flow)
+
+`GET /spoke/ingestion/secrets` enumerates the references an author may use, **never the
+values**. DataSpoke lists Secrets in its own namespace whose name starts with
+`dataspoke-source-cred-`, expands each Secret's data keys, and returns one row per
+`(secret, key)` pair:
 
 ```jsonc
-// Vault path — API writes the Secret, then persists the reference
 {
-  "username": "<user>",
-  "password": "<plaintext>",
-  "secret_ref": {
-    "name": "<k8s-secret-name>",
-    "key": "<key-within-secret>",
-    "force_overwrite": false  // optional, default false
-  }
-}
-
-// Reference path — caller pre-provisioned the Secret
-{
-  "username": "<user>",
-  "secret_ref": {
-    "name": "<k8s-secret-name>",
-    "key": "<key-within-secret>"
-  }
+  "secrets": [
+    { "ref": "team_pg__password", "secret_name": "dataspoke-source-cred-team-pg", "key": "password" },
+    { "ref": "team_pg__ssl_key",  "secret_name": "dataspoke-source-cred-team-pg", "key": "ssl_key" }
+  ]
 }
 ```
 
-`secret_ref.force_overwrite` is meaningful only on the vault path; on the reference path
-it is silently ignored.
+`ref` is the literal string an author pastes into a recipe as `${...}`. The endpoint returns
+only metadata (names + keys); Secret values are never read on this path. Requires the `list`
+verb on Secrets (see [RBAC model](#rbac-model)).
 
-### Validation matrix (API boundary, returns 422 INVALID_PARAMETER)
+### Reference verify flow (at source save)
 
-| Request `auth` | Outcome |
-|---|---|
-| `{username}` only | 422 — no credential supplied (must include `secret_ref` for credentialed platforms) |
-| `{username, password}` only (no `secret_ref`) | 422 — plaintext-only is banned |
-| `{username, password, secret_ref: {name, key}}` | Vault path. 422 on `(name, key)` collision unless `force_overwrite=true` |
-| `{username, password, secret_ref: {name, key, force_overwrite: true}}` | Vault path with merge-patch on existing Secret |
-| `{username, secret_ref: {name, key}}` | Reference path. 422 if the Secret or key does not exist |
-| `{username, password, secret_ref: {name}}` (missing `key`) | 422 — `secret_ref.key` required |
-| `{username, password, secret_ref: {key}}` (missing `name`) | 422 — `secret_ref.name` required |
-| Any shape with `secret_ref` as a string (legacy) | 422 — must be an object |
-| `secret_ref.name` not matching prefix `dataspoke-source-cred-` | 422 `SecretRefNameForbidden` (both paths) |
+When a source is created/updated, DataSpoke extracts every `${name__key}` reference from
+`recipe.source.config` and verifies each one before persisting:
 
-For sources that do not require auth (e.g., Kafka with `NoAuth`), `auth` may be omitted
-entirely. Per-platform requirements are enforced by `validate_platform_fields()`.
+0. **Prefix is implicit**: `${name__key}` always maps to `dataspoke-source-cred-<name>`. A
+   reference whose `<name>` resolves to a non-prefixed or non-existent Secret fails below.
+1. For each distinct `${name__key}`: parse → `(dataspoke-source-cred-<name>, <key>)`.
+2. API calls k8s `read_namespaced_secret(name, own-ns)`.
+3. Secret missing → `422 SECRET_REF_NOT_FOUND` (`detail`: which ref, which secret name).
+4. `data[key]` missing → `422 SECRET_REF_NOT_FOUND` (`detail`: which ref, which key).
+5. All references resolve → persist the source.
 
-### Vault-write flow
+Verification is at save time so authors get immediate feedback. A Secret deleted between save
+and run still surfaces as a run-time error — see [error taxonomy](#error-taxonomy). A
+malformed reference (e.g. no `__`, empty segment) fails as `422 SECRET_REF_MALFORMED`.
 
-0. **Prefix check**: `secret_ref.name` must start with `dataspoke-source-cred-`. If not, return
-   422 `SecretRefNameForbidden`. Enforced in the validator alongside step 1.
-1. **Validator** (Pydantic + `model_validator`) enforces the matrix above.
-2. **Collision check**: API calls k8s `read_namespaced_secret(name, own-ns)`. If the Secret
-   exists and contains `data[key]`, and `force_overwrite=false`, return 422 `SecretCollision`.
-3. **Write**:
-   - Secret does not exist → `create_namespaced_secret` with `data: {key: base64(password)}`.
-   - Secret exists, target `key` absent from `data` → `patch_namespaced_secret` (merge-patch)
-     to add `data[key]`. `force_overwrite` is irrelevant here — there is nothing to
-     overwrite.
-   - Secret exists, target `key` present, `force_overwrite=true` → `patch_namespaced_secret`
-     with merge-patch setting only `data[key]`. Other keys in the Secret are preserved.
-4. **Persist**: rewrite the auth dict to reference shape (`{username, secret_ref: {name,
-   key}}`) and persist to `ingestion_configs.auth`. The plaintext `password` is dropped
-   before DB write.
-5. **Response**: API returns the conf with the rewritten reference shape — caller sees
-   their password was vaulted.
+### Run-time resolve flow
 
-If step 3 fails (e.g., k8s API transient error), the conf is not persisted; the API
-returns 500/503 and the caller retries. There is no DB row for the failed PUT.
-
-If step 4 fails (DB error after k8s write succeeded), the Secret is left in place. The
-caller's next PUT either references the existing Secret (without `password`) or vaults
-again with `force_overwrite=true`. Net effect: a possibly-orphan Secret with no DB row;
-acceptable trade-off vs. the complexity of two-phase commit.
-
-### Reference-path verify flow
-
-On `{username, secret_ref: {name, key}}` PUT/PATCH:
-
-0. Prefix check: `secret_ref.name` must start with `dataspoke-source-cred-`. If not, return 422
-   `SecretRefNameForbidden`.
-1. API calls k8s `read_namespaced_secret(name, own-ns)`.
-2. Secret missing → 422 `SecretRefNotFound: secret '<name>' does not exist`.
-3. `data[key]` missing → 422 `SecretRefNotFound: key '<key>' not present in secret '<name>'`.
-4. Persist auth dict as-is.
-
-Verification is at PUT time, not run time. Run-time still calls `resolve_secret_ref()`,
-but with a Secret that was confirmed reachable at registration. (A Secret deleted between
-PUT and run time still surfaces as a run-time error — see error taxonomy below.)
-
-### Run-time read flow
+Before an `ACTIVE_CUSTOM_MANAGED` extractor runs, the service deep-copies the recipe and
+substitutes every `${name__key}` with its plaintext value:
 
 ```
-auth.secret_ref ─▶ build "k8s-secret/<own-ns>/<name>/<key>"
-                ─▶ cache hit? ─yes─▶ return decoded value
-                              │
-                              no
-                              ▼
-                       k8s GET /api/v1/namespaces/<own-ns>/secrets/<name>
-                              │
-                              ▼
-                       cache + return data[key] (base64-decoded)
+${name__key}  ─▶ split on last "__"  ─▶ (name, key)
+              ─▶ secret = "dataspoke-source-cred-" + name
+              ─▶ cache hit? ─yes─▶ substitute decoded value
+                            │
+                            no
+                            ▼
+                     k8s GET /api/v1/namespaces/<own-ns>/secrets/<secret>
+                            ▼
+                     cache + substitute data[key] (base64-decoded)
 ```
 
-The resolver loads in-cluster ServiceAccount config at first use. If that load fails,
-every subsequent call raises `SecretResolverUnavailable` — no silent fallback.
+The resolved recipe dict (plaintext in memory only) is handed to the extractor; the stored
+recipe keeps the `${name__key}` form. The resolver loads in-cluster ServiceAccount config at
+first use. If that load fails, every subsequent call raises `SecretResolverUnavailable` — no
+silent fallback. `DATAHUB_MANAGED` and `PASSIVE` sources are never resolved by DataSpoke
+(DataHub or the external pipeline owns their secrets).
 
 ### Cache
 
-In-memory cache, 60s TTL, keyed on `(name, key)` (namespace is implicit own-ns). Bounds
-the k8s API call rate when a burst of dry-runs hits the same Secret. Per-process; pod
-restart clears it. TTL is short enough that secret rotations propagate within a minute.
-Bounded with a hard cap (LRU eviction by insertion order) so a long-running pod with
-many distinct refs cannot grow the cache without limit.
+In-memory cache, 60s TTL, keyed on `(secret_name, key)`. Bounds the k8s API call rate when a
+burst of runs/dry-runs hits the same Secret. Per-process; pod restart clears it. TTL is short
+enough that rotations propagate within a minute. Bounded with a hard cap (LRU eviction by
+insertion order) so a long-running pod with many distinct refs cannot grow the cache without
+limit.
 
 ### Error taxonomy
 
 | Error | When | Surface |
 |---|---|---|
-| `SecretRefMalformed` | Validator: `secret_ref` shape wrong (non-object, missing fields, empty values) | 422 INVALID_PARAMETER at PUT/PATCH |
-| `SecretRefNameForbidden` | `secret_ref.name` does not start with `dataspoke-source-cred-` | 422 INVALID_PARAMETER at PUT/PATCH |
-| `SecretCollision` | Vault path: target `(name, key)` already exists and `force_overwrite=false` | 422 INVALID_PARAMETER at PUT/PATCH |
-| `SecretRefNotFound` | Reference-path verify failed; or run-time: Secret/key disappeared between PUT and run | 422 at PUT/PATCH; `IngestionResult(errors=[…])` → `status="error"` at run-time |
-| `SecretResolverUnavailable` | In-cluster k8s config not loadable | 503 at PUT/PATCH (cannot verify or vault); `IngestionResult(errors=[…])` at run-time |
-| RBAC `Forbidden` (403) from k8s API | API ServiceAccount lacks the required verb | Wrapped to match the failing operation (`SecretRefNotFound` for read; 503 for write) |
-| K8s API transient errors (5xx, network) | Cluster instability | 503 at PUT/PATCH; `IngestionResult(errors=[…])` at run-time |
+| `SecretRefMalformed` | A `${...}` reference has no `__`, or an empty name/key segment | `422 SECRET_REF_MALFORMED` at source PUT/PATCH |
+| `SecretRefNotFound` | Verify (save) failed, or run-time: Secret/key absent | `422 SECRET_REF_NOT_FOUND` at PUT/PATCH; `IngestionResult(errors=[…])` → `status="error"` at run-time |
+| `SecretResolverUnavailable` | In-cluster k8s config not loadable | `503` at PUT/PATCH (cannot verify or list); `IngestionResult(errors=[…])` at run-time |
+| RBAC `Forbidden` (403) from k8s API | API ServiceAccount lacks `get`/`list` on secrets | Wrapped as `SecretRefNotFound` for read; `503` for the list endpoint |
+| K8s API transient errors (5xx, network) | Cluster instability | `503` at PUT/PATCH / list; `IngestionResult(errors=[…])` at run-time |
 
-API-boundary errors (vault path, reference verify) surface as 422/503 with the standard
-DataSpoke error envelope. Run-time resolution failures surface as `status="error"` in the
-ingestion run response (200 envelope), consistent with the existing `method/run` contract.
-
-### Precedence
-
-The vault-vs-reference distinction is determined by the presence of `password` in the
-request body:
-- `password` present → vault path (always writes the Secret first)
-- `password` absent → reference path (verify-only)
-
-Sending `password` along with a `secret_ref` that already exists, without
-`force_overwrite=true`, is the collision case — explicit 422.
+API-boundary errors (verify, list) surface as `422`/`503` with the standard DataSpoke error
+envelope. Run-time resolution failures surface as `status="error"` in the ingestion run
+response (200 envelope), consistent with the `sources/{id}/method/run` contract.
 
 ### RBAC model
 
-The Helm chart adds a single `Role` in the API pod's own namespace, granting `get`,
-`create`, and `patch` (no `delete`) on the `secrets` resource (`resourceNames` unset, so
-any secret name in that namespace). A `RoleBinding` binds the Role to the API
-ServiceAccount.
+The Helm chart adds a single `Role` in the API pod's own namespace granting **`get` and
+`list`** (no `create`, `patch`, or `delete`) on the `secrets` resource. A `RoleBinding` binds
+the Role to the API ServiceAccount.
 
-`delete` is intentionally omitted: ingestion-config DELETE does not remove the underlying
-Secret (see Non-Goals; reference counting required, deferred). The chart exposes
+Reference-only means DataSpoke never mutates `dataspoke-source-cred-*` Secrets, so no write
+verb is granted. The chart exposes
 `Values.api.secretReader.enabled` (default `true`) to gate the entire RBAC bundle for
-deployments that disable ingestion entirely.
+deployments that disable ingestion entirely. There is no `Values.api.secretReader.namespaces[]`
+— single-namespace policy is enforced.
 
-There is no `Values.api.secretReader.namespaces[]` — single-namespace policy is
-enforced.
-
-### Backwards compatibility
-
-There is no production traffic on `ingestion_configs` yet. Prior rows persisted under the
-placeholder `secret_ref` design are deleted by the test-mode reset
-(`uv run python -m tests.integration.util --reset-seed`). No migration script is provided.
-
-Calls referencing the old string-form `secret_ref: "k8s-secret/<name>/<key>"` return 422
-on PUT/PATCH (validator rejects non-object). Callers update to the structured form.
+> The DataHub-token / LLM-key accessors ([HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management),
+> [BACKEND_LLM §LLM API key](BACKEND_LLM.md)) are DataSpoke-owned infra Secrets with their own
+> fixed names and `create`/`patch` needs; they are governed by a separate RBAC grant, not this
+> read-only source-cred Role.
 
 ## Data Model
 
-`ingestion_configs.auth` (JSONB) holds one of three shapes after this change:
+No DataSpoke table stores credentials. `ingestion_source.recipe` (JSONB) holds the recipe with
+`${name__key}` references inline in `source.config`, e.g.:
 
 ```jsonc
-// No-auth source (e.g., kafka NoAuth)
-null
-
-// Reference shape (the only persisted form when auth is present)
 {
-  "username": "<user>",
-  "secret_ref": {
-    "name": "<k8s-secret-name>",
-    "key": "<key>"
+  "source": {
+    "type": "postgres",
+    "config": {
+      "host_port": "pg.example:5432",
+      "username": "spoke_reader",
+      "password": "${team_pg__password}",   // reference, never plaintext
+      "env": "DEV",
+      "schema_pattern": { "allow": ["^catalog$"] }
+    }
   }
 }
 ```
 
-The vault-path request shape (with `password` and optional `force_overwrite`) is **never
-persisted** — it is rewritten to the reference shape before the DB write.
-
-No new columns. No DB migration. The resolver and writer are stateless (cache aside).
+The resolver and the list endpoint are stateless (cache aside). No new columns, no DB
+migration.
 
 ## Interfaces
 
 ### Module location
 
-`src/backend/ingestion/secret_resolver.py` (initial home; relocate under
-`src/shared/secrets/` when a second subsystem becomes a consumer).
-
-The LLM API key accessor ([`BACKEND_LLM.md` §LLM API key](BACKEND_LLM.md)) is a
-second consumer of the in-cluster client + TTL-cache machinery. It reuses that
-machinery but targets the fixed Secret `dataspoke-llm-secret` and is gated by the
-`admin` group, so it bypasses the source-cred prefix guard (the fixed target name
-plus admin auth are its controls). When that lift happens, the shared client/cache
-primitives move to `src/shared/secrets/` and both consumers import them.
+`src/backend/ingestion/secret_resolver.py` (initial home; relocate under `src/shared/secrets/`
+when a second subsystem becomes a consumer). The in-cluster client + TTL-cache machinery is
+shared with the DataHub-token / LLM-key accessors; those target fixed Secret names under a
+separate RBAC grant and bypass the `dataspoke-source-cred-` prefix guard.
 
 ### Public surface
 
 ```python
-# Resolver (read path)
+# Resolve one reference to plaintext (run path)
 def resolve_secret_ref(ref: str) -> str: ...
 
-# Writer (vault path)
-def write_secret_value(name: str, key: str, value: str, force_overwrite: bool) -> None: ...
+# Substitute every ${name__key} in a recipe dict, returning a resolved copy (run path)
+def resolve_recipe_secrets(recipe: dict) -> dict: ...
 
-# Verifier (reference path)
-def verify_secret_ref(name: str, key: str) -> None: ...
+# Verify a reference exists without returning its value (save path)
+def verify_secret_ref(ref: str) -> None: ...
+
+# List available references under the dataspoke-source-cred- prefix (discovery; no values)
+def list_source_cred_refs() -> list[SecretRefInfo]: ...
 
 class SecretRefMalformed(ValueError): ...
-class SecretRefNameForbidden(ValueError): ...
 class SecretRefNotFound(LookupError): ...
-class SecretCollision(ValueError): ...
 class SecretResolverUnavailable(RuntimeError): ...
 ```
 
-All three operations are synchronous. The k8s Python client's calls are blocking but
-fast; async wrappers add no value over the downstream extractor latency that already
-dominates ingestion runs.
+All operations are synchronous. The k8s Python client's calls are blocking but fast; async
+wrappers add no value over the extractor latency that dominates ingestion runs.
 
-`resolve_secret_ref` accepts only the `k8s-secret/<name>/<key>` form — exactly two
-segments after the `k8s-secret/` prefix, with the namespace implicit (own-ns). A
-three-segment tail (`k8s-secret/<ns>/<name>/<key>`, the legacy cross-namespace form)
-is rejected as `SecretRefMalformed`.
+`resolve_secret_ref` / `verify_secret_ref` accept the `name__key` form (the inside of a
+`${...}` token). The parser splits on the **last** `__` and prepends `dataspoke-source-cred-`
+to the name segment; a token with no `__` or an empty segment is `SecretRefMalformed`.
 
 ### Caller integration
 
-**At PUT/PATCH** (`src/api/routers/spoke/ingestion/data.py`):
+**At source PUT/PATCH** (`src/api/routers/spoke/ingestion/sources.py`):
 
 ```
-1. Pydantic validates auth shape (matrix above)
-2. If password present → call write_secret_value(name, key, password, force_overwrite)
-3. Else → call verify_secret_ref(name, key)
-4. Rewrite request.auth to reference shape (drops password)
-5. Persist conf
+1. Pydantic validates the recipe shape (recipe.source.{type,config})
+2. Extract all ${name__key} tokens from recipe.source.config
+3. For each distinct token → verify_secret_ref(token)  (422 on malformed / not-found)
+4. Persist the source with the recipe unchanged (references intact)
 ```
 
-**At run time** (`src/backend/ingestion/extractors.py`):
+**At run time** (`src/backend/ingestion/service.py` + extractor):
 
 ```
-1. Read auth.secret_ref.name and auth.secret_ref.key
-2. Build "k8s-secret/<name>/<key>" string
-3. Call resolve_secret_ref()
-4. Use the returned plaintext as the password
-5. On any resolver exception: return IngestionResult(errors=[…])
+1. Load the source; resolved = resolve_recipe_secrets(source.recipe)
+2. Hand `resolved` (plaintext in memory) to the extractor for recipe.source.type
+3. On any resolver exception: return IngestionResult(errors=[…]) → status="error"
 ```
+
+**Discovery** (`GET /spoke/ingestion/secrets`): calls `list_source_cred_refs()` and returns the
+`{secrets: [...]}` envelope above.
 
 ### API schema (`src/api/schemas/ingestion.py`)
 
-The `auth` field becomes a typed Pydantic model rather than `dict[str, Any]`:
+The source recipe is a typed model; secret references are validated as strings (the resolver
+owns reference semantics, not Pydantic). The list endpoint returns:
 
 ```python
-class SecretRefSpec(BaseModel):
-    name: str
+class SecretRefInfo(BaseModel):
+    ref: str          # "name__key" — paste into a recipe as ${ref}
+    secret_name: str  # "dataspoke-source-cred-<name>"
     key: str
-    force_overwrite: bool = False  # ignored on reference path
 
-class AuthSpec(BaseModel):
-    username: str
-    password: str | None = None
-    secret_ref: SecretRefSpec | None = None
-
-    @model_validator(mode="after")
-    def enforce_matrix(self) -> "AuthSpec":
-        # implements the validation matrix
-        ...
+class SecretRefListResponse(BaseModel):
+    secrets: list[SecretRefInfo]
 ```
 
-The `dict[str, Any]` form is retained at the persistence layer (`ingestion_configs.auth`
-JSONB) but the API surface is typed. The persisted form is always the reference shape.
+There is no `auth` field and no vault request shape — both are removed in the per-source model.
 
 ### Helm chart
 
 | Value | Default | Purpose |
 |---|---|---|
-| `api.secretReader.enabled` | `true` | Gates the entire `Role` + `RoleBinding` bundle |
+| `api.secretReader.enabled` | `true` | Gates the `Role` + `RoleBinding` bundle |
 
-The `Role` grants `get`, `create`, `patch` on `secrets` in the API namespace.
-`Values.api.secretReader.namespaces[]` is removed; cross-namespace access is no longer
-supported.
+The `Role` grants `get`, `list` on `secrets` in the API namespace.
+`Values.api.secretReader.namespaces[]` does not exist; cross-namespace access is not supported.
 
 Cross-reference: secret-management for DataSpoke's own infra credentials lives in
 [HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management). That section governs
-DataSpoke's runtime config (DataHub token, internal Postgres password, etc.); this spec
-governs how DataSpoke vaults and resolves *user-supplied source* credentials. The LLM API
-key is a third case — a DataSpoke-owned secret that is read at runtime *and* rotated online
-through `/admin/conf`; see [BACKEND_LLM §LLM API key](BACKEND_LLM.md).
+DataSpoke's runtime config (DataHub token, internal Postgres password, etc.); this spec governs
+how DataSpoke discovers and resolves *user-supplied source* credentials. The LLM API key is a
+third case — a DataSpoke-owned secret read at runtime *and* rotated online through
+`/admin/conf`; see [BACKEND_LLM §LLM API key](BACKEND_LLM.md).
 
 ## Open Questions
 
-- [ ] Auto-cleanup on conf DELETE: should ingestion-config DELETE remove the underlying
-      Secret? Requires reference counting (a Secret may back multiple confs). Future
-      work; baseline leaves Secrets in place. An operator-side cleanup script (list all
-      `dataspoke-source-cred-*` Secrets, intersect with active confs, delete the orphans) would
-      cover this without burdening the runtime API.
-- [ ] Pluggable backends (Vault, AWS Secrets Manager, GCP Secret Manager): the resolver
-      and writer are sized for one interface. When a second backend is needed, lift the
-      module under `src/shared/secrets/` and dispatch on a `SecretBackend` enum.
-- [ ] Cache TTL configurability: hardcoded 60s. Defer until an operator reports a real
-      need.
-- [ ] RBAC health check endpoint: a `verify_access() -> bool` that the readiness probe
-      can call to fail fast on RBAC misconfiguration. Worth considering after first
-      production deploy uncovers operational pain.
+- [ ] Auto-cleanup of orphaned source-cred Secrets: out of scope (reference-only; a Secret may
+      back multiple sources). An operator-side script (list all `dataspoke-source-cred-*`
+      Secrets, intersect with `${...}` references across active sources, delete the orphans)
+      covers this without a runtime write verb.
+- [ ] Pluggable backends (Vault, AWS/GCP Secret Manager): the resolver is sized for one
+      interface. When a second backend is needed, lift the module under `src/shared/secrets/`
+      and dispatch on a `SecretBackend` enum.
+- [ ] Cache TTL configurability: hardcoded 60s. Defer until an operator reports a real need.
+- [ ] RBAC health-check endpoint: a `verify_access() -> bool` the readiness probe can call to
+      fail fast on RBAC misconfiguration. Worth considering after first production deploy.

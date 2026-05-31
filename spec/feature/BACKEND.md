@@ -101,7 +101,7 @@ Route handler function names must mirror the REST path they serve.
 |-------|---------------|
 | `GET /governance/metric/{id}/attr/conf` | `get_metric_conf` |
 | `POST /governance/metric/{id}/method/run` | `post_metric_run` |
-| `GET /spoke/common/data/{urn}/attr/ingestion/conf` | `get_data_ingestion_conf` |
+| `GET /spoke/ingestion/sources/{id}/attr/conf` | `get_ingestion_source_conf` |
 | `POST /metagen/method/run` | `post_metagen_run` |
 | `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
 | `POST /ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
@@ -198,150 +198,157 @@ not from aspects.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
-**Covers**: MANIFESTO §2.1 Ingestion Control (UC1). Behavioural narrative — including the
-`active-custom` / `passive` split — lives in
-[USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control); DataHub aspect reads/writes are
-catalogued in [DATAHUB_INTEGRATION §Aspect Reference](../DATAHUB_INTEGRATION.md#aspect-reference).
-The DPI emission contract that all ingestors (in-house and external) must satisfy lives
-in [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide);
-DataSpoke-side consumption (event mapping, observation fallback) is
-[below](#custom-ingestor-authoring-contract). This section describes the implementation only.
+**Covers**: MANIFESTO §2.1 Ingestion Control (UC1). Ingestion is modeled **per source /
+recipe** — one source produces many datasets, mirroring DataHub. Behavioural narrative —
+including the three-mode split — lives in
+[USE_CASE §UC1](../USE_CASE_en.md#uc1-ingestion-control); DataHub aspect reads/writes and the
+source-sync surfaces are catalogued in
+[DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync).
+The custom-extractor extension seam (how a forked extractor consumes `recipe.source.config`
+and emits MCPs) is [below](#custom-extractor-authoring-contract). This section describes the
+implementation only.
 
-**Supported platforms** (in-house extractor module per platform; applies to `active-custom`
-mode — `passive` mode is platform-agnostic since DataSpoke does not run the extractor):
+DataSpoke's two goals: **augment** DataHub's native ingestion with a custom, forkable
+extractor for cases DataHub's connectors can't cover, and **make all ingestion visible** —
+which datasets each source covers, and which are ingested in an unmanaged way.
 
-| Platform | Status | Locator | Identifier |
-|----------|--------|---------|------------|
-| `postgres` | Implemented | `host`, `port` | `database`, `schema_name`, `table` |
-| `kafka` | Implemented | `bootstrap_servers` | `topic`, `cluster` |
-| `mysql`, `oracle`, `bigquery`, `snowflake` | Planned | platform-specific | platform-specific |
+**Ingestion modes** (see [`BACKEND_SCHEMA §ingestion_source`](BACKEND_SCHEMA.md#ingestion_source)):
 
-**Aspects emitted** (non-dry-run, per discovered dataset, by the `active-custom` extractor):
-`StatusClass(removed=False)`, `ContainerClass(container=<schema_container_urn>)`,
-`DatasetPropertiesClass`, `SchemaMetadataClass`, plus `DataProcessInstance` start +
-complete `RunEvent` aspects per run (see
-[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)).
-Postgres also emits a two-level container hierarchy (database → schema), one container
-URN per `(database, schema)` pair, plus a `BrowsePathsV2Class` aspect on each dataset
-that references both container URNs (explicit emission for parity with upstream
-managed-PG source; DataHub's server-side generation from `Container` is not reliable
-under subsequent aspect writes). See
+| Mode | Who ingests | DataSpoke's role |
+|------|-------------|------------------|
+| `DATAHUB_MANAGED` | DataHub's own recipe + cron | Sync the source definition (recipe, schedule) down; map its datasets; mirror run events. **Read-only** in DataSpoke (DataHub is SSOT) |
+| `ACTIVE_CUSTOM_MANAGED` | DataSpoke's Airflow tier DAG | Build the recipe; run the pluggable extractor; emit to DataHub; record runs; map datasets |
+| `PASSIVE` | External pipeline / DataHub CLI (not registered as a DataHub source) | Record the registration + declared `AllowDenyPattern` scope; sync results from DataHub; map datasets |
+
+**SSOT split**: DataSpoke owns *registration* (the source row, recipe, schedule, declared
+scope); DataHub owns *results* (runs, observed datasets). This split enables freshness
+measurement — registered cadence vs. observed runs.
+
+**Supported `source.type` for `ACTIVE_CUSTOM_MANAGED`** (one extractor module per type,
+registered by `recipe.source.type`):
+
+| `source.type` | Status |
+|---------------|--------|
+| `postgres` | Implemented (table + column metadata only) |
+| `kafka`, `mysql`, `oracle`, `bigquery`, `snowflake` | Fork-and-extend (custom-extractor seam) |
+
+`DATAHUB_MANAGED` and `PASSIVE` are platform-agnostic on the DataSpoke side (DataSpoke does
+not run the extractor).
+
+**Aspects emitted** (non-dry-run, per discovered dataset, by the `ACTIVE_CUSTOM_MANAGED`
+postgres extractor): `StatusClass(removed=False)`, `ContainerClass(container=<schema_container_urn>)`,
+`DatasetPropertiesClass`, `SchemaMetadataClass`, plus `DataProcessInstance` start + complete
+`RunEvent` aspects per run, and a two-level container hierarchy (database → schema) with a
+`BrowsePathsV2Class` aspect on each dataset referencing both container URNs (explicit emission
+for parity with DataHub's managed-PG source). See
 [DATAHUB_INTEGRATION §Container URN Construction](../DATAHUB_INTEGRATION.md#container-urn-construction)
-for the URN-parity invariant with DataHub's managed-PG source. Kafka emits no containers
-or browse paths (topics live at platform root, matching upstream Kafka source behavior).
-For postgres, `DatasetProperties.description` is sourced from the PG `obj_description()`
-COMMENT and each `SchemaField.description` from `col_description()`; when no COMMENT is
-set, the dataset description falls back to `"Ingested by DataSpoke: {database}.{schema}.{table}"`.
-`dry_run: true` runs the extractor and returns the schema preview without emitting any aspects
-(no dataset, no container).
+for the URN-parity invariant. `DatasetProperties.description` is sourced from PG
+`obj_description()` and each `SchemaField.description` from `col_description()`; absent a
+COMMENT, the dataset description falls back to
+`"Ingested by DataSpoke: {database}.{schema}.{table}"`. The extractor MAY stamp
+`systemMetadata.pipelineName` = the source id for observed mapping. Baseline scope is narrow —
+no profiling, no stateful-ingestion soft-delete. `dry_run: true` runs the extractor and returns
+the schema preview without emitting any aspects.
 
 #### Implementation
 
-CRUD for ingestion configurations (PostgreSQL: `ingestion_configs`). Config upsert registers
-the dataset URN in `dataset_registry` (does not require the dataset to exist in DataHub yet).
+CRUD for ingestion sources (PostgreSQL: `ingestion_source`, keyed on `id`). The recipe is
+stored DataHub-compatible (`recipe.source.{type,config}`). See
+[`BACKEND_SCHEMA §ingestion_source`](BACKEND_SCHEMA.md#ingestion_source) and
+[`§ingestion_source_dataset`](BACKEND_SCHEMA.md#ingestion_source_dataset). Key columns:
+`mode`, `name`, `platform` (= `recipe.source.type`), `recipe`, `schedule`, `datahub_source_urn`,
+`status` (plus the internal-only derived `schedule_tier`).
 
-Ingestion config model: see
-[`BACKEND_SCHEMA §ingestion_configs`](BACKEND_SCHEMA.md#ingestion_configs). Key fields:
-`dataset_urn` (unique per dataset), `mode` (`active-custom` | `passive`), `platform`
-(`postgres`, `kafka` implemented for `active-custom`; any platform allowed for `passive`),
-`locator`/`identifier`/`auth` (JSONB connection details; `locator`/`auth` are
-`active-custom`-only), `is_enabled`/`schedule_tier` (`schedule_tier` is `active-custom`-only),
-`status` (DAG verification outcome).
+**API body shape**: the request/response JSON mirrors the UC1 recipe YAML 1:1, using
+DataHub-recipe-standard wording only — `{mode, name, schedule, recipe:{source:{type,config}}}`
+— plus read-only management fields (`id`, `status`, `created_at`, `updated_at`, and
+`datahub_source_urn` for `DATAHUB_MANAGED`). No DataSpoke-isms on the wire: `schedule` is the
+cron string (not `schedule_cron`/`schedule_tier`), and the frontend renders/edits this JSON as
+YAML. On `GET`, `${name__key}` secret references inside `recipe` are masked.
 
-**`workflow_dag_id` derivation**: for `mode='active-custom'` configs with a valid
-`schedule_tier` (`hourly` / `daily` / `weekly`), `workflow_dag_id` is set to
-`ingestion-active-{schedule_tier}` on every upsert/PATCH so the periodic tier DAG can
-fetch its dataset list deterministically. `passive` mode and missing/invalid tiers leave
-it `null`.
+**Editability**: `DATAHUB_MANAGED` rows are read-only (DataHub is SSOT) — create/update/delete
+return `409 INGESTION_SOURCE_READONLY`; they are written only by the sync sweep. `ACTIVE_CUSTOM_MANAGED`
+and `PASSIVE` are user-managed via the API.
 
-**Mode is mutable post-creation** via PATCH. Switching `active-custom` → `passive` is
-allowed and takes effect on the next periodic tier sweep; previously-scheduled
-`active-custom` runs are not cancelled retroactively but no new ones are scheduled.
-Switching `passive` → `active-custom` requires the `active-custom`-only fields
-(`schedule_tier`, `locator`, `auth`) to be populated. `method/run` is rejected
-(`409 INGESTION_NOT_APPLICABLE`) for `passive` configs because passive ingestion is
-run externally; for `active-custom` configs with `is_enabled=false` it is rejected
-(`409 INGESTION_DISABLED`) unless `dry_run=true`.
+**Schedule**: `schedule` is a cron string. For `ACTIVE_CUSTOM_MANAGED`, on upsert the service
+validates it maps to one of the three tiers (`hourly`/`daily`/`weekly`) and caches the result in
+the internal `schedule_tier` column, which selects the Airflow tier DAG; `schedule: null` means
+manual-only (runs only on `…/method/run`, never on a tier DAG). `DATAHUB_MANAGED` mirrors
+DataHub's schedule; `PASSIVE` has none.
 
-**Auth resolution** (`active-custom` only — passive ingestors handle their own auth
-out-of-band): the `auth` field carries a structured `secret_ref: {name, key}` that
-points at a Kubernetes Secret in DataSpoke's own namespace. On PUT, callers either supply
-`password` (vault path: API writes the Secret then persists only the reference) or omit
-`password` (reference path: API verifies a pre-existing Secret). Plaintext passwords are
-never persisted in `ingestion_configs.auth`. Validation matrix, vault/verify/resolve
-flows, RBAC, and error taxonomy live in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). At
-run time the extractor calls the resolver; failures surface as `IngestionResult(errors=[…])`
-→ `status="error"`.
+**Secret resolution** (`secret_resolver.py`): recipes reference secrets DataHub-compatibly as
+`${name__key}`. Before a run, the service pre-resolves: split on the last `__` → read K8s Secret
+`dataspoke-source-cred-<name>` key `<key>` (the `dataspoke-source-cred-` prefix vault) →
+substitute plaintext into the recipe dict at run time. Plaintext is never persisted; the stored
+recipe keeps only the `${name__key}` reference. Vault/verify flows, RBAC, and error taxonomy
+live in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). Failures surface as
+`IngestionResult(errors=[…])` → `status="error"`.
 
-**Active-custom run pipeline** (`IngestionService.run()`): load config → connect to source via
-`locator`/`auth` → emit `DataProcessInstanceRunEvent(STARTED)` against a deterministic DPI
-URN derived from `run_id` (skipped on `dry_run`; see
-[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)) → discover schema
-via `identifier` → emit `StatusClass` + `DatasetPropertiesClass` + `SchemaMetadataClass` to
-DataHub (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as
-failure) → emit `DataProcessInstanceRunEvent(COMPLETE | FAILED)` carrying the run outcome
-(skipped on `dry_run`) → on success mark `dataset_registry.datahub_registered = true` via
-`mark_registered()` in `src/shared/db/registry.py` (skipped on `dry_run`) → record
-`INGESTION.COMPLETE` / `INGESTION.FAIL` event (recorded for both dry-run and non-dry-run;
-the run's `dry_run` boolean is preserved in the event's `detail` payload so downstream
-readers can distinguish them; see [Event Catalogue](#event-catalogue)).
+**Active-custom run pipeline** (`IngestionService.run()`): load source → reject if
+`mode != ACTIVE_CUSTOM_MANAGED` (`409 INGESTION_RUN_NOT_APPLICABLE`) → reject concurrent run via
+Redis SETNX (`ingestion:running:{source_id}`) → resolve `${name__key}` recipe secrets → emit
+`DataProcessInstanceRunEvent(STARTED)` against a deterministic DPI URN derived from `run_id`
+(skipped on `dry_run`) → dispatch to the extractor registered for `recipe.source.type`; emit
+dataset aspects (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as
+failure) → emit `DataProcessInstanceRunEvent(COMPLETE | FAILED)` (skipped on `dry_run`) → record
+the extractor's emitted URNs into `ingestion_source_dataset` (`origin = emitted`, authoritative)
+→ record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (the run's `dry_run` boolean is preserved
+in the event's `detail`; see [Event Catalogue](#event-catalogue)).
 
-**Passive status-sync pipeline** (`IngestionService.sync_passive_status()`,
-called hourly by the `ingestion-passive-hourly` DAG): enumerate all configs with
-`mode = passive` AND `is_enabled = true` → for each, query DataHub on **two surfaces**
-and merge results:
+**Sync + mapping sweep** (`IngestionService.sync()`, called hourly by the `ingestion-sync-hourly`
+DAG) reconciles all modes:
 
-1. **`DataProcessInstance` runs** via the `dataset(urn).runs` GraphQL field — picks up
-   any DPI emitter that follows the [DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide)
-   (DataSpoke's own `active-custom` extractors, custom acryl-datahub-SDK scripts,
-   third-party pipelines). Each terminal `RunEvent` becomes one event row.
-2. **`Operation` time-series aspects** with `operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`
-   — covers DataHub Managed Ingestion's standard source plugins, which emit `Operation`
-   per run rather than DPI. Each ingestion-like Operation becomes one
-   `INGESTION.COMPLETE` event. `DELETE`/`DROP`/`UNKNOWN` are excluded — they don't
-   represent ingestion of new metadata.
+1. **Source defs**: pull `DATAHUB_MANAGED` source recipes + schedules via DataHub's
+   `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. Mask secrets in the
+   stored/displayed recipe (DataHub returns them raw).
+2. **Mapping**: list the DataHub dataset set once and rebuild `ingestion_source_dataset` by
+   evaluating each source's **filter-matcher** — derived from the recipe's `platform`+`database`+
+   `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`
+   scope for `PASSIVE`. `origin = matcher`. Matching parses dataset URNs and applies filters the
+   way the connector names them — declared/derived coverage, an explicit approximation (DataHub
+   exposes no native source→dataset reverse lookup).
+3. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
+   per dataset to link datasets to their source authoritatively — `DATAHUB_MANAGED` (DataHub
+   stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
+   `origin = pipeline_name`. Not used for `PASSIVE`.
+4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
+   `DATAHUB_MANAGED`; `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
+   `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`, deduplicated by
+   `(entity_id, event_type, occurred_at)`.
+5. **Unmanaged bucket**: datasets in DataHub linked to no source (served by
+   `GET /spoke/ingestion/unmanaged`).
 
-Both surfaces feed the same insert path: rows in the unified `events` table with
-`event_type = INGESTION.COMPLETE` / `INGESTION.FAIL` (mirroring the `active-custom`
-path's event shape so clients see a uniform stream), deduplicated by
-`(entity_id, event_type, occurred_at)`. Passive configs with `is_enabled=false` are
-skipped. No aspects are emitted by DataSpoke; the registry's `datahub_registered`
-flag is reconciled by the existing `datahub-sync-daily` DAG.
+See [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)
+for the GraphQL surfaces and field citations.
 
-### Custom Ingestor Authoring Contract
+### Custom Extractor Authoring Contract
 
-The generic authoring contract — required aspects, ordering, failure semantics, URN
-convention, `systemMetadata` requirements, and the authoring checklist — lives in
-[DATAHUB_INTEGRATION §Custom Ingestor Guide](../DATAHUB_INTEGRATION.md#custom-ingestor-guide).
-That guide is generic across all DataHub-targeting ingestors. This section covers
-DataSpoke-side **consumption** only.
+`ACTIVE_CUSTOM_MANAGED` runs DataSpoke's own pluggable extractor — the seam for covering
+sources DataHub's native connectors can't. An extractor registry is keyed by
+`recipe.source.type`; this release ships a **postgres extractor only**. A forked extractor
+reads a subset of the DataHub-format `recipe.source.config`, crawls the source, and emits via
+acryl-datahub MCP/schema classes. The DPI emission contract (required aspects, ordering,
+failure semantics, URN convention, `systemMetadata` incl. stamping `pipelineName` = source id,
+authoring checklist) lives in
+[DATAHUB_INTEGRATION §Custom Extractor Guide](../DATAHUB_INTEGRATION.md#custom-extractor-guide).
+Adding an extractor for a new `source.type` (with AI-assisted coding) is the expected
+fork-and-extend path — the project's Productized-Scaffold identity.
 
-**DataSpoke's role**: the `ingestion-passive-hourly` DAG queries `dataset(urn).runs`
-GraphQL hourly. Each terminal `RunEvent` becomes one row in the dataset's local
-`event/ingestion` timeline — `result.resultType = SUCCESS` maps to
-`INGESTION.COMPLETE`, `FAILURE` maps to `INGESTION.FAIL`. A run that emits STARTED
-but never terminal is treated as in-flight (never surfaced) until a terminal event
-arrives or a human cleans it up via DataHub's UI.
+**Run-event consumption**: every observed run maps into the dataset's `event/ingestion` timeline.
+DataSpoke's own extractor records its runs inline (see run pipeline above). `DATAHUB_MANAGED` and
+`PASSIVE` runs are observed by the `ingestion-sync-hourly` DAG — `listExecutionRequests` for
+DataHub-managed, and `DataProcessInstance` runs + ingestion-like `Operation` aspects
+(`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`) for passive. `result.resultType = SUCCESS`
+maps to `INGESTION.COMPLETE`, `FAILURE` to `INGESTION.FAIL`.
 
-**Observation fallback (Managed Ingestion)**: DataSpoke's poll *also* surfaces
-ingestion-like `Operation` aspects (`operationType ∈ {INSERT, UPDATE, CREATE,
-ALTER}`) as `INGESTION.COMPLETE` events. This covers ingestors that emit `Operation`
-but no DPI — most notably DataHub Managed Ingestion's standard source plugins. It
-does not relax the DPI contract; authors targeting full DataSpoke parity (terminal
-status, run identity, lineage to the producing job) must still emit DPI.
+**DataSpoke's own conventions**:
 
-**DataSpoke's own conventions** (one example of how an in-house ingestor populates
-the generic contract):
+- `runId = "dataspoke-{source_id}-{run_id}"`, with `run_id = uuid4()` per run.
+- DPI URN = `urn:li:dataProcessInstance:{source_id}-{run_id}`, matching the `runId` suffix so
+  dataset aspects and the DPI cross-reference cleanly.
 
-- `runId = "dataspoke-{platform}-{run_id}"`, with `run_id = uuid4()` per
-  `IngestionService._run_inner` invocation.
-- DPI URN = `urn:li:dataProcessInstance:{platform}-{run_id}`, matching the
-  `runId` suffix so dataset aspects and the DPI cross-reference cleanly.
-
-**Reference implementation**: `src/backend/ingestion/service.py::_run_inner` and
-`src/backend/ingestion/extractors.py`. Authors building a new in-house extractor or
-external script should mirror the same emit sequence using the `acryl-datahub`
-Python SDK.
+**Reference implementation**: `src/backend/ingestion/service.py` and the extractor registry in
+`src/backend/ingestion/extractors.py`.
 
 ### Validation Service (`src/backend/validation/`)
 
@@ -741,12 +748,13 @@ results emitted by an external system, deferred to a future release.
 resolved **per dataset**, not from a single `metric_conf` value. `metric_conf.time_window_sec`
 is only the fallback used when no per-dataset window can be derived.
 
-- `ingestion-freshness`: the window is read from each dataset's `ingestion_configs` row
-  (joined by `dataset_urn`). active-custom → `SCHEDULE_TIER_SECONDS[schedule_tier] × 2`;
-  passive → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `ingestion-passive-hourly`
-  DAG); no row, or active-custom with a null `schedule_tier` → `metric_conf.time_window_sec`.
-  The `× 2` factor leaves room for transient late ingestion. Tier→seconds and the passive
-  period live in `src/shared/schedule.py`.
+- `ingestion-freshness`: the window is read from each dataset's owning ingestion source
+  (resolved via the `ingestion_source_dataset` mapping). `ACTIVE_CUSTOM_MANAGED` /
+  `DATAHUB_MANAGED` with a schedule → `SCHEDULE_TIER_SECONDS[schedule_tier] × 2`; `PASSIVE` (no
+  schedule) → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `ingestion-sync-hourly` DAG);
+  a dataset mapped to no source, or a source with no derivable schedule →
+  `metric_conf.time_window_sec`. The `× 2` factor leaves room for transient late ingestion.
+  Tier→seconds and the passive period live in `src/shared/schedule.py`.
 - `validation-score`: for each dataset the measurer reads its most recent `N + 1` validation
   results (`N` = the `validation_score_n_intervals` runtime config (`/api/v1/admin/conf`),
   default 3) and sets the window to `mean(last N inter-arrival gaps) × 2`. A dataset with
@@ -754,7 +762,7 @@ is only the fallback used when no per-dataset window can be derived.
   is the latest result whose `data_time` is inside the window.
 
 Both measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
-`validation_results`, and `ingestion_configs` only — no DataHub call.
+`validation_results`, `ingestion_source`, and `ingestion_source_dataset` only — no DataHub call.
 
 **Measurers** (`src/backend/metrics/measurers/`): one async function per built-in
 `metric_type`, registered via the measurer registry. Each measurer receives the resolved
@@ -803,7 +811,7 @@ the classification. A dataset is failed when:
 
 `detail` is optional, type-specific metadata. `ingestion-freshness` and `validation-score`
 report the applied window via `time_window_sec` (the resolved per-dataset value) and
-`window_source` (`"active-custom:<tier>"` / `"passive"` / `"default"` for freshness;
+`window_source` (`"managed:<tier>"` / `"passive"` / `"default"` for freshness;
 `"intervals"` / `"default"` for validation-score), alongside `last_event_at` (freshness)
 or `latest_data_time` + `score` (validation-score). `dataset_count` is the total scanned
 (matching `dataset_filter`),
@@ -853,7 +861,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
-| `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | `POST method/ingestion/run` succeeds / errors |
+| `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`) | `RUN_COMPLETE` / `RUN_FAILED` | global generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
@@ -901,7 +909,7 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ingestion-active-hourly` | `ingestion_active_hourly.py` | Airflow schedule | `@hourly` |
 | `ingestion-active-daily` | `ingestion_active_daily.py` | Airflow schedule | `@daily` |
 | `ingestion-active-weekly` | `ingestion_active_weekly.py` | Airflow schedule | `@weekly` |
-| `ingestion-passive-hourly` | `ingestion_passive_hourly.py` | Airflow schedule | `@hourly` |
+| `ingestion-sync-hourly` | `ingestion_sync_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
 | `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
@@ -968,17 +976,17 @@ error code (`METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …).
 
 ### Ingestion Workflow
 
-Ingestion supports two trigger modes per dataset:
+An `ACTIVE_CUSTOM_MANAGED` source supports two trigger modes:
 
 | Mode | Trigger | How |
 |------|---------|-----|
-| **Periodic** | Airflow schedule | Datasets are assigned to a schedule tier (`hourly`, `daily`, `weekly`); the corresponding static DAG runs all configs in that tier |
-| **Manual** | User HTTP request | `POST .../method/ingestion/run` calls `IngestionService.run()` directly |
+| **Periodic** | Airflow schedule | A source's `schedule_tier` (`hourly`, `daily`, `weekly`) is derived from its recipe cron; the corresponding static DAG runs all `ACTIVE_CUSTOM_MANAGED` sources in that tier |
+| **Manual** | User HTTP request | `POST .../ingestion/sources/{id}/method/run` calls `IngestionService.run()` directly |
 
 **Static tier-based DAGs**: DataSpoke uses three static Airflow DAGs per domain (hourly,
-daily, weekly). Each DAG fetches the dataset list for its tier at execution time
+daily, weekly). Each DAG fetches the source list for its tier at execution time
 (`POST /internal/activities/ingestion/list-active`), then uses dynamic task mapping
-(`expand()`) to run ingestion for each dataset in parallel (`max_active_runs`: 5).
+(`expand()`) to run the extractor for each source in parallel (`max_active_runs`: 5).
 
 > **Scaling assumption**: ingestion activity endpoints execute synchronously inside
 > the API process; Airflow is scheduler + fan-out, not worker.
@@ -1036,8 +1044,8 @@ failures.
 
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
-| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `INGESTION_DISABLED`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
+| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `INGESTION_SOURCE_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |
@@ -1056,7 +1064,7 @@ completes with reduced enrichment. All failures are logged at WARNING with `exc_
 | `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
 | pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
 | LLM dataset classification | OntogenService | Dataset excluded from classification |
-| DataHub run-history poll | IngestionService (passive sync) | Skip the affected dataset for this hourly tick; retry next tick |
+| DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this hourly tick; retry next tick |
 
 ---
 

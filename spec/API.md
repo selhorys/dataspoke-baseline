@@ -219,12 +219,8 @@ this single per-dataset path.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/data/{dataset_urn}` | Get dataset summary (identity, owner, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr` | Get dataset attributes (schema summary, ownership, tags) | Data Resource | — |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Get ingestion configuration for dataset | Ingestion Control | UC1 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Create or replace ingestion configuration | Ingestion Control | UC1 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Partially update ingestion configuration | Ingestion Control | UC1 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/ingestion/conf` | Remove ingestion configuration | Ingestion Control | UC1 |
-| `POST` | `/spoke/common/data/{dataset_urn}/method/ingestion/run` | Execute ingestion pipeline directly — `active-custom` configs only (`dry_run` in body for no-write mode); concurrent runs return `409 INGESTION_RUNNING`; rejected with `409 INGESTION_DISABLED` when the conf is disabled and `dry_run` is not true; rejected with `409 INGESTION_NOT_APPLICABLE` for `passive` configs (passive ingestion is run externally) | Ingestion Control | UC1 |
-| `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports (success/failure notices) | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion` | Reverse-lookup (read-only): the source that covers this dataset, its `mode`, and the latest run. Ingestion is configured per-source under `/spoke/ingestion/sources` | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports for this dataset (success/failure notices, mirrored from its source's runs) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description` + declared `variables`) | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
@@ -256,33 +252,64 @@ planned. See [DATAHUB_INTEGRATION §Key principles](DATAHUB_INTEGRATION.md#overv
 
 ### Ingestion (`/spoke/ingestion`)
 
-A cross-dataset list view of ingestion attributes. Each row combines dataset identity
-with the ingestion attributes stored under `common/data/{dataset_urn}/attr/ingestion/*`
-(currently `conf`). Useful for operations dashboards and bulk management.
+Ingestion is modeled **per source / recipe** — one source produces many datasets, mirroring
+DataHub. DataSpoke's goals: **augment** DataHub's native ingestion with a custom, forkable
+extractor for sources DataHub's connectors can't cover, and **make all ingestion visible** —
+which datasets each source covers, and which are ingested in an unmanaged way.
 
-DataSpoke ingestion implements source-agnostic metadata extraction built on DataHub's
-entity-aspect model — connecting to heterogeneous data sources and emitting results as
-standard DataHub aspects. Design framework, source abstraction model, and aspect emission
-details: see [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)
-and [DATAHUB_INTEGRATION §Aspect Reference](DATAHUB_INTEGRATION.md#aspect-reference).
+Three modes (`mode` on each source): `DATAHUB_MANAGED` (DataHub's own recipe + cron; DataHub
+SSOT; **read-only** in DataSpoke — synced down via `listIngestionSources`), `ACTIVE_CUSTOM_MANAGED`
+(DataSpoke's pluggable extractor crawls + emits on a tier schedule), `PASSIVE` (ingested outside
+DataHub/DataSpoke; DataSpoke records the registration + a declared `AllowDenyPattern` scope and
+syncs results). The recipe is stored DataHub-compatible (`recipe.source.{type,config}`); secrets
+are referenced as `${name__key}` and resolved from K8s Secret `dataspoke-source-cred-<name>`.
 
-Per-dataset detail, actions, and events live on the canonical `data/{dataset_urn}`
-surface: `attr/ingestion/conf` (CRUD), `method/ingestion/run`, `event/ingestion`.
-
-`attr/ingestion/conf` carries a `mode` flag (`active-custom` | `passive`) —
-`active-custom` configs are run by DataSpoke's in-house extractor on the configured
-`schedule_tier`; `passive` configs are populated by external ingestors (DataHub Managed
-Ingestion, custom acryl-datahub-SDK scripts, or any pipeline that emits
-`DataProcessInstance` records per run) and have their run history mirrored into
-`event/ingestion` by an hourly poll job. Both modes share the same API surface;
-`method/ingestion/run` applies to `active-custom` only and returns
-`409 INGESTION_NOT_APPLICABLE` for `passive`. See
+Source→dataset mapping is rebuilt by the hourly sync DAG (not a public mutation) by evaluating
+each source's filter-matcher against the DataHub dataset set, optionally enriched by
+`systemMetadata.pipelineName` for the two MANAGED modes. Datasets covered by no source form the
+**unmanaged bucket** (`GET /spoke/ingestion/unmanaged`). Design, sync, and aspect details: see
 [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)
-and [DATAHUB_INTEGRATION §Custom Ingestor Guide](DATAHUB_INTEGRATION.md#custom-ingestor-guide).
+and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingestion-source-sync).
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/ingestion` | List ingestion attributes across datasets — each row aggregates the per-dataset `attr/ingestion/*` (paginated, filterable) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated; filter by `mode`) | Ingestion Control | UC1 |
+| `POST` | `/spoke/ingestion/sources` | Create a source (`ACTIVE_CUSTOM_MANAGED` or `PASSIVE` only; `DATAHUB_MANAGED` is synced, not created) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources/{id}` | Get one source as JSON (recipe `${name__key}` secrets masked) | Ingestion Control | UC1 |
+| `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
+| `PATCH` | `/spoke/ingestion/sources/{id}` | Partially update a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
+| `DELETE` | `/spoke/ingestion/sources/{id}` | Remove a source (+ cascade its dataset mappings); `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
+| `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor (`dry_run` in body for no-write connection check); `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `origin`) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets covered by no source (paginated) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/secrets` | List source-credential references available to recipes — one row per `(secret, key)` under the `dataspoke-source-cred-` prefix, as `{ref: "name__key", secret_name, key}`. **Values are never returned.** Admins pre-create the K8s Secrets out-of-band; a recipe references one as `${name__key}` | Ingestion Control | UC1 |
+
+**Source body shape.** The request and response bodies are JSON whose fields mirror the UC1
+recipe YAML 1:1, using **DataHub-recipe-standard wording only** — no DataSpoke-specific field
+names. The frontend renders/edits this JSON as YAML; the two are lossless transforms of each
+other. A `GET` response (and `POST`/`PUT`/`PATCH` body) carries:
+
+```jsonc
+{
+  "mode": "ACTIVE_CUSTOM_MANAGED",          // DATAHUB_MANAGED | ACTIVE_CUSTOM_MANAGED | PASSIVE
+  "name": "dummy postgres example_db in catalog schema",
+  "schedule": "0 0 * * *",                  // cron string; null = manual-only (no tier DAG); omit for PASSIVE
+  "recipe": {                               // DataHub-compatible; recipe.source byte-compatible with a DataHub recipe
+    "source": {
+      "type": "postgres",
+      "config": { "host_port": "…", "password": "${dummy_data_pg__password}", "schema_pattern": { "allow": ["^catalog$"] }, "env": "DEV" }
+    }
+  }
+}
+```
+
+Responses additionally include read-only management fields outside the recipe-standard set:
+`id`, `status`, `created_at`, `updated_at`, and `datahub_source_urn` (for `DATAHUB_MANAGED`).
+On `GET`, every `${name__key}` reference inside `recipe` is **masked**. There is no
+`schedule_tier`/`schedule_cron`/`is_enabled` on the wire — the tier is derived server-side from
+`schedule`, and `schedule: null` is the manual-only ("paused") state. See
+[`USE_CASE_en.md §UC1`](USE_CASE_en.md#uc1-ingestion-control) for the YAML form of each mode.
 
 ### Validation (`/spoke/validation`)
 
@@ -755,12 +782,15 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
 | `EDGE_NOT_FOUND` | 404 | Ontology edge ID not found |
 | `TRIPLE_NOT_FOUND` | 404 | Ontology triple ID not found |
-| `CONFIG_NOT_FOUND` | 404 | Ingestion or validation configuration not found |
+| `CONFIG_NOT_FOUND` | 404 | Validation or other per-dataset configuration not found |
+| `INGESTION_SOURCE_NOT_FOUND` | 404 | Ingestion source id does not exist (`/spoke/ingestion/sources/{id}`) |
+| `SECRET_REF_MALFORMED` | 422 | A `${name__key}` reference in a recipe has no `__` separator or an empty name/key segment |
+| `SECRET_REF_NOT_FOUND` | 422 | A recipe's `${name__key}` references a `dataspoke-source-cred-<name>` Secret or `key` that does not exist at source save (also surfaces as a run-time `status="error"` if deleted later) |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
-| `INGESTION_DISABLED` | 409 | Ingestion conf has `is_enabled=false`; non-dry-run rejected |
-| `INGESTION_NOT_APPLICABLE` | 409 | `method/ingestion/run` called against a `passive`-mode conf; passive ingestion is run externally and has no DataSpoke-side run pipeline |
-| `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this config |
+| `INGESTION_SOURCE_READONLY` | 409 | Create/update/delete attempted on a `DATAHUB_MANAGED` source; DataHub is SSOT, so it is synced down and read-only in DataSpoke |
+| `INGESTION_RUN_NOT_APPLICABLE` | 409 | `…/sources/{id}/method/run` called on a non-`ACTIVE_CUSTOM_MANAGED` source; only DataSpoke-managed sources have a DataSpoke-side run pipeline |
+| `INGESTION_RUNNING` | 409 | An ingestion run is already in progress for this source |
 | `UNKNOWN_VARIABLE` | 422 | `POST .../attr/validation/result` body carries `variables` keys not declared in the dataset's `attr/validation/conf.variables` |
 | `INVALID_SCORE` | 422 | `POST .../attr/validation/result` body has `score` outside `[0.0, 1.0]` |
 | `METAGEN_RUNNING` | 409 | A metagen run is already in progress |

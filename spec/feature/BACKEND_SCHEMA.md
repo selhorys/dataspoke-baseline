@@ -94,44 +94,68 @@ A token is valid iff `used_at IS NULL AND expires_at > now()` and the raw
 token hashes to a matching row. Expired and consumed rows are cleaned up by a
 periodic Airflow housekeeping DAG (no synchronous-delete invariant).
 
-#### `ingestion_configs`
+#### `ingestion_source`
 
-Stores per-dataset ingestion configuration.
+Stores per-source ingestion configuration — one row per data source / recipe (not
+per dataset). A single source produces many datasets, mirroring how DataHub models
+ingestion. SSOT split: DataSpoke owns **registration** (this row: recipe, schedule,
+scope); DataHub owns **results** (runs, observed datasets — synced down).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `UUID` PK | Config identifier |
-| `dataset_urn` | `TEXT` UNIQUE | Target dataset URN |
-| `mode` | `TEXT` | `active-custom` (DataSpoke's in-house extractor runs on a tier schedule) or `passive` (external pipeline ingests; DataSpoke mirrors run history via the hourly `ingestion-passive-hourly` DAG observing `DataProcessInstance` aspects in DataHub) |
-| `platform` | `TEXT` | DataHub platform name (`postgres`, `kafka`, `mysql`, `bigquery`, etc.) |
-| `locator` | `JSONB` NULL | Infrastructure location (e.g., `{"host", "port"}` for RDBMS); `active-custom` only — null for `passive` (passive ingestors handle their own connectivity out-of-band) |
-| `identifier` | `JSONB` | Dataset identifier within the infra (e.g., `{"database", "schema_name", "table"}`) |
-| `auth` | `JSONB` NULL | Access credentials (e.g., `{"username", "secret_ref"}`); `active-custom` only — null for `passive` (passive ingestors handle their own auth out-of-band) |
-| `is_enabled` | `BOOLEAN` | Enable scheduled execution via Airflow (`active-custom` mode) or scheduled status sync (`passive` mode) |
-| `schedule_tier` | `TEXT` NULL | Schedule tier for `active-custom` mode — `hourly`, `daily`, or `weekly` (required when `mode='active-custom'` and `is_enabled=true`); null for `passive` mode |
-| `workflow_dag_id` | `TEXT` NULL | Airflow DAG ID of the assigned periodic DAG (`active-custom` mode only) |
-| `status` | `TEXT` | `OK` (DAG verification succeeded), `ERROR` (verification failed) |
+| `id` | `UUID` PK | Source identifier |
+| `mode` | `TEXT` | `DATAHUB_MANAGED` (DataHub's own recipe + cron; DataHub is SSOT, DataSpoke syncs the definition down), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's pluggable extractor crawls + emits on a tier schedule), or `PASSIVE` (ingested outside DataHub/DataSpoke; DataSpoke records the registration and syncs results) |
+| `name` | `TEXT` | Human-readable source name. For `DATAHUB_MANAGED`, mirrors the DataHub source name |
+| `platform` | `TEXT` | DataHub platform name (`postgres`, `kafka`, `mysql`, `bigquery`, etc.) — the `recipe.source.type` |
+| `recipe` | `JSONB` | DataHub-compatible recipe `{source: {type, config}}`. `config` is byte-compatible with DataHub's source recipe (e.g. `host_port`, `database`, `schema_pattern.allow/deny`, `env`). For `PASSIVE`, `config` carries only the declared scope as an `AllowDenyPattern`-shaped filter (same vocabulary, no connectivity/auth). Secrets referenced as `${name__key}` (resolved from K8s Secret `dataspoke-source-cred-<name>` key `<key>`); plaintext never stored |
+| `schedule` | `TEXT` NULL | Cron expression — the recipe-standard `schedule` field exposed verbatim in the API. For `DATAHUB_MANAGED`, mirrored from DataHub's schedule. For `ACTIVE_CUSTOM_MANAGED`, must map to one of the three allowed tiers; `NULL` means manual-only (runs only on `…/method/run`, not on any tier DAG). Null for `PASSIVE` |
+| `schedule_tier` | `TEXT` NULL | **Internal, derived — never exposed in the API.** The tier (`hourly`/`daily`/`weekly`) computed from `schedule`, cached so the Airflow tier DAG can `WHERE schedule_tier = …`. Null when `schedule` is null or for `PASSIVE` |
+| `datahub_source_urn` | `TEXT` NULL | The `dataHubIngestionSource` URN for `DATAHUB_MANAGED` (sync key; also the `systemMetadata.pipelineName` match value for the optional observed-mapping enrichment). For `ACTIVE_CUSTOM_MANAGED`, the `pipeline_name` DataSpoke's extractor stamps. Null for `PASSIVE` |
+| `status` | `TEXT` | `OK` / `ERROR` (last sync or run health) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
 
+The API request/response body mirrors the UC1 recipe YAML 1:1 in JSON, using
+DataHub-recipe-standard wording only — `{mode, name, schedule, recipe:{source:{type,config}}}`
+— plus read-only management fields (`id`, `status`, `created_at`, `updated_at`, and
+`datahub_source_urn` for `DATAHUB_MANAGED`). `schedule_tier` is internal and never appears in
+the API. See [API §Ingestion](../API.md#ingestion-spokeingestion).
+
+- **Editability**: `DATAHUB_MANAGED` rows are read-only in DataSpoke (DataHub is SSOT — edits return `409 INGESTION_SOURCE_READONLY`); they are created/updated only by the sync sweep. `ACTIVE_CUSTOM_MANAGED` and `PASSIVE` are user-managed via the API.
+
+#### `ingestion_source_dataset`
+
+Source→dataset mapping — which datasets each source covers. Rebuilt by the sync
+sweep (see [`BACKEND.md §Ingestion Service`](BACKEND.md)). Answers "which recipe
+covers which data?"; datasets present in DataHub but absent from this table for
+every source form the **unmanaged bucket**.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `source_id` | `UUID` FK → `ingestion_source(id)` ON DELETE CASCADE | Owning source |
+| `dataset_urn` | `TEXT` | A dataset the source covers |
+| `origin` | `TEXT` | How the link was derived: `matcher` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (authoritative — `ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes) |
+| `first_seen_at` | `TIMESTAMPTZ` | First sweep that linked this pair |
+| `last_seen_at` | `TIMESTAMPTZ` | Most recent sweep confirming the link |
+
+- **PK**: `(source_id, dataset_urn)`.
+- Mapping is **declared/derived coverage** for `matcher`-origin rows (what the recipe says it covers), an explicit approximation since DataHub exposes no native source→dataset reverse lookup. `emitted` and `pipeline_name` origins are observed and authoritative.
+
 #### `dataset_registry`
 
-Tracks dataset URNs referenced by DataSpoke configs and whether they exist in DataHub.
+Tracks dataset URNs referenced by DataSpoke and whether they exist in DataHub.
+Retained for the validation precondition gate.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Dataset URN |
-| `datahub_registered` | `BOOLEAN` | `true` after successful (non-dry-run) ingestion to DataHub |
+| `datahub_registered` | `BOOLEAN` | `true` when the dataset exists in DataHub |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-- **Creation**: lazy, via `ensure_dataset_registered()` on ingestion config upsert. Validation config upsert checks the registry but does not create rows — `validation_configs` references `dataset_urn` directly, and the validation precondition gate (`422 DATASET_NOT_IN_DATAHUB`) reads from this registry.
-- **Updates**: `mark_registered()` called from `IngestionService.run()` on successful non-dry-run;
-  `mark_unregistered()` reserved for DataHub sync.
-- **DataHub sync**: bidirectional reconciliation against DataHub via
-  `POST /internal/admin/datahub/sync` (manual/scripted) and the `datahub-sync-daily` Airflow DAG.
-- **SSOT**: DataHub is authoritative for dataset existence;
-  the registry caches state for the validation precondition gate.
+- **Creation**: lazy, via `ensure_dataset_registered()`. Validation config upsert checks the registry; the validation precondition gate (`422 DATASET_NOT_IN_DATAHUB`) reads from it.
+- **DataHub sync**: reconciled against DataHub via the `datahub-sync-daily` Airflow DAG.
+- **SSOT**: DataHub is authoritative for dataset existence; the registry caches state for the validation precondition gate.
 
 #### `validation_configs`
 
