@@ -198,7 +198,7 @@ def _reject_if_datahub_managed(mode: str, source_id: str) -> None:
 # If DataHub returns the recipe with these keys set to non-${...} values,
 # those values are masked.  Keys that already use ${...} refs are kept as-is
 # because they do not contain actual secrets.
-_SECRET_REF_RE_INLINE = re.compile(r"^\$\{[A-Za-z0-9_]+\}$")
+_SECRET_REF_RE_INLINE = re.compile(r"^\$\{[A-Za-z0-9_.-]+\}$")
 
 _PLAINTEXT_SECRET_KEYS: frozenset[str] = frozenset(
     {

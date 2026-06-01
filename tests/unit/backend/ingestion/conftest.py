@@ -20,7 +20,7 @@ _RECIPE_POSTGRES = {
             "host_port": "example-pg:5432",
             "database": "example_db",
             "username": "spoke_reader",
-            "password": "${dummy_data_pg__password}",
+            "password": "${dummy-data-pg__password}",
             "schema_pattern": {"allow": ["^catalog$"]},
             "env": "DEV",
         },

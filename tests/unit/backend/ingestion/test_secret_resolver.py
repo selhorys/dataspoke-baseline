@@ -82,24 +82,26 @@ class TestParseNameKey:
     """Spec: SECRET_RESOLUTION.md §Run-time resolve flow — 'split on last __'."""
 
     def test_valid_ref_splits_correctly(self) -> None:
-        """'team_pg__password' splits into name='team_pg', key='password'.
+        """'team-pg__password' splits into name='team-pg', key='password'.
 
         Spec: SECRET_RESOLUTION.md §Reference syntax — '${name__key}' resolves to
-        Secret 'dataspoke-source-cred-<name>', data key '<key>'.
+        Secret 'dataspoke-source-cred-<name>', data key '<key>'. name is a
+        DNS-label-safe token (lowercase alphanumerics and hyphens).
         """
-        name, key = _sr._parse_name_key("team_pg__password")
-        assert name == "team_pg"
+        name, key = _sr._parse_name_key("team-pg__password")
+        assert name == "team-pg"
         assert key == "password"
 
     def test_last_double_underscore_used_as_split_point(self) -> None:
-        """When name itself contains __, split on the LAST __ only.
+        """When the key segment contains __, split on the LAST __ only.
 
         Spec: SECRET_RESOLUTION.md §Name prefix policy — 'split unambiguously on
-        the last __ (since <name> cannot contain __)'. Defensive: we still handle it.
+        the last __'. The _parse_name_key function uses rfind so extra __ in the
+        key segment land in key, not in name.
         """
-        name, key = _sr._parse_name_key("team__pg__password")
-        assert name == "team__pg"
-        assert key == "password"
+        name, key = _sr._parse_name_key("team-pg__some__key")
+        assert name == "team-pg__some"
+        assert key == "key"
 
     def test_no_double_underscore_raises_malformed(self) -> None:
         """Ref without __ raises SecretRefMalformed.
@@ -124,7 +126,7 @@ class TestParseNameKey:
         Spec: SECRET_RESOLUTION.md §Error taxonomy — empty segment.
         """
         with pytest.raises(SecretRefMalformed):
-            _sr._parse_name_key("team_pg__")
+            _sr._parse_name_key("team-pg__")
 
 
 # ── _secret_name prefix guard ─────────────────────────────────────────────────
@@ -162,7 +164,7 @@ class TestResolveSecretRef:
         Spec: SECRET_RESOLUTION.md §Run-time resolve flow — 'base64-decoded'.
         """
         self.core.read_namespaced_secret.return_value = _make_secret({"password": "hunter2"})
-        result = resolve_secret_ref("team_pg__password")
+        result = resolve_secret_ref("team-pg__password")
         assert result == "hunter2"
 
     def test_calls_correct_secret_name_and_namespace(self) -> None:
@@ -355,7 +357,7 @@ class TestResolveRecipeSecrets:
         recipe = {
             "source": {
                 "type": "postgres",
-                "config": {"password": "${team_pg__password}", "host_port": "pg:5432"},
+                "config": {"password": "${team-pg__password}", "host_port": "pg:5432"},
             }
         }
         resolved = resolve_recipe_secrets(recipe)
@@ -370,7 +372,7 @@ class TestResolveRecipeSecrets:
         only in the returned in-memory dict.'
         """
         self.core.read_namespaced_secret.return_value = _make_secret({"password": "s3cr3t"})
-        original_password = "${team_pg__password}"
+        original_password = "${team-pg__password}"
         recipe = {
             "source": {
                 "type": "postgres",
@@ -402,7 +404,7 @@ class TestResolveRecipeSecrets:
             "source": {
                 "type": "postgres",
                 "config": {
-                    "ssl": {"cert": "${team_pg__cert}"},
+                    "ssl": {"cert": "${team-pg__cert}"},
                 },
             }
         }
@@ -430,7 +432,7 @@ class TestVerifySecretRef:
         → persist the source.'
         """
         self.core.read_namespaced_secret.return_value = _make_secret({"pw": "val"})
-        result = verify_secret_ref("team_pg__pw")
+        result = verify_secret_ref("team-pg__pw")
         assert result is None
 
     def test_missing_secret_raises_not_found(self) -> None:
@@ -441,7 +443,7 @@ class TestVerifySecretRef:
         """
         self.core.read_namespaced_secret.side_effect = _make_api_exception(404)
         with pytest.raises(SecretRefNotFound):
-            verify_secret_ref("team_pg__pw")
+            verify_secret_ref("team-pg__pw")
 
     def test_missing_key_raises_not_found(self) -> None:
         """Secret exists but key absent → SecretRefNotFound.
@@ -451,7 +453,7 @@ class TestVerifySecretRef:
         """
         self.core.read_namespaced_secret.return_value = _make_secret({"other": "val"})
         with pytest.raises(SecretRefNotFound):
-            verify_secret_ref("team_pg__pw")
+            verify_secret_ref("team-pg__pw")
 
     def test_malformed_ref_raises_malformed(self) -> None:
         """Ref without __ raises SecretRefMalformed — no k8s call made.
@@ -469,7 +471,7 @@ class TestVerifySecretRef:
         """
         self.core.read_namespaced_secret.side_effect = _make_api_exception(403)
         with pytest.raises(SecretRefNotFound):
-            verify_secret_ref("team_pg__pw")
+            verify_secret_ref("team-pg__pw")
 
     def test_5xx_raises_resolver_unavailable(self) -> None:
         """k8s 5xx → SecretResolverUnavailable.
@@ -478,7 +480,7 @@ class TestVerifySecretRef:
         """
         self.core.read_namespaced_secret.side_effect = _make_api_exception(500)
         with pytest.raises(SecretResolverUnavailable):
-            verify_secret_ref("team_pg__pw")
+            verify_secret_ref("team-pg__pw")
 
 
 # ── list_source_cred_refs ─────────────────────────────────────────────────────

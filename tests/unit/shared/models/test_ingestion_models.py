@@ -110,24 +110,25 @@ class TestParseRecipe:
 
 class TestExtractSecretRefs:
     def test_finds_double_underscore_ref(self) -> None:
-        """${name__key} tokens with __ are returned.
+        """${name__key} tokens with DNS-label-safe name and __ separator are returned.
 
-        Spec: SECRET_RESOLUTION.md — '${name__key}' is the secret reference syntax.
+        Spec: SECRET_RESOLUTION.md — '${name__key}' is the secret reference syntax;
+        name is a DNS-label-safe token (lowercase alphanumerics and hyphens).
         """
         recipe = {
             "source": {
                 "type": "postgres",
-                "config": {"password": "${team_pg__password}"},
+                "config": {"password": "${dummy-data-pg__password}"},
             }
         }
         refs = extract_secret_refs(recipe)
-        assert refs == {"team_pg__password"}
+        assert refs == {"dummy-data-pg__password"}
 
     def test_ignores_plain_var_without_double_underscore(self) -> None:
-        """${plainvar} without __ is not a secret ref and must be ignored.
+        """${plainvar} without __ does not match the secret ref pattern and is ignored.
 
-        Spec: SECRET_RESOLUTION.md §Reference syntax — 'Only tokens whose inner text
-        contains __ are returned; tokens without __ are silently skipped.'
+        Spec: SECRET_RESOLUTION.md §Reference syntax — the pattern requires an explicit
+        __ separator; tokens without __ are not matched and are silently skipped.
         """
         recipe = {
             "source": {
@@ -147,13 +148,13 @@ class TestExtractSecretRefs:
             "source": {
                 "type": "postgres",
                 "config": {
-                    "ssl": {"cert": "${team_pg__ssl_cert}"},
-                    "password": "${team_pg__password}",
+                    "ssl": {"cert": "${team-pg__ssl_cert}"},
+                    "password": "${team-pg__password}",
                 },
             }
         }
         refs = extract_secret_refs(recipe)
-        assert refs == {"team_pg__ssl_cert", "team_pg__password"}
+        assert refs == {"team-pg__ssl_cert", "team-pg__password"}
 
     def test_recurses_lists(self) -> None:
         """Lists of strings containing ${ref} are also scanned."""
@@ -161,12 +162,12 @@ class TestExtractSecretRefs:
             "source": {
                 "type": "kafka",
                 "config": {
-                    "extra_secrets": ["${kafka_cred__api_key}", "${kafka_cred__api_secret}"],
+                    "extra_secrets": ["${kafka-cred__api_key}", "${kafka-cred__api_secret}"],
                 },
             }
         }
         refs = extract_secret_refs(recipe)
-        assert refs == {"kafka_cred__api_key", "kafka_cred__api_secret"}
+        assert refs == {"kafka-cred__api_key", "kafka-cred__api_secret"}
 
     def test_deduplicates_same_ref_used_twice(self) -> None:
         """Same ${name__key} used in two places appears once in the output set."""
@@ -174,13 +175,13 @@ class TestExtractSecretRefs:
             "source": {
                 "type": "postgres",
                 "config": {
-                    "password": "${team_pg__password}",
-                    "backup_password": "${team_pg__password}",
+                    "password": "${team-pg__password}",
+                    "backup_password": "${team-pg__password}",
                 },
             }
         }
         refs = extract_secret_refs(recipe)
-        assert refs == {"team_pg__password"}
+        assert refs == {"team-pg__password"}
 
     def test_empty_config_returns_empty_set(self) -> None:
         """No placeholders in config → empty set."""
@@ -198,8 +199,13 @@ class TestExtractSecretRefs:
         refs = extract_secret_refs({"not": "a recipe"})
         assert refs == set()
 
-    def test_ref_with_multiple_double_underscores_in_name(self) -> None:
-        """${a__b__c} uses last __ as split point — returns 'a__b__c' as the full ref token.
+    def test_ref_with_double_underscore_in_key_segment(self) -> None:
+        """${name__key} where the key segment itself contains __ — full token is returned.
+
+        The regex matches name=[a-z0-9-]+ then __ then key=[A-Za-z0-9_.-]+, so
+        ${team__pg__password} captures name=team, key=pg__password; the reconstructed
+        token team__pg__password is what extract_secret_refs returns. The resolver
+        then splits on the last __ (team__pg → name, password → key).
 
         Spec: SECRET_RESOLUTION.md §Run-time resolve flow — 'split on last __'.
         """

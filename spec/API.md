@@ -298,7 +298,7 @@ other. A `GET` response (and `POST`/`PUT`/`PATCH` body) carries:
   "recipe": {                               // DataHub-compatible; recipe.source byte-compatible with a DataHub recipe
     "source": {
       "type": "postgres",
-      "config": { "host_port": "…", "password": "${dummy_data_pg__password}", "schema_pattern": { "allow": ["^catalog$"] }, "env": "DEV" }
+      "config": { "host_port": "…", "password": "${dummy-data-pg__password}", "schema_pattern": { "allow": ["^catalog$"] }, "env": "DEV" }
     }
   }
 }

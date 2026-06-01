@@ -52,7 +52,7 @@ class TestCreateIngestionSourceRequest:
                     "type": "postgres",
                     "config": {
                         "host_port": "pg:5432",
-                        "password": "${team_pg__password}",
+                        "password": "${team-pg__password}",
                     },
                 }
             },
@@ -278,9 +278,9 @@ class TestIngestionSourceResponse:
         Spec: BACKEND.md §API body shape — '${name__key} secret references … the
         response returns those references verbatim (never plaintext)'.
         """
-        recipe = {"source": {"type": "postgres", "config": {"password": "${team_pg__password}"}}}
+        recipe = {"source": {"type": "postgres", "config": {"password": "${team-pg__password}"}}}
         resp = self._make_response(recipe=recipe)
-        assert resp.recipe["source"]["config"]["password"] == "${team_pg__password}"
+        assert resp.recipe["source"]["config"]["password"] == "${team-pg__password}"
 
     def test_datahub_source_urn_optional(self) -> None:
         """datahub_source_urn is None for non-DATAHUB_MANAGED sources."""
@@ -319,7 +319,7 @@ class TestSecretRefListResponse:
         resp = SecretRefListResponse(
             secrets=[
                 SecretRefInfo(
-                    ref="team_pg__password",
+                    ref="team-pg__password",
                     secret_name="dataspoke-source-cred-team-pg",
                     key="password",
                 )
@@ -327,7 +327,7 @@ class TestSecretRefListResponse:
         )
         assert len(resp.secrets) == 1
         ref = resp.secrets[0]
-        assert ref.ref == "team_pg__password"
+        assert ref.ref == "team-pg__password"
         assert ref.secret_name == "dataspoke-source-cred-team-pg"
         assert ref.key == "password"
 
@@ -337,7 +337,7 @@ class TestSecretRefListResponse:
         Spec: SECRET_RESOLUTION.md §Reference discovery — 'Values are never returned'.
         """
         info = SecretRefInfo(
-            ref="team_pg__password",
+            ref="team-pg__password",
             secret_name="dataspoke-source-cred-team-pg",
             key="password",
         )

@@ -86,15 +86,19 @@ def parse_recipe(recipe: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return source_type, config
 
 
-_SECRET_REF_RE = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
+# Secret reference pattern: ${name__key} where
+#   name  — DNS-label-safe token: lowercase alphanumerics and hyphens (e.g. dummy-data-pg)
+#   key   — Secret data-key: alphanumerics, hyphens, underscores, dots (e.g. password)
+# Example: ${dummy-data-pg__password} → name=dummy-data-pg, key=password
+_SECRET_REF_RE = re.compile(r"\$\{([a-z0-9-]+)__([A-Za-z0-9_.-]+)\}")
 
 
 def extract_secret_refs(recipe: dict[str, Any]) -> set[str]:
     """Return the set of ``name__key`` tokens found inside ``${...}`` placeholders.
 
     Scans all string values in ``recipe.source.config`` recursively (including
-    nested dicts and lists). Only tokens whose inner text contains ``__`` are
-    returned — tokens without ``__`` are not secret refs and are silently skipped.
+    nested dicts and lists). Returns the reconstructed ``name__key`` token for
+    every matched reference.
 
     Returns an empty set when the recipe has no source.config or no
     ``${...}`` placeholders.
@@ -113,9 +117,7 @@ def _collect_refs(obj: Any, refs: set[str]) -> None:
     """Recursively collect ``name__key`` tokens from all string values."""
     if isinstance(obj, str):
         for match in _SECRET_REF_RE.finditer(obj):
-            inner = match.group(1)
-            if "__" in inner:
-                refs.add(inner)
+            refs.add(f"{match.group(1)}__{match.group(2)}")
     elif isinstance(obj, dict):
         for v in obj.values():
             _collect_refs(v, refs)

@@ -225,14 +225,14 @@ class TestSecretRefListResponse:
         resp = SecretRefListResponse(
             secrets=[
                 SecretRefInfo(
-                    ref="team_pg__password",
+                    ref="team-pg__password",
                     secret_name="dataspoke-source-cred-team-pg",
                     key="password",
                 )
             ]
         )
         assert len(resp.secrets) == 1
-        assert resp.secrets[0].ref == "team_pg__password"
+        assert resp.secrets[0].ref == "team-pg__password"
         assert resp.secrets[0].secret_name == "dataspoke-source-cred-team-pg"
         assert resp.secrets[0].key == "password"
         data = resp.secrets[0].model_dump()

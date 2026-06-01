@@ -21,7 +21,7 @@ Operator, …); DataSpoke only **lists** the available references, **verifies** 
 source-save time, and **resolves** them when an `ACTIVE_CUSTOM_MANAGED` extractor runs.
 
 The reference syntax is `${name__key}`, embedded directly in `recipe.source.config` (e.g.
-`password: '${team_pg__password}'`) — the same `${...}` substitution DataHub's own recipe
+`password: '${team-pg__password}'`) — the same `${...}` substitution DataHub's own recipe
 loader uses, so the recipe stays byte-compatible. `${name__key}` resolves to Kubernetes
 Secret `dataspoke-source-cred-<name>`, data key `<key>`.
 
@@ -105,7 +105,7 @@ kubectl create secret generic dataspoke-source-cred-team-pg \
 ```
 
 A single Secret may hold multiple keys (e.g. `password`, `ssl_key`), and a single Secret may
-back multiple sources. After creation, the reference `${team_pg__password}` is usable in any
+back multiple sources. After creation, the reference `${team-pg__password}` is usable in any
 recipe. Equivalent ESO / Terraform / sealed-secrets flows are supported as long as the
 resulting object lands in DataSpoke's namespace under the prefix. Rotation is a plain
 `kubectl` update of the Secret value — the recipe is untouched, and the resolver picks up the
@@ -125,8 +125,8 @@ values**. DataSpoke lists Secrets in its own namespace whose name starts with
 ```jsonc
 {
   "secrets": [
-    { "ref": "team_pg__password", "secret_name": "dataspoke-source-cred-team-pg", "key": "password" },
-    { "ref": "team_pg__ssl_key",  "secret_name": "dataspoke-source-cred-team-pg", "key": "ssl_key" }
+    { "ref": "team-pg__password", "secret_name": "dataspoke-source-cred-team-pg", "key": "password" },
+    { "ref": "team-pg__ssl_key",  "secret_name": "dataspoke-source-cred-team-pg", "key": "ssl_key" }
   ]
 }
 ```
@@ -237,7 +237,7 @@ No DataSpoke table stores credentials. `ingestion_source.recipe` (JSONB) holds t
     "config": {
       "host_port": "pg.example:5432",
       "username": "spoke_reader",
-      "password": "${team_pg__password}",   // reference, never plaintext
+      "password": "${team-pg__password}",   // reference, never plaintext
       "env": "DEV",
       "schema_pattern": { "allow": ["^catalog$"] }
     }

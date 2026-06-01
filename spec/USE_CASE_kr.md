@@ -172,7 +172,7 @@ recipe:
       host_port: 'example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432'
       database: example_db
       username: postgres
-      password: '${dummy_data_pg__password}'
+      password: '${dummy-data-pg__password}'
       env: DEV
       schema_pattern:
         allow:

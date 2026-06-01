@@ -83,7 +83,7 @@ class CreateIngestionSourceRequest(BaseModel):
                         "config": {
                             "host_port": "pg.example:5432",
                             "username": "spoke_reader",
-                            "password": "${dummy_data_pg__password}",
+                            "password": "${dummy-data-pg__password}",
                             "schema_pattern": {"allow": ["^catalog$"]},
                             "env": "DEV",
                         },

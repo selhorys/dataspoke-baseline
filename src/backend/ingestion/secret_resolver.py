@@ -159,7 +159,7 @@ def _parse_name_key(ref: str) -> tuple[str, str]:
     if "__" not in ref:
         raise SecretRefMalformed(
             f"Secret ref {ref!r} has no '__' separator. "
-            "Expected format: 'name__key' (e.g. 'team_pg__password')."
+            "Expected format: 'name__key' (e.g. 'team-pg__password')."
         )
     # Split on the LAST ``__`` so ``name`` may contain ``__`` (though DNS-label
     # names cannot, this is a defensive choice consistent with the spec).
@@ -248,7 +248,14 @@ def resolve_secret_ref(ref: str) -> str:
     return decoded
 
 
-_REF_RE = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
+# Matches a ${name__key} secret reference: a DNS-label-safe name segment
+# (lowercase alphanumerics and hyphens), then the literal __ separator, then a
+# Secret data-key segment. This is the same shape the source-level extractor
+# (shared.models.ingestion._SECRET_REF_RE) recognises, so a reference verified at
+# save time is exactly the set substituted at run time. A ${...} token that does
+# not match (e.g. an uppercase name, or a DataHub env placeholder without __) is
+# left untouched.
+_REF_RE = re.compile(r"\$\{([a-z0-9-]+__[A-Za-z0-9_.-]+)\}")
 
 
 def _substitute_refs(obj: Any) -> Any:

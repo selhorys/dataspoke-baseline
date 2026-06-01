@@ -865,6 +865,16 @@ if [[ "$PROFILE" == "dev" ]]; then
       info "DATASPOKE_TEST_LANGFUSE_SECRET_KEY is unset — dataspoke-langfuse-secret not created."
     fi
 
+    # Source-credential Secret: dummy-data Postgres (dev only)
+    # Allows ACTIVE_CUSTOM_MANAGED ingestion recipes that reference ${dummy-data-pg__password}
+    # to resolve at run time. Must live in the DataSpoke API namespace so secret_resolver.py
+    # (which reads /var/run/secrets/kubernetes.io/serviceaccount/namespace) can reach it.
+    info "Applying dataspoke-source-cred-dummy-data-pg (dev source credential)..."
+    kubectl create secret generic dataspoke-source-cred-dummy-data-pg \
+      --namespace "${NS}" \
+      --from-literal=password="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-ExampleDev2024!}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+
     # Helm repo setup
     info "Adding/updating Helm repositories..."
     helm_repo_add_if_missing bitnami        "https://charts.bitnami.com/bitnami"

@@ -14,9 +14,13 @@ Steps mirror USE_CASE_en.md §UC1 Case 2:
   8. GET /spoke/common/data/{catalog_urn}/attr/ingestion → reverse-lookup returns this source
   9. Cleanup: DELETE /sources/{id}
 
+The test skips cleanly when the dummy-data-pg K8s Secret is not provisioned in the cluster
+(checked via GET /spoke/ingestion/secrets before the first mutation).
+
 spec: USE_CASE_en.md §UC1 Case 2
 spec: API.md §Ingestion (/spoke/ingestion/sources)
 spec: feature/BACKEND.md §Ingestion Service §Active-custom run pipeline
+spec: feature/SECRET_RESOLUTION.md §Reference discovery — skip guard
 spec: TESTING.md §Api-Wired Integration Tests
 """
 
@@ -24,9 +28,11 @@ import asyncio
 import os
 import time
 import urllib.parse
+from collections.abc import AsyncGenerator
 
 import httpx
 import pytest
+import pytest_asyncio
 
 from tests.integration.util import dataspoke_db
 from tests.integration.util.datahub import discover_catalog_tables
@@ -39,19 +45,57 @@ _PG_HOST_PORT = os.environ.get(
     "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
 )
 
-# Secret reference: K8s Secret dataspoke-source-cred-dummy_data_pg, key 'password'.
+# Secret reference: K8s Secret dataspoke-source-cred-dummy-data-pg, key 'password'.
+# The <name> segment (dummy-data-pg) must be DNS-label-safe (hyphens, no underscores).
 # The secret must be pre-created in the cluster; DataSpoke lists and resolves it at run time.
-# spec: USE_CASE_en.md §UC1 Case 2 — password: '${dummy_data_pg__password}'
-_SECRET_REF = "${dummy_data_pg__password}"
+# spec: USE_CASE_en.md §UC1 Case 2 — password: '${dummy-data-pg__password}'
+# spec: feature/SECRET_RESOLUTION.md §Name prefix policy — <name> DNS-label-safe
+_SECRET_REF = "${dummy-data-pg__password}"
+_SECRET_REF_BARE = "dummy-data-pg__password"  # the inside of ${...}
 
 # F4: plaintext password for negative-secret assertion.
 # Populated by the dev install from helm-charts/.env DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD;
-# mirrors the value stored in the dataspoke-source-cred-dummy_data_pg K8s secret.
+# mirrors the value stored in the dataspoke-source-cred-dummy-data-pg K8s secret.
 _PG_PLAINTEXT_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
 
 # ── Dummy-data module constants ────────────────────────────────────────────────
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_ingestion_sources() -> AsyncGenerator[None]:
+    """Reset ingestion_source table before and after each test in this module.
+
+    The test body stays REST-only; DB-touching setup/teardown lives in this fixture.
+    spec: TESTING.md §Api-Wired Integration Tests — 'the test itself stays REST-only;
+          setup/teardown fixtures may use util'.
+    spec: feedback_reset_before_api_wired — reset before api-wired tests.
+    """
+    await dataspoke_db.reset_ingestion_sources()
+    yield
+    await dataspoke_db.reset_ingestion_sources()
+
+
+async def _dummy_pg_secret_is_provisioned(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> bool:
+    """Return True if the dummy-data-pg secret ref is listed by GET /spoke/ingestion/secrets.
+
+    The test is REST-only and cannot read k8s directly; we probe the API's own
+    secret-list endpoint as the skip guard.
+
+    spec: feature/SECRET_RESOLUTION.md §Reference discovery (list flow)
+    spec: TESTING.md §Api-Wired Integration Tests — REST-only guard
+    """
+    resp = await api_client.get("/api/v1/spoke/ingestion/secrets", headers=admin_headers)
+    if resp.status_code != 200:
+        return False
+    return any(
+        item.get("ref") == _SECRET_REF_BARE
+        for item in resp.json().get("secrets", [])
+    )
 
 # ── Catalog URNs (resolvable after DUMMY_DATA_DATAHUB_SCHEMAS seed) ───────────
 # spec: project_datahub_resolvable_urns_catalog_only — only catalog.* seeded into DataHub
@@ -76,13 +120,24 @@ async def test_uc1_active_custom_postgres(
        extractor on the schedule. The recipe is DataHub-compatible; the password
        references a k8s secret via ${name__key}."
 
+    Skips when the dataspoke-source-cred-dummy-data-pg K8s Secret is absent from the cluster
+    (probed via GET /spoke/ingestion/secrets) so the test fails cleanly rather than with a
+    confusing SECRET_REF_NOT_FOUND error.
+
     spec: USE_CASE_en.md §UC1 Case 2
     spec: API.md §Ingestion — POST /spoke/ingestion/sources (ACTIVE_CUSTOM_MANAGED)
     spec: feature/BACKEND.md §Ingestion Service §Active-custom run pipeline
+    spec: feature/SECRET_RESOLUTION.md §Reference discovery — skip guard via list endpoint
     """
-    # Guarantee clean slate: no leftover ingestion_source rows from a prior run.
-    # spec: feedback_reset_before_api_wired — reset before api-wired tests.
-    await dataspoke_db.reset_ingestion_sources()
+    # Skip-guard: probe the API's own secret-list endpoint (REST-only; cannot read k8s directly).
+    # spec: feature/SECRET_RESOLUTION.md §Reference discovery (list flow)
+    if not await _dummy_pg_secret_is_provisioned(api_client, admin_headers):
+        pytest.skip(
+            f"Secret ref '{_SECRET_REF_BARE}' not listed by GET /spoke/ingestion/secrets. "
+            "Pre-create K8s Secret 'dataspoke-source-cred-dummy-data-pg' with key 'password' "
+            "to run the real-run UC1 Case 2 test. "
+            "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide."
+        )
 
     source_id: str | None = None
 
@@ -91,7 +146,7 @@ async def test_uc1_active_custom_postgres(
         # spec: USE_CASE_en.md §UC1 Case 2 — exact recipe YAML → JSON body:
         #   mode: ACTIVE_CUSTOM_MANAGED, schedule: '0 0 * * *',
         #   recipe.source.type: postgres, schema_pattern.allow: ['^catalog$'],
-        #   password: '${dummy_data_pg__password}'
+        #   password: '${dummy-data-pg__password}'
         create_resp = await api_client.post(
             "/api/v1/spoke/ingestion/sources",
             headers=admin_headers,
@@ -154,7 +209,7 @@ async def test_uc1_active_custom_postgres(
             "spec: USE_CASE_en.md §UC1 Case 2 — password stored as masked ref"
         )
         # F4: negative check — the API must never return plaintext credentials.
-        # The K8s secret dataspoke-source-cred-dummy_data_pg holds the same value as
+        # The K8s secret dataspoke-source-cred-dummy-data-pg holds the same value as
         # DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD in helm-charts/.env.
         # spec: API.md §Ingestion §Source body shape — secret refs never expanded in responses
         assert _PG_PLAINTEXT_PASSWORD, (
@@ -201,13 +256,13 @@ async def test_uc1_active_custom_postgres(
         emitted = dry_detail.get("emitted_urns_count", 0)
         assert emitted == 0, (
             f"Dry-run must not emit any datasets (emitted_urns_count=0); got {emitted}. "
-            "spec: feature/BACKEND.md §Active-custom run pipeline — aspect emission skipped on dry_run"
+            "spec: feature/BACKEND.md §Active-custom run pipeline"
+            " — aspect emission skipped on dry_run"
         )
 
         # ── Step 4: Real run — emit dataset aspects to DataHub ────────────────
         # spec: USE_CASE_en.md §UC1 Case 2 — "A real run emits dataset aspects + a
         # DataProcessInstance, and records emitted URNs as the authoritative mapping"
-        run_start = time.time()
         real_run_resp = await api_client.post(
             source_run_url,
             headers=admin_headers,
@@ -262,8 +317,8 @@ async def test_uc1_active_custom_postgres(
         # F2: non-empty floor — if mapping rows are absent the run silently produced nothing.
         assert dataset_urns, (
             "no emitted mapping rows after run — "
-            "_upsert_dataset_mappings() should have committed rows synchronously before run() returned. "
-            "spec: feature/BACKEND.md §Active-custom run pipeline"
+            "_upsert_dataset_mappings() should have committed rows synchronously before"
+            " run() returned. spec: feature/BACKEND.md §Active-custom run pipeline"
         )
         # At least 2 catalog datasets must appear in the mapping.
         assert len(dataset_urns) >= 2, (
@@ -292,7 +347,7 @@ async def test_uc1_active_custom_postgres(
         # ── Step 6: GET /sources/{id}/event → INGESTION.COMPLETE ─────────────
         # Poll until the INGESTION.COMPLETE event for this run_id appears.
         # spec: feature/BACKEND.md §Active-custom run pipeline — INGESTION.COMPLETE event recorded
-        # spec: USE_CASE_en.md §UC1 — "Each event row carries event_type INGESTION.COMPLETE on success"
+        # spec: USE_CASE_en.md §UC1 — INGESTION.COMPLETE carries status='success'
         event_body: dict = {}
         found_complete = False
         deadline = time.time() + 30.0
@@ -355,7 +410,8 @@ async def test_uc1_active_custom_postgres(
             "spec: USE_CASE_en.md §UC1 API Mapping — reverse-lookup returns owning source"
         )
         assert reverse_body.get("mode") == "ACTIVE_CUSTOM_MANAGED", (
-            f"Reverse-lookup mode must be 'ACTIVE_CUSTOM_MANAGED'; got {reverse_body.get('mode')!r}. "
+            f"Reverse-lookup mode must be 'ACTIVE_CUSTOM_MANAGED'; "
+            f"got {reverse_body.get('mode')!r}. "
             "spec: USE_CASE_en.md §UC1 API Mapping"
         )
         assert reverse_body.get("dataset_urn") == _CATALOG_TITLE_URN

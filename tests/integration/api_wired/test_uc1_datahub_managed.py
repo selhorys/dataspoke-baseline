@@ -9,7 +9,7 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
   3. Assert a DATAHUB_MANAGED source row appeared in GET /spoke/ingestion/sources
   4. Assert the row is read-only: PUT / PATCH / DELETE return 409 INGESTION_SOURCE_READONLY
   5. Poll GET /sources/{id}/datasets until seed-derived non-catalog URNs appear (≥180s, ES budget)
-  6. Assert the returned schedule round-trips ('0 0 * * *') and that schedule_tier is absent from wire
+  6. Assert schedule round-trips ('0 0 * * *') and schedule_tier is absent from wire
   7. Cleanup: deleteIngestionSource from DataHub + re-run sync to remove the mirrored row
 
 F1 fix: Step 5 polls with ≥180s timeout until mapped dataset rows appear and asserts non-empty.
@@ -35,11 +35,8 @@ import pytest_asyncio
 
 from tests.integration.util import dataspoke_db
 from tests.integration.util.datahub import (
-    ENV,
     PG_INSTANCE,
-    PG_PLATFORM,
     TARGET_SCHEMAS,
-    _make_pg_urn,
 )
 
 # ── Dummy-data module constants ────────────────────────────────────────────────
@@ -73,7 +70,7 @@ async def _managed_source_setup(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     internal_headers: dict[str, str],
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Create a DataHub IngestionSource, run sync, yield the DataSpoke source id.
 
     Teardown (F5 fix): deletes the DataHub IngestionSource and re-runs sync to
@@ -179,10 +176,11 @@ async def _managed_source_setup(
         s for s in list_resp.json().get("sources", [])
         if s.get("datahub_source_urn") == ingestion_source_urn
     ]
+    found_urns = [s.get("datahub_source_urn") for s in list_resp.json().get("sources", [])]
     assert len(matching) >= 1, (
-        f"Expected a DATAHUB_MANAGED source with datahub_source_urn={ingestion_source_urn!r} "
-        f"after sync; found {[s.get('datahub_source_urn') for s in list_resp.json().get('sources', [])]}. "
-        "spec: feature/BACKEND.md §Sync sweep step 1"
+        f"Expected a DATAHUB_MANAGED source with "
+        f"datahub_source_urn={ingestion_source_urn!r} after sync; "
+        f"found {found_urns}. spec: feature/BACKEND.md §Sync sweep step 1"
     )
 
     managed_source = matching[0]
@@ -281,6 +279,22 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         "spec: USE_CASE_en.md §UC1 Case 1 — recipe mirrored from DataHub"
     )
 
+    # ── Secret-masking invariant ──────────────────────────────────────────────
+    # USE_CASE_en.md §UC1 Case 1 specifies "secrets masked" in the synced recipe:
+    #   the displayed recipe shows password: <hidden>.
+    # The DataHub source fixture uses 'ExampleDev2024!' as the plaintext password;
+    # the synced DataSpoke copy must NOT contain that plaintext anywhere in the response.
+    # spec: USE_CASE_en.md §UC1 Case 1 — "recipe is rendered as YAML with secrets masked"
+    # spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 1 — "Mask secrets in the
+    #   stored/displayed recipe (DataHub returns them raw)."
+    # spec: API.md §Ingestion §Source body shape — secret refs never expanded in responses
+    _PLAINTEXT_PW_IN_FIXTURE = "ExampleDev2024!"
+    assert _PLAINTEXT_PW_IN_FIXTURE not in get_resp.text, (
+        f"Synced DATAHUB_MANAGED recipe must have secrets masked; "
+        f"plaintext '{_PLAINTEXT_PW_IN_FIXTURE}' must not appear in GET response. "
+        "spec: USE_CASE_en.md §UC1 Case 1 — 'recipe is rendered as YAML with secrets masked'."
+    )
+
     # ── Step 4: Assert read-only enforcement ─────────────────────────────────
     # spec: API.md §Ingestion — PUT / PATCH on DATAHUB_MANAGED → 409 INGESTION_SOURCE_READONLY
     put_resp = await api_client.put(
@@ -335,7 +349,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # 180s covers the full lag window.
     # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s.
     # spec: USE_CASE_en.md §UC1 Case 1 — GET /sources/{id}/datasets lists mapped datasets.
-    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin values: emitted, matcher, pipeline_name.
+    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin: emitted | matcher | pipeline_name
     datasets_body: dict = {}
     mapped_datasets: list = []
     # ES-gated assertion: dataset existence search indexes lag 2-3 min after seed.
@@ -410,3 +424,16 @@ async def test_uc1_datahub_managed_sync_and_readonly(
             "The recipe denies catalog via schema_pattern.deny. "
             "spec: USE_CASE_en.md §UC1 Case 1 — recipe denies catalog schema."
         )
+
+    # UC1 Case 1 maps via the sync matcher — at least one mapped row must have origin='matcher'.
+    # (pipeline_name origin is also valid if DataHub stamps systemMetadata, but matcher is the
+    # primary UC1-Case-1 path since DataSpoke is not the ingestor.)
+    # spec: USE_CASE_en.md §UC1 Case 1 — GET /sources/{id}/datasets "lists the covered datasets"
+    # spec: feature/BACKEND.md §Sync sweep step 2 — DATAHUB_MANAGED matcher origin.
+    matcher_origins = [d for d in mapped_datasets if d.get("origin") == "matcher"]
+    assert matcher_origins, (
+        f"At least one mapped row must have origin='matcher' for a DATAHUB_MANAGED sync; "
+        f"origins seen: {[d.get('origin') for d in mapped_datasets]}. "
+        "spec: feature/BACKEND.md §Sync sweep step 2 — DATAHUB_MANAGED uses filter-matcher; "
+        "origin=matcher is the primary mapping path before pipeline_name enrichment."
+    )
