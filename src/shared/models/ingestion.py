@@ -156,14 +156,20 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
     The dataset name passed to the returned callable must be the
     platform-specific name as it appears in the DataHub dataset URN:
       - postgres / mysql / oracle: ``database.schema.table`` (three dot-separated parts)
-      - kafka: ``topic`` (single token, no dots) or ``cluster.topic``
+      - kafka: ``topic`` (bare, no instance) or ``platform_instance.topic``
       - bigquery / snowflake: the full dataset identifier
 
     Pattern semantics per DataHub's SQL source config:
       - ``schema_pattern`` is matched against the **schema segment only**
         (e.g. ``^catalog$`` applied to the schema part of ``example_db.catalog.orders``).
       - ``table_pattern`` is matched against the **full** ``database.schema.table`` string.
-      - ``topic_patterns`` (kafka) is matched against the topic name.
+      - ``topic_patterns`` (kafka) allow and deny are each evaluated against the topic
+        name. Because a kafka dataset URN name may be ``<topic>`` (no platform instance)
+        or ``<platform_instance>.<topic>`` (instance set), both candidate forms — the full
+        name and, when a dot is present, the substring after the first dot — are tested.
+        A name is covered when the allow patterns match at least one form AND the deny
+        patterns do not match any form. Allow and deny are checked independently so deny
+        cannot be bypassed when allow matches a different candidate form.
       - ``dataset_pattern`` (BigQuery / Snowflake) is matched against the full name.
 
     When both ``schema_pattern`` and ``table_pattern`` are present, a dataset
@@ -220,10 +226,36 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
             tp = config["table_pattern"]
             return _make_adp(tp.get("allow", [".*"]), tp.get("deny", []))
 
-        # Kafka topic patterns — matched against the topic name.
+        # Kafka topic patterns — allow and deny evaluated against the topic name.
+        # A kafka dataset URN name may be bare (<topic>) or instance-prefixed
+        # (<platform_instance>.<topic>).  Candidate forms are the full name and,
+        # when a dot is present, the substring after the first dot (bare topic).
+        # covered(name) = ALLOW_matches_any_form AND NOT DENY_matches_any_form.
+        # deny is checked independently so it cannot be bypassed by the allow
+        # branch matching a different form of the same name.
         if "topic_patterns" in config:
             tp = config["topic_patterns"]
-            return _make_adp(tp.get("allow", [".*"]), tp.get("deny", []))
+            allow_pats: list[str] = tp.get("allow", [".*"])
+            deny_pats: list[str] = tp.get("deny", [])
+            allow_adp = AllowDenyPattern(allow=allow_pats, deny=[])
+            deny_adp: Any = (
+                AllowDenyPattern(allow=deny_pats, deny=[]) if deny_pats else None
+            )
+
+            def _kafka_pred(
+                name: str,
+                _a: Any = allow_adp,
+                _d: Any = deny_adp,
+            ) -> bool:
+                _head, sep, rest = name.partition(".")
+                forms = [name] + ([rest] if sep else [])
+                if not any(_a.allowed(f) for f in forms):
+                    return False
+                if _d is not None and any(_d.allowed(f) for f in forms):
+                    return False
+                return True
+
+            return _kafka_pred
 
         # BigQuery / Snowflake dataset pattern — matched against the full name.
         if "dataset_pattern" in config:

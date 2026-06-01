@@ -442,3 +442,114 @@ class TestBuildMatcher:
         """Malformed recipe (missing source) → predicate that returns False for all inputs."""
         matcher = build_matcher({"broken": "recipe"})
         assert matcher("any.table") is False
+
+    # ── kafka topic_patterns ───────────────────────────────────────────────────
+
+    def test_kafka_instance_prefixed_name_matches_topic_pattern(self) -> None:
+        """Instance-prefixed kafka name 'example_kafka.imazon.orders.events' is matched
+        by topic_patterns allow=['^imazon\\..*$'] — the pattern is evaluated against the
+        bare topic ('imazon.orders.events') after stripping the leading platform-instance
+        segment.
+
+        Spec: BACKEND.md §Sync sweep — UC1 Case 3 passive kafka; DataHub evaluates
+        topic_patterns against the topic name before instance prefix is applied.
+        """
+        recipe = {
+            "source": {
+                "type": "kafka",
+                "config": {
+                    "topic_patterns": {"allow": [r"^imazon\..*$"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("example_kafka.imazon.orders.events") is True
+        assert matcher("example_kafka.imazon.shipping.updates") is True
+
+    def test_kafka_bare_topic_matches_topic_pattern(self) -> None:
+        """Bare topic name 'imazon.orders.events' (no platform instance) is matched
+        directly by topic_patterns allow=['^imazon\\..*$'] without any segment stripping.
+        """
+        recipe = {
+            "source": {
+                "type": "kafka",
+                "config": {
+                    "topic_patterns": {"allow": [r"^imazon\..*$"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("imazon.orders.events") is True
+
+    def test_kafka_non_matching_topic_is_excluded(self) -> None:
+        """An instance-prefixed name whose topic segment does not match the allow pattern
+        is rejected.  'example_kafka.other.topic' strips to 'other.topic', which does not
+        match '^imazon\\..*$'.
+        """
+        recipe = {
+            "source": {
+                "type": "kafka",
+                "config": {
+                    "topic_patterns": {"allow": [r"^imazon\..*$"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("example_kafka.other.topic") is False
+
+    def test_kafka_deny_pattern_topic_anchored_allow_and_deny(self) -> None:
+        """Topic-anchored allow + topic-anchored deny: deny wins even for instance-prefixed names.
+
+        allow=['^imazon\\..*$'], deny=['^imazon\\.shipping\\..*$']:
+          - 'example_kafka.imazon.orders.events'    → topic 'imazon.orders.events'    → allowed
+          - 'example_kafka.imazon.shipping.updates' → topic 'imazon.shipping.updates' → denied
+
+        Spec: BACKEND.md — 'deny wins'; deny is evaluated against every candidate form
+        (full name and bare topic) so the instance prefix cannot shield a denied topic.
+        """
+        recipe = {
+            "source": {
+                "type": "kafka",
+                "config": {
+                    "topic_patterns": {
+                        "allow": [r"^imazon\..*$"],
+                        "deny": [r"^imazon\.shipping\..*$"],
+                    },
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("example_kafka.imazon.orders.events") is True
+        assert matcher("example_kafka.imazon.shipping.updates") is False
+
+    def test_kafka_broad_allow_with_topic_anchored_deny_excludes_denied_topics(self) -> None:
+        """Broad allow=['.*'] does not let a topic-anchored deny be bypassed.
+
+        With allow=['.*'] and deny=['^imazon\\.secret\\..*$']:
+          - 'example_kafka.imazon.secret.x' → full name matches broad allow, but bare topic
+            'imazon.secret.x' matches deny → excluded (deny wins over allow).
+          - 'imazon.secret.x' (bare)        → matches broad allow AND matches deny → excluded.
+          - 'example_kafka.imazon.orders.events' → matches broad allow, bare topic
+            'imazon.orders.events' does not match deny → included.
+
+        Spec: BACKEND.md — deny and allow are evaluated against all candidate forms
+        independently; deny winning on any form excludes the dataset.
+        """
+        recipe = {
+            "source": {
+                "type": "kafka",
+                "config": {
+                    "topic_patterns": {
+                        "allow": [".*"],
+                        "deny": [r"^imazon\.secret\..*$"],
+                    },
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # instance-prefixed denied topic — must be excluded
+        assert matcher("example_kafka.imazon.secret.x") is False
+        # bare denied topic — must be excluded
+        assert matcher("imazon.secret.x") is False
+        # non-denied sibling under same broad allow — must be included
+        assert matcher("example_kafka.imazon.orders.events") is True
