@@ -44,6 +44,7 @@ from src.backend.ingestion.secret_resolver import (
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
+from src.shared.db.registry import reconcile_registry
 from src.shared.events import (
     INGESTION_COMPLETE,
     INGESTION_FAIL,
@@ -1025,9 +1026,11 @@ class IngestionService:
 
         1. **Source defs**: pull DATAHUB_MANAGED source recipes + schedules via
            listIngestionSources; upsert read-only rows; remove stale rows.
-        2. **Mapping**: enumerate all DataHub datasets once, rebuild
-           ingestion_source_dataset rows with origin='matcher' for every source.
-           Preserve origin='emitted' rows (authoritative from active-custom runs).
+        2. **Mapping + registry reconcile**: enumerate all DataHub datasets once,
+           rebuild ingestion_source_dataset rows with origin='matcher' for every
+           source. Preserve origin='emitted' rows (authoritative from active-custom
+           runs). Reconcile dataset_registry to mirror the full DataHub URN set:
+           insert new URNs as registered, soft-flag removed URNs as unregistered.
         3. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
            sources, read systemMetadata.pipelineName per dataset and upsert
            origin='pipeline_name' rows where the name matches a source.
@@ -1039,11 +1042,14 @@ class IngestionService:
 
         Returns:
             Summary dict for the activity endpoint / logging:
-              sources_synced   — DATAHUB_MANAGED rows upserted
-              sources_removed  — DATAHUB_MANAGED rows removed (gone from DataHub)
-              datasets_mapped  — new ingestion_source_dataset matcher rows inserted
-              pipeline_links   — pipeline_name-origin rows upserted
-              events_mirrored  — new INGESTION events written
+              sources_synced    — DATAHUB_MANAGED rows upserted
+              sources_removed   — DATAHUB_MANAGED rows removed (gone from DataHub)
+              datasets_mapped   — new ingestion_source_dataset matcher rows inserted
+              pipeline_links    — pipeline_name-origin rows upserted
+              events_mirrored   — new INGESTION events written
+              registry_inserted — new dataset_registry rows inserted (datahub_registered=True)
+              registry_marked_true   — existing rows flipped from False to True
+              registry_marked_false  — existing rows soft-flagged as False (left DataHub)
         """
         summary: dict[str, Any] = {
             "sources_synced": 0,
@@ -1051,6 +1057,9 @@ class IngestionService:
             "datasets_mapped": 0,
             "pipeline_links": 0,
             "events_mirrored": 0,
+            "registry_inserted": 0,
+            "registry_marked_true": 0,
+            "registry_marked_false": 0,
         }
 
         # ── Step 1: Source defs (DATAHUB_MANAGED) ────────────────────────────
@@ -1203,6 +1212,19 @@ class IngestionService:
                     await self._db.delete(stale_row)
 
         await self._db.commit()
+
+        # ── Step 2b: Registry reconcile ───────────────────────────────────────
+        # Uses the same all_dataset_urns enumerated above — no second DataHub call.
+        # Committed independently so a reconcile error does not roll back the mapping.
+        try:
+            reg_counts = await reconcile_registry(self._db, set(all_dataset_urns))
+            await self._db.commit()
+            summary["registry_inserted"] = reg_counts["inserted"]
+            summary["registry_marked_true"] = reg_counts["marked_true"]
+            summary["registry_marked_false"] = reg_counts["marked_false"]
+        except Exception:
+            logger.exception("registry_reconcile_failed — skipping, will retry next sweep")
+            await self._db.rollback()
 
         # ── Step 3: Observed enrichment (MANAGED modes) ───────────────────────
         if all_dataset_urns:

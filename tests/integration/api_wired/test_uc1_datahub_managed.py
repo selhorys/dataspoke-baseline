@@ -156,31 +156,47 @@ async def _managed_source_setup(
     ingestion_source_urn = gql_data.get("data", {}).get("createIngestionSource")
     assert ingestion_source_urn, f"createIngestionSource returned no URN: {gql_data}"
 
-    # Run sync to mirror the source into DataSpoke
-    sync_resp = await api_client.post(
-        "/internal/activities/ingestion/sync",
-        headers=internal_headers,
-    )
-    assert sync_resp.status_code == 200, (
-        f"POST /internal/activities/ingestion/sync expected 200, "
-        f"got {sync_resp.status_code}: {sync_resp.text}"
-    )
+    # Poll: re-run POST /internal/activities/ingestion/sync and re-list
+    # GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED until a row with the created
+    # datahub_source_urn appears (≤180s).
+    #
+    # DataHub eventual consistency: listIngestionSources may not return the brand-new
+    # source immediately, so the sync correctly mirrors only pre-existing sources on the
+    # first call.  Subsequent sync calls pick it up once DataHub indexes the new entry.
+    # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s.
+    # spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 1 — sync mirrors all
+    #       DataHub-managed sources; new sources surface after indexing completes.
+    poll_deadline = time.time() + 180.0
+    poll_interval = 5.0
+    matching: list = []
+    found_urns: list = []
+    while time.time() < poll_deadline:
+        sync_resp = await api_client.post(
+            "/internal/activities/ingestion/sync",
+            headers=internal_headers,
+        )
+        assert sync_resp.status_code == 200, (
+            f"POST /internal/activities/ingestion/sync expected 200, "
+            f"got {sync_resp.status_code}: {sync_resp.text}"
+        )
+        list_resp = await api_client.get(
+            "/api/v1/spoke/ingestion/sources?mode=DATAHUB_MANAGED&limit=100",
+            headers=admin_headers,
+        )
+        assert list_resp.status_code == 200, list_resp.text
+        sources = list_resp.json().get("sources", [])
+        matching = [s for s in sources if s.get("datahub_source_urn") == ingestion_source_urn]
+        found_urns = [s.get("datahub_source_urn") for s in sources]
+        if matching:
+            break
+        await asyncio.sleep(poll_interval)
 
-    # Locate the mirrored DataSpoke source row
-    list_resp = await api_client.get(
-        "/api/v1/spoke/ingestion/sources?mode=DATAHUB_MANAGED&limit=100",
-        headers=admin_headers,
-    )
-    assert list_resp.status_code == 200, list_resp.text
-    matching = [
-        s for s in list_resp.json().get("sources", [])
-        if s.get("datahub_source_urn") == ingestion_source_urn
-    ]
-    found_urns = [s.get("datahub_source_urn") for s in list_resp.json().get("sources", [])]
     assert len(matching) >= 1, (
         f"Expected a DATAHUB_MANAGED source with "
-        f"datahub_source_urn={ingestion_source_urn!r} after sync; "
-        f"found {found_urns}. spec: feature/BACKEND.md §Sync sweep step 1"
+        f"datahub_source_urn={ingestion_source_urn!r} after ≤180s polling; "
+        f"found {found_urns}. "
+        "spec: feature/BACKEND.md §Sync sweep step 1 — sync mirrors DataHub-managed sources; "
+        "spec: project_es_indexing_lag_after_reset_seed — DataHub eventual consistency."
     )
 
     managed_source = matching[0]
@@ -381,9 +397,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         non_catalog_mapped = [
             d for d in mapped_datasets
             if _EXPECTED_URN_INFIX in d.get("dataset_urn", "")
-            and not any(
-                f"{PG_INSTANCE}.catalog." in d.get("dataset_urn", "")
-            )
+            and f"{PG_INSTANCE}.catalog." not in d.get("dataset_urn", "")
         ]
         if non_catalog_mapped:
             break

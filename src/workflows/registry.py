@@ -8,13 +8,13 @@ TIERS: tuple[str, ...] = ("hourly", "daily", "weekly")
 INGESTION_ACTIVE_DAG_IDS: tuple[str, ...] = tuple(
     f"ingestion-active-{tier}" for tier in TIERS
 )
-INGESTION_SYNC_DAG_IDS: tuple[str, ...] = ("ingestion-sync-hourly",)
+INGESTION_SYNC_DAG_IDS: tuple[str, ...] = ("datahub-sync-hourly",)
 METRICS_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metrics-{tier}" for tier in TIERS)
 METAGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"metagen-{tier}" for tier in TIERS)
 ONTOGEN_TIER_DAG_IDS: tuple[str, ...] = tuple(f"ontogen-{tier}" for tier in TIERS)
 
 ON_DEMAND_DAG_IDS: tuple[str, ...] = ("metrics",)
-SYNC_DAG_IDS: tuple[str, ...] = ("datahub-sync-daily", "auth-role-sync-daily")
+SYNC_DAG_IDS: tuple[str, ...] = ("auth-role-sync-daily",)
 
 ALL_DAG_IDS: frozenset[str] = frozenset(
     INGESTION_ACTIVE_DAG_IDS

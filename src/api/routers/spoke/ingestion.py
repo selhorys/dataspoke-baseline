@@ -15,7 +15,12 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
+from src.api.auth.dependencies import (
+    AuthContext,
+    require_authenticated,
+    require_editor,
+    require_writer,
+)
 from src.api.dependencies import get_db, get_ingestion_service
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
@@ -326,15 +331,16 @@ async def get_ingestion_unmanaged(
 ) -> IngestionUnmanagedResponse:
     """List DataHub dataset URNs not covered by any ingestion source.
 
-    Returns URNs from ``dataset_registry`` that have no row in
-    ``ingestion_source_dataset``. The mapping is rebuilt by the hourly sync DAG;
-    an empty list means all known datasets have an owning source.
+    Returns URNs that exist in DataHub (``datahub_registered=True``) and have
+    no row in ``ingestion_source_dataset``. The registry is populated by the
+    hourly sync DAG; an empty list means all known datasets have an owning source.
     """
     # Subquery: dataset_urns that DO have a source mapping.
     mapped_subq = select(IngestionSourceDataset.dataset_urn).scalar_subquery()
 
     base_q = select(DatasetRegistry.dataset_urn).where(
-        DatasetRegistry.dataset_urn.not_in(mapped_subq)
+        DatasetRegistry.datahub_registered.is_(True),
+        DatasetRegistry.dataset_urn.not_in(mapped_subq),
     )
 
     count_q = select(func.count()).select_from(base_q.subquery())
@@ -361,7 +367,7 @@ async def get_ingestion_unmanaged(
 
 @router.get("/secrets", response_model=SecretRefListResponse)
 async def get_ingestion_secrets(
-    _writer: AuthContext = Depends(require_writer),
+    _editor: AuthContext = Depends(require_editor),
 ) -> SecretRefListResponse:
     """List available source-credential references (no values returned).
 

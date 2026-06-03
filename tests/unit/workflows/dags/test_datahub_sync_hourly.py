@@ -1,10 +1,10 @@
-"""Unit tests for the datahub-sync-daily DAG definition.
+"""Unit tests for the datahub-sync-hourly DAG definition.
 
 Tests cover:
-- datahub-sync-daily is registered in _EXPECTED_DAGS in admin.py
+- datahub-sync-hourly is registered in _EXPECTED_DAGS in admin.py
 - The DAG file exists in the dags/ directory
 - The DAG file contains the correct dag_id string and expected structural markers
-- ALL_DAG_IDS exactly matches the 16 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue
+- ALL_DAG_IDS exactly matches the 15 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue
 
 Note: airflow is not installed in the unit-test Python environment
 (it runs in-cluster only). These tests verify the DAG file at the
@@ -17,23 +17,23 @@ from __future__ import annotations
 from pathlib import Path
 
 _DAGS_DIR = Path(__file__).resolve().parents[4] / "src" / "workflows" / "dags"
-_DAG_ID = "datahub-sync-daily"
+_DAG_ID = "datahub-sync-hourly"
 
-# Exact set of 16 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue.
+# Exact set of 15 DAG IDs from spec/feature/BACKEND.md §DAG Catalogue.
 # 4 ingestion (3 active tier + 1 sync hourly)
 # 3 metrics tier (hourly/daily/weekly)
 # 3 metagen tier (hourly/daily/weekly)
 # 3 ontogen tier (hourly/daily/weekly)
 # 1 on-demand (metrics)
-# 2 sync (datahub-sync-daily, auth-role-sync-daily)
-# Total = 16
+# 1 sync (auth-role-sync-daily)
+# Total = 15
 _EXPECTED_ALL_DAG_IDS: frozenset[str] = frozenset({
     # Ingestion — active scheduled tiers
     "ingestion-active-hourly",
     "ingestion-active-daily",
     "ingestion-active-weekly",
-    # Ingestion — sync sweep
-    "ingestion-sync-hourly",
+    # Ingestion — sync sweep (consolidated DataHub reconciliation)
+    "datahub-sync-hourly",
     # Metrics — scheduled tiers
     "metrics-hourly",
     "metrics-daily",
@@ -49,7 +49,6 @@ _EXPECTED_ALL_DAG_IDS: frozenset[str] = frozenset({
     # On-demand (API-triggered Airflow DAGs)
     "metrics",
     # Sync
-    "datahub-sync-daily",
     "auth-role-sync-daily",
 })
 
@@ -59,14 +58,14 @@ _EXPECTED_ALL_DAG_IDS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 
-def test_datahub_sync_daily_in_expected_dags():
-    """datahub-sync-daily must appear in the _EXPECTED_DAGS frozenset so that
+def test_datahub_sync_hourly_in_expected_dags():
+    """datahub-sync-hourly must appear in the _EXPECTED_DAGS frozenset so that
     /internal/admin/dags/verify flags it as missing when Airflow is not yet loaded."""
     from src.api.routers.admin import _EXPECTED_DAGS
 
     assert _DAG_ID in _EXPECTED_DAGS, (
         f"'{_DAG_ID}' not found in _EXPECTED_DAGS. "
-        "Add it to _SYNC_DAGS in src/api/routers/admin.py."
+        "Add it to src/api/routers/admin.py."
     )
 
 
@@ -75,17 +74,16 @@ def test_datahub_sync_daily_in_expected_dags():
 # ---------------------------------------------------------------------------
 
 
-def test_datahub_sync_daily_dag_file_exists():
-    """The datahub_sync_daily.py DAG file must exist in the dags directory."""
-    dag_file = _DAGS_DIR / "datahub_sync_daily.py"
+def test_datahub_sync_hourly_dag_file_exists():
+    """The datahub_sync_hourly.py DAG file must exist in the dags directory."""
+    dag_file = _DAGS_DIR / "datahub_sync_hourly.py"
     assert dag_file.is_file(), f"DAG file not found: {dag_file}"
 
 
-def test_datahub_sync_daily_dag_id_string_present():
-    """The DAG file must reference the 'datahub-sync-daily' ID (literal or via variable)."""
-    dag_file = _DAGS_DIR / "datahub_sync_daily.py"
+def test_datahub_sync_hourly_dag_id_string_present():
+    """The DAG file must reference the 'datahub-sync-hourly' ID (literal or via variable)."""
+    dag_file = _DAGS_DIR / "datahub_sync_hourly.py"
     source = dag_file.read_text()
-    # The ID may appear as a literal or assigned to _DAG_ID then referenced via dag_id=_DAG_ID.
     id_present = (
         f'"{_DAG_ID}"' in source
         or f"'{_DAG_ID}'" in source
@@ -95,21 +93,21 @@ def test_datahub_sync_daily_dag_id_string_present():
     )
 
 
-def test_datahub_sync_daily_calls_sync_endpoint():
-    """The DAG task must target the /internal/activities/datahub/sync endpoint."""
-    dag_file = _DAGS_DIR / "datahub_sync_daily.py"
+def test_datahub_sync_hourly_calls_ingestion_sync_endpoint():
+    """The DAG task must target the /internal/activities/ingestion/sync endpoint."""
+    dag_file = _DAGS_DIR / "datahub_sync_hourly.py"
     source = dag_file.read_text()
-    assert "/internal/activities/datahub/sync" in source, (
-        "DAG task does not reference /internal/activities/datahub/sync"
+    assert "/internal/activities/ingestion/sync" in source, (
+        "DAG task does not reference /internal/activities/ingestion/sync"
     )
 
 
-def test_datahub_sync_daily_is_in_sync_dag_ids():
-    """datahub-sync-daily must be registered in SYNC_DAG_IDS and ALL_DAG_IDS."""
-    from src.workflows.registry import ALL_DAG_IDS, SYNC_DAG_IDS
+def test_datahub_sync_hourly_is_in_ingestion_sync_dag_ids():
+    """datahub-sync-hourly must be registered in INGESTION_SYNC_DAG_IDS and ALL_DAG_IDS."""
+    from src.workflows.registry import ALL_DAG_IDS, INGESTION_SYNC_DAG_IDS
 
-    assert _DAG_ID in SYNC_DAG_IDS, (
-        f"'{_DAG_ID}' not in SYNC_DAG_IDS — verify src/workflows/registry.py"
+    assert _DAG_ID in INGESTION_SYNC_DAG_IDS, (
+        f"'{_DAG_ID}' not in INGESTION_SYNC_DAG_IDS — verify src/workflows/registry.py"
     )
     assert _DAG_ID in ALL_DAG_IDS, (
         f"'{_DAG_ID}' not in ALL_DAG_IDS — verify src/workflows/registry.py"
@@ -122,7 +120,7 @@ def test_datahub_sync_daily_is_in_sync_dag_ids():
 
 
 def test_all_dag_ids_exactly_matches_spec_catalogue():
-    """ALL_DAG_IDS must be set-equal to the 16 DAG IDs enumerated in
+    """ALL_DAG_IDS must be set-equal to the 15 DAG IDs enumerated in
     spec/feature/BACKEND.md §DAG Catalogue.
 
     This test prevents silent drift — a DAG added to the registry without a
@@ -130,7 +128,7 @@ def test_all_dag_ids_exactly_matches_spec_catalogue():
 
     spec: BACKEND.md §DAG Catalogue
     """
-    # spec: BACKEND.md §DAG Catalogue — 16 DAGs total across all tiers and modes
+    # spec: BACKEND.md §DAG Catalogue — 15 DAGs total across all tiers and modes
     from src.workflows.registry import ALL_DAG_IDS
 
     extra_in_impl = ALL_DAG_IDS - _EXPECTED_ALL_DAG_IDS

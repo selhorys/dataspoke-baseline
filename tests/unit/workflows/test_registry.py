@@ -3,13 +3,13 @@
 Pins the exact set of DAG IDs per spec/feature/BACKEND.md §DAG Catalogue.
 Also verifies tier structure for tier-based DAG groups.
 
-spec: feature/BACKEND.md §DAG Catalogue — 16 DAGs total:
+spec: feature/BACKEND.md §DAG Catalogue — 15 DAGs total:
   4 ingestion (3 active tier + 1 sync hourly)
   3 metrics tier (hourly/daily/weekly)
   3 metagen tier (hourly/daily/weekly)
   3 ontogen tier (hourly/daily/weekly)
   1 on-demand (metrics)
-  2 sync (datahub-sync-daily, auth-role-sync-daily)
+  1 sync (auth-role-sync-daily)
 """
 
 import pytest
@@ -31,8 +31,8 @@ _SPEC_ALL_DAG_IDS: frozenset[str] = frozenset({
     "ingestion-active-hourly",
     "ingestion-active-daily",
     "ingestion-active-weekly",
-    # Ingestion — sync sweep
-    "ingestion-sync-hourly",
+    # Ingestion — consolidated DataHub sync sweep
+    "datahub-sync-hourly",
     # Metrics — scheduled tiers
     "metrics-hourly",
     "metrics-daily",
@@ -48,7 +48,6 @@ _SPEC_ALL_DAG_IDS: frozenset[str] = frozenset({
     # On-demand (API-triggered Airflow DAGs)
     "metrics",
     # Sync
-    "datahub-sync-daily",
     "auth-role-sync-daily",
 })
 
@@ -83,13 +82,13 @@ def test_all_dag_ids_is_frozenset() -> None:
     assert isinstance(ALL_DAG_IDS, frozenset)
 
 
-def test_all_dag_ids_has_exactly_16_entries() -> None:
-    """ALL_DAG_IDS must have exactly 16 entries per spec.
+def test_all_dag_ids_has_exactly_15_entries() -> None:
+    """ALL_DAG_IDS must have exactly 15 entries per spec.
 
     spec: feature/BACKEND.md §DAG Catalogue.
     """
-    assert len(ALL_DAG_IDS) == 16, (
-        f"Expected 16 DAG IDs, got {len(ALL_DAG_IDS)}. "
+    assert len(ALL_DAG_IDS) == 15, (
+        f"Expected 15 DAG IDs, got {len(ALL_DAG_IDS)}. "
         f"ALL_DAG_IDS: {sorted(ALL_DAG_IDS)}"
     )
 
@@ -120,12 +119,12 @@ def test_ingestion_active_dag_ids_count() -> None:
 # ── INGESTION_SYNC_DAG_IDS ────────────────────────────────────────────────────
 
 
-def test_ingestion_sync_dag_ids_contains_hourly() -> None:
-    """INGESTION_SYNC_DAG_IDS must contain ingestion-sync-hourly.
+def test_ingestion_sync_dag_ids_contains_datahub_sync_hourly() -> None:
+    """INGESTION_SYNC_DAG_IDS must contain datahub-sync-hourly.
 
-    spec: feature/BACKEND.md §DAG Catalogue — ingestion sync sweep runs hourly.
+    spec: feature/BACKEND.md §DAG Catalogue — consolidated DataHub sync sweep runs hourly.
     """
-    assert "ingestion-sync-hourly" in INGESTION_SYNC_DAG_IDS
+    assert "datahub-sync-hourly" in INGESTION_SYNC_DAG_IDS
 
 
 def test_ingestion_sync_dag_ids_count() -> None:
@@ -186,12 +185,12 @@ def test_on_demand_dag_ids_is_exactly_metrics() -> None:
 # ── SYNC_DAG_IDS ──────────────────────────────────────────────────────────────
 
 
-def test_sync_dag_ids_contains_datahub_sync_daily() -> None:
-    """SYNC_DAG_IDS must contain 'datahub-sync-daily'.
+def test_sync_dag_ids_contains_auth_role_sync_daily() -> None:
+    """SYNC_DAG_IDS must contain 'auth-role-sync-daily'.
 
-    spec: feature/BACKEND.md §DAG Catalogue — sync DAG reconciles dataset registry.
+    spec: feature/BACKEND.md §DAG Catalogue — auth role sync DAG.
     """
-    assert "datahub-sync-daily" in SYNC_DAG_IDS
+    assert "auth-role-sync-daily" in SYNC_DAG_IDS
 
 
 # ── Union covers ALL_DAG_IDS ──────────────────────────────────────────────────

@@ -309,8 +309,14 @@ Failure responses:
 | Condition | Response |
 |---|---|
 | Reader attempting a write method on `/spoke/*` or `/hub/*` | `403 READ_ONLY_ROLE` |
+| Reader on `GET /spoke/ingestion/secrets` (Editor+ exception — see below) | `403 READ_ONLY_ROLE` |
 | Editor or Reader attempting `/admin/*` | `403 FORBIDDEN` |
 | Role row missing (defensive — should not occur post-registration) | `403 FORBIDDEN` |
+
+**Editor+ read exception:** `GET /spoke/ingestion/secrets` requires Editor or Admin even though
+it is a GET — enumerating which source-credential references exist is author/operator tooling
+(see [SECRET_RESOLUTION.md §Reference discovery](SECRET_RESOLUTION.md#reference-discovery-list-flow)).
+It is the only read route that deviates from the Reader-GET rule above.
 
 Role changes take effect on the **next request**, both for JWT-authenticated
 sessions and for API-token requests (the intersection check reads

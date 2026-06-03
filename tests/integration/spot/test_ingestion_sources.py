@@ -93,10 +93,13 @@ def _unique_email(prefix: str = "spot-ingestion") -> str:
 async def reader_headers(integration_db_url: str) -> AsyncGenerator[dict[str, str]]:
     """Module-scoped fixture: seed a Reader user directly in the DB and return auth headers.
 
-    Uses DB seeding (google_sub, no password_hash) to avoid the /auth/register rate limit.
-    Automatically deletes the seeded user at teardown.
+    Uses the same proven pattern as the reader_token fixture in test_auth_privilege.py:
+    DB-seeded user (google_sub, no password_hash) + issue_access_token, so the JWT is
+    signed with the same secret the in-cluster API uses.  The server looks up role from
+    the DB on every request; the seeded 'Reader' row ensures the gate evaluates to Reader.
 
-    spec: API.md §Authentication — method × role gate (Reader can GET but not POST)
+    spec: API.md §Authentication — method × role gate (Reader GET only; writes → 403)
+    spec: feature/AUTH.md §Privilege Model — Reader on /spoke/* write routes → 403 READ_ONLY_ROLE
     spec: TESTING.md §Spot vs Api-Wired Integration Tests — fixture may use util for teardown
     """
     from src.backend.auth.tokens import issue_access_token
@@ -123,6 +126,9 @@ async def reader_headers(integration_db_url: str) -> AsyncGenerator[dict[str, st
     finally:
         await engine.dispose()
 
+    # issue_access_token signs with DATASPOKE_JWT_SECRET_KEY, which conftest promotes
+    # from DATASPOKE_TEST_JWT_SECRET_KEY so it matches the in-cluster API pod.
+    # spec: feedback_test_runtime_env_promotion — conftest must promote JWT secret.
     token, _ = issue_access_token(user_id, email)
 
     yield {"Authorization": f"Bearer {token}"}

@@ -81,7 +81,7 @@ def test_airflow_execution_failed_detail_included_when_provided() -> None:
     impl interface contract (Airflow REST API + impl conventions) — detail aids debugging.
     """
     exc = AirflowExecutionFailedError(
-        dag_id="datahub-sync-daily", dag_run_id="run-2", detail="upstream error"
+        dag_id="datahub-sync-hourly", dag_run_id="run-2", detail="upstream error"
     )
     assert "upstream error" in str(exc)
 

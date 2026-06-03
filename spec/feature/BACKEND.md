@@ -295,7 +295,7 @@ the extractor's emitted URNs into `ingestion_source_dataset` (`origin = emitted`
 → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (the run's `dry_run` boolean is preserved
 in the event's `detail`; see [Event Catalogue](#event-catalogue)).
 
-**Sync + mapping sweep** (`IngestionService.sync()`, called hourly by the `ingestion-sync-hourly`
+**Sync + mapping sweep** (`IngestionService.sync()`, called hourly by the `datahub-sync-hourly`
 DAG) reconciles all modes:
 
 1. **Source defs**: pull `DATAHUB_MANAGED` source recipes + schedules via DataHub's
@@ -306,7 +306,8 @@ DAG) reconciles all modes:
    `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`
    scope for `PASSIVE`. `origin = matcher`. Matching parses dataset URNs and applies filters the
    way the connector names them — declared/derived coverage, an explicit approximation (DataHub
-   exposes no native source→dataset reverse lookup).
+   exposes no native source→dataset reverse lookup). A source with no derivable selection patterns
+   (`schema_pattern`/`table_pattern`/`topic_patterns`/`dataset_pattern` all absent) maps no datasets.
 3. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
    per dataset to link datasets to their source authoritatively — `DATAHUB_MANAGED` (DataHub
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
@@ -336,7 +337,7 @@ fork-and-extend path — the project's Productized-Scaffold identity.
 
 **Run-event consumption**: every observed run maps into the dataset's `event/ingestion` timeline.
 DataSpoke's own extractor records its runs inline (see run pipeline above). `DATAHUB_MANAGED` and
-`PASSIVE` runs are observed by the `ingestion-sync-hourly` DAG — `listExecutionRequests` for
+`PASSIVE` runs are observed by the `datahub-sync-hourly` DAG — `listExecutionRequests` for
 DataHub-managed, and `DataProcessInstance` runs + ingestion-like `Operation` aspects
 (`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`) for passive. `result.resultType = SUCCESS`
 maps to `INGESTION.COMPLETE`, `FAILURE` to `INGESTION.FAIL`.
@@ -751,7 +752,7 @@ is only the fallback used when no per-dataset window can be derived.
 - `ingestion-freshness`: the window is read from each dataset's owning ingestion source
   (resolved via the `ingestion_source_dataset` mapping). `ACTIVE_CUSTOM_MANAGED` /
   `DATAHUB_MANAGED` with a schedule → `SCHEDULE_TIER_SECONDS[schedule_tier] × 2`; `PASSIVE` (no
-  schedule) → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `ingestion-sync-hourly` DAG);
+  schedule) → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `datahub-sync-hourly` DAG);
   a dataset mapped to no source, or a source with no derivable schedule →
   `metric_conf.time_window_sec`. The `× 2` factor leaves room for transient late ingestion.
   Tier→seconds and the passive period live in `src/shared/schedule.py`.
@@ -909,7 +910,7 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ingestion-active-hourly` | `ingestion_active_hourly.py` | Airflow schedule | `@hourly` |
 | `ingestion-active-daily` | `ingestion_active_daily.py` | Airflow schedule | `@daily` |
 | `ingestion-active-weekly` | `ingestion_active_weekly.py` | Airflow schedule | `@weekly` |
-| `ingestion-sync-hourly` | `ingestion_sync_hourly.py` | Airflow schedule | `@hourly` |
+| `datahub-sync-hourly` | `datahub_sync_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
 | `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
@@ -920,7 +921,6 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ontogen-hourly` | `ontogen_hourly.py` | Airflow schedule | `@hourly` |
 | `ontogen-daily` | `ontogen_daily.py` | Airflow schedule | `@daily` |
 | `ontogen-weekly` | `ontogen_weekly.py` | Airflow schedule | `@weekly` |
-| `datahub-sync-daily` | `datahub_sync_daily.py` | Airflow schedule | `@daily` |
 | `auth-role-sync-daily` | `auth_role_sync_daily.py` | Airflow schedule | `@daily` |
 
 > **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
@@ -935,8 +935,13 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 the live DataHub URN set. Accepts an optional `dataset_urns` list in the body
 (null/omitted = full sweep). Flips the flag bidirectionally: sets it true when a URN is
 found in DataHub, false when it has disappeared. Returns counts
-`{checked, flipped_true, flipped_false, unchanged, not_found}`. The `datahub-sync-daily`
-DAG calls this endpoint daily (unparameterized, full sweep).
+`{checked, flipped_true, flipped_false, unchanged, not_found}`. This endpoint is the
+**on-demand / scoped** path (e.g. validation's per-dataset precision check). Scheduled
+full-estate reconciliation runs **hourly** as part of the `datahub-sync-hourly` sweep, which
+enumerates DataHub once and reconciles `dataset_registry` — inserting newly-seen URNs and
+soft-flagging `datahub_registered` true/false — alongside the ingestion source→dataset mapping.
+An empty (but successful) enumeration is treated as "no signal" and skips the deregister pass
+so a transient zero-result search cannot mass-deregister the registry.
 
 ### DAG Verification
 

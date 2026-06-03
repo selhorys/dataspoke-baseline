@@ -117,6 +117,25 @@ async def require_writer(
     return ctx
 
 
+async def require_editor(
+    ctx: AuthContext = Depends(require_authenticated),
+) -> AuthContext:
+    """Enforce that the caller is Editor or Admin (Reader blocked on any method).
+
+    Use this for read endpoints that expose sensitive information and must be
+    restricted to Editor-or-above regardless of HTTP method.
+
+    Raises:
+        ForbiddenError('READ_ONLY_ROLE')  — Reader on any method.
+    """
+    if ctx.effective_role == "Reader":
+        raise ForbiddenError(
+            error_code="READ_ONLY_ROLE",
+            message="Reader role cannot access this resource.",
+        )
+    return ctx
+
+
 async def require_admin(
     ctx: AuthContext = Depends(require_authenticated),
 ) -> AuthContext:

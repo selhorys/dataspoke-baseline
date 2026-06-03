@@ -28,9 +28,10 @@ _PG_HOST_PORT = os.environ.get(
     "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
     "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
 )
-# Secret reference: K8s Secret dataspoke-source-cred-spot-pg, key 'password'.
-_SECRET_REF_HOURLY = "${spot_pg_hourly__password}"
-_SECRET_REF_DAILY = "${spot_pg_daily__password}"
+# Secret reference: provisioned K8s Secret dataspoke-source-cred-dummy-data-pg, key 'password'.
+# spec: SECRET_RESOLUTION.md §Name prefix policy — DNS-label-safe (hyphens, no underscores).
+_SECRET_REF_HOURLY = "${dummy-data-pg__password}"
+_SECRET_REF_DAILY = "${dummy-data-pg__password}"
 
 # Per-module dummy-data seed: re-seed catalog schema in PG and ingest into DataHub
 # before this module's tests run (autoused by tests/integration/conftest.py).
@@ -168,7 +169,7 @@ async def test_ingestion_run_activity(
                         "host_port": _PG_HOST_PORT,
                         "database": "example_db",
                         "username": "postgres",
-                        "password": "${spot_pg_daily__password}",
+                        "password": "${dummy-data-pg__password}",
                         "env": "DEV",
                         "schema_pattern": {"allow": ["^catalog$"]},
                     },

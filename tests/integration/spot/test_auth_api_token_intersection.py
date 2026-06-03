@@ -26,7 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Simple spoke endpoint used as the write target — auth check fires before body validation
 _WRITE_URL = "/api/v1/spoke/metagen/method/run"
-_READ_URL = "/api/v1/spoke/ingestion"
+# Reader-accessible GET on /spoke/* — use the sources list (bare /spoke/ingestion removed in
+# per-source overhaul; /spoke/ingestion/sources is the correct list route).
+# spec: API.md §Ingestion — GET /spoke/ingestion/sources is Reader-allowed.
+_READ_URL = "/api/v1/spoke/ingestion/sources"
 
 
 def _unique_email(prefix: str = "intersection") -> str:

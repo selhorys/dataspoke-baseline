@@ -373,10 +373,13 @@ class TestBuildMatcher:
         assert matcher("example_db.catalog.title_master") is True
         assert matcher("example_db.catalog.editions") is False
 
-    def test_no_patterns_is_allow_all(self) -> None:
-        """No patterns declared → allow all (default).
+    def test_no_patterns_is_match_nothing(self) -> None:
+        """No selection patterns declared → match-nothing (no inferable coverage).
 
-        Spec: BACKEND.md — 'If none of the above keys are found … defaults to allow_all'.
+        Spec: BACKEND.md — 'a source with no derivable selection patterns maps no datasets'.
+        A source whose recipe carries no schema_pattern/table_pattern/topic_patterns/
+        dataset_pattern cannot have its coverage inferred, so the matcher returns False
+        for every name rather than claiming to cover everything.
         """
         recipe = {
             "source": {
@@ -385,8 +388,32 @@ class TestBuildMatcher:
             }
         }
         matcher = build_matcher(recipe)
-        assert matcher("any.schema.table") is True
-        assert matcher("example_db.catalog.orders") is True
+        assert matcher("any.schema.table") is False
+        assert matcher("example_db.catalog.orders") is False
+
+    def test_datahub_gc_no_patterns_maps_nothing(self) -> None:
+        """Regression: DataHub built-in sources (datahub-gc, datahub-documents) carry no
+        selection patterns. Each must map zero datasets, not the full estate.
+
+        Without this fix, every dataset was attributed to datahub-gc because the old
+        allow-all default matched everything.
+
+        Spec: BACKEND.md — 'a source with no derivable selection patterns maps no datasets'.
+        """
+        gc_recipe = {"source": {"type": "datahub-gc", "config": {}}}
+        gc_matcher = build_matcher(gc_recipe)
+        # Postgres-style dataset name
+        assert gc_matcher("example_db.catalog.title_master") is False
+        # Kafka-style dataset name (instance-prefixed)
+        assert gc_matcher("example_kafka.imazon.orders.events") is False
+        # Generic names
+        assert gc_matcher("some.random.dataset") is False
+        assert gc_matcher("anything") is False
+
+        docs_recipe = {"source": {"type": "datahub-documents", "config": {}}}
+        docs_matcher = build_matcher(docs_recipe)
+        assert docs_matcher("example_db.catalog.title_master") is False
+        assert docs_matcher("example_kafka.imazon.orders.events") is False
 
     def test_schema_and_table_pattern_both_must_pass(self) -> None:
         """When both schema_pattern and table_pattern present, dataset must pass both.

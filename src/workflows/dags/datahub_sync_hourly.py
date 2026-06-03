@@ -1,8 +1,10 @@
-"""Airflow DAG: ingestion-sync-hourly
+"""Airflow DAG: datahub-sync-hourly
 
-Hourly sync sweep. Reconciles all ingestion sources (DATAHUB_MANAGED, PASSIVE,
-ACTIVE_CUSTOM_MANAGED) against DataHub: pulls source definitions, rebuilds
-dataset mappings, mirrors run events into the events table.
+Hourly full DataHub→DataSpoke reconciliation sweep. In a single pass it:
+- reconciles dataset_registry existence from DataHub's entity enumeration,
+- rebuilds ingestion source→dataset mappings,
+- mirrors managed source definitions,
+- mirrors run events into the events table.
 
 Single task — the service iterates all sources internally.
 
@@ -17,11 +19,14 @@ from _internal_headers import internal_headers
 from airflow import DAG
 from airflow.providers.http.operators.http import HttpOperator
 
-_DAG_ID = "ingestion-sync-hourly"
+_DAG_ID = "datahub-sync-hourly"
 
 with DAG(
     dag_id=_DAG_ID,
-    description="Hourly sync of all ingestion sources against DataHub",
+    description=(
+        "Hourly DataHub→DataSpoke reconciliation: dataset_registry existence, "
+        "ingestion source→dataset mapping, managed source defs, run events"
+    ),
     schedule="@hourly",
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -32,10 +37,10 @@ with DAG(
         "retry_delay": timedelta(seconds=10),
         "execution_timeout": timedelta(minutes=5),
     },
-    tags=["ingestion", "sync", "hourly"],
+    tags=["datahub", "ingestion", "sync", "hourly"],
 ) as dag:
-    ingestion_sync = HttpOperator(
-        task_id="ingestion_sync",
+    datahub_sync = HttpOperator(
+        task_id="datahub_sync",
         http_conn_id="dataspoke_api",
         endpoint="/internal/activities/ingestion/sync",
         method="POST",

@@ -282,8 +282,8 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 | `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor (`dry_run` in body for no-write connection check); `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `origin`) | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source | Ingestion Control | UC1 |
-| `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets covered by no source (paginated) | Ingestion Control | UC1 |
-| `GET` | `/spoke/ingestion/secrets` | List source-credential references available to recipes — one row per `(secret, key)` under the `dataspoke-source-cred-` prefix, as `{ref: "name__key", secret_name, key}`. **Values are never returned.** Admins pre-create the K8s Secrets out-of-band; a recipe references one as `${name__key}` | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets (`dataset_registry.datahub_registered=true`) covered by no ingestion source (paginated) — the registry is refreshed hourly by the `datahub-sync-hourly` sweep | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/secrets` | List source-credential references available to recipes — one row per `(secret, key)` under the `dataspoke-source-cred-` prefix, as `{ref: "name__key", secret_name, key}`. **Values are never returned.** Admins pre-create the K8s Secrets out-of-band; a recipe references one as `${name__key}`. **Requires Editor or Admin** (`403 READ_ONLY_ROLE` for Reader) — exception to the Reader-GET rule, since enumerating which credential refs exist is author-only tooling | Ingestion Control | UC1 |
 
 **Source body shape.** The request and response bodies are JSON whose fields mirror the UC1
 recipe YAML 1:1, using **DataHub-recipe-standard wording only** — no DataSpoke-specific field
@@ -813,7 +813,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `OAUTH_NOT_CONFIGURED` | 503 | `GET /auth/google/{login,callback}` invoked while Google OAuth credentials or the OAuth-state HMAC secret are not configured — operator must set `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET` |
 | `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 409 | `GET /auth/google/callback` resolved a Google `sub` that is already linked to a different DataSpoke user (one Google account per user) |
 | `INVALID_REFRESH_TOKEN` | 401 | `POST /auth/token/refresh` received a structurally-valid JWT whose `type` claim is not `"refresh"` (e.g. an access token presented at the refresh endpoint) |
-| `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (write method on `/spoke/*` or `/hub/*`) |
+| `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (any write method on `/spoke/*` or `/hub/*`, or the Editor+ read route `GET /spoke/ingestion/secrets`) |
 | `INVALID_API_TOKEN` | 401 | `Authorization: Bearer dsk_...` token does not match any `api_tokens` row, or the format is malformed |
 | `TOKEN_REVOKED` | 401 | API token row exists but `revoked_at` is set |
 | `TOKEN_EXPIRED` | 401 | API token row exists but `expires_at` is in the past |

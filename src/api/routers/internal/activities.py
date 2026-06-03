@@ -11,12 +11,11 @@ orchestrator running inside the same K8s namespace, gated by X-Internal-Token.
 Activities:
   /ingestion/list-active  — list source IDs with ACTIVE_CUSTOM_MANAGED configs for a tier
   /ingestion/run          — execute ingestion pipeline for a single source
-  /ingestion/sync         — reconcile all ingestion sources against DataHub (hourly sweep)
+  /ingestion/sync         — reconcile all ingestion sources + dataset_registry against DataHub
   /metagen/run            — execute global metagen inference pipeline (singleton)
   /metrics/list-active    — list metric IDs with is_enabled=True for a tier
   /metrics/run            — execute metric measurement for a single metric
   /ontogen/run            — execute the ontogen inference pipeline (singleton)
-  /datahub/sync           — reconcile dataset_registry against live DataHub URN set
   /auth/role-sync         — reconcile DataHub-side role assignments against users.role
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue + §Dependency Injection.
@@ -29,7 +28,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.auth.internal import require_internal_token
-from src.api.schemas.admin import DatahubSyncRequest
 from src.shared.exceptions import ConflictError, DataSpokeError
 from src.workflows._common import (
     make_datahub,
@@ -48,7 +46,6 @@ router = APIRouter(
         "internal/activities/metagen",
         "internal/activities/metrics",
         "internal/activities/ontogen",
-        "internal/activities/datahub",
         "internal/activities/auth",
     ],
     dependencies=[Depends(require_internal_token)],
@@ -121,9 +118,9 @@ async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
 async def ingestion_sync() -> dict[str, object]:
     """Reconcile all ingestion sources against DataHub.
 
-    Called hourly by the ingestion-sync-hourly DAG. Runs the five-step sync
-    pipeline (source defs, mapping, observed enrichment, run events, unmanaged
-    bucket) and returns a summary dict.
+    Called hourly by the datahub-sync-hourly DAG. Runs the sync pipeline
+    (source defs, mapping, dataset_registry reconcile, observed enrichment,
+    run events) and returns a summary dict.
 
     Retryable: DataHub transient failures surface as 500 so Airflow retries.
 
@@ -322,32 +319,6 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
         # ONTOGEN_RUNNING (409) → retryable = True (Airflow will retry)
         non_retryable = exc.error_code != "ONTOGEN_RUNNING" if hasattr(exc, "error_code") else True
         return _error_response(exc, non_retryable=non_retryable)  # type: ignore[return-value]
-
-
-# ── /datahub ──────────────────────────────────────────────────────────────────
-
-
-@router.post("/datahub/sync")
-async def datahub_sync(body: DatahubSyncRequest) -> dict[str, object]:
-    """Reconcile dataset_registry.datahub_registered against the live DataHub URN set.
-
-    Called daily by the datahub-sync-daily DAG (unparameterized = full sweep).
-    Accepts an optional dataset_urns list for a targeted sweep.
-    """
-    try:
-        async with make_db_session() as db:
-            from src.shared.db.registry import sync_with_datahub
-
-            datahub = await make_datahub(db)
-            result = await sync_with_datahub(
-                db=db,
-                datahub=datahub,
-                dataset_urns=body.dataset_urns,
-            )
-            await db.commit()
-            return result
-    except DataSpokeError as exc:
-        return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
 
 
 # ── /auth ─────────────────────────────────────────────────────────────────────

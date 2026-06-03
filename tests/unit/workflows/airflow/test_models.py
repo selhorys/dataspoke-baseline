@@ -134,7 +134,7 @@ def test_status_alias_equals_state() -> None:
     impl interface contract (Airflow REST API + impl conventions) — .status is a backward-compat alias for .state.
     """
     resp = DagRunResponse(
-        dag_run_id="run-1", dag_id="datahub-sync-daily", state=DagRunState.success
+        dag_run_id="run-1", dag_id="datahub-sync-hourly", state=DagRunState.success
     )
     assert resp.status == resp.state
 

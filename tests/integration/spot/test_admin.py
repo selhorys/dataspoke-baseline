@@ -6,6 +6,13 @@ Concerns covered:
 - POST /internal/admin/datahub/sync — full sync returns sync result envelope
 - POST /internal/admin/datahub/sync — targeted sync (single URN) returns sync result
 - POST /internal/admin/datahub/sync — 401 when X-Internal-Token header is missing
+
+Targeted-sync pre-seeding note:
+  dataset_registry is populated lazily via ensure_dataset_registered(), which is
+  called only by ValidationService.upsert_config() (PUT /attr/validation/conf).
+  The ingestion sync sweep writes to ingestion_source_dataset, NOT dataset_registry.
+  To get a dataset_registry row for catalog.title_master, this test calls the
+  validation-conf PUT endpoint, which is the real mechanism that inserts the row.
 """
 
 import os
@@ -14,9 +21,16 @@ import urllib.parse
 import httpx
 import pytest
 
+# Dummy-data: catalog schema must exist in DataHub so that ensure_dataset_registered()
+# finds it (datahub_registered=True) when the validation-conf PUT is called.
+# spec: TESTING.md §Per-Module Dummy-Data Reset
+DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _PG_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
-_VAULT_NAME = "dataspoke-source-cred-spot-pg"
+# Provisioned K8s Secret for dummy-data postgres.
+# spec: SECRET_RESOLUTION.md §Name prefix policy — DNS-label-safe name (hyphens, no underscores).
+_VAULT_NAME = "dataspoke-source-cred-dummy-data-pg"
 _VAULT_KEY = "password"
 
 
@@ -152,72 +166,71 @@ async def test_internal_admin_datahub_sync_targeted(
 ) -> None:
     """POST /internal/admin/datahub/sync with dataset_urns performs a targeted sync.
 
-    Pre-seeds dataset_registry by creating an ACTIVE_CUSTOM_MANAGED source whose
-    dataset mapping covers catalog.title_master. The sync sweep registers the URN in
-    dataset_registry; sync_with_datahub then checks that URN against DataHub.
+    Pre-seeds dataset_registry for catalog.title_master by calling the validation-conf
+    PUT endpoint. ensure_dataset_registered() (called by ValidationService.upsert_config)
+    is the only code path that inserts dataset_registry rows; the ingestion sync sweep
+    only writes to ingestion_source_dataset, which is a separate table. The sync DAG
+    reconciles existing registry rows against DataHub — it does not create new rows.
+
+    Setup:
+      1. PUT /attr/validation/conf for catalog.title_master → ensure_dataset_registered()
+         checks DataHub, inserts dataset_registry row with datahub_registered=True
+         (catalog is present in DataHub because DUMMY_DATA_DATAHUB_SCHEMAS seeds it).
+      2. POST /internal/admin/datahub/sync {"dataset_urns": [test_urn]} → checked=1
+         because the registry row now exists.
 
     spec: API.md §Internal Admin — POST /internal/admin/datahub/sync response shape.
-    spec: BACKEND.md §Ingestion Service — dataset_registry populated by source creation.
+    spec: feature/BACKEND_SCHEMA.md §dataset_registry — created lazily via
+        ensure_dataset_registered() on validation-conf PUT.
+    spec: feature/BACKEND.md §DataHub Sync — reconciles existing registry rows;
+        does not create new rows.
     """
     test_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    pg_host_port = os.environ.get(
-        "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
-        "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
-    )
+    enc_urn = urllib.parse.quote(test_urn, safe="")
+    conf_url = f"/api/v1/spoke/common/data/{enc_urn}/attr/validation/conf"
 
-    # Create a source that covers the catalog schema; the sync sweep populates dataset_registry.
-    create_resp = await api_client.post(
-        "/api/v1/spoke/ingestion/sources",
+    # Step 1: PUT validation conf for the target dataset. This calls
+    # ensure_dataset_registered(), which checks DataHub and inserts a
+    # dataset_registry row with datahub_registered=True. catalog.title_master
+    # is present in DataHub because DUMMY_DATA_DATAHUB_SCHEMAS seeds it.
+    # spec: feature/BACKEND_SCHEMA.md §dataset_registry §Creation.
+    put_resp = await api_client.put(
+        conf_url,
         headers=admin_headers,
         json={
-            "mode": "ACTIVE_CUSTOM_MANAGED",
-            "name": "admin-sync-targeted-test-source",
-            "schedule": "0 0 * * *",
-            "recipe": {
-                "source": {
-                    "type": "postgres",
-                    "config": {
-                        "host_port": pg_host_port,
-                        "database": "example_db",
-                        "username": "postgres",
-                        "password": "${admin_test_pg__password}",
-                        "env": "DEV",
-                        "schema_pattern": {"allow": ["^catalog$"]},
-                    },
-                }
-            },
+            "description": "Admin-sync targeted-test validation conf",
+            "variables": ["row_cnt"],
         },
     )
-    assert create_resp.status_code == 201, (
-        f"Create source failed: {create_resp.status_code} {create_resp.text}"
+    assert put_resp.status_code in (200, 201), (
+        f"PUT validation/conf failed: {put_resp.status_code} {put_resp.text}"
     )
-    source_id = create_resp.json()["id"]
 
     try:
-        # Trigger ingestion sync to populate dataset_registry via the source mapping.
-        await api_client.post(
-            "/internal/activities/ingestion/sync",
-            headers=internal_headers,
-        )
-
-        # Now run the targeted datahub sync.
-        # Internal routes are mounted WITHOUT /api/v1 prefix (see main.py).
+        # Step 2: Targeted datahub/sync. The dataset_registry row created above
+        # is now present, so checked must equal 1.
+        # spec: API.md §Internal Admin — POST /internal/admin/datahub/sync response shape.
         resp = await api_client.post(
             "/internal/admin/datahub/sync",
             headers=internal_headers,
             json={"dataset_urns": [test_urn]},
         )
         assert resp.status_code == 200, (
-            f"/internal/admin/datahub/sync expected 200, got {resp.status_code}: {resp.text}"
+            f"/internal/admin/datahub/sync expected 200, "
+            f"got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert "checked" in body
-        # Targeted: checked should be >= 1 (the URN we submitted, if it is in dataset_registry)
+        for key in ("checked", "flipped_true", "flipped_false", "unchanged", "not_found"):
+            assert key in body, f"Response missing key '{key}': {body}"
+
+        # checked must be exactly 1: the dataset_registry row we just created.
+        # spec: src/shared/db/registry.py sync_with_datahub — checked = len(matched rows).
         assert body["checked"] >= 1, (
             f"Expected checked >= 1 for the submitted URN; got checked={body['checked']}. "
-            "spec: API.md §Internal Admin — POST /internal/admin/datahub/sync"
+            "dataset_registry row should have been created by the validation-conf PUT. "
+            "spec: API.md §Internal Admin; "
+            "spec: feature/BACKEND_SCHEMA.md §dataset_registry §Creation."
         )
     finally:
-        await api_client.delete(
-            f"/api/v1/spoke/ingestion/sources/{source_id}", headers=admin_headers
-        )
+        # Clean up the validation conf so other tests are not affected.
+        await api_client.delete(conf_url, headers=admin_headers)

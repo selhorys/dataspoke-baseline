@@ -116,11 +116,90 @@ async def mark_unregistered(db: AsyncSession, dataset_urn: str) -> None:
     db.add(row)
 
 
+async def reconcile_registry(
+    db: AsyncSession,
+    enumerated_urns: set[str],
+) -> dict[str, int]:
+    """Make dataset_registry a full stateful mirror of the provided URN set.
+
+    Given a pre-fetched set of DataHub dataset URNs:
+    - INSERT rows for URNs present in the set but absent from registry
+      (datahub_registered=True).
+    - Set datahub_registered=True for existing rows that are in the set
+      and currently False.
+    - Set datahub_registered=False for existing rows that are NOT in the
+      set (soft-flag; no hard-delete).
+    - Leave rows that are already correct unchanged.
+
+    Does NOT commit — the caller commits as part of its step-isolated
+    transaction so one step's failure does not roll back the others.
+
+    Returns:
+        dict with keys: inserted, marked_true, marked_false, unchanged
+    """
+    now = datetime.now(tz=UTC)
+
+    # Load ALL existing registry rows in one query.
+    all_result = await db.execute(select(DatasetRegistry))
+    existing_rows: dict[str, DatasetRegistry] = {
+        r.dataset_urn: r for r in all_result.scalars().all()
+    }
+    existing_urns = set(existing_rows.keys())
+
+    inserted = 0
+    marked_true = 0
+    marked_false = 0
+    unchanged = 0
+
+    # Step A: process each enumerated URN.
+    for urn in enumerated_urns:
+        row = existing_rows.get(urn)
+        if row is None:
+            # Not in registry — insert as True.
+            new_row = DatasetRegistry(
+                dataset_urn=urn,
+                datahub_registered=True,
+            )
+            db.add(new_row)
+            inserted += 1
+        elif not row.datahub_registered:
+            # Exists but currently False — flip to True.
+            row.datahub_registered = True
+            row.updated_at = now
+            db.add(row)
+            marked_true += 1
+        else:
+            # Already True — no change.
+            unchanged += 1
+
+    # Step B: soft-flag registry rows absent from the enumerated set.
+    # Guard: an empty enumeration is treated as "no signal" rather than
+    # "everything is gone" — a transient empty-but-successful DataHub search
+    # (e.g. during the ES index-lag window) must not mass-deregister a
+    # non-empty registry. The deregister pass is skipped on empty input; it
+    # self-corrects on the next sweep once enumeration returns results.
+    if enumerated_urns:
+        for urn in existing_urns - enumerated_urns:
+            row = existing_rows[urn]
+            if row.datahub_registered:
+                row.datahub_registered = False
+                row.updated_at = now
+                db.add(row)
+                marked_false += 1
+
+    return {
+        "inserted": inserted,
+        "marked_true": marked_true,
+        "marked_false": marked_false,
+        "unchanged": unchanged,
+    }
+
+
 async def sync_with_datahub(
     db: AsyncSession,
     datahub: DataHubClient,
     dataset_urns: list[str] | None = None,
-) -> dict:
+) -> dict[str, int]:
     """Bidirectional reconciliation of dataset_registry against DataHub.
 
     Calls datahub.enumerate_datasets() once to obtain the current DataHub URN set.

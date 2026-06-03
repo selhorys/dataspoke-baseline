@@ -220,6 +220,59 @@ async def test_require_writer_admin_on_delete_is_allowed() -> None:
     assert result is ctx
 
 
+# ── require_editor ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_require_editor_reader_on_get_raises_forbidden() -> None:
+    """Reader + GET raises ForbiddenError('READ_ONLY_ROLE') — method is irrelevant.
+
+    spec: spec/feature/AUTH.md §Privilege Model — secrets enumeration is
+    restricted to Editor-or-Admin regardless of HTTP method.
+    spec: spec/API.md §Ingestion — GET /spoke/ingestion/secrets requires Editor+.
+    """
+    from src.backend.auth.privilege import require_editor
+    from src.shared.exceptions import ForbiddenError
+
+    ctx = await _make_auth_context("Reader")
+
+    with pytest.raises(ForbiddenError) as exc_info:
+        await require_editor(ctx=ctx)
+
+    assert exc_info.value.error_code == "READ_ONLY_ROLE", (
+        "Reader on require_editor must raise ForbiddenError('READ_ONLY_ROLE') "
+        "per spec/feature/AUTH.md §Privilege Model"
+    )
+
+
+@pytest.mark.asyncio
+async def test_require_editor_editor_is_allowed() -> None:
+    """Editor is allowed through require_editor.
+
+    spec: spec/feature/AUTH.md §Privilege Model — Editor can access Editor+ resources.
+    """
+    from src.backend.auth.privilege import require_editor
+
+    ctx = await _make_auth_context("Editor")
+
+    result = await require_editor(ctx=ctx)
+    assert result is ctx, "require_editor must pass through the AuthContext for Editor role"
+
+
+@pytest.mark.asyncio
+async def test_require_editor_admin_is_allowed() -> None:
+    """Admin is allowed through require_editor.
+
+    spec: spec/feature/AUTH.md §Privilege Model — Admin has all privileges.
+    """
+    from src.backend.auth.privilege import require_editor
+
+    ctx = await _make_auth_context("Admin")
+
+    result = await require_editor(ctx=ctx)
+    assert result is ctx, "require_editor must pass through the AuthContext for Admin role"
+
+
 # ── require_admin ──────────────────────────────────────────────────────────────
 
 

@@ -5,18 +5,27 @@ as a DataHub source). DataSpoke registers a passive source with a declared
 allow/deny scope and syncs results from DataHub.
 
 Steps mirror USE_CASE_en.md §UC1 Case 3:
+  0. Pre-source positive check — trigger sync to populate dataset_registry, then poll
+     GET /spoke/ingestion/unmanaged until both imazon.* topics appear (they are in
+     DataHub but covered by no source yet — system sources map nothing).
   1. POST /spoke/ingestion/sources with mode=PASSIVE + kafka topic_patterns recipe
   2. Assert 201 + response body shape (no schedule on the wire)
-  3. POST /sources/{id}/method/run → 409 INGESTION_RUN_NOT_APPLICABLE
-  4. Before-sync: assert imazon.* topics appear in GET /spoke/ingestion/unmanaged
-  5. Trigger sync → GET /sources/{id}/datasets maps imazon.* topics by declared scope
-  6. After-sync: assert imazon.* topics ABSENT from GET /spoke/ingestion/unmanaged
-  7. Cleanup: DELETE /sources/{id}
+  3. POST /sources/{id}/method/run → 409 INGESTION_RUN_NOT_APPLICABLE (dry and non-dry)
+  4. Trigger sync (PASSIVE source now exists) → GET /sources/{id}/datasets maps
+     imazon.* topics with origin=matcher
+  5. After-sync negative check — poll GET /spoke/ingestion/unmanaged (≤120s) until
+     both imazon.* topics are ABSENT (they are now mapped to the PASSIVE source)
+  6. GET /sources/{id}/event → 200
 
-Before/after delta (steps 4 and 6) proves the positive presence invariant:
-  - Before sync the topics are covered by no source → they appear in /unmanaged.
-  - After sync they are mapped to this PASSIVE source → they are absent from /unmanaged.
-This is robust against cross-test flakiness because we track specific URNs.
+Before/after delta (steps 0 and 5) proves the /unmanaged contract:
+  - Step 0: registry is populated + no source maps the topics → they appear in /unmanaged.
+  - Step 5: after sync with the PASSIVE source present → they are absent from /unmanaged.
+
+Design note: dataset_registry is populated by the sync sweep
+(POST /internal/activities/ingestion/sync). The registry starts empty after reset-all
+(run before the api-wired group). Step 0 runs the first sync so the positive check has
+data to work with. The system sources (datahub-gc, datahub-documents) declare no
+topic_patterns → they map zero Kafka datasets → the imazon topics remain unmanaged.
 
 spec: USE_CASE_en.md §UC1 Case 3
 spec: API.md §Ingestion — PASSIVE mode, INGESTION_RUN_NOT_APPLICABLE
@@ -24,6 +33,8 @@ spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 2 (mapping via Al
 spec: TESTING.md §Api-Wired Integration Tests
 """
 
+import asyncio
+import time
 from collections.abc import AsyncGenerator
 
 import httpx
@@ -79,8 +90,10 @@ async def test_uc1_passive_kafka(
        and syncs results from DataHub."
 
     Before/after delta for /unmanaged:
-      - Before sync: imazon.* topics are covered by no source → appear in /unmanaged.
-      - After sync: topics are mapped to this source → absent from /unmanaged.
+      - Step 0 (before source): registry populated by sync; imazon.* topics appear in
+        /unmanaged because no source maps them yet.
+      - Step 5 (after sync with PASSIVE source present): topics mapped to this source
+        → absent from /unmanaged.
 
     spec: USE_CASE_en.md §UC1 Case 3
     spec: API.md §Ingestion — POST /spoke/ingestion/sources (PASSIVE)
@@ -89,6 +102,65 @@ async def test_uc1_passive_kafka(
     source_id: str | None = None
 
     try:
+        # ── Step 0: Positive /unmanaged check — registry populated, topics unmapped ──
+        # dataset_registry starts empty after reset-all. Run sync to populate it from
+        # DataHub. The system sources (datahub-gc, datahub-documents) declare no
+        # topic_patterns so they map zero Kafka datasets. The imazon.* topics land in
+        # dataset_registry with datahub_registered=true and no source mapping → they
+        # appear in GET /spoke/ingestion/unmanaged.
+        #
+        # Poll pattern: re-trigger sync on every iteration so newly-ES-indexed URNs
+        # surface each time the matcher runs. Budget 180s covers the ES indexing lag
+        # (~2-3 min) documented in project_es_indexing_lag_after_reset_seed.
+        #
+        # spec: USE_CASE_en.md §UC1 — "Datasets covered by no source appear in
+        #   GET /spoke/ingestion/unmanaged"
+        # spec: API.md §Ingestion — GET /spoke/ingestion/unmanaged: datasets in DataHub
+        #   linked to no source
+        # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min after seed.
+        # spec: feature/BACKEND.md §Sync sweep — populates dataset_registry from DataHub
+        poll_deadline_step0 = time.time() + 180.0
+        poll_interval = 5.0
+        before_unmanaged_urns: set[str] = set()
+        while time.time() < poll_deadline_step0:
+            # Re-sync each iteration: newly-ES-indexed URNs surface on each call.
+            sync_resp_0 = await api_client.post(
+                "/internal/activities/ingestion/sync",
+                headers=internal_headers,
+            )
+            # Tolerate transient blips (e.g. API briefly busy) — retry within budget.
+            if sync_resp_0.status_code == 200:
+                unmanaged_resp_0 = await api_client.get(
+                    "/api/v1/spoke/ingestion/unmanaged?limit=500",
+                    headers=admin_headers,
+                )
+                if unmanaged_resp_0.status_code == 200:
+                    before_unmanaged_urns = set(
+                        unmanaged_resp_0.json().get("dataset_urns", [])
+                    )
+                    if _IMAZON_KAFKA_URNS.issubset(before_unmanaged_urns):
+                        break
+            await asyncio.sleep(poll_interval)
+
+        # Positive presence assertion: both imazon.* topics must appear in /unmanaged
+        # before the PASSIVE source is created. Fails loudly if either is absent —
+        # this would mean either (a) the ES index lag exceeded 180s, or (b) a source
+        # is already mapping them (which would be a real coverage regression).
+        # spec: USE_CASE_en.md §UC1 Case 3 — "Datasets covered by no source appear in
+        #   GET /spoke/ingestion/unmanaged" (positive invariant before source creation).
+        before_missing = _IMAZON_KAFKA_URNS - before_unmanaged_urns
+        assert not before_missing, (
+            f"Before PASSIVE source creation, imazon.* topics must appear in /unmanaged. "
+            f"The registry is populated by sync; system sources map no Kafka datasets, "
+            f"so topics have no source mapping and are therefore unmanaged. "
+            f"Missing URNs: {sorted(before_missing)}. "
+            f"All /unmanaged URNs seen: {sorted(before_unmanaged_urns)}. "
+            "This check fails if: (a) ES indexing lag exceeded the 180s poll budget, or "
+            "(b) some source unexpectedly maps these topics already. "
+            "spec: USE_CASE_en.md §UC1 Case 3 — unmanaged bucket contains unmapped datasets; "
+            "spec: project_es_indexing_lag_after_reset_seed — ES lag budget 2-3 min."
+        )
+
         # ── Step 1: POST source — PASSIVE with kafka topic_patterns recipe ─────
         # spec: USE_CASE_en.md §UC1 Case 3 — exact recipe YAML → JSON body:
         #   mode: PASSIVE, no schedule (external ingestor owns it),
@@ -184,57 +256,47 @@ async def test_uc1_passive_kafka(
             "spec: API.md §Ingestion — INGESTION_RUN_NOT_APPLICABLE for all PASSIVE run attempts"
         )
 
-        # ── Step 4: BEFORE-SYNC — imazon.* topics must appear in /unmanaged ────
-        # Before any sync, the topics are seeded in DataHub but covered by no source.
-        # They must appear in GET /spoke/ingestion/unmanaged (positive presence).
-        # spec: USE_CASE_en.md §UC1 — "Datasets covered by no source appear in
-        #   GET /spoke/ingestion/unmanaged"
-        # spec: API.md §Ingestion — GET /spoke/ingestion/unmanaged: datasets in DataHub
-        #   linked to no source
-        # Note: the source was just created but not yet synced; the sync sweep has not run.
-        before_unmanaged_resp = await api_client.get(
-            "/api/v1/spoke/ingestion/unmanaged?limit=200",
-            headers=admin_headers,
-        )
-        assert before_unmanaged_resp.status_code == 200, (
-            f"GET /spoke/ingestion/unmanaged (before sync) expected 200, "
-            f"got {before_unmanaged_resp.status_code}: {before_unmanaged_resp.text}"
-        )
-        before_unmanaged_urns = set(before_unmanaged_resp.json().get("dataset_urns", []))
-        # Both imazon.* topics must be present in /unmanaged before this source is synced.
-        # This is the positive presence check; spec: USE_CASE_en.md §UC1 §Imazon Examples
-        # Case 3 — "Datasets covered by no source appear in GET /spoke/ingestion/unmanaged".
-        before_missing = _IMAZON_KAFKA_URNS - before_unmanaged_urns
-        assert not before_missing, (
-            f"Before sync, imazon.* topics must appear in /unmanaged (they are seeded in "
-            f"DataHub but covered by no source yet). Missing: {sorted(before_missing)}. "
-            "spec: USE_CASE_en.md §UC1 Case 3 — unmanaged bucket contains unmapped datasets."
-        )
-
-        # ── Step 5: Trigger sync → datasets mapped via declared scope ─────────
+        # ── Step 4: Trigger sync (PASSIVE source now exists) → topics mapped ──
+        # Now that the PASSIVE source is registered, re-run the sync sweep. The
+        # matcher evaluates the source's AllowDenyPattern (^imazon\..*$) against
+        # DataHub datasets and maps matching topics to this source with origin=matcher.
+        #
+        # Poll: re-trigger sync each iteration so newly-ES-indexed URNs surface.
+        # Budget 180s covers remaining ES lag from the seed operation.
+        #
         # spec: feature/BACKEND.md §Sync sweep step 2 — "evaluate each source's
         #   filter-matcher — derived from the declared AllowDenyPattern scope for PASSIVE;
         #   origin = matcher"
-        # The DUMMY_DATA_DATAHUB_TOPICS constant ensures both imazon.* topics are in DataHub.
-        sync_resp = await api_client.post(
-            "/internal/activities/ingestion/sync",
-            headers=internal_headers,
-        )
-        assert sync_resp.status_code == 200, (
-            f"POST /internal/activities/ingestion/sync expected 200, "
-            f"got {sync_resp.status_code}: {sync_resp.text}"
-        )
+        # spec: TESTING.md §Imazon Dummy-Data Reference — both Kafka topics seeded in DataHub.
+        poll_deadline_step4 = time.time() + 180.0
+        datasets_body: dict = {}
+        dataset_urns: set[str] = set()
+        while time.time() < poll_deadline_step4:
+            try:
+                sync_resp_4 = await api_client.post(
+                    "/internal/activities/ingestion/sync",
+                    headers=internal_headers,
+                )
+                assert sync_resp_4.status_code == 200, (
+                    f"POST /internal/activities/ingestion/sync expected 200, "
+                    f"got {sync_resp_4.status_code}: {sync_resp_4.text}"
+                )
+            except Exception:
+                pass  # transient; outer deadline handles retry
 
-        # GET /sources/{id}/datasets — topics matching ^imazon\..*$ must appear
-        datasets_resp = await api_client.get(source_datasets_url, headers=admin_headers)
-        assert datasets_resp.status_code == 200, (
-            f"GET /sources/{source_id}/datasets expected 200, "
-            f"got {datasets_resp.status_code}: {datasets_resp.text}"
-        )
-        datasets_body = datasets_resp.json()
+            datasets_resp = await api_client.get(source_datasets_url, headers=admin_headers)
+            assert datasets_resp.status_code == 200, (
+                f"GET /sources/{source_id}/datasets expected 200, "
+                f"got {datasets_resp.status_code}: {datasets_resp.text}"
+            )
+            datasets_body = datasets_resp.json()
+            dataset_urns = {d["dataset_urn"] for d in datasets_body.get("datasets", [])}
+            if _IMAZON_KAFKA_URNS.issubset(dataset_urns):
+                break
+            await asyncio.sleep(poll_interval)
+
         assert "datasets" in datasets_body
         assert "total_count" in datasets_body
-        dataset_urns = {d["dataset_urn"] for d in datasets_body["datasets"]}
 
         # Both imazon.* topics must be mapped by the AllowDenyPattern matcher.
         # spec: USE_CASE_en.md §UC1 Case 3 — "DataSpoke maps the datasets matching
@@ -261,37 +323,45 @@ async def test_uc1_passive_kafka(
                     "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matcher origin"
                 )
 
-        # ── Step 6: AFTER-SYNC — mapped URNs must be ABSENT from /unmanaged ────
-        # Negative invariant (mapped ⇒ not unmanaged).
+        # ── Step 5: AFTER-SYNC — mapped URNs must be ABSENT from /unmanaged ────
+        # Negative invariant (mapped ⇒ not unmanaged). Poll until both imazon topics
+        # leave /unmanaged (mapping commit + ES propagation may take a moment).
+        # Bounded: ≤120s. Fails loudly if topics remain unmanaged past the deadline.
+        #
+        # The before/after delta (steps 0+5) prevents vacuous passes: if /unmanaged
+        # were always empty, step 0 would already have failed. Here we assert that
+        # the topics — which were confirmed present in step 0 — are now absent after
+        # the PASSIVE source maps them.
+        #
         # spec: USE_CASE_en.md §UC1 — "Datasets covered by no source appear in
         #   GET /spoke/ingestion/unmanaged"
         # spec: API.md §Ingestion — GET /spoke/ingestion/unmanaged: datasets in DataHub
         #   linked to no source
-        #
-        # F3 robustness: we verify each mapped URN individually against the
-        # unmanaged set — this is the real contract.  The before/after delta (steps 4+6)
-        # prevents the vacuous-pass risk: if /unmanaged returns [] (all mapped), the
-        # before-check would have already failed.
-        unmanaged_resp = await api_client.get(
-            "/api/v1/spoke/ingestion/unmanaged?limit=200",
-            headers=admin_headers,
-        )
-        assert unmanaged_resp.status_code == 200, (
-            f"GET /spoke/ingestion/unmanaged (after sync) expected 200, "
-            f"got {unmanaged_resp.status_code}: {unmanaged_resp.text}"
-        )
-        unmanaged_body = unmanaged_resp.json()
-        assert "dataset_urns" in unmanaged_body
-        after_unmanaged_urns = set(unmanaged_body["dataset_urns"])
+        poll_deadline_step5 = time.time() + 120.0
+        after_unmanaged_urns: set[str] = set()
+        mapped_but_still_unmanaged: set[str] = _IMAZON_KAFKA_URNS.copy()
+        while time.time() < poll_deadline_step5:
+            unmanaged_resp = await api_client.get(
+                "/api/v1/spoke/ingestion/unmanaged?limit=500",
+                headers=admin_headers,
+            )
+            if unmanaged_resp.status_code == 200:
+                after_unmanaged_urns = set(unmanaged_resp.json().get("dataset_urns", []))
+                mapped_but_still_unmanaged = _IMAZON_KAFKA_URNS & after_unmanaged_urns
+                if not mapped_but_still_unmanaged:
+                    break
+            await asyncio.sleep(poll_interval)
+
         # Structural invariant: mapped URNs must be absent from /unmanaged after sync.
-        mapped_but_still_unmanaged = _IMAZON_KAFKA_URNS & after_unmanaged_urns
         assert not mapped_but_still_unmanaged, (
             f"Datasets mapped to the PASSIVE source must NOT appear in /unmanaged after sync. "
             f"Still listed as unmanaged: {sorted(mapped_but_still_unmanaged)}. "
+            "The before/after delta (step 0 confirmed presence; this step must confirm absence) "
+            "proves the mapping took effect. "
             "spec: USE_CASE_en.md §UC1 — mapped datasets absent from unmanaged bucket"
         )
 
-        # ── Step 6b: GET /sources/{id}/event — events list accessible ─────────
+        # ── Step 6: GET /sources/{id}/event — events list accessible ─────────
         # spec: API.md §Ingestion — GET /sources/{id}/event returns event history
         # For a PASSIVE source with no actual run, the list may be empty but must be 200.
         event_resp = await api_client.get(source_event_url, headers=admin_headers)

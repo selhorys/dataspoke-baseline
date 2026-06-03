@@ -143,8 +143,11 @@ every source form the **unmanaged bucket**.
 
 #### `dataset_registry`
 
-Tracks dataset URNs referenced by DataSpoke and whether they exist in DataHub.
-Retained for the validation precondition gate.
+Mirrors the DataHub dataset estate: one row per known dataset URN with a
+`datahub_registered` flag. Feeds the validation precondition gate and the ingestion
+**unmanaged bucket** (`GET /spoke/ingestion/unmanaged` = rows with `datahub_registered=true`
+and no `ingestion_source_dataset` mapping). Presence is not a "validation-configured" marker —
+validation-config existence lives in `validation_configs`.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -153,9 +156,9 @@ Retained for the validation precondition gate.
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-- **Creation**: lazy, via `ensure_dataset_registered()`. Validation config upsert checks the registry; the validation precondition gate (`422 DATASET_NOT_IN_DATAHUB`) reads from it.
-- **DataHub sync**: reconciled against DataHub via the `datahub-sync-daily` Airflow DAG.
-- **SSOT**: DataHub is authoritative for dataset existence; the registry caches state for the validation precondition gate.
+- **Creation / reconcile**: bulk, by the hourly `datahub-sync-hourly` sweep — it enumerates DataHub once and upserts every URN (insert new rows `datahub_registered=true`; soft-flag absent rows `false`; an empty enumeration is skipped as "no signal"). Additionally lazy, via `ensure_dataset_registered()` on validation-config upsert, which probes DataHub on-demand for per-dataset precision (the precondition gate `422 DATASET_NOT_IN_DATAHUB` reads the flag).
+- **DataHub sync**: the scheduled full reconcile is the hourly `datahub-sync-hourly` sweep; `POST /internal/admin/datahub/sync` provides on-demand scoped reconcile.
+- **SSOT**: DataHub is authoritative for dataset existence; the registry mirrors it (flag), refreshed hourly with on-demand reconcile for validation.
 
 #### `validation_configs`
 

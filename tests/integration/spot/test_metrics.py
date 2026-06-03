@@ -43,6 +43,7 @@ Spec:
 import asyncio
 import json
 import os
+import uuid
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
@@ -1248,8 +1249,11 @@ async def test_ingestion_freshness_active_custom_daily_window(
 
     conn = await _get_ds_conn()
     now = datetime.now(tz=UTC)
-    # Stable source ID — deterministic so cleanup is reliable even on partial failure.
-    source_id = "00000000-spot-fresh-daily-w-0000"
+    # Stable, valid UUID v4 source ID — deterministic so cleanup is reliable even on partial
+    # failure.  Non-standard strings like "00000000-spot-fresh-daily-w-0000" are rejected by
+    # asyncpg as invalid UUIDs; use proper UUID format.
+    # spec: BACKEND_SCHEMA.md §ingestion_source — id column is UUID.
+    source_id = str(uuid.UUID("00000000-0000-4000-8000-0000000000d1"))
     try:
         # Insert ingestion_source (ACTIVE_CUSTOM_MANAGED, daily schedule_tier)
         # spec: BACKEND_SCHEMA.md §ingestion_source — columns: id, mode, name, platform, recipe,
@@ -1429,8 +1433,10 @@ async def test_ingestion_freshness_passive_window(
 
     conn = await _get_ds_conn()
     now = datetime.now(tz=UTC)
-    # Deterministic source ID for reliable cleanup.
-    source_id = "00000000-spot-fresh-passv-w-0000"
+    # Stable, valid UUID v4 source ID — deterministic so cleanup is reliable even on partial
+    # failure.  Non-standard strings are rejected by asyncpg as invalid UUIDs; use proper UUID.
+    # spec: BACKEND_SCHEMA.md §ingestion_source — id column is UUID.
+    source_id = str(uuid.UUID("00000000-0000-4000-8000-0000000000d2"))
     try:
         # Insert ingestion_source (PASSIVE, no schedule_tier)
         # spec: BACKEND_SCHEMA.md §ingestion_source — PASSIVE sources have no schedule/schedule_tier

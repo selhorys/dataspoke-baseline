@@ -9,7 +9,14 @@ from src.backend.auth.privilege import (
     AuthContext,
     require_admin,
     require_authenticated,
+    require_editor,
     require_writer,
 )
 
-__all__ = ["AuthContext", "require_authenticated", "require_writer", "require_admin"]
+__all__ = [
+    "AuthContext",
+    "require_authenticated",
+    "require_writer",
+    "require_editor",
+    "require_admin",
+]

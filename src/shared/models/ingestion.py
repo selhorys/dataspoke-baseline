@@ -6,9 +6,12 @@ so neither imports from the other for ingestion primitives.
 
 from __future__ import annotations
 
+import logging
 import re
 from enum import Enum
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # ── Platform enum ─────────────────────────────────────────────────────────────
 
@@ -176,7 +179,9 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
     must pass both predicates to be included.
 
     If none of the above keys are found in ``source.config``, the matcher
-    defaults to ``allow_all`` — all dataset names match.
+    returns ``False`` for every name (match-nothing). A source with no
+    derivable selection patterns maps no datasets — coverage that cannot be
+    inferred must not be assumed.
 
     Note: This is an explicit approximation. DataHub exposes no native
     source→dataset reverse lookup; the matcher reconstructs coverage from
@@ -263,11 +268,13 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
             return _make_adp(dp.get("allow", [".*"]), dp.get("deny", []))
 
     except ImportError:
-        # acryl-datahub not available in this context — fall through to allow-all.
+        # acryl-datahub not available in this context — no SDK means no
+        # evaluation is possible; fall through to match-nothing.
         pass
-    except Exception:
-        # Pattern construction failed — allow all (conservative / safe default).
-        pass
+    except Exception as exc:
+        # Pattern construction failed — log so a malformed pattern is observable,
+        # then fall through to match-nothing (no coverage can be inferred).
+        logger.warning("build_matcher: pattern construction failed: %s", exc)
 
-    # Default: allow all (no patterns declared).
-    return lambda name: True
+    # No derivable selection patterns → no inferable coverage → matches nothing.
+    return lambda name: False

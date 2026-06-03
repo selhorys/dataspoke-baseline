@@ -3,12 +3,11 @@
 Routes under test:
   POST /internal/activities/ingestion/list-active
   POST /internal/activities/ingestion/run
-  POST /internal/activities/ingestion/passive-sync
+  POST /internal/activities/ingestion/sync
   POST /internal/activities/metagen/run
   POST /internal/activities/metrics/list-active
   POST /internal/activities/metrics/run
   POST /internal/activities/ontogen/run
-  POST /internal/activities/datahub/sync
 
 spec: API.md §Internal routes — X-Internal-Token header required.
 spec: feature/BACKEND.md §DAG Catalogue + §Dependency Injection — activity endpoints
@@ -26,12 +25,11 @@ _INTERNAL_TOKEN = "test-internal-secret-act"
 
 _INGESTION_LIST = "/internal/activities/ingestion/list-active"
 _INGESTION_RUN = "/internal/activities/ingestion/run"
-_INGESTION_PASSIVE = "/internal/activities/ingestion/passive-sync"
+_INGESTION_SYNC = "/internal/activities/ingestion/sync"
 _METAGEN_RUN = "/internal/activities/metagen/run"
 _METRICS_LIST = "/internal/activities/metrics/list-active"
 _METRICS_RUN = "/internal/activities/metrics/run"
 _ONTOGEN_RUN = "/internal/activities/ontogen/run"
-_DATAHUB_SYNC = "/internal/activities/datahub/sync"
 
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 

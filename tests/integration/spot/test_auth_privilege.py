@@ -17,8 +17,10 @@ import httpx
 import pytest
 import pytest_asyncio
 
-# Simple endpoint with no required state — exists on all envs
-_SPOKE_COMMON_GET_URL = "/api/v1/spoke/ingestion"
+# Reader-accessible GET on /spoke/* — returns 200 for any authenticated user.
+# The per-source overhaul replaced the bare /spoke/ingestion route; use the list endpoint.
+# spec: API.md §Ingestion — GET /spoke/ingestion/sources lists all sources (Reader allowed)
+_SPOKE_COMMON_GET_URL = "/api/v1/spoke/ingestion/sources"
 # An endpoint that accepts POST and returns quickly without side effects on a GET
 _SPOKE_COMMON_POST_URL = "/api/v1/spoke/metagen/method/run"
 _ADMIN_URL = "/api/v1/admin/users"

@@ -111,7 +111,7 @@ Each MANIFESTO feature has a clear integration direction:
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
 | Ingestion Control (`ACTIVE_CUSTOM_MANAGED`) | UC1 | **Write** | The pluggable extractor emits dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. |
-| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `ingestion-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and mirrors run history (`listExecutionRequests` / `DataProcessInstance` / `Operation`). No aspect writes by DataSpoke. |
+| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `datahub-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and mirrors run history (`listExecutionRequests` / `DataProcessInstance` / `Operation`). No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on resurrection. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
 | Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
@@ -392,7 +392,7 @@ per-run DataProcessInstance aspects per the [Custom Extractor Guide](#custom-ext
 postgres datasets additionally receive `Container` and `BrowsePathsV2` aspects so they
 nest under the same database → schema hierarchy as DataHub's managed-PG source);
 `DATAHUB_MANAGED` / `PASSIVE` modes read source defs + run history out-of-band via the
-`ingestion-sync-hourly` DAG and write no aspects.*
+`datahub-sync-hourly` DAG and write no aspects.*
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
@@ -570,7 +570,7 @@ is an organisation-specific optimisation.
 DataSpoke models ingestion **per source / recipe** in three modes (`DATAHUB_MANAGED`,
 `ACTIVE_CUSTOM_MANAGED`, `PASSIVE` — see
 [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)). This
-section catalogues the DataHub surfaces the hourly `ingestion-sync-hourly` sweep uses; citations
+section catalogues the DataHub surfaces the hourly `datahub-sync-hourly` sweep uses; citations
 are to `ref/github/datahub/` v1.5.0.2.
 
 - **Reading managed source defs**: `DATAHUB_MANAGED` sources are synced down (DataHub is SSOT)

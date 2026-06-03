@@ -5,6 +5,8 @@ Tests cover:
 - mark_unregistered: flip True → False, no-op on False → False, missing row warn-and-return
 - sync_with_datahub: full sweep and scoped modes, empty list early-return, duplicate URN dedup,
   no-commit contract, missing-row not_found counting
+- reconcile_registry: inserts new URNs (True), flips absent existing rows to False,
+  keeps existing True rows, idempotent, no-commit contract
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from src.shared.db.registry import mark_registered, mark_unregistered, sync_with_datahub
+from src.shared.db.registry import mark_registered, mark_unregistered, reconcile_registry, sync_with_datahub
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -288,3 +290,158 @@ async def test_sync_empty_list_returns_zero_counts_and_skips_datahub(db: AsyncMo
     }
     datahub.enumerate_datasets.assert_not_awaited()
     db.execute.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# reconcile_registry
+# ---------------------------------------------------------------------------
+#
+# Fixture layout for reconcile_registry tests:
+#   URN_NEW   — in enumerated_urns, NOT in registry → INSERT (True)
+#   URN_TRUE  — in enumerated_urns, in registry (True) → unchanged
+#   URN_FALSE — in enumerated_urns, in registry (False) → flip True
+#   URN_GONE  — NOT in enumerated_urns, in registry (True) → soft-flag False
+
+_URN_NEW = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.new,PROD)"
+_URN_TRUE = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.true,PROD)"
+_URN_FALSE = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.false,PROD)"
+_URN_GONE = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.gone,PROD)"
+
+
+async def test_reconcile_registry_inserts_new_urns_as_registered(db: AsyncMock):
+    """URNs in enumerated_urns not in registry are inserted with datahub_registered=True."""
+    # No existing rows in registry.
+    db.execute = AsyncMock(return_value=_scalars_result([]))
+
+    added_rows: list = []
+    db.add = MagicMock(side_effect=added_rows.append)
+
+    result = await reconcile_registry(db, {_URN_NEW})
+
+    assert result["inserted"] == 1
+    assert result["marked_true"] == 0
+    assert result["marked_false"] == 0
+    assert result["unchanged"] == 0
+    # db.add must have been called with the new row.
+    assert db.add.call_count == 1
+    new_row = added_rows[0]
+    assert new_row.dataset_urn == _URN_NEW
+    assert new_row.datahub_registered is True
+
+
+async def test_reconcile_registry_flips_false_rows_to_true(db: AsyncMock):
+    """Existing rows with datahub_registered=False are flipped to True."""
+    row_false = _make_registry_row(urn=_URN_FALSE, registered=False)
+    db.execute = AsyncMock(return_value=_scalars_result([row_false]))
+
+    result = await reconcile_registry(db, {_URN_FALSE})
+
+    assert result["inserted"] == 0
+    assert result["marked_true"] == 1
+    assert result["marked_false"] == 0
+    assert result["unchanged"] == 0
+    assert row_false.datahub_registered is True
+
+
+async def test_reconcile_registry_keeps_existing_true_unchanged(db: AsyncMock):
+    """Existing rows already True and in enumerated_urns are not touched."""
+    row_true = _make_registry_row(urn=_URN_TRUE, registered=True)
+    original_updated_at = row_true.updated_at
+    db.execute = AsyncMock(return_value=_scalars_result([row_true]))
+
+    added: list = []
+    db.add = MagicMock(side_effect=added.append)
+
+    result = await reconcile_registry(db, {_URN_TRUE})
+
+    assert result["unchanged"] == 1
+    assert result["inserted"] == 0
+    assert result["marked_true"] == 0
+    assert result["marked_false"] == 0
+    assert row_true.datahub_registered is True
+    assert row_true.updated_at == original_updated_at
+    assert db.add.call_count == 0
+
+
+async def test_reconcile_registry_soft_flags_absent_rows_to_false(db: AsyncMock):
+    """Existing True rows whose URN is absent from a NON-empty enumeration are flipped False."""
+    row_gone = _make_registry_row(urn=_URN_GONE, registered=True)
+    db.execute = AsyncMock(return_value=_scalars_result([row_gone]))
+
+    # Non-empty enumeration that does not include the gone row.
+    result = await reconcile_registry(db, {_URN_NEW})
+
+    assert result["marked_false"] == 1
+    assert result["inserted"] == 1  # _URN_NEW inserted
+    assert result["marked_true"] == 0
+    assert row_gone.datahub_registered is False
+
+
+async def test_reconcile_registry_empty_enumeration_does_not_deregister(db: AsyncMock):
+    """An empty (but successful) enumeration is 'no signal' — must NOT mass-deregister.
+
+    Guards the ES-index-lag window where DataHub search can return zero hits while
+    datasets still exist; the deregister pass is skipped on empty input.
+    """
+    row_a = _make_registry_row(urn=_URN_TRUE, registered=True)
+    row_b = _make_registry_row(urn=_URN_GONE, registered=True)
+    db.execute = AsyncMock(return_value=_scalars_result([row_a, row_b]))
+
+    result = await reconcile_registry(db, set())
+
+    assert result["marked_false"] == 0
+    assert row_a.datahub_registered is True
+    assert row_b.datahub_registered is True
+
+
+async def test_reconcile_registry_full_mixed_scenario(db: AsyncMock):
+    """Full mixed scenario: insert new, flip False→True, keep True, soft-flag gone."""
+    row_true = _make_registry_row(urn=_URN_TRUE, registered=True)
+    row_false = _make_registry_row(urn=_URN_FALSE, registered=False)
+    row_gone = _make_registry_row(urn=_URN_GONE, registered=True)
+
+    # Registry has: TRUE, FALSE, GONE.  Enumerated: NEW, TRUE, FALSE (GONE is absent).
+    db.execute = AsyncMock(return_value=_scalars_result([row_true, row_false, row_gone]))
+
+    added: list = []
+    db.add = MagicMock(side_effect=added.append)
+
+    result = await reconcile_registry(db, {_URN_NEW, _URN_TRUE, _URN_FALSE})
+
+    assert result["inserted"] == 1     # NEW was not in registry
+    assert result["marked_true"] == 1  # FALSE flipped to True
+    assert result["marked_false"] == 1 # GONE soft-flagged
+    assert result["unchanged"] == 1    # TRUE already correct
+
+    assert row_true.datahub_registered is True
+    assert row_false.datahub_registered is True
+    assert row_gone.datahub_registered is False
+
+
+async def test_reconcile_registry_does_not_commit(db: AsyncMock):
+    """reconcile_registry does NOT commit — caller is responsible."""
+    db.execute = AsyncMock(return_value=_scalars_result([]))
+
+    await reconcile_registry(db, set())
+
+    db.commit.assert_not_awaited()
+
+
+async def test_reconcile_registry_idempotent(db: AsyncMock):
+    """Calling reconcile_registry twice with the same set produces the same outcome."""
+    row_true = _make_registry_row(urn=_URN_TRUE, registered=True)
+
+    # First call: existing True row, in enumerated set → unchanged.
+    db.execute = AsyncMock(return_value=_scalars_result([row_true]))
+    result1 = await reconcile_registry(db, {_URN_TRUE})
+
+    # Second call: same state.
+    db.execute = AsyncMock(return_value=_scalars_result([row_true]))
+    result2 = await reconcile_registry(db, {_URN_TRUE})
+
+    assert result1 == result2 == {
+        "inserted": 0,
+        "marked_true": 0,
+        "marked_false": 0,
+        "unchanged": 1,
+    }

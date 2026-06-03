@@ -135,6 +135,12 @@ values**. DataSpoke lists Secrets in its own namespace whose name starts with
 only metadata (names + keys); Secret values are never read on this path. Requires the `list`
 verb on Secrets (see [RBAC model](#rbac-model)).
 
+This endpoint requires the caller to be **Editor or Admin** (`403 READ_ONLY_ROLE` for Reader) —
+a deliberate exception to the general Reader-GET rule (see
+[AUTH.md §Privilege Model](AUTH.md#privilege-model)). Enumerating which credential references
+exist is author/operator tooling, not general read access, so it is gated to writers even though
+no values are exposed.
+
 ### Reference verify flow (at source save)
 
 When a source is created/updated, DataSpoke extracts every `${name__key}` reference from

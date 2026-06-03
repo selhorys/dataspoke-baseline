@@ -349,7 +349,7 @@ async def _extract_postgres(
                 errors.append(f"Failed to emit aspects for '{dataset_name}': {exc}")
                 continue
 
-        emitted_urns.append(dataset_urn)
+            emitted_urns.append(dataset_urn)
 
     return IngestionResult(
         entities_ingested=len(emitted_urns),
