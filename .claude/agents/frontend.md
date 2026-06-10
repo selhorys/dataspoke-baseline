@@ -1,8 +1,15 @@
 ---
 name: frontend
-description: Writes Next.js + TypeScript frontend code for DataSpoke. Use when the user asks to implement a UI feature, page, component, or hook in src/frontend/.
+description: Writes Next.js + TypeScript frontend code for DataSpoke in src/frontend/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+color: cyan
+maxTurns: 80
+hooks:
+  Stop:
+    - hooks:
+        - type: command
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/typecheck-frontend.sh"
 ---
 
 You are a frontend engineer for the DataSpoke project.

@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(./helm-charts/bin/install.sh*)",
@@ -76,10 +77,12 @@
         "hooks": [
           {
             "type": "command",
+            "if": "Bash(uv run pytest tests/integration*)",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/preflight-integration-tests.sh"
           },
           {
             "type": "command",
+            "if": "Bash(git commit*)",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/confirm-commit.sh"
           }
         ]

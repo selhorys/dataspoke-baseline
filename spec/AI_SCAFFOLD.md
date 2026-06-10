@@ -100,7 +100,7 @@ directly in the main conversation.
 
 | Subagent | Role | Scope | Tools |
 |----------|------|-------|-------|
-| `reviewer` | Evaluator | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `workflow`, and `frontend` generators | Read, Glob, Grep, Bash |
+| `reviewer` | Evaluator | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `airflow-dag`, and `frontend` generators | Read, Glob, Grep, Bash |
 | `test-reviewer` | Evaluator | Independently reviews test-generator output. Produces structured pass/fail scoring across 5 test-specific criteria: spec traceability, spec-derived (vs impl-calibrated) assertions, failure-mode coverage, plausibly-broken-impl sensitivity, and property-based testing opportunity (advisory). Invoked after the `test` generator | Read, Glob, Grep, Bash |
 | `security-reviewer` | Evaluator | Parallel security review when a generator's diff touches sensitive paths (auth, secrets, migrations, DataHub emission, Helm credentials, new dependencies, `.prauto/`). Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, crypto. Authoritative glob list lives in the agent file | Read, Glob, Grep, Bash |
 
@@ -111,7 +111,7 @@ All three reviewers use read-only tools — they analyze and report but do not w
 | Subagent | Scope | Tools |
 |----------|-------|-------|
 | `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs and the approved plan. Self-verifies with `pytest`. Supports fix pass mode for reviewer findings | Read, Write, Edit, Glob, Grep, Bash |
-| `workflow` | Airflow DAG Python files in `src/workflows/dags/` and workflow parameter modules. Orchestrates `src/backend/` services via HttpOperator tasks. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
+| `airflow-dag` | Airflow DAG Python files in `src/workflows/dags/` and workflow parameter modules. Orchestrates `src/backend/` services via HttpOperator tasks. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
 | `test` | Tests across all layers in `tests/`. Follows `spec/TESTING.md`. Supports reviewer-directed testing mode to verify specific findings | Read, Write, Edit, Glob, Grep, Bash |
 | `frontend` | Next.js/TypeScript code in `src/frontend/`. Reads `FRONTEND_*.md` specs. Self-verifies with `npm test` and `tsc`. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
 | `k8s-helm` | Helm charts, Dockerfiles, Kubernetes manifests, dev environment scripts. No review loop (infrastructure changes are lower-risk) | Read, Write, Edit, Glob, Grep, Bash |
@@ -120,14 +120,15 @@ All three reviewers use read-only tools — they analyze and report but do not w
 
 The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan
 mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles
-(backend → workflow → test → frontend, each followed by its evaluator — `reviewer` for code
+(backend → airflow-dag → test → frontend, each followed by its evaluator — `reviewer` for code
 generators, `test-reviewer` for the `test` agent — with a single fix pass) → `k8s-helm` when
-ready (no review loop). Sequential by default; backend and workflow may run
-concurrently when workflow does not consume new API contracts, and frontend may run concurrently
-with the test phase when it does not depend on pending backend changes. The main agent
-orchestrates by passing the approved plan into generators, generator completion reports into the
-reviewer, and reviewer findings back to generators for fix passes; issues that persist after one
-fix pass escalate to the user.
+ready (no review loop). Sequential by default; backend and airflow-dag may run
+concurrently when the DAG work does not consume new API contracts, and frontend may run concurrently
+with the test phase when it does not depend on pending backend changes. The generate+evaluate
+cycles run as the checked-in `feature-impl` dynamic workflow (`.claude/workflows/feature-impl.js`),
+which passes the approved plan into generators, generator completion reports into reviewers, and
+reviewer findings back to generators for fix passes; issues that persist after one fix pass halt
+the run and escalate to the user. Single-generator changes fall back to a direct subagent call.
 
 See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 
@@ -141,7 +142,7 @@ A good implementation plan produced during the Plan phase should cover:
 2. **Files to create or modify** — For each file: exact path (following existing conventions),
    purpose (one line), key contents (classes, functions, endpoints — names only, not
    implementations).
-3. **Component boundaries** — Which agent owns which files (backend, workflow, frontend). Data
+3. **Component boundaries** — Which agent owns which files (backend, airflow-dag, frontend). Data
    flow between components (API contracts, Airflow DAG inputs/outputs). Scope boundaries — what
    each agent should defer to others.
 4. **Acceptance criteria** — Concrete, testable conditions per component: endpoints that must
@@ -204,7 +205,7 @@ tailored to an organization's data sources, domain vocabulary, and operational r
 2. **Run `/spec-write`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/k8s-deploy install`** — bring up the DataHub environment
 4. **Implement features** using the plan → approve → generate → evaluate workflow:
-   Plan mode → approve → `backend` → `reviewer` → `workflow` → `reviewer` → `test` →
+   Plan mode → approve → `backend` → `reviewer` → `airflow-dag` → `reviewer` → `test` →
    `test-reviewer` → `frontend` → `reviewer` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
@@ -233,7 +234,7 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
 5. **Least privilege** — Agents read and inspect freely but cannot change shared state without
    user confirmation. Destructive cluster operations are blocked.
 
-6. **Self-verifying subagents** — `backend`, `workflow`, `frontend`, and `test` agents have Bash
+6. **Self-verifying subagents** — `backend`, `airflow-dag`, `frontend`, and `test` agents have Bash
    access to run tests and type-checks, catching errors before reporting completion.
    Self-verification is necessary but not sufficient — it is complemented by independent review
    (see principle 8).
@@ -244,7 +245,7 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    Delegate implementation to generator agents rather than writing code in the main
    conversation.
 
-8. **Generator-evaluator separation** — Generators (backend, workflow, frontend, test) produce
+8. **Generator-evaluator separation** — Generators (backend, airflow-dag, frontend, test) produce
    code or tests and self-verify. An independent evaluator agent — `reviewer` for code,
    `test-reviewer` for tests — then evaluates the output against the spec and approved plan.
    Self-evaluation is insufficient for quality assurance — models tend to praise their own work.

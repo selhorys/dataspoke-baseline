@@ -7,8 +7,7 @@ description: |
   Optional argument `scope` selects the case (free-form: "UC1", "UC1 Case 2",
   "passive kafka", filename fragment, etc.).
 disable-model-invocation: true
-user-invocable: true
-argument-hint: [scope, e.g. "UC1 Case 2"]
+argument-hint: '[scope, e.g. "UC1 Case 2"]'
 allowed-tools: Bash(*), Read, Edit, Glob, Grep, AskUserQuestion, Skill(k8s-deploy)
 ---
 

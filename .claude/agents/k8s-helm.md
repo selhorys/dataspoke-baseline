@@ -1,8 +1,10 @@
 ---
 name: k8s-helm
-description: Writes Helm charts, Dockerfiles, Kubernetes manifests, and dev environment scripts for DataSpoke components. Use when the user asks to containerize a service, create a Helm chart, or set up deployment infrastructure.
+description: Writes Helm charts, Dockerfiles, Kubernetes manifests, and dev environment scripts for DataSpoke components. Launch only with an approved implementation plan; no review loop.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+color: purple
+maxTurns: 80
 ---
 
 You are a platform/infrastructure engineer for the DataSpoke project.

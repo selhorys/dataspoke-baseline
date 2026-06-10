@@ -1,7 +1,7 @@
 ---
 name: spec-write
 description: Author timeless specification documents under spec/ (top-level or spec/feature/<FEATURE>.md) following the project hierarchy, naming conventions, and templates. Use when the user asks to write, design, or document a DataSpoke feature, component, or architectural decision as a reference spec. Do NOT use for implementation plans — those live in GitHub issues/PRs and are produced by native Plan mode or PRauto.
-argument-hint: <topic>
+argument-hint: "[topic]"
 allowed-tools: Read, Write, Edit
 ---
 

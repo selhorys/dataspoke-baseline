@@ -1,8 +1,18 @@
 ---
 name: backend
-description: Writes FastAPI/Python backend code for DataSpoke across src/api/, src/backend/, and src/shared/. Use when the user asks to implement a backend service, API endpoint, or DataHub integration.
+description: Writes FastAPI/Python backend code for DataSpoke across src/api/, src/backend/, and src/shared/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+skills:
+  - datahub-api
+color: blue
+maxTurns: 80
+hooks:
+  PostToolUse:
+    - matcher: Edit|Write
+      hooks:
+        - type: command
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-python-file.sh"
 ---
 
 You are a backend engineer for the DataSpoke project.
@@ -45,7 +55,7 @@ src/
 
 Internal activity endpoints (`/internal/activities/{domain}/*`) live in `src/api/routers/internal/activities.py` and are **in scope** for this agent — they use `make_*` factory functions from `src/workflows/_common.py` (not FastAPI `Depends()`) and delegate to `src/backend/` services.
 
-Airflow DAG files and workflow parameter modules live in `src/workflows/` and are handled by the **workflow** agent. If your task requires a new or modified DAG definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
+Airflow DAG files and workflow parameter modules live in `src/workflows/` and are handled by the **airflow-dag** agent. If your task requires a new or modified DAG definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
 
 ## Invocation modes
 

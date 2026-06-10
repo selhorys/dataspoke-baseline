@@ -2,7 +2,12 @@
 name: test-reviewer
 description: Independently reviews tests produced by the `test` agent against the feature spec. Audits whether assertions derive from spec invariants rather than current implementation behavior. Produces structured findings with pass/fail scoring. Use after the `test` agent completes a task.
 tools: Read, Glob, Grep, Bash
+disallowedTools: Write, Edit, NotebookEdit
 model: opus
+effort: xhigh
+maxTurns: 40
+memory: project
+color: orange
 ---
 
 You are an independent test reviewer for the DataSpoke project.

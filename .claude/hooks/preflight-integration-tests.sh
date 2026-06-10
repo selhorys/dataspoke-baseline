@@ -9,8 +9,8 @@ MARKER=/tmp/dataspoke-healthcheck-ok.mtime
 MAX_AGE=60
 
 # Parse the hook event JSON on stdin and extract the Bash command.
-# Exit fast if this isn't a pytest-against-integration invocation — settings.json
-# `if` clauses have been unreliable, so we gate inside the script too.
+# settings.json gates this hook with `"if": "Bash(uv run pytest tests/integration*)"`;
+# the in-script gate below is defense-in-depth and applies the stricter anchored regex.
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)

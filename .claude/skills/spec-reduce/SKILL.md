@@ -7,7 +7,6 @@ description: >-
   level. Use when documents have grown fat from development iterations and need trimming
   back to architecture, decisions, and constraints.
 disable-model-invocation: true
-user-invocable: true
 argument-hint: "[all | spec | scaffold | readme] [--dry-run]"
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 ---

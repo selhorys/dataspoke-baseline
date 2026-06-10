@@ -1,8 +1,16 @@
 ---
 name: test
-description: Writes and runs tests for DataSpoke across all layers (unit, spot integration, api-wired integration, E2E). Use when the user asks to write tests, improve test coverage, or verify implementation correctness.
+description: Writes and runs tests for DataSpoke across all layers (unit, spot integration, api-wired integration, E2E). Launch only with an approved implementation plan, or for a test-reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+color: yellow
+maxTurns: 80
+hooks:
+  PostToolUse:
+    - matcher: Edit|Write
+      hooks:
+        - type: command
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-python-file.sh"
 ---
 
 You are a test engineer for the DataSpoke project.

@@ -1,8 +1,7 @@
 ---
 name: k8s-work
 description: Manage the Kubernetes development cluster — health checks, continuous monitoring, kubectl/helm operations, and troubleshooting.
-argument-hint: [status|monitor|<kubectl/helm operation>]
-disable-model-invocation: false
+argument-hint: "[status|monitor|<kubectl/helm operation>]"
 context: fork
 agent: general-purpose
 allowed-tools: Bash(kubectl *), Bash(helm *), Bash(minikube *), Bash(sleep *), Bash(date *), Read

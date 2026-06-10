@@ -1,8 +1,16 @@
 ---
-name: workflow
-description: Writes Airflow DAG Python files and workflow parameter modules in src/workflows/. Use when the user asks to implement or modify an Airflow DAG, scheduled task, or durable orchestration.
+name: airflow-dag
+description: Writes Airflow DAG Python files and workflow parameter modules in src/workflows/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+color: green
+maxTurns: 80
+hooks:
+  PostToolUse:
+    - matcher: Edit|Write
+      hooks:
+        - type: command
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-python-file.sh"
 ---
 
 You are a workflow engineer for the DataSpoke project.

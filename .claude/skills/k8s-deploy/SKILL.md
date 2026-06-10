@@ -1,9 +1,7 @@
 ---
 name: k8s-deploy
 description: Drive the helm-charts/bin/ install/uninstall/build/health scripts for both dev and prod profiles — configure, install, reinstall, uninstall, health-check, and rebuild-the-API / rebuild-the-frontend. The dev profile installs umbrella chart + peripherals (nginx-ingress, DataHub, Langfuse, dummy data, dev-lock) and auto-seeds peripheral connection config via the admin API. The prod profile installs the umbrella chart only; operator wires peripherals via /api/v1/admin/peripherals/*.
-disable-model-invocation: false
-user-invocable: true
-argument-hint: [configure|install|reinstall|uninstall|health-check|run-api] [--profile dev|prod] [--components <csv>] [other options...]
+argument-hint: "[configure|install|reinstall|uninstall|health-check|run-api] [--profile dev|prod] [--components <csv>] [other options...]"
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 

@@ -8,9 +8,9 @@
 # max 100 chars per line) and a quick stats line so the user can
 # spot violations before clicking approve.
 #
-# settings.json `if` clauses are not honored by Claude Code's hook
-# schema, so filter inside the script — otherwise this hook would
-# emit "ask" for every Bash call.
+# settings.json gates this hook with `"if": "Bash(git commit*)"`;
+# the in-script filter below is defense-in-depth (stricter separator-
+# aware regex) so behavior stays correct even without the `if` gate.
 #
 # Output contract: stdout is JSON consumed by Claude Code. Silent
 # exit (no stdout) passes the tool call through unchanged.
