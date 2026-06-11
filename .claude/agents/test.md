@@ -4,7 +4,7 @@ description: Writes and runs tests for DataSpoke across all layers (unit, spot i
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 color: yellow
-maxTurns: 80
+maxTurns: 160
 hooks:
   PostToolUse:
     - matcher: Edit|Write
@@ -72,6 +72,10 @@ The prompt includes specific findings from the reviewer agent. Write targeted te
 Run the tests you wrote to verify they pass. Fix any failures before reporting completion.
 
 ## Completion report
+
+Your final text message is the only thing the orchestrator receives — never end on a tool call
+or mid-work narration. If you are running low on turns, stop editing and emit the report with
+remaining work listed under **Deferred**.
 
 End your work with a structured summary:
 - **Files changed**: list of created/modified test files with one-line descriptions

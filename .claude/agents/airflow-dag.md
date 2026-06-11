@@ -4,7 +4,7 @@ description: Writes Airflow DAG Python files and workflow parameter modules in s
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 color: green
-maxTurns: 80
+maxTurns: 160
 hooks:
   PostToolUse:
     - matcher: Edit|Write
@@ -72,6 +72,10 @@ Business logic lives in `src/backend/` services (handled by the **backend** agen
 Run `uv run pytest tests/unit/workflows/` to verify.
 
 ## Completion report
+
+Your final text message is the only thing the orchestrator receives — never end on a tool call
+or mid-work narration. If you are running low on turns, stop editing and emit the report with
+remaining work listed under **Deferred**.
 
 End your work with a structured summary:
 - **Files changed**: list of created/modified files with one-line descriptions

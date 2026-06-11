@@ -2,9 +2,9 @@
 name: frontend
 description: Writes Next.js + TypeScript frontend code for DataSpoke in src/frontend/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
-model: sonnet
+model: opus
 color: cyan
-maxTurns: 80
+maxTurns: 160
 hooks:
   Stop:
     - hooks:
@@ -95,6 +95,10 @@ Verify from the repo root (no `cd`):
 - `pnpm -C src/frontend lint`
 
 ## Completion report
+
+Your final text message is the only thing the orchestrator receives — never end on a tool call
+or mid-work narration. If you are running low on turns, stop editing and emit the report with
+remaining work listed under **Deferred**.
 
 End your work with a structured summary:
 - **Files changed**: list of created/modified files with one-line descriptions

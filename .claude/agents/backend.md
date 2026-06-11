@@ -2,11 +2,11 @@
 name: backend
 description: Writes FastAPI/Python backend code for DataSpoke across src/api/, src/backend/, and src/shared/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
-model: sonnet
+model: opus
 skills:
   - datahub-api
 color: blue
-maxTurns: 80
+maxTurns: 160
 hooks:
   PostToolUse:
     - matcher: Edit|Write
@@ -81,6 +81,10 @@ For each task, produce:
 Run `uv run pytest tests/unit/` (or the relevant subset) to verify. If you add or change dependencies in `pyproject.toml`, run `uv sync` first.
 
 ## Completion report
+
+Your final text message is the only thing the orchestrator receives — never end on a tool call
+or mid-work narration. If you are running low on turns, stop editing and emit the report with
+remaining work listed under **Deferred**.
 
 End your work with a structured summary:
 - **Files changed**: list of created/modified files with one-line descriptions
