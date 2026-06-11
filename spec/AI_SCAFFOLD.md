@@ -125,10 +125,13 @@ generators, `test-reviewer` for the `test` agent — with a single fix pass) →
 ready (no review loop). Sequential by default; backend and airflow-dag may run
 concurrently when the DAG work does not consume new API contracts, and frontend may run concurrently
 with the test phase when it does not depend on pending backend changes. The generate+evaluate
-cycles run as the checked-in `feature-impl` dynamic workflow (`.claude/workflows/feature-impl.js`),
-which passes the approved plan into generators, generator completion reports into reviewers, and
-reviewer findings back to generators for fix passes; issues that persist after one fix pass halt
-the run and escalate to the user. Single-generator changes fall back to a direct subagent call.
+cycles run as direct subagent calls by default — the orchestrator passes the approved plan into each
+generator, generator completion reports into its reviewer, and reviewer findings back for a fix pass;
+the one non-negotiable rule is generator ≠ reviewer. Issues that persist after one fix pass halt the
+run and escalate to the user. The checked-in `feature-impl` dynamic workflow
+(`.claude/workflows/feature-impl.js`) mechanizes this same loop and is reserved for large features
+that span several generator stages at once, where its deterministic fan-out and parallelism earn the
+extra tokens.
 
 See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 
