@@ -18,7 +18,9 @@ export const meta = {
 //                                       "frontend", "k8s-helm"])
 //   security: string[]                — stages whose diff touches the sensitive paths listed in
 //                                       .claude/agents/security-reviewer.md (decided at plan time)
-if (!args || typeof args.plan !== 'string' || !Array.isArray(args.stages)) {
+// The harness may deliver args JSON-stringified; normalize before validating.
+const ARGS = typeof args === 'string' ? JSON.parse(args) : args
+if (!ARGS || typeof ARGS.plan !== 'string' || !Array.isArray(ARGS.stages)) {
   throw new Error('feature-impl requires args {plan: string, stages: array, security?: string[]}')
 }
 
@@ -53,7 +55,7 @@ function genPrompt(stage, findings) {
   const base = `You are the ${stage} generator in CLAUDE.md §Implementation Workflow.
 
 APPROVED IMPLEMENTATION PLAN:
-${args.plan}
+${ARGS.plan}
 
 Implement your stage's scope from the plan, following your agent instructions (read the relevant specs first). End with your structured completion report.`
   if (!findings) return base
@@ -67,7 +69,7 @@ function reviewPrompt(stage, report) {
   return `Review the ${stage} generator's output per your agent instructions.
 
 APPROVED IMPLEMENTATION PLAN:
-${args.plan}
+${ARGS.plan}
 
 GENERATOR COMPLETION REPORT:
 ${report}
@@ -79,7 +81,7 @@ Read every changed file yourself — do not trust the report's claims. Return ve
 // parallel for security-flagged stages. Verdicts merge worst-of; findings concatenate.
 async function reviewPass(stage, report, pass) {
   const reviewers = [REVIEWER_FOR[stage] || 'reviewer']
-  if ((args.security || []).includes(stage)) reviewers.push('security-reviewer')
+  if ((ARGS.security || []).includes(stage)) reviewers.push('security-reviewer')
   const results = (await parallel(reviewers.map(type => () =>
     agent(reviewPrompt(stage, report), {
       agentType: type,
@@ -132,7 +134,7 @@ async function runStage(stage) {
 // group, then halts the run so later stages don't build on a broken base.
 const results = []
 let haltedAt = null
-for (const group of args.stages) {
+for (const group of ARGS.stages) {
   const stages = Array.isArray(group) ? group : [group]
   log(`stage group: ${stages.join(' + ')}`)
   const groupResults = (await parallel(stages.map(s => () => runStage(s)))).filter(Boolean)
