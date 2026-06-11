@@ -1,0 +1,2 @@
+- [Frontend dep pin convention](project_frontend_dep_pin_convention.md) — runtime deps use ^major.minor.patch; flag major-only floors (low)
+- [Ingestion secret-ref model](project_ingestion_secret_ref_model.md) — ${name__key} are references not plaintext; API never returns secret values

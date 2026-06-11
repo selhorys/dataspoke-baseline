@@ -285,6 +285,61 @@ describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
   });
 });
 
+describe("AppShell — Ingestion nav entry (FRONTEND_BASIC.md §Shell)", () => {
+  it.each([["Admin"], ["Editor"], ["Reader"]] as const)(
+    "renders the Ingestion link at /ingestion for %s role",
+    (role) => {
+      mockUseMe.mockReturnValue({
+        me: makeMe(role),
+        isAdmin: role === "Admin",
+        isEditor: role === "Editor",
+        canWrite: role !== "Reader",
+        isLoading: false,
+      });
+
+      render(
+        <AppShell>
+          <div />
+        </AppShell>,
+      );
+
+      const link = screen.getByRole("link", { name: /ingestion/i });
+      expect(link).toBeTruthy();
+      expect(link.getAttribute("href")).toBe("/ingestion");
+    },
+  );
+
+  it("places Ingestion between Metrics and Validation in the DOM", () => {
+    mockUseMe.mockReturnValue({
+      me: makeMe("Admin"),
+      isAdmin: true,
+      isEditor: false,
+      canWrite: true,
+      isLoading: false,
+    });
+
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    const metrics = screen.getByRole("link", { name: /metrics/i });
+    const ingestion = screen.getByRole("link", { name: /ingestion/i });
+    const validation = screen.getByRole("link", { name: /validation/i });
+
+    // DOCUMENT_POSITION_FOLLOWING (0x04): the argument node comes AFTER `this`.
+    expect(
+      metrics.compareDocumentPosition(ingestion) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      ingestion.compareDocumentPosition(validation) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
 describe("AppShell — infra icon links", () => {
   beforeEach(() => {
     mockUseMe.mockReturnValue({

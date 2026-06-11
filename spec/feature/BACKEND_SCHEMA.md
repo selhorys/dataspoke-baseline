@@ -469,15 +469,17 @@ The Ontology Generation singleton uses `entity_type=ontogen` and `entity_id='sin
 at `/spoke/ontogen/event`; per-result events use `entity_type=node|edge|triple`
 and the corresponding ID.
 
-#### `department_mapping`
+#### `peripheral_config`
 
-Maps DataHub ownership URNs to organizational departments (used by metrics
-aggregation when an HR API is unavailable).
+Connection settings for the peripheral subsystems, managed via
+`/api/v1/admin/peripherals/*` (see
+[DATAHUB_INTEGRATION.md](../DATAHUB_INTEGRATION.md) §Configuration). Absence of
+a row disables the corresponding integration.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `owner_urn` | `TEXT` PK | DataHub owner URN |
-| `department` | `TEXT` | Department name |
+| `name` | `VARCHAR(32)` PK | Peripheral name; `CHECK` ∈ `datahub`, `langfuse`, `smtp` |
+| `settings` | `JSONB` | Peripheral-specific connection settings (URLs, tokens, keys) |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 ### Indexes

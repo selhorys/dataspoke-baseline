@@ -90,11 +90,11 @@ describe("apiFetch — URL construction", () => {
     const fetchMock = vi.fn().mockResolvedValue(makeResponse(200, {}));
     vi.stubGlobal("fetch", fetchMock);
 
-    await apiFetch("/spoke/ingestion/datasets");
+    await apiFetch("/spoke/ingestion/sources");
 
     const calledUrl: string = fetchMock.mock.calls[0][0];
     expect(calledUrl).not.toContain("//spoke");
-    expect(calledUrl).toContain("/api/v1/spoke/ingestion/datasets");
+    expect(calledUrl).toContain("/api/v1/spoke/ingestion/sources");
   });
 
   it("always includes the /api/v1 prefix in the outgoing URL", async () => {

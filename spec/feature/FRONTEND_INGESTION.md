@@ -16,9 +16,10 @@ ingestion visible — which datasets each source covers, and which are ingested 
 | `/ingestion/sources/new` | Create a source (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) | `POST /spoke/ingestion/sources` |
 | `/ingestion/sources/[id]` | Source detail (recipe, datasets, runs, events) | `GET /spoke/ingestion/sources/{id}` |
 | `/ingestion/unmanaged` | Datasets covered by no source | `GET /spoke/ingestion/unmanaged` |
+| `/ingestion/data/[urn]` | Per-dataset reverse-lookup (owning source, latest run, events) | `GET /spoke/common/data/{dataset_urn}/attr/ingestion`, `GET …/event/ingestion` |
 
-The per-dataset reverse-lookup is shown on the **dataset page** (see FRONTEND_BASIC dataset
-detail), not a route here.
+The per-dataset reverse-lookup page mirrors the per-dataset pages of Validation
+(`/validation/data/[urn]`) and MetaGen (`/metagen/data/[urn]`).
 
 ## List View (`/ingestion`)
 
@@ -60,12 +61,13 @@ A table of DataHub datasets covered by no source (`GET /spoke/ingestion/unmanage
 This is the "what's being ingested in an unmanaged way?" answer; each row links to its dataset
 page.
 
-## Per-dataset reverse-lookup
+## Per-dataset reverse-lookup (`/ingestion/data/[urn]`)
 
-On a dataset's detail page, an "Ingestion" panel shows the owning source (link to
-`/ingestion/sources/[id]`), its `mode`, and the latest run — from
-`GET /spoke/common/data/{dataset_urn}/attr/ingestion`. Per-dataset ingestion events come from
-`GET /spoke/common/data/{dataset_urn}/event/ingestion`.
+An "Ingestion" panel shows the owning source (link to `/ingestion/sources/[id]`), its
+`mode`, and the latest run — from `GET /spoke/common/data/{dataset_urn}/attr/ingestion`.
+When no source covers the dataset, the panel says so and links to `/ingestion/unmanaged`.
+Below it, an events table shows per-dataset ingestion events from
+`GET /spoke/common/data/{dataset_urn}/event/ingestion`. The page is read-only.
 
 ## Components
 

@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.auth.internal import require_internal_token
+from src.shared.events import AUTH_ROLE_SYNC_FIXED
 from src.shared.exceptions import ConflictError, DataSpokeError
 from src.workflows._common import (
     make_datahub,
@@ -399,7 +400,7 @@ async def auth_role_sync() -> dict[str, object]:
                         Event(
                             entity_type="user",
                             entity_id=str(user.id),
-                            event_type="AUTH.ROLE_SYNC_FIXED",
+                            event_type=AUTH_ROLE_SYNC_FIXED,
                             status="OK",
                             detail={
                                 "dataspoke_role_authoritative": user.role,

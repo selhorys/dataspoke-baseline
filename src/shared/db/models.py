@@ -478,20 +478,6 @@ class Event(Base):
     )
 
 
-# ── department_mapping ───────────────────────────────────────────────────────
-
-
-class DepartmentMapping(Base):
-    __tablename__ = "department_mapping"
-    __table_args__ = {"schema": SCHEMA}
-
-    owner_urn: Mapped[str] = mapped_column(Text, primary_key=True)
-    department: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
 # ── ontogen_config (singleton) ────────────────────────────────────────────────
 
 

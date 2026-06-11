@@ -16,7 +16,6 @@ from src.shared.db.models import (
     Base,
     DatasetNodeMap,
     DatasetRegistry,
-    DepartmentMapping,
     EdgeEmbedding,
     Event,
     IngestionSource,
@@ -60,7 +59,6 @@ ALL_MODELS = [
     MetricDefinition,
     MetricResult,
     Event,
-    DepartmentMapping,
     OntogenConfig,
     RuntimeConfig,
     PeripheralConfig,
@@ -91,7 +89,6 @@ EXPECTED_TABLES = {
     "metric_definitions",
     "metric_results",
     "events",
-    "department_mapping",
     "ontogen_config",
     "runtime_config",
     "peripheral_config",
@@ -150,7 +147,6 @@ def test_text_primary_keys() -> None:
     # spec: BACKEND_SCHEMA.md — TEXT PKs on definition/mapping tables + ValidationConfig
     text_pk_models = [
         MetricDefinition,
-        DepartmentMapping,
         OntogenNode,
         OntogenEdge,
         OntogenTriple,
@@ -268,7 +264,9 @@ def test_timestamptz_columns() -> None:
 
 
 def test_ontogen_triple_composite_id_constraint() -> None:
-    """OntogenTriple must have a CHECK enforcing id = subject_node_id || '__' || edge_id || '__' || object_node_id.
+    """OntogenTriple must have a CHECK enforcing the composite id pattern.
+
+    id = subject_node_id || '__' || edge_id || '__' || object_node_id.
 
     Tests the constraint *expression* rather than its name. Constraint names are
     implementation details — they may be renamed without changing enforcement behavior.
@@ -280,7 +278,7 @@ def test_ontogen_triple_composite_id_constraint() -> None:
         for c in OntogenTriple.__table__.constraints
         if isinstance(c, _Check)
     ]
-    # The expression must enforce the concatenation rule: id = subject || '__' || edge || '__' || object
+    # The expression must enforce: id = subject || '__' || edge || '__' || object
     assert any(
         "subject_node_id" in expr and "edge_id" in expr and "object_node_id" in expr
         for expr in check_exprs
@@ -308,10 +306,11 @@ def test_ontogen_node_no_double_underscore_constraint() -> None:
         if isinstance(c, _Check)
     ]
     # Require the exact predicate as defined in src/shared/db/models.py
-    assert any(
-        "position('__' in id) = 0" in expr
-        for expr in check_exprs
-    ), f"Expected position('__' in id) = 0 CHECK not found on ontogen_nodes. Constraints: {check_exprs}"
+    expected_predicate = "position('__' in id) = 0"
+    assert any(expected_predicate in expr for expr in check_exprs), (
+        f"Expected {expected_predicate!r} CHECK not found on ontogen_nodes. "
+        f"Constraints: {check_exprs}"
+    )
 
 
 def test_ontogen_edge_no_double_underscore_constraint() -> None:
@@ -334,10 +333,11 @@ def test_ontogen_edge_no_double_underscore_constraint() -> None:
         if isinstance(c, _Check)
     ]
     # Require the exact predicate as defined in src/shared/db/models.py
-    assert any(
-        "position('__' in id) = 0" in expr
-        for expr in check_exprs
-    ), f"Expected position('__' in id) = 0 CHECK not found on ontogen_edges. Constraints: {check_exprs}"
+    expected_predicate = "position('__' in id) = 0"
+    assert any(expected_predicate in expr for expr in check_exprs), (
+        f"Expected {expected_predicate!r} CHECK not found on ontogen_edges. "
+        f"Constraints: {check_exprs}"
+    )
 
 
 def test_ontogen_triple_fks() -> None:
@@ -388,8 +388,10 @@ def test_ingestion_source_has_required_columns() -> None:
           schedule, schedule_tier, datahub_source_urn, status columns.
     """
     col_names = {col.name for col in IngestionSource.__table__.columns}
-    for expected in ("mode", "name", "platform", "recipe", "schedule", "schedule_tier",
-                     "datahub_source_urn", "status", "created_at", "updated_at"):
+    for expected in (
+        "mode", "name", "platform", "recipe", "schedule", "schedule_tier",
+        "datahub_source_urn", "status", "created_at", "updated_at",
+    ):
         assert expected in col_names, (
             f"IngestionSource missing column '{expected}'. "
             "spec: BACKEND_SCHEMA.md §ingestion_source."
@@ -397,7 +399,7 @@ def test_ingestion_source_has_required_columns() -> None:
 
 
 def test_ingestion_source_dataset_has_required_columns() -> None:
-    """IngestionSourceDataset has all columns specified in BACKEND_SCHEMA.md §ingestion_source_dataset.
+    """IngestionSourceDataset has all columns per BACKEND_SCHEMA.md §ingestion_source_dataset.
 
     spec: BACKEND_SCHEMA.md §ingestion_source_dataset — source_id, dataset_urn, origin,
           first_seen_at, last_seen_at.
@@ -505,3 +507,14 @@ def test_base_metadata_tables_match_expected_set() -> None:
     """
     actual = {t.name for t in Base.metadata.sorted_tables if t.schema == "dataspoke"}
     assert actual == EXPECTED_TABLES
+
+
+def test_department_mapping_table_absent() -> None:
+    """department_mapping must not exist in Base.metadata.
+
+    spec: BACKEND_SCHEMA.md — dead table removed; DepartmentMapping model deleted.
+    """
+    all_table_names = {t.name for t in Base.metadata.sorted_tables if t.schema == "dataspoke"}
+    assert "department_mapping" not in all_table_names, (
+        "department_mapping table should be removed from the schema"
+    )

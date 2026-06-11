@@ -75,3 +75,8 @@ EDGE_PREFIX = "EDGE."
 TRIPLE_APPROVE = "TRIPLE.APPROVE"
 TRIPLE_REJECT = "TRIPLE.REJECT"
 TRIPLE_PREFIX = "TRIPLE."
+
+# ── Auth (entity_type = "user") ──────────────────────────────────────────────
+
+AUTH_ROLE_SYNC_FIXED = "AUTH.ROLE_SYNC_FIXED"
+AUTH_PREFIX = "AUTH."

@@ -16,14 +16,12 @@ spec: feature/VALIDATION.md §API Surface.
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.api.dependencies import get_validation_service
 from src.api.main import app
-from src.shared.exceptions import EntityNotFoundError
-
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/common/data"
@@ -253,9 +251,10 @@ async def test_delete_validation_conf_204(client, mock_svc: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_validation_result_200(client, mock_svc: AsyncMock) -> None:
-    """POST /attr/validation/result returns 200 with the recorded row.
+async def test_post_validation_result_201(client, mock_svc: AsyncMock) -> None:
+    """POST /attr/validation/result returns 201 Created with the recorded row.
 
+    spec: API.md §HTTP Status Codes — POST that creates a resource returns 201.
     spec: feature/VALIDATION.md §Validation Result — pipeline POSTs results.
     """
     from src.backend.validation.service import ValidationResultRecord
@@ -277,8 +276,24 @@ async def test_post_validation_result_200(client, mock_svc: AsyncMock) -> None:
         },
         headers=auth_headers(),
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     assert resp.json()["score"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_get_validation_result_limit_over_10000_returns_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /attr/validation/result rejects limit > 10000 with 422.
+
+    spec: API.md §Data Resource — GET result limit capped at 10000 (le=10000).
+    """
+    resp = await client.get(
+        _RESULT_URL,
+        params={"limit": 10001},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

@@ -397,15 +397,6 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── department_mapping ───────────────────────────────────────────────
-    op.create_table(
-        "department_mapping",
-        sa.Column("owner_urn", sa.Text(), primary_key=True),
-        sa.Column("department", sa.Text(), nullable=False),
-        sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        schema=SCHEMA,
-    )
-
     # ── ontogen_config (singleton) ───────────────────────────────────────
     op.create_table(
         "ontogen_config",

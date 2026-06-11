@@ -103,7 +103,7 @@ async def delete_data_validation_conf(
 @sub_router.post(
     "/{dataset_urn}/attr/validation/result",
     response_model=ValidationResultRow,
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_201_CREATED,
 )
 async def post_data_validation_result(
     dataset_urn: DatasetUrnPath,
@@ -128,7 +128,7 @@ async def get_data_validation_result(
     dataset_urn: DatasetUrnPath,
     from_time: datetime | None = Query(default=None, alias="from"),
     until_time: datetime | None = Query(default=None, alias="until"),
-    limit: int = Query(default=1000, ge=1),
+    limit: int = Query(default=1000, ge=1, le=10000),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationResultListResponse:
     results, total_count = await service.get_results(

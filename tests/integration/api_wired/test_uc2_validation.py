@@ -51,11 +51,17 @@ _KAFKA_URN = (
 _PG_CONF_URL = f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/conf"
 _PG_RESULT_URL = f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/result"
 _KAFKA_CONF_URL = f"/api/v1/spoke/common/data/{_enc(_KAFKA_URN)}/attr/validation/conf"
-_KAFKA_RESULT_URL = f"/api/v1/spoke/common/data/{_enc(_KAFKA_URN)}/attr/validation/result"
+_KAFKA_RESULT_URL = (
+    f"/api/v1/spoke/common/data/{_enc(_KAFKA_URN)}/attr/validation/result"
+)
 _VALIDATION_LIST_URL = "/api/v1/spoke/validation"
 
 # Consumed by the api-wired `purge_urns` autouse fixture (see conftest.py).
 URNS_TO_PURGE: list[str] = [_PG_URN, _KAFKA_URN]
+
+_PG_DESCRIPTION = (
+    "Daily order fulfillment quality: row count, fill rate, and anomaly score"
+)
 
 
 @pytest.mark.asyncio
@@ -70,7 +76,7 @@ async def test_uc2_passive_result_store(
 
     Steps mirror USE_CASE_en.md §UC2:
       1. PUT validation conf for postgres + kafka datasets — 2 × 201
-      2. Pipelines POST results: 3 days for postgres, 2 days for kafka — 5 × 200
+      2. Pipelines POST results: 3 days for postgres, 2 days for kafka — 5 × 201
       3. GET postgres result?from=…&until=… → 3 rows, descending by data_time
       4. Cross-dataset GET /validation → shows BOTH datasets with their descriptions,
          variable counts, latest_data_time, latest_score
@@ -88,12 +94,13 @@ async def test_uc2_passive_result_store(
             _PG_CONF_URL,
             headers=admin_headers,
             json={
-                "description": "Daily order fulfillment quality: row count, fill rate, and anomaly score",
+                "description": _PG_DESCRIPTION,
                 "variables": ["row_cnt", "fill_rate", "anomaly_score"],
             },
         )
         assert put_pg_resp.status_code == 201, (
-            f"Step 1: PUT postgres conf expected 201, got {put_pg_resp.status_code}: {put_pg_resp.text}"
+            f"Step 1: PUT postgres conf expected 201, "
+            f"got {put_pg_resp.status_code}: {put_pg_resp.text}"
         )
         assert put_pg_resp.json()["variables"] == ["row_cnt", "fill_rate", "anomaly_score"]
 
@@ -106,7 +113,8 @@ async def test_uc2_passive_result_store(
             },
         )
         assert put_kafka_resp.status_code == 201, (
-            f"Step 1: PUT kafka conf expected 201, got {put_kafka_resp.status_code}: {put_kafka_resp.text}"
+            f"Step 1: PUT kafka conf expected 201, "
+            f"got {put_kafka_resp.status_code}: {put_kafka_resp.text}"
         )
         assert put_kafka_resp.json()["variables"] == ["msg_cnt", "lag_seconds"]
 
@@ -114,6 +122,7 @@ async def test_uc2_passive_result_store(
         # UC2 narrative: "Each night, the validation task runs after the partition
         # write and POSTs the day's metrics to DataSpoke."
         # spec: VALIDATION.md §Validation Result — data_time is partition timestamp.
+        # spec: API.md §HTTP Status Codes — POST that creates a resource returns 201.
 
         day_0 = datetime(2026, 5, 1, tzinfo=UTC)
         day_1 = datetime(2026, 5, 2, tzinfo=UTC)
@@ -138,8 +147,8 @@ async def test_uc2_passive_result_store(
             },
         ]:
             resp = await api_client.post(_PG_RESULT_URL, headers=admin_headers, json=payload)
-            assert resp.status_code == 200, (
-                f"Step 2: POST postgres result for {payload['data_time']} expected 200, "
+            assert resp.status_code == 201, (
+                f"Step 2: POST postgres result for {payload['data_time']} expected 201, "
                 f"got {resp.status_code}: {resp.text}"
             )
 
@@ -157,8 +166,8 @@ async def test_uc2_passive_result_store(
             },
         ]:
             resp = await api_client.post(_KAFKA_RESULT_URL, headers=admin_headers, json=payload)
-            assert resp.status_code == 200, (
-                f"Step 2: POST kafka result for {payload['data_time']} expected 200, "
+            assert resp.status_code == 201, (
+                f"Step 2: POST kafka result for {payload['data_time']} expected 201, "
                 f"got {resp.status_code}: {resp.text}"
             )
 
@@ -193,34 +202,40 @@ async def test_uc2_passive_result_store(
 
         # spec: VALIDATION.md §GET result — descending data_time order.
         returned_dates = [r["data_time"][:10] for r in results]
-        assert returned_dates == ["2026-05-03", "2026-05-02", "2026-05-01"], (
-            f"Step 3: expected descending data_time order [05-03, 05-02, 05-01], got {returned_dates}"
+        expected_dates = ["2026-05-03", "2026-05-02", "2026-05-01"]
+        assert returned_dates == expected_dates, (
+            f"Step 3: expected descending order {expected_dates}, got {returned_dates}"
         )
 
         # ── Step 4: Cross-dataset list shows BOTH datasets ───────────────────
         # UC2 narrative: "The caller checks the cross-dataset validation list
         # to see which datasets have recent quality signals."
-        # spec: VALIDATION.md §API Surface — GET /spoke/validation aggregates conf + latest result.
+        # spec: VALIDATION.md §API Surface — GET /spoke/validation aggregates
+        # conf + latest result.
 
         list_resp = await api_client.get(
             f"{_VALIDATION_LIST_URL}?limit=100",
             headers=admin_headers,
         )
         assert list_resp.status_code == 200, (
-            f"Step 4: GET /validation expected 200, got {list_resp.status_code}: {list_resp.text}"
+            f"Step 4: GET /validation expected 200, "
+            f"got {list_resp.status_code}: {list_resp.text}"
         )
         items = list_resp.json()["validations"]
         by_urn = {i["dataset_urn"]: i for i in items}
         assert _PG_URN in by_urn, (
-            f"Step 4: postgres dataset not found in cross-dataset list; got: {list(by_urn)}"
+            f"Step 4: postgres dataset not found in cross-dataset list; "
+            f"got: {list(by_urn)}"
         )
         assert _KAFKA_URN in by_urn, (
-            f"Step 4: kafka dataset not found in cross-dataset list; got: {list(by_urn)}"
+            f"Step 4: kafka dataset not found in cross-dataset list; "
+            f"got: {list(by_urn)}"
         )
 
-        # spec: VALIDATION.md §API Surface — each row aggregates description + variable_count + latest result
+        # spec: VALIDATION.md §API Surface — each row aggregates:
+        # description + variable_count + latest result.
         pg_item = by_urn[_PG_URN]
-        assert pg_item["description"] == "Daily order fulfillment quality: row count, fill rate, and anomaly score"
+        assert pg_item["description"] == _PG_DESCRIPTION
         assert pg_item["variable_count"] == 3, (
             f"Step 4: postgres expected variable_count=3, got {pg_item['variable_count']}"
         )
@@ -270,10 +285,12 @@ async def test_uc2_passive_result_store(
         assert list_active_resp.status_code == 200
         active_urns = [i["dataset_urn"] for i in list_active_resp.json()["validations"]]
         assert _PG_URN not in active_urns, (
-            f"Step 5: ?removed=false must NOT include deleted postgres dataset; got: {active_urns}"
+            f"Step 5: ?removed=false must NOT include deleted postgres dataset; "
+            f"got: {active_urns}"
         )
         assert _KAFKA_URN in active_urns, (
-            f"Step 5: ?removed=false should still include active kafka dataset; got: {active_urns}"
+            f"Step 5: ?removed=false should still include active kafka dataset; "
+            f"got: {active_urns}"
         )
 
         # ── Step 5.5: PATCH on soft-deleted slot → 404 ────────────────────────────
@@ -308,12 +325,14 @@ async def test_uc2_passive_result_store(
             },
         )
         assert resurrect_resp.status_code == 201, (
-            f"Step 6: PUT-after-DELETE expected 201, got {resurrect_resp.status_code}: {resurrect_resp.text}"
+            f"Step 6: PUT-after-DELETE expected 201, "
+            f"got {resurrect_resp.status_code}: {resurrect_resp.text}"
         )
 
         get_after_resurrect = await api_client.get(_PG_CONF_URL, headers=admin_headers)
         assert get_after_resurrect.status_code == 200, (
-            f"Step 6: GET conf after resurrection expected 200, got {get_after_resurrect.status_code}"
+            "Step 6: GET conf after resurrection expected 200, "
+            f"got {get_after_resurrect.status_code}"
         )
         resurrected = get_after_resurrect.json()
         assert resurrected["description"] == "Reinstated quality check with extended variables"
