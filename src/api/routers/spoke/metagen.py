@@ -111,17 +111,19 @@ _RunStatus = Literal["success", "failure"]
 @router.post("/method/run", response_model=MetagenRunResponse)
 async def post_metagen_run(
     body: MetagenRunRequest = Body(default_factory=MetagenRunRequest),
+    dry_run: bool = Query(default=False),
     service: MetagenService = Depends(get_metagen_service),
     _writer: AuthContext = Depends(require_writer),
 ) -> MetagenRunResponse:
     """Trigger a manual metagen generation run.
 
+    Pass ``?dry_run=true`` to simulate the run without persisting any results.
     Concurrent runs return 409 METAGEN_RUNNING.
-    Rejected with 409 METAGEN_DISABLED when conf is disabled and dry_run is not true.
+    Rejected with 409 METAGEN_DISABLED when conf is disabled and ``dry_run`` is not true.
     """
     result = await service.run(
         dataset_urns=body.dataset_urns,
-        dry_run=body.dry_run,
+        dry_run=dry_run,
     )
     return MetagenRunResponse(
         run_id=result.run_id,

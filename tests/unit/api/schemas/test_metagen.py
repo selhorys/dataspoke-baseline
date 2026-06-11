@@ -283,13 +283,13 @@ class TestMetagenItemListResponse:
 
 class TestMetagenRunRequest:
     def test_defaults(self) -> None:
-        """MetagenRunRequest defaults: dataset_urns=None, dry_run=False.
+        """MetagenRunRequest defaults: dataset_urns=None.
 
-        Spec: API.md §Metadata Generation — POST method/run optional fields.
+        Spec: API.md §Metadata Generation — POST method/run optional body
+        `{"dataset_urns": [...]}`; dry_run travels as a query parameter, not a body field.
         """
         req = MetagenRunRequest()
         assert req.dataset_urns is None
-        assert req.dry_run is False
 
     def test_dataset_urns_list(self) -> None:
         """MetagenRunRequest accepts a list of dataset_urns.
@@ -298,14 +298,6 @@ class TestMetagenRunRequest:
         """
         req = MetagenRunRequest(dataset_urns=[_VALID_URN])
         assert req.dataset_urns == [_VALID_URN]
-
-    def test_dry_run_true(self) -> None:
-        """MetagenRunRequest accepts dry_run=True.
-
-        Spec: API.md §Metadata Generation — dry_run flag.
-        """
-        req = MetagenRunRequest(dry_run=True)
-        assert req.dry_run is True
 
 
 # ── MetagenRunResponse ─────────────────────────────────────────────────────────
@@ -319,7 +311,6 @@ class TestMetagenRunResponse:
         outcomes are 'success' or 'failure'; tier short-circuit ('skipped')
         is owned by /internal/activities/metagen/run, not the public route.
         """
-        from datetime import UTC, datetime
         resp = MetagenRunResponse(
             run_id="run-1",
             status="success",

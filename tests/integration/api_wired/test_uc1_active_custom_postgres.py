@@ -6,8 +6,8 @@ API; an Airflow tier DAG runs DataSpoke's postgres extractor on the cron schedul
 Steps mirror USE_CASE_en.md §UC1 Case 2:
   1. POST /spoke/ingestion/sources with ACTIVE_CUSTOM_MANAGED + catalog-only recipe
   2. Assert 201 + response body shape (mode, name, schedule, recipe with ${...} ref intact)
-  3. Dry-run POST /sources/{id}/method/run {dry_run: true} → success, no datasets emitted
-  4. Real run {dry_run: false} → success
+  3. Dry-run POST /sources/{id}/method/run?dry_run=true → success, no datasets emitted
+  4. Real run (no dry_run param) → success
   5. Assert catalog.* datasets present in DataHub (ES settle: up to 30s poll)
   6. GET /sources/{id}/datasets → origin='emitted' rows for catalog datasets
   7. GET /sources/{id}/event → INGESTION.COMPLETE event
@@ -231,12 +231,11 @@ async def test_uc1_active_custom_postgres(
         source_event_url = f"/api/v1/spoke/ingestion/sources/{source_id}/event"
 
         # ── Step 3: Dry-run — connection check, no DataHub emission ───────────
-        # spec: USE_CASE_en.md §UC1 Case 2 — "POST .../method/run {dry_run: true}"
+        # spec: USE_CASE_en.md §UC1 Case 2 — "POST .../method/run?dry_run=true"
         # spec: feature/BACKEND.md §Active-custom run pipeline — dry_run skips aspect emission
         dry_run_resp = await api_client.post(
-            source_run_url,
+            f"{source_run_url}?dry_run=true",
             headers=admin_headers,
-            json={"dry_run": True},
         )
         assert dry_run_resp.status_code == 200, (
             f"Dry-run expected 200, got {dry_run_resp.status_code}: {dry_run_resp.text}"
@@ -266,7 +265,6 @@ async def test_uc1_active_custom_postgres(
         real_run_resp = await api_client.post(
             source_run_url,
             headers=admin_headers,
-            json={"dry_run": False},
         )
         assert real_run_resp.status_code == 200, (
             f"Real run expected 200, got {real_run_resp.status_code}: {real_run_resp.text}"

@@ -86,7 +86,6 @@ async def test_metagen_run_disabled_conf_non_dry_run_returns_409_METAGEN_DISABLE
         run_resp = await api_client.post(
             run_url,
             headers=admin_headers,
-            json={"dry_run": False},
         )
         assert run_resp.status_code == 409, (
             f"Non-dry run with is_enabled=false must return 409; "
@@ -152,9 +151,8 @@ async def test_metagen_run_dry_run_permitted_when_disabled(
         )
 
         run_resp = await api_client.post(
-            run_url,
+            f"{run_url}?dry_run=true",
             headers=admin_headers,
-            json={"dry_run": True},
         )
         assert run_resp.status_code == 200, (
             f"dry_run=true with is_enabled=false must return 200; "
@@ -666,9 +664,8 @@ async def test_metagen_dry_run_with_origin_filter_does_not_raise(
         )
 
         run_resp = await api_client.post(
-            run_url,
+            f"{run_url}?dry_run=true",
             headers=admin_headers,
-            json={"dry_run": True},
         )
         assert run_resp.status_code == 200, (
             f"Dry-run with origin=DEV filter must return 200; "

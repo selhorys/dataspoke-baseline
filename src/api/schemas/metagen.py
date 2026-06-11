@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, model_validator
 from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse
 
-
 # ── Global conf ───────────────────────────────────────────────────────────────
 
 
@@ -120,7 +119,6 @@ class MetagenItemDetailResponse(MetagenItemSummary):
 
 class MetagenRunRequest(BaseModel):
     dataset_urns: list[str] | None = None
-    dry_run: bool = False
 
 
 class MetagenRunResponse(BaseModel):

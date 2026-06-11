@@ -219,7 +219,6 @@ async def test_uc5_governance_imazon_example(
             run_resp = await api_client.post(
                 f"/api/v1/spoke/governance/metric/{cfg['metric_id']}/method/run",
                 headers=admin_headers,
-                json={"dry_run": False},
             )
             assert run_resp.status_code == 200, (
                 f"POST method/run for '{cfg['metric_id']}' expected 200, "

@@ -128,13 +128,6 @@ class PatchMetricConfigRequest(BaseModel):
         return self
 
 
-class RunMetricRequest(BaseModel):
-    dry_run: bool = Field(
-        default=False,
-        description="When true, simulate the measurement without persisting results",
-    )
-
-
 class MetricDefinitionResponse(SingleResponse):
     id: str = Field(description="Unique identifier of the metric definition")
     mode: str = Field(description="Measurement mode: 'active' or 'passive'")

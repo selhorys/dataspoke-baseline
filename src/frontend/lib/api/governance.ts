@@ -233,11 +233,10 @@ export function useDeleteMetric() {
 export function useRunMetric() {
   const qc = useQueryClient();
   return useMutation<MetricRunResult, Error, { metricId: string; dry_run?: boolean }>({
-    mutationFn: ({ metricId, dry_run = false }) =>
-      apiFetch<MetricRunResult>(`/spoke/governance/metric/${metricId}/method/run`, {
-        method: "POST",
-        body: JSON.stringify({ dry_run }),
-      }),
+    mutationFn: ({ metricId, dry_run = false }) => {
+      const url = `/spoke/governance/metric/${metricId}/method/run${dry_run ? "?dry_run=true" : ""}`;
+      return apiFetch<MetricRunResult>(url, { method: "POST" });
+    },
     meta: { handledInline: true },
     onSuccess: (_data, vars) => {
       void qc.invalidateQueries({

@@ -17,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.ingestion import Mode
 
-
 # ── Sub-models ────────────────────────────────────────────────────────────────
 
 
@@ -29,7 +28,9 @@ class SecretRefInfo(BaseModel):
     """
 
     ref: str = Field(description="'name__key' token — paste into recipe.source.config as ${ref}")
-    secret_name: str = Field(description="Full Kubernetes Secret name: dataspoke-source-cred-<name>")
+    secret_name: str = Field(
+        description="Full Kubernetes Secret name: dataspoke-source-cred-<name>"
+    )
     key: str = Field(description="Key within the Secret's data map")
 
 
@@ -126,18 +127,9 @@ class PatchIngestionSourceRequest(BaseModel):
     )
     recipe: dict[str, Any] | None = Field(
         default=None,
-        description="Replacement recipe dict. Partial recipe updates are not supported; supply the full new recipe.",
-    )
-
-
-class RunIngestionSourceRequest(BaseModel):
-    """Request body for POST /spoke/ingestion/sources/{id}/method/run."""
-
-    dry_run: bool = Field(
-        default=False,
         description=(
-            "When true, perform a no-write connection and extraction check without "
-            "emitting any aspects to DataHub."
+            "Replacement recipe dict. Partial recipe updates are not supported; "
+            "supply the full new recipe."
         ),
     )
 
@@ -155,7 +147,9 @@ class IngestionSourceResponse(SingleResponse):
     model_config = ConfigDict(from_attributes=True)
 
     id: str = Field(description="Unique identifier of the ingestion source (UUID)")
-    mode: Mode = Field(description="Ingestion mode: DATAHUB_MANAGED | ACTIVE_CUSTOM_MANAGED | PASSIVE")
+    mode: Mode = Field(
+        description="Ingestion mode: DATAHUB_MANAGED | ACTIVE_CUSTOM_MANAGED | PASSIVE"
+    )
     name: str = Field(description="Human-readable name for this source")
     schedule: str | None = Field(
         description="Cron expression for the schedule tier, or null for manual-only"

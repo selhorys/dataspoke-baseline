@@ -21,7 +21,7 @@ import type { Me } from "@/lib/api/types";
 // ---------------------------------------------------------------------------
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
-  usePathname: () => "/ingestion",
+  usePathname: () => "/validation",
 }));
 
 vi.mock("next/link", () => ({
@@ -279,9 +279,9 @@ describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
       </AppShell>,
     );
 
-    // Ingestion and Validation links must always be visible
-    expect(screen.getByRole("link", { name: /ingestion/i })).toBeTruthy();
+    // Validation and MetaGen links must always be visible
     expect(screen.getByRole("link", { name: /validation/i })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /metagen/i })).toBeTruthy();
   });
 });
 
@@ -312,7 +312,7 @@ describe("AppShell — infra icon links", () => {
 
     const datahubLink = screen.getByRole("link", { name: /open datahub/i });
     expect(datahubLink).toBeTruthy();
-    expect(datahubLink.getAttribute("href")).toBe("http://datahub.example.com");
+    expect(datahubLink.getAttribute("href")).toBe("http://datahub.example.com/login");
     expect(datahubLink.getAttribute("target")).toBe("_blank");
 
     const langfuseLink = screen.getByRole("link", { name: /open langfuse/i });

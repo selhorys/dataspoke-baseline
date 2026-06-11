@@ -109,15 +109,20 @@ export function useMetagenQueue(params: MetagenQueueParams = {}) {
 
 // ── Global run ─────────────────────────────────────────────────────────────────
 
-/** POST /spoke/metagen/method/run */
+/** POST /spoke/metagen/method/run?dry_run=true */
 export function useRunMetagen() {
   const qc = useQueryClient();
   return useMutation<MetagenRunResponse, Error, MetagenRunBody>({
-    mutationFn: (body) =>
-      apiFetch<MetagenRunResponse>("/spoke/metagen/method/run", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }),
+    mutationFn: ({ dataset_urns, dry_run = false }) => {
+      const url = `/spoke/metagen/method/run${dry_run ? "?dry_run=true" : ""}`;
+      if (dataset_urns && dataset_urns.length > 0) {
+        return apiFetch<MetagenRunResponse>(url, {
+          method: "POST",
+          body: JSON.stringify({ dataset_urns }),
+        });
+      }
+      return apiFetch<MetagenRunResponse>(url, { method: "POST" });
+    },
     meta: { handledInline: true },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["metagen", "queue"] });

@@ -25,7 +25,6 @@ from src.api.schemas.metrics import (
     MetricRunResultResponse,
     PatchMetricConfigRequest,
     ReplaceMetricConfigRequest,
-    RunMetricRequest,
 )
 from src.backend.metrics.service import MetricDefinitionRecord, MetricsService
 from src.shared.db.models import Event, MetricDefinition, MetricResult
@@ -249,14 +248,19 @@ async def get_metric_results(
 @router.post("/{metric_id}/method/run", response_model=MetricRunResultResponse)
 async def post_metric_run(
     metric_id: MetricIdParam,
-    body: RunMetricRequest,
+    dry_run: bool = Query(default=False),
     airflow: AirflowClient = Depends(get_airflow_client),
     service: MetricsService = Depends(get_metrics_service),
     _writer: AuthContext = Depends(require_writer),
 ) -> MetricRunResultResponse:
-    """Trigger a metric measurement run; concurrent runs return 409 METRIC_RUNNING."""
+    """Trigger a metric measurement run.
+
+    Pass ``?dry_run=true`` to simulate the measurement without persisting results.
+    Concurrent runs return 409 METRIC_RUNNING.
+    Returns 409 METRIC_DISABLED when the metric is disabled and ``dry_run`` is not true.
+    """
     definition = await service.get_metric(metric_id)
-    if not definition.is_enabled and not body.dry_run:
+    if not definition.is_enabled and not dry_run:
         raise ConflictError(
             "METRIC_DISABLED",
             f"Metric {metric_id} is disabled; only dry-run is permitted",
@@ -270,7 +274,7 @@ async def post_metric_run(
             conf={
                 "callback_base_url": settings.airflow_callback_base_url,
                 "metric_id": metric_id,
-                "dry_run": str(body.dry_run).lower(),
+                "dry_run": str(dry_run).lower(),
                 "workflow_id": workflow_id,
             },
         )

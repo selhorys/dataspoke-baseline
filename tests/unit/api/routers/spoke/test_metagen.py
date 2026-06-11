@@ -17,16 +17,19 @@ Spec traceability:
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.api.dependencies import get_metagen_service
 from src.api.main import app
-from src.backend.metagen.service import ItemDetailDTO, ItemSummaryDTO, MetagenGlobalConfDTO, RunResultDTO
+from src.backend.metagen.service import (
+    ItemDetailDTO,
+    ItemSummaryDTO,
+    MetagenGlobalConfDTO,
+    RunResultDTO,
+)
 from src.shared.exceptions import ConflictError, EntityNotFoundError
-
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/metagen"
@@ -188,7 +191,9 @@ async def test_put_conf_returns_200_with_conf_body(client, mock_svc: AsyncMock) 
 
     Spec: API.md §Metadata Generation — PUT /metagen/attr/conf.
     """
-    mock_svc.put_global_conf = AsyncMock(return_value=_make_conf_dto(is_enabled=True, result_limit=5))
+    mock_svc.put_global_conf = AsyncMock(
+        return_value=_make_conf_dto(is_enabled=True, result_limit=5)
+    )
 
     resp = await client.put(
         f"{_BASE}/attr/conf",
@@ -364,9 +369,9 @@ async def test_post_run_returns_200_with_run_response(client, mock_svc: AsyncMoc
 
 @pytest.mark.asyncio
 async def test_post_run_returns_200_with_dry_run_true(client, mock_svc: AsyncMock) -> None:
-    """POST /metagen/method/run with dry_run=true returns 200.
+    """POST /metagen/method/run?dry_run=true returns 200.
 
-    Spec: API.md §Metadata Generation — dry_run flag in request.
+    Spec: API.md §Metadata Generation — dry_run as ?dry_run=true query parameter.
     """
     mock_svc.run = AsyncMock(return_value=RunResultDTO(
         run_id=str(uuid.uuid4()),
@@ -377,8 +382,7 @@ async def test_post_run_returns_200_with_dry_run_true(client, mock_svc: AsyncMoc
     ))
 
     resp = await client.post(
-        f"{_BASE}/method/run",
-        json={"dry_run": True},
+        f"{_BASE}/method/run?dry_run=true",
         headers=auth_headers(),
     )
 

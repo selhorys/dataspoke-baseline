@@ -347,7 +347,6 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     run_resp = await api_client.post(
         f"/api/v1/spoke/ingestion/sources/{managed_id}/method/run",
         headers=admin_headers,
-        json={"dry_run": False},
     )
     assert run_resp.status_code == 409, (
         f"method/run on DATAHUB_MANAGED must return 409; got {run_resp.status_code}. "

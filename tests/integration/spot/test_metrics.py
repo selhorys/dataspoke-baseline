@@ -36,7 +36,8 @@ Tests insert rows directly via asyncpg and clean up in `finally` blocks.
 
 Spec:
 - spec/USE_CASE_en.md §UC5 — Factory defaults, Built-in active metric types, API Mapping
-- spec/API.md §Metric (/spoke/governance/metric) — field rules, payload caps, error codes, create/replace
+- spec/API.md §Metric (/spoke/governance/metric) — field rules, payload caps, error codes,
+  create/replace
 - spec/feature/BACKEND.md §Metrics Service §Breakdown format, §Create vs replace, §Time windows
 """
 
@@ -172,7 +173,8 @@ async def test_create_replace_flow(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST create (201) → POST same id (409 METRIC_EXISTS) → PUT replace existing (200) → PUT absent id (404) → bad metric_id (422).
+    """POST create (201) → POST same id (409 METRIC_EXISTS) → PUT replace (200) →
+    PUT absent id (404) → bad metric_id (422).
 
     Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric creates;
           PUT .../attr/conf replaces an existing definition and returns 404 when absent.
@@ -206,7 +208,8 @@ async def test_create_replace_flow(
             json=_CREATE_BODY,
         )
         assert create_resp.status_code == 201, (
-            f"POST /spoke/governance/metric must return 201 on create; got {create_resp.status_code}: {create_resp.text}. "
+            f"POST /spoke/governance/metric must return 201 on create; "
+            f"got {create_resp.status_code}: {create_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
         )
         assert create_resp.json()["id"] == _METRIC_ID
@@ -218,7 +221,8 @@ async def test_create_replace_flow(
             json=_CREATE_BODY,
         )
         assert dup_resp.status_code == 409, (
-            f"POST with duplicate metric_id must return 409; got {dup_resp.status_code}: {dup_resp.text}. "
+            f"POST with duplicate metric_id must return 409; "
+            f"got {dup_resp.status_code}: {dup_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping — colliding id returns 409 METRIC_EXISTS."
         )
         assert dup_resp.json().get("error_code") == "METRIC_EXISTS", (
@@ -243,7 +247,8 @@ async def test_create_replace_flow(
             },
         )
         assert replace_resp.status_code == 200, (
-            f"PUT .../attr/conf must return 200 when replacing existing; got {replace_resp.status_code}: {replace_resp.text}. "
+            f"PUT .../attr/conf must return 200 when replacing existing; "
+            f"got {replace_resp.status_code}: {replace_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
         )
         assert replace_resp.json()["title"] == "Replaced Title"
@@ -270,11 +275,14 @@ async def test_create_replace_flow(
             },
         )
         assert absent_resp.status_code == 404, (
-            f"PUT .../attr/conf must return 404 when id is absent; got {absent_resp.status_code}: {absent_resp.text}. "
-            "Spec: spec/USE_CASE_en.md §UC5 §API Mapping — PUT returns 404 METRIC_NOT_FOUND when absent."
+            f"PUT .../attr/conf must return 404 when id is absent; "
+            f"got {absent_resp.status_code}: {absent_resp.text}. "
+            "Spec: spec/USE_CASE_en.md §UC5 §API Mapping — "
+            "PUT returns 404 METRIC_NOT_FOUND when absent."
         )
         assert absent_resp.json().get("error_code") == "METRIC_NOT_FOUND", (
-            f"Expected error_code='METRIC_NOT_FOUND'; got {absent_resp.json().get('error_code')!r}. "
+            "Expected error_code='METRIC_NOT_FOUND'; "
+            f"got {absent_resp.json().get('error_code')!r}. "
             "Spec: spec/API.md §Error Catalogue."
         )
 
@@ -416,7 +424,8 @@ async def test_put_passive_mode_returns_501(
 ) -> None:
     """PUT with mode='passive' → 501 NOT_IMPLEMENTED.
 
-    Spec: spec/API.md §Metric — 'passive is reserved; PUT with mode: passive returns 501 NOT_IMPLEMENTED'.
+    Spec: spec/API.md §Metric — passive is reserved; PUT with mode: passive returns
+          501 NOT_IMPLEMENTED.
     Spec: spec/USE_CASE_en.md §UC5 §Modes.
     """
     resp = await api_client.put(
@@ -785,9 +794,8 @@ async def test_dry_run_does_not_persist_result_or_event(
 
     # Dry-run
     run_resp = await api_client.post(
-        base_run,
+        f"{base_run}?dry_run=true",
         headers=admin_headers,
-        json={"dry_run": True},
     )
     assert run_resp.status_code == 200, run_resp.text
     run_body = run_resp.json()
@@ -860,8 +868,7 @@ async def test_metric_run_persists_values_dict(
     run_resp = await api_client.post(
         base_run,
         headers=admin_headers,
-        json={"dry_run": False},
-    )
+        )
     assert run_resp.status_code == 200, run_resp.text
     assert run_resp.json().get("status") == "success"
 
@@ -946,8 +953,7 @@ async def test_metric_run_concurrent_returns_409(
             return await concurrent_client.post(
                 base_run,
                 headers=admin_headers,
-                json={"dry_run": False},
-            )
+                )
 
         results = await asyncio.gather(
             _fire(), _fire(), _fire(), _fire(), _fire(),
@@ -969,7 +975,7 @@ async def test_metric_run_concurrent_returns_409(
         r for r in results if isinstance(r, httpx.Response) and r.status_code == 409
     )
     assert conflict_resp.json().get("error_code") == "METRIC_RUNNING", (
-        f"Expected error_code='METRIC_RUNNING'. "
+        "Expected error_code='METRIC_RUNNING'. "
         "Spec: spec/API.md §Error Catalogue."
     )
 
@@ -1007,8 +1013,7 @@ async def test_breakdown_datasets_has_no_category_field(
     run_resp = await api_client.post(
         base_run,
         headers=admin_headers,
-        json={"dry_run": False},
-    )
+        )
     assert run_resp.status_code == 200, run_resp.text
 
     results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
@@ -1097,8 +1102,7 @@ async def test_metric_run_unresolved_urns_in_event(
         run_resp = await api_client.post(
             base_run,
             headers=admin_headers,
-            json={"dry_run": False},
-        )
+            )
         assert run_resp.status_code == 200, run_resp.text
         # Capture the run_id to match the event exactly — avoids relying on default sort order.
         # Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail key run_id.
@@ -1139,7 +1143,9 @@ async def test_metric_run_unresolved_urns_in_event(
 
         # Full event-shape invariant — all required keys must be present.
         # Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE.
-        for key in ("run_id", "metric_id", "values", "dry_run", "unresolved_urns", "breakdown_summary"):
+        _required_keys = ("run_id", "metric_id", "values", "dry_run", "unresolved_urns",
+                           "breakdown_summary")
+        for key in _required_keys:
             assert key in detail, (
                 f"METRIC.RUN_COMPLETE detail missing required key '{key}'. "
                 "Spec: spec/feature/BACKEND.md §Event Catalogue."
@@ -1285,11 +1291,12 @@ async def test_ingestion_freshness_active_custom_daily_window(
             )
 
         # Clear any pre-existing INGESTION.COMPLETE events for these URNs
+        _del_ingestion = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
         for urn in (urn_fresh, urn_stale):
-            await conn.execute(
-                "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
-                urn,
-            )
+            await conn.execute(_del_ingestion, urn)
 
         # Insert INGESTION.COMPLETE events with controlled timestamps
         await conn.execute(
@@ -1332,8 +1339,7 @@ async def test_ingestion_freshness_active_custom_daily_window(
         run_resp = await api_client.post(
             base_run,
             headers=admin_headers,
-            json={"dry_run": False},
-        )
+            )
         assert run_resp.status_code == 200, run_resp.text
 
         # Read results
@@ -1365,7 +1371,8 @@ async def test_ingestion_freshness_active_custom_daily_window(
         )
         detail = stale_entries[0]["detail"]
         assert detail["time_window_sec"] == _DAILY_WINDOW_SEC, (
-            f"Stale entry time_window_sec must be {_DAILY_WINDOW_SEC}; got {detail.get('time_window_sec')}. "
+            f"Stale entry time_window_sec must be {_DAILY_WINDOW_SEC}; "
+            f"got {detail.get('time_window_sec')}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         assert detail["window_source"] == "managed:daily", (
@@ -1391,12 +1398,13 @@ async def test_ingestion_freshness_active_custom_daily_window(
             await conn.execute(
                 "DELETE FROM dataspoke.ingestion_source WHERE id = $1", source_id
             )
+        _del_ev = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
         for urn in (urn_fresh, urn_stale):
             with suppress(Exception):
-                await conn.execute(
-                    "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
-                    urn,
-                )
+                await conn.execute(_del_ev, urn)
         await conn.close()
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)
@@ -1467,11 +1475,12 @@ async def test_ingestion_freshness_passive_window(
             )
 
         # Clear any pre-existing INGESTION.COMPLETE events for these URNs
+        _del_ev_passive = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
         for urn in (urn_fresh, urn_stale):
-            await conn.execute(
-                "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
-                urn,
-            )
+            await conn.execute(_del_ev_passive, urn)
 
         await conn.execute(
             "INSERT INTO dataspoke.events "
@@ -1508,7 +1517,7 @@ async def test_ingestion_freshness_passive_window(
         )
         assert create_resp.status_code == 201, create_resp.text
 
-        run_resp = await api_client.post(base_run, headers=admin_headers, json={"dry_run": False})
+        run_resp = await api_client.post(base_run, headers=admin_headers)
         assert run_resp.status_code == 200, run_resp.text
 
         results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
@@ -1525,11 +1534,15 @@ async def test_ingestion_freshness_passive_window(
             "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — passive window=7200s."
         )
 
-        stale_entries = [e for e in row.get("breakdown", {}).get("datasets", []) if e["urn"] == urn_stale]
+        stale_entries = [
+            e for e in row.get("breakdown", {}).get("datasets", [])
+            if e["urn"] == urn_stale
+        ]
         assert stale_entries, "urn_stale must be in breakdown."
         detail = stale_entries[0]["detail"]
         assert detail["window_source"] == "passive", (
-            f"window_source for PASSIVE source must be 'passive'; got {detail.get('window_source')!r}. "
+            "window_source for PASSIVE source must be 'passive'; "
+            f"got {detail.get('window_source')!r}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         assert detail["time_window_sec"] == _PASSIVE_WINDOW_SEC, (
@@ -1546,12 +1559,13 @@ async def test_ingestion_freshness_passive_window(
             await conn.execute(
                 "DELETE FROM dataspoke.ingestion_source WHERE id = $1", source_id
             )
+        _del_ev_p = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
         for urn in (urn_fresh, urn_stale):
             with suppress(Exception):
-                await conn.execute(
-                    "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
-                    urn,
-                )
+                await conn.execute(_del_ev_p, urn)
         await conn.close()
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)
@@ -1562,7 +1576,8 @@ async def test_ingestion_freshness_no_config_fallback(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ingestion-freshness: dataset with no ingestion_source mapping uses metric_conf.time_window_sec.
+    """ingestion-freshness: dataset with no ingestion_source mapping uses
+    metric_conf.time_window_sec.
 
     Uses a URN that has no ingestion_source_dataset row, and an event 50000s ago.
     With fallback time_window_sec=3600 → 50000s > 3600s → stale, window_source='default'.
@@ -1597,10 +1612,11 @@ async def test_ingestion_freshness_no_config_fallback(
             "DELETE FROM dataspoke.ingestion_source_dataset WHERE dataset_urn = $1", urn
         )
         # Insert an event 50000s ago
-        await conn.execute(
-            "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
-            urn,
+        _del_fallback = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
         )
+        await conn.execute(_del_fallback, urn)
         await conn.execute(
             "INSERT INTO dataspoke.events "
             "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
@@ -1620,7 +1636,9 @@ async def test_ingestion_freshness_no_config_fallback(
                 "is_enabled": True,
                 "metric_type": "ingestion-freshness",
                 "title": "Fallback Window Spot Test",
-                "description": "Tests metric_conf fallback when no ingestion_source_dataset row exists",
+                "description": (
+                    "Tests metric_conf fallback when no ingestion_source_dataset row exists"
+                ),
                 "metrics": ["total", "ingested_in_time"],
                 "metric_conf": {"time_window_sec": 3600},  # 50000s > 3600s → stale
                 "schedule_tier": None,
@@ -1629,7 +1647,7 @@ async def test_ingestion_freshness_no_config_fallback(
         )
         assert create_resp.status_code == 201, create_resp.text
 
-        run_resp = await api_client.post(base_run, headers=admin_headers, json={"dry_run": False})
+        run_resp = await api_client.post(base_run, headers=admin_headers)
         assert run_resp.status_code == 200, run_resp.text
 
         results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
@@ -1649,7 +1667,8 @@ async def test_ingestion_freshness_no_config_fallback(
         assert stale_entries, "Must have stale entry."
         detail = stale_entries[0]["detail"]
         assert detail["window_source"] == "default", (
-            f"No source mapping → window_source must be 'default'; got {detail.get('window_source')!r}. "
+            "No source mapping → window_source must be 'default'; "
+            f"got {detail.get('window_source')!r}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         assert detail["time_window_sec"] == 3600, (
@@ -1658,11 +1677,12 @@ async def test_ingestion_freshness_no_config_fallback(
         )
 
     finally:
+        _del_fb = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
         with suppress(Exception):
-            await conn.execute(
-                "DELETE FROM dataspoke.events WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'",
-                urn,
-            )
+            await conn.execute(_del_fb, urn)
         await conn.close()
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)
@@ -1757,7 +1777,7 @@ async def test_validation_score_intervals_window(
         )
         assert create_resp.status_code == 201, create_resp.text
 
-        run_resp = await api_client.post(base_run, headers=admin_headers, json={"dry_run": False})
+        run_resp = await api_client.post(base_run, headers=admin_headers)
         assert run_resp.status_code == 200, run_resp.text
 
         results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
@@ -1876,7 +1896,7 @@ async def test_validation_score_sparse_fallback_window(
         )
         assert create_resp.status_code == 201, create_resp.text
 
-        run_resp = await api_client.post(base_run, headers=admin_headers, json={"dry_run": False})
+        run_resp = await api_client.post(base_run, headers=admin_headers)
         assert run_resp.status_code == 200, run_resp.text
 
         results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
@@ -1899,7 +1919,8 @@ async def test_validation_score_sparse_fallback_window(
         assert stale_entries, "Sparse stale dataset must appear in breakdown."
         detail = stale_entries[0]["detail"]
         assert detail["window_source"] == "default", (
-            f"Sparse dataset must have window_source='default'; got {detail.get('window_source')!r}. "
+            "Sparse dataset must have window_source='default'; "
+            f"got {detail.get('window_source')!r}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
         )
         assert detail["time_window_sec"] == 3600, (
@@ -1974,7 +1995,8 @@ async def test_metric_values_filtered_to_declared_subset(
             },
         )
         assert create_resp.status_code == 201, (
-            f"POST /spoke/governance/metric must return 201 on create; got {create_resp.status_code}: {create_resp.text}. "
+            f"POST /spoke/governance/metric must return 201 on create; "
+            f"got {create_resp.status_code}: {create_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
         )
         assert create_resp.json()["metrics"] == ["total"], (
@@ -1986,8 +2008,7 @@ async def test_metric_values_filtered_to_declared_subset(
         run_resp = await api_client.post(
             base_run,
             headers=admin_headers,
-            json={"dry_run": False},
-        )
+            )
         assert run_resp.status_code == 200, (
             f"POST method/run must return 200; got {run_resp.status_code}: {run_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."

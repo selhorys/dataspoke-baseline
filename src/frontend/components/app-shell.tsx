@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   BarChart3,
-  Database,
   GitBranch,
   LayoutDashboard,
   LogOut,
@@ -43,7 +42,6 @@ interface NavItem {
 const mainNav: NavItem[] = [
   { label: "Dashboard", href: "/governance/dashboard", icon: LayoutDashboard },
   { label: "Metrics", href: "/governance/metrics", icon: BarChart3 },
-  { label: "Ingestion", href: "/ingestion", icon: Database },
   { label: "Validation", href: "/validation", icon: Shield },
   { label: "OntoGen", href: "/ontogen", icon: Network },
   { label: "MetaGen", href: "/metagen", icon: Sparkles },

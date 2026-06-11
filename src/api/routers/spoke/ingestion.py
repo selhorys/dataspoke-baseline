@@ -26,7 +26,6 @@ from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import (
     CreateIngestionSourceRequest,
-    IngestionReverseLookupResponse,
     IngestionRunResponse,
     IngestionSourceDatasetRow,
     IngestionSourceDatasetsResponse,
@@ -35,7 +34,6 @@ from src.api.schemas.ingestion import (
     IngestionUnmanagedResponse,
     PatchIngestionSourceRequest,
     ReplaceIngestionSourceRequest,
-    RunIngestionSourceRequest,
     SecretRefInfo,
     SecretRefListResponse,
 )
@@ -212,20 +210,20 @@ async def delete_ingestion_source(
 @router.post("/sources/{id}/method/run", response_model=IngestionRunResponse)
 async def post_ingestion_source_run(
     id: str,
-    body: RunIngestionSourceRequest,
+    dry_run: bool = Query(default=False),
     service: IngestionService = Depends(get_ingestion_service),
     _writer: AuthContext = Depends(require_writer),
 ) -> IngestionRunResponse:
     """Execute the extractor for an ACTIVE_CUSTOM_MANAGED source.
 
-    ``dry_run=true`` performs a no-write connection check without emitting
-    any aspects to DataHub.
+    Pass ``?dry_run=true`` to perform a no-write connection check without
+    emitting any aspects to DataHub.
 
     Returns ``409 INGESTION_RUN_NOT_APPLICABLE`` for non-ACTIVE_CUSTOM_MANAGED sources.
     Returns ``409 INGESTION_RUNNING`` when a concurrent run is already in progress.
     Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent.
     """
-    result = await service.run(source_id=id, dry_run=body.dry_run)
+    result = await service.run(source_id=id, dry_run=dry_run)
     return IngestionRunResponse(
         run_id=result.run_id,
         status=result.status,

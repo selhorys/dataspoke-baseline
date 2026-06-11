@@ -14,7 +14,7 @@ Concerns covered (one per test):
    → POST /internal/activities/ingestion/sync → GET .../datasets returns URNs with
    origin='matcher'. Proves the sync matcher independently of api-wired UC1 Case 3.
 8. Real run emit + origin=emitted: ACTIVE_CUSTOM_MANAGED postgres catalog source →
-   POST .../method/run {dry_run: false} → ≥2 catalog URNs in .../datasets with
+   POST .../method/run (no dry_run param) → ≥2 catalog URNs in .../datasets with
    origin='emitted'. Skipped if dummy-data-pg secret absent from cluster.
 9. Populated reverse-lookup: after real run in #8, GET /data/{catalog_title_urn}/attr/ingestion
    returns source_id, mode=ACTIVE_CUSTOM_MANAGED, latest_run.status=success. Complements
@@ -319,7 +319,6 @@ async def test_run_passive_source_returns_not_applicable(
     run_resp = await api_client.post(
         f"{_SOURCES_BASE}/{source_id}/method/run",
         headers=admin_headers,
-        json={"dry_run": False},
     )
     assert run_resp.status_code == 409, (
         f"Expected 409 INGESTION_RUN_NOT_APPLICABLE on PASSIVE run; "
@@ -582,7 +581,7 @@ async def test_real_run_emits_catalog_datasets_with_origin_emitted(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ACTIVE_CUSTOM_MANAGED postgres catalog source: POST .../method/run {dry_run: false}
+    """ACTIVE_CUSTOM_MANAGED postgres catalog source: POST .../method/run (real run)
     → ≥2 catalog URNs in .../datasets with origin='emitted'.
 
     Skipped when the dummy-data-pg K8s Secret is not provisioned in the cluster
@@ -624,15 +623,14 @@ async def test_real_run_emits_catalog_datasets_with_origin_emitted(
         )
         source_id = create_resp.json()["id"]
 
-        # Real run: dry_run=False.
+        # Real run: dry_run omitted (defaults to false).
         # spec: feature/BACKEND.md §Active-custom run pipeline — emit dataset aspects (not dry_run)
         run_resp = await api_client.post(
             f"{_SOURCES_BASE}/{source_id}/method/run",
             headers=admin_headers,
-            json={"dry_run": False},
         )
         assert run_resp.status_code == 200, (
-            f"POST .../method/run {{dry_run: false}} expected 200; "
+            f"POST .../method/run (real run) expected 200; "
             f"got {run_resp.status_code}: {run_resp.text}"
         )
         run_body = run_resp.json()
@@ -737,7 +735,6 @@ async def test_populated_reverse_lookup_after_real_run(
         run_resp = await api_client.post(
             f"{_SOURCES_BASE}/{source_id}/method/run",
             headers=admin_headers,
-            json={"dry_run": False},
         )
         assert run_resp.status_code == 200, (
             f"Real run expected 200; got {run_resp.status_code}: {run_resp.text}"

@@ -98,7 +98,7 @@ export interface MetagenItemDetail extends MetagenItemSummary {
 
 export interface MetagenRunBody {
   dataset_urns?: string[] | null;
-  dry_run?: boolean;
+  dry_run?: boolean; // passed as ?dry_run=true query param; not sent in request body
 }
 
 export interface MetagenRunResponse {

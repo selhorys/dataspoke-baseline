@@ -25,12 +25,10 @@ from src.api.schemas.ingestion import (
     IngestionSourceResponse,
     PatchIngestionSourceRequest,
     ReplaceIngestionSourceRequest,
-    RunIngestionSourceRequest,
     SecretRefInfo,
     SecretRefListResponse,
 )
 from src.shared.models.ingestion import Mode
-
 
 # ── CreateIngestionSourceRequest ──────────────────────────────────────────────
 
@@ -286,23 +284,6 @@ class TestIngestionSourceResponse:
         """datahub_source_urn is None for non-DATAHUB_MANAGED sources."""
         resp = self._make_response(datahub_source_urn=None)
         assert resp.datahub_source_urn is None
-
-
-# ── RunIngestionSourceRequest ─────────────────────────────────────────────────
-
-
-class TestRunIngestionSourceRequest:
-    def test_defaults_to_non_dry_run(self) -> None:
-        """dry_run defaults to False — a real run by default.
-
-        Spec: API.md §Ingestion — POST .../method/run body.
-        """
-        req = RunIngestionSourceRequest()
-        assert req.dry_run is False
-
-    def test_dry_run_true_accepted(self) -> None:
-        req = RunIngestionSourceRequest(dry_run=True)
-        assert req.dry_run is True
 
 
 # ── SecretRefListResponse ─────────────────────────────────────────────────────

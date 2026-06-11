@@ -6,15 +6,14 @@ Spec traceability:
 - spec/feature/BACKEND.md §Metrics Service §Create vs replace
 """
 
-from unittest.mock import AsyncMock, MagicMock
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.api.dependencies import get_airflow_client, get_metrics_service, get_redis
 from src.api.main import app
 from src.shared.exceptions import ConflictError, EntityNotFoundError
-
 from tests.unit.api.conftest import auth_headers
 
 _METRIC_RUN_URL = "/api/v1/spoke/governance/metric/{metric_id}/method/run"
@@ -381,7 +380,6 @@ async def test_post_metric_run_disabled_returns_409(
 
     resp = await client.post(
         _METRIC_RUN_URL.format(metric_id=metric_id),
-        json={"dry_run": False},
         headers=auth_headers(),
     )
 

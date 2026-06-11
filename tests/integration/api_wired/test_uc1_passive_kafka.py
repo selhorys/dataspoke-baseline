@@ -234,7 +234,6 @@ async def test_uc1_passive_kafka(
         run_resp = await api_client.post(
             source_run_url,
             headers=admin_headers,
-            json={"dry_run": False},
         )
         assert run_resp.status_code == 409, (
             f"PASSIVE source method/run expected 409, got {run_resp.status_code}: {run_resp.text}. "
@@ -247,9 +246,8 @@ async def test_uc1_passive_kafka(
         )
         # dry_run=True must also return 409 (PASSIVE cannot be run regardless)
         dry_run_resp = await api_client.post(
-            source_run_url,
+            f"{source_run_url}?dry_run=true",
             headers=admin_headers,
-            json={"dry_run": True},
         )
         assert dry_run_resp.status_code == 409, (
             f"PASSIVE source dry-run must also return 409; got {dry_run_resp.status_code}. "

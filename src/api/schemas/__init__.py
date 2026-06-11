@@ -25,7 +25,6 @@ from src.api.schemas.ingestion import (
     IngestionUnmanagedResponse,
     PatchIngestionSourceRequest,
     ReplaceIngestionSourceRequest,
-    RunIngestionSourceRequest,
     SecretRefInfo,
     SecretRefListResponse,
 )
@@ -54,7 +53,6 @@ from src.api.schemas.metrics import (
     MetricRunResultResponse,
     PatchMetricConfigRequest,
     ReplaceMetricConfigRequest,
-    RunMetricRequest,
 )
 from src.api.schemas.ontogen import (
     EdgeAttrResponse,
@@ -111,7 +109,6 @@ __all__ = [
     "IngestionUnmanagedResponse",
     "PatchIngestionSourceRequest",
     "ReplaceIngestionSourceRequest",
-    "RunIngestionSourceRequest",
     "SecretRefInfo",
     "SecretRefListResponse",
     # metagen
@@ -138,7 +135,6 @@ __all__ = [
     "MetricRunResultResponse",
     "PatchMetricConfigRequest",
     "ReplaceMetricConfigRequest",
-    "RunMetricRequest",
     # ontogen
     "EdgeAttrResponse",
     "EdgeListResponse",
