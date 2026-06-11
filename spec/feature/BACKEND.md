@@ -99,14 +99,14 @@ Route handler function names must mirror the REST path they serve.
 
 | Route | Function name |
 |-------|---------------|
-| `GET /governance/metric/{id}/attr/conf` | `get_metric_conf` |
-| `POST /governance/metric/{id}/method/run` | `post_metric_run` |
+| `GET /spoke/governance/metric/{id}/attr/conf` | `get_metric_conf` |
+| `POST /spoke/governance/metric/{id}/method/run` | `post_metric_run` |
 | `GET /spoke/ingestion/sources/{id}/attr/conf` | `get_ingestion_source_conf` |
-| `POST /metagen/method/run` | `post_metagen_run` |
-| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
-| `POST /ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
-| `POST /ontogen/result/edge/{edge_id}/method/review` | `post_ontogen_edge_review` |
-| `POST /ontogen/result/triple/{triple_id}/method/review` | `post_ontogen_triple_review` |
+| `POST /spoke/metagen/method/run` | `post_metagen_run` |
+| `POST /spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
+| `POST /spoke/ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
+| `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | `post_ontogen_edge_review` |
+| `POST /spoke/ontogen/result/triple/{triple_id}/method/review` | `post_ontogen_triple_review` |
 
 ### Service Pattern
 
@@ -142,7 +142,8 @@ Bounded ReAct loop wrapping every structured-output LLM call (UC3 ontogen,
 UC4 metagen). The mechanics (two-layer enforcement, iteration bounds,
 exhaustion behaviour), per-service validator rule tables, the
 producer-reviewer adversarial debate framework (used by both UC3 ontogen
-and UC4 metagen), and the test-mode env-var toggles all live in
+and UC4 metagen), and the DB-backed test-mode stub toggles (`RuntimeConfig`
+row, flipped online via `PATCH /api/v1/admin/conf`) all live in
 [BACKEND_LLM](BACKEND_LLM.md). Service sections below point at it where
 they invoke the loop.
 
@@ -247,7 +248,7 @@ for the URN-parity invariant. `DatasetProperties.description` is sourced from PG
 COMMENT, the dataset description falls back to
 `"Ingested by DataSpoke: {database}.{schema}.{table}"`. The extractor MAY stamp
 `systemMetadata.pipelineName` = the source id for observed mapping. Baseline scope is narrow —
-no profiling, no stateful-ingestion soft-delete. `dry_run: true` runs the extractor and returns
+no profiling, no stateful-ingestion soft-delete. `?dry_run=true` runs the extractor and returns
 the schema preview without emitting any aspects.
 
 #### Implementation

@@ -31,7 +31,7 @@
 | Layer | Language | Framework | Static Gates |
 |-------|----------|-----------|-------------|
 | Backend (API + services) | Python 3.13 | pytest + httpx | mypy, ruff |
-| Frontend | TypeScript | Jest + React Testing Library | TypeScript compiler, ESLint |
+| Frontend | TypeScript | Vitest + React Testing Library | TypeScript compiler, ESLint |
 | E2E | TypeScript | Playwright | -- |
 
 > **Do not use the `datahub` CLI** -- it requires Python <= 3.11 and is incompatible with the
@@ -92,9 +92,9 @@ environment.
 
 ### TypeScript (Frontend)
 
-**Running** (from `src/frontend/`): `npm test`
+**Running** (from project root): `pnpm -C src/frontend test`
 
-**Mocking rules**: Mock API client calls with Jest mocks. Use `@testing-library/react` for
+**Mocking rules**: Mock API client calls with Vitest mocks (`vi.mock`). Use `@testing-library/react` for
 rendering; assert on accessible roles, not DOM internals.
 
 **Static gates**: `npx tsc --noEmit` and `npx eslint src/` (from `src/frontend/`)

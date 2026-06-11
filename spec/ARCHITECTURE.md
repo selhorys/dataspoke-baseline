@@ -389,7 +389,7 @@ lock protocol, see [`spec/TESTING.md`](TESTING.md).
 ### Kubernetes Topology
 
 DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace
-containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed),
+(`dataspoke-01` by default) containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed),
 `dataspoke-event-consumer` (optional Kafka consumer Deployment — opt-in for organisations
 adding event-driven extensions; not deployed in the baseline),
 `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` +

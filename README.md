@@ -112,7 +112,7 @@ Use the plan -> approve -> generate -> evaluate workflow:
 1. Read the relevant spec in `spec/feature/`
 2. Plan (built-in Plan mode) -> human reviews and approves
 3. `backend` -> `reviewer` -> [fix pass if needed]
-4. `workflow` -> `reviewer` -> [fix pass if needed]
+4. `airflow-dag` -> `reviewer` -> [fix pass if needed]
 5. `test` -- write and run tests
 6. `frontend` -> `reviewer` -> [fix pass if needed]
 7. `k8s-helm` -- containerize and deploy
@@ -141,7 +141,7 @@ Fork this repository and adapt:
 | [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, hooks |
 | [spec/AI_PRAUTO.md](spec/AI_PRAUTO.md) | PRauto autonomous PR worker: lifecycle labels, heartbeat, phase state machine |
 | [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |
-| [spec/feature/](spec/feature/) | Feature specs (BACKEND, BACKEND_LLM, BACKEND_SCHEMA, VALIDATION, SECRET_RESOLUTION, FRONTEND_*, HELM_CHART) |
+| [spec/feature/](spec/feature/) | Feature specs (AUTH, BACKEND, BACKEND_LLM, BACKEND_SCHEMA, VALIDATION, SECRET_RESOLUTION, FRONTEND_*, HELM_CHART) |
 
 ## License
 

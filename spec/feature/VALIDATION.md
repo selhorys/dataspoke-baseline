@@ -22,8 +22,8 @@ hundred-terabyte rules is not a path that scales — and exposing an ever-richer
 express rules is reaching for an expressiveness target that does not exist.
 
 The pragmatic locus of validation is the **data pipeline itself** — the validation task
-sits immediately after the partition-writing task it audits, runs in the data engineer's
-chosen environment with the right credentials and resources, and emits its result
+sits immediately after the partition-writing task it audits, runs in the pipeline's
+own environment with the right credentials and resources, and emits its result
 afterwards. This is the data-engineering analogue of shipping unit tests with backend
 code; the only twist is that the quality task ships to *production* alongside the
 pipeline, not to a dev environment.

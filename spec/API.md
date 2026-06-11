@@ -279,7 +279,7 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 | `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
 | `PATCH` | `/spoke/ingestion/sources/{id}` | Partially update a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
 | `DELETE` | `/spoke/ingestion/sources/{id}` | Remove a source (+ cascade its dataset mappings); `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
-| `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor (`dry_run` in body for no-write connection check); `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
+| `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor (`?dry_run=true` for no-write connection check); `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `origin`) | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets (`dataset_registry.datahub_registered=true`) covered by no ingestion source (paginated) — the registry is refreshed hourly by the `datahub-sync-hourly` sweep | Ingestion Control | UC1 |
@@ -409,7 +409,7 @@ ontogen): [BACKEND_LLM §Metagen Adversarial Debate](feature/BACKEND_LLM.md#meta
 | `PUT` | `/spoke/metagen/attr/conf` | Create or replace operational conf | Metadata Generation | UC4 |
 | `PATCH` | `/spoke/metagen/attr/conf` | Partially update operational conf | Metadata Generation | UC4 |
 | `DELETE` | `/spoke/metagen/attr/conf` | Remove operational conf (effectively disables) | Metadata Generation | UC4 |
-| `POST` | `/spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}` narrows scope or evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`. Rejected with `409 METAGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
+| `POST` | `/spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...]}` narrows scope; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`. Rejected with `409 METAGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Metadata Generation | UC4 |
 | `GET` | `/spoke/metagen/event` | Global generation-run event history (e.g. `METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}` — includes all candidates with their statuses | Metadata Generation | UC4 |
@@ -476,7 +476,7 @@ validation.
 | `PATCH` | `/spoke/governance/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/governance/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; `?from=…&to=…` for time range) | Governance | UC5 |
-| `POST` | `/spoke/governance/metric/{metric_id}/method/run` | Trigger a metric measurement run; concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
+| `POST` | `/spoke/governance/metric/{metric_id}/method/run` | Trigger a metric measurement run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/event` | Metric run events (run completions, definition changes) | Governance | UC5 |
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
@@ -682,8 +682,8 @@ definitions:
     than on `result`.
 - `method` — Business actions that go beyond CRUD. Action vocabulary used in this spec:
   `run` (trigger a pipeline), `review` (approve/reject a proposal via `verdict` body
-  field). Always `POST`. Use `dry_run` in the request body for no-write mode instead
-  of separate dry-run paths.
+  field). Always `POST`. Use the `?dry_run=true` query parameter for no-write mode
+  instead of separate dry-run paths.
 - `event` — Immutable history log of occurrences on a resource. Always `GET`; supports
   `offset`/`limit` pagination and `sort=occurred_at_desc` (default order, newest first).
   Supports `from`/`to` for time-range filtering. Sub-paths may be defined in feature specs

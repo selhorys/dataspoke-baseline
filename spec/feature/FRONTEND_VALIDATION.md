@@ -14,7 +14,7 @@ DataSpoke after each partition write.
 | UI route | Title | API base |
 |---|---|---|
 | `/validation` | List | `/spoke/validation` |
-| `/validation/data/[urn]` | Per-dataset detail | `/spoke/common/data/{urn}/attr/validation/{conf,result}`, `/event/validation` |
+| `/validation/data/[urn]` | Per-dataset detail | `/spoke/common/data/{dataset_urn}/attr/validation/{conf,result}`, `/event/validation` |
 
 ---
 

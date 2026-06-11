@@ -69,9 +69,9 @@ Classify the changed file using the spec hierarchy from `CLAUDE.md`:
 
 | Priority | Pattern | Documents |
 |----------|---------|-----------|
-| 1 | `spec/MANIFESTO_*.md` | Product identity |
+| 1 | `spec/MANIFESTO_*.md`, `spec/API.md`, `spec/USE_CASE_*.md` | Product identity, API contract, scenario set |
 | 2 | `spec/API_DESIGN_PRINCIPLE_*.md`, `spec/DATAHUB_INTEGRATION.md` | Binding conventions |
-| 3 | `spec/ARCHITECTURE.md`, `spec/TESTING.md`, `spec/USE_CASE_*.md` | System architecture |
+| 3 | `spec/ARCHITECTURE.md`, `spec/TESTING.md` | System architecture |
 | 4 | `spec/AI_SCAFFOLD.md`, `spec/AI_PRAUTO.md` | Scaffold conventions |
 | 5 | `spec/feature/*.md` | Common feature specs and per-function FRONTEND specs (`FRONTEND_{BASIC,GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`) |
 | — | `CLAUDE.md`, `README.md`, `.claude/**` | Harness documents |

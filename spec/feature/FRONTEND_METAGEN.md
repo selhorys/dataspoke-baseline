@@ -14,7 +14,7 @@ candidate review.
 | UI route | Title | API base |
 |---|---|---|
 | `/metagen` | Global page (conf + queue) | `/spoke/metagen/attr/conf`, `/spoke/metagen/item`, `/spoke/metagen/event` |
-| `/metagen/data/[urn]` | Per-dataset boundary + items | `/spoke/common/data/{urn}/attr/metagen/{conf,item}`, `/event/metagen` |
+| `/metagen/data/[urn]` | Per-dataset boundary + items | `/spoke/common/data/{dataset_urn}/attr/metagen/{conf,item}`, `/event/metagen` |
 
 ---
 
@@ -22,7 +22,7 @@ candidate review.
 
 | Page | Read | Write |
 |---|---|---|
-| `/metagen` | `GET /spoke/metagen/attr/conf`, `GET /spoke/metagen/item`, `GET /spoke/metagen/event` | `PUT/PATCH/DELETE /spoke/metagen/attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`); `POST /spoke/metagen/method/run` (optional body `{dataset_urns?, dry_run?}`) |
+| `/metagen` | `GET /spoke/metagen/attr/conf`, `GET /spoke/metagen/item`, `GET /spoke/metagen/event` | `PUT/PATCH/DELETE /spoke/metagen/attr/conf` (fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`); `POST /spoke/metagen/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
 | `/metagen/data/[urn]` | `GET .../attr/metagen/conf`, `GET .../attr/metagen/item`, `GET .../attr/metagen/item/{item_id}` (per-item candidates), `GET .../event/metagen` | `PUT/PATCH/DELETE .../attr/metagen/conf` (fields: `is_enabled`, `allowed[]`); `POST .../attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see

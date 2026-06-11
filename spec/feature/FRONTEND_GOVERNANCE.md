@@ -66,7 +66,7 @@ list, create, edit, run, disable, delete.
 |---|---|---|
 | `/governance/metrics` (list) | `GET /spoke/governance/metric` (paginated; filter by `metric_type`, `mode`, `is_enabled`) | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
-| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`{dry_run?}`) |
+| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
 The create form is the edit form (below) with one extra leading field: a
 `metric_id` text input — **create-only** (validated per

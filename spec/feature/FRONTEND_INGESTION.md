@@ -64,8 +64,8 @@ page.
 
 On a dataset's detail page, an "Ingestion" panel shows the owning source (link to
 `/ingestion/sources/[id]`), its `mode`, and the latest run — from
-`GET /spoke/common/data/{urn}/attr/ingestion`. Per-dataset ingestion events come from
-`GET /spoke/common/data/{urn}/event/ingestion`.
+`GET /spoke/common/data/{dataset_urn}/attr/ingestion`. Per-dataset ingestion events come from
+`GET /spoke/common/data/{dataset_urn}/event/ingestion`.
 
 ## Components
 

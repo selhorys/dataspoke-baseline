@@ -105,7 +105,7 @@ DataSpoke는 두 모드를 모두 지원한다.
 |---|---|
 | `GET/POST /spoke/ingestion/sources` | 소스 목록(`mode` 필터); 생성(`ACTIVE_CUSTOM_MANAGED`/`PASSIVE`만) |
 | `GET/PUT/PATCH/DELETE /spoke/ingestion/sources/{id}` | 읽기(레시피를 마스킹된 YAML로), 교체, 갱신, 삭제. `DATAHUB_MANAGED`는 읽기 전용 → `409 INGESTION_SOURCE_READONLY` |
-| `POST /spoke/ingestion/sources/{id}/method/run` | 수동 실행(`dry_run: true`로 연결 점검) — **`ACTIVE_CUSTOM_MANAGED`만**; 그 외는 `409 INGESTION_RUN_NOT_APPLICABLE` |
+| `POST /spoke/ingestion/sources/{id}/method/run` | 수동 실행(`?dry_run=true`로 연결 점검) — **`ACTIVE_CUSTOM_MANAGED`만**; 그 외는 `409 INGESTION_RUN_NOT_APPLICABLE` |
 | `GET /spoke/ingestion/sources/{id}/datasets` | 이 소스가 커버하는 데이터셋(매핑) |
 | `GET /spoke/ingestion/sources/{id}/event` | 소스의 실행/이벤트 이력 |
 | `GET /spoke/ingestion/unmanaged` | 어떤 소스도 커버하지 않는 DataHub 데이터셋 |
@@ -180,7 +180,7 @@ recipe:
 ```
 
 ```http
-POST /api/v1/spoke/ingestion/sources/{id}/method/run    { "dry_run": true }
+POST /api/v1/spoke/ingestion/sources/{id}/method/run?dry_run=true
 ```
 
 dry-run은 emit 없이 추출기를 실행한다(연결 점검, 스키마 미리보기). 실제 실행은 데이터셋 aspect와
@@ -532,7 +532,7 @@ conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책
 | 엔드포인트 | 용도 |
 |---|---|
 | `PUT/PATCH/GET/DELETE /spoke/metagen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
-| `POST /spoke/metagen/method/run` | 수동 생성 실행 트리거. body `{"dataset_urns": [...], "dry_run": bool}`은 선택. 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
+| `POST /spoke/metagen/method/run` | 수동 생성 실행 트리거. body `{"dataset_urns": [...]}`은 선택; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
 | `GET /spoke/metagen/event` | 글로벌 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
 | `GET /spoke/metagen/item` | 데이터셋 전반의 아이템 목록 (페이지네이션·`dataset_urn`·`kind`·`status` 필터) |
 | `GET /spoke/metagen/item/{composite_id}` | `{dataset_urn}::{item_id}` 복합 ID로 아이템과 모든 후보 조회 |
@@ -693,7 +693,7 @@ breakdown 형태와 DAG 시맨틱은
 행이 부재할 때만 삽입; 멱등). 기본값은 `mode: "active"`, `is_enabled: false`,
 `schedule_tier: "daily"`, `dataset_filter: {}`, 타입에 맞는 `metric_conf`다.
 시드는 비활성 상태로 들어가므로, 거버넌스 리드가 PATCH `is_enabled: true`로
-명시적으로 켜거나 `dry_run: true` 1회 실행을 거친 뒤 스케줄 측정이 시작된다.
+명시적으로 켜거나 `?dry_run=true` 1회 실행을 거친 뒤 스케줄 측정이 시작된다.
 사용자는 어떤 디폴트라도 수정·비활성화·삭제할 수 있고, 같은 세 타입으로 메트릭을
 더 추가할 수 있다.
 
@@ -703,7 +703,7 @@ breakdown 형태와 DAG 시맨틱은
 |---|---|
 | `POST /spoke/governance/metric` | 메트릭 생성 — `metric_id`를 정의 필드와 함께 요청 본문에 담는다. 중복 id는 `409 METRIC_EXISTS` |
 | `PUT/PATCH/GET/DELETE /spoke/governance/metric/{metric_id}/attr/conf` | 기존 메트릭 교체·갱신·읽기·삭제 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT`은 기존 정의를 교체하며 id가 없으면 `404 METRIC_NOT_FOUND` |
-| `POST /spoke/governance/metric/{metric_id}/method/run` | 측정 실행 트리거; `dry_run: true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
+| `POST /spoke/governance/metric/{metric_id}/method/run` | 측정 실행 트리거; `?dry_run=true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
 | `GET /spoke/governance/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 `values`와 데이터셋별 `breakdown`을 담음) |
 | `GET /spoke/governance/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
 | `GET /spoke/governance/metric` | 모든 메트릭 리스트 |

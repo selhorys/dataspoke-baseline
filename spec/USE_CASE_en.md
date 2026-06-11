@@ -98,7 +98,7 @@ and
 |---|---|
 | `GET/POST /spoke/ingestion/sources` | List sources (filter `mode`); create (`ACTIVE_CUSTOM_MANAGED`/`PASSIVE` only) |
 | `GET/PUT/PATCH/DELETE /spoke/ingestion/sources/{id}` | Read (recipe as masked YAML), replace, update, remove. `DATAHUB_MANAGED` is read-only → `409 INGESTION_SOURCE_READONLY` |
-| `POST /spoke/ingestion/sources/{id}/method/run` | Manual run (`dry_run: true` for connection check) — **`ACTIVE_CUSTOM_MANAGED` only**; else `409 INGESTION_RUN_NOT_APPLICABLE` |
+| `POST /spoke/ingestion/sources/{id}/method/run` | Manual run (`?dry_run=true` for connection check) — **`ACTIVE_CUSTOM_MANAGED` only**; else `409 INGESTION_RUN_NOT_APPLICABLE` |
 | `GET /spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping) |
 | `GET /spoke/ingestion/sources/{id}/event` | Run/event history for the source |
 | `GET /spoke/ingestion/unmanaged` | DataHub datasets covered by no source |
@@ -172,7 +172,7 @@ recipe:
 ```
 
 ```http
-POST /api/v1/spoke/ingestion/sources/{id}/method/run    { "dry_run": true }
+POST /api/v1/spoke/ingestion/sources/{id}/method/run?dry_run=true
 ```
 
 Dry-run exercises the extractor (connection check, schema preview) without emitting. A real run
@@ -531,7 +531,7 @@ and
 | Endpoint | Used for |
 |---|---|
 | `PUT/PATCH/GET/DELETE /spoke/metagen/attr/conf` | Singleton operational conf — see field table above |
-| `POST /spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...], "dry_run": bool}`. Concurrent runs return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
+| `POST /spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...]}`; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
 | `GET /spoke/metagen/event` | Global generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
 | `GET /spoke/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) |
 | `GET /spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}`, including every candidate |
@@ -690,7 +690,7 @@ inserted when the `metric_definitions` row is absent). Defaults are
 `mode: "active"`, `is_enabled: false`, `schedule_tier: "daily"`, `dataset_filter: {}`,
 type-appropriate `metric_conf`. The seeds ship disabled so the governance lead opts
 in explicitly via PATCH `is_enabled: true` (or runs a one-off `method/run` with
-`dry_run: true`) before scheduled measurement begins. The user can edit, disable, or
+`?dry_run=true`) before scheduled measurement begins. The user can edit, disable, or
 delete any default, and add more metrics of the same three types.
 
 ### API Mapping
@@ -699,7 +699,7 @@ delete any default, and add more metrics of the same three types.
 |---|---|
 | `POST /spoke/governance/metric` | Create a metric — `metric_id` is supplied in the request body alongside the definition fields. A colliding id returns `409 METRIC_EXISTS` |
 | `PUT/PATCH/GET/DELETE /spoke/governance/metric/{metric_id}/attr/conf` | Replace / update / read / delete an existing metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT` replaces an existing definition and returns `404 METRIC_NOT_FOUND` when the id is absent |
-| `POST /spoke/governance/metric/{metric_id}/method/run` | Trigger a measurement run; `dry_run: true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
+| `POST /spoke/governance/metric/{metric_id}/method/run` | Trigger a measurement run; `?dry_run=true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
 | `GET /spoke/governance/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries `values` and per-dataset `breakdown`) |
 | `GET /spoke/governance/metric/{metric_id}/event` | Run completion / definition change events |
 | `GET /spoke/governance/metric` | List all metrics |
