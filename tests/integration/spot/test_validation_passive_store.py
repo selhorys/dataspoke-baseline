@@ -593,10 +593,8 @@ async def test_put_conf_rejects_description_with_control_chars(
         },
     )
 
-    # TODO(spec-sync): API.md §Error Codes lists INVALID_PARAMETER → 400 but
-    # PydanticValidationError handler at src/api/main.py:188 returns 422. Track separately.
+    # spec: API.md §Error Codes — INVALID_PARAMETER → 422 (schema-layer validation).
     # spec: VALIDATION.md §Rule Configuration — control characters rejected at schema layer.
-    # Implementation maps to 422 via PydanticValidationError handler (see src/api/main.py).
     assert resp.status_code == 422, (
         f"PUT with control char in description expected 422 (Pydantic boundary), "
         f"got {resp.status_code}: {resp.text}. "

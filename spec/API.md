@@ -773,8 +773,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 
 | `error_code` | HTTP | Description |
 |-------------|------|-------------|
-| `INVALID_PARAMETER` | 400 | Query param or body field fails validation (e.g., `PUT/PATCH /spoke/common/data/{urn}/attr/validation/conf` body where `description` carries ASCII control characters other than `\t` (0x09) and `\n` (0x0a) — see [VALIDATION.md §Rule Configuration](feature/VALIDATION.md#rule-configuration)) |
-| `MISSING_REQUIRED_FIELD` | 400 | Required body field not provided |
+| `INVALID_PARAMETER` | 422 | Query param or body field fails schema-layer validation (e.g., `PUT/PATCH /spoke/common/data/{urn}/attr/validation/conf` body where `description` carries ASCII control characters other than `\t` (0x09) and `\n` (0x0a) — see [VALIDATION.md §Rule Configuration](feature/VALIDATION.md#rule-configuration)) |
 | `UNAUTHORIZED` | 401 | Token missing, expired, or malformed |
 | `FORBIDDEN` | 403 | Valid token; caller's role does not satisfy route requirement |
 | `DATASET_NOT_FOUND` | 404 | Dataset URN does not exist in DataHub (read paths, e.g. `GET /spoke/common/data/{urn}`) |

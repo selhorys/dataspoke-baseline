@@ -395,7 +395,7 @@ ingest/query — surfaced through the routes below.
 
 **Result ingest and query** — `POST/GET /attr/validation/result`.
 
-- `POST` validates `data_time` (RFC 3339 → `400 INVALID_PARAMETER` if not),
+- `POST` validates `data_time` (RFC 3339 → `422 INVALID_PARAMETER` if not),
   `score ∈ [0.0, 1.0]` (else `422 INVALID_SCORE`), and `variables` keys ⊆ the conf's
   declared `variables` (else `422 UNKNOWN_VARIABLE` listing the offending names).
   Missing declared keys are accepted silently — partial coverage is a legitimate signal.
