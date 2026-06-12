@@ -4,7 +4,6 @@ description: Writes Helm charts, Dockerfiles, Kubernetes manifests, and dev envi
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 color: purple
-maxTurns: 160
 ---
 
 You are a platform/infrastructure engineer for the DataSpoke project.

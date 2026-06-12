@@ -6,7 +6,6 @@ model: opus
 skills:
   - datahub-api
 color: blue
-maxTurns: 160
 hooks:
   PostToolUse:
     - matcher: Edit|Write

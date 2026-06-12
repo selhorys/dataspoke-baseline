@@ -4,7 +4,6 @@ description: Writes and runs tests for DataSpoke across all layers (unit, spot i
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 color: yellow
-maxTurns: 160
 hooks:
   PostToolUse:
     - matcher: Edit|Write

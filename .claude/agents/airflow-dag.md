@@ -4,7 +4,6 @@ description: Writes Airflow DAG Python files and workflow parameter modules in s
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 color: green
-maxTurns: 160
 hooks:
   PostToolUse:
     - matcher: Edit|Write

@@ -5,7 +5,6 @@ tools: Read, Glob, Grep, Bash
 disallowedTools: Write, Edit, NotebookEdit
 model: opus
 effort: xhigh
-maxTurns: 40
 memory: project
 color: orange
 ---

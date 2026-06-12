@@ -4,7 +4,6 @@ description: Writes Next.js + TypeScript frontend code for DataSpoke in src/fron
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: opus
 color: cyan
-maxTurns: 160
 hooks:
   Stop:
     - hooks:
