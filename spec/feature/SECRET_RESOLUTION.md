@@ -23,7 +23,9 @@ source-save time, and **resolves** them when an `ACTIVE_CUSTOM_MANAGED` extracto
 The reference syntax is `${name__key}`, embedded directly in `recipe.source.config` (e.g.
 `password: '${team-pg__password}'`) — the same `${...}` substitution DataHub's own recipe
 loader uses, so the recipe stays byte-compatible. `${name__key}` resolves to Kubernetes
-Secret `dataspoke-source-cred-<name>`, data key `<key>`.
+Secret `dataspoke-source-cred-<name>`, data key `<key>`. Kubernetes Secrets are the **only
+backend the baseline implements**; the reference itself is backend-agnostic, which is the
+extension point for custom secret stores (see [Backend extensibility](#backend-extensibility)).
 
 This spec covers the secret-naming convention, the admin authoring guide, the list/verify/
 resolve flows, the RBAC model, and the error taxonomy. UC1 Ingestion Control is the first
@@ -51,13 +53,20 @@ future subsystems reuse the same module.
 
 - **Writing/vaulting credential values through DataSpoke.** Reference-only — DataSpoke has no
   create/patch path for `dataspoke-source-cred-*` Secrets. Admins author them out-of-band.
-- Pluggable secret backends (Vault, AWS Secrets Manager, GCP Secret Manager). Future work; the
-  resolver interface is shaped to allow it but the baseline ships only the Kubernetes backend.
+- **Custom secret-store backends in the baseline.** The baseline product implements exactly one
+  backend: Kubernetes Secrets. The `${name__key}` reference is backend-agnostic, so users can
+  extend DataSpoke with a resolver backed by a safer managed store (AWS Secrets Manager, GCP
+  Secret Manager, HashiCorp Vault) without changing recipes or the API surface — see
+  [Backend extensibility](#backend-extensibility).
 - Cross-namespace references. All Secrets live in DataSpoke's own namespace. Operators needing
   a credential from another namespace replicate it into the DataSpoke namespace (ESO,
   copy-secret jobs, manual kubectl).
-- Auto-deleting Kubernetes Secrets when a source is deleted. Multiple sources may share a
-  Secret; reference counting is out of scope. See [Open Questions](#open-questions).
+- **Managing orphaned secret items.** A `name__key` entry (or whole Secret) no longer referenced
+  by any source is not detected, reported, or deleted by the baseline product. The model is
+  reference-only and multiple sources may share a Secret, so reference counting, orphan
+  reporting, and auto-deletion are all outside the implementation scope. An operator-side
+  script (list `dataspoke-source-cred-*` Secrets, intersect with `${...}` references across
+  active sources, delete the orphans) covers this without any runtime write verb.
 - Encrypting Kubernetes Secrets at rest beyond the cluster's etcd encryption-at-rest config.
   Operators are responsible for cluster hardening.
 - Client-side credential resolution. The frontend and CLI never resolve references.
@@ -92,6 +101,20 @@ recipe can never mutate an infra Secret either.
 it forms part of a Kubernetes object name. `<key>` follows Kubernetes Secret data-key rules
 (`[A-Za-z0-9._-]+`). Because `<name>` cannot contain `__`, the reference parser splits
 unambiguously on the **last** `__` (see [resolve flow](#run-time-resolve-flow)).
+
+### Backend extensibility
+
+The baseline product uses **only the Kubernetes Secrets backend**. This is a product boundary,
+not an interface limitation: a `${name__key}` reference names a logical credential (`name`) and
+an entry within it (`key`) and carries no backend information. The neutral resolver layer
+(grammar, `${...}` substitution, cache, error taxonomy, and the public functions in
+[Public surface](#public-surface)) is backend-independent. A custom secret store based on safer
+storage — AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault — is added by implementing
+the `SecretBackend` protocol (`read_value` / `verify` / `list_refs` over the logical
+`(name, key)` pair; e.g. `name` → managed-secret identifier, `key` → JSON field within it) and
+binding it via `src.shared.secrets.set_backend()`. Recipes, the list/verify/resolve flows, the
+error taxonomy, and the API surface stay unchanged; only the backend and its deployment wiring
+(Kubernetes RBAC → cloud IAM) are swapped.
 
 ### Admin authoring guide (out-of-band)
 
@@ -183,7 +206,8 @@ silent fallback. `DATAHUB_MANAGED` and `PASSIVE` sources are never resolved by D
 
 ### Cache
 
-In-memory cache, 60s TTL, keyed on `(secret_name, key)`. Bounds the k8s API call rate when a
+In-memory cache in the backend-neutral resolver layer, 60s TTL, keyed on the logical
+`(name, key)` pair. Bounds the k8s API call rate when a
 burst of runs/dry-runs hits the same Secret. Per-process; pod restart clears it. TTL is short
 enough that rotations propagate within a minute. Bounded with a hard cap (LRU eviction by
 insertion order) so a long-running pod with many distinct refs cannot grow the cache without
@@ -214,7 +238,8 @@ The Role is shared between two access patterns in the same ServiceAccount:
 - **Source-cred reads** (uses `get` + `list`): `list_source_cred_refs` enumerates
   `dataspoke-source-cred-*` Secrets; `verify_secret_ref` / `resolve_secret_ref` read them.
   The resolver never issues write calls — the security property "DataSpoke does not mutate
-  source-cred Secrets" is enforced in application code (`secret_resolver.py` prefix guard).
+  source-cred Secrets" is enforced in application code (the Kubernetes backend's prefix guard,
+  `src/shared/secrets/k8s.py`).
 - **Infra accessor writes** (uses `get` + `create` + `patch`): the admin peripheral accessors
   (`datahub_secret.py`, `llm_secret.py`, `langfuse_secret.py`, `smtp_secret.py`) use
   create-or-patch semantics against their respective fixed-name infra Secrets. The fixed
@@ -258,10 +283,14 @@ migration.
 
 ### Module location
 
-`src/backend/ingestion/secret_resolver.py` (initial home; relocate under `src/shared/secrets/`
-when a second subsystem becomes a consumer). The in-cluster client + TTL-cache machinery is
-shared with the DataHub-token / LLM-key accessors; those target fixed Secret names under a
-separate RBAC grant and bypass the `dataspoke-source-cred-` prefix guard.
+The `src/shared/secrets/` package: `interface.py` (exceptions, `SecretRefInfo`, the
+`SecretBackend` protocol), `grammar.py` (the single `${name__key}` pattern and parser),
+`resolver.py` (the backend-neutral cache, `${...}` substitution, backend binding, and public
+functions), and `k8s.py` (the `KubernetesSecretBackend` and in-cluster client bootstrap). The
+in-cluster client + TTL-cache machinery is shared with the DataHub-token / LLM-key accessors;
+those consume `require_k8s_client` from `src/shared/secrets/k8s.py`, target fixed Secret names
+under a separate RBAC grant, and bypass the `dataspoke-source-cred-` prefix guard under their
+own fixed-name controls.
 
 ### Public surface
 
@@ -281,7 +310,20 @@ def list_source_cred_refs() -> list[SecretRefInfo]: ...
 class SecretRefMalformed(ValueError): ...
 class SecretRefNotFound(LookupError): ...
 class SecretResolverUnavailable(RuntimeError): ...
+
+# Backend seam: a store implements this protocol over the logical (name, key) pair.
+class SecretBackend(Protocol):
+    def read_value(self, name: str, key: str) -> str: ...
+    def verify(self, name: str, key: str) -> None: ...
+    def list_refs(self) -> list[SecretRefInfo]: ...
+
+def get_backend() -> SecretBackend: ...        # lazily instantiates the default backend
+def set_backend(backend: SecretBackend | None) -> None: ...  # swap + clear cache; None restores default
 ```
+
+The default binding is the lazily-instantiated Kubernetes backend; there is no configuration
+knob to select a backend in the baseline. `set_backend()` swaps the active backend and clears
+the cache; `set_backend(None)` restores the default.
 
 All operations are synchronous. The k8s Python client's calls are blocking but fast; async
 wrappers add no value over the extractor latency that dominates ingestion runs.
@@ -347,13 +389,6 @@ third case — a DataSpoke-owned secret read at runtime *and* rotated online thr
 
 ## Open Questions
 
-- [ ] Auto-cleanup of orphaned source-cred Secrets: out of scope (reference-only; a Secret may
-      back multiple sources). An operator-side script (list all `dataspoke-source-cred-*`
-      Secrets, intersect with `${...}` references across active sources, delete the orphans)
-      covers this without a runtime write verb.
-- [ ] Pluggable backends (Vault, AWS/GCP Secret Manager): the resolver is sized for one
-      interface. When a second backend is needed, lift the module under `src/shared/secrets/`
-      and dispatch on a `SecretBackend` enum.
 - [ ] Cache TTL configurability: hardcoded 60s. Defer until an operator reports a real need.
 - [ ] RBAC health-check endpoint: a `verify_access() -> bool` the readiness probe can call to
       fail fast on RBAC misconfiguration. Worth considering after first production deploy.

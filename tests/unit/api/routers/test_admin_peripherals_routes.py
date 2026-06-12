@@ -58,9 +58,8 @@ import pytest
 from src.api.dependencies import get_db
 from src.api.main import app
 from src.backend.admin.peripheral_service import DatahubConfigDTO, LangfuseConfigDTO
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.db.models import PeripheralConfig
-
+from src.shared.secrets import SecretResolverUnavailable
 from tests.unit.api.conftest import _make_mock_user, auth_headers
 
 _PERIPHERALS = "/api/v1/admin/peripherals"

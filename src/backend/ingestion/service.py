@@ -6,7 +6,9 @@ Schema: spec/feature/BACKEND_SCHEMA.md §ingestion_source + §ingestion_source_d
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -30,17 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import json
-import re
-
 from src.backend.ingestion.extractors import run_extractor
-from src.backend.ingestion.secret_resolver import (
-    SecretRefMalformed,
-    SecretRefNotFound,
-    SecretResolverUnavailable,
-    resolve_recipe_secrets,
-    verify_secret_ref,
-)
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
@@ -53,8 +45,26 @@ from src.shared.events import (
     INGESTION_SOURCE_DELETE,
     INGESTION_SOURCE_UPDATE,
 )
-from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError, StorageUnavailableError
-from src.shared.models.ingestion import Mode, build_matcher, extract_secret_refs, parse_recipe, cron_to_tier
+from src.shared.exceptions import (
+    ConflictError,
+    EntityNotFoundError,
+    PreconditionFailedError,
+    StorageUnavailableError,
+)
+from src.shared.models.ingestion import (
+    Mode,
+    build_matcher,
+    cron_to_tier,
+    extract_secret_refs,
+    parse_recipe,
+)
+from src.shared.secrets import (
+    SecretRefMalformed,
+    SecretRefNotFound,
+    SecretResolverUnavailable,
+    resolve_recipe_secrets,
+    verify_secret_ref,
+)
 
 logger = logging.getLogger(__name__)
 

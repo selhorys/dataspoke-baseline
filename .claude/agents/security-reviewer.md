@@ -33,6 +33,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `src/shared/settings.py` — secret env vars (JWT, DataHub token, Postgres, LLM, Airflow, internal-token)
 - `src/shared/datahub/**` — DataHub client and emission (`client.py`, `consumer.py`, `events.py`)
 - `src/backend/ingestion/**`, `src/backend/metagen/**`, `src/backend/ontogen/**`, `src/api/routers/internal/activities.py` — DataHub write paths
+- `src/shared/secrets/**` — secret resolution: ref grammar, source-cred prefix guard, backend dispatch, k8s client bootstrap
 - `migrations/**` — any DB migration (data-loss or privilege risk)
 - `helm-charts/**/templates/secrets.yaml`, `helm-charts/**/values*.yaml` — credentials / config
 - `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/pnpm-lock.yaml` — new/bumped dependencies

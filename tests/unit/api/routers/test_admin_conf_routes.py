@@ -51,9 +51,8 @@ import pytest
 from src.api.dependencies import get_db
 from src.api.main import app
 from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.db.models import RuntimeConfig
-
+from src.shared.secrets import SecretResolverUnavailable
 from tests.unit.api.conftest import _make_mock_user, auth_headers
 
 _ADMIN_CONF = "/api/v1/admin/conf"

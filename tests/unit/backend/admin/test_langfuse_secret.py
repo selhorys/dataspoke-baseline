@@ -18,7 +18,8 @@ Concerns covered:
 10. set — k8s client init failure raises SecretResolverUnavailable.
 11. set — invalidates cache: prime cache via get, then set, then next get re-reads.
 12. langfuse_secret_key_is_set: True when non-empty, False when "".
-13. Secret name and key constants: _SECRET_NAME="dataspoke-langfuse-secret", _SECRET_KEY="secret_key".
+13. Secret name and key constants: _SECRET_NAME="dataspoke-langfuse-secret",
+    _SECRET_KEY="secret_key".
 
 Spec traceability:
 - plan/scalable-beaming-hamster.md §Backend — langfuse_secret mirrors llm_secret pattern.
@@ -41,13 +42,14 @@ from src.backend.admin.langfuse_secret import (
     langfuse_secret_key_is_set,
     set_langfuse_secret_key,
 )
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
+from src.shared.secrets import SecretResolverUnavailable
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _SECRET_NAME = "dataspoke-langfuse-secret"
 _SECRET_KEY = "secret_key"
 _NAMESPACE = "dataspoke"
+_REQUIRE_CLIENT = "src.backend.admin.langfuse_secret.require_k8s_client"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -132,12 +134,13 @@ def test_secret_key_constant() -> None:
 def test_get_returns_base64_decoded_value() -> None:
     """get_langfuse_secret_key() decodes the Kubernetes Secret's base64-encoded secret_key.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — key stored as base64 in dataspoke-langfuse-secret.
+    spec: plan/scalable-beaming-hamster.md §Backend — key stored as base64
+    in dataspoke-langfuse-secret.
     """
     secret = _fake_secret("sk-langfuse-key")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_langfuse_secret_key()
 
     assert result == "sk-langfuse-key"
@@ -157,7 +160,7 @@ def test_get_cache_hit_does_not_re_read() -> None:
     secret = _fake_secret("cached-key")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         first = get_langfuse_secret_key()
         second = get_langfuse_secret_key()
 
@@ -182,7 +185,7 @@ def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
     core = _make_core(read_return=secret)
     real_now = _time.monotonic()
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         get_langfuse_secret_key()
         first_count = core.read_namespaced_secret.call_count
 
@@ -204,7 +207,7 @@ def test_get_404_returns_empty_string_and_caches() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_langfuse_secret_key()
         assert result == "", "404 must yield empty string (secret unset)"
 
@@ -226,7 +229,7 @@ def test_get_403_returns_empty_string_not_cached() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(403))
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_langfuse_secret_key()
         assert result == ""
 
@@ -252,14 +255,14 @@ def test_get_403_logs_warning(caplog) -> None:
 
     # Step 1: prime the cache with the sentinel so it's known to the module.
     core_ok = _make_core(read_return=_fake_secret(_SENTINEL))
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core_ok, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_ok, _NAMESPACE)):
         get_langfuse_secret_key()
 
     # Step 2: invalidate cache, then induce a 403.
     invalidate_langfuse_secret_key_cache()
 
     core_403 = _make_core(read_side_effect=_api_exception(403))
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core_403, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_403, _NAMESPACE)):
         with caplog.at_level(logging.WARNING, logger="src.backend.admin.langfuse_secret"):
             get_langfuse_secret_key()
 
@@ -278,14 +281,14 @@ def test_get_403_logs_warning(caplog) -> None:
 # ── 6. get — other k8s error raises SecretResolverUnavailable ────────────────
 
 
-def test_get_500_raises_secret_resolver_unavailable() -> None:
+def test_get_500_raises_resolver_unavailable() -> None:
     """read_namespaced_secret raises ApiException(500) → SecretResolverUnavailable propagated.
 
     spec: plan/scalable-beaming-hamster.md §Backend — other k8s errors propagate as unavailable.
     """
     core = _make_core(read_side_effect=_api_exception(500))
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         with pytest.raises(SecretResolverUnavailable):
             get_langfuse_secret_key()
 
@@ -298,7 +301,7 @@ def test_get_returns_empty_string_when_data_is_none() -> None:
     secret = _fake_secret(None)
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_langfuse_secret_key()
 
     assert result == ""
@@ -309,7 +312,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_langfuse_secret_key()
 
     assert result == ""
@@ -326,7 +329,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
     core = MagicMock()
     core.read_namespaced_secret.side_effect = _api_exception(404)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_langfuse_secret_key("new-lf-key")
 
     core.create_namespaced_secret.assert_called_once()
@@ -352,7 +355,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
     core = MagicMock()
     core.read_namespaced_secret.return_value = existing_secret
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_langfuse_secret_key("updated-lf-key")
 
     core.patch_namespaced_secret.assert_called_once()
@@ -372,10 +375,11 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
 def test_set_out_of_cluster_raises() -> None:
     """set_langfuse_secret_key propagates SecretResolverUnavailable on k8s client init failure.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s client is unavailable.
+    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s
+    client is unavailable.
     """
     with patch(
-        "src.backend.admin.langfuse_secret._require_client",
+        _REQUIRE_CLIENT,
         side_effect=SecretResolverUnavailable("out-of-cluster"),
     ):
         with pytest.raises(SecretResolverUnavailable):
@@ -392,17 +396,17 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     """
     secret_v1 = _fake_secret("v1-key")
     core_v1 = _make_core(read_return=secret_v1)
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core_v1, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_v1, _NAMESPACE)):
         get_langfuse_secret_key()
 
     core_set = MagicMock()
     core_set.read_namespaced_secret.return_value = _fake_secret("v1-key")
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core_set, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_set, _NAMESPACE)):
         set_langfuse_secret_key("v2-key")
 
     secret_v2 = _fake_secret("v2-key")
     core_v2 = _make_core(read_return=secret_v2)
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core_v2, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_v2, _NAMESPACE)):
         result = get_langfuse_secret_key()
 
     assert core_v2.read_namespaced_secret.call_count == 1
@@ -420,7 +424,7 @@ def test_langfuse_secret_key_is_set_true_when_present() -> None:
     secret = _fake_secret("live-lf-key")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = langfuse_secret_key_is_set()
 
     assert result is True
@@ -433,7 +437,7 @@ def test_langfuse_secret_key_is_set_false_when_absent() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = langfuse_secret_key_is_set()
 
     assert result is False
@@ -447,7 +451,7 @@ def test_langfuse_secret_key_is_set_false_when_key_absent() -> None:
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.langfuse_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = langfuse_secret_key_is_set()
 
     assert result is False

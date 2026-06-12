@@ -41,13 +41,14 @@ from src.backend.admin.datahub_secret import (
     invalidate_datahub_token_cache,
     set_datahub_token,
 )
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
+from src.shared.secrets import SecretResolverUnavailable
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _SECRET_NAME = "dataspoke-datahub-secret"
 _SECRET_KEY = "token"
 _NAMESPACE = "dataspoke"
+_REQUIRE_CLIENT = "src.backend.admin.datahub_secret.require_k8s_client"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -135,12 +136,13 @@ def test_secret_key_constant() -> None:
 def test_get_returns_base64_decoded_value() -> None:
     """get_datahub_token() decodes the Kubernetes Secret's base64-encoded token.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — token stored as base64 in dataspoke-datahub-secret.
+    spec: plan/scalable-beaming-hamster.md §Backend — token stored as base64
+    in dataspoke-datahub-secret.
     """
     secret = _fake_secret("my-datahub-token")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_datahub_token()
 
     assert result == "my-datahub-token"
@@ -160,7 +162,7 @@ def test_get_cache_hit_does_not_re_read() -> None:
     secret = _fake_secret("cached-token")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         first = get_datahub_token()
         second = get_datahub_token()
 
@@ -185,7 +187,7 @@ def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
     core = _make_core(read_return=secret)
     real_now = _time.monotonic()
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         get_datahub_token()
         first_count = core.read_namespaced_secret.call_count
 
@@ -207,7 +209,7 @@ def test_get_404_returns_empty_string_and_caches() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_datahub_token()
         assert result == "", "404 must yield empty string (secret unset)"
 
@@ -229,7 +231,7 @@ def test_get_403_returns_empty_string_not_cached() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(403))
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_datahub_token()
         assert result == "", "403 must yield empty string (fail-safe)"
 
@@ -256,7 +258,7 @@ def test_get_403_logs_warning(caplog) -> None:
 
     # Step 1: seed the sentinel into the cache via a successful read.
     core_ok = _make_core(read_return=_fake_secret(_SENTINEL))
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core_ok, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_ok, _NAMESPACE)):
         get_datahub_token()
 
     # Step 2: invalidate so we actually hit k8s on the next call.
@@ -264,7 +266,7 @@ def test_get_403_logs_warning(caplog) -> None:
 
     # Step 3: now call with a 403-returning core; capture warning logs.
     core_403 = _make_core(read_side_effect=_api_exception(403))
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core_403, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_403, _NAMESPACE)):
         with caplog.at_level(logging.WARNING, logger="src.backend.admin.datahub_secret"):
             get_datahub_token()
 
@@ -283,14 +285,14 @@ def test_get_403_logs_warning(caplog) -> None:
 # ── 6. get — other k8s error raises SecretResolverUnavailable ────────────────
 
 
-def test_get_500_raises_secret_resolver_unavailable() -> None:
+def test_get_500_raises_resolver_unavailable() -> None:
     """read_namespaced_secret raises ApiException(500) → SecretResolverUnavailable propagated.
 
     spec: plan/scalable-beaming-hamster.md §Backend — other k8s errors propagate as unavailable.
     """
     core = _make_core(read_side_effect=_api_exception(500))
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         with pytest.raises(SecretResolverUnavailable):
             get_datahub_token()
 
@@ -303,7 +305,7 @@ def test_get_returns_empty_string_when_data_is_none() -> None:
     secret = _fake_secret(None)
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_datahub_token()
 
     assert result == "", "data=None must be treated as unset (returns '')"
@@ -314,7 +316,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_datahub_token()
 
     assert result == "", "Empty data dict must be treated as unset (returns '')"
@@ -331,7 +333,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
     core = MagicMock()
     core.read_namespaced_secret.side_effect = _api_exception(404)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_datahub_token("new-token")
 
     core.create_namespaced_secret.assert_called_once()
@@ -358,7 +360,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
     core = MagicMock()
     core.read_namespaced_secret.return_value = existing_secret
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_datahub_token("updated-token")
 
     core.patch_namespaced_secret.assert_called_once()
@@ -380,10 +382,11 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
 def test_set_out_of_cluster_raises() -> None:
     """set_datahub_token propagates SecretResolverUnavailable on k8s client init failure.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s client is unavailable.
+    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s
+    client is unavailable.
     """
     with patch(
-        "src.backend.admin.datahub_secret._require_client",
+        _REQUIRE_CLIENT,
         side_effect=SecretResolverUnavailable("out-of-cluster"),
     ):
         with pytest.raises(SecretResolverUnavailable):
@@ -401,20 +404,20 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     # Prime cache.
     secret_v1 = _fake_secret("v1-token")
     core_v1 = _make_core(read_return=secret_v1)
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core_v1, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_v1, _NAMESPACE)):
         get_datahub_token()
     assert core_v1.read_namespaced_secret.call_count == 1
 
     # set (patch path).
     core_set = MagicMock()
     core_set.read_namespaced_secret.return_value = _fake_secret("v1-token")
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core_set, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_set, _NAMESPACE)):
         set_datahub_token("v2-token")
 
     # Next get must re-read, not hit the old cache.
     secret_v2 = _fake_secret("v2-token")
     core_v2 = _make_core(read_return=secret_v2)
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core_v2, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_v2, _NAMESPACE)):
         result = get_datahub_token()
 
     assert core_v2.read_namespaced_secret.call_count == 1, (
@@ -434,7 +437,7 @@ def test_datahub_token_is_set_true_when_present() -> None:
     secret = _fake_secret("live-token")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = datahub_token_is_set()
 
     assert result is True
@@ -447,7 +450,7 @@ def test_datahub_token_is_set_false_when_absent() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = datahub_token_is_set()
 
     assert result is False
@@ -461,7 +464,7 @@ def test_datahub_token_is_set_false_when_key_absent() -> None:
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.datahub_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = datahub_token_is_set()
 
     assert result is False

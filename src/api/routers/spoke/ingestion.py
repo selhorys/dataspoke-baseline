@@ -37,14 +37,14 @@ from src.api.schemas.ingestion import (
     SecretRefInfo,
     SecretRefListResponse,
 )
-from src.backend.ingestion.secret_resolver import (
-    SecretResolverUnavailable,
-    list_source_cred_refs,
-)
 from src.backend.ingestion.service import IngestionService
 from src.shared.db.models import DatasetRegistry, Event, IngestionSource, IngestionSourceDataset
 from src.shared.exceptions import StorageUnavailableError
 from src.shared.models.ingestion import Mode
+from src.shared.secrets import (
+    SecretResolverUnavailable,
+    list_source_cred_refs,
+)
 
 router = APIRouter(
     prefix="/ingestion",

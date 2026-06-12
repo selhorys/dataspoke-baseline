@@ -38,8 +38,8 @@ from src.backend.admin.datahub_secret import (
     set_datahub_token,
 )
 from src.backend.admin.langfuse_secret import (
-    langfuse_secret_key_is_set,
     invalidate_langfuse_secret_key_cache,
+    langfuse_secret_key_is_set,
     set_langfuse_secret_key,
 )
 from src.backend.admin.llm_secret import llm_api_key_is_set, set_llm_api_key
@@ -55,10 +55,10 @@ from src.backend.admin.smtp_secret import (
 )
 from src.backend.auth import api_tokens, users
 from src.backend.datahub import users as dh_users
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.registry import sync_with_datahub
 from src.shared.exceptions import ConflictError, DataHubSyncError, StorageUnavailableError
+from src.shared.secrets import SecretResolverUnavailable
 from src.workflows.airflow.client import AirflowClient
 from src.workflows.registry import ALL_DAG_IDS as _EXPECTED_DAGS
 

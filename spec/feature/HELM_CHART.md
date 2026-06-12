@@ -802,7 +802,8 @@ The Role is shared between two distinct access patterns:
 
 - **Source-cred reads** (`get` + `list`): the secret resolver reads and
   enumerates `dataspoke-source-cred-*` Secrets. The application-level
-  prefix guard in `secret_resolver.py` ensures the resolver never touches
+  prefix guard in the Kubernetes secret backend (`src/shared/secrets/k8s.py`)
+  ensures the resolver never touches
   infra Secrets; RBAC cannot enforce this boundary because the Role is
   namespace-scoped without `resourceNames`.
 - **Infra accessor writes** (`get` + `create` + `patch`): the admin

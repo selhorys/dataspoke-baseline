@@ -7,12 +7,12 @@ Public surface:
     invalidate_datahub_token_cache() -> None
 
     Exceptions re-raised from the k8s layer:
-        SecretResolverUnavailable  (from secret_resolver) — k8s client init failure
+        SecretResolverUnavailable  (from src.shared.secrets) — k8s client init failure
 
 Design notes:
-- Reuses ``secret_resolver._require_client()`` to get the (CoreV1Api, namespace)
-  pair without duplicating the in-cluster init logic and without weakening the
-  source-cred prefix guard on secret_resolver's public functions.
+- Reuses ``src.shared.secrets.k8s.require_k8s_client()`` to get the
+  (CoreV1Api, namespace) pair without duplicating the in-cluster init logic and
+  without weakening the source-cred prefix guard on the resolver's public functions.
 - Cache: simple monotonic-TTL single-entry cache; no LRU needed (single key).
 - The plaintext token value is NEVER logged or included in exception messages.
 """
@@ -24,13 +24,15 @@ import logging
 import time
 from typing import Any
 
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable, _require_client
+from src.shared.secrets import SecretResolverUnavailable
+from src.shared.secrets.k8s import require_k8s_client
 
 logger = logging.getLogger(__name__)
 
 # SECURITY BOUNDARY: the API ServiceAccount's Role grants get/create/patch on ALL
 # Secrets in the namespace (resourceNames unset), and this accessor deliberately
-# bypasses secret_resolver's dataspoke-source-cred- prefix guard. The *only* thing
+# bypasses the dataspoke-source-cred- prefix guard enforced by
+# KubernetesSecretBackend (src/shared/secrets/k8s.py). The *only* thing
 # scoping these calls to the DataHub token is this hardcoded name. Do NOT parameterize
 # _SECRET_NAME from any request input — doing so would let an admin read/overwrite
 # dataspoke-secrets (JWT signing key, LLM key, etc.).
@@ -73,7 +75,7 @@ def get_datahub_token() -> str:
     # 2. Read Secret via k8s API
     core: Any
     namespace: str
-    core, namespace = _require_client()
+    core, namespace = require_k8s_client()
 
     try:
         secret = core.read_namespaced_secret(name=_SECRET_NAME, namespace=namespace)
@@ -89,7 +91,7 @@ def get_datahub_token() -> str:
                 extra={"secret_name": _SECRET_NAME, "namespace": namespace},
             )
             return ""
-        # Other k8s error — propagate as unavailable (matches secret_resolver convention)
+        # Other k8s error — propagate as unavailable (matches the resolver convention)
         raise SecretResolverUnavailable(
             "Kubernetes API unavailable when reading DataHub secret"
         ) from exc
@@ -119,7 +121,7 @@ def set_datahub_token(value: str) -> None:
     from kubernetes import client as k8s_client
     from kubernetes.client.exceptions import ApiException
 
-    core, namespace = _require_client()  # raises SecretResolverUnavailable if out-of-cluster
+    core, namespace = require_k8s_client()  # raises SecretResolverUnavailable if out-of-cluster
 
     encoded = base64.b64encode(value.encode()).decode()
     existing: bool

@@ -7,9 +7,10 @@ so neither imports from the other for ingestion primitives.
 from __future__ import annotations
 
 import logging
-import re
 from enum import Enum
 from typing import Any
+
+from src.shared.secrets.grammar import SECRET_REF_RE
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +90,6 @@ def parse_recipe(recipe: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return source_type, config
 
 
-# Secret reference pattern: ${name__key} where
-#   name  — DNS-label-safe token: lowercase alphanumerics and hyphens (e.g. dummy-data-pg)
-#   key   — Secret data-key: alphanumerics, hyphens, underscores, dots (e.g. password)
-# Example: ${dummy-data-pg__password} → name=dummy-data-pg, key=password
-_SECRET_REF_RE = re.compile(r"\$\{([a-z0-9-]+)__([A-Za-z0-9_.-]+)\}")
-
-
 def extract_secret_refs(recipe: dict[str, Any]) -> set[str]:
     """Return the set of ``name__key`` tokens found inside ``${...}`` placeholders.
 
@@ -117,9 +111,14 @@ def extract_secret_refs(recipe: dict[str, Any]) -> set[str]:
 
 
 def _collect_refs(obj: Any, refs: set[str]) -> None:
-    """Recursively collect ``name__key`` tokens from all string values."""
+    """Recursively collect ``name__key`` tokens from all string values.
+
+    Uses the shared ``SECRET_REF_RE`` pattern, so the set extracted (and
+    verified) at save time is by construction the set substituted at run time
+    by the resolver.
+    """
     if isinstance(obj, str):
-        for match in _SECRET_REF_RE.finditer(obj):
+        for match in SECRET_REF_RE.finditer(obj):
             refs.add(f"{match.group(1)}__{match.group(2)}")
     elif isinstance(obj, dict):
         for v in obj.values():

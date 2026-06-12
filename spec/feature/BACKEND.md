@@ -277,7 +277,7 @@ the internal `schedule_tier` column, which selects the Airflow tier DAG; `schedu
 manual-only (runs only on `…/method/run`, never on a tier DAG). `DATAHUB_MANAGED` mirrors
 DataHub's schedule; `PASSIVE` has none.
 
-**Secret resolution** (`secret_resolver.py`): recipes reference secrets DataHub-compatibly as
+**Secret resolution** (the `src/shared/secrets/` shared resolver): recipes reference secrets DataHub-compatibly as
 `${name__key}`. Before a run, the service pre-resolves: split on the last `__` → read K8s Secret
 `dataspoke-source-cred-<name>` key `<key>` (the `dataspoke-source-cred-` prefix vault) →
 substitute plaintext into the recipe dict at run time. Plaintext is never persisted; the stored

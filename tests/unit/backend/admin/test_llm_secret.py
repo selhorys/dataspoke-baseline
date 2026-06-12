@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from kubernetes.client.exceptions import ApiException
@@ -43,13 +43,14 @@ from src.backend.admin.llm_secret import (
     llm_api_key_is_set,
     set_llm_api_key,
 )
-from src.backend.ingestion.secret_resolver import SecretResolverUnavailable
+from src.shared.secrets import SecretResolverUnavailable
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _SECRET_NAME = "dataspoke-llm-secret"
 _SECRET_KEY = "api_key"
 _NAMESPACE = "dataspoke"
+_REQUIRE_CLIENT = "src.backend.admin.llm_secret.require_k8s_client"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ def test_get_returns_base64_decoded_value() -> None:
     secret = _fake_secret("sk-xyz")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_llm_api_key()
 
     assert result == "sk-xyz", (
@@ -142,7 +143,7 @@ def test_get_cache_hit_does_not_re_read() -> None:
     secret = _fake_secret("sk-cached")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         first = get_llm_api_key()
         second = get_llm_api_key()
 
@@ -169,7 +170,7 @@ def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
     core = _make_core(read_return=secret)
     real_now = _time.monotonic()
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         # First call — populates cache with expiry = real_now + TTL.
         get_llm_api_key()
         first_count = core.read_namespaced_secret.call_count  # 1
@@ -197,7 +198,7 @@ def test_get_404_returns_empty_string_and_caches() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_llm_api_key()
         assert result == "", "404 must yield empty string (secret unset)"
 
@@ -223,7 +224,7 @@ def test_get_403_returns_empty_string_not_cached() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(403))
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_llm_api_key()
         assert result == "", "403 must yield empty string (fail-safe)"
 
@@ -243,7 +244,7 @@ def test_get_403_logs_warning_without_key_value(caplog) -> None:
     """
     core = _make_core(read_side_effect=_api_exception(403))
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         with caplog.at_level(logging.WARNING, logger="src.backend.admin.llm_secret"):
             get_llm_api_key()
 
@@ -267,14 +268,14 @@ def test_get_403_logs_warning_without_key_value(caplog) -> None:
 # ── 6. get — other k8s error raises SecretResolverUnavailable ────────────────
 
 
-def test_get_500_raises_secret_resolver_unavailable() -> None:
+def test_get_500_raises_resolver_unavailable() -> None:
     """read_namespaced_secret raises ApiException(500) → SecretResolverUnavailable propagated.
 
     spec: BACKEND_LLM.md §LLM API key — other k8s errors propagate as unavailable.
     """
     core = _make_core(read_side_effect=_api_exception(500))
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         with pytest.raises(SecretResolverUnavailable):
             get_llm_api_key()
 
@@ -290,7 +291,7 @@ def test_get_returns_empty_string_when_data_is_none() -> None:
     secret = _fake_secret(None)  # data=None
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_llm_api_key()
 
     assert result == "", "data=None must be treated as unset (returns '')"
@@ -304,7 +305,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = get_llm_api_key()
 
     assert result == "", "Empty data dict must be treated as unset (returns '')"
@@ -326,7 +327,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
     # read raises 404 → Secret does not exist.
     core.read_namespaced_secret.side_effect = _api_exception(404)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_llm_api_key("sk-new")
 
     core.create_namespaced_secret.assert_called_once()
@@ -349,19 +350,19 @@ def test_set_create_path_invalidates_cache() -> None:
     # Prime cache.
     secret_before = _fake_secret("sk-old")
     core_get = _make_core(read_return=secret_before)
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_get, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_get, _NAMESPACE)):
         assert get_llm_api_key() == "sk-old"
 
     # set (create path): 404 on read → create.
     core_set = MagicMock()
     core_set.read_namespaced_secret.side_effect = _api_exception(404)
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_set, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_set, _NAMESPACE)):
         set_llm_api_key("sk-new")
 
     # Next get must re-read, not return cached "sk-old".
     secret_after = _fake_secret("sk-new")
     core_after = _make_core(read_return=secret_after)
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_after, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_after, _NAMESPACE)):
         result = get_llm_api_key()
 
     assert result == "sk-new", (
@@ -387,7 +388,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
     core = MagicMock()
     core.read_namespaced_secret.return_value = existing_secret
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_llm_api_key("sk-updated")
 
     core.patch_namespaced_secret.assert_called_once()
@@ -414,7 +415,7 @@ def test_set_patch_path_does_not_touch_other_keys() -> None:
     core = MagicMock()
     core.read_namespaced_secret.return_value = existing_secret
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         set_llm_api_key("sk-new")
 
     patch_body = core.patch_namespaced_secret.call_args[1]["body"]
@@ -439,7 +440,7 @@ def test_set_empty_string_clears_key() -> None:
     existing_secret = _fake_secret("sk-old")
     core_set.read_namespaced_secret.return_value = existing_secret
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_set, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_set, _NAMESPACE)):
         set_llm_api_key("")
 
     patch_body = core_set.patch_namespaced_secret.call_args[1]["body"]
@@ -452,7 +453,7 @@ def test_set_empty_string_clears_key() -> None:
     secret_cleared = MagicMock()
     secret_cleared.data = {_SECRET_KEY: _b64("")}
     core_get = _make_core(read_return=secret_cleared)
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_get, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_get, _NAMESPACE)):
         result = get_llm_api_key()
 
     assert result == "", "After clearing, get must return ''"
@@ -467,7 +468,7 @@ def test_set_out_of_cluster_raises() -> None:
     spec: BACKEND_LLM.md §LLM API key — PATCH cannot persist when k8s client is unavailable.
     """
     with patch(
-        "src.backend.admin.llm_secret._require_client",
+        _REQUIRE_CLIENT,
         side_effect=SecretResolverUnavailable("out-of-cluster"),
     ):
         with pytest.raises(SecretResolverUnavailable):
@@ -485,7 +486,7 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     # Prime cache via get.
     secret_v1 = _fake_secret("sk-v1")
     core_v1 = _make_core(read_return=secret_v1)
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_v1, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_v1, _NAMESPACE)):
         get_llm_api_key()
     assert core_v1.read_namespaced_secret.call_count == 1
 
@@ -493,13 +494,13 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     core_set = MagicMock()
     existing_secret = _fake_secret("sk-v1")
     core_set.read_namespaced_secret.return_value = existing_secret
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_set, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_set, _NAMESPACE)):
         set_llm_api_key("sk-v2")
 
     # Next get must re-read, not hit the old cache.
     secret_v2 = _fake_secret("sk-v2")
     core_v2 = _make_core(read_return=secret_v2)
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core_v2, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core_v2, _NAMESPACE)):
         result = get_llm_api_key()
 
     assert core_v2.read_namespaced_secret.call_count == 1, (
@@ -515,14 +516,14 @@ def test_llm_api_key_is_set_true_when_secret_has_key() -> None:
     """llm_api_key_is_set returns True when the Secret contains a non-empty api_key.
 
     Exercises the real get_llm_api_key → K8s read → base64-decode path.
-    The K8s layer is mocked (CoreV1Api + _require_client); no cluster needed.
+    The K8s layer is mocked (CoreV1Api + require_k8s_client); no cluster needed.
 
     spec: BACKEND_LLM.md §LLM API key — masked GET returns '********' when set.
     """
     secret = _fake_secret("sk-x")
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = llm_api_key_is_set()
 
     assert result is True, (
@@ -540,7 +541,7 @@ def test_llm_api_key_is_set_false_when_secret_absent() -> None:
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = llm_api_key_is_set()
 
     assert result is False, (
@@ -558,7 +559,7 @@ def test_llm_api_key_is_set_false_when_key_absent_from_data() -> None:
     secret = _fake_secret("")  # data={}; api_key key not present
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         result = llm_api_key_is_set()
 
     assert result is False, (
@@ -580,7 +581,7 @@ def test_403_warning_emitted_and_does_not_log_key_sentinel(caplog) -> None:
     key_sentinel = "sk-ultra-secret-value"
     core = _make_core(read_side_effect=_api_exception(403))
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         with caplog.at_level(logging.WARNING, logger="src.backend.admin.llm_secret"):
             result = get_llm_api_key()
 
@@ -615,7 +616,7 @@ def test_plaintext_not_logged_on_read_success_decode_path(caplog) -> None:
     secret = _fake_secret(key_sentinel)
     core = _make_core(read_return=secret)
 
-    with patch("src.backend.admin.llm_secret._require_client", return_value=(core, _NAMESPACE)):
+    with patch(_REQUIRE_CLIENT, return_value=(core, _NAMESPACE)):
         with caplog.at_level(logging.DEBUG, logger="src.backend.admin.llm_secret"):
             result = get_llm_api_key()
 
