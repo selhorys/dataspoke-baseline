@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'feature-impl',
-  description: 'CLAUDE.md §Implementation Workflow steps 4-8: per-stage generate → evaluate cycles from an approved plan',
+  name: 'wf-minimal',
+  description: 'Simplest example of a dynamic agent-fleet workflow: per-stage generate → adversarial-review cycles from an approved plan (CLAUDE.md §Implementation Workflow steps 4-8)',
   whenToUse: 'After a human approves an implementation plan that names generator stages. args = {plan, stages, security?}.',
   phases: [
     { title: 'backend' },
@@ -21,7 +21,7 @@ export const meta = {
 // The harness may deliver args JSON-stringified; normalize before validating.
 const ARGS = typeof args === 'string' ? JSON.parse(args) : args
 if (!ARGS || typeof ARGS.plan !== 'string' || !Array.isArray(ARGS.stages)) {
-  throw new Error('feature-impl requires args {plan: string, stages: array, security?: string[]}')
+  throw new Error('wf-minimal requires args {plan: string, stages: array, security?: string[]}')
 }
 
 const REVIEWER_FOR = { test: 'test-reviewer' } // every other reviewed stage uses `reviewer`

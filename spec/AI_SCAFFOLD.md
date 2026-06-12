@@ -128,10 +128,11 @@ with the test phase when it does not depend on pending backend changes. The gene
 cycles run as direct subagent calls by default — the orchestrator passes the approved plan into each
 generator, generator completion reports into its reviewer, and reviewer findings back for a fix pass;
 the one non-negotiable rule is generator ≠ reviewer. Issues that persist after one fix pass halt the
-run and escalate to the user. The checked-in `feature-impl` dynamic workflow
-(`.claude/workflows/feature-impl.js`) mechanizes this same loop and is reserved for large features
-that span several generator stages at once, where its deterministic fan-out and parallelism earn the
-extra tokens.
+run and escalate to the user. When workflow-based multi-agent execution is desired, the orchestrator
+writes a dynamic workflow script: an agent fleet composed from the subagent definitions in
+`.claude/agents/`, with each generator paired against an adversarial reviewer and fan-out /
+parallelism shaped to the task. The per-stage loop above is one of the simplest examples of such a
+workflow, checked in as `.claude/workflows/wf-minimal.js`.
 
 See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
 
