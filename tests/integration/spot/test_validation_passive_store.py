@@ -33,13 +33,11 @@ Spec:
 - spec/DATAHUB_INTEGRATION.md §Assertion Aspects
 """
 
-import os
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-
 from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
     AssertionInfoClass,
@@ -77,7 +75,10 @@ def _epoch_ms(dt: datetime) -> int:
 
 def _make_datahub_graph() -> DataHubGraph:
     """Return a DataHubGraph client pointing at the dev-env GMS."""
-    from tests.integration.util.datahub import _gms_url, _get_token  # type: ignore[attr-defined]
+    from tests.integration.util.datahub import (  # type: ignore[attr-defined]
+        _get_token,
+        _gms_url,
+    )
     token = _get_token()
     return DataHubGraph(DatahubClientConfig(server=_gms_url, token=token))
 
@@ -273,7 +274,10 @@ async def test_post_result_emits_assertion_run_event(
             "variables": {"row_cnt": 50.0},
         },
     )
-    assert resp.status_code == 200, f"POST result failed: {resp.text}"
+    assert resp.status_code == 201, (
+        f"POST /attr/validation/result must return 201 Created; "
+        f"got {resp.status_code}: {resp.text}. spec: API.md §HTTP Status Codes"
+    )
     row = resp.json()
     # data_time round-trips via API
     assert "2026-03-15" in row["data_time"]
@@ -352,7 +356,7 @@ async def test_get_result_historical_filter_and_last_write_wins(
                 "variables": {"row_cnt": float(100 + i)},
             },
         )
-        assert resp.status_code == 200, f"POST day {i} failed: {resp.text}"
+        assert resp.status_code == 201, f"POST day {i} failed: {resp.text}"
 
     # POST a second entry for day 0 (duplicate data_time) — this should win on read
     resp = await api_client.post(
@@ -364,7 +368,7 @@ async def test_get_result_historical_filter_and_last_write_wins(
             "variables": {"row_cnt": 999.0},
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
 
     # GET with from=day2, until=day5 (inclusive day2, exclusive day5 → days 2,3,4)
     from_dt = (base_date + timedelta(days=2)).isoformat()
@@ -479,7 +483,8 @@ async def test_put_after_delete_resurrects_assertion(
         headers=admin_headers,
         json={"description": new_description, "variables": ["row_cnt", "null_rate"]},
     )
-    assert resp.status_code in (200, 201), f"PUT-after-DELETE failed: {resp.text}"
+    # spec: USE_CASE_en.md §UC2 — PUT-after-DELETE (resurrection) creates anew → 201
+    assert resp.status_code == 201, f"PUT-after-DELETE must return 201 Created: {resp.text}"
     second_data = resp.json()
 
     assert second_data["description"] == new_description
@@ -588,7 +593,8 @@ async def test_put_conf_rejects_description_with_control_chars(
         },
     )
 
-    # TODO(spec-sync): API.md §Error Codes lists INVALID_PARAMETER → 400 but PydanticValidationError handler at src/api/main.py:188 returns 422. Track separately.
+    # TODO(spec-sync): API.md §Error Codes lists INVALID_PARAMETER → 400 but
+    # PydanticValidationError handler at src/api/main.py:188 returns 422. Track separately.
     # spec: VALIDATION.md §Rule Configuration — control characters rejected at schema layer.
     # Implementation maps to 422 via PydanticValidationError handler (see src/api/main.py).
     assert resp.status_code == 422, (
@@ -650,7 +656,11 @@ async def test_out_of_band_tombstone_reverted_on_put(
     """
     from datahub.emitter.mcp import MetadataChangeProposalWrapper
     from datahub.emitter.rest_emitter import DatahubRestEmitter
-    from tests.integration.util.datahub import _gms_url, _get_token  # type: ignore[attr-defined]
+
+    from tests.integration.util.datahub import (  # type: ignore[attr-defined]
+        _get_token,
+        _gms_url,
+    )
 
     assertion_urn = build_assertion_urn(_DATASET_URN)
 

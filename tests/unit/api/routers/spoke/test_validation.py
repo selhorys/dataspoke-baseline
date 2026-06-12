@@ -17,19 +17,17 @@ import pytest
 
 from src.api.dependencies import get_validation_service
 from src.api.main import app
-from src.shared.exceptions import (
-    DataHubUnavailableError,
-    EntityNotFoundError,
-    PreconditionFailedError,
-)
-
+from src.shared.exceptions import PreconditionFailedError
 from tests.unit.api.conftest import auth_headers
 
 _DATA_BASE = "/api/v1/spoke/common/data"
 _VALIDATION_BASE = "/api/v1/spoke/validation"
 
 # The dataset URN used in tests — includes parens that must be URL-encoded.
-_VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+_VALID_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+    "example_db.orders.daily_fulfillment_summary,DEV)"
+)
 _VALID_URN_ENC = (
     _VALID_URN
     .replace("(", "%28")
@@ -290,9 +288,10 @@ async def test_delete_conf_204(client, mock_svc: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_result_200(client, mock_svc: AsyncMock) -> None:
-    """POST /attr/validation/result returns 200 with the recorded row.
+async def test_post_result_201(client, mock_svc: AsyncMock) -> None:
+    """POST /attr/validation/result returns 201 Created with the recorded row.
 
+    spec: API.md §HTTP Status Codes — POST that creates a resource returns 201 Created.
     spec: VALIDATION.md §Validation Result — pipeline POSTs results.
     """
     from src.backend.validation.service import ValidationResultRecord
@@ -314,7 +313,10 @@ async def test_post_result_200(client, mock_svc: AsyncMock) -> None:
         },
         headers=auth_headers(),
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201, (
+        f"POST /attr/validation/result must return 201 Created (resource-creating POST); "
+        f"got {resp.status_code}. spec: API.md §HTTP Status Codes."
+    )
     data = resp.json()
     assert data["score"] == 1.0
 
@@ -558,7 +560,8 @@ async def test_resurrection_via_put_after_delete_returns_201_at_route_layer(
 
     # spec: USE_CASE_en.md §UC2 — resurrection returns 201, not 200
     assert resp.status_code == 201, (
-        f"Expected HTTP 201 for PUT-after-delete (resurrection), got {resp.status_code}: {resp.text}"
+        f"Expected HTTP 201 for PUT-after-delete (resurrection), "
+        f"got {resp.status_code}: {resp.text}"
     )
 
 
@@ -603,7 +606,9 @@ async def test_get_validation_list_removed_true_returns_only_removed_items(
     # spec: API.md §Standard Response Envelope — collection responses use a content key
     # named after the resource (e.g., `validations`) plus pagination metadata.
     data = resp.json()
-    assert isinstance(data, dict), f"Response must be the standard list envelope dict; got {type(data).__name__}"
+    assert isinstance(data, dict), (
+        f"Response must be the standard list envelope dict; got {type(data).__name__}"
+    )
     assert "validations" in data and "total_count" in data, (
         f"Response must carry 'validations' (resource-named content key) and 'total_count'; "
         f"got keys: {list(data.keys())}. spec: API.md §Standard Response Envelope"
@@ -653,7 +658,9 @@ async def test_get_validation_list_removed_false_returns_only_active_items(
     # spec: API.md §Standard Response Envelope — collection responses use a content key
     # named after the resource (e.g., `validations`) plus pagination metadata.
     data = resp.json()
-    assert isinstance(data, dict), f"Response must be the standard list envelope dict; got {type(data).__name__}"
+    assert isinstance(data, dict), (
+        f"Response must be the standard list envelope dict; got {type(data).__name__}"
+    )
     assert "validations" in data and "total_count" in data, (
         f"Response must carry 'validations' (resource-named content key) and 'total_count'; "
         f"got keys: {list(data.keys())}. spec: API.md §Standard Response Envelope"
@@ -678,7 +685,8 @@ def _make_real_svc_override():
     The real service checks score via math.isfinite before touching the DB,
     so the mocked DB/datahub are never actually called for invalid-score requests.
     """
-    from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+    from unittest.mock import AsyncMock as _AsyncMock
+
     from src.backend.validation.service import ValidationService
 
     mock_datahub = _AsyncMock()
