@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
@@ -114,7 +116,7 @@ def _error_json(
     error_code: str,
     message: str,
     headers: dict[str, str] | None = None,
-    detail: dict[str, object] | None = None,
+    detail: dict[str, object] | list[object] | None = None,
 ) -> JSONResponse:
     trace_id = request.headers.get(_TRACE_HEADER, "")
     body: dict[str, object] = {
@@ -143,7 +145,9 @@ async def _handle_rate_limit(request: Request, exc: RateLimitExceeded) -> JSONRe
         request,
         429,
         "RATE_LIMIT_EXCEEDED",
-        f"Rate limit exceeded: {exc.detail}" if getattr(exc, "detail", None) else "Rate limit exceeded.",
+        f"Rate limit exceeded: {exc.detail}"
+        if getattr(exc, "detail", None)
+        else "Rate limit exceeded.",
     )
     view_rate_limit = getattr(request.state, "view_rate_limit", None)
     if view_rate_limit is not None:
@@ -185,6 +189,18 @@ async def _handle_authentication(request: Request, exc: AuthenticationError) -> 
 
 async def _handle_validation(request: Request, exc: PydanticValidationError) -> JSONResponse:
     return _error_json(request, 422, "INVALID_PARAMETER", str(exc))
+
+
+async def _handle_request_validation(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return _error_json(
+        request,
+        422,
+        "INVALID_PARAMETER",
+        "Request validation failed.",
+        detail={"errors": jsonable_encoder(exc.errors())},
+    )
 
 
 async def _handle_datahub(request: Request, exc: DataHubUnavailableError) -> JSONResponse:
@@ -342,6 +358,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(PeripheralNotConfiguredError, _handle_peripheral_not_configured)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubSyncError, _handle_datahub_sync)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, _handle_request_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
     app.add_exception_handler(DataSpokeError, _handle_dataspoke_generic)  # type: ignore[arg-type]

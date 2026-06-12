@@ -747,6 +747,7 @@ machine-readable context about the failure. Currently emitted by:
 
 - `UNKNOWN_VARIABLE` → `detail.unknown: string[]` lists offending variable keys.
 - `INVALID_SCORE` → `detail.score` echoes the rejected value (JSON number when finite, otherwise a string like `"nan"` since JSON has no NaN/Inf).
+- `INVALID_PARAMETER` → `detail.errors` carries FastAPI's `.errors()` field-error list (`loc`/`msg`/`type`/`input` per failed field; `input` echoes the rejected value).
 
 Clients should treat `detail` as optional; absent for errors that don't need it.
 

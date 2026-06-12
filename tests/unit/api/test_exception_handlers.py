@@ -3,6 +3,7 @@
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 
 from src.shared.exceptions import (
     ConflictError,
@@ -38,6 +39,13 @@ def _make_app() -> FastAPI:
     @app.get("/test/generic")
     async def raise_generic() -> None:
         raise DataSpokeError("Something went wrong")
+
+    class _ProbeBody(BaseModel):
+        required_field: str
+
+    @app.post("/test/probe-body")
+    async def probe_body(body: _ProbeBody) -> dict:
+        return {"echo": body.required_field}
 
     return app
 
@@ -104,3 +112,121 @@ async def test_error_response_has_required_fields(exc_client: AsyncClient) -> No
     assert "error_code" in body
     assert "message" in body
     assert "trace_id" in body
+
+
+# ── RequestValidationError handler (_handle_request_validation) ──────────────
+#
+# Spec anchors:
+#   spec/API.md §Error Catalogue (error envelope) — top-level keys: error_code,
+#                                                    message, trace_id, resp_time
+#   spec/API.md §Application Error Codes          — INVALID_PARAMETER → 422
+#   spec/API.md §Error Catalogue (error envelope) — INVALID_PARAMETER → detail.errors
+#                                                    carries FastAPI's .errors() list
+#                                                    (loc/msg/type/input per failed field)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_missing_required_field_returns_422_standard_envelope(
+    exc_client: AsyncClient,
+) -> None:
+    """Missing required body field → 422 INVALID_PARAMETER in standard envelope.
+
+    Spec: spec/API.md §Application Error Codes (INVALID_PARAMETER → 422);
+          spec/API.md §Error Catalogue (error envelope) (INVALID_PARAMETER →
+          detail.errors with loc/msg/type/input per failed field).
+    """
+    resp = await exc_client.post(
+        "/test/probe-body",
+        json={},  # required_field is absent
+    )
+
+    assert resp.status_code == 422
+
+    body = resp.json()
+
+    # Standard envelope keys — spec/API.md §Error Catalogue (error envelope)
+    assert body["error_code"] == "INVALID_PARAMETER"
+    assert body["message"]  # non-empty
+    assert "trace_id" in body
+    assert "resp_time" in body
+
+    # detail.errors carries the field-error list — spec/API.md §Error Catalogue (error envelope)
+    detail = body["detail"]
+    assert isinstance(detail, dict), "detail must be an object, not a list"
+    errors = detail["errors"]
+    assert isinstance(errors, list)
+    assert len(errors) >= 1
+
+    # Each entry must identify the offending field via loc/msg/type/input
+    # spec/API.md §Error Catalogue (error envelope) — loc/msg/type/input per failed field
+    first_err = errors[0]
+    assert "loc" in first_err
+    assert "msg" in first_err
+    assert "type" in first_err
+    assert "input" in first_err  # presence only; value is impl-incidental
+
+    # loc must reference the missing field
+    loc_str = ".".join(str(s) for s in first_err["loc"])
+    assert "required_field" in loc_str
+
+
+async def test_malformed_json_body_returns_422_standard_envelope(
+    exc_client: AsyncClient,
+) -> None:
+    """Malformed JSON body triggers RequestValidationError → 422 standard envelope.
+
+    Spec: spec/API.md §Application Error Codes (INVALID_PARAMETER → 422);
+          spec/API.md §Error Catalogue (error envelope) (error_code, message,
+          trace_id, resp_time on every error response).
+    """
+    resp = await exc_client.post(
+        "/test/probe-body",
+        content=b"{ not valid json }",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 422
+
+    body = resp.json()
+
+    # Standard envelope — spec/API.md §Error Catalogue (error envelope)
+    assert body["error_code"] == "INVALID_PARAMETER"
+    assert body["message"]
+    assert "trace_id" in body
+    assert "resp_time" in body
+
+    # detail must be present and be an object with an errors list
+    assert "detail" in body
+    detail = body["detail"]
+    assert isinstance(detail, dict)
+    assert "errors" in detail
+    assert isinstance(detail["errors"], list)
+
+
+async def test_request_validation_error_is_not_fastapi_default_shape(
+    exc_client: AsyncClient,
+) -> None:
+    """Standard envelope is returned, NOT FastAPI's bare {"detail": [...]} response.
+
+    Spec: spec/API.md §Error Catalogue (error envelope) — all errors follow the
+          envelope with top-level error_code, message, trace_id, resp_time.
+          FastAPI's default RequestValidationError handler returns
+          {"detail": [...]}, which is rejected by the spec.
+    """
+    resp = await exc_client.post(
+        "/test/probe-body",
+        json={},  # triggers RequestValidationError
+    )
+
+    body = resp.json()
+
+    # Confirm top-level error_code present (standard envelope)
+    assert "error_code" in body
+
+    # FastAPI's default shape has "detail" as a top-level *list*; our handler
+    # wraps it inside detail.errors (an object).  Unconditional: detail must
+    # always be present and be an object for INVALID_PARAMETER.
+    assert isinstance(body.get("detail"), dict), (
+        "detail must be an object {errors: [...]}, not a bare list or absent"
+    )
+    assert "errors" in body["detail"]
