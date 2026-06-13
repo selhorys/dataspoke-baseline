@@ -23,6 +23,9 @@ const AUTH_DIR = path.join(__dirname, ".auth");
 
 export default defineConfig({
   testDir: ".",
+  // Role assignment by filename convention: `*.editor.spec.ts` / `*.reader.spec.ts`
+  // run under the editor / reader project; every other `*.spec.ts` runs under admin
+  // only (the full-write role). See per-project testMatch/testIgnore below.
   testMatch: ["use-case/**/*.spec.ts", "ground/**/*.spec.ts"],
 
   globalSetup: "./global-setup.ts",
@@ -46,6 +49,8 @@ export default defineConfig({
   projects: [
     {
       name: "admin",
+      // Everything except the role-specific ground specs.
+      testIgnore: ["**/*.editor.spec.ts", "**/*.reader.spec.ts"],
       use: {
         ...devices["Desktop Chrome"],
         storageState: path.join(AUTH_DIR, "admin.json"),
@@ -53,9 +58,7 @@ export default defineConfig({
     },
     {
       name: "editor",
-      // The _smoke.spec.ts harness test runs in admin only — exclude it here
-      // so the file enumerates as 2 tests (admin project), not 6.
-      testIgnore: ["**/use-case/_smoke.spec.ts"],
+      testMatch: ["**/*.editor.spec.ts"],
       use: {
         ...devices["Desktop Chrome"],
         storageState: path.join(AUTH_DIR, "editor.json"),
@@ -63,7 +66,7 @@ export default defineConfig({
     },
     {
       name: "reader",
-      testIgnore: ["**/use-case/_smoke.spec.ts"],
+      testMatch: ["**/*.reader.spec.ts"],
       use: {
         ...devices["Desktop Chrome"],
         storageState: path.join(AUTH_DIR, "reader.json"),

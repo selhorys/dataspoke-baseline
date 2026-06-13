@@ -142,6 +142,7 @@ export function RecipeYamlEditor({
   return (
     <div className="space-y-3">
       <Textarea
+        aria-label="recipe YAML"
         rows={18}
         className="font-mono text-xs"
         value={text}

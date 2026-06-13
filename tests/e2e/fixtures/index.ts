@@ -14,13 +14,17 @@
  * spec: spec/TESTING.md §E2E — dual confirmation, stub toggle, Imazon URNs.
  */
 
+import * as fs from "fs";
 import * as path from "path";
 import { test as base, type APIRequestContext, expect } from "@playwright/test";
-import { apiBaseUrl, ADMIN_EMAIL, ADMIN_PASSWORD, type StubField, IMAZON_URNS } from "./env";
+import { apiBaseUrl, type StubField, IMAZON_URNS } from "./env";
 
 export { IMAZON_URNS };
 
 const AUTH_DIR = path.join(__dirname, "..", ".auth");
+
+/** Long-lived admin API token written by global-setup; read by the adminApi fixture. */
+const ADMIN_API_TOKEN_FILE = path.join(AUTH_DIR, "admin-api-token.txt");
 
 /** storageState files keyed by role (matching playwright.config.ts project names) */
 export const STORAGE_STATE: Record<string, string> = {
@@ -29,47 +33,57 @@ export const STORAGE_STATE: Record<string, string> = {
   reader: path.join(AUTH_DIR, "reader.json"),
 };
 
-// ── Extended fixture type ─────────────────────────────────────────────────────
+// ── Extended fixture types ────────────────────────────────────────────────────
+
+type E2EWorkerFixtures = {
+  /** APIRequestContext carrying a long-lived admin API token (worker-scoped). */
+  adminApi: APIRequestContext;
+};
 
 type E2EFixtures = {
-  /** APIRequestContext carrying a fresh admin bearer token. */
-  adminApi: APIRequestContext;
   /** Toggle a stub_* field via PATCH /api/v1/admin/conf; read it back via GET. */
   toggleStub: (field: StubField, value: boolean) => Promise<Record<string, unknown>>;
 };
 
 // ── Fixture implementations ───────────────────────────────────────────────────
 
-export const test = base.extend<E2EFixtures>({
+export const test = base.extend<E2EFixtures, E2EWorkerFixtures>({
   /**
-   * Fresh admin bearer token obtained at fixture setup time.
-   * Each test gets its own APIRequestContext so tokens don't bleed across tests.
+   * Worker-scoped admin probe context for dual-confirmation backend checks.
    *
-   * Source: tests/integration/api_wired/conftest.py admin_token fixture.
+   * Reads the long-lived `dsk_` API token that global-setup minted and wrote to
+   * `.auth/admin-api-token.txt`, and builds one reusable APIRequestContext bearing
+   * it. No login or mint happens here, so the test run makes ZERO /auth/token calls
+   * (only global-setup's handful) — this avoids both the /auth/token 10/min rate
+   * limit (which a per-test login blew) and 15-min access-token expiry during long
+   * ES-settle polls. workers:1 means one context per run.
+   *
+   * Source: tests/integration/api_wired/conftest.py admin_token fixture;
+   * spec/feature/AUTH.md §API Tokens (dsk_ bearer, raw token returned once).
    */
-  adminApi: async ({ playwright }, use) => {
-    const base = apiBaseUrl();
-
-    // Obtain admin token
-    const tokenResp = await playwright.request.newContext({ baseURL: base });
-    const tokenRes = await tokenResp.post("/api/v1/auth/token", {
-      data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
-    });
-    expect(tokenRes.ok(), `Admin token request failed: ${await tokenRes.text()}`).toBeTruthy();
-    const { access_token: adminToken } = (await tokenRes.json()) as { access_token: string };
-    await tokenResp.dispose();
-
-    const ctx = await playwright.request.newContext({
-      baseURL: base,
-      extraHTTPHeaders: {
-        Authorization: `Bearer ${adminToken}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-    });
-    await use(ctx);
-    await ctx.dispose();
-  },
+  adminApi: [
+    async ({ playwright }, use) => {
+      const apiBase = apiBaseUrl();
+      if (!fs.existsSync(ADMIN_API_TOKEN_FILE)) {
+        throw new Error(
+          `Admin API token file missing: ${ADMIN_API_TOKEN_FILE}. ` +
+            `global-setup must mint it before tests run.`
+        );
+      }
+      const apiToken = fs.readFileSync(ADMIN_API_TOKEN_FILE, "utf-8").trim();
+      const ctx = await playwright.request.newContext({
+        baseURL: apiBase,
+        extraHTTPHeaders: {
+          Authorization: `Bearer ${apiToken}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+      });
+      await use(ctx);
+      await ctx.dispose();
+    },
+    { scope: "worker" },
+  ],
 
   /**
    * Toggle a stub_* field via PATCH /api/v1/admin/conf and return the updated conf.

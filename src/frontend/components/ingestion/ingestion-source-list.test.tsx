@@ -56,7 +56,7 @@ vi.mock("@/components/ui/select", () => {
       return React.createElement(
         "div",
         { "data-testid": "select-root", "data-value": value },
-        React.Children.map(children, (child: React.ReactElement) => {
+        React.Children.map(children, (child: React.ReactNode) => {
           if (!React.isValidElement(child)) return child;
           return React.cloneElement(child as React.ReactElement<{
             onValueChange?: (v: string) => void;
@@ -78,7 +78,7 @@ vi.mock("@/components/ui/select", () => {
       React.createElement(
         "div",
         { "data-testid": "select-content" },
-        React.Children.map(children, (child: React.ReactElement) => {
+        React.Children.map(children, (child: React.ReactNode) => {
           if (!React.isValidElement(child)) return child;
           return React.cloneElement(child as React.ReactElement<{
             onValueChange?: (v: string) => void;

@@ -44,6 +44,11 @@ const STORAGE_STATE_FILES: Record<string, string> = {
   reader: path.join(AUTH_DIR, "reader.json"),
 };
 
+/** Long-lived admin API token for backend probes — minted once here, read by the
+ *  worker-scoped adminApi fixture. Keeps /auth/token calls to a handful per run
+ *  (well under the 10/min limit) and avoids 15-min access-token expiry mid-run. */
+const ADMIN_API_TOKEN_FILE = path.join(AUTH_DIR, "admin-api-token.txt");
+
 async function acquireLock(): Promise<void> {
   if (process.env["DATASPOKE_DEV_ENV_LOCK_PREACQUIRED"]) {
     console.log("[e2e setup] Lock pre-acquired; skipping acquire.");
@@ -227,6 +232,29 @@ async function loginAndSaveState(
   await browser.close();
 }
 
+/**
+ * Mint a long-lived `dsk_` API token (POST /auth/api-tokens) using the admin
+ * access token, and write the raw token to ADMIN_API_TOKEN_FILE. The worker-scoped
+ * adminApi fixture reads this file, so per-test/per-worker logins are avoided —
+ * the run makes only the handful of /auth/token calls in this setup. The
+ * global-teardown --reset-seed wipes api_tokens, so tokens never accumulate.
+ */
+async function mintAdminApiToken(adminToken: string): Promise<void> {
+  const base = apiBaseUrl();
+  console.log("[e2e setup] Minting long-lived admin API token for probes...");
+  const resp = await fetch(`${base}/api/v1/auth/api-tokens`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ name: "e2e-probe" }),
+  });
+  if (!resp.ok) {
+    throw new Error(`API token mint failed: ${resp.status} ${await resp.text()}`);
+  }
+  const { token } = (await resp.json()) as { token: string };
+  fs.writeFileSync(ADMIN_API_TOKEN_FILE, token, { encoding: "utf-8" });
+  console.log(`[e2e setup] Admin API token saved: ${ADMIN_API_TOKEN_FILE}`);
+}
+
 export default async function globalSetup(_config: FullConfig): Promise<void> {
   // 1. Load env
   loadDotenv();
@@ -244,6 +272,9 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   flushRateLimitKeys();
   const adminToken = await getAdminToken();
   await provisionTestUsers(adminToken);
+
+  // 5b. Mint a long-lived admin API token for the worker-scoped adminApi fixture.
+  await mintAdminApiToken(adminToken);
 
   // 6. Login per role and save storageState
   console.log("[e2e setup] Logging in per role and saving storageState...");
