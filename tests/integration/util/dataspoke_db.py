@@ -28,6 +28,7 @@ import os
 import asyncpg
 
 from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS
+from src.backend.auth.users import _hash_password  # noqa: SLF001
 from src.backend.metrics.bootstrap import _FACTORY_DEFAULTS
 from tests.integration.util.postgres import _load_dotenv
 
@@ -54,7 +55,7 @@ async def _get_connection() -> asyncpg.Connection:
 async def reset_all() -> None:
     """TRUNCATE every table in the `dataspoke` schema, then re-seed factory rows.
 
-    Two tables require inline re-seeding because the API is not restarted after
+    Three items require inline re-seeding because the API is not restarted after
     TRUNCATE, so startup seeding won't re-run:
 
     - metric_definitions: factory defaults are spec-mandated initial state
@@ -66,6 +67,13 @@ async def reset_all() -> None:
       llm_provider and llm_model are overridden from the DATASPOKE_DEV_LLM_PROVIDER
       / DATASPOKE_DEV_LLM_MODEL env vars (same variables install.sh PATCHes) so
       the dev provider/model is preserved across resets.
+
+    - bootstrap admin user (dataspoke@dataspoke.local / "DataSpoke Admin" / role
+      "Admin"): TRUNCATE wipes the users table. The API is not restarted, so the
+      startup/post-install bootstrap endpoint won't re-run. The admin must exist
+      for any authenticated test or manual session to succeed after a reset.
+      Password is hashed using the same _hash_password helper as the canonical
+      internal_bootstrap endpoint in src/api/routers/admin.py.
     """
     conn = await _get_connection()
     try:
@@ -138,6 +146,15 @@ async def reset_all() -> None:
                 "langfuse",
                 json.dumps({"host": langfuse_host, "public_key": langfuse_pk}),
             )
+
+        await conn.execute(
+            f"INSERT INTO {_SCHEMA}.users (email, name, password_hash, role) "
+            "VALUES ($1, $2, $3, $4)",
+            "dataspoke@dataspoke.local",
+            "DataSpoke Admin",
+            _hash_password("dataspoke"),  # noqa: SLF001
+            "Admin",
+        )
     finally:
         await conn.close()
 
